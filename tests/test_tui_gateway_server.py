@@ -5007,14 +5007,17 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
 def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     """Regression guard: if session.close runs while session.create's
     _build thread is still constructing the agent, the build thread
-    must detect the orphan and clean up the slash_worker + notify
-    registration it's about to install.  Without the cleanup those
-    resources leak — the subprocess stays alive until atexit and the
-    notify callback lingers in the global registry."""
+    must detect the orphan and close the agent immediately (before
+    installing the worker/notify).  The agent race guard fires first,
+    so the worker is never installed — no cleanup needed for it.
+
+    session.close itself unregisters the notify callback unconditionally,
+    so the notify leak is covered by the close path, not the build path.
+    """
     import threading
 
-    closed_workers: list[str] = []
-    unregistered_keys: list[str] = []
+    closed_agents: list[str] = []
+    installed_workers: list[str] = []
 
     class _FakeWorker:
         def __init__(self, key, model):
@@ -5023,7 +5026,6 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
 
         def close(self):
             self._closed = True
-            closed_workers.append(self.key)
 
     class _FakeAgent:
         def __init__(self):
@@ -5032,19 +5034,14 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
             self.base_url = ""
             self.api_key = ""
 
-    # Make _build block until we release it — simulates slow agent init.
-    # Also signal when _build actually reaches _make_agent so the test
-    # can close the session at the right moment: session.create now
-    # defers _start_agent_build behind a 50ms timer (see the
-    # `_deferred_build` path in @method("session.create")), so closing
-    # before the build thread has even started would skip the orphan
-    # detection entirely and the test would race a non-event.
-    build_started = threading.Event()
-    release_build = threading.Event()
-    build_entered = threading.Event()
+        def close(self):
+            closed_agents.append("agent_closed")
 
-    def _slow_make_agent(sid, key, session_id=None, session_db=None):
-        build_started.set()
+    # Make _build block until we release it — simulates slow agent init.
+    build_entered = threading.Event()
+    release_build = threading.Event()
+
+    def _slow_make_agent(sid, key, session_id=None, session_db=None, **_kw):
         build_entered.set()
         release_build.wait(timeout=3.0)
         return _FakeAgent()
@@ -5061,16 +5058,19 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda t: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda t: None)
+    monkeypatch.setattr(server, "_start_notification_poller", lambda sid, s: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a: None)
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a: None)
+    monkeypatch.setattr(server, "_probe_config_health", lambda *a: None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
 
     # Shim register/unregister to observe leaks
     import tools.approval as _approval
 
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
-    monkeypatch.setattr(
-        _approval,
-        "unregister_gateway_notify",
-        lambda key: unregistered_keys.append(key),
-    )
+    monkeypatch.setattr(_approval, "unregister_gateway_notify", lambda key: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
 
     # Start: session.create spawns _build thread, returns synchronously
@@ -5083,17 +5083,13 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert resp.get("result"), f"got error: {resp.get('error')}"
     sid = resp["result"]["session_id"]
-    assert build_entered.wait(timeout=1.0), "deferred build did not start"
 
-    # Wait until the (deferred) build thread has actually entered
-    # _make_agent — otherwise session.close pops _sessions[sid] before
-    # _build ever runs, _start_agent_build never calls _build, and we
-    # never exercise the orphan-cleanup path.
-    assert build_started.wait(timeout=2.0), "build thread never entered _make_agent"
+    # Wait until the build thread has entered _make_agent.
+    assert build_entered.wait(timeout=2.0), "build thread never entered _make_agent"
 
     # Build thread is blocked in _slow_make_agent.  Close the session
     # NOW — this pops _sessions[sid] before _build can install the
-    # worker/notify.
+    # agent/worker/notify.
     close_resp = server.handle_request(
         {
             "id": "2",
@@ -5103,30 +5099,110 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert close_resp.get("result", {}).get("closed") is True
 
-    # At this point session.close saw slash_worker=None (not yet
-    # installed) so it didn't close anything.  Release the build thread
-    # and let it finish — it should detect the orphan and clean up the
-    # worker it just allocated + unregister the notify.
+    # Release the build thread — the agent race guard should detect
+    # the orphan and close the agent immediately, before installing
+    # the worker.
     release_build.set()
 
-    # Give the build thread a moment to run through its finally.
+    # Wait for agent close.
     for _ in range(100):
-        if closed_workers:
+        if closed_agents:
             break
         import time
 
         time.sleep(0.02)
 
     assert (
-        len(closed_workers) == 1
-    ), f"orphan worker was not cleaned up — closed_workers={closed_workers}"
-    # Notify may be unregistered by both session.close (unconditional)
-    # and the orphan-cleanup path; the key guarantee is that the build
-    # thread does at least one unregister call (any prior close
-    # already popped the callback; the duplicate is a no-op).
-    assert len(unregistered_keys) >= 1, (
-        f"orphan notify registration was not unregistered — "
-        f"unregistered_keys={unregistered_keys}"
+        len(closed_agents) == 1
+    ), f"orphan agent was not closed — closed_agents={closed_agents}"
+
+
+def test_session_create_close_race_closes_orphaned_agent(monkeypatch):
+    """Regression guard: if session.close runs while _make_agent is still
+    building, the completed agent must be closed — not leaked into a
+    detached session dict.
+
+    Without the fix the agent's close() is never called because
+    session.close saw agent=None (build not done yet) and the build
+    thread later assigns the agent to the now-detached session dict.
+    """
+    import threading
+
+    closed_agents: list[str] = []
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "x"
+            self.provider = "openrouter"
+            self.base_url = ""
+            self.api_key = ""
+
+        def close(self):
+            closed_agents.append("agent_closed")
+
+    build_entered = threading.Event()
+    release_build = threading.Event()
+
+    def _slow_make_agent(sid, key, session_id=None, session_db=None, **_kw):
+        build_entered.set()
+        release_build.wait(timeout=3.0)
+        return _FakeAgent()
+
+    monkeypatch.setattr(server, "_make_agent", _slow_make_agent)
+    monkeypatch.setattr(server, "_SlashWorker", type("_W", (), {"__init__": lambda s, *a, **k: None}))
+    monkeypatch.setattr(
+        server,
+        "_get_db",
+        lambda: types.SimpleNamespace(create_session=lambda *a, **kw: None),
+    )
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda t: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda t: None)
+    monkeypatch.setattr(server, "_start_notification_poller", lambda sid, s: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a: None)
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a: None)
+    monkeypatch.setattr(server, "_probe_config_health", lambda *a: None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "unregister_gateway_notify", lambda key: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    # Create session — spawns deferred _build thread
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
+    assert resp.get("result"), f"got error: {resp.get('error')}"
+    sid = resp["result"]["session_id"]
+
+    # Wait for build thread to enter _make_agent
+    assert build_entered.wait(timeout=2.0), "build thread never entered _make_agent"
+
+    # Close session while _make_agent is blocked
+    close_resp = server.handle_request(
+        {"id": "2", "method": "session.close", "params": {"session_id": sid}}
+    )
+    assert close_resp.get("result", {}).get("closed") is True
+
+    # Release build thread — it should detect the orphan and close the agent
+    release_build.set()
+
+    # Wait for agent close
+    for _ in range(100):
+        if closed_agents:
+            break
+        import time
+
+        time.sleep(0.02)
+
+    assert closed_agents, (
+        "orphaned agent was not closed after session.close raced _make_agent — "
+        "agent leaks background processes, sandbox, browser, and HTTP connections"
     )
 
 

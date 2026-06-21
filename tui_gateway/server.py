@@ -968,6 +968,16 @@ def _start_agent_build(sid: str, session: dict) -> None:
             finally:
                 _clear_session_context(tokens)
 
+            # Guard against session.close racing _make_agent: if the session
+            # was popped while we were building, close the orphaned agent
+            # immediately — mirrors _attach_worker's race guard (line 470).
+            with _sessions_lock:
+                if _sessions.get(sid) is not current:
+                    if hasattr(agent, "close"):
+                        agent.close()
+                    ready.set()
+                    return
+
             # Session DB row deferred to first run_conversation() call.
             # pending_title applied post-first-message (see cli.exec handler).
             current["agent"] = agent

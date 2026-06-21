@@ -581,6 +581,19 @@ def _ensure_hermes_home_managed(home: Path):
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
+    # Route obviously light-weight prompts to a cheaper/faster model while
+    # keeping the configured primary model for harder turns. Disabled by
+    # default; when enabled the primary runtime remains the session's source
+    # of truth and the cheap route is turn-scoped.
+    "smart_model_routing": {
+        "enabled": False,
+        "cheap_model": "",
+        "cheap_provider": "",
+        "cheap_base_url": "",
+        "cheap_api_mode": "",
+        "short_prompt_threshold": 180,
+        "long_prompt_threshold": 500,
+    },
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
@@ -3482,7 +3495,7 @@ def check_config_version() -> Tuple[int, int]:
 
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
-    "_config_version", "model", "providers", "fallback_model",
+    "_config_version", "model", "providers", "smart_model_routing", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",

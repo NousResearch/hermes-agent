@@ -325,7 +325,13 @@ def run_conversation(
     # If the previous turn activated fallback, restore the primary
     # runtime so this turn gets a fresh attempt with the preferred model.
     # No-op when _fallback_activated is False (gateway, first turn, etc.).
+    agent._restore_turn_model_route()
     agent._restore_primary_runtime()
+
+    # After restoring the primary runtime, optionally route this turn to a
+    # cheaper model. The route is turn-scoped and restored at the start of
+    # the next turn.
+    agent._maybe_route_turn_model(user_message)
 
     # Sanitize surrogate characters from user input.  Clipboard paste from
     # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates

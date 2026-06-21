@@ -3292,6 +3292,16 @@ class AIAgent:
         from agent.agent_runtime_helpers import restore_primary_runtime
         return restore_primary_runtime(self)
 
+    def _restore_turn_model_route(self) -> bool:
+        """Forwarder — see ``agent.agent_runtime_helpers.restore_turn_model_route``."""
+        from agent.agent_runtime_helpers import restore_turn_model_route
+        return restore_turn_model_route(self)
+
+    def _maybe_route_turn_model(self, user_message: str) -> bool:
+        """Forwarder — see ``agent.agent_runtime_helpers.maybe_route_turn_model``."""
+        from agent.agent_runtime_helpers import maybe_route_turn_model
+        return maybe_route_turn_model(self, user_message)
+
     def _try_recover_primary_transport(
         self, api_error: Exception, *, retry_count: int, max_retries: int,
     ) -> bool:

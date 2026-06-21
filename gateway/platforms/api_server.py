@@ -749,6 +749,16 @@ class APIServerAdapter(BasePlatformAdapter):
     and routes them through hermes-agent's AIAgent.
     """
 
+    # Stateless request/response: every route (the OpenAI-spec
+    # /v1/chat/completions and /v1/responses, and the proprietary /v1/runs SSE
+    # stream) tears down its channel when the turn ends. There is no persistent
+    # outbound channel to push a background completion to a client that already
+    # received its response, and ``send()`` is a no-op stub. So async-delivery
+    # tools (terminal notify_on_complete / watch_patterns, delegate_task
+    # background=True) must NOT promise delivery on this path — see
+    # ``async_delivery_supported()``.
+    supports_async_delivery: bool = False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
@@ -3655,6 +3665,38 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         return None
 
+    @staticmethod
+    def _bind_api_server_session(
+        *,
+        chat_id: str = "",
+        session_key: str = "",
+        session_id: str = "",
+    ) -> list:
+        """Bind session contextvars for an API-server agent run.
+
+        This is the SINGLE structural chokepoint every API-server agent-entry
+        path must use to seed session context — it hardwires
+        ``platform="api_server"`` and ``async_delivery=False`` so a new route
+        physically cannot reintroduce the silent-no-op bug (#10760) by
+        forgetting to mark the channel as non-delivering. There is no
+        ``async_delivery`` parameter to get wrong; the stateless HTTP path can
+        never wake the agent after the turn ends, on ANY route.
+
+        Returns reset tokens; pass them to ``clear_session_vars`` in a
+        ``finally`` block (the binding is request-scoped and must not outlive
+        the turn — a session resumed later on a delivering interface, e.g. the
+        CLI or a gateway platform, re-binds fresh and is NOT blocked).
+        """
+        from gateway.session_context import set_session_vars
+
+        return set_session_vars(
+            platform="api_server",
+            chat_id=chat_id,
+            session_key=session_key,
+            session_id=session_id,
+            async_delivery=False,
+        )
+
     async def _run_agent(
         self,
         user_message: str,
@@ -3682,10 +3724,9 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
 
         def _run():
-            from gateway.session_context import clear_session_vars, set_session_vars
+            from gateway.session_context import clear_session_vars
 
-            tokens = set_session_vars(
-                platform="api_server",
+            tokens = self._bind_api_server_session(
                 chat_id=session_id or "",
                 session_key=gateway_session_key or session_id or "",
                 session_id=session_id or "",
@@ -3940,7 +3981,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         pass
 
                 def _run_sync():
-                    from gateway.session_context import clear_session_vars, set_session_vars
+                    from gateway.session_context import clear_session_vars
                     from tools.approval import (
                         register_gateway_notify,
                         reset_current_session_key,
@@ -3956,8 +3997,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         # contextvars so concurrent runs do not share process
                         # environment state.
                         approval_token = set_current_session_key(approval_session_key)
-                        session_tokens = set_session_vars(
-                            platform="api_server",
+                        session_tokens = self._bind_api_server_session(
                             session_key=approval_session_key,
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)

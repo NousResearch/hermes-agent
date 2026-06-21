@@ -23,7 +23,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.auxiliary_client import call_llm, _is_connection_error
+from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -761,6 +761,14 @@ class ContextCompressor(ContextEngine):
         # this flag to know "compression was attempted but aborted, freeze
         # the chat until the user manually retries via /compress".
         self._last_compress_aborted: bool = False
+        # Set True when the summary call failed with an authentication /
+        # permission error (HTTP 401/403). Auth failures are non-recoverable
+        # at the request level — the credential or endpoint is broken — so
+        # compress() must ABORT (preserve the session unchanged) rather than
+        # rotate into a degraded child session with a placeholder summary.
+        # This is independent of the abort_on_summary_failure config flag:
+        # rotating on a broken credential is never the right behavior.
+        self._last_summary_auth_failure: bool = False
         # When a user-configured summary model fails and we recover by
         # retrying on the main model, record the failure so gateway /
         # CLI callers can still warn the user even though compression
@@ -1245,7 +1253,10 @@ Recovered from a deterministic fallback because the LLM context summarizer was u
 Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
 {HISTORICAL_IN_PROGRESS_HEADING}
-{active_task}
+Unknown from deterministic fallback — the latest user ask is recorded once under
+"{HISTORICAL_TASK_HEADING}" above as historical context only. Do NOT treat it as an
+unfulfilled instruction to re-answer; verify current state and continue from the
+protected recent messages after this summary.
 
 ## Blocked
 {_bullets(blockers, limit=5)}
@@ -1257,7 +1268,9 @@ None recoverable from deterministic fallback.
 None recoverable from deterministic fallback.
 
 {HISTORICAL_PENDING_ASKS_HEADING}
-{active_task}
+None recoverable from deterministic fallback. (The latest user ask is preserved once
+under "{HISTORICAL_TASK_HEADING}" as historical context — it is NOT necessarily
+outstanding.)
 
 ## Relevant Files
 {_bullets(relevant_files, limit=12)}
@@ -1511,7 +1524,13 @@ This compaction should PRIORITISE preserving all information related to the focu
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
-            response = call_llm(**call_kwargs)
+            # Compression is atomic: protect the in-flight summary call from a
+            # mid-turn gateway interrupt. Without this, an incoming user message
+            # aborts the summary and compression falls back to a degraded static
+            # marker, losing the real handoff (#23975). Re-entrant: a main-model
+            # retry (_generate_summary recursion) re-enters harmlessly.
+            with aux_interrupt_protection():
+                response = call_llm(**call_kwargs)
             content = response.choices[0].message.content
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):
@@ -1524,6 +1543,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._summary_failure_cooldown_until = 0.0
             self._summary_model_fallen_back = False
             self._last_summary_error = None
+            self._last_summary_auth_failure = False
             return self._with_summary_prefix(summary)
         except RuntimeError:
             # No provider configured — long cooldown, unlikely to self-resolve
@@ -1571,6 +1591,26 @@ This compaction should PRIORITISE preserving all information related to the focu
             # back to the main model instead of entering a 60-second cooldown.
             # See issue #18458.
             _is_streaming_closed = _is_connection_error(e)
+            # Authentication / permission failures (401/403) are NOT transient
+            # and NOT fixable by retrying the same request: the credential is
+            # invalid/blocked/expired or the endpoint is wrong (e.g. a prod
+            # token sent to a staging inference URL). Flag them so compress()
+            # aborts and preserves the session instead of rotating into a
+            # degraded child with a placeholder summary. We still allow the
+            # one-shot fallback to the MAIN model below when the failure came
+            # from a distinct auxiliary summary_model (its dedicated creds may
+            # be the only broken thing); only a failure on the main model — or
+            # a fallback that also auth-fails — makes the abort stick.
+            _is_auth_error = (
+                _status in {401, 403}
+                or "invalid api key" in _err_str
+                or "invalid x-api-key" in _err_str
+                or ("api key" in _err_str and ("invalid" in _err_str or "blocked" in _err_str))
+                or "unauthorized" in _err_str
+                or "authentication" in _err_str
+            )
+            if _is_auth_error:
+                self._last_summary_auth_failure = True
             if _is_json_decode and not _is_model_not_found and not _is_timeout:
                 logger.error(
                     "Context compression failed: auxiliary LLM returned a "
@@ -1809,6 +1849,23 @@ This compaction should PRIORITISE preserving all information related to the focu
             idx += 1
         return idx
 
+    def _effective_protect_first_n(self) -> int:
+        """``protect_first_n`` decayed across compression cycles.
+
+        ``protect_first_n`` keeps the first N non-system messages verbatim so
+        the original task framing survives the FIRST compaction. But applying
+        it on every subsequent pass fossilizes those early turns — they're
+        re-copied into each child session and never summarized away, so old
+        user messages become immortal and grow the head unboundedly across a
+        long session (#11996). Once the session has been compressed at least
+        once, the early turns are already captured in the handoff summary, so
+        there's no need to keep re-protecting them: decay to 0 (the system
+        prompt is still always protected separately by _protect_head_size).
+        """
+        if self.compression_count >= 1 or self._previous_summary:
+            return 0
+        return self.protect_first_n
+
     def _protect_head_size(self, messages: List[Dict[str, Any]]) -> int:
         """Total count of head messages to protect.
 
@@ -1820,14 +1877,19 @@ This compaction should PRIORITISE preserving all information related to the focu
         the ``messages`` list (e.g. the gateway ``/compress`` handler
         strips it before calling compress()).
 
-        Examples:
+        The ``protect_first_n`` portion DECAYS after the first compression
+        (see _effective_protect_first_n) so early user turns don't fossilize
+        across repeated compactions (#11996).
+
+        Examples (first compaction):
           protect_first_n=0 → system prompt only (or nothing if no system msg)
           protect_first_n=3 → system + first 3 non-system messages
+        After the first compaction: system prompt only.
         """
         head = 0
         if messages and messages[0].get("role") == "system":
             head = 1
-        return head + self.protect_first_n
+        return head + self._effective_protect_first_n()
 
     def _align_boundary_backward(self, messages: List[Dict[str, Any]], idx: int) -> int:
         """Pull a compress-end boundary backward to avoid splitting a
@@ -2178,6 +2240,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_summary_auth_failure = False
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
@@ -2293,19 +2356,38 @@ This compaction should PRIORITISE preserving all information related to the focu
         #           _last_summary_dropped_count for gateway hygiene to
         #           surface a warning.
         # Default is False (historical behavior).
-        if not summary and self.abort_on_summary_failure:
+        #
+        # EXCEPTION — auth failures always abort. A 401/403 from the summary
+        # call means the credential or endpoint is broken (invalid/blocked
+        # key, or a token pointed at the wrong inference host). Rotating into
+        # a child session with a placeholder summary on a broken credential
+        # strands the user on a degraded session for zero benefit — every
+        # subsequent call fails the same way. So when the failure was an auth
+        # error we abort regardless of abort_on_summary_failure, preserving
+        # the conversation unchanged until the credential is fixed.
+        if not summary and (self.abort_on_summary_failure or self._last_summary_auth_failure):
             n_skipped = compress_end - compress_start
             self._last_summary_dropped_count = 0  # nothing actually dropped
             self._last_summary_fallback_used = False
             self._last_compress_aborted = True
             if not self.quiet_mode:
-                logger.warning(
-                    "Summary generation failed — aborting compression "
-                    "(compression.abort_on_summary_failure=true). "
-                    "%d message(s) preserved unchanged. Conversation is "
-                    "frozen until the next /compress or /new.",
-                    n_skipped,
-                )
+                if self._last_summary_auth_failure:
+                    logger.warning(
+                        "Summary generation failed with an authentication "
+                        "error — aborting compression. %d message(s) preserved "
+                        "unchanged; the session was NOT rotated. Check your "
+                        "provider credential / inference endpoint, then retry "
+                        "with /compress or start fresh with /new.",
+                        n_skipped,
+                    )
+                else:
+                    logger.warning(
+                        "Summary generation failed — aborting compression "
+                        "(compression.abort_on_summary_failure=true). "
+                        "%d message(s) preserved unchanged. Conversation is "
+                        "frozen until the next /compress or /new.",
+                        n_skipped,
+                    )
             return messages
 
         # Phase 4: Assemble compressed message list

@@ -306,6 +306,23 @@ def _check_s6_supervision(issues: list[str]) -> None:
     )
 
 
+def check_certificates() -> None:
+    """Verify the certifi CA bundle is loadable.
+
+    Surfaces the SSLConfigurationError user-friendly path before they hit
+    a wall of tracebacks on the first outbound HTTPS call.
+    """
+    try:
+        from agent.ssl_guard import verify_ca_bundle_with_fallback
+        from agent.errors import SSLConfigurationError
+        verify_ca_bundle_with_fallback()
+        check_ok("SSL CA certificate bundle is valid")
+    except SSLConfigurationError as e:
+        check_fail("SSL CA certificate bundle is broken", str(e))
+    except Exception as e:
+        check_warn("SSL certificate check skipped", str(e))
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
     """Warn when a systemd user gateway service will stop after logout.
 
@@ -445,6 +462,31 @@ def _build_apikey_providers_list() -> list:
     return _static
 
 
+def managed_scope_check() -> None:
+    """Report the active managed scope (resolved dir + pinned key counts).
+
+    Silent when no managed scope is present. When the managed directory was
+    resolved from the HERMES_MANAGED_DIR override (rather than the system
+    default), that is surfaced too — a redirected scope is the documented
+    foot-gun (see docs/design/managed-scope.md §7) and an operator should see it.
+    """
+    try:
+        from hermes_cli import managed_scope
+        managed_dir = managed_scope.get_managed_dir()
+    except Exception:  # noqa: BLE001 — diagnostics must never crash
+        return
+    if managed_dir is None:
+        return
+    n_cfg = len(managed_scope.managed_config_keys())
+    n_env = len(managed_scope.load_managed_env())
+    check_ok(
+        f"Managed scope active: {n_cfg} config key(s), {n_env} env key(s) "
+        f"pinned by {managed_dir}"
+    )
+    if os.environ.get("HERMES_MANAGED_DIR", "").strip():
+        check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -539,6 +581,30 @@ def run_doctor(args):
     except Exception as e:
         # Never let a bug in the advisory check block the rest of doctor.
         check_warn(f"Security advisory check failed: {e}")
+
+    _section("MCP Server Security")
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_security import validate_mcp_server_entry
+
+        servers = load_config().get("mcp_servers") or {}
+        suspicious = 0
+        if isinstance(servers, dict):
+            for name, entry in sorted(servers.items()):
+                if not isinstance(entry, dict):
+                    continue
+                issues_found = validate_mcp_server_entry(name, entry)
+                if not issues_found:
+                    continue
+                suspicious += 1
+                check_warn(f"MCP server '{name}' has suspicious stdio command", "; ".join(issues_found))
+                manual_issues.append(
+                    f"Review/remove mcp_servers.{name} in config.yaml; rotate any credentials that may have been exposed."
+                )
+        if suspicious == 0:
+            check_ok("No suspicious MCP stdio commands")
+    except Exception as e:
+        check_warn(f"MCP security check failed: {e}")
     
     _section("Python Environment")
     py_version = sys.version_info
@@ -567,7 +633,10 @@ def run_doctor(args):
     # Detect drift between pyproject.toml and hermes_cli/__init__.py versions
     # (a git conflict resolution can silently revert one but not the other).
     _check_version_consistency(issues)
-    
+
+    _section("SSL / CA Certificates")
+    check_certificates()
+
     _section("Required Packages")
     required_packages = [
         ("openai", "OpenAI SDK"),
@@ -598,6 +667,8 @@ def run_doctor(args):
             check_warn(name, "(optional, not installed)")
     
     _section("Configuration Files")
+    # Managed scope (administrator-pinned config/env), when present.
+    managed_scope_check()
     # Check ~/.hermes/.env (primary location for user config)
     env_path = HERMES_HOME / '.env'
     if env_path.exists():
@@ -752,6 +823,7 @@ def run_doctor(args):
                 "huggingface",
                 "lmstudio",
                 "nous",
+                "nvidia",
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs
@@ -1513,11 +1585,20 @@ def run_doctor(args):
         # glob (which pulls in Electron, node-pty, etc.) is never resolved
         # for a routine security check. The web and ui-tui workspaces are
         # audited separately via --workspace flags. See #38772.
+        # The WhatsApp bridge may live under a writable HERMES_HOME mirror
+        # instead of the (possibly read-only) install tree in Docker — resolve
+        # it through the shared helper so we audit the dir that actually holds
+        # node_modules. See #49561.
+        try:
+            from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+            _whatsapp_bridge_dir = resolve_whatsapp_bridge_dir()
+        except Exception:
+            _whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
         npm_audit_targets = [
             (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
             (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
             (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
-            (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge", []),
+            (_whatsapp_bridge_dir, "WhatsApp bridge", []),
         ]
         for npm_dir, label, audit_extra in npm_audit_targets:
             # For workspace-scoped audits run from PROJECT_ROOT the
@@ -2107,6 +2188,11 @@ def run_doctor(args):
         if _mem_cfg_path.exists():
             with open(_mem_cfg_path, encoding="utf-8") as _f:
                 _raw_cfg = _yaml.safe_load(_f) or {}
+            try:
+                from hermes_cli import managed_scope
+                _raw_cfg = managed_scope.apply_managed_overlay(_raw_cfg)
+            except Exception:
+                pass
             _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
     except Exception:
         pass

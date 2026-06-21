@@ -67,6 +67,16 @@ function buildDesktopBackendPath({
   )
 }
 
+function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatform(process.platform) } = {}) {
+  if (!hermesHome) return hermesHome
+  const resolved = pathModule.resolve(String(hermesHome))
+  const parent = pathModule.dirname(resolved)
+  if (pathModule.basename(parent).toLowerCase() === 'profiles') {
+    return pathModule.dirname(parent)
+  }
+  return resolved
+}
+
 function buildDesktopBackendEnv({
   hermesHome,
   pythonPathEntries = [],
@@ -97,5 +107,6 @@ module.exports = {
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
   delimiterForPlatform,
+  normalizeHermesHomeRoot,
   pathEnvKey
 }

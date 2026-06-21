@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -25,12 +26,63 @@ from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
+
+class _Snowflake:
+    """Minimal object exposing ``.id`` — satisfies discord.py's Snowflake
+    protocol for ``channel.history(before=...)`` without constructing a
+    ``discord.Object`` (which test doubles that stub the discord module
+    cannot build).  Used to anchor reply-context scans inclusively.
+    """
+
+    __slots__ = ("id",)
+
+    def __init__(self, id: int) -> None:  # noqa: A002 - matches discord API
+        self.id = id
+
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
+_DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+# Discord enforces a hard cap of 100 global application (slash) commands per
+# app. Registering more makes the ENTIRE sync fail with error 30032
+# ("Maximum number of application commands reached"), which silently breaks
+# every slash command — not just the overflow ones. We keep the desired set
+# at or below this limit at registration time.
+_DISCORD_MAX_APP_COMMANDS = 100
+_DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
+    "non_conversational",
+    "non_conversational_history",
+})
+# Upgrade-bridge fallback only. The primary mechanism is the persisted
+# non-conversational message-ID set populated from explicitly marked sends
+# (metadata["non_conversational"]). These regexes exist solely to recognize
+# status bumps emitted by an older gateway version that pre-dates the marking,
+# so they don't partition history after an upgrade. New emitters should set the
+# metadata flag, not rely on a regex here.
+_DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
+    re.compile(r"^\s*💾\s*Self-improvement review:\s+\S[\s\S]*$", re.IGNORECASE),
+    # Legacy/background-review test doubles used this shorter form before the
+    # self-improvement prefix became the stable emitter contract.
+    re.compile(
+        r"^\s*💾\s+Skill\s+['\"].+?['\"]\s+(?:created|updated|improved|patched)\.?\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^\s*⏳\s+Working\s+—\s+\d+\s+min(?:\s|$)", re.IGNORECASE),
+    re.compile(
+        r"^\s*\[Background process\s+\S+\s+"
+        r"(?:finished with exit code|is still running~)[\s\S]*\]\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*(?:✅|❌)\s+Hermes update\s+"
+        r"(?:finished|failed|timed out)[\s\S]*$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
+)
 
 try:
     import discord
@@ -46,13 +98,12 @@ except ImportError:
 
 import sys
 from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
-from utils import atomic_json_write
+from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -124,6 +175,73 @@ def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[s
     if bundled.is_file():
         return str(bundled)
     return None
+
+
+class _DiscordNonConversationalMessageTracker:
+    """Persistent bounded set of Discord message IDs that are status noise."""
+
+    _MAX_TRACKED = 2000
+
+    def __init__(self, max_tracked: int = _MAX_TRACKED):
+        self._max_tracked = max_tracked
+        self._ids: dict[str, None] = dict.fromkeys(self._load())
+
+    def _state_path(self) -> _Path:
+        from hermes_constants import get_hermes_home
+
+        return (
+            get_hermes_home()
+            / _DISCORD_COMMAND_SYNC_STATE_SUBDIR
+            / _DISCORD_NONCONVERSATIONAL_STATE_FILENAME
+        )
+
+    def _load(self) -> list[str]:
+        path = self._state_path()
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [str(message_id) for message_id in data if str(message_id).strip()]
+        except Exception:
+            logger.debug("[%s] Failed to load non-conversational Discord IDs", "Discord")
+        return []
+
+    def _save(self) -> None:
+        ids = list(self._ids)
+        if len(ids) > self._max_tracked:
+            ids = ids[-self._max_tracked:]
+            self._ids = dict.fromkeys(ids)
+        try:
+            atomic_json_write(self._state_path(), ids, indent=None)
+        except Exception:
+            logger.debug("[%s] Failed to save non-conversational Discord IDs", "Discord", exc_info=True)
+
+    def mark_many(self, message_ids: List[str]) -> None:
+        changed = False
+        for message_id in message_ids:
+            key = str(message_id or "").strip()
+            if key and key not in self._ids:
+                self._ids[key] = None
+                changed = True
+        if changed:
+            self._save()
+
+    def __contains__(self, message_id: str) -> bool:
+        return str(message_id or "") in self._ids
+
+
+def _metadata_marks_nonconversational(metadata: Optional[Dict[str, Any]]) -> bool:
+    """Return True when an outbound send was explicitly marked as status-only."""
+    if not isinstance(metadata, dict):
+        return False
+    return any(bool(metadata.get(key)) for key in _DISCORD_NONCONVERSATIONAL_METADATA_KEYS)
+
+
+def _looks_like_nonconversational_history_message(content: str) -> bool:
+    """Fallback recognizer for legacy status bumps missing persisted IDs."""
+    text = content or ""
+    return any(pattern.match(text) for pattern in _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS)
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -628,8 +746,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
         # Text batching: merge rapid successive messages (Telegram-style)
-        self._text_batch_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "0.6"))
-        self._text_batch_split_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
+        self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
+        self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
@@ -675,6 +793,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Persistent set of bot-authored lifecycle/status message IDs that
+        # should not act as conversational history boundaries after restart.
+        self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
@@ -1571,6 +1692,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id = None
             if metadata and metadata.get("thread_id"):
                 thread_id = metadata["thread_id"]
+            nonconversational = _metadata_marks_nonconversational(metadata)
 
             if thread_id:
                 # Fetch the thread directly — threads are addressed by their own ID.
@@ -1648,7 +1770,10 @@ class DiscordAdapter(BasePlatformAdapter):
             # backfill — avoids a full channel.history() scan on hot paths.
             if message_ids:
                 _target_id = thread_id or chat_id
-                self._last_self_message_id[_target_id] = message_ids[-1]
+                if nonconversational:
+                    self._nonconversational_messages.mark_many(message_ids)
+                elif not _looks_like_nonconversational_history_message(content):
+                    self._last_self_message_id[_target_id] = message_ids[-1]
 
             return SendResult(
                 success=True,
@@ -3518,6 +3643,11 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
         already_registered: set[str] = set()
+        # Native commands above are registered first and are the highest
+        # priority, so they always survive the 100-command cap. Reserve one
+        # slot for the consolidated ``/skill`` group registered further below.
+        slot_cap = _DISCORD_MAX_APP_COMMANDS - 1
+        dropped_over_cap = 0
         try:
             from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
 
@@ -3534,6 +3664,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Discord command names: lowercase, hyphens OK, max 32 chars.
                 discord_name = cmd_def.name.lower()[:32]
                 if discord_name in already_registered:
+                    continue
+                if len(already_registered) >= slot_cap:
+                    dropped_over_cap += 1
                     continue
                 auto_cmd = _build_auto_slash_command(
                     cmd_def.name,
@@ -3567,6 +3700,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 discord_name = plugin_name.lower()[:32]
                 if discord_name in already_registered:
                     continue
+                if len(already_registered) >= slot_cap:
+                    dropped_over_cap += 1
+                    continue
                 auto_cmd = _build_auto_slash_command(
                     plugin_name,
                     plugin_desc,
@@ -3588,6 +3724,20 @@ class DiscordAdapter(BasePlatformAdapter):
         # subcommand groups.  This uses 1 top-level slot instead of N,
         # supporting up to 25 categories × 25 skills = 625 skills.
         self._register_skill_group(tree)
+
+        if dropped_over_cap:
+            # Staying under the cap keeps the whole sync succeeding; without
+            # this guard a single over-limit command makes Discord reject the
+            # entire batch (error 30032), breaking every slash command.
+            logger.warning(
+                "[%s] Reached Discord's limit of %d slash commands; skipped %d "
+                "lower-priority command(s) to keep the command sync working. "
+                "Disable slash commands you don't need or trim installed plugins "
+                "to surface them all.",
+                self.name,
+                _DISCORD_MAX_APP_COMMANDS,
+                dropped_over_cap,
+            )
 
         # Optional defense-in-depth: hide every slash command from non-admin
         # guild members in Discord's slash picker. Server-side authorization
@@ -4118,12 +4268,20 @@ class DiscordAdapter(BasePlatformAdapter):
         self,
         channel: Any,
         before: "DiscordMessage",
+        reply_target: Optional[Any] = None,
     ) -> str:
         """Fetch recent channel messages for conversational context.
 
         Scans backwards from *before* and collects messages until it hits
         a message sent by this bot (the natural partition point between
         bot turns) or reaches ``history_backfill_limit``.
+
+        When ``reply_target`` is provided (the user replied to a specific
+        message), a second backward scan is run ending at that target so the
+        agent sees the conversation surrounding what the user pointed at —
+        even when the reply target sits *before* the most recent bot turn and
+        would otherwise be cut off by the self-message partition.  The two
+        windows are merged chronologically and de-duplicated by message ID.
 
         Returns a formatted block like::
 
@@ -4158,7 +4316,47 @@ class DiscordAdapter(BasePlatformAdapter):
             pass  # Malformed cache entry — fall back to cold-start scan
 
         try:
-            collected = []
+            def _keep(msg) -> Optional[str]:
+                """Return a formatted ``[name] content`` line, or None to skip.
+
+                Encapsulates the system-message / non-conversational / other-bot
+                filtering so both the primary and reply-anchored scans apply
+                identical rules.  Does NOT enforce the self-message partition —
+                callers decide where to stop.
+                """
+                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
+                    return None
+                content = getattr(msg, "clean_content", msg.content) or ""
+                if (
+                    str(getattr(msg, "id", "")) in self._nonconversational_messages
+                    or _looks_like_nonconversational_history_message(content)
+                ):
+                    return None
+                # Respect DISCORD_ALLOW_BOTS for other bots.  For history
+                # context, "mentions" is treated as "all" — we are deciding
+                # what context to show, not whether to respond.
+                if (
+                    getattr(msg.author, "bot", False)
+                    and msg.author != self._client.user
+                    and not include_other_bots
+                ):
+                    return None
+                if not content and msg.attachments:
+                    content = "(attachment)"
+                if not content:
+                    return None
+                name = (
+                    getattr(msg.author, "display_name", None)
+                    or getattr(msg.author, "name", None)
+                    or "unknown"
+                )
+                if getattr(msg.author, "bot", False):
+                    name = f"{name} [bot]"
+                return f"[{name}] {content}"
+
+            # ── Primary window: recent channel activity since the last bot turn ──
+            collected: List[Tuple[str, str]] = []  # (message_id, line)
+            seen_ids: set = set()
             # IMPORTANT: pass oldest_first=False explicitly.  discord.py 2.x
             # silently flips the default to True when `after=` is supplied,
             # which would select the *earliest* N messages after our last
@@ -4172,39 +4370,89 @@ class DiscordAdapter(BasePlatformAdapter):
                 after=_after_obj,
                 oldest_first=False,
             ):
-                # Stop at our own message — this is the partition point.
-                # Everything before this is already in the session transcript.
-                # (Redundant when _after_obj is set, but needed for cold start.)
+                # Non-conversational lifecycle/status bumps (self-improvement
+                # reviews, background-process notices, restart banners) must be
+                # skipped BEFORE the partition check — otherwise a delayed
+                # status bump authored by us would be mistaken for the real
+                # last bot turn and hide messages that came after it.
+                _content = getattr(msg, "clean_content", msg.content) or ""
+                if (
+                    str(getattr(msg, "id", "")) in self._nonconversational_messages
+                    or _looks_like_nonconversational_history_message(_content)
+                ):
+                    continue
+                # Stop at our own (conversational) message — this is the
+                # partition point.  Everything before this is already in the
+                # session transcript.  (Redundant when _after_obj is set, but
+                # needed for cold start.)
                 if msg.author == self._client.user:
                     break
-
-                # Skip system messages (pins, joins, thread renames, etc.)
-                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
+                line = _keep(msg)
+                if line is None:
                     continue
+                mid = str(getattr(msg, "id", ""))
+                collected.append((mid, line))
+                if mid:
+                    seen_ids.add(mid)
 
-                # Respect DISCORD_ALLOW_BOTS for other bots.
-                # For history context, "mentions" is treated as "all" — we are
-                # deciding what context to show, not whether to respond.
-                if getattr(msg.author, "bot", False) and not include_other_bots:
-                    continue
+            # ── Reply window: context around the message the user pointed at ──
+            # When the user replied to a specific message that sits BEFORE the
+            # primary window's partition point, the surrounding exchange isn't
+            # captured above.  Fetch a small window ending just after the reply
+            # target so the agent sees what it was referencing.  This window is
+            # NOT partitioned on the self-message boundary — the whole point is
+            # to surface older context the transcript lacks.
+            reply_collected: List[Tuple[str, str]] = []
+            reply_target_id = str(getattr(reply_target, "id", "")) if reply_target else ""
+            if reply_target is not None and reply_target_id and reply_target_id not in seen_ids:
+                # Reuse the same cap as the primary scan but keep the reply
+                # window modest — it's anchored context, not a full backfill.
+                reply_limit = max(1, min(limit, 10))
+                # `before` is exclusive in discord.py, so to *include* the
+                # target we anchor at target_id + 1.  Use a minimal snowflake
+                # shim (any object exposing ``.id`` satisfies discord.py's
+                # Snowflake protocol) rather than discord.Object, so this path
+                # works under test doubles that stub the discord module too.
+                try:
+                    _before_obj = _Snowflake(int(reply_target_id) + 1)
+                except (ValueError, TypeError):
+                    _before_obj = before
+                async for msg in channel.history(
+                    limit=reply_limit,
+                    before=_before_obj,
+                    oldest_first=False,
+                ):
+                    line = _keep(msg)
+                    if line is None:
+                        continue
+                    mid = str(getattr(msg, "id", ""))
+                    if mid and mid in seen_ids:
+                        continue
+                    reply_collected.append((mid, line))
+                    if mid:
+                        seen_ids.add(mid)
 
-                content = getattr(msg, "clean_content", msg.content) or ""
-                if not content and msg.attachments:
-                    content = "(attachment)"
-                if not content:
-                    continue
-
-                name = msg.author.display_name
-                if getattr(msg.author, "bot", False):
-                    name = f"{name} [bot]"
-                collected.append(f"[{name}] {content}")
-
-            if not collected:
+            if not collected and not reply_collected:
                 return ""
 
-            # channel.history returns newest-first (oldest_first=False); reverse for chronological order
+            # channel.history returns newest-first; reverse each window for
+            # chronological order, then present reply context first (it is
+            # older) followed by the recent activity.
             collected.reverse()
-            return "[Recent channel messages]\n" + "\n".join(collected)
+            reply_collected.reverse()
+
+            blocks: List[str] = []
+            if reply_collected:
+                blocks.append(
+                    "[Context around the replied-to message]\n"
+                    + "\n".join(line for _id, line in reply_collected)
+                )
+            if collected:
+                blocks.append(
+                    "[Recent channel messages]\n"
+                    + "\n".join(line for _id, line in collected)
+                )
+            return "\n\n".join(blocks)
 
         except discord.Forbidden:
             logger.debug("[%s] Missing permissions to fetch channel history", self.name)
@@ -4535,6 +4783,13 @@ class DiscordAdapter(BasePlatformAdapter):
         Open-ended mode (``choices`` empty/None): renders the question as
         plain embed text — no buttons. The gateway's text-intercept captures
         the next message in this session and resolves the clarify.
+
+        Choice normalisation: ``choices`` may contain bare strings OR dicts
+        (LLMs sometimes emit ``[{"description": "..."}]`` instead of bare
+        strings, which would otherwise render as raw Python repr on the
+        button label). Dict choices are unwrapped against the canonical
+        LLM tool-call keys ``label``, ``description``, ``text``, ``title``
+        in that order. Dicts with none of those keys are dropped.
         """
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
@@ -4560,8 +4815,37 @@ class DiscordAdapter(BasePlatformAdapter):
                 color=discord.Color.orange(),
             )
 
+            # Normalise choices: LLMs sometimes emit `[{"description": "..."}]`
+            # instead of bare strings, which would render as raw Python repr on
+            # the button label. Unwrap the common shapes, then stringify.
+            def _flatten_choice(c):
+                if c is None:
+                    return ""
+                if isinstance(c, str):
+                    return c.strip()
+                if isinstance(c, dict):
+                    # Prefer the canonical LLM tool-call user-facing keys
+                    # in the order the LLM is most likely to emit them.
+                    # 'name' and 'value' are deliberately NOT here: they're
+                    # Discord-component-shaped fields that could appear in
+                    # dicts that aren't meant to be choices (e.g., a
+                    # developer-error wiring that passes a Button-shaped
+                    # object). Picking them would leak raw enum values
+                    # or 4-char model identifiers onto user-facing buttons.
+                    # If a dict has none of the canonical keys, drop it
+                    # rather than picking some random field — a garbage
+                    # button label is worse than no button at all.
+                    for key in ("label", "description", "text", "title"):
+                        v = c.get(key)
+                        if isinstance(v, str) and v.strip():
+                            return v.strip()
+                    return ""
+                if isinstance(c, (list, tuple)):
+                    return " ".join(_flatten_choice(x) for x in c).strip()
+                return str(c).strip()
+
             clean_choices = [
-                str(c).strip() for c in (choices or []) if c is not None and str(c).strip()
+                s for s in (_flatten_choice(c) for c in (choices or [])) if s
             ]
             # Discord allows up to 5 buttons per row, 5 rows per view = 25.
             # We reserve one slot for the "Other" button, so cap at 24 choices.
@@ -4626,6 +4910,8 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             msg = await channel.send(embed=embed, view=view)
             view._message = msg  # store for on_timeout expiration editing
+            if _metadata_marks_nonconversational(metadata):
+                self._nonconversational_messages.mark_many([str(msg.id)])
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -4973,7 +5259,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
 
-        all_attachments = list(message.attachments) + snapshot_attachments
+        referenced_attachments = []
+        reference = getattr(message, "reference", None)
+        resolved_reference = getattr(reference, "resolved", None) if reference else None
+        if resolved_reference is not None:
+            referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
+
+        all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -5194,14 +5486,40 @@ class DiscordAdapter(BasePlatformAdapter):
             #   - any thread (in_bot_thread bypasses the mention check, but
             #     processing-window gaps and post-restart context still need
             #     recovery)
+            #   - any reply (the user pointed at a specific message; hydrate
+            #     the context around it even in a free-response channel where
+            #     no mention gap exists — otherwise replies get only the short
+            #     "[Replying to: ...]" snippet with no surrounding context)
             # DMs skip entirely because every DM message triggers the bot,
             # so the session transcript already has everything.
             # Auto-threaded messages also skip — we just created the thread,
             # there's nothing prior to backfill.
             _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
-            if (_has_mention_gap or is_thread) and auto_threaded_channel is None:
+            _is_reply = message.reference is not None
+
+            # Resolve the replied-to message into an object exposing ``.id``.
+            # discord.py may give us a full Message (resolved), a
+            # DeletedReferencedMessage, or nothing.  Duck-type on ``.id``
+            # rather than isinstance(discord.Message) — under test doubles the
+            # discord module (and thus discord.Message) can be a mock, which is
+            # not a valid isinstance() second argument.  Any object with an int
+            # id works as a scan anchor; otherwise fall back to a bare snowflake
+            # built from the reference's message_id.
+            _reply_target = None
+            if _is_reply:
+                _resolved = getattr(message.reference, "resolved", None)
+                _resolved_id = getattr(_resolved, "id", None) if _resolved is not None else None
+                if _resolved_id is not None:
+                    _reply_target = _resolved
+                else:
+                    _ref_mid = getattr(message.reference, "message_id", None)
+                    if _ref_mid is not None:
+                        with suppress(ValueError, TypeError):
+                            _reply_target = _Snowflake(int(_ref_mid))
+
+            if (_has_mention_gap or is_thread or _is_reply) and auto_threaded_channel is None:
                 _backfill_text = await self._fetch_channel_context(
-                    message.channel, before=message,
+                    message.channel, before=message, reply_target=_reply_target,
                 )
                 if _backfill_text:
                     _channel_context = _backfill_text
@@ -6092,10 +6410,47 @@ def _define_discord_view_classes() -> None:
             self.resolved = False
 
             for index, choice in enumerate(self.choices):
-                # Discord button labels are capped at 80 chars.
-                label_body = choice if len(choice) <= 75 else choice[:72] + "..."
+                # Discord button labels are capped at 80 chars. On mobile the
+                # visible width is much narrower (often <40 chars before it
+                # wraps to 2 lines and the second line gets cut off), so we
+                # cap aggressively and cut at a word boundary when possible
+                # to keep the trailing text readable.
+                #
+                # Cut strategy (most-preferred to least-preferred):
+                #   1. Last space in the trailing half of the budget
+                #      (cleanest word boundary)
+                #   2. Last soft boundary in the trailing half of the
+                #      budget (hyphen, comma, period, paren)
+                #   3. Hard cut at the budget limit (last resort)
+                prefix = f"{index + 1}. "
+                budget = 80 - len(prefix)
+                if len(choice) <= budget:
+                    label_body = choice
+                else:
+                    truncated = choice[: budget - 1].rstrip()
+                    cut_at = -1
+                    # 1. Last space in the trailing half of the budget.
+                    space = truncated.rfind(" ")
+                    if space >= budget // 2:
+                        cut_at = space
+                    # 2. Soft boundary — only if no word boundary found.
+                    # Find the latest soft boundary in the trailing half
+                    # of the budget; that maximizes preserved text length.
+                    # Cut AT the soft boundary (inclusive) so the label
+                    # ends on the soft char (e.g. "-" or ",") rather than
+                    # on the alpha char that followed it.
+                    if cut_at < 0:
+                        latest_soft = max(
+                            (truncated.rfind(s) for s in ("-", ",", ".", ")")),
+                            default=-1,
+                        )
+                        if latest_soft >= budget // 2:
+                            cut_at = latest_soft + 1
+                    if cut_at > 0:
+                        truncated = truncated[:cut_at]
+                    label_body = truncated.rstrip() + "…"
                 button = discord.ui.Button(
-                    label=f"{index + 1}. {label_body}",
+                    label=f"{prefix}{label_body}",
                     style=discord.ButtonStyle.primary,
                     custom_id=f"clarify:{clarify_id}:{index}",
                 )

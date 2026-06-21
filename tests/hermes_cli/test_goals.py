@@ -547,6 +547,47 @@ class TestGoalStateSubgoalsBackcompat:
         assert rt.subgoals == ["a", "b", "c"]
 
 
+class TestMigrateGoalToSession:
+    """migrate_goal_to_session carries a /goal from a parent session to its
+    compression continuation child (#33618). load_goal does a flat
+    per-session lookup with no lineage walk, so without migration an active
+    goal silently dies when compression rotates session_id."""
+
+    def test_migrates_active_goal_to_child(self, hermes_home):
+        from hermes_cli.goals import save_goal, load_goal, migrate_goal_to_session, GoalState
+        save_goal("parent-sid", GoalState(goal="ship the feature"))
+        assert migrate_goal_to_session("parent-sid", "child-sid", reason="compression") is True
+        child = load_goal("child-sid")
+        assert child is not None and child.goal == "ship the feature"
+        # Parent row archived (cleared) so only the child is active.
+        parent = load_goal("parent-sid")
+        assert parent is not None and parent.status == "cleared"
+
+    def test_no_goal_to_migrate_returns_false(self, hermes_home):
+        from hermes_cli.goals import migrate_goal_to_session, load_goal
+        assert migrate_goal_to_session("empty-parent", "child2") is False
+        assert load_goal("child2") is None
+
+    def test_does_not_clobber_existing_child_goal(self, hermes_home):
+        from hermes_cli.goals import save_goal, load_goal, migrate_goal_to_session, GoalState
+        save_goal("p3", GoalState(goal="parent goal"))
+        save_goal("c3", GoalState(goal="child already has one"))
+        assert migrate_goal_to_session("p3", "c3") is False
+        assert load_goal("c3").goal == "child already has one"
+
+    def test_same_id_is_noop(self, hermes_home):
+        from hermes_cli.goals import save_goal, migrate_goal_to_session, GoalState
+        save_goal("same", GoalState(goal="g"))
+        assert migrate_goal_to_session("same", "same") is False
+
+    def test_cleared_goal_not_migrated(self, hermes_home):
+        from hermes_cli.goals import save_goal, clear_goal, migrate_goal_to_session, load_goal, GoalState
+        save_goal("p4", GoalState(goal="done already"))
+        clear_goal("p4")
+        assert migrate_goal_to_session("p4", "c4") is False
+        assert load_goal("c4") is None
+
+
 class TestGoalManagerSubgoals:
     def test_add_subgoal(self, hermes_home):
         from hermes_cli.goals import GoalManager

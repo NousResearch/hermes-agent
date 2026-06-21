@@ -369,6 +369,12 @@ class TestTeePattern:
         assert dangerous is True
         assert key is not None
 
+    def test_tee_absolute_home_bashrc(self):
+        bashrc = Path.home() / ".bashrc"
+        dangerous, key, desc = detect_dangerous_command(f"echo x | tee {bashrc}")
+        assert dangerous is True
+        assert key is not None
+
     def test_tee_custom_hermes_home_env(self):
         dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/.env")
         assert dangerous is True
@@ -560,10 +566,36 @@ class TestSensitiveRedirectPattern:
         assert dangerous is True
         assert key is not None
 
+    def test_append_to_absolute_home_ssh_authorized_keys(self):
+        authorized_keys = Path.home() / ".ssh" / "authorized_keys"
+        dangerous, key, desc = detect_dangerous_command(f"cat key >> {authorized_keys}")
+        assert dangerous is True
+        assert key is not None
+
     def test_append_to_tilde_ssh_authorized_keys(self):
         dangerous, key, desc = detect_dangerous_command("cat key >> ~/.ssh/authorized_keys")
         assert dangerous is True
         assert key is not None
+
+    def test_redirect_to_absolute_home_bashrc(self):
+        bashrc = Path.home() / ".bashrc"
+        dangerous, key, desc = detect_dangerous_command(f"echo 'alias ll=\"ls -la\"' > {bashrc}")
+        assert dangerous is True
+        assert key is not None
+
+    def test_redirect_to_home_set_after_import(self, monkeypatch, tmp_path):
+        late_home = tmp_path / "late-home"
+        late_home.mkdir()
+        monkeypatch.setenv("HOME", str(late_home))
+
+        dangerous, key, desc = detect_dangerous_command(f"echo x > {late_home}/.bashrc")
+        assert dangerous is True
+        assert key is not None
+
+    def test_redirect_to_other_absolute_home_bashrc_is_not_current_user_sensitive(self):
+        dangerous, key, desc = detect_dangerous_command("echo x > /tmp/not-current-home/.bashrc")
+        assert dangerous is False
+        assert key is None
 
     def test_redirect_to_safe_tmp_file(self):
         dangerous, key, desc = detect_dangerous_command("echo hello > /tmp/output.txt")
@@ -631,6 +663,79 @@ class TestProjectSensitiveCopyPattern:
         assert dangerous is False
         assert key is None
         assert desc is None
+
+
+class TestSensitiveCopyMovePattern:
+    """cp/mv/install OVERWRITING ~/.ssh/*, credential files (~/.netrc etc.),
+    shell rc files, or ~/.hermes/config.yaml/.env must require approval — the
+    tee/redirection forms were already gated (#14639 family / commit 4e9d886d),
+    but cp/mv/install on these targets was an unpaired half-door (key implant /
+    shell-rc command injection slipped through auto-approve)."""
+
+    def test_cp_to_ssh_authorized_keys(self):
+        dangerous, key, desc = detect_dangerous_command("cp /tmp/evil ~/.ssh/authorized_keys")
+        assert dangerous is True
+        assert key is not None
+
+    def test_mv_to_ssh_private_key(self):
+        dangerous, key, desc = detect_dangerous_command("mv /tmp/k ~/.ssh/id_rsa")
+        assert dangerous is True
+
+    def test_install_to_netrc(self):
+        dangerous, key, desc = detect_dangerous_command("install -m600 /tmp/c ~/.netrc")
+        assert dangerous is True
+
+    def test_cp_to_bashrc(self):
+        dangerous, key, desc = detect_dangerous_command("cp /tmp/e ~/.bashrc")
+        assert dangerous is True
+
+    def test_cp_to_hermes_config(self):
+        dangerous, key, desc = detect_dangerous_command("cp /tmp/evil.yaml ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_cp_from_ssh_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cp ~/.ssh/config /tmp/x")
+        assert dangerous is False
+
+    def test_cp_unrelated_files_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cp a.txt b.txt")
+        assert dangerous is False
+
+
+class TestSensitiveInPlaceEditPattern:
+    """Detect in-place edits to user startup and credential files."""
+
+    def test_sed_in_place_bashrc(self):
+        dangerous, key, desc = detect_dangerous_command("sed -i 's/a/b/' ~/.bashrc")
+        assert dangerous is True
+        assert key is not None
+
+    def test_sed_long_in_place_ssh_authorized_keys(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "sed --in-place 's/key/newkey/' ~/.ssh/authorized_keys"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_perl_in_place_netrc(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/pass/pass2/' ~/.netrc"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_ruby_in_place_absolute_home_zshrc(self):
+        zshrc = Path.home() / ".zshrc"
+        dangerous, key, desc = detect_dangerous_command(
+            f"ruby -i -pe 'gsub(/a/, \"b\")' {zshrc}"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_sed_in_place_regular_file_safe(self):
+        dangerous, key, desc = detect_dangerous_command("sed -i 's/a/b/' notes.txt")
+        assert dangerous is False
+        assert key is None
 
 
 class TestProjectSensitiveTeePattern:

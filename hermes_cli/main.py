@@ -1130,6 +1130,46 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             return None
 
 
+def _session_browse_resume_plan(session_id: str, mode: str = "tui") -> dict:
+    """Return the post-picker action for ``hermes sessions browse``.
+
+    ``browse`` is an interactive UX, not a scripting primitive, so its default
+    should open the best interactive surface (TUI). ``auto`` preserves the old
+    relaunch behavior for people who want config/flags to decide.
+    """
+    normalized = (mode or "tui").strip().lower()
+    if normalized == "repl":
+        normalized = "cli"
+    if normalized == "auto":
+        return {
+            "kind": "relaunch",
+            "label": "auto",
+            "args": ["--resume", session_id],
+            "preserve": True,
+        }
+    if normalized == "cli":
+        return {
+            "kind": "relaunch",
+            "label": "REPL",
+            "args": ["--cli", "--resume", session_id],
+            "preserve": False,
+        }
+    if normalized == "tui":
+        return {
+            "kind": "relaunch",
+            "label": "TUI",
+            "args": ["--tui", "--resume", session_id],
+            "preserve": False,
+        }
+    if normalized in {"telegram", "discord", "imessage"}:
+        return {
+            "kind": "gateway_hint",
+            "label": normalized,
+            "message": f"Open {normalized} and send: /resume {session_id}",
+        }
+    raise ValueError(f"Unknown session browse mode: {mode}")
+
+
 def _resolve_last_session(source: str = "cli") -> Optional[str]:
     """Look up the most recently-used session ID for a source."""
     db = None
@@ -12414,6 +12454,23 @@ def main():
     sessions_browse.add_argument(
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
     )
+    sessions_browse.add_argument(
+        "--mode",
+        choices=[
+            "tui",
+            "cli",
+            "repl",
+            "auto",
+            "telegram",
+            "discord",
+            "imessage",
+        ],
+        default="tui",
+        help=(
+            "How to resume the selected session "
+            "(default: tui; auto preserves old config/flag behavior)"
+        ),
+    )
 
     def _confirm_prompt(prompt: str) -> bool:
         """Prompt for y/N confirmation, safe against non-TTY environments."""
@@ -12606,11 +12663,28 @@ def main():
                 print("Cancelled.")
                 return
 
-            # Launch hermes --resume <id> by replacing the current process
-            print(f"Resuming session: {selected_id}")
+            plan = _session_browse_resume_plan(selected_id, getattr(args, "mode", "tui"))
+            if plan["kind"] == "gateway_hint":
+                print(plan["message"])
+                return
+
+            # Launch the selected surface by replacing the current process.
+            print(f"Resuming session in {plan['label']}: {selected_id}")
             from hermes_cli.relaunch import relaunch
 
-            relaunch(["--resume", selected_id])
+            if plan.get("preserve"):
+                relaunch(plan["args"], preserve_inherited=True)
+            else:
+                # Keep non-UI inherited flags like --profile/--model, but drop
+                # any UI flag from the browser invocation so the chosen mode wins.
+                inherited_argv = [
+                    a for a in sys.argv[1:] if a not in {"--tui", "--cli"}
+                ]
+                relaunch(
+                    plan["args"],
+                    preserve_inherited=True,
+                    original_argv=inherited_argv,
+                )
             return  # won't reach here after execvp
 
         elif action == "optimize":

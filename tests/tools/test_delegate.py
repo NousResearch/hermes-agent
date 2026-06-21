@@ -69,6 +69,10 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("model", props)
+        self.assertIn("provider", props)
+        self.assertIn("model", props["tasks"]["items"]["properties"])
+        self.assertIn("provider", props["tasks"]["items"]["properties"])
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -197,6 +201,36 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "completed")
         self.assertEqual(result["results"][0]["summary"], "Done!")
         mock_run.assert_called_once()
+
+    def test_single_task_accepts_runtime_model_override(self):
+        parent = _make_mock_parent()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "openai/gpt-5-nano"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(
+                    goal="cheap check",
+                    model="openai/gpt-5-nano",
+                    parent_agent=parent,
+                )
+            )
+
+        self.assertEqual(result["results"][0]["status"], "completed")
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "openai/gpt-5-nano")
+        self.assertEqual(kwargs["provider"], parent.provider)
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode(self, mock_run):

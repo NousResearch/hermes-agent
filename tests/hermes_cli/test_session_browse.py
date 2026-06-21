@@ -10,7 +10,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 
-from hermes_cli.main import _session_browse_picker
+from hermes_cli.main import _session_browse_picker, _session_browse_resume_plan
 
 
 # ─── Sample session data ──────────────────────────────────────────────────────
@@ -393,8 +393,8 @@ class TestSessionBrowseArgparse:
         from hermes_cli.main import _session_browse_picker
         assert callable(_session_browse_picker)
 
-    def test_browse_default_limit_is_500(self):
-        """The default --limit for browse should be 500."""
+    def test_browse_defaults(self):
+        """The default browse limit and resume mode should match the CLI UX."""
         # Build the same argparse tree cmd_sessions uses and verify the default.
         import argparse
         parser = argparse.ArgumentParser()
@@ -402,12 +402,36 @@ class TestSessionBrowseArgparse:
         browse = subparsers.add_parser("browse")
         browse.add_argument("--source")
         browse.add_argument("--limit", type=int, default=500)
+        browse.add_argument(
+            "--mode",
+            choices=["tui", "cli", "repl", "auto"],
+            default="tui",
+        )
 
         args = parser.parse_args(["browse"])
         assert args.limit == 500
+        assert args.mode == "tui"
 
         args = parser.parse_args(["browse", "--limit", "42"])
         assert args.limit == 42
+
+
+class TestSessionBrowseResumePlan:
+    def test_default_resumes_in_tui(self):
+        plan = _session_browse_resume_plan("sid123")
+        assert plan["kind"] == "relaunch"
+        assert plan["args"] == ["--tui", "--resume", "sid123"]
+        assert plan["preserve"] is False
+
+    def test_auto_preserves_legacy_relaunch_behavior(self):
+        plan = _session_browse_resume_plan("sid123", "auto")
+        assert plan["args"] == ["--resume", "sid123"]
+        assert plan["preserve"] is True
+
+    def test_gateway_mode_prints_resume_command(self):
+        plan = _session_browse_resume_plan("sid123", "telegram")
+        assert plan["kind"] == "gateway_hint"
+        assert "/resume sid123" in plan["message"]
 
 
 # ─── Integration: cmd_sessions browse action ────────────────────────────────

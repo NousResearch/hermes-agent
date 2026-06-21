@@ -835,6 +835,36 @@ export const api = {
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
       { method: "DELETE" },
     ),
+  startWeixinOnboarding: (body: { profile?: string }) =>
+    fetchJSON<WeixinOnboardingStartResponse>(
+      "/api/messaging/weixin/onboarding/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  getWeixinOnboardingStatus: (sessionId: string) =>
+    fetchJSON<WeixinOnboardingStatusResponse>(
+      `/api/messaging/weixin/onboarding/${encodeURIComponent(sessionId)}/status`,
+    ),
+  applyWeixinOnboarding: (
+    sessionId: string,
+    body: { profile?: string },
+  ) =>
+    fetchJSON<WeixinOnboardingApplyResponse>(
+      `/api/messaging/weixin/onboarding/${encodeURIComponent(sessionId)}/apply`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  cancelWeixinOnboarding: (sessionId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/weixin/onboarding/${encodeURIComponent(sessionId)}`,
+      { method: "DELETE" },
+    ),
 
   // Gateway / update actions
   restartGateway: () =>
@@ -1691,6 +1721,33 @@ export interface TelegramOnboardingApplyResponse {
   ok: boolean;
   platform: "telegram";
   bot_username?: string;
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
+}
+
+export interface WeixinOnboardingStartResponse {
+  session_id: string;
+  state: "starting";
+  expires_at: string;
+}
+
+export type WeixinOnboardingStatusResponse = {
+  session_id: string;
+  state: "starting" | "waiting" | "scanned" | "confirmed" | "failed" | "expired" | "cancelled";
+  expires_at: string;
+  qr_image_base64?: string;
+  error?: string;
+  account_id?: string;
+  base_url?: string;
+};
+
+export interface WeixinOnboardingApplyResponse {
+  ok: boolean;
+  platform: "weixin";
+  account_id: string;
   needs_restart: boolean;
   restart_started?: boolean;
   restart_action?: string;

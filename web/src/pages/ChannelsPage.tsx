@@ -533,6 +533,15 @@ export default function ChannelsPage() {
                     showToast={showToast}
                   />
                 )}
+                {platform.id === "weixin" && (
+                  <WeixinOnboardingPanel
+                    onChanged={load}
+                    onRestartNeeded={() => setRestartNeeded(true)}
+                    platform={platform}
+                    setRestartNeeded={setRestartNeeded}
+                    showToast={showToast}
+                  />
+                )}
               </CardContent>
             </Card>
           );
@@ -882,6 +891,277 @@ function TelegramOnboardingPanel({
                 Cancel
               </Button>
             </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WeixinOnboardingPanel({
+  onChanged,
+  onRestartNeeded,
+  platform,
+  setRestartNeeded,
+  showToast,
+}: {
+  onChanged: () => Promise<void>;
+  onRestartNeeded: () => void;
+  platform: MessagingPlatform;
+  setRestartNeeded: (needed: boolean) => void;
+  showToast: (message: string, type: "success" | "error") => void;
+}) {
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [qrImageSrc, setQrImageSrc] = useState("");
+  const [phase, setPhase] = useState<
+    "idle" | "starting" | "waiting" | "scanned" | "applying"
+  >("idle");
+  const [error, setError] = useState("");
+  const [tick, setTick] = useState(0);
+  const [expiresAt, setExpiresAt] = useState<string>("");
+
+  // Poll for QR scan status while waiting.
+  useEffect(() => {
+    if (!sessionId || (phase !== "waiting" && phase !== "scanned")) return;
+    let cancelled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      try {
+        const status = await api.getWeixinOnboardingStatus(sessionId);
+        if (cancelled) return;
+
+        if (status.qr_image_base64) {
+          setQrImageSrc(`data:image/png;base64,${status.qr_image_base64}`);
+        }
+
+        if (status.state === "waiting") {
+          setPhase("waiting");
+          setError("");
+          timeout = setTimeout(poll, 2000);
+          return;
+        }
+        if (status.state === "scanned") {
+          setPhase("scanned");
+          setError("");
+          timeout = setTimeout(poll, 2000);
+          return;
+        }
+        if (status.state === "confirmed") {
+          // Auto-apply: save credentials and restart gateway.
+          void apply();
+          return;
+        }
+        if (status.state === "failed" || status.state === "expired" || status.state === "cancelled") {
+          resetSetup();
+          setError(
+            status.error ||
+              "WeChat setup expired or failed. Start a new QR setup to try again.",
+          );
+          return;
+        }
+        // starting or unknown — keep polling.
+        timeout = setTimeout(poll, 2000);
+      } catch (pollError) {
+        if (cancelled) return;
+        const parsedExpiresAt = Date.parse(expiresAt);
+        const expired =
+          Number.isFinite(parsedExpiresAt) && Date.now() >= parsedExpiresAt;
+        if (expired) {
+          resetSetup();
+          setError("WeChat setup expired. Start a new QR setup to try again.");
+          return;
+        }
+        setError(`Still waiting for WeChat. Retrying after: ${pollError}`);
+        timeout = setTimeout(poll, 2000);
+      }
+    };
+
+    timeout = setTimeout(poll, 1500);
+    return () => {
+      cancelled = true;
+      if (timeout) clearTimeout(timeout);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, sessionId, expiresAt]);
+
+  // Expiry countdown ticker.
+  useEffect(() => {
+    if (!sessionId) return;
+    const timer = setInterval(() => setTick((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [sessionId]);
+
+  const resetSetup = () => {
+    setSessionId(null);
+    setQrImageSrc("");
+    setPhase("idle");
+    setExpiresAt("");
+    setError("");
+  };
+
+  const start = async () => {
+    setPhase("starting");
+    setError("");
+    setQrImageSrc("");
+    try {
+      const res = await api.startWeixinOnboarding({});
+      setSessionId(res.session_id);
+      setExpiresAt(res.expires_at);
+      setPhase("waiting");
+    } catch (startError) {
+      setPhase("idle");
+      setError(String(startError));
+    }
+  };
+
+  const cancel = async () => {
+    if (sessionId) {
+      try {
+        await api.cancelWeixinOnboarding(sessionId);
+      } catch {
+        /* local cleanup still wins */
+      }
+    }
+    resetSetup();
+  };
+
+  const watchRestartOutcome = async () => {
+    for (let i = 0; i < 20; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        const st = await api.getActionStatus("gateway-restart", 5);
+        if (st.running) continue;
+        if (st.exit_code !== 0 && st.exit_code !== null) {
+          onRestartNeeded();
+          showToast(
+            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
+            "error",
+          );
+        }
+        return;
+      } catch {
+        // transient fetch error; keep polling
+      }
+    }
+  };
+
+  const apply = async () => {
+    if (!sessionId) return;
+    setPhase("applying");
+    setError("");
+    try {
+      const result = await api.applyWeixinOnboarding(sessionId, {});
+      resetSetup();
+      if (result.restart_started) {
+        showToast("WeChat saved; gateway restarting…", "success");
+        setRestartNeeded(false);
+        setTimeout(() => void onChanged(), 4000);
+        void watchRestartOutcome();
+      } else if (result.restart_started === undefined && result.needs_restart) {
+        try {
+          await api.restartGateway();
+          showToast("WeChat saved; gateway restarting…", "success");
+          setRestartNeeded(false);
+          setTimeout(() => void onChanged(), 4000);
+        } catch (restartError) {
+          onRestartNeeded();
+          showToast(`WeChat saved; gateway restart failed: ${restartError}`, "error");
+        }
+      } else {
+        onRestartNeeded();
+        const detail = result.restart_error ? `: ${result.restart_error}` : "";
+        showToast(`WeChat saved; gateway restart failed${detail}`, "error");
+      }
+      await onChanged();
+    } catch (applyError) {
+      setPhase("waiting");
+      setError(String(applyError));
+    }
+  };
+
+  const expiresIn = useMemo(
+    () => (expiresAt ? formatExpiry(expiresAt) : ""),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [expiresAt, tick],
+  );
+
+  return (
+    <div className="rounded-sm border border-border bg-background/35 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          className="uppercase"
+          onClick={() => void start()}
+          disabled={phase === "starting" || phase === "waiting" || phase === "scanned" || phase === "applying"}
+          prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
+        >
+          {phase === "starting" ? "Starting…" : "Set up with QR"}
+        </Button>
+        {platform.configured && (
+          <span className="text-xs text-muted-foreground">
+            Existing WeChat credentials are configured.
+          </span>
+        )}
+      </div>
+
+      {error && (
+        <div className="mt-3 border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {sessionId && qrImageSrc && (
+        <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+          <div className="grid gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              {phase === "waiting" && (
+                <>
+                  <Badge tone="warning">waiting</Badge>
+                  <span className="text-sm text-muted-foreground">
+                    Scan the QR code with WeChat on your phone.
+                  </span>
+                </>
+              )}
+              {phase === "scanned" && (
+                <>
+                  <Badge tone="success">scanned</Badge>
+                  <span className="text-sm text-muted-foreground">
+                    Confirm the login in WeChat to finish.
+                  </span>
+                </>
+              )}
+              {phase === "applying" && (
+                <>
+                  <Badge tone="success">confirmed</Badge>
+                  <span className="text-sm text-muted-foreground">
+                    Saving credentials and restarting gateway…
+                  </span>
+                </>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" ghost onClick={() => void cancel()}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex flex-col items-center justify-center gap-3">
+            <img
+              src={qrImageSrc}
+              alt="WeChat setup QR code"
+              className="h-56 w-56 bg-white p-2"
+            />
+            <div className="flex flex-wrap items-center justify-center gap-2 text-sm">
+              <Badge tone={expiresIn === "expired" ? "destructive" : "outline"}>
+                {expiresIn}
+              </Badge>
+            </div>
+            <Button size="sm" ghost onClick={() => void cancel()}>
+              Cancel
+            </Button>
           </div>
         </div>
       )}

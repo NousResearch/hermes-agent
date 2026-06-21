@@ -1,4 +1,4 @@
-# Hermes-Agent — Docker Compose (Ollama + PostgreSQL + OpenSpace)
+# Hermes-Agent — Docker Compose (Ollama + PostgreSQL + WeChat)
 #
 # Default compose file for running the local stack against the published
 # upstream Docker Hub Hermes image while keeping the local ./data env and config mounts.
@@ -11,19 +11,19 @@
 #
 # Services:
 #   hermes-web     — Hermes web UI on :9119
-#   hermes-gateway — Gateway: api_server :8789 (OpenSpace).
-#   postgres       — PostgreSQL :5432
+#   hermes-gateway — Gateway runner with WeChat personal (weixin) platform enabled.
+#                    No host ports — weixin uses outbound long-poll to Tencent iLink.
+#   postgres       — PostgreSQL :5432 (database persisted in the postgres_data volume)
 #
 # Both hermes services share the same ./data volume.
 # Bootstrap (config copy, skills sync) is idempotent — safe to run in parallel.
 #
-# OpenSpace connects to hermes via: http://localhost:8789/v1  (OpenAI-compatible)
-# Hermes web UI:                    http://localhost:9119
-# Interactive CLI (chat):           docker exec -it hermes-web hermes  (or hermes-gateway)
+# Hermes web UI:                  http://localhost:9119
+# Interactive CLI (chat):         docker exec -it hermes-web hermes
+# Connect WeChat (one-shot):      docker compose -f docker-compose.upstream.yml run --rm hermes-gateway hermes gateway setup weixin
 #
 # Ports (host → container):
 #   9119 → 9119   Hermes Web UI
-#   8789 → 8789   OpenSpace agent access (api_server, OpenAI-compatible)
 #   5433 → 5432   PostgreSQL (host:5433 → container:5432)
 
 x-hermes-common: &hermes-common
@@ -43,6 +43,11 @@ x-hermes-common: &hermes-common
     - HERMES_GID=1000
     # Ollama does not require a real API key; any non-empty string satisfies the field
     - OPENAI_API_KEY=ollama
+    # Ollama lives on the Docker host. host.docker.internal resolves via the
+    # extra_hosts entry below — works on Docker Desktop (Win/macOS) and on
+    # Linux with the host-gateway mapping.
+    - OPENAI_BASE_URL=http://host.docker.internal:11434/v1
+    - OLLAMA_BASE_URL=http://host.docker.internal:11434
     # Postgres DSN — available to memory plugins and skills
     - DATABASE_URL=postgresql://hermes:${POSTGRES_PASSWORD:-changeme}@postgres:5432/hermes
   env_file:
@@ -63,17 +68,6 @@ services:
     container_name: hermes-web
     # --insecure is required here because the upstream dashboard now guards 0.0.0.0 binds by default.
     command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
-    environment:
-      # UID remapping — must match your host user to avoid permission issues
-      - HERMES_UID=1000
-      - HERMES_GID=1000
-      # Ollama does not require a real API key; any non-empty string satisfies the field
-      - OPENAI_API_KEY=ollama
-      # Postgres DSN — available to memory plugins and skills
-      - DATABASE_URL=postgresql://hermes:${POSTGRES_PASSWORD:-changeme}@postgres:5432/hermes
-      - GATEWAY_HEALTH_URL=http://hermes-gateway:8789
-      # Let the dashboard probe the separate gateway container instead of
-      # falling back to local PID checks inside hermes-web.
     volumes:
       - ./data:/opt/data
       - ./docker/hermes-config.yaml:/opt/hermes/cli-config.yaml.example:ro
@@ -92,21 +86,10 @@ services:
   hermes-gateway:
     <<: *hermes-common
     container_name: hermes-gateway
-    # api_server platform binds :8789 per docker/hermes-config.yaml
+    # Runs the gateway with the weixin (WeChat personal / iLink) platform enabled
+    # per docker/hermes-config.yaml. weixin uses outbound long-poll to
+    # ilinkai.weixin.qq.com — no inbound host port needed.
     command: ["gateway", "run"]
-    ports:
-      - "8789:8789"     # OpenSpace agent access  (/v1 OpenAI-compatible)
-    environment:
-      - HERMES_UID=1000
-      - HERMES_GID=1000
-      - OPENAI_API_KEY=ollama
-      - DATABASE_URL=postgresql://hermes:${POSTGRES_PASSWORD:-changeme}@postgres:5432/hermes
-      # Allow OpenSpace runtime (port 8788) to call the agent API
-      - API_SERVER_CORS_ORIGINS=http://localhost:8788,http://host.docker.internal:8788
-      # Required when binding api_server to 0.0.0.0 — used as Bearer token by OpenSpace
-      - API_SERVER_KEY=${API_SERVER_KEY:-28765d337208aa3c0b6671cb1969e8cad9c22d7b7967b216}
-      # Allow all incoming users on the gateway (no per-user allowlist needed for OpenSpace)
-      - GATEWAY_ALLOW_ALL_USERS=true
     # Wait for hermes-web's healthcheck so config bootstrap is complete before gateway reads it
     depends_on:
       postgres:
@@ -114,9 +97,9 @@ services:
       hermes-web:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8789/health'); sys.exit(0 if r.status==200 else 1)"]
+      test: ["CMD-SHELL", "python3 -c 'import os,sys; sys.exit(0 if os.path.exists(\"/opt/data/weixin_accounts\") else 1)'"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 60s
 

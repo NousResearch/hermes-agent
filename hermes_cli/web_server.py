@@ -717,6 +717,14 @@ class TelegramOnboardingApply(BaseModel):
     profile: Optional[str] = None
 
 
+class WeixinOnboardingStart(BaseModel):
+    profile: Optional[str] = None
+
+
+class WeixinOnboardingApply(BaseModel):
+    profile: Optional[str] = None
+
+
 class AudioTranscriptionRequest(BaseModel):
     data_url: str
     mime_type: Optional[str] = None
@@ -5321,6 +5329,120 @@ async def apply_telegram_onboarding(
 async def cancel_telegram_onboarding(pairing_id: str):
     with _telegram_onboarding_lock:
         _telegram_onboarding_pairings.pop(pairing_id, None)
+    return {"ok": True}
+
+
+# =============================================================================
+# Weixin (WeChat personal) QR onboarding — mirrors Telegram onboarding shape
+# =============================================================================
+
+def _weixin_qr_manager():
+    """Lazy import + bind to the dashboard event loop on first use."""
+    from gateway.platforms.weixin_qr_session import get_weixin_qr_session_manager
+
+    manager = get_weixin_qr_session_manager()
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            manager.set_event_loop(loop)
+    except RuntimeError:
+        pass
+    return manager
+
+
+@app.post("/api/messaging/weixin/onboarding/start")
+async def start_weixin_onboarding(body: WeixinOnboardingStart, profile: Optional[str] = None):
+    """Start a Weixin QR login session.
+
+    Returns ``{session_id, state, expires_at}`` with ``state="starting"``.
+    The frontend polls ``/status`` until ``state`` transitions to
+    ``waiting`` (QR ready), ``confirmed`` (scan complete), or ``failed``.
+    """
+    effective_profile = body.profile or profile
+    try:
+        with _profile_scope(effective_profile):
+            hermes_home = str(get_hermes_home())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    manager = _weixin_qr_manager()
+    return manager.start_session(hermes_home)
+
+
+@app.get("/api/messaging/weixin/onboarding/{session_id}/status")
+async def get_weixin_onboarding_status(session_id: str):
+    """Poll a Weixin QR login session.
+
+    Returns ``{session_id, state, expires_at, qr_image_base64?, error?, account_id?, base_url?}``.
+    ``qr_image_base64`` is present when ``state`` is ``waiting`` or ``scanned``
+    and contains a base64-encoded PNG suitable for ``<img src="data:image/png;base64,...">``.
+    """
+    manager = _weixin_qr_manager()
+    status = manager.get_status(session_id)
+    if status is None:
+        raise HTTPException(
+            status_code=404,
+            detail="WeChat setup session was not found. Start a new setup.",
+        )
+    return status
+
+
+@app.post("/api/messaging/weixin/onboarding/{session_id}/apply")
+async def apply_weixin_onboarding(
+    session_id: str, body: WeixinOnboardingApply, profile: Optional[str] = None
+):
+    """Save confirmed Weixin credentials to .env and enable the platform.
+
+    Called by the frontend after ``status`` returns ``state="confirmed"``.
+    Writes ``WEIXIN_ACCOUNT_ID``, ``WEIXIN_TOKEN``, ``WEIXIN_BASE_URL`` to
+    ``.env``, sets ``platforms.weixin.enabled: true`` in config.yaml, and
+    triggers a gateway restart — mirroring ``apply_telegram_onboarding``.
+    """
+    manager = _weixin_qr_manager()
+    credentials = manager.get_credentials(session_id)
+    if not credentials:
+        raise HTTPException(
+            status_code=409,
+            detail="WeChat setup is not ready yet. Scan the QR code first.",
+        )
+
+    effective_profile = body.profile or profile
+    try:
+        with _profile_scope(effective_profile):
+            save_env_value("WEIXIN_ACCOUNT_ID", credentials["account_id"])
+            save_env_value("WEIXIN_TOKEN", credentials["token"])
+            save_env_value("WEIXIN_BASE_URL", credentials["base_url"])
+            _write_platform_enabled("weixin", True)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        _log.exception("Weixin onboarding apply failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save WeChat setup.",
+        ) from exc
+
+    # Remove the session now that credentials are persisted.
+    manager.cancel_session(session_id)
+
+    restart_result = _restart_gateway_after_telegram_onboarding(effective_profile)
+
+    return {
+        "ok": True,
+        "platform": "weixin",
+        "account_id": credentials["account_id"],
+        "needs_restart": not restart_result["restart_started"],
+        **restart_result,
+    }
+
+
+@app.delete("/api/messaging/weixin/onboarding/{session_id}")
+async def cancel_weixin_onboarding(session_id: str):
+    """Cancel a Weixin QR login session."""
+    manager = _weixin_qr_manager()
+    manager.cancel_session(session_id)
     return {"ok": True}
 
 

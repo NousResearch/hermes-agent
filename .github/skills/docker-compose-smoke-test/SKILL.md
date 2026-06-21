@@ -77,7 +77,7 @@ Use the command that matches the chosen compose path.
 This should start:
 
 - `hermes-web` on `:9119`
-- `hermes-gateway` on `:8789`, with `:8644` pre-published for optional webhook enablement
+- `hermes-gateway` running the gateway with the `weixin` (WeChat personal) platform enabled — no host port, outbound long-poll only
 - `postgres` on host port `5433`
 
 ### 5. Check status and logs
@@ -98,17 +98,111 @@ Focus on:
 - healthcheck failures;
 - config bootstrap problems or entrypoint drift when startup behavior is under discussion;
 - missing env vars or permission errors;
-- port binding conflicts.
+- port binding conflicts;
+- WeChat gateway stuck on first poll — verify `data/weixin_accounts/` exists and contains a JSON credential file. If empty, run the wizard (the `setup` subcommand opens a menu — select `Weixin / WeChat`, item 13):
+  ```bash
+  docker compose -f docker-compose.upstream.yml run --rm hermes-gateway \
+      hermes gateway setup
+  ```
 
 ### 6. Smoke test the running stack
 
 Validate these expectations:
 
 - `http://127.0.0.1:9119/api/status` returns a healthy status for the web UI.
-- `hermes-gateway` binds the OpenAI-compatible API on `:8789`.
-- `:8644` only needs to respond when `platforms.webhook` is enabled in `data/config.yaml`.
+- `hermes-gateway` logs show a successful iLink `getupdates` long-poll connection (no host port to probe directly).
 - `postgres` reports healthy in `docker compose ps`.
 - `docker exec -it hermes-web hermes` is the documented interactive smoke test when an interactive shell is appropriate.
+
+#### 6a. WeChat channel smoke test (no HTTP port to probe)
+
+The weixin adapter uses outbound long-poll to Tencent iLink — there is no host port to `curl`. Use this four-level sequence instead, cheapest first.
+
+**Level 1 — Container healthcheck (5s).** The compose healthcheck probes for `data/weixin_accounts/` directory existence. If `healthy`, the wizard has run at least once.
+
+```bash
+docker compose -f docker-compose.upstream.yml ps
+# hermes-gateway state should be "healthy" (or "Up" if healthcheck is still pending)
+```
+
+If state is `Up` but not `healthy`, the wizard has not been run yet — run it (the `setup` subcommand opens a menu — select `Weixin / WeChat`, item 13):
+
+```bash
+docker compose -f docker-compose.upstream.yml run --rm hermes-gateway \
+    hermes gateway setup
+```
+
+**Level 2 — Adapter connected log (10-30s).** The weixin adapter logs a specific line when its long-poll loop is up. This is the canonical "channel is alive" signal.
+
+```bash
+docker compose -f docker-compose.upstream.yml logs --tail=200 hermes-gateway 2>&1 \
+    | grep -E "Connected|Disconnected"
+```
+
+Success looks like:
+
+```
+hermes-gateway  | [weixin] Connected account=<id> base=https://ilinkai.weixin.qq.com
+```
+
+That line is emitted at [gateway/platforms/weixin.py:1297](gateway/platforms/weixin.py#L1297). No `Disconnected` line should follow.
+
+Failure modes:
+
+- `getUpdates failed ret=-14 errcode=-14 errmsg=session expired` — iLink session expired; re-run the wizard.
+- `getUpdates failed ret=-2 errmsg=unknown error` — stale-session signal (same as `-14`); re-run the wizard.
+- `Session expired; pausing for 10 minutes` — same root cause; wizard re-run required.
+- `Connected` then `Disconnected` — token lock conflict (another profile is using the same bot). Stop the other profile, restart.
+
+**Level 3 — Gateway status CLI (instant).** Reports running gateway PIDs and platform state. Useful when logs are ambiguous.
+
+```bash
+docker compose -f docker-compose.upstream.yml exec hermes-gateway hermes gateway status
+```
+
+**Level 4 — End-to-end inbound (the real proof).** This is the only test that proves the channel actually delivers messages.
+
+```bash
+# 1. Tail the gateway log
+docker compose -f docker-compose.upstream.yml logs -f hermes-gateway 2>&1 \
+    | grep -E "inbound|Connected|Disconnected"
+
+# 2. From your phone, send "ping" to the WeChat account you scanned with
+
+# 3. Expected within ~2 seconds:
+#    [weixin] inbound from=<sender_id> type=direct media=0
+
+# 4. Confirm a session file was created:
+docker compose -f docker-compose.upstream.yml exec hermes-web ls -la /opt/data/sessions/ | tail -5
+# Look for a new .json file with recent mtime
+```
+
+The `inbound from=` line is emitted at [gateway/platforms/weixin.py:1466](gateway/platforms/weixin.py#L1466).
+
+**One-shot script (all four levels in one command):**
+
+```bash
+docker compose -f docker-compose.upstream.yml ps && \
+echo "--- adapter connected? ---" && \
+docker compose -f docker-compose.upstream.yml logs --tail=200 hermes-gateway 2>&1 \
+    | grep -E "Connected|Disconnected" | tail -3 && \
+echo "--- gateway status ---" && \
+docker compose -f docker-compose.upstream.yml exec hermes-gateway hermes gateway status && \
+echo "--- recent sessions (send a test message from WeChat first) ---" && \
+docker compose -f docker-compose.upstream.yml exec hermes-web ls -la /opt/data/sessions/ | tail -3
+```
+
+**Common failure → fix table:**
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Container `Exit 1` immediately | `data/weixin_accounts/` doesn't exist | Run the wizard |
+| Container `Up` but not `healthy` | Wizard hasn't run yet | Run the wizard |
+| `Connected` then `Disconnected` | Token lock conflict (another profile using same bot) | Stop other profile, restart |
+| `getUpdates failed ret=-14` | iLink session expired | Re-run wizard |
+| `getUpdates failed ret=-2 errmsg=unknown error` | Stale session signal | Re-run wizard |
+| `Connected` but no `inbound` after sending message | WeChat side didn't deliver (iLink bot not in your contacts) | Add the bot as a contact in WeChat first |
+| `inbound` appears but no session file | Agent crashed mid-processing | Check `docker compose logs hermes-gateway` for stack traces |
 
 ### 7. Shut down safely when needed
 

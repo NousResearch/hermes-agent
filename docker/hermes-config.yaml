@@ -1,4 +1,4 @@
-# Hermes-Agent — Deployment Config (Ollama + OpenSpace)
+# Hermes-Agent — Deployment Config (Ollama + WeChat)
 # Auto-copied to data/config.yaml on first container start.
 # Edit data/config.yaml directly after first run.
 
@@ -78,23 +78,28 @@ display:
 # =============================================================================
 platforms:
 
-  # OpenSpace agent access — OpenAI-compatible endpoint on :8789
-  # Connect any OpenAI-compatible frontend (OpenSpace, Open WebUI, LobeChat, etc.)
-  # at http://<host>:8789/v1
-  api_server:
+  # WeChat personal account via Tencent iLink Bot API.
+  # Run the QR wizard once to bind the bot to your WeChat account:
+  #   docker compose -f docker-compose.upstream.yml run --rm hermes-gateway \
+  #       hermes gateway setup weixin
+  # Credentials are saved to ~/.hermes/weixin_accounts/<account_id>.json by the
+  # wizard — no further config needed here. Set dm_policy / group_policy below
+  # to restrict who can talk to the bot.
+  weixin:
     enabled: true
     extra:
-      host: "0.0.0.0"
-      port: 8789
-      # Hermes reports this as the model name in GET /v1/models
-      model_name: "hermes-agent"
-      # Allow calls from OpenSpace runtime (port 8788)
-      cors_origins: "http://localhost:8788,http://host.docker.internal:8788"
-      # Uncomment to require an API key for the agent access port
-      # key: "your-secret-key"
+      dm_policy: "open"        # "open" | "allowlist" | "disabled"
+      group_policy: "disabled" # "open" | "allowlist" | "disabled"
 
-  # Webhook platform — disabled by default in this OpenSpace/Ollama stack.
-  # Uncomment to enable a generic inbound webhook on :8644.
+  # Uncomment to enable WeCom (企业微信) corporate AI bot. The wizard returns
+  # bot_id + secret which must be pasted into .extra below.
+  # wecom:
+  #   enabled: true
+  #   extra:
+  #     bot_id: "<from wizard>"
+  #     secret: "<from wizard>"
+
+  # Uncomment to enable a generic inbound webhook. Bind :8644 in compose before enabling.
   # webhook:
   #   enabled: false
   #   extra:

@@ -39,9 +39,27 @@ pip install hermes-agent[messaging]
 
 ## Setup
 
-### 1. Run the Setup Wizard
+### Option A: Web Dashboard (recommended)
 
-The easiest way to connect your WeChat account is through the interactive setup:
+The easiest way to connect your WeChat account is through the Hermes web dashboard — no terminal required.
+
+1. Open the dashboard at `http://localhost:9119` (or your deployment URL)
+2. Navigate to **Channels**
+3. Find **Weixin / WeChat** and click **Set up with QR**
+4. A QR code renders inline in your browser
+5. Open WeChat on your phone → tap **+** → **Scan QR Code** → point at the QR
+6. Confirm the login in WeChat when prompted
+7. The dashboard auto-saves credentials and restarts the gateway
+
+The dashboard handles everything: QR rendering, scan-status polling, credential persistence, and gateway restart. You don't need to run any CLI commands.
+
+:::info
+The web QR flow talks directly to Tencent's iLink Bot API — no external pairing service required. The QR is fetched from `ilinkai.weixin.qq.com` and rendered as a PNG in your browser.
+:::
+
+### Option B: Terminal Wizard (alternative)
+
+If you prefer the terminal or don't have dashboard access, use the interactive setup:
 
 ```bash
 hermes gateway setup

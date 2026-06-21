@@ -22,6 +22,11 @@ x-hermes-common: &hermes-common
     - HERMES_UID=1000
     - HERMES_GID=1000
     - OPENAI_API_KEY=ollama
+    # Ollama lives on the Docker host. host.docker.internal resolves via the
+    # extra_hosts entry below — works on Docker Desktop (Win/macOS) and on
+    # Linux with the host-gateway mapping.
+    - OPENAI_BASE_URL=http://host.docker.internal:11434/v1
+    - OLLAMA_BASE_URL=http://host.docker.internal:11434
     - DATABASE_URL=postgresql://hermes:${POSTGRES_PASSWORD:-changeme}@postgres:5432/hermes
   env_file:
     - path: ./data/.env
@@ -37,14 +42,6 @@ services:
     <<: *hermes-common
     container_name: hermes-web
     command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
-    environment:
-      - HERMES_UID=1000
-      - HERMES_GID=1000
-      - OPENAI_API_KEY=ollama
-      - DATABASE_URL=postgresql://hermes:${POSTGRES_PASSWORD:-changeme}@postgres:5432/hermes
-      - GATEWAY_HEALTH_URL=http://hermes-gateway:8789
-      # Let the dashboard probe the separate gateway container instead of
-      # falling back to local PID checks inside hermes-web.
     volumes:
       - ./data:/opt/data
       - ./docker/hermes-config.yaml:/opt/hermes/cli-config.yaml.example:ro
@@ -64,26 +61,19 @@ services:
   hermes-gateway:
     <<: *hermes-common
     container_name: hermes-gateway
+    # Runs the gateway with the weixin (WeChat personal / iLink) platform enabled
+    # per docker/hermes-config.yaml. weixin uses outbound long-poll to
+    # ilinkai.weixin.qq.com — no inbound host port needed.
     command: ["gateway", "run"]
-    ports:
-      - "8789:8789"
-    environment:
-      - HERMES_UID=1000
-      - HERMES_GID=1000
-      - OPENAI_API_KEY=ollama
-      - DATABASE_URL=postgresql://hermes:${POSTGRES_PASSWORD:-changeme}@postgres:5432/hermes
-      - API_SERVER_CORS_ORIGINS=http://localhost:8788,http://host.docker.internal:8788
-      - API_SERVER_KEY=${API_SERVER_KEY:-28765d337208aa3c0b6671cb1969e8cad9c22d7b7967b216}
-      - GATEWAY_ALLOW_ALL_USERS=true
     depends_on:
       postgres:
         condition: service_healthy
       hermes-web:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8789/health'); sys.exit(0 if r.status==200 else 1)"]
+      test: ["CMD-SHELL", "python3 -c 'import os,sys; sys.exit(0 if os.path.exists(\"/opt/data/weixin_accounts\") else 1)'"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 60s
 

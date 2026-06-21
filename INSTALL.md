@@ -1,6 +1,6 @@
 # Hermes-Agent — Installation Guide
 
-Deploy the JZKK720/hermes-agent fork with Ollama and PostgreSQL using Docker Compose.
+Deploy the JZKK720/hermes-agent fork with Ollama, PostgreSQL, and WeChat personal-account chat using Docker Compose.
 
 ## Prerequisites
 
@@ -70,9 +70,29 @@ This keeps the local `data/.env`, `data/config.yaml`, sessions, memories, and Po
 | Service | URL | Description |
 |---|---|---|
 | Hermes Web UI | http://localhost:9119 | Chat interface |
-| OpenSpace agent API | http://localhost:8789/v1 | OpenAI-compatible API endpoint |
-| Gateway webhook | :8644 | Optional platform webhook receiver. Port is published, but the default config leaves it disabled. |
+| WeChat gateway | outbound only | `hermes-gateway` runs the gateway with `weixin` (WeChat personal) enabled. No host port — uses outbound long-poll to Tencent iLink. |
 | PostgreSQL | localhost:5433 | Internal database (host port 5433) |
+
+### Connect WeChat (one-shot)
+
+The `hermes gateway setup` subcommand does **not** accept a platform argument — it opens an interactive menu. From the menu, pick `Weixin / WeChat` (item **13** in the default list).
+
+```bash
+docker compose -f docker-compose.upstream.yml run --rm hermes-gateway \
+    hermes gateway setup
+```
+
+When prompted `Select [1-27] (27):`, type `13` and press Enter.
+
+The wizard prints an ASCII QR code in the terminal. Scan it with the WeChat app on your phone (Settings → Plugins → search "iLink Bot" if not visible), confirm in WeChat, and the wizard saves credentials to `data/weixin_accounts/<account_id>.json` automatically.
+
+Then bring the gateway up:
+
+```bash
+docker compose -f docker-compose.upstream.yml up -d hermes-gateway
+```
+
+You only need to run the wizard once per WeChat account. To re-bind a different account, repeat the command and the wizard will save a separate JSON file.
 
 ### Interactive CLI
 
@@ -85,6 +105,7 @@ docker exec -it hermes-web hermes
 ```bash
 docker compose -f docker-compose.upstream.yml logs -f                                                # stream logs from all services
 docker compose -f docker-compose.upstream.yml logs -f hermes-web                                     # web UI logs only
+docker compose -f docker-compose.upstream.yml logs -f hermes-gateway                                 # WeChat gateway logs only
 docker compose -f docker-compose.upstream.yml down                                                   # stop all services
 docker compose -f docker-compose.upstream.yml down -v                                                # stop + delete volumes (resets data!)
 docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans # start or refresh from the published upstream image
@@ -95,10 +116,9 @@ docker compose -f docker-compose.upstream.yml up -d --pull always --force-recrea
 ```bash
 docker compose ps
 curl -fsS http://127.0.0.1:9119/api/status
-curl -fsS -H "Authorization: Bearer ${API_SERVER_KEY:-28765d337208aa3c0b6671cb1969e8cad9c22d7b7967b216}" http://127.0.0.1:8789/v1/models
 ```
 
-On Windows PowerShell, prefer `Invoke-RestMethod` for the `:8789` probe. On PowerShell 7.6.1, `Invoke-WebRequest` can return `ResponseEnded` against Hermes' aiohttp API even when the endpoint is healthy.
+The web UI healthcheck on `:9119` is the primary smoke signal. The WeChat gateway has no public HTTP port — verify with `docker compose logs hermes-gateway` and look for a successful iLink `getupdates` long-poll connection.
 
 ---
 
@@ -108,11 +128,13 @@ On Windows PowerShell, prefer `Invoke-RestMethod` for the `:8789` probe. On Powe
 
 | Variable | Purpose | Required |
 |---|---|---|
-| `API_SERVER_KEY` | Bearer token securing `:8789` (OpenSpace endpoint) | No — open if unset |
+| `POSTGRES_PASSWORD` | PostgreSQL container password (matches compose default `changeme`) | No — defaults to `changeme` |
 | `TELEGRAM_BOT_TOKEN` | Telegram gateway | Optional |
 | `DISCORD_BOT_TOKEN` | Discord gateway | Optional |
 | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | Slack gateway | Optional |
 | `EXA_API_KEY` | AI-native web search | Optional |
+
+WeChat personal accounts (`weixin`) do not use tokens — credentials are obtained via the QR wizard and saved to `data/weixin_accounts/`.
 
 ### `data/config.yaml` — runtime settings
 
@@ -197,13 +219,13 @@ docker compose -f docker-compose.upstream.yml up -d --pull always --force-recrea
 
 ### `8644` does not respond
 
-That is expected in the default OpenSpace/Ollama stack. The compose files keep `8644` published so you can enable webhook integrations later, but `data/config.yaml` leaves `platforms.webhook` disabled by default. Only treat `8644` as required after you explicitly enable the webhook platform.
+Webhook platform is no longer pre-published in this stack. To enable inbound webhooks, bind `:8644` in `docker-compose.yml` on the `hermes-gateway` service and set `platforms.webhook.enabled: true` in `data/config.yaml`.
 
 ### Reset everything (start fresh)
 
 ```bash
-docker compose down -v   # removes named volumes
-rm -rf data/             # removes persisted data (config, sessions, memories)
+docker compose down -v   # removes named volumes (including postgres_data — all DB rows gone)
+rm -rf data/             # removes persisted data (config, sessions, memories, weixin_accounts)
 docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans
 ```
 
@@ -214,6 +236,5 @@ docker compose -f docker-compose.upstream.yml up -d --pull always --force-recrea
 | Port (host) | Port (container) | Service |
 |---|---|---|
 | 9119 | 9119 | Hermes Web UI |
-| 8789 | 8789 | OpenSpace API (OpenAI-compatible) |
-| 8644 | 8644 | Optional gateway webhook (published by compose, disabled by default) |
+| — | — | `hermes-gateway` (WeChat gateway, outbound only — no host port) |
 | 5433 | 5432 | PostgreSQL |

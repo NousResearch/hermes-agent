@@ -886,6 +886,13 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    # Bundled standalone plugins that should expose first-party Hermes CLI
+    # surfaces without requiring per-profile opt-in. User-installed plugins
+    # remain opt-in through this same allow-list.
+    "plugins": {
+        "enabled": ["pr-review"],
+        "disabled": [],
+    },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,

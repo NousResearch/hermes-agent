@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from hermes_cli.config import DEFAULT_CONFIG
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from plugins.pr_review import cli as pr_review_cli
 from plugins.pr_review import core, register
@@ -22,6 +23,10 @@ def test_register_adds_cli_command():
     assert entry["plugin"] == "pr-review"
     assert callable(entry["setup_fn"])
     assert callable(entry["handler_fn"])
+
+
+def test_pr_review_is_enabled_as_first_party_bundled_cli_by_default():
+    assert "pr-review" in DEFAULT_CONFIG["plugins"]["enabled"]
 
 
 def test_default_docs_stay_on_broad_conventions_not_larry_specific_docs():

@@ -86,7 +86,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Tuple
 
 from toolsets import get_toolset_names
 
@@ -4859,6 +4859,89 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Comment-then-exit completion thresholds and patterns.
+#
+# Background: research/audit workers (cheap-NO filter audits, doc audits,
+# follow-up reviews) often ship their work as a ``kanban_comment`` with
+# a multi-paragraph summary and a path to the artifact on disk, then
+# exit rc=0. Before this carve-out, the dispatcher's protocol-violation
+# detector would see the clean exit on a still-``running`` task and
+# auto-block + respawn — producing a duplicate worker. The 2026-06-21
+# incident on ``t_c928fc79`` is the canonical example: a 2325-byte
+# audit summary comment was followed by a duplicate respawn that
+# started redoing the same audit.
+#
+# The carve-out: when the worker exits cleanly AND has posted a
+# non-trivial comment during the current run that references a
+# durable artifact, classify the run as ``completed`` (transition
+# the task to ``done``) rather than as a protocol violation. Without
+# a comment, or with a short comment, the old protocol-violation
+# behavior still applies — we do not lower the bar for a real silent
+# failure. 500 bytes is the floor for "this looks like a real handoff
+# summary, not a one-line 'stop work' note" and matches what the
+# original incident looked like.
+_COMMENT_COMPLETION_MIN_BYTES = 500
+
+# Pattern matching a "durable artifact" reference in a comment body.
+# Used to distinguish a real research handoff (which references a
+# report path, a PR URL, or a /tmp/ handoff file) from a one-line
+# "stop work" note. Conservative on purpose: ``data/`` and ``docs/``
+# are the canonical repo-relative artifact locations; PR URLs are the
+# canonical way to ship coding work; ``/tmp/`` covers the
+# handoff-JSON-in-tmp pattern.
+_COMMENT_COMPLETION_ARTIFACT_RE = re.compile(
+    r"(?:data/|docs/|/tmp/|[a-z]+\.md\b|[a-z]+\.json\b|[a-z]+\.txt\b|"
+    r"https?://|pull\s*request\b)",
+    re.IGNORECASE,
+)
+
+
+def _comment_shipped_handoff(
+    conn: sqlite3.Connection,
+    task_id: str,
+    started_at: Optional[int],
+) -> Optional[Tuple[int, str]]:
+    """Return ``(comment_id, body)`` for a substantive, artifact-bearing
+    comment posted during the current run, or ``None`` if no such
+    comment exists.
+
+    A comment counts as a "shipped handoff" only when ALL of:
+
+    1. ``created_at >= started_at`` — the comment was posted during
+       THIS run, not a stale carry-over from a previous attempt
+       (otherwise a worker could bypass the protocol-violation check
+       by inheriting a big comment from a prior run).
+    2. ``length(body) >= _COMMENT_COMPLETION_MIN_BYTES`` — the comment
+       is long enough to be a real handoff, not a one-line "stop work"
+       note. 500 bytes is the floor.
+    3. The body contains a durable-artifact reference (a ``data/`` or
+       ``docs/`` path, a ``/tmp/`` handoff file, a ``.md`` / ``.json``
+       / ``.txt`` filename, an HTTP(S) URL, or the literal phrase
+       "pull request"). This is the conservative check that
+       distinguishes "I shipped a real result" from "I left a
+       conversational reply that happens to be long".
+
+    Returns the first matching comment (id, body) ordered by id
+    ascending so the dispatcher always picks the same handoff when
+    several qualify. ``None`` means "no qualifying handoff comment
+    for this run, treat the exit as a normal protocol violation".
+    """
+    if started_at is None:
+        return None
+    row = conn.execute(
+        "SELECT id, body FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "  AND length(body) >= ? "
+        "ORDER BY id ASC LIMIT 1",
+        (task_id, int(started_at), _COMMENT_COMPLETION_MIN_BYTES),
+    ).fetchone()
+    if row is None:
+        return None
+    body = row["body"] or ""
+    if not _COMMENT_COMPLETION_ARTIFACT_RE.search(body):
+        return None
+    return (int(row["id"]), body)
+
 
 @dataclass
 class DispatchResult:
@@ -5499,6 +5582,71 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
+            # Comment-then-exit completion. When a worker exits cleanly
+            # AND has posted a non-trivial handoff comment during this
+            # run (>= _COMMENT_COMPLETION_MIN_BYTES with a durable
+            # artifact reference), we treat it as a successful run,
+            # NOT a protocol violation. The research/audit pattern is
+            # "post a multi-paragraph summary comment with the report
+            # path, then exit rc=0" — the old logic punished that
+            # pattern by auto-blocking + duplicate-respawning. Now the
+            # task is promoted to ``done`` (same end state as
+            # ``kanban_complete``) and the run row records
+            # ``outcome=completed``.
+            #
+            # The check + transition happen as a single unit and
+            # ``continue`` out of the iteration so the crash-restore
+            # block below (UPDATE to ``ready``, ``_end_run`` with
+            # ``crashed`` outcome, etc.) does NOT clobber the
+            # ``done`` transition. The public ``crashed`` return
+            # and the ``_last_auto_blocked`` side-channel both stay
+            # silent for this path — the orchestrator learns about
+            # the success via the ``completed`` event on the kanban
+            # notify stream, not as a crash to be retried.
+            if kind == "clean_exit":
+                handoff = _comment_shipped_handoff(
+                    conn, row["id"], started_at,
+                )
+                if handoff is not None:
+                    comment_id, comment_body = handoff
+                    # Use the first line of the comment as the
+                    # run-summary so the run history shows a useful
+                    # one-liner without copying the full report
+                    # body into the run row.
+                    handoff_summary = (
+                        comment_body.splitlines()[0][:200]
+                        if comment_body else None
+                    )
+                    cur = conn.execute(
+                        "UPDATE tasks SET status = 'done', result = ?, "
+                        "completed_at = ?, claim_lock = NULL, "
+                        "claim_expires = NULL, worker_pid = NULL "
+                        "WHERE id = ? AND status = 'running'",
+                        (handoff_summary, int(time.time()), row["id"]),
+                    )
+                    if cur.rowcount == 1:
+                        payload = {
+                            "pid": pid,
+                            "claimer": row["claim_lock"],
+                            "exit_code": code,
+                            "comment_id": comment_id,
+                            "comment_bytes": len(comment_body),
+                        }
+                        run_id = _end_run(
+                            conn, row["id"],
+                            outcome="completed", status="completed",
+                            summary=handoff_summary,
+                            metadata=payload,
+                        )
+                        _append_event(
+                            conn, row["id"], "commented_through_completion",
+                            payload,
+                            run_id=run_id,
+                        )
+                    # Skip the rest of the loop body — the task is
+                    # already promoted to ``done`` and the run is
+                    # already closed.
+                    continue
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling

@@ -4436,6 +4436,341 @@ def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Comment-then-exit completion (research/audit worker pattern)
+# ---------------------------------------------------------------------------
+#
+# Background: research/audit workers (cheap-NO, doc audits, etc.) sometimes
+# ship their work as a ``kanban_comment`` containing a multi-paragraph
+# summary and a path to the artifact on disk, then exit rc=0. The
+# dispatcher's protocol-violation detector used to treat this exact
+# pattern as a "worker answered without terminal transition" and
+# auto-blocked the task — even though the work was done. The result was
+# a duplicate respawn and a phantom blocker.
+#
+# The fix: when a worker exits rc=0 (clean exit) AND has posted a
+# non-trivial comment (>= 500 bytes) during the current run that
+# references a durable artifact, classify the run as ``completed``
+# (transition the task to ``done``) instead of as a protocol violation.
+# Without a comment, or with a short comment, the old protocol-violation
+# behavior still applies — we don't lower the bar for a real silent
+# failure.
+
+# Threshold matching ``kanban_db._COMMENT_COMPLETION_MIN_BYTES`` — keep
+# these in sync if either is changed.
+_COMMENT_COMPLETION_TEST_MIN_BYTES = 500
+# A substring the dispatcher will look for in the comment to confirm
+# the comment is actually a research/audit handoff, not just a
+# one-line note. The dispatcher checks for an artifact pattern
+# (data/, docs/, /tmp/, or a URL) — the test fixture must contain at
+# least one such marker. The cheap-NO audit used ``data/...md``; this
+# string captures the spirit of that test fixture.
+_ARTIFACT_HINT = "data/cheap_no_audit_2026_06_21.md"
+
+
+def test_clean_exit_with_substantive_comment_marks_done(kanban_home):
+    """A worker that exits rc=0 after posting a 500+ byte comment
+    referencing a durable artifact is treated as having **completed** the
+    task — not as a protocol violation. The task transitions to ``done``
+    and the run outcome is ``completed``, NOT ``crashed``.
+
+    Regression for the cheap-NO audit duplicate-respawn bug (2026-06-21
+    incident on ``t_c928fc79``). The first run shipped a 2325-byte
+    summary comment with the report path and exited rc=0; the dispatcher
+    treated it as a protocol violation and respawned a duplicate worker.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="research audit", assignee="researcher")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999996
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        # Worker posts a research-audit-style comment with a path to
+        # the artifact. The comment is well over 500 bytes and references
+        # data/ (a real artifact location). This is the exact pattern
+        # that the cheap-NO audit worker used.
+        body = (
+            "## Audit summary\n\n"
+            "Reviewed 7d of ws_alert_consumer rejections. "
+            "**17,811 total rejections**, of which **32 were cheap-NO** "
+            "(price < 0.10). All 32 cheap-NO rejections are correct — "
+            "they match the configured cheap-NO filter. The remaining "
+            "17,779 are split across `slippage-too-high` (8,401), "
+            "`edge-too-small` (6,233), and `expiry-too-near` (3,145). "
+            "Full breakdown at `data/cheap_no_audit_2026_06_21.md`. "
+            "No code change needed — the filter is working as designed. "
+            "Padding the comment a bit to clear the 500-byte threshold "
+            "so the dispatcher classifies this as a real handoff "
+            "rather than a one-line reply that happens to be long."
+        )
+        assert len(body) >= _COMMENT_COMPLETION_TEST_MIN_BYTES, (
+            f"test fixture comment must be >= 500 bytes to exercise the "
+            f"non-trivial-completion path; got {len(body)}"
+        )
+        assert _ARTIFACT_HINT in body, (
+            "test fixture comment must reference a durable artifact "
+            "(data/ path, docs/ path, /tmp/, or URL) to exercise the "
+            "non-trivial-completion path"
+        )
+        kb.add_comment(conn, tid, author="researcher", body=body)
+
+        # Simulate the reap loop having recorded a clean exit for this
+        # pid and force liveness check to say "dead".
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid not in crashed, (
+            f"research worker with substantive comment + clean exit "
+            f"should NOT be detected as crashed; crashed={crashed}"
+        )
+        task = kb.get_task(conn, tid)
+        assert task.status == "done", (
+            f"task should be promoted to 'done' on comment-then-exit, "
+            f"got status={task.status}"
+        )
+        # And it shouldn't be blocked, since the work is done.
+        assert task.status != "blocked", (
+            f"comment-then-exit must not auto-block, got {task.status}"
+        )
+
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        # The new event (added by the fix) and the absence of the
+        # protocol-violation / crashed events.
+        assert "commented_through_completion" in kinds, (
+            f"expected 'commented_through_completion' event for the "
+            f"comment-shipped path, got {kinds}"
+        )
+        assert "protocol_violation" not in kinds, (
+            f"clean-exit + non-trivial comment should NOT trip "
+            f"protocol_violation, got {kinds}"
+        )
+        assert "crashed" not in kinds, (
+            f"clean-exit + non-trivial comment should NOT emit "
+            f"'crashed', got {kinds}"
+        )
+        assert "gave_up" not in kinds, (
+            f"clean-exit + non-trivial comment should NOT trip the "
+            f"breaker / gave_up, got {kinds}"
+        )
+
+        # Run row should record outcome=completed, not crashed.
+        with kb.connect() as conn2:
+            run = conn2.execute(
+                "SELECT outcome, status FROM task_runs "
+                "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+        assert run["outcome"] == "completed", (
+            f"run outcome should be 'completed' on comment-then-exit "
+            f"success, got {run['outcome']}"
+        )
+    finally:
+        conn.close()
+
+
+def test_clean_exit_with_short_comment_still_protocol_violation(kanban_home):
+    """A clean exit with a short comment (< 500 bytes) is still a
+    protocol violation. The bar is "the worker actually shipped a
+    real handoff", and a one-line "stop work" comment doesn't clear it.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="tiny comment", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        fake_pid = 999995
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        # Short comment — under threshold, even with an artifact ref.
+        short_body = (
+            "stop work — see data/foo.md. "
+            "this is intentionally under the 500-byte threshold "
+            "so the dispatcher still treats it as a protocol violation."
+        )
+        assert len(short_body) < _COMMENT_COMPLETION_TEST_MIN_BYTES
+        kb.add_comment(conn, tid, author="worker", body=short_body)
+
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid in crashed, (
+            f"short-comment + clean exit should still be protocol "
+            f"violation, got crashed={crashed}"
+        )
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"protocol violation should still auto-block, got "
+            f"status={task.status}"
+        )
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "protocol_violation" in kinds, (
+            f"expected 'protocol_violation' for short comment, got {kinds}"
+        )
+    finally:
+        conn.close()
+
+
+def test_clean_exit_with_no_comment_still_protocol_violation(kanban_home):
+    """A clean exit with NO comment at all is still a real protocol
+    violation — a worker that just answered conversationally and exited.
+    This is the regression the original auto-block was added for; the
+    fix must not weaken it.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="silent", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        fake_pid = 999994
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        # No add_comment() call — simulating a worker that wrote its
+        # answer as plain text and exited rc=0.
+
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid in crashed, "no-comment + clean exit is still a protocol violation"
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"silent clean exit should still auto-block, got "
+            f"status={task.status}"
+        )
+    finally:
+        conn.close()
+
+
+def test_clean_exit_with_artifact_in_500byte_comment_marks_done(kanban_home):
+    """Sub-test for the artifact-reference branch: a comment that is
+    500+ bytes AND references a PR URL is treated as a shipped result.
+
+    The cheap-NO worker referenced ``data/...md``; an audit worker
+    references a PR URL. Both patterns must be recognized.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="pr-based audit", assignee="researcher")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        fake_pid = 999993
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        # 500+ byte comment referencing a GitHub PR URL.
+        pr_url = "https://github.com/user/repo/pull/123"
+        body = (
+            "## Follow-up audit complete\n\n"
+            "Re-ran the cheap-NO filter audit with the new edge "
+            "direction schema. Findings: 32 cheap-NO rejections in 7d, "
+            "all correctly filtered. The 17,779 other rejections are "
+            "unchanged from the prior run. No new regressions. "
+            "Documentation update merged via PR " + pr_url + ".\n\n"
+            "Padded to clear the 500-byte threshold so the dispatcher "
+            "recognizes this as a real shipped handoff rather than a "
+            "silent one-line reply. Lorem ipsum dolor sit amet, "
+            "consectetur adipiscing elit, sed do eiusmod tempor "
+            "incididunt ut labore et dolore magna aliqua."
+        )
+        assert len(body) >= _COMMENT_COMPLETION_TEST_MIN_BYTES
+        assert pr_url in body
+        kb.add_comment(conn, tid, author="researcher", body=body)
+
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid not in crashed
+        task = kb.get_task(conn, tid)
+        assert task.status == "done", (
+            f"PR-URL comment + clean exit should be 'done', got {task.status}"
+        )
+    finally:
+        conn.close()
+
+
+def test_clean_exit_comment_from_prior_run_does_not_save_it(kanban_home):
+    """A worker can't bypass the protocol-violation check by
+    inheriting a big comment from a previous run. The dispatcher only
+    counts comments created during the current run (after
+    ``tasks.started_at``).
+
+    This guards against the trivial "I left a 2kB comment last time, so
+    my next silent clean exit will look like a success" bypass.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="stale comment bypass", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        fake_pid = 999992
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        # Insert a big comment dated TWO HOURS AGO, well before this
+        # run started. The dispatcher's "this run's comment" check must
+        # not pick it up.
+        one_hour_ago = int(time.time()) - 3600
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    tid,
+                    "worker",
+                    "X" * 600,  # 600 bytes of X — clearly over threshold
+                    one_hour_ago,
+                ),
+            )
+
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        # The stale comment should not have saved this run.
+        assert tid in crashed, (
+            f"stale comment from prior run must not bypass the "
+            f"protocol-violation check, got crashed={crashed}"
+        )
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"silent clean exit + stale comment should still "
+            f"auto-block, got status={task.status}"
+        )
+    finally:
+        conn.close()
+
+
 def test_reclaim_task_clears_failure_counter(kanban_home):
     """Operator reclaim wipes the counter so the next retry gets a fresh
     budget."""

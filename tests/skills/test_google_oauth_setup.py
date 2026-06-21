@@ -119,6 +119,7 @@ def setup_module(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "CLIENT_SECRET_PATH", tmp_path / "google_client_secret.json")
     monkeypatch.setattr(module, "TOKEN_PATH", tmp_path / "google_token.json")
     monkeypatch.setattr(module, "PENDING_AUTH_PATH", tmp_path / "google_oauth_pending.json", raising=False)
+    monkeypatch.setattr(module, "LAST_AUTH_URL_PATH", tmp_path / "google_oauth_last_url.txt", raising=False)
 
     client_secret = {
         "installed": {
@@ -146,6 +147,41 @@ class TestGetAuthUrl:
         flow = FakeFlow.created[-1]
         assert flow.autogenerate_code_verifier is True
         assert flow.authorization_kwargs == {"access_type": "offline", "prompt": "consent"}
+
+    def test_scopes_auth_url_to_requested_services_and_outputs_json(self, setup_module, capsys):
+        setup_module.get_auth_url(services="calendar", output_format="json")
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["auth_url"] == "https://auth.example/authorize?state=generated-state"
+        assert payload["services"] == ["calendar"]
+        assert payload["scopes"] == ["https://www.googleapis.com/auth/calendar"]
+        assert payload["pending_path"] == str(setup_module.PENDING_AUTH_PATH)
+        assert payload["last_auth_url_path"] == str(setup_module.LAST_AUTH_URL_PATH)
+
+        saved = json.loads(setup_module.PENDING_AUTH_PATH.read_text())
+        assert saved["requested_scopes"] == ["https://www.googleapis.com/auth/calendar"]
+        assert saved["services"] == ["calendar"]
+        assert setup_module.LAST_AUTH_URL_PATH.read_text() == payload["auth_url"]
+
+        flow = FakeFlow.created[-1]
+        assert flow.scopes == ["https://www.googleapis.com/auth/calendar"]
+
+    def test_main_accepts_documented_auth_url_flags(self, setup_module, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            setup_module,
+            "get_auth_url",
+            lambda services=None, output_format="text": calls.append((services, output_format)),
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["setup.py", "--auth-url", "--services", "calendar", "--format", "json"],
+        )
+
+        setup_module.main()
+
+        assert calls == [("calendar", "json")]
 
 
 class TestExchangeAuthCode:
@@ -229,6 +265,31 @@ class TestExchangeAuthCode:
         assert setup_module.PENDING_AUTH_PATH.exists()
         assert not setup_module.TOKEN_PATH.exists()
 
+    def test_json_failure_returns_fresh_auth_url_for_same_services(self, setup_module, capsys):
+        setup_module.PENDING_AUTH_PATH.write_text(
+            json.dumps(
+                {
+                    "state": "saved-state",
+                    "code_verifier": "saved-verifier",
+                    "requested_scopes": ["https://www.googleapis.com/auth/calendar"],
+                    "services": ["calendar"],
+                }
+            )
+        )
+        FakeFlow.fetch_error = Exception("invalid_grant: code expired")
+
+        with pytest.raises(SystemExit):
+            setup_module.exchange_auth_code("4/test-auth-code", output_format="json")
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["error"] == "token_exchange_failed"
+        assert "invalid_grant" in payload["message"]
+        assert payload["fresh_auth_url"] == "https://auth.example/authorize?state=generated-state"
+        assert payload["services"] == ["calendar"]
+        assert payload["scopes"] == ["https://www.googleapis.com/auth/calendar"]
+        assert setup_module.LAST_AUTH_URL_PATH.read_text() == payload["fresh_auth_url"]
+        assert json.loads(setup_module.PENDING_AUTH_PATH.read_text())["state"] == "generated-state"
+
     def test_accepts_narrower_scopes_with_warning(self, setup_module, capsys):
         """Partial scopes are accepted with a warning (gws migration: v2.0)."""
         setup_module.PENDING_AUTH_PATH.write_text(
@@ -255,6 +316,38 @@ class TestExchangeAuthCode:
         # Token is saved (partial scopes accepted)
         assert setup_module.TOKEN_PATH.exists()
         # Pending auth is cleaned up
+        assert not setup_module.PENDING_AUTH_PATH.exists()
+
+    def test_saves_json_success_for_requested_services(self, setup_module, capsys):
+        setup_module.PENDING_AUTH_PATH.write_text(
+            json.dumps(
+                {
+                    "state": "saved-state",
+                    "code_verifier": "saved-verifier",
+                    "requested_scopes": ["https://www.googleapis.com/auth/calendar"],
+                    "services": ["calendar"],
+                }
+            )
+        )
+        FakeFlow.credentials_payload = {
+            "token": "access-token",
+            "refresh_token": "refresh-token",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_id": "client-id",
+            "client_secret": "client-secret",
+            "scopes": ["https://www.googleapis.com/auth/calendar"],
+        }
+
+        setup_module.exchange_auth_code("4/test-auth-code", output_format="json")
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "authenticated"
+        assert payload["token_path"] == str(setup_module.TOKEN_PATH)
+        assert payload["services"] == ["calendar"]
+        assert payload["scopes"] == ["https://www.googleapis.com/auth/calendar"]
+
+        saved = json.loads(setup_module.TOKEN_PATH.read_text())
+        assert saved["services"] == ["calendar"]
         assert not setup_module.PENDING_AUTH_PATH.exists()
 
 

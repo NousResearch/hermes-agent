@@ -308,11 +308,16 @@ CONCLUDE_SCHEMA = {
 FORGET_SCHEMA = {
     "name": "mem0_forget",
     "description": (
-        "SOFT, REVERSIBLE. Mark a memory obsolete so it stops surfacing in recall, "
+        "SOFT, REVERSIBLE REDACTION. Mark a memory obsolete so it stops surfacing in recall, "
         "WITHOUT destroying it (it can be restored). This is the SAFE DEFAULT for "
         "'this is no longer true / superseded'. Prefer this over mem0_delete unless "
         "data must genuinely not exist. By-id (read-before-forget); a gated by-filter "
-        "path requires a dry-run then a confirm_token. restore=true un-forgets."
+        "path requires a dry-run then a confirm_token. restore=true un-forgets.\n"
+        "CAVEAT (self-host): forget = reversible REDACTION, not erasure. The original "
+        "content is retained verbatim in the row's plaintext metadata (original_text) in "
+        "the shared store, and recall-hiding is client-side. For anything that must "
+        "genuinely NOT EXIST (secrets, wrong/sensitive data), use mem0_delete — it is the "
+        "only true removal."
     ),
     "parameters": {
         "type": "object",

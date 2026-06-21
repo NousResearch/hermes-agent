@@ -356,6 +356,27 @@ class MemoryManager:
 
         self._providers.append(provider)
 
+        self._reindex_provider(provider)
+
+        logger.info(
+            "Memory provider '%s' registered (%d tools)",
+            provider.name,
+            len(provider.get_tool_schemas()),
+        )
+
+    def _reindex_provider(self, provider: MemoryProvider) -> None:
+        """(Re)build the tool→provider routing table for one provider.
+
+        Called at ``add_provider`` time AND again after ``initialize`` (via
+        ``initialize_all``): a provider may GATE tools behind config that only
+        resolves in ``initialize()`` (e.g. mem0's ``mem0_forget``/``mem0_delete``
+        appear in ``get_tool_schemas()`` only once ``destructive_tools_enabled``
+        is read at init). If we indexed solely at registration — before init —
+        those gated tools would be advertised in the schema but missing from the
+        routing table, so a call resolves to "Unknown tool" even though the
+        model sees the tool. Re-indexing post-init closes that gap. Idempotent:
+        only adds names not already routed (built-ins/first-provider still win).
+        """
         # Core tool names are reserved — a memory provider must never register
         # a tool that shadows a built-in (e.g. ``clarify``, ``delegate_task``).
         # Built-ins always win, so such a tool is dropped at agent init and
@@ -380,7 +401,7 @@ class MemoryManager:
                 continue
             if tool_name and tool_name not in self._tool_to_provider:
                 self._tool_to_provider[tool_name] = provider
-            elif tool_name in self._tool_to_provider:
+            elif tool_name in self._tool_to_provider and self._tool_to_provider[tool_name] is not provider:
                 logger.warning(
                     "Memory tool name conflict: '%s' already registered by %s, "
                     "ignoring from %s",
@@ -388,12 +409,6 @@ class MemoryManager:
                     self._tool_to_provider[tool_name].name,
                     provider.name,
                 )
-
-        logger.info(
-            "Memory provider '%s' registered (%d tools)",
-            provider.name,
-            len(provider.get_tool_schemas()),
-        )
 
     @property
     def providers(self) -> List[MemoryProvider]:
@@ -913,5 +928,17 @@ class MemoryManager:
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' initialize failed: %s",
+                    provider.name, e,
+                )
+            # Re-index AFTER initialize: a provider may expose config-gated tools
+            # (e.g. mem0's destructive mem0_forget/mem0_delete) only once it has
+            # read its config in initialize(). Indexing only at add_provider —
+            # before init — leaves those gated tools advertised-but-unroutable
+            # ("Unknown tool" on call despite the model seeing them). Idempotent.
+            try:
+                self._reindex_provider(provider)
+            except Exception as e:
+                logger.warning(
+                    "Memory provider '%s' re-index after init failed: %s",
                     provider.name, e,
                 )

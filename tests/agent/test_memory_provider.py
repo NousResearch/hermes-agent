@@ -1491,3 +1491,86 @@ class TestContextEngineToolsetGate:
         """Gate is moot without a context_compressor."""
         tools, names, engine_names = self._run_context_engine_injection(None, None)
         assert tools == []
+
+
+class GatedToolsAfterInitProvider(FakeMemoryProvider):
+    """Provider whose tool set GROWS at initialize() time.
+
+    Models mem0: ``mem0_forget``/``mem0_delete`` are only emitted by
+    ``get_tool_schemas()`` once ``destructive_tools_enabled`` is read in
+    ``initialize()``. Before init the provider advertises only its base tools.
+    """
+
+    def __init__(self, name="gated", base_tools=None, gated_tools=None):
+        super().__init__(name=name, tools=list(base_tools or []))
+        self._base_tools = list(base_tools or [])
+        self._gated_tools = list(gated_tools or [])
+        self._enabled = False
+
+    def initialize(self, session_id, **kwargs):
+        super().initialize(session_id, **kwargs)
+        self._enabled = True  # gate flips on at init, like destructive_tools_enabled
+
+    def get_tool_schemas(self):
+        tools = list(self._base_tools)
+        if self._enabled:
+            tools += self._gated_tools
+        return tools
+
+
+class TestGatedToolRoutingAfterInit:
+    """Regression: a tool gated behind initialize() must be ROUTABLE after init.
+
+    The bug (2026-06-21): the routing table ``_tool_to_provider`` was built only
+    at ``add_provider`` -- BEFORE ``initialize_all`` -- so a config-gated tool was
+    advertised in ``get_tool_schemas()`` (the model saw it) but absent from the
+    routing table (``has_tool`` False), so a call returned "Unknown tool" despite
+    the tool appearing in the model's tool list. A gateway restart never fixed it
+    (same order every boot). Fix: re-index each provider after ``initialize``.
+    """
+
+    def _provider(self):
+        return GatedToolsAfterInitProvider(
+            base_tools=[{"name": "mem_base", "description": "always on",
+                         "parameters": {"type": "object", "properties": {}}}],
+            gated_tools=[{"name": "mem_gated", "description": "on after init",
+                          "parameters": {"type": "object", "properties": {}}}],
+        )
+
+    def test_gated_tool_not_routable_before_init(self):
+        """Before initialize_all, only base tools are routable (the gate is shut)."""
+        mgr = MemoryManager()
+        mgr.add_provider(self._provider())
+        assert mgr.has_tool("mem_base")
+        assert not mgr.has_tool("mem_gated")  # gate still shut
+
+    def test_gated_tool_routable_after_init(self):
+        """After initialize_all flips the gate, the gated tool is ROUTABLE.
+
+        This is the exact contract the bug violated: advertised == routable.
+        """
+        mgr = MemoryManager()
+        prov = self._provider()
+        mgr.add_provider(prov)
+        mgr.initialize_all(session_id="t")
+        advertised = {s["name"] for p in mgr.providers for s in p.get_tool_schemas()}
+        assert "mem_gated" in advertised
+        # ...AND routable (the property the bug broke)
+        assert mgr.has_tool("mem_gated"), \
+            "gated tool advertised but not routable -- the advertised-but-Unknown-tool bug"
+        # and it actually dispatches to the provider, not 'Unknown tool'
+        out = json.loads(mgr.handle_tool_call("mem_gated", {}))
+        assert out.get("handled") == "mem_gated"
+
+    def test_reindex_is_idempotent(self):
+        """Re-indexing twice must not duplicate or warn-drop the same provider's tools."""
+        mgr = MemoryManager()
+        prov = self._provider()
+        mgr.add_provider(prov)
+        mgr.initialize_all(session_id="t")
+        # initialize_all again (e.g. session switch) -- still routable, no breakage
+        mgr.initialize_all(session_id="t2")
+        assert mgr.has_tool("mem_gated")
+        assert mgr.has_tool("mem_base")
+        out = json.loads(mgr.handle_tool_call("mem_gated", {}))
+        assert out.get("handled") == "mem_gated"

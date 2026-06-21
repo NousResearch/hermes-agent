@@ -495,6 +495,31 @@ async function normalizeEvent(space, message) {
   }
 }
 
+function inboundStreamErrorMessage(e) {
+  const msg = e && e.message ? e.message : String(e);
+  let out = "photon-sidecar: inbound stream errored — restarting: " + msg;
+
+  // The Spectrum SDK surfaces Photon cloud CatchUpEvents failures as an
+  // iMessage internal error. Local Hermes allowlists cannot cause or fix this:
+  // inbound messages stop before they reach the gateway. Add an explicit hint
+  // so operators know to retry/restart or escalate to Photon support instead
+  // of chasing PHOTON_ALLOWED_USERS / pairing configuration.
+  const details = String(e?.cause?.details || e?.details || "");
+  const path = String(e?.cause?.path || e?.path || "");
+  const code = String(e?.code || "");
+  if (
+    path.includes("EventService/CatchUpEvents") ||
+    details.includes("Unknown server error occurred") ||
+    (code === "internalError" && msg.includes("Unknown server error"))
+  ) {
+    out +=
+      " | Photon Spectrum CatchUpEvents returned an internal server error; " +
+      "this is upstream of Hermes, so inbound iMessages may not be delivered " +
+      "until Photon recovers or the stream is re-established.";
+  }
+  return out;
+}
+
 // spectrum-ts handles in-session gRPC reconnects internally, but if the async
 // iterator itself throws or ends, this consumer would stop forever. Wrap it in
 // a re-subscribe loop with capped exponential backoff + jitter so inbound
@@ -526,12 +551,7 @@ async function normalizeEvent(space, message) {
     } catch (e) {
       consecutiveFailures += 1;
       const reason = e && e.message ? e.message : String(e);
-      console.error(
-        "photon-sidecar: inbound stream errored — restarting (" +
-          consecutiveFailures +
-          "): " +
-          reason
-      );
+      console.error(inboundStreamErrorMessage(e));
       markStreamRecovering(reason);
     }
     // If the stream keeps ending/erroring back-to-back, spectrum-ts's internal

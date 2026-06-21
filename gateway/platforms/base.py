@@ -882,13 +882,22 @@ _MEDIA_DELIVERY_DENIED_PREFIXES = (
     "/boot",
     "/var/log",
     "/var/lib",
-    "/run",  # systemd runtime: /run/secrets (k8s serviceaccount tokens,
-    # docker/podman secrets), /run/credentials/<unit> (systemd LoadCredential),
-    # sockets. /var/run is a compat symlink to /run, and
-    # validate_media_delivery_path resolve()s symlinks BEFORE this prefix check,
-    # so a /var/run/... path canonicalizes to /run/... and slips past the
-    # /var/run entry alone — this closes that canonicalization bypass.
-    "/var/run",
+    # systemd runtime credential subtrees: /run/secrets (k8s serviceaccount
+    # tokens, docker/podman secrets) and /run/credentials/<unit> (systemd
+    # LoadCredential). We deny ONLY these sensitive subtrees, not the whole
+    # /run tree — /run/user/<uid>/... is a legitimate per-user runtime dir
+    # (XDG_RUNTIME_DIR) where apps write deliverable media, so a blanket /run
+    # entry would block valid uploads.
+    #
+    # /var/run is a compat symlink to /run on systemd, and
+    # validate_media_delivery_path resolve()s symlinks BEFORE this prefix
+    # check, so /var/run/secrets/... canonicalizes to /run/secrets/... and is
+    # caught by the /run/* entries. The /var/run/* entries below additionally
+    # cover non-systemd layouts where /var/run is a real directory.
+    "/run/secrets",
+    "/run/credentials",
+    "/var/run/secrets",
+    "/var/run/credentials",
 )
 
 # Within $HOME we additionally deny common credential / config directories.

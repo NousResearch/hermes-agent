@@ -486,3 +486,66 @@ class TestXaiToken:
     def test_prefix_visible_in_masked_output(self):
         result = redact_sensitive_text(self.KEY, force=True)
         assert result.startswith("xai-AB")
+
+
+class TestRedactMapping:
+    """redact_mapping masks credential fields in config dicts like the model
+    block, which the text redactor misses because a dict repr uses single
+    quotes."""
+
+    KEY = "cfut_FAKE1234567890ABCDEFsecret"
+
+    def _model(self):
+        return {
+            "default": "@cf/moonshotai/kimi-k2.7-code",
+            "provider": "custom",
+            "base_url": "https://example.invalid/v1",
+            "api_key": self.KEY,
+            "reasoning_effort": "medium",
+        }
+
+    def test_api_key_masked(self):
+        from agent.redact import redact_mapping
+
+        result = redact_mapping(self._model())
+        assert result["api_key"] != self.KEY
+        assert self.KEY not in str(result)
+
+    def test_non_secret_fields_untouched(self):
+        from agent.redact import redact_mapping
+
+        result = redact_mapping(self._model())
+        assert result["provider"] == "custom"
+        assert result["base_url"] == "https://example.invalid/v1"
+        assert result["reasoning_effort"] == "medium"
+
+    def test_input_not_mutated(self):
+        from agent.redact import redact_mapping
+
+        original = self._model()
+        redact_mapping(original)
+        assert original["api_key"] == self.KEY
+
+    def test_non_dict_passthrough(self):
+        from agent.redact import redact_mapping
+
+        assert redact_mapping("not set") == "not set"
+        assert redact_mapping(None) is None
+
+    def test_force_overrides_disabled(self, monkeypatch):
+        from agent.redact import redact_mapping
+
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        # Disabled and no force, so the key passes through (the opt-out).
+        assert redact_mapping(self._model())["api_key"] == self.KEY
+        # force still masks even when redaction is off.
+        assert redact_mapping(self._model(), force=True)["api_key"] != self.KEY
+
+    def test_other_credential_field_names(self):
+        from agent.redact import redact_mapping
+
+        block = {"auth_token": "x" * 24, "client_secret": "y" * 24, "name": "ok"}
+        result = redact_mapping(block)
+        assert result["auth_token"] != "x" * 24
+        assert result["client_secret"] != "y" * 24
+        assert result["name"] == "ok"

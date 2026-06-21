@@ -6468,7 +6468,10 @@ def show_config():
     # Model settings
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
-    print(f"  Model:        {config.get('model', 'not set')}")
+    # A custom provider keeps the api_key inside the model dict, so mask its
+    # credential fields before printing instead of dumping the raw dict.
+    from agent.redact import redact_mapping
+    print(f"  Model:        {redact_mapping(config.get('model', 'not set'))}")
     _cfg_max_turns = config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])
     print(f"  Max turns:    {_cfg_max_turns}")
     # Warn on stale HERMES_MAX_ITERATIONS ghost in .env that disagrees with

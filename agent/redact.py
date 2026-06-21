@@ -249,6 +249,36 @@ def _mask_token(token: str) -> str:
     return mask_secret(token, head=6, tail=4, floor=18)
 
 
+# Match credential field names the same way the env scanner does, so config
+# display and log redaction stay consistent.
+_SECRET_NAME_RE = re.compile(_SECRET_ENV_NAMES, re.IGNORECASE)
+
+
+def _is_secret_key(name: object) -> bool:
+    """True if a config field name holds a credential (api_key, token, ...)."""
+    return isinstance(name, str) and (
+        name.lower() in _SENSITIVE_BODY_KEYS or bool(_SECRET_NAME_RE.search(name))
+    )
+
+
+def redact_mapping(mapping, *, force: bool = False):
+    """Return a copy of mapping with credential values masked for display.
+
+    The text redactor only catches double-quoted JSON, but a dict repr uses
+    single quotes, so config blocks like the model dict need masking by field.
+    Shallow on purpose, since model and provider blocks are flat. Non-dict
+    input and non-string values pass through, and the input is never changed.
+    Respects security.redact_secrets unless force is set.
+    """
+    assert isinstance(force, bool), "force must be a bool"
+    if not isinstance(mapping, dict) or not (force or _REDACT_ENABLED):
+        return mapping
+    return {
+        key: mask_secret(val, empty=val) if isinstance(val, str) and _is_secret_key(key) else val
+        for key, val in mapping.items()
+    }
+
+
 def _redact_query_string(query: str) -> str:
     """Redact sensitive parameter values in a URL query string.
 

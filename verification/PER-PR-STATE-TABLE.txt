@@ -1,0 +1,45 @@
+PR       STATE  MODE           REBASE→v0.17             BUILD  TEST   TITLE
+---------------------------------------------------------------------------------------------------------------------------------------
+#48024   OPEN   ready-for-review CLEAN                    OK     PASS   feat(reasoning): expose thinking/reasoning across AP
+#48057   OPEN   ready-for-review CLEAN                    OK     PASS   fix(tools): drop empty-name tools before they reach 
+#48065   OPEN   ready-for-review CLEAN                    OK     PASS   fix(agent): unwrap pre-wrapped context-engine tool s
+#48069   OPEN   ready-for-review CONFLICT(netdiff-clean)  OK     PASS   fix(tools): skip MCP keepalive during in-flight call
+#48101   OPEN   ready-for-review CLEAN                    OK     PASS   feat(agent): per-model system-prompt prelude (operat
+#49184   OPEN   ready-for-review CLEAN                    OK     PASS   fix(copilot): route Claude on Copilot to /v1/message
+#49449   OPEN   ready-for-review CLEAN                    OK     PASS   feat(models): correct under-reported Copilot/Codex p
+#49644   OPEN   ready-for-review CLEAN                    OK     PASS   feat(reasoning): accept "max" reasoning effort end-t
+#49915   OPEN   draft          CLEAN                    OK     no-test fix(tui): Ctrl+C always interrupts a running turn, e
+#49916   OPEN   draft          CLEAN                    OK     PASS   fix(tui): YOLO badge reflects only real /yolo bypass
+#49917   OPEN   draft          CLEAN                    OK     PASS   feat(autopilot): engine-enforced goal-chasing mode (
+#50021   OPEN   draft          CLEAN                    OK     PASS   feat(tools): opt-in tool-timing sidecar (HERMES_TOOL
+#50022   OPEN   draft          CLEAN                    OK     no-test feat(tools): model_router proxy client tool
+#50031   OPEN   draft          CLEAN                    OK     FAIL   feat(copilot): auto-mode router for the model:auto b
+#50032   OPEN   draft          CLEAN                    OK     PASS   feat(tools): deterministic source accelerator (herme
+#50033   OPEN   draft          CLEAN                    OK     PASS   feat(gemini): present authentic @google/gemini-cli i
+#50038   OPEN   draft          CLEAN                    OK     PASS   feat(codex): present authentic codex CLI version/ide
+#50039   OPEN   draft          CLEAN                    OK     PASS   feat(provider): Antigravity CLI (agy-cli) provider
+#50040   OPEN   draft          CLEAN                    OK     PASS   feat(delegation): persona kwarg for delegate_task
+#50041   OPEN   draft          CLEAN                    OK     PASS   fix(doctor): skip operator-declared optional integra
+#50042   OPEN   draft          CLEAN                    OK     PASS   feat(tools): browser-export redaction + bounded over
+#50045   OPEN   draft          CLEAN                    OK     PASS   feat(skills): hub path-repair, frontmatter-name reso
+#50046   OPEN   draft          CLEAN                    OK     PASS   feat(update): optional stable-release-tag update che
+#50047   OPEN   draft          CLEAN                    OK     PASS   fix(gateway): read-only liveness probe + non-root-wo
+#50048   OPEN   draft          CLEAN                    OK     PASS   feat(send): [[plain]] directive + --plain flag for u
+#50049   OPEN   draft          CLEAN                    OK     PASS   fix(agent): guard subdirectory-hint expansion agains
+#50053   OPEN   draft          CLEAN                    OK     PASS   feat(context-engine): additive grounding hook points
+#50054   OPEN   draft          CLEAN                    OK     PASS   feat(plugins): register_command(override=True) to sh
+#50055   OPEN   draft          CLEAN                    OK     PASS   fix(copilot): ensure requests don't end on an assist
+#50056   OPEN   draft          CONFLICT(union-resolved) OK     PASS   feat(state): HERMES_SQLITE_DRIVER selection + driver
+#50064   OPEN   draft          CLEAN                    OK     PASS   feat(copilot): authentic @github/copilot CLI identit
+#50066   OPEN   draft          CLEAN                    OK     FAIL   test: bedrock EU-region fallback + sessions paginati
+#50068   OPEN   draft          CLEAN                    OK     no-test feat(tui): autopilot + YOLO status-bar badges (front
+#50073   OPEN   draft          CLEAN                    OK     PASS   feat(compression): offload oversized single message 
+#50078   OPEN   draft          CLEAN                    OK     FAIL   test: catch-up tests + discord 'max' effort descript
+#50080   OPEN   draft          CLEAN                    OK     PASS   test: context-engine unwrap + compression main-runti
+#50086   OPEN   draft          CLEAN                    OK     FAIL   fix(dashboard): dedupe symlinked state.db scans in c
+#50111   OPEN   draft          (tracker)                n/a    n/a    [deferred-work tracker, NOT FOR MERGE] pullable resi
+#50146   OPEN   draft          CLEAN                    OK     PASS   fix(gateway): don't upcast non-image attachments to 
+#50155   OPEN   draft          CLEAN                    OK     PASS   feat(context-engine): post-response grounding-enforc
+#50296   OPEN   draft          CLEAN                    OK     PASS   fix(review): isolate background-review fork from the
+---------------------------------------------------------------------------------------------------------------------------------------
+TOTAL: 41 PRs, all OPEN. 8 ready-for-review, 33 draft. 0 merged, 0 closed.

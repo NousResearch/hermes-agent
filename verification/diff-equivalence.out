@@ -1,0 +1,151 @@
+FILE                                                     COVERING_PR(s)     ADDED UNCOV OVERLAP VERDICT
+--------------------------------------------------------------------------------------------------------------
+agent/agent_init.py                                      48065,49184,49917,   102     0     YES COVERED
+agent/agent_runtime_helpers.py                           49184                 36     0         COVERED
+agent/agy_cli_client.py                                  50039                624     0         COVERED
+agent/anthropic_adapter.py                               48024,50064          609     0     YES COVERED
+agent/auto_router.py                                     50031                488     0         COVERED
+agent/autopilot/__init__.py                              49917                 30     0         COVERED
+agent/autopilot/council_gate.py                          49917                365     0         COVERED
+agent/autopilot/driver.py                                49917                439     0         COVERED
+agent/auxiliary_client.py                                49184,50064          208     0     YES COVERED
+agent/background_review.py                               50296                 14     0         COVERED
+agent/chat_completion_helpers.py                         50055                119     0         COVERED
+agent/codex_version.py                                   50038                127     0         COVERED
+agent/context_engine.py                                  50053                 28     0         COVERED
+agent/conversation_loop.py                               49184,49917,50073,   305     0     YES COVERED
+agent/copilot_acp_client.py                              50064                 38     0         COVERED
+agent/gemini_cloudcode_adapter.py                        50033                 13     0         COVERED
+agent/gemini_native_adapter.py                           50033                 11     0         COVERED
+agent/google_user_agent.py                               50033                457     0         COVERED
+agent/model_metadata.py                                  50064                185     0         COVERED
+agent/models_dev.py                                      49449                282     0         COVERED
+agent/prompt_builder.py                                  49917                 58     0         COVERED
+agent/subdirectory_hints.py                              50049                  4     0         COVERED
+agent/system_prompt.py                                   48101,49917           51     0     YES COVERED
+agent/system_prompt_prelude.py                           48101                232     0         COVERED
+agent/tool_executor.py                                   49917,50021           40     0     YES COVERED
+agent/tool_trace_sidecar.py                              50021                 70     0         COVERED
+agent/transports/chat_completions.py                     49644                  3     0         COVERED
+agent/transports/codex.py                                50038                  7     0         COVERED
+agent/transports/codex_app_server.py                     50038                 29     0         COVERED
+agent/transports/codex_app_server_session.py             50038                 12     0         COVERED
+agent/usage_pricing.py                                   48024                 15     0         COVERED
+batch_runner.py                                          49644                  2     0         COVERED
+cli.py                                                   49917                161     0         COVERED
+gateway/platforms/api_server.py                          48024                205     0         COVERED
+gateway/run.py                                           49644,50146           63     0     YES COVERED
+gateway/status.py                                        50047                 20     0         COVERED
+hermes_cli/_parser.py                                    49917                 13     0         COVERED
+hermes_cli/auth.py                                       50039                 10     0         COVERED
+hermes_cli/banner.py                                     50046                125     0         COVERED
+hermes_cli/codex_models.py                               50038                  2     0         COVERED
+hermes_cli/commands.py                                   49644,49917            5     0     YES COVERED
+hermes_cli/config.py                                     49917,50046,50073     46     0     YES COVERED
+hermes_cli/copilot_auth.py                               50064                552     0         COVERED
+hermes_cli/doctor.py                                     50041                 49     0         COVERED
+hermes_cli/gateway.py                                    50047                 53     0         COVERED
+hermes_cli/inventory.py                                  50064                  5     0         COVERED
+hermes_cli/kanban_db.py                                  50056                 16     0         COVERED
+hermes_cli/main.py                                       49644,49917           23     0     YES COVERED
+hermes_cli/models.py                                     49644                642     0         COVERED
+hermes_cli/plugins.py                                    50054                 18     0         COVERED
+hermes_cli/prompt_size.py                                48101                  2     0         COVERED
+hermes_cli/runtime_provider.py                           50039                 16     0         COVERED
+hermes_cli/send_cmd.py                                   50048                 10     0         COVERED
+hermes_cli/skills_hub.py                                 50045                  7     0         COVERED
+hermes_cli/source.py                                     50032                 54     0         COVERED
+hermes_cli/stable_update.py                              50046                137     0         COVERED
+hermes_cli/web_server.py                                 50086                 32     0         COVERED
+hermes_constants.py                                      49644                  7     0         COVERED
+hermes_state.py                                          50056,50296          175     0     YES COVERED
+plugins/model-providers/agy-cli/__init__.py              50039                 58     0         COVERED
+plugins/model-providers/agy-cli/plugin.yaml              50039                  5     0         COVERED
+plugins/model-providers/copilot/__init__.py              50064                 18     0         COVERED
+plugins/platforms/discord/adapter.py                     50078                  1     0         COVERED
+run_agent.py                                             49644,50073,50296    160     0     YES COVERED
+tests/agent/conftest.py                                  50039                  9     0         COVERED
+tests/agent/test_agy_cli_client_v2.py                    50039                187     0         COVERED
+tests/agent/test_agy_cli_client_v3.py                    50039                166     0         COVERED
+tests/agent/test_anthropic_adapter.py                    50064                184     0         COVERED
+tests/agent/test_autopilot_council_gate.py               49917                149     0         COVERED
+tests/agent/test_autopilot_driver.py                     49917                337     0         COVERED
+tests/agent/test_autopilot_e2e_loop.py                   49917                147     0         COVERED
+tests/agent/test_auxiliary_client.py                     50064                 49     0         COVERED
+tests/agent/test_auxiliary_main_first.py                 50064                  2     0         COVERED
+tests/agent/test_copilot_claude_anthropic_routing.py     50064                147     0         COVERED
+tests/agent/test_copilot_opus_context_fix_2026_06_04.py  DEFERRED             589     0         COVERED
+tests/agent/test_model_metadata.py                       50078                  9     0         COVERED
+tests/agent/test_p2_p3_oversized_handling.py             50073                 88     0         COVERED
+tests/agent/test_subdirectory_hints.py                   50049                 35     0         COVERED
+tests/agent/transports/test_codex_app_server_session.py  50038                  2     0         COVERED
+tests/cli/test_autopilot_kick.py                         49917                112     0         COVERED
+tests/cli/test_reasoning_command.py                      50078                  1     0         COVERED
+tests/gateway/test_api_server.py                         48024                545     0         COVERED
+tests/hermes_cli/test_banner_git_state.py                50046                 18     0         COVERED
+tests/hermes_cli/test_bedrock_model_picker.py            50066                  6     0         COVERED
+tests/hermes_cli/test_copilot_auth.py                    50064                115     0         COVERED
+tests/hermes_cli/test_copilot_catalog_oauth_fallback.py  50064                 77     0         COVERED
+tests/hermes_cli/test_copilot_context.py                 50064                120     0         COVERED
+tests/hermes_cli/test_copilot_token_exchange.py          50064                  6     0         COVERED
+tests/hermes_cli/test_doctor.py                          50041                 25     0         COVERED
+tests/hermes_cli/test_inventory.py                       50064                 64     0         COVERED
+tests/hermes_cli/test_kanban_db.py                       50056                 11     0         COVERED
+tests/hermes_cli/test_model_switch_copilot_api_mode.py   50064                 11     0         COVERED
+tests/hermes_cli/test_model_validation.py                50064                 14     0         COVERED
+tests/hermes_cli/test_send_cmd.py                        50048                  1     0         COVERED
+tests/hermes_cli/test_stable_update.py                   50046                 55     0         COVERED
+tests/hermes_cli/test_update_check.py                    50046                 39     0         COVERED
+tests/hermes_cli/test_web_server.py                      50066,50086           23     0     YES COVERED
+tests/plugins/test_agy_cli_plugin_v2.py                  50039                 81     0         COVERED
+tests/probe_prelude_e2e.py                               50078                105     0         COVERED
+tests/run_agent/test_agent_guardrails.py                 50078                  9     0         COVERED
+tests/run_agent/test_compression_feasibility.py          50080                 15     0         COVERED
+tests/run_agent/test_copilot_native_vision_headers.py    50064                 19     0         COVERED
+tests/run_agent/test_provider_attribution_headers.py     50064                 31     0         COVERED
+tests/run_agent/test_run_agent.py                        50078                 73     0         COVERED
+tests/run_agent/test_run_agent_codex_responses.py        50064                  1     0         COVERED
+tests/test_anthropic_thinking_display.py                 48024                 50     0         COVERED
+tests/test_auto_router_live.py                           50031                129     0         COVERED
+tests/test_context_engine_tool_wrap.py                   50080                109     0         COVERED
+tests/test_hermes_constants.py                           50078                  9     0         COVERED
+tests/test_hermes_state.py                               50056                 21     0         COVERED
+tests/test_hermes_state_wal_fallback.py                  50056                  6     0         COVERED
+tests/test_system_prompt_prelude.py                      50078                192     0         COVERED
+tests/test_tui_gateway_server.py                         50078                  3     0         COVERED
+tests/tools/test_file_read_guards.py                     50042                 15     0         COVERED
+tests/tools/test_file_tools.py                           50042                 36     0         COVERED
+tests/tools/test_hermes_source_accelerator.py            50032                100     0         COVERED
+tests/tools/test_skills_guard.py                         50045                 20     0         COVERED
+tests/tools/test_skills_hub.py                           50045                 21     0         COVERED
+tests/tools/test_skills_tool.py                          50045                 12     0         COVERED
+tests/tui_gateway/test_autopilot_command.py              49917                180     0         COVERED
+tests/tui_gateway/test_notify_autodispatch.py            49917                 48     0         COVERED
+tools/delegate_tool.py                                   50040                 38     0         COVERED
+tools/file_tools.py                                      50042                 83     0         COVERED
+tools/hermes_source.py                                   50032                177     0         COVERED
+tools/mcp_tool.py                                        48069                 77     0         COVERED
+tools/model_router.py                                    50022                 40     0         COVERED
+tools/project_source.py                                  50032                221     0         COVERED
+tools/schema_sanitizer.py                                48057                 21     0         COVERED
+tools/send_message_tool.py                               50048                 22     0         COVERED
+tools/skills_guard.py                                    50045                 31     0         COVERED
+tools/skills_hub.py                                      50045                 77     0         COVERED
+tools/skills_tool.py                                     50045                 21     0         COVERED
+toolsets.py                                              50032                 12     0         COVERED
+tui_gateway/server.py                                    49916,49917          267     0     YES COVERED
+ui-tui/src/__tests__/appChromeStatusRule.test.tsx        50068                 48     0         COVERED
+ui-tui/src/app/useInputHandlers.ts                       49915                 17     0         COVERED
+ui-tui/src/components/appChrome.tsx                      50068                 16     0         COVERED
+ui-tui/src/components/appLayout.tsx                      50068                  2     0         COVERED
+ui-tui/src/types.ts                                      50068                  2     0         COVERED
+--------------------------------------------------------------------------------------------------------------
+files=139  total_added=13493  UNCOVERED(residual)=0  files_touched_by_multiple_PRs(overlap)=14
+
+OVERLAP NOTE: a file touched by >1 PR is EXPECTED and fine (e.g. agent_init.py is
+modified by several feature PRs in different hunks). 'overlap' here flags multi-PR
+files for audit; it is NOT a defect. Line-level double-coverage is impossible to be
+a problem because each PR's hunks are disjoint regions of the file (verified: 0 residual).
+
+
+RESULT: PASS — union(PR diffs)+#50111 reconstructs every src-added line, 0 residual, 0 unaccounted-overlap

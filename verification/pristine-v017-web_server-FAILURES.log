@@ -1,0 +1,9 @@
+# Pristine v0.17.0 (2bd1977d8fad185c9b4be47884f7e87f1add0ce3), ZERO PRs applied
+# git rev-parse HEAD = 2bd1977d8fad185c9b4be47884f7e87f1add0ce3
+FAILED tests/hermes_cli/test_web_server.py::TestWebServerEndpoints::test_cron_delivery_targets_lists_configured_platforms
+FAILED tests/hermes_cli/test_web_server.py::TestNewEndpoints::test_cron_blueprints_list
+FAILED tests/hermes_cli/test_web_server.py::TestNewEndpoints::test_blueprint_instantiate_creates_job
+FAILED tests/hermes_cli/test_web_server.py::TestNewEndpoints::test_blueprint_instantiate_unknown_404
+FAILED tests/hermes_cli/test_web_server.py::TestNewEndpoints::test_blueprint_instantiate_bad_value_422
+FAILED tests/hermes_cli/test_web_server.py::TestDesktopCronTicker::test_ticker_runs_when_desktop
+6 failed, 300 passed, 2 warnings in 25.03s

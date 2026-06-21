@@ -131,9 +131,13 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 **Commit / push**
 
-- Pending at ledger pre-commit time; after commit/push, append final SHA/remote verification before final report.
+- Committed scoped Live USB guard/runbook/ledger changes: `d600340a0202f22cccad42ad9ef209dbed37d264` (`fix: gate AgentCyber live USB mutations`).
+- Pushed guarded sync branch to origin without force: `origin/agentcyber/upstream-sync-20260621-194355`.
+- Verified local and remote branch tips matched after push: `git rev-parse HEAD` and `git rev-parse origin/agentcyber/upstream-sync-20260621-194355` both returned `d600340a0202f22cccad42ad9ef209dbed37d264`.
+- Post-push drift: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `64`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`.
+- This ledger was updated after push with the new SHA/remote verification; a follow-up ledger-only commit/push is required and should be verified before final report.
 
 **Next lane**
 
-- Commit and push this guarded sync-branch update after this ledger entry, then record final SHA/remote-tip verification.
+- Commit and push the post-push ledger verification entry, then verify local and remote tips match before final report.
 - After the pushed branch is reviewed/merged into AgentCyber main, future cron runs should be verification/no-op unless upstream drifts again or a new focused Live USB gap is found.

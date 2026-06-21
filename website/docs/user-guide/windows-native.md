@@ -238,8 +238,8 @@ hermes --version
 Hermes honors both `$env:X` (process-scope) and User environment variables (permanent, set in System Properties → Environment Variables). Setting API keys in `%LOCALAPPDATA%\hermes\.env` (your `HERMES_HOME`) is the normal path — same as Linux:
 
 ```
-OPENROUTER_API_KEY=sk-or-...
-TELEGRAM_BOT_TOKEN=...
+OPENROUTER_API_KEY=***
+TELEGRAM_BOT_TOKEN=***
 ```
 
 Don't put secrets in User environment variables unless you specifically want every Windows process to see them (it isn't what you want).
@@ -317,146 +317,43 @@ This is unrelated to Windows but sometimes surfaces first there. Usually it mean
 **"Works on my other machine" encoding weirdness after `git pull`.**
 If you edited Hermes config or a skill on Windows using a non-UTF-8 editor (Notepad on older Windows versions, some Chinese IMEs), the file may have been saved with a BOM. Hermes tolerates `utf-8-sig` on most config reads, but a BOM inside a folded YAML scalar (`description: >`) silently breaks YAML parsing. Re-save the file as plain UTF-8 without BOM.
 
-## Console window & popup prevention (deep dive)
+## Console window & popup notes
 
-These are real-world hardening lessons collected from running Hermes on Windows 11 24/7 — each issue was discovered, reproduced, and resolved in production before being documented here.
+Three Windows behaviours worth knowing when Hermes is running as a background agent — not covered by `pythonw.exe` and `CREATE_NO_WINDOW` alone.
 
-### The `pythonw.exe` trap
+### VBS zero-window wrapper
 
-Windows ships with **two different `pythonw.exe` binaries**:
+`pythonw.exe` + `CREATE_NO_WINDOW` covers most cases, but edge cases remain: scheduled tasks triggered at boot, some antivirus hooks, or a PE loader briefly attaching a console before processing the subsystem flag.
 
-1. **Fake `pythonw.exe`** — a 0-byte stub in `%LOCALAPPDATA%\Microsoft\WindowsApps` that has the `Console` subsystem flag (not `Windows`). It's a Windows App Execution Alias, not a real binary.
-2. **Real `pythonw.exe`** — installed by `uv` or a proper Python distribution. This one has the `Windows` subsystem and creates **no console window**.
-
-If your gateway or watchdog script is launched via the fake `pythonw.exe`, the PE loader sees `Console` subsystem and flashes a `conhost.exe` window — exactly the opposite of what `pythonw` is supposed to do.
-
-**Detection:**
-
-```powershell
-# Check subsystem type (needs MSVC dumpbin, or check file size)
-ls "$env:LOCALAPPDATA\Microsoft\WindowsApps\pythonw.exe"  # 0 bytes = fake
-ls "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\pythonw.exe"  # ~200KB = real
-```
-
-**Fix:** Always use `uv`'s `pythonw.exe` (or a venv's). Never rely on the PATH-resolution `pythonw` which picks up the WindowsApps stub first. Resolve to the explicit path (`%LOCALAPPDATA%\\hermes\\hermes-agent\\venv\\Scripts\\pythonw.exe`) in every watchdog script and scheduled task action.
-
-### `CREATE_NO_WINDOW` is mandatory for `subprocess`
-
-When spawning subprocesses from Python (especially in watchdog/cron scripts), always pass `CREATE_NO_WINDOW`:
-
-```python
-import subprocess
-subprocess.Popen(
-    ["pythonw.exe", "script.py"],
-    creationflags=subprocess.CREATE_NO_WINDOW
-)
-```
-
-Without this flag, Windows may create a console window for the child process even when using `pythonw.exe`. The combination of `pythonw.exe` (Windows subsystem) + `CREATE_NO_WINDOW` is what reliably prevents any window flash.
-
-### MSYS git-bash path traps
-
-When running commands through git-bash (MSYS2), `/f` in a command like `cmd //c taskkill /f /im process.exe` gets auto-converted by MSYS's path conversion to `F:/`. The slash-`f` looks like a Windows drive path to the MSYS runtime, which silently rewrites it.
-
-**Fix:** Use `cmd //c` wrapper: `cmd //c "taskkill /f /im process.exe"`. The `//c` passes `cmd /c` through to Windows while the inner command string is protected from MSYS path mangling.
-
-### Scheduled tasks: systematic pitfalls
-
-`schtasks` on Windows looks like a clean way to auto-start services, but it has sharp edges:
-
-1. **Path quoting in `/tr`:** If the path to your script contains spaces, `schtasks` may silently truncate the command. Use triple-escaped quotes: `\\\"C:\\path with spaces\\script.py\\\"`.
-
-2. **High-integrity tasks create admin-only artifacts:** A scheduled task created by an admin-daemon (HIGHEST integrity) cannot be disabled or modified by a Medium-integrity process. If the admin-daemon crashes, the Medium process is locked out — the task becomes orphaned.
-
-3. **`schtasks /run` with expired `/st`:** If a task has a start-time in the past, `schtasks /run` silently refuses to trigger it. Use `schtasks /end` + `schtasks /run` to force a restart, or better: don't pin tasks to specific start times for recurring jobs.
-
-4. **`.bat` files as scheduled task actions:** Even if the `.bat` script's first line invokes `pythonw.exe`, the batch file itself requires `cmd.exe` which creates a visible console window. Always point the scheduled task directly at `pythonw.exe` with your script as the argument.
-
-### The VBS zero-window method
-
-For the most aggressive popup-elimination, wrap your bootstrap in VBS:
+For those, a VBS wrapper is the only method that hits 100% zero-window:
 
 ```vbscript
-' Launcher.vbs
+' launcher.vbs — point a scheduled task or Startup shortcut at this file
 CreateObject("WScript.Shell").Run "pythonw.exe C:\path\to\script.py", 0, False
 ```
 
-Run via `wscript.exe //B //Nologo Launcher.vbs`. The `//B` flag suppresses all WScript dialogs (including script errors), and `Run(..., 0)` hides the window. This is the only method that achieves **100% zero-window** execution on Windows — it survives all edge cases that `pythonw.exe` alone can't handle.
-
-Use VBS wrappers for:
-- Scheduled task actions (instead of direct `.py` or `.bat`)
-- Startup-folder shortcuts
-- Watchdog scripts that must never flash
+Run with `wscript.exe //B //Nologo launcher.vbs`. The `//B` flag suppresses all WScript dialogs (including script errors), and `Run(…, 0)` hides the window before the child process starts. Use this for startup-folder shortcuts and any scheduled task action that must never flash.
 
 ### OpenWith.exe storms
 
-When Windows' `ShellExecute` can't determine how to open a file (e.g., a `.bak` file with no association), it fires `OpenWith.exe` — the "Open with…" dialog. If this happens inside a loop or a watchdog that runs every few seconds, the screen floods with uncloseable dialogs.
+Windows `ShellExecute` fires `OpenWith.exe` — the "Open with…" dialog — when it encounters a file with an unrecognised extension in a scanned directory (Startup, Desktop, any auto-run location). In a tight loop or a watchdog, this floods the screen with uncloseable dialogs.
 
-Common triggers:
-- `.bat.bak` files in the Startup folder (Windows tries to execute them at login)
-- `.disabled` extension (not a typo — Windows treats this as an unknown extension)
-- Any file in a Startup/auto-run location with an unrecognized extension
+The most common trigger: a renamed script left in Startup — `hermes-gateway.bat.bak`, `watchdog.py.disabled`. Windows tries to execute it at login, fails, and falls back to `OpenWith.exe`.
 
-**Fix:**
-1. Use `.bak` or `.old` extensions **never** — use `.inactive` or better: delete/move files entirely.
-2. For Startup folder hygiene: never leave old versions of scripts with renamed extensions. Move them out of `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\`.
-3. As defense-in-depth, associate dangerous extensions with `txtfile` in the registry:
+**Prevention:**
+- Never leave renamed files in the Startup folder. Move stale files out entirely.
+- As a defensive measure, associate dangerous extensions with `txtfile`:
 
 ```powershell
-# Registers .bak as text file to prevent OpenWith storms
 New-Item -Path "HKCU:\Software\Classes\.bak" -Force | Out-Null
 Set-ItemProperty -Path "HKCU:\Software\Classes\.bak" -Name "(Default)" -Value "txtfile"
 ```
 
-### `conhost.exe` lifecycle
+The `.disabled` suffix is **not** a formal Task Scheduler disable mechanism — it keeps the scheduler from loading the file but does NOT stop Explorer. Delete disabled tasks or move them out of scanned directories.
 
-`conhost.exe` is the console host process that renders any console subsystem process. It spawns for every console-attached process and dies when the process exits. If you see `conhost.exe` processes lingering:
-- They're from a living console-attached parent — find the parent, don't kill conhost.
-- Killing conhost kills the attached process too. Never `taskkill conhost.exe`.
-- A burst of 50+ conhost instances at boot = a console-attached process spawning children in a loop (classic `python.exe` watchdog misconfiguration).
+### conhost lifecycle
 
-### `.disabled` extension shadow
-
-Windows Task Scheduler does NOT have a formal "disable" mechanism at the filesystem level. Renaming a task XML to `.disabled`:
-- Prevents Task Scheduler from loading it ✓
-- Does NOT stop Windows Explorer from trying to open it ✗
-
-If the file is in a scanned directory, Explorer fires `ShellExecute` → triggers `OpenWith.exe` → popup. Delete the file or move it out of scanned directories entirely.
-
-### Windows proxy trap for Python subprocess
-
-On Windows, `urllib.request` (and libraries built on it) reads proxy settings from the registry (`Internet Settings`). If the user has a proxy configured (e.g., Clash on port 7897), Python subprocesses inherit this and may get blocked:
-
-```python
-# This silently uses registry proxy settings → may return 418 or hang
-import urllib.request
-urllib.request.urlopen("http://localhost:11434/api/tags")
-```
-
-**Fix:** Use `requests` with explicit proxy disabling:
-
-```python
-import requests
-session = requests.Session()
-session.proxies = {'http': None, 'https': None}
-session.get("http://localhost:11434/api/tags")
-```
-
-This is especially important for watchdog scripts that call localhost services (Ollama, gateway API). The `NO_PROXY=localhost,127.0.0.1,::1` environment variable helps, but `requests` with explicit `proxies=None` is more reliable.
-
-### Summary: zero-window checklist
-
-For a truly silent Windows Hermes deployment:
-
-| Item | Rule |
-|---|---|
-| Python binary | Always `pythonw.exe` from `uv` or venv, never WindowsApps stub |
-| subprocess flags | `CREATE_NO_WINDOW` on every `Popen` call |
-| Scheduled tasks | Direct to `pythonw.exe`, never `.bat`; quote paths with `\\\"` |
-| High-frequency scripts (≤2 min) | VBS wrapper via `wscript.exe //B` |
-| Startup folder | No renamed extensions (`.bak`, `.disabled`); move stale files out |
-| Proxy | `requests.Session(proxies={...: None})` for localhost calls |
-| Shell | Use `cmd //c` to protect MSYS bash from path mangling |
+`conhost.exe` is the console host process — one instance per console-attached process. It spawns when the process starts, dies when it exits. Lingering `conhost.exe` means the parent is alive — find the parent, not conhost. Killing conhost kills the attached process. A burst of 50+ conhost instances means a console-attached process is spawning children in a loop (classic `python.exe` watchdog misconfiguration).
 
 ## Where to go next
 

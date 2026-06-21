@@ -26,6 +26,15 @@ def test_sidecar_healthz_reports_stream_health() -> None:
     assert "process.exit(75);" in index
 
 
+def test_sidecar_labels_catchup_internal_errors_as_upstream_photon() -> None:
+    """Photon cloud stream failures should not look like local auth problems."""
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
+    assert "function inboundStreamErrorMessage" in index
+    assert "EventService/CatchUpEvents" in index
+    assert "this is upstream of Hermes" in index
+    assert "PHOTON_ALLOWED_USERS" in index
+
+
 def test_spectrum_patch_preserves_text_when_single_attachment(tmp_path: Path) -> None:
     """The sidecar dependency patch must turn text+one attachment into group content."""
     dist = tmp_path / "node_modules" / "spectrum-ts" / "dist"

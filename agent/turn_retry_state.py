@@ -60,6 +60,10 @@ class TurnRetryState:
     has_retried_429: bool = False
 
     # ── Auth-failure provider failover ───────────────────────────────────
+    # Set once the primary provider got one final same-provider retry after
+    # provider-specific credential refresh failed, but before fallback is used.
+    primary_auth_retry_before_fallback_attempted: bool = False
+
     # Set once we've escalated a persistent 401/403 (after the per-provider
     # credential-refresh attempt above failed) to the fallback chain, so we
     # don't loop on the same auth failover within one attempt.

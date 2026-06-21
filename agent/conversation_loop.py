@@ -103,6 +103,46 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     return None
 
 
+_AUTH_PRIMARY_RETRY_BEFORE_FALLBACK_PROVIDERS = {
+    "openai-codex",
+    "xai-oauth",
+    "nous",
+    "copilot",
+}
+
+
+def _should_retry_primary_auth_before_fallback(
+    agent: Any,
+    classified: Any,
+    *,
+    status_code: Optional[int],
+    already_attempted: bool,
+) -> bool:
+    """Whether to retry the primary OAuth-ish provider once before fallback.
+
+    Provider-specific refresh/credential-pool recovery runs before this
+    guard.  If those paths cannot repair a 401, one same-provider retry is a
+    cheap final check for races in credential persistence before switching to
+    a potentially expensive fallback provider.
+    """
+    if already_attempted or status_code != 401:
+        return False
+    if not bool(getattr(classified, "is_auth", False)):
+        return False
+    provider = (getattr(agent, "provider", "") or "").strip().lower()
+    if provider not in _AUTH_PRIMARY_RETRY_BEFORE_FALLBACK_PROVIDERS:
+        return False
+    has_pending_fallback = getattr(agent, "_has_pending_fallback", None)
+    if callable(has_pending_fallback):
+        try:
+            return bool(has_pending_fallback())
+        except Exception:
+            return False
+    chain = getattr(agent, "_fallback_chain", None) or []
+    index = getattr(agent, "_fallback_index", 0) or 0
+    return index < len(chain)
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -2795,6 +2835,26 @@ def run_conversation(
                     print(f"{agent.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
                     print(f"{agent.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
 
+                if _should_retry_primary_auth_before_fallback(
+                    agent,
+                    classified,
+                    status_code=status_code,
+                    already_attempted=_retry.primary_auth_retry_before_fallback_attempted,
+                ):
+                    _retry.primary_auth_retry_before_fallback_attempted = True
+                    _provider_label = (getattr(agent, "provider", "") or "provider").strip()
+                    agent._buffer_status(
+                        f"🔐 {_provider_label} authentication failed after refresh recovery — "
+                        "retrying primary once before fallback..."
+                    )
+                    logger.warning(
+                        "Persistent auth failure on %s after refresh/credential recovery; "
+                        "retrying primary once before fallback",
+                        _provider_label,
+                    )
+                    time.sleep(1)
+                    continue
+
                 # Thinking block signature recovery.
                 #
                 # Anthropic signs thinking blocks against the full turn
@@ -3696,7 +3756,7 @@ def run_conversation(
                             agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0

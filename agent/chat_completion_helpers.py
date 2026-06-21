@@ -52,6 +52,31 @@ _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 
 
+_OAUTH_AUTH_FAILOVER_GUARD_PROVIDERS = {"openai-codex", "xai-oauth"}
+_PAID_AUTH_FALLBACK_PROVIDERS = {"anthropic", "bedrock"}
+
+
+def _should_block_paid_oauth_auth_fallback(
+    agent: Any,
+    *,
+    reason: "FailoverReason | None",
+    current_provider: str,
+    fallback_provider: str,
+) -> bool:
+    """Guard against hiding persistent OAuth 401s behind paid fallbacks.
+
+    A broken ChatGPT/Codex/xAI OAuth credential is usually fixed by
+    re-authentication, not by switching to an expensive provider.  Rate-limit
+    and billing failover still work; this guard is only for persistent auth
+    failures after the refresh/retry paths have already run.
+    """
+    if reason != FailoverReason.auth:
+        return False
+    if current_provider not in _OAUTH_AUTH_FAILOVER_GUARD_PROVIDERS:
+        return False
+    return fallback_provider in _PAID_AUTH_FALLBACK_PROVIDERS
+
+
 def _ra():
     """Lazy ``run_agent`` reference.
 
@@ -1208,19 +1233,40 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             )
         return False
     fb = agent._fallback_chain[agent._fallback_index]
-    agent._fallback_index += 1
     fb_key = _fallback_entry_key(fb)
     unavailable = getattr(agent, "_unavailable_fallback_keys", None)
     if unavailable is None:
         unavailable = set()
         agent._unavailable_fallback_keys = unavailable
-    if fb_key in unavailable:
-        logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
-        return agent._try_activate_fallback(reason)
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
+
+    # Skip auth-triggered jumps from OAuth providers to expensive fallback
+    # providers.  By the time auth failover calls us, provider refresh,
+    # credential-pool rotation, and the one-shot primary retry have already
+    # been tried; switching to Anthropic/Bedrock would hide a re-login problem
+    # and can rack up charges.  Leave rate-limit/billing fallbacks untouched.
+    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+    if _should_block_paid_oauth_auth_fallback(
+        agent,
+        reason=reason,
+        current_provider=current_provider,
+        fallback_provider=fb_provider,
+    ):
+        logger.warning(
+            "Suppressing paid fallback %s for persistent auth failure on %s; "
+            "surface re-auth guidance instead",
+            fb_provider,
+            current_provider,
+        )
+        return False
+
+    agent._fallback_index += 1
+    if fb_key in unavailable:
+        logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
+        return agent._try_activate_fallback(reason=reason)
     if not fb_provider or not fb_model:
-        return agent._try_activate_fallback(reason)  # skip invalid, try next
+        return agent._try_activate_fallback(reason=reason)  # skip invalid, try next
 
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
@@ -1231,13 +1277,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_model,
             local_skip_reason,
         )
-        return agent._try_activate_fallback(reason)
+        return agent._try_activate_fallback(reason=reason)
 
     # Skip entries that resolve to the current (provider, model) — falling
     # back to the same backend that just failed loops the failure. Compare
     # base_url too so two distinct custom_providers entries pointing at the
     # same shim/proxy URL also dedup. See issue #22548.
-    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     current_model = (getattr(agent, "model", "") or "").strip()
     current_base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()
     fb_base_url_for_dedup = (fb.get("base_url") or "").strip().rstrip("/").lower()
@@ -1246,7 +1291,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry %s/%s matches current provider/model",
             fb_provider, fb_model,
         )
-        return agent._try_activate_fallback(reason)
+        return agent._try_activate_fallback(reason=reason)
     if (
         fb_base_url_for_dedup
         and current_base_url
@@ -1257,7 +1302,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry base_url %s matches current backend",
             fb_base_url_for_dedup,
         )
-        return agent._try_activate_fallback(reason)
+        return agent._try_activate_fallback(reason=reason)
 
     # Use centralized router for client construction.
     # raw_codex=True because the main agent needs direct responses.stream()
@@ -1289,7 +1334,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 "Fallback to %s failed: provider not configured",
                 fb_provider)
             unavailable.add(fb_key)
-            return agent._try_activate_fallback(reason)  # try next in chain
+            return agent._try_activate_fallback(reason=reason)  # try next in chain
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
 
@@ -1493,7 +1538,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if fb_provider == "nous":
             unavailable.add(fb_key)
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
-        return agent._try_activate_fallback(reason)  # try next in chain
+        return agent._try_activate_fallback(reason=reason)  # try next in chain
 
 
 

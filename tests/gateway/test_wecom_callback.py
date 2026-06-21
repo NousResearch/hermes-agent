@@ -6,8 +6,8 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.wecom_callback import WecomCallbackAdapter
-from gateway.platforms.wecom_crypto import WXBizMsgCrypt
+from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt
 
 
 def _app(name="test-app", corp_id="ww1234567890", agent_id="1000002"):
@@ -49,7 +49,7 @@ class TestWecomCrypto:
         crypt = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
         encrypted_xml = crypt.encrypt("<xml/>", nonce="n", timestamp="1")
         root = ET.fromstring(encrypted_xml)
-        from gateway.platforms.wecom_crypto import SignatureError
+        from plugins.platforms.wecom.wecom_crypto import SignatureError
         with pytest.raises(SignatureError):
             crypt.decrypt("bad-sig", "1", "n", root.findtext("Encrypt", default=""))
 

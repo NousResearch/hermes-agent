@@ -563,8 +563,16 @@ def compress_context(
                     agent._flush_messages_to_session_db(messages)
                 except Exception:
                     pass  # best-effort — don't block compression on a flush error
-                # Propagate title to the new session with auto-numbering
+                # Propagate durable session metadata to the continuation.  The
+                # title is auto-numbered below; cwd must be copied verbatim so a
+                # Desktop session that auto-compresses stays under its original
+                # workspace instead of reappearing under "No workspace".
                 old_title = agent._session_db.get_session_title(agent.session_id)
+                try:
+                    old_session_row = agent._session_db.get_session(agent.session_id) or {}
+                    old_cwd = old_session_row.get("cwd") or None
+                except Exception:
+                    old_cwd = None
                 agent._session_db.end_session(agent.session_id, "compression")
                 old_session_id = agent.session_id
                 agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -598,6 +606,7 @@ def compress_context(
                     model=agent.model,
                     model_config=agent._session_init_model_config,
                     parent_session_id=old_session_id,
+                    cwd=old_cwd,
                 )
                 agent._session_db_created = True
                 # Auto-number the title for the continuation session

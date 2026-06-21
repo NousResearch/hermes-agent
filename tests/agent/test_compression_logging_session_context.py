@@ -78,3 +78,22 @@ def test_logging_session_context_follows_compression_rotation(tmp_path: Path) ->
         )
     finally:
         hermes_logging.clear_session_context()
+
+
+def test_compression_continuation_inherits_parent_cwd(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "PARENT_CWD_SESSION"
+    parent_cwd = str(tmp_path / "project")
+    Path(parent_cwd).mkdir()
+    db.create_session(parent_sid, source="cli", cwd=parent_cwd)
+
+    agent = _build_agent_with_db(db, parent_sid)
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    child_sid = getattr(agent, "session_id")
+    assert child_sid != parent_sid
+    child = db.get_session(child_sid)
+    assert child is not None
+    assert child["parent_session_id"] == parent_sid
+    assert child["cwd"] == parent_cwd

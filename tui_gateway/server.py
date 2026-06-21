@@ -1148,6 +1148,52 @@ def _session_cwd(session: dict | None) -> str:
     return _completion_cwd()
 
 
+def _session_declared_cwd(session: dict | None) -> str:
+    """Return only the cwd explicitly associated with this session.
+
+    UI/session metadata payloads must not fall back to the gateway launch cwd:
+    if a legacy row truly has no cwd, the desktop should keep it in the
+    synthetic "No workspace" bucket instead of grouping it under $HOME.
+
+    Some live sessions were created before this metadata split (or rotated by
+    compression while the desktop process was still running): their in-memory
+    dict may have a correct ``cwd`` but lack ``explicit_cwd``. Hydrate once from
+    the owning SessionDB row so the sidebar's live/active-list refresh does not
+    temporarily group the row under "No workspace" until the user clicks it.
+    """
+    if not session:
+        return ""
+    raw = str(session.get("cwd") or "").strip()
+    if raw and session.get("explicit_cwd"):
+        return raw
+    if session.get("_declared_cwd_checked"):
+        return ""
+
+    key = str(session.get("session_key") or "").strip()
+    if not key:
+        return ""
+    try:
+        with _session_db(session) as db:
+            row = db.get_session(key) if db is not None else None
+        stored = str((row or {}).get("cwd") or "").strip()
+        if stored:
+            session["cwd"] = stored
+            session["explicit_cwd"] = True
+            try:
+                _register_session_cwd(session)
+            except Exception:
+                pass
+            return stored
+        # Cache only a real stored NULL/empty-cwd row. If the row is absent, do
+        # not cache: first-turn lazy creation or compression rotation may still
+        # create a row with a cwd later in this live process.
+        if row is not None:
+            session["_declared_cwd_checked"] = True
+    except Exception:
+        logger.debug("failed to hydrate declared cwd from session row", exc_info=True)
+    return ""
+
+
 def _session_source(session: dict | None) -> str:
     if session:
         source = str(session.get("source") or "").strip()
@@ -1260,6 +1306,14 @@ def _ensure_session_db_row(session: dict) -> None:
             model_config=model_config or None,
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
         )
+        # create_session is INSERT OR IGNORE. If another path (notably the
+        # AIAgent's own lazy _ensure_db_session, or a retry from an earlier
+        # transient failure) already inserted this row with cwd=NULL, repair the
+        # explicitly chosen workspace now. Without this, a later resume treats
+        # the row as workspace-less and can permanently backfill the configured
+        # default/launch cwd instead of the user's actual project.
+        if session.get("explicit_cwd"):
+            db.update_session_cwd(key, _session_cwd(session))
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)
     finally:
@@ -2607,7 +2661,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
             if candidate.get("agent") is agent:
                 session = candidate
                 break
-    cwd = _session_cwd(session)
+    cwd = _session_declared_cwd(session)
     cfg_personality = ((_load_cfg().get("display") or {}).get("personality") or "")
     personality = (session or {}).get("personality", cfg_personality)
     reasoning_config = getattr(agent, "reasoning_config", None)
@@ -2647,7 +2701,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "tools": {},
         "skills": {},
         "cwd": cwd,
-        "branch": _git_branch_for_cwd(cwd),
+        "branch": _git_branch_for_cwd(cwd) if cwd else "",
         "personality": str(personality or ""),
         "running": bool((session or {}).get("running")),
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
@@ -3756,6 +3810,7 @@ def _init_session(
     history: list,
     cols: int = 80,
     cwd: str | None = None,
+    explicit_cwd: bool = False,
     session_db=None,
 ):
     now = time.time()
@@ -3773,6 +3828,7 @@ def _init_session(
             "attached_images": [],
             "image_counter": 0,
             "cwd": cwd or _completion_cwd(),
+            "explicit_cwd": bool(explicit_cwd),
             "cols": cols,
             "slash_worker": None,
             "show_reasoning": _load_show_reasoning(),
@@ -3794,7 +3850,8 @@ def _init_session(
             with _sessions_lock:
                 if sid in _sessions:
                     _sessions[sid]["cwd"] = row["cwd"]
-        else:
+                    _sessions[sid]["explicit_cwd"] = True
+        elif explicit_cwd:
             try:
                 db.update_session_cwd(key, _sessions[sid]["cwd"])
             except Exception:
@@ -4480,9 +4537,8 @@ def _(rid, params: dict) -> dict:
             target = tip
             found = db.get_session(target) or found
 
-    profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
-        profile_home
-    )
+    stored_resume_cwd = str(found.get("cwd") or "").strip()
+    profile_resume_cwd = stored_resume_cwd or _profile_configured_cwd(profile_home)
 
     def _reuse_live_payload(sid: str, session: dict) -> dict:
         payload = _live_session_payload(
@@ -4558,7 +4614,7 @@ def _(rid, params: dict) -> dict:
                     "created_at": now,
                     "display_history_prefix": [],
                     "edit_snapshots": {},
-                    "explicit_cwd": False,
+                    "explicit_cwd": bool(stored_resume_cwd),
                     "history": history,
                     "history_lock": threading.Lock(),
                     "history_version": 0,
@@ -4580,6 +4636,7 @@ def _(rid, params: dict) -> dict:
                     "transport": current_transport() or _stdio_transport,
                 }
                 _register_session_cwd(_sessions[sid])
+        declared_cwd = _session_declared_cwd(_sessions.get(sid))
         return _ok(
             rid,
             {
@@ -4588,8 +4645,8 @@ def _(rid, params: dict) -> dict:
                 "message_count": len(messages),
                 "messages": messages,
                 "info": {
-                    "cwd": cwd,
-                    "branch": _git_branch_for_cwd(cwd),
+                    "cwd": declared_cwd,
+                    "branch": _git_branch_for_cwd(declared_cwd) if declared_cwd else "",
                     "model": _resolve_model(),
                     "tools": {},
                     "skills": {},
@@ -4806,6 +4863,7 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     now = time.time()
     return {
         "current": sid == current_sid,
+        "cwd": _session_declared_cwd(session),
         "id": sid,
         "last_active": float(session.get("last_active") or session.get("created_at") or now),
         "message_count": len(history),
@@ -4831,8 +4889,15 @@ def _fallback_session_info(session: dict) -> dict:
     agent = session.get("agent")
     if agent is not None:
         return _session_info(agent)
+    cwd = _session_declared_cwd(session)
     return {
-        "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
+        # Preserve the session's own workspace even while the agent is still
+        # lazy / building. Falling back to the gateway process cwd here makes a
+        # live resume report the launch directory (often $HOME), and the desktop
+        # then patches an otherwise-correct persisted row into the synthetic
+        # "kemaldoganay" workspace.
+        "cwd": cwd,
+        "branch": _git_branch_for_cwd(cwd) if cwd else "",
         "lazy": True,
         "model": _resolve_model(),
         "skills": {},

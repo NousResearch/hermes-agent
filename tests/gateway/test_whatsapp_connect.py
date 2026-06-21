@@ -13,6 +13,7 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
+import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -517,31 +518,41 @@ class TestKillPortProcess:
             for call in mock_run.call_args_list
         )
 
-    def test_uses_fuser_on_linux(self):
-        from plugins.platforms.whatsapp.adapter import _kill_port_process
+    def test_kills_only_listeners_on_linux(self):
+        """POSIX path SIGTERMs only LISTENer PIDs (never clients) — the #43846 fix.
 
-        mock_check = MagicMock(returncode=0)
+        Replaces the old fuser-based test: ``fuser``/bare ``lsof -i`` also
+        matched client sockets sharing the port number, which closed unrelated
+        processes (a browser tab on the same port). The implementation now
+        resolves listeners via ``_listener_pids_on_port`` and signals only those.
+        """
+        from plugins.platforms.whatsapp import adapter as wa
 
+        kills = []
         with patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", False), \
-             patch("plugins.platforms.whatsapp.adapter.subprocess.run", return_value=mock_check) as mock_run:
-            _kill_port_process(3000)
+             patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port",
+                   return_value=[55555]) as mock_listeners, \
+             patch("plugins.platforms.whatsapp.adapter.os.kill",
+                   side_effect=lambda pid, sig: kills.append((pid, sig))):
+            wa._kill_port_process(3000)
 
-        calls = [c.args[0] for c in mock_run.call_args_list]
-        assert ["fuser", "3000/tcp"] in calls
-        assert ["fuser", "-k", "3000/tcp"] in calls
+        mock_listeners.assert_called_once_with(3000)
+        assert kills == [(55555, signal.SIGTERM)]
 
-    def test_skips_fuser_kill_when_port_free(self):
-        from plugins.platforms.whatsapp.adapter import _kill_port_process
+    def test_no_kill_when_no_listener_on_port(self):
+        """No LISTENer on the port → nothing is signalled."""
+        from plugins.platforms.whatsapp import adapter as wa
 
-        mock_check = MagicMock(returncode=1)  # port not in use
-
+        kills = []
         with patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", False), \
-             patch("plugins.platforms.whatsapp.adapter.subprocess.run", return_value=mock_check) as mock_run:
-            _kill_port_process(3000)
+             patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port",
+                   return_value=[]) as mock_listeners, \
+             patch("plugins.platforms.whatsapp.adapter.os.kill",
+                   side_effect=lambda pid, sig: kills.append((pid, sig))):
+            wa._kill_port_process(3000)
 
-        calls = [c.args[0] for c in mock_run.call_args_list]
-        assert ["fuser", "3000/tcp"] in calls
-        assert ["fuser", "-k", "3000/tcp"] not in calls
+        mock_listeners.assert_called_once_with(3000)
+        assert kills == []
 
     def test_suppresses_exceptions(self):
         from plugins.platforms.whatsapp.adapter import _kill_port_process

@@ -43,6 +43,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform, PlatformConfig
+from utils import env_int
 
 logger = logging.getLogger(__name__)
 # Automated sender patterns — emails from these are silently ignored
@@ -309,10 +310,10 @@ class EmailAdapter(BasePlatformAdapter):
         self._address = os.getenv("EMAIL_ADDRESS", "")
         self._password = os.getenv("EMAIL_PASSWORD", "")
         self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
-        self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
+        self._imap_port = env_int("EMAIL_IMAP_PORT", 993)
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
-        self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
-        self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+        self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
+        self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -881,3 +882,101 @@ class EmailAdapter(BasePlatformAdapter):
             "chat_id": chat_id,
             "subject": ctx.get("subject", ""),
         }
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Plugin migration glue (#41112 / #3823)
+#
+# Added when the Email adapter moved from gateway/platforms/email.py into this
+# bundled plugin. register() exposes the platform via the registry, replacing
+# the Platform.EMAIL elif in gateway/run.py, the _PLATFORM_CONNECTED_CHECKERS
+# entry in gateway/config.py, the _PLATFORMS["email"] static dict in
+# hermes_cli/gateway.py, and the _send_email dispatch in
+# tools/send_message_tool.py. EMAIL_* env→PlatformConfig seeding stays in core.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Out-of-process Email delivery via SMTP (one-shot). Implements the
+    standalone_sender_fn contract; replaces the legacy _send_email helper."""
+    import smtplib
+    import ssl as _ssl
+    from email.mime.text import MIMEText
+    from email.utils import formatdate
+
+    extra = getattr(pconfig, "extra", {}) or {}
+    address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
+    password = os.getenv("EMAIL_PASSWORD", "")
+    smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
+    try:
+        smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
+    except (ValueError, TypeError):
+        smtp_port = 587
+
+    if not all([address, password, smtp_host]):
+        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+
+    try:
+        msg = MIMEText(message, "plain", "utf-8")
+        msg["From"] = address
+        msg["To"] = chat_id
+        msg["Subject"] = "Hermes Agent"
+        msg["Date"] = formatdate(localtime=True)
+
+        server = smtplib.SMTP(smtp_host, smtp_port)
+        server.starttls(context=_ssl.create_default_context())
+        server.login(address, password)
+        server.send_message(msg)
+        server.quit()
+        return {"success": True, "platform": "email", "chat_id": chat_id}
+    except Exception as e:
+        try:
+            from tools.send_message_tool import _error as _e
+            return _e(f"Email send failed: {e}")
+        except Exception:
+            return {"error": f"Email send failed: {e}"}
+
+
+def _is_connected(config) -> bool:
+    """Email is connected when an address is configured (in PlatformConfig.extra
+    or via EMAIL_ADDRESS). Mirrors the legacy
+    _PLATFORM_CONNECTED_CHECKERS[Platform.EMAIL] = bool(extra.get('address'))."""
+    extra = getattr(config, "extra", {}) or {}
+    if extra.get("address"):
+        return True
+    import hermes_cli.gateway as gateway_mod
+    return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs EmailAdapter from a PlatformConfig."""
+    return EmailAdapter(config)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="email",
+        label="Email",
+        adapter_factory=_build_adapter,
+        check_fn=check_email_requirements,
+        is_connected=_is_connected,
+        required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
+        install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps",
+        allowed_users_env="EMAIL_ALLOWED_USERS",
+        allow_all_env="EMAIL_ALLOW_ALL_USERS",
+        cron_deliver_env_var="EMAIL_HOME_ADDRESS",
+        standalone_sender_fn=_standalone_send,
+        max_message_length=50_000,
+        pii_safe=True,
+        emoji="📧",
+        allow_update_command=True,
+    )

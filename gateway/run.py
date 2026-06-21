@@ -5302,6 +5302,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Returns True if at least one adapter connected successfully.
         """
         logger.info("Starting Hermes Gateway...")
+        if not hasattr(self, "_background_tasks") or self._background_tasks is None:
+            self._background_tasks = set()
         try:
             self._gateway_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -10500,7 +10502,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             return 20
 
-    def _get_goal_manager_for_event(self, event: "MessageEvent"):
+    def _get_goal_manager_for_event(
+        self,
+        event: "MessageEvent",
+        *,
+        create_session: bool = True,
+    ):
         """Return a GoalManager bound to the session for this gateway event.
 
         Returns ``(manager, session_entry)`` or ``(None, None)`` if the
@@ -10512,9 +10519,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("goal manager unavailable: %s", exc)
             return None, None
         try:
-            session_entry = self.session_store.get_or_create_session(event.source)
+            if create_session:
+                session_entry = self.session_store.get_or_create_session(event.source)
+            else:
+                lookup = None
+                if hasattr(self.session_store.__class__, "get_existing_session"):
+                    lookup = getattr(self.session_store, "get_existing_session", None)
+                if callable(lookup):
+                    session_entry = lookup(event.source)
+                else:
+                    # Lightweight test doubles often expose a prebuilt entry
+                    # without implementing the full GatewaySessionStore API.
+                    # Use it only when present on the instance itself; do not
+                    # trigger MagicMock.__getattr__ and accidentally create a
+                    # mock session.
+                    session_entry = vars(self.session_store).get("entry")
         except Exception as exc:
             logger.debug("goal manager: session lookup failed: %s", exc)
+            return None, None
+        if session_entry is None:
             return None, None
         sid = getattr(session_entry, "session_id", None) or ""
         if not sid:

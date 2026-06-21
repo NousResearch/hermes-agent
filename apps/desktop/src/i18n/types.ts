@@ -297,6 +297,17 @@ export interface Translations {
       intro: string
       colorMode: string
       colorModeDesc: string
+      textSizeTitle: string
+      textSizeDesc: string
+      textSizeCompact: string
+      textSizeDefault: string
+      textSizeLarge: string
+      textSizeHuge: string
+      chatWidthTitle: string
+      chatWidthDesc: string
+      chatWidthCozy: string
+      chatWidthWide: string
+      chatWidthFull: string
       toolViewTitle: string
       toolViewDesc: string
       translucencyTitle: string

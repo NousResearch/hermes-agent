@@ -319,11 +319,17 @@
 
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.75rem;
-    --conversation-text-font-size: 0.8125rem;
-    --conversation-tool-font-size: 0.6875rem;
-    --conversation-caption-font-size: 0.75rem;
-    --conversation-line-height: 1.125rem;
-    --conversation-caption-line-height: 1rem;
+    /* User-tunable display scale (Settings → Appearance). Default 1 preserves
+       the original sizing; the ui-scale store overrides these on documentElement
+       at boot so the picker persists across sessions. Kept as bare multipliers
+       so every conversation font/line-height below scales in lockstep. */
+    --user-text-scale: 1;
+    --user-chat-width-scale: 1;
+    --conversation-text-font-size: calc(0.8125rem * var(--user-text-scale));
+    --conversation-tool-font-size: calc(0.6875rem * var(--user-text-scale));
+    --conversation-caption-font-size: calc(0.75rem * var(--user-text-scale));
+    --conversation-line-height: calc(1.125rem * var(--user-text-scale));
+    --conversation-caption-line-height: calc(1rem * var(--user-text-scale));
     --conversation-turn-gap: 0.375rem;
     /* Gap between top-level turn blocks (prose ↔ tools ↔ thinking) — enough air
        that scaffolding reads as separate from the reply, not crammed into it. */
@@ -338,7 +344,7 @@
     --sticky-human-top: 0.23rem;
     --file-tree-row-height: 1.375rem;
 
-    --composer-width: 48.75rem;
+    --composer-width: calc(48.75rem * var(--user-chat-width-scale));
     --composer-control-size: 1.5rem;
     --composer-control-primary-size: 1.625rem;
     --composer-control-gap: 0.25rem;
@@ -1125,7 +1131,7 @@ code {
 
 [data-slot='composer-rich-input'] {
   color: var(--ui-text-primary);
-  font-size: 0.8125rem;
+  font-size: var(--conversation-text-font-size);
 }
 
 [data-slot='composer-rich-input']:empty::before {

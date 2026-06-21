@@ -7220,6 +7220,18 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         if isinstance(allowed_users, list):
             allowed_users = ",".join(str(v) for v in allowed_users)
         os.environ["TELEGRAM_ALLOWED_USERS"] = str(allowed_users)
+    home_channel = telegram_cfg.get("home_channel")
+    if home_channel is not None and not os.getenv("TELEGRAM_HOME_CHANNEL"):
+        if isinstance(home_channel, dict):
+            _chat_id = home_channel.get("chat_id")
+            if _chat_id:
+                os.environ["TELEGRAM_HOME_CHANNEL"] = str(_chat_id)
+                if home_channel.get("name"):
+                    os.environ["TELEGRAM_HOME_CHANNEL_NAME"] = str(home_channel["name"])
+                if home_channel.get("thread_id"):
+                    os.environ["TELEGRAM_HOME_CHANNEL_THREAD_ID"] = str(home_channel["thread_id"])
+        else:
+            os.environ["TELEGRAM_HOME_CHANNEL"] = str(home_channel)
     group_allowed_users = telegram_cfg.get("group_allow_from")
     if group_allowed_users is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_USERS"):
         if isinstance(group_allowed_users, list):

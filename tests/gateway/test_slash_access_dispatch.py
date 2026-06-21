@@ -337,7 +337,6 @@ async def test_running_agent_fastpath_blocks_non_admin_command():
     )
     src = _make_source(user_id="999")
     # Mark the session as having an in-flight agent so the fast-path runs.
-    from gateway.session import build_session_key
     sk = build_session_key(src)
     runner._running_agents[sk] = MagicMock()
     runner._running_agents_ts[sk] = 0  # not stale (epoch + small delta on this machine)
@@ -361,7 +360,6 @@ async def test_running_agent_fastpath_allows_admin_command():
         }
     )
     src = _make_source(user_id="111")  # admin
-    from gateway.session import build_session_key
     sk = build_session_key(src)
     runner._running_agents[sk] = MagicMock()
     runner._running_agents_ts[sk] = 0
@@ -384,7 +382,6 @@ async def test_running_agent_fastpath_status_always_works():
         }
     )
     src = _make_source(user_id="999")  # non-admin
-    from gateway.session import build_session_key
     sk = build_session_key(src)
     runner._running_agents[sk] = MagicMock()
     runner._running_agents_ts[sk] = 0

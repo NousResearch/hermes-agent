@@ -77,13 +77,26 @@ describe('applyDisplay', () => {
     const setBell = vi.fn()
 
     applyDisplay({ config: { display: { mouse_tracking: false } } }, setBell)
-    expect($uiState.get().mouseTracking).toBe(false)
+    expect($uiState.get().mouseTracking).toBe('off')
 
     applyDisplay({ config: { display: { mouse_tracking: true, tui_mouse: false } } }, setBell)
-    expect($uiState.get().mouseTracking).toBe(true)
+    expect($uiState.get().mouseTracking).toBe('all')
 
     applyDisplay({ config: { display: { tui_mouse: false } } }, setBell)
-    expect($uiState.get().mouseTracking).toBe(false)
+    expect($uiState.get().mouseTracking).toBe('off')
+  })
+
+  it('threads mouse_tracking presets through to $uiState', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { mouse_tracking: 'wheel' } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('wheel')
+
+    applyDisplay({ config: { display: { mouse_tracking: 'buttons' } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('buttons')
+
+    applyDisplay({ config: { display: { mouse_tracking: 'all' } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('all')
   })
 
   it('parses display.sections into per-section overrides', () => {
@@ -183,15 +196,30 @@ describe('normalizeStatusBar', () => {
 })
 
 describe('normalizeMouseTracking', () => {
-  it('defaults on and prefers canonical mouse_tracking over legacy tui_mouse', () => {
-    expect(normalizeMouseTracking({})).toBe(true)
-    expect(normalizeMouseTracking({ mouse_tracking: false })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: 0 })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: 'off' })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: 'false' })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: null, tui_mouse: false })).toBe(true)
-    expect(normalizeMouseTracking({ mouse_tracking: true, tui_mouse: false })).toBe(true)
-    expect(normalizeMouseTracking({ tui_mouse: false })).toBe(false)
+  it('defaults to all and prefers canonical mouse_tracking over legacy tui_mouse', () => {
+    expect(normalizeMouseTracking({})).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: false })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: 0 })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: 'off' })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: 'false' })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: null, tui_mouse: false })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: true, tui_mouse: false })).toBe('all')
+    expect(normalizeMouseTracking({ tui_mouse: false })).toBe('off')
+  })
+
+  it('accepts preset strings (wheel/buttons/all) and their aliases', () => {
+    expect(normalizeMouseTracking({ mouse_tracking: 'wheel' })).toBe('wheel')
+    expect(normalizeMouseTracking({ mouse_tracking: 'scroll' })).toBe('wheel')
+    expect(normalizeMouseTracking({ mouse_tracking: 'buttons' })).toBe('buttons')
+    expect(normalizeMouseTracking({ mouse_tracking: 'click' })).toBe('buttons')
+    expect(normalizeMouseTracking({ mouse_tracking: 'all' })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: 'full' })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: 'on' })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: ' WHEEL ' })).toBe('wheel')
+  })
+
+  it('falls back to all for unknown strings', () => {
+    expect(normalizeMouseTracking({ mouse_tracking: 'rainbows' })).toBe('all')
   })
 })
 

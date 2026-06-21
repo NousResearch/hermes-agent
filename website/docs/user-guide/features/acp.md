@@ -218,6 +218,21 @@ Dangerous terminal commands can be routed back to the editor as approval prompts
 
 On timeout or error, the approval bridge denies the request.
 
+### Session-scoped edit auto-approval
+
+ACP exposes a third tier between *allow once* and *allow always*: **Allow for session**. Picking it from the editor's permission prompt records the approval inside the current ACP session only — every subsequent matching command in that session goes through without prompting, but a new ACP session (or restarting the editor) resets the slate and re-prompts the first time.
+
+| Option | Editor label | Scope | Persisted across restarts |
+|---|---|---|---|
+| `allow_once` | Allow once | This one tool call | No |
+| `allow_session` | Allow for session | All matching calls in this ACP session | No — cleared when the session ends |
+| `allow_always` | Allow always | All future sessions | Yes (written to the Hermes permanent allowlist) |
+| `deny` | Deny | This one tool call | No |
+
+`allow_session` is the right default for an editor workflow where you trust an agent for the duration of a task but don't want to grant a long-lived allowlist entry. The safety trade-off is straightforward: the broader the scope, the less the editor will interrupt you, and the more damage a misbehaving agent (or prompt injection) can do before you notice. Start with `allow_once` for unfamiliar commands; promote to `allow_session` once you've seen the agent run the same pattern correctly a few times; reserve `allow_always` for truly idempotent commands you trust forever (e.g. `git status`).
+
+The ACP bridge maps these options onto Hermes' internal approval semantics — `allow_always` writes a permanent allowlist entry the same way the CLI does, while `allow_session` only affects the in-process approval cache for the current ACP session.
+
 ## Troubleshooting
 
 ### ACP agent does not appear in the editor

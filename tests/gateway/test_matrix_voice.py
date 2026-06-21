@@ -2,7 +2,6 @@
 
 Updated for the mautrix-python SDK (no more matrix-nio / nio imports).
 """
-import io
 import os
 import tempfile
 import types
@@ -28,7 +27,7 @@ from gateway.platforms.base import MessageType
 
 def _make_adapter():
     """Create a MatrixAdapter with mocked config."""
-    from gateway.platforms.matrix import MatrixAdapter
+    from plugins.platforms.matrix.adapter import MatrixAdapter
     from gateway.config import PlatformConfig
 
     config = PlatformConfig(

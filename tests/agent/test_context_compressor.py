@@ -2277,6 +2277,53 @@ class TestUpdateModelBudgets:
         assert comp.max_summary_tokens == min(int(10_000 * 0.05), 4000)
 
 
+class TestUpdateModelResetsCalibration:
+    """#23767: update_model() must clear stale cross-call calibration state.
+
+    Old-model real-usage / defer baselines must not suppress a preflight
+    compression the new (smaller) model actually needs.
+    """
+
+    def _comp(self):
+        from unittest.mock import patch
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            return ContextCompressor("big-model", threshold_percent=0.50, quiet_mode=True)
+
+    def test_real_usage_state_cleared(self):
+        comp = self._comp()
+        # Simulate a large-model session that proved a prompt fit.
+        comp.last_prompt_tokens = 120_000
+        comp.last_real_prompt_tokens = 120_000
+        comp.last_rough_tokens_when_real_prompt_fit = 130_000
+        comp.last_compression_rough_tokens = 130_000
+        comp.awaiting_real_usage_after_compression = True
+        comp._ineffective_compression_count = 2
+
+        comp.update_model("small-model", context_length=65_536)
+
+        assert comp.last_prompt_tokens == 0
+        assert comp.last_real_prompt_tokens == 0
+        assert comp.last_rough_tokens_when_real_prompt_fit == 0
+        assert comp.last_compression_rough_tokens == 0
+        assert comp.awaiting_real_usage_after_compression is False
+        assert comp._ineffective_compression_count == 0
+
+    def test_defer_no_longer_suppresses_after_switch(self):
+        """The exact #23767 failure: old model's 'it fit' must not defer
+        preflight on the new smaller model."""
+        comp = self._comp()
+        comp.last_real_prompt_tokens = 50_000
+        comp.last_rough_tokens_when_real_prompt_fit = 90_000
+        # Before switch, a modest rough growth would defer.
+        comp.threshold_tokens = 85_000
+        assert comp.should_defer_preflight_to_real_usage(93_000) is True
+
+        # After switching to a 65K model, the stale state is gone, so a rough
+        # estimate over the new threshold is NOT deferred — preflight will run.
+        comp.update_model("small-model", context_length=65_536)
+        assert comp.should_defer_preflight_to_real_usage(comp.threshold_tokens + 5_000) is False
+
+
 class TestTruncateToolCallArgsJson:
     """Regression tests for #11762.
 

@@ -53,7 +53,7 @@ The `cmx/` category breaks down as:
   capability gate) — leak-safe, generic, provider-agnostic host-side seams that the
   cmx engine *uses* but which no-op for ContextCompressor/LCM.
 - **`test_cmx_hermes_engine_schemas_are_bare`** — hardcodes the PRIVATE path
-  `/mnt/devvm/custom/hermes/hermes-cmx/src/cmx/hermes_engine.py`; CANNOT be public.
+  `<cmx-tree>/src/cmx/hermes_engine.py`; CANNOT be public.
 
 **Decision:** CMX stays **deferred pending the single CMX-implementation PR**, per the
 user's explicit rule that CMX-touching code travels in ONE CMX PR, never piecemeal.

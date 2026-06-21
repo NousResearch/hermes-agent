@@ -1,5 +1,5 @@
 diff --git a/agent/model_metadata.py b/agent/model_metadata.py
-index 0ce9d0c63..0d3980444 100644
+index 0ce9d0c63..b790ab56e 100644
 --- a/agent/model_metadata.py
 +++ b/agent/model_metadata.py
 @@ -149,6 +149,21 @@ DEFAULT_CONTEXT_LENGTHS = {
@@ -160,7 +160,7 @@ index 0ce9d0c63..0d3980444 100644
 +# UNDER-reports. The codex /models `context_window` is the DEFAULT
 +# input-budget-after-output-reservation, NOT the hard cap. Verified live
 +# 2026-06-08 against chatgpt.com/backend-api/codex with a fresh ChatGPT Pro
-+# token (account 94125662): gpt-5.4 actually accepts ~900K input (891,509 →
++# token (a paid ChatGPT Pro account): gpt-5.4 actually accepts ~900K input (891,509 →
 +# OK, ~957K → context_length_exceeded) even though /models advertises 272K.
 +# gpt-5.4-mini and gpt-5.5 ARE genuinely ~272K input (gpt-5.5's documented
 +# 400K total minus a fixed 128K output reservation; no API lever (model

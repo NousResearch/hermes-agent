@@ -1,6 +1,6 @@
 diff --git a/tests/test_context_engine_tool_wrap.py b/tests/test_context_engine_tool_wrap.py
 new file mode 100644
-index 000000000..7628e2b35
+index 000000000..19f0d302c
 --- /dev/null
 +++ b/tests/test_context_engine_tool_wrap.py
 @@ -0,0 +1,129 @@
@@ -109,8 +109,8 @@ index 000000000..7628e2b35
 +def test_cmx_hermes_engine_schemas_are_bare():
 +    """The cmx engine itself must now expose BARE schemas (source-level guard)."""
 +    import importlib.util, os
-+    cmx_path = "/mnt/devvm/custom/hermes/hermes-cmx/src/cmx/hermes_engine.py"
-+    if not os.path.exists(cmx_path):
++    cmx_path = os.environ.get("CMX_ENGINE_PATH", "")
++    if not cmx_path or not os.path.exists(cmx_path):
 +        import pytest
 +        pytest.skip("cmx source not present in this layout")
 +    # Parse TOOL_SCHEMAS without importing the heavy engine deps.

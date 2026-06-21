@@ -1,13 +1,13 @@
 diff --git a/tests/agent/test_copilot_opus_context_fix_2026_06_04.py b/tests/agent/test_copilot_opus_context_fix_2026_06_04.py
 new file mode 100644
-index 000000000..c11402bf6
+index 000000000..428056250
 --- /dev/null
 +++ b/tests/agent/test_copilot_opus_context_fix_2026_06_04.py
 @@ -0,0 +1,714 @@
 +"""Regression tests for the copilot-opus-context fix series (Phase A1/A2/A6/D).
 +
-+These pin the policy decisions made on 2026-06-04 in the isolated workspace
-+review at /mnt/devvm/custom/hermes/review-copilot-opus-context/.
++These pin the policy decisions made on 2026-06-04 in an isolated review
++workspace.
 +
 +Backed by empirical probes captured in the same workspace
 +(probes/effort-thinking-results.json):

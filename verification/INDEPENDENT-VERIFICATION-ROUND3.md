@@ -42,7 +42,7 @@ files. Investigated every category — ALL explained, ZERO real gaps:
 - **deferred content**: src versions that are private-overlay (e.g.
   `test_copilot_context.py` = private-overlay-phaseh, confirmed in
   `#50111:deferred/private-overlay-phaseh/...patch`; `probe_prelude_e2e.py`'s 2
-  `/mnt/devvm/...review-sysprompt-prelude` path lines = private, in the deferred set).
+  `<review-workspace>` path lines = private, in the deferred set).
 
 The correct coverage metric is per-line content containment (0 uncovered), not whole-file
 byte-equality (which conflates upstream drift + new files + private-deferred content).

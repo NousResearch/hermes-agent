@@ -83,7 +83,7 @@ index 3762e9097..cefe29248 100644
  # context_window / max_output / supported reasoning_effort whenever the data
 -# is provably wrong upstream. Source of truth document:
 -#
--#   /mnt/devvm/custom/hermes/review-copilot-opus-context/AUTHORITATIVE_LIMITS.md
+-#   <review-workspace>/AUTHORITATIVE_LIMITS.md
   hermes_cli/prompt_size.py
 diff --git a/mnt/devvm/custom/hermes/src/hermes_cli/prompt_size.py b/hermes_cli/prompt_size.py
 index 9db0edc77..913beb18b 100644
@@ -117,7 +117,7 @@ index a872cffd1..d7061ea4e 100644
 +from pathlib import Path
  
 -# Front-load the worktree (mirror the dev wrapper) so our patched modules win.
--WT = "/mnt/devvm/custom/hermes/review-sysprompt-prelude"
+-WT = "<review-workspace>"
 +# Front-load the repo root (parent of this tests/ dir) so our patched modules
 +# win, mirroring the dev wrapper without hardcoding a private worktree path.
 +WT = str(Path(__file__).resolve().parent.parent)
@@ -136,7 +136,7 @@ index 7628e2b35..581a1936c 100644
 -def test_cmx_hermes_engine_schemas_are_bare():
 -    """The cmx engine itself must now expose BARE schemas (source-level guard)."""
 -    import importlib.util, os
--    cmx_path = "/mnt/devvm/custom/hermes/hermes-cmx/src/cmx/hermes_engine.py"
+-    cmx_path = "<cmx-tree>/src/cmx/hermes_engine.py"
 -    if not os.path.exists(cmx_path):
 -        import pytest
 -        pytest.skip("cmx source not present in this layout")

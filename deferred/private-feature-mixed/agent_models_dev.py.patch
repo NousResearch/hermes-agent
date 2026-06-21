@@ -1,8 +1,8 @@
 diff --git a/agent/models_dev.py b/agent/models_dev.py
-index 590f77806..3762e9097 100644
+index 590f77806..9166d3c98 100644
 --- a/agent/models_dev.py
 +++ b/agent/models_dev.py
-@@ -688,6 +688,265 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
+@@ -688,6 +688,264 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
      return _parse_provider_info(mdev_id, raw)
  
  
@@ -18,9 +18,8 @@ index 590f77806..3762e9097 100644
 +#
 +# This override table is the single source of truth for per-(provider, model)
 +# context_window / max_output / supported reasoning_effort whenever the data
-+# is provably wrong upstream. Source of truth document:
-+#
-+#   /mnt/devvm/custom/hermes/review-copilot-opus-context/AUTHORITATIVE_LIMITS.md
++# is provably wrong upstream. Source of truth: empirically probed per-model
++# context/output limits (documented in the PR description).
 +#
 +# Matching rules:
 +#   1. provider_id is normalized lowercase + first segment (e.g. "github-copilot",
@@ -268,7 +267,7 @@ index 590f77806..3762e9097 100644
  # ---------------------------------------------------------------------------
  # Model-level queries (rich ModelInfo)
  # ---------------------------------------------------------------------------
-@@ -695,31 +954,58 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
+@@ -695,31 +953,58 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
  def get_model_info(
      provider_id: str, model_id: str
  ) -> Optional[ModelInfo]:

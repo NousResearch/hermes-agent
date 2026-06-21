@@ -1,7 +1,7 @@
 APPLY MATRIX — every open feature PR 3-way-applied onto a fresh v0.17.0
 v0.17.0 = 2bd1977d8fad185c9b4be47884f7e87f1add0ce3
 method: git diff origin/main...<pr-head> (net PR contribution) | git apply --3way onto v0.17.0
-generated: 2026-06-21T22:29:47Z
+generated: 2026-06-21T22:44:47Z
 ================================================================
 PR       HEAD_SHA     RESULT    DETAIL
 ----------------------------------------------------------------

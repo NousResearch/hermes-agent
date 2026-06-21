@@ -59,9 +59,12 @@ export async function renameSessionPreferringRpc(
       })
 
       return { title: result?.title ?? title }
-    } catch {
+    } catch (err) {
       // Fall through to REST — e.g. the socket is mid-reconnect. REST still
-      // works for any session that already has a persisted row.
+      // works for any session that already has a persisted row. Log so a
+      // genuine RPC-side failure (which then surfaces a REST 404 for the
+      // runtime id) is at least diagnosable instead of silently swallowed.
+      console.warn('session.title RPC rename failed; falling back to REST', err)
     }
   }
 

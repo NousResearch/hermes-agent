@@ -263,6 +263,51 @@ class TestBridgeRuntimeFailure:
         assert adapter._bridge_log_fh is None
 
     @pytest.mark.asyncio
+    async def test_send_normalizes_bare_phone_numbers_to_jid(self):
+        """A bare phone target (with or without +) becomes a full JID.
+
+        Baileys' jidDecode crashes on a bare number (#8637); the adapter
+        must rewrite it to ``<digits>@s.whatsapp.net`` before the bridge
+        call. Regression guard for that crash.
+        """
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._bridge_process = None  # unmanaged bridge — skip exit check
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"messageId": "msg-1"})
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=_AsyncCM(mock_resp))
+        adapter._http_session = mock_session
+
+        result = await adapter.send("+50766715226", "hello")
+
+        assert result.success is True
+        payload = mock_session.post.call_args.kwargs["json"]
+        assert payload["chatId"] == "50766715226@s.whatsapp.net"
+
+    @pytest.mark.asyncio
+    async def test_send_leaves_group_jid_untouched(self):
+        """A fully-qualified group JID must pass through unchanged."""
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._bridge_process = None
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"messageId": "msg-2"})
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=_AsyncCM(mock_resp))
+        adapter._http_session = mock_session
+
+        result = await adapter.send("123456789-987654321@g.us", "hello")
+
+        assert result.success is True
+        payload = mock_session.post.call_args.kwargs["json"]
+        assert payload["chatId"] == "123456789-987654321@g.us"
+
+    @pytest.mark.asyncio
     async def test_poll_messages_marks_retryable_fatal_when_managed_bridge_exits(self):
         adapter = _make_adapter()
         fatal_handler = AsyncMock()

@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { $rightRailActiveTabId, RIGHT_RAIL_PREVIEW_TAB_ID, type RightRailTabId, selectRightRailTab } from './layout'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
+import { setPaneOpen } from './panes'
 
 export interface PreviewTarget {
   binary?: boolean
@@ -100,6 +101,7 @@ export function setPreviewTarget(target: PreviewTarget | null) {
   $previewTarget.set(target)
 
   if (target) {
+    setPaneOpen('preview', true)
     selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
   }
 }

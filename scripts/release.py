@@ -124,6 +124,7 @@ AUTHOR_MAP = {
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
     "etheraura@protonmail.com": "EtherAura",  # PR #45205 salvage (Linux in-app update relaunch / GUI-skew terminal state)
+    "valentt@users.noreply.github.com": "valentt",
     "devran.an12@gmail.com": "devorun",
     "xtpeeps@qq.com": "x7peeps",
     "sommerhoff@gmail.com": "andressommerhoff",

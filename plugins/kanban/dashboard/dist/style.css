@@ -386,6 +386,28 @@
 }
 .hermes-kanban-drawer-close:hover { color: var(--color-foreground); }
 
+.hermes-kanban-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.hermes-kanban-drawer-linkcopy {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+  font-size: 0.72rem;
+  line-height: 1;
+  padding: 0.25rem 0.5rem;
+}
+.hermes-kanban-drawer-linkcopy:hover {
+  color: var(--color-foreground);
+  border-color: var(--color-foreground);
+}
+
 /* Attachment download trigger — styled as a link, rendered as a <button>
    so the click handler can fetch with the session token (#35338). */
 .hermes-kanban-attachment-link {

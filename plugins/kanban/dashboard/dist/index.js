@@ -244,6 +244,69 @@
     return `${url}${sep}board=${encodeURIComponent(board)}`;
   }
 
+  function readKanbanUrlParam(name) {
+    try {
+      const qs = new URLSearchParams(window.location.search || "");
+      const value = qs.get(name);
+      return (value || "").trim() || null;
+    } catch (_e) { return null; }
+  }
+
+  function readKanbanUrlBoard() {
+    return readKanbanUrlParam("board");
+  }
+
+  function readKanbanUrlTask() {
+    return readKanbanUrlParam("task") || readKanbanUrlParam("task_id");
+  }
+
+  function buildKanbanTaskUrl(board, taskId) {
+    const url = new URL(window.location.href);
+    if (board) url.searchParams.set("board", board);
+    else url.searchParams.delete("board");
+    url.searchParams.delete("task_id");
+    if (taskId) url.searchParams.set("task", taskId);
+    else url.searchParams.delete("task");
+    return url;
+  }
+
+  function writeKanbanUrlState(board, taskId) {
+    try {
+      if (!window.history || !window.location) return;
+      const url = buildKanbanTaskUrl(board, taskId);
+      window.history.replaceState(window.history.state, "", url.toString());
+    } catch (_e) { /* ignore browser history quirks */ }
+  }
+
+  function copyTextWithTextarea(text) {
+    const el = document.createElement("textarea");
+    el.value = text;
+    el.setAttribute("readonly", "readonly");
+    el.style.position = "fixed";
+    el.style.left = "-9999px";
+    document.body.appendChild(el);
+    el.select();
+    try {
+      if (typeof document.execCommand !== "function") {
+        throw new Error("Copy command is not available");
+      }
+      const copied = document.execCommand("copy");
+      if (!copied) throw new Error("Copy command was not accepted");
+    } catch (e) {
+      return Promise.reject(e);
+    } finally { document.body.removeChild(el); }
+    return Promise.resolve();
+  }
+
+  function copyTextToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(function () {
+        return copyTextWithTextarea(text);
+      });
+    }
+    return copyTextWithTextarea(text);
+  }
+
   // The SDK's Select component fires ``onValueChange(value)`` directly
   // (it's a shadcn-style popup, not a native <select>). Older plugin
   // code calls ``onChange({target: {value}})`` which silently never
@@ -464,7 +527,14 @@
 
   function KanbanPage() {
     const { t } = useI18n();
-    const [board, setBoard] = useState(() => readSelectedBoard() || null);
+    const [board, setBoard] = useState(function () {
+      const urlBoard = readKanbanUrlBoard();
+      if (urlBoard) {
+        writeSelectedBoard(urlBoard);
+        return urlBoard;
+      }
+      return readSelectedBoard() || null;
+    });
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
 
@@ -488,7 +558,7 @@
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
 
-    const [selectedTaskId, setSelectedTaskId] = useState(null);
+    const [selectedTaskId, setSelectedTaskId] = useState(() => readKanbanUrlTask());
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
     const [failedIds, setFailedIds] = useState(() => new Set());
@@ -673,6 +743,17 @@
     }, [boardData, tenantFilter, assigneeFilter, search]);
 
     // --- actions ------------------------------------------------------------
+    const openTask = useCallback(function (taskId) {
+      if (!taskId) return;
+      setSelectedTaskId(taskId);
+      writeKanbanUrlState(board, taskId);
+    }, [board]);
+
+    const closeTask = useCallback(function () {
+      setSelectedTaskId(null);
+      writeKanbanUrlState(board, null);
+    }, [board]);
+
     const moveTask = useCallback(function (taskId, newStatus) {
       const confirmMsg = getDestructiveConfirm(t, newStatus);
       if (confirmMsg && !window.confirm(confirmMsg)) return;
@@ -709,6 +790,32 @@
       setLastSelectedId(null);
       setFailedIds(new Set());
     }, []);
+
+    // Keep browser back/forward deep-link navigation in sync while the SPA
+    // keeps this plugin mounted. Initial page loads are handled by the state
+    // initializers above; this handles later query-string changes.
+    useEffect(function () {
+      function syncFromUrl() {
+        const urlBoard = readKanbanUrlBoard();
+        const urlTask = readKanbanUrlTask();
+        if (urlBoard && urlBoard !== board) {
+          setBoardData(null);
+          cursorRef.current = 0;
+          setLoading(true);
+          setBoard(urlBoard);
+          writeSelectedBoard(urlBoard);
+          setSearch("");
+          setTenantFilter("");
+          setAssigneeFilter("");
+          setIncludeArchived(false);
+          clearSelected();
+        }
+        setSelectedTaskId(urlTask);
+      }
+      window.addEventListener("popstate", syncFromUrl);
+      return function () { window.removeEventListener("popstate", syncFromUrl); };
+    }, [board, clearSelected]);
+
     const moveSelected = useCallback(function (newStatus) {
       const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
       if (confirmMsg && !window.confirm(confirmMsg)) return;
@@ -908,6 +1015,8 @@
       setLoading(true);
       setBoard(nextSlug);
       writeSelectedBoard(nextSlug);
+      setSelectedTaskId(null);
+      writeKanbanUrlState(nextSlug, null);
       // Reset filters so stale search/tenant/assignee don't persist across boards.
       setSearch("");
       setTenantFilter("");
@@ -1003,7 +1112,7 @@
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
         }),
         h(BoardToolbar, {
           board: boardData,
@@ -1042,14 +1151,14 @@
           onMove: moveTask,
           onMoveSelected: moveSelected,
           onDelete: deleteTask,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
           boardSlug: board,
-          onClose: function () { setSelectedTaskId(null); },
+          onClose: closeTask,
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -2800,6 +2909,7 @@
     const [homeChannels, setHomeChannels] = useState([]);
     const [homeBusy, setHomeBusy] = useState({});
     const boardSlug = props.boardSlug;
+    const [linkCopied, setLinkCopied] = useState(false);
 
     const load = useCallback(function () {
       return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug))
@@ -2826,6 +2936,16 @@
       window.addEventListener("keydown", onKey);
       return function () { window.removeEventListener("keydown", onKey); };
     }, [props.onClose, editing]);
+
+    const handleCopyLink = function () {
+      const link = buildKanbanTaskUrl(boardSlug, props.taskId).toString();
+      copyTextToClipboard(link)
+        .then(function () {
+          setLinkCopied(true);
+          setTimeout(function () { setLinkCopied(false); }, 1800);
+        })
+        .catch(function (e) { setErr(String(e.message || e)); });
+    };
 
     const handleComment = function () {
       const body = newComment.trim();
@@ -3016,12 +3136,20 @@
       },
         h("div", { className: "hermes-kanban-drawer-head" },
           h("span", { className: "text-xs text-muted-foreground" }, props.taskId),
-          h("button", {
-            type: "button",
-            onClick: props.onClose,
-            className: "hermes-kanban-drawer-close",
-            title: tx(t, "close", "Close (Esc)"),
-          }, "×"),
+          h("div", { className: "hermes-kanban-drawer-actions" },
+            h("button", {
+              type: "button",
+              onClick: handleCopyLink,
+              className: "hermes-kanban-drawer-linkcopy",
+              title: tx(t, "copyTaskLink", "Copy link to this task"),
+            }, linkCopied ? tx(t, "copied", "Copied") : tx(t, "copyLink", "Copy link")),
+            h("button", {
+              type: "button",
+              onClick: props.onClose,
+              className: "hermes-kanban-drawer-close",
+              title: tx(t, "close", "Close (Esc)"),
+            }, "×"),
+          ),
         ),
         loading ? h("div", { className: "p-4 text-sm text-muted-foreground" },
           tx(t, "loadingDetail", "Loading…")) :

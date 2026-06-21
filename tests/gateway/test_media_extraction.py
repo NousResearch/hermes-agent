@@ -321,6 +321,41 @@ caption
         )
         assert tags == [], f"generated image re-emitted after compression: {tags}"
 
+    def test_image_generate_remote_backend_not_reemitted_after_compression(self):
+        """Remote terminal backends (Docker/Modal/SSH) make image_generate carry
+        a DISTINCT ``agent_visible_image`` alongside ``host_image``. The dedup
+        builder must record EVERY path field, not just the first — otherwise the
+        ``agent_visible_image`` path is never deduped and gets re-attached on
+        every text-only turn after a compression boundary (the #46627 symptom,
+        which the single-field regression above does not exercise)."""
+        from gateway.run import (
+            _collect_auto_append_media_tags,
+            _collect_history_media_paths,
+        )
+
+        history = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "c", "function": {"name": "image_generate"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c",
+                "content": (
+                    '{"success": true, '
+                    '"host_image": "/host/.hermes/cache/cat.png", '
+                    '"image": "/host/.hermes/cache/cat.png", '
+                    '"agent_visible_image": "/root/.hermes/cache/cat.png"}'
+                ),
+            },
+        ]
+        history_paths = _collect_history_media_paths(history)
+
+        tags, _ = _collect_auto_append_media_tags(
+            history, history_offset=9999, history_media_paths=history_paths
+        )
+        assert tags == [], f"agent_visible_image re-emitted after compression: {tags}"
+
 
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""

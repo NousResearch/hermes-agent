@@ -1157,11 +1157,18 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
             except Exception:
                 payload = None
             if isinstance(payload, dict) and payload.get("success"):
+                # Record EVERY path field, not just the first. The consumer
+                # (_collect_auto_append_media_tags) can emit any of host_image /
+                # image / agent_visible_image, so all delivered shapes must land
+                # in the dedup set. On remote terminal backends (Docker/Modal/
+                # SSH) image_generate carries a *distinct* agent_visible_image;
+                # stopping at host_image left that path undeduped, so it was
+                # re-attached every text-only turn after a compression boundary —
+                # the exact #46627 symptom this helper exists to prevent.
                 for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
                     jp = payload.get(field)
                     if isinstance(jp, str) and jp:
                         paths.add(jp)
-                        break
     return paths
 
 # ---------------------------------------------------------------------------

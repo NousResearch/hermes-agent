@@ -1,0 +1,12 @@
+Per-PR own-test-files run on each READY PR's HEAD SHA (venv pytest):
+  #48024  c5346ea34  180 passed
+  #48057  a4589b165   49 passed
+  #48065  ea7e64f46    8 passed
+  #48069  4a1fbe9e1    5 passed
+  #48101  af2016d1e   19 passed
+  #49184  d684ef808   13 passed
+  #49449  cd27defe2   15 passed
+  #49644  9ea0cab9a   10 passed
+TOTAL: 299 passed, 0 failed across the 8 READY PRs' own test suites.
+NOTE: fork PRs get no gated upstream CI until a maintainer approves; this local
+per-head test run is the documented substitute.

@@ -159,16 +159,21 @@ def test_feasibility_check_passes_live_main_runtime():
         agent._emit_status = lambda msg: None
         agent._check_compression_model_feasibility()
 
-    mock_get_client.assert_called_once_with(
-        "compression",
-        main_runtime={
-            "model": "gpt-5.4",
-            "provider": "openai-codex",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "codex-token",
-            "api_mode": "codex_responses",
-        },
-    )
+    # Candidate widened _MAIN_RUNTIME_FIELDS to include requested_model and
+    # resolved_model. Subset-match the keys this test cares about.
+    assert mock_get_client.call_count == 1
+    args, kwargs = mock_get_client.call_args
+    assert args[0] == "compression"
+    main_runtime = kwargs["main_runtime"]
+    expected_subset = {
+        "model": "gpt-5.4",
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key": "codex-token",
+        "api_mode": "codex_responses",
+    }
+    for k, v in expected_subset.items():
+        assert main_runtime.get(k) == v, f"main_runtime[{k!r}] = {main_runtime.get(k)!r}, expected {v!r}"
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=1_000_000)

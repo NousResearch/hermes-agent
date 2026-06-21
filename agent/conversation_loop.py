@@ -605,6 +605,7 @@ def run_conversation(
     codex_ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
+    file_mutation_recovery_attempts = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
@@ -5039,6 +5040,38 @@ def run_conversation(
                     length_continue_retries = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
+
+                _failed_file_mutations = getattr(agent, "_turn_failed_file_mutations", None) or {}
+                if (
+                    _failed_file_mutations
+                    and file_mutation_recovery_attempts < 1
+                    and api_call_count < agent.max_iterations
+                    and agent.iteration_budget.remaining > 0
+                    and agent._file_mutation_auto_recovery_enabled()
+                ):
+                    recovery_prompt = agent._format_file_mutation_recovery_prompt(
+                        _failed_file_mutations
+                    )
+                    if recovery_prompt:
+                        file_mutation_recovery_attempts += 1
+                        logger.info(
+                            "Unresolved file mutations before final response; "
+                            "injecting self-recovery turn (%d path(s))",
+                            len(_failed_file_mutations),
+                        )
+                        recovery_msg = agent._build_assistant_message(
+                            assistant_message, finish_reason
+                        )
+                        recovery_msg["_file_mutation_recovery_synthetic"] = True
+                        messages.append(recovery_msg)
+                        messages.append({
+                            "role": "user",
+                            "content": recovery_prompt,
+                            "_file_mutation_recovery_synthetic": True,
+                        })
+                        agent._session_messages = messages
+                        final_response = None
+                        continue
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 

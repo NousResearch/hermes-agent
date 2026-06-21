@@ -379,6 +379,31 @@ class TestFormatFooter:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class TestFormatRecoveryPrompt:
+    def test_empty_returns_empty_string(self):
+        assert AIAgent._format_file_mutation_recovery_prompt({}) == ""
+
+    def test_prompt_tells_model_to_self_correct_or_ask_approval(self):
+        out = AIAgent._format_file_mutation_recovery_prompt(
+            {"/tmp/a.md": {"tool": "patch", "error_preview": "Could not find old_string"}},
+        )
+        assert "Do NOT claim the task is complete" in out
+        assert "re-read the relevant file" in out
+        assert "ask the user for approval/decision" in out
+        assert "Do not add a generic verifier warning footer" in out
+        assert "/tmp/a.md" in out
+        assert "Could not find old_string" in out
+
+    def test_prompt_truncates_after_10_entries(self):
+        failed = {
+            f"/tmp/f{i}.md": {"tool": "patch", "error_preview": "err"}
+            for i in range(15)
+        }
+        out = AIAgent._format_file_mutation_recovery_prompt(failed)
+        assert "… and 5 more" in out
+        assert out.count("/tmp/f") == 10
+
+
 # ---------------------------------------------------------------------------
 # _file_mutation_verifier_enabled — env + config precedence
 # ---------------------------------------------------------------------------
@@ -409,16 +434,42 @@ class TestVerifierEnabled:
         )
         agent = _bare_agent()
         assert agent._file_mutation_verifier_enabled() is True
-
     def test_config_disables_when_no_env(self, monkeypatch):
         monkeypatch.delenv("HERMES_FILE_MUTATION_VERIFIER", raising=False)
         import hermes_cli.config as _cfg_mod
         monkeypatch.setattr(
-            _cfg_mod, "load_config",
+            _cfg_mod,
+            "load_config",
             lambda: {"display": {"file_mutation_verifier": False}},
         )
         agent = _bare_agent()
         assert agent._file_mutation_verifier_enabled() is False
+
+
+class TestAutoRecoveryEnabled:
+    def test_default_is_enabled(self, monkeypatch):
+        monkeypatch.delenv("HERMES_FILE_MUTATION_AUTO_RECOVERY", raising=False)
+        import hermes_cli.config as _cfg_mod
+        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {})
+        agent = _bare_agent()
+        assert agent._file_mutation_auto_recovery_enabled() is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "FALSE", "no", "off"])
+    def test_env_disables(self, monkeypatch, value):
+        monkeypatch.setenv("HERMES_FILE_MUTATION_AUTO_RECOVERY", value)
+        agent = _bare_agent()
+        assert agent._file_mutation_auto_recovery_enabled() is False
+
+    def test_config_disables_when_no_env(self, monkeypatch):
+        monkeypatch.delenv("HERMES_FILE_MUTATION_AUTO_RECOVERY", raising=False)
+        import hermes_cli.config as _cfg_mod
+        monkeypatch.setattr(
+            _cfg_mod,
+            "load_config",
+            lambda: {"display": {"file_mutation_auto_recovery": False}},
+        )
+        agent = _bare_agent()
+        assert agent._file_mutation_auto_recovery_enabled() is False
 
 
 # ---------------------------------------------------------------------------

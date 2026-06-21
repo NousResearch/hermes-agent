@@ -1718,8 +1718,16 @@ DEFAULT_CONFIG = {
         # superseded by a successful write to the same path.  This catches
         # the "batch of parallel patches, half fail, model claims success"
         # class of over-claim that otherwise forces users to run
-        # `git status` to verify edits landed.  Set false to suppress.
+        # `git status` to verify edits landed.  Set false to suppress the
+        # user-visible footer only; auto-recovery below can still catch and
+        # repair failed mutations before a final answer.
         "file_mutation_verifier": True,
+        # File-mutation auto-recovery.  When true (default), an unresolved
+        # write_file / patch failure triggers one internal recovery turn before
+        # any final response is delivered. The model should retry the edit or
+        # ask for approval/decision if it cannot proceed safely. This is the
+        # preferred non-spam path; the footer is only a last-resort display aid.
+        "file_mutation_auto_recovery": True,
         # Nous credits status-bar notices (usage bands, grant-spent, depleted /
         # restored).  When false, no credits notices are emitted — balance data
         # is still captured and /usage keeps working.  Off switch for sub +
@@ -1940,6 +1948,26 @@ DEFAULT_CONFIG = {
         # falls through to request reconstruction rather than breaking
         # the login flow.
         "public_url": "",
+    },
+
+    # Agent2Agent (A2A) sidecar settings. The sidecar is a separate process
+    # (`hermes-a2a`) that exposes a narrow standards-based A2A facade and maps
+    # inbound peer tasks to Hermes Kanban. Keep it bound to localhost unless a
+    # trusted perimeter (Cloudflare Access, Tailscale, mTLS/OIDC proxy) handles
+    # public TLS/auth. Peer bearer tokens should be stored as sha256 hashes here
+    # or as env vars, never as raw config secrets.
+    "a2a": {
+        "enabled": False,
+        "host": "127.0.0.1",
+        "port": 8765,
+        "public_url": "http://127.0.0.1:8765",
+        "rpc_path": "/a2a",
+        "agent_name": "Sasha Hermes Agent",
+        "board": "",
+        "audit_db_path": "",
+        "artifact_root": "",
+        "allow_insecure_local": False,
+        "peers": {},
     },
 
     # Privacy settings

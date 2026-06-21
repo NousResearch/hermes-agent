@@ -2838,6 +2838,34 @@ class AIAgent:
             pass
         return True  # safe default: verifier on
 
+    def _file_mutation_auto_recovery_enabled(self) -> bool:
+        """Check whether failed file mutations should trigger a recovery turn.
+
+        This is intentionally separate from ``display.file_mutation_verifier``:
+        users may hate the user-facing footer noise while still wanting Hermes
+        to catch failed writes and give the model one internal chance to fix the
+        problem before any final answer is delivered.
+
+        Config path: ``display.file_mutation_auto_recovery`` (bool, default
+        True). ``HERMES_FILE_MUTATION_AUTO_RECOVERY`` env var overrides config.
+        """
+        try:
+            import os as _os
+            env = _os.environ.get("HERMES_FILE_MUTATION_AUTO_RECOVERY")
+            if env is not None:
+                return env.strip().lower() not in {"0", "false", "no", "off"}
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config() or {}
+            except Exception:
+                _cfg = {}
+            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
+            if isinstance(_display, dict) and "file_mutation_auto_recovery" in _display:
+                return bool(_display.get("file_mutation_auto_recovery"))
+        except Exception:
+            pass
+        return True
+
     # Bare absolute / home / Windows-drive file paths in a footer line.
     # Anchors mirror the gateway's ``extract_local_files`` bare-path
     # detector so that anything the gateway WOULD auto-attach is wrapped
@@ -2907,6 +2935,45 @@ class AIAgent:
         # already backticked above; the lookbehind keeps it from being
         # double-wrapped).
         return cls._neutralize_footer_paths("\n".join(lines))
+
+    @classmethod
+    def _format_file_mutation_recovery_prompt(cls, failed: Dict[str, Dict[str, Any]]) -> str:
+        """Render unresolved file-mutation failures as an internal recovery nudge.
+
+        This prompt is appended as a synthetic user message after a model tries
+        to finish a turn with unresolved write_file/patch failures.  The model
+        gets one more chance to repair the failed edits using the normal tools;
+        if it cannot proceed safely, it should ask the user for the missing
+        approval/decision instead of sending a misleading "done" answer or
+        relying on a noisy post-hoc footer.
+        """
+        if not failed:
+            return ""
+        lines = [
+            "[System: File-mutation verifier detected unresolved write_file/patch failures ",
+            "before your final answer was delivered. Do NOT claim the task is complete yet. ",
+            "First try to fix the failed mutations yourself: re-read the relevant file(s), ",
+            "adjust the patch/write, and rerun the appropriate tool. If you cannot safely ",
+            "proceed because the target is protected, cross-profile, credential-like, or needs ",
+            "a human decision, ask the user for approval/decision in one concise message. ",
+            "Do not add a generic verifier warning footer. Failed mutations:",
+        ]
+        shown = 0
+        for path, info in failed.items():
+            if shown >= 10:
+                break
+            preview = (info.get("error_preview") or "").strip()
+            tool = info.get("tool") or "patch"
+            if preview:
+                lines.append(f"- {path} — [{tool}] {preview}")
+            else:
+                lines.append(f"- {path} — [{tool}] failed")
+            shown += 1
+        remaining = len(failed) - shown
+        if remaining > 0:
+            lines.append(f"- … and {remaining} more")
+        lines.append("]")
+        return "\n".join(lines)
 
     def _turn_completion_explainer_enabled(self) -> bool:
         """Check whether the end-of-turn completion explainer footer is on.

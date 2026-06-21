@@ -3101,7 +3101,15 @@ class SessionDB:
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
-                f"{active_clause} ORDER BY timestamp, id",
+                # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
+                # append_message stamps rows with time.time(), which is not
+                # monotonic (WSL2, NTP steps, VM/laptop sleep resume). A later
+                # row can carry an earlier timestamp than its predecessor, and
+                # ORDER BY timestamp would then sort an assistant tool_calls row
+                # after its tool response, breaking tool-call/response adjacency
+                # and triggering an HTTP 400 on replay. This matches get_messages
+                # — see c03acca50 for the original fix.
+                f"{active_clause} ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
 

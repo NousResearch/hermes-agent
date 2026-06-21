@@ -7758,17 +7758,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     time.time() - _started_at,
                     _quick_key,
                 )
-                adapter = self.adapters.get(source.platform)
-                if adapter:
-                    if self._busy_input_mode == "queue":
-                        self._enqueue_fifo(_quick_key, event, adapter)
-                    else:
-                        merge_pending_message_event(
-                            adapter._pending_messages,
-                            _quick_key,
-                            event,
-                            merge_text=True,
-                        )
+                self._queue_or_replace_pending_event(_quick_key, event)
                 return None
 
             running_agent = self._running_agents.get(_quick_key)
@@ -7781,14 +7771,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
                 # Queue the message so it will be picked up after the
                 # agent starts.
-                adapter = self.adapters.get(source.platform)
-                if adapter:
-                    merge_pending_message_event(
-                        adapter._pending_messages,
-                        _quick_key,
-                        event,
-                        merge_text=True,
-                    )
+                self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             if self._draining:
                 if self._queue_during_drain_enabled():

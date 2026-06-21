@@ -297,7 +297,10 @@ async def test_recent_telegram_followups_append_in_pending_queue():
 
     fake_agent.interrupt.assert_not_called()
     adapter = runner.adapters[Platform.TELEGRAM]
-    assert adapter._pending_messages[session_key].text == "part one\npart two"
+    assert adapter._pending_messages[session_key].text == "part one"
+    overflow = getattr(runner, "_queued_events", {}).get(session_key, [])
+    assert len(overflow) == 1
+    assert overflow[0].text == "part two"
 
 
 # ------------------------------------------------------------------

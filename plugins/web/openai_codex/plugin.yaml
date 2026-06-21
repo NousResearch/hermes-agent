@@ -1,0 +1,7 @@
+name: web-openai-codex
+version: 1.0.0
+description: "OpenAI Codex Web Search — agentic web_search via the Codex backend, authenticated with ChatGPT Pro/Plus OAuth (hermes auth add openai-codex). No API key, no per-call web-search billing."
+author: su-record
+kind: backend
+provides_web_providers:
+  - openai-codex

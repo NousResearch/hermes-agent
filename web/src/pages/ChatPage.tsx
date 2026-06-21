@@ -36,6 +36,11 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { normalizeSessionTitle } from "@/lib/chat-title";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import {
+  reassembleWrappedLines,
+  type TranscriptRow,
+} from "@/lib/terminal-transcript";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
@@ -191,6 +196,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     useState<PtyConnectionState>("connecting");
   const ptyStateRef = useRef<PtyConnectionState>("connecting");
   const [lastCloseCode, setLastCloseCode] = useState<number | null>(null);
+  // Touch copy: on a phone the inner Ink TUI runs xterm in mouse-events mode,
+  // so a press-and-hold can only word-select and never drag-extends — leaving
+  // you stranded on one word. A long-press instead opens this read-only sheet
+  // with the full transcript, where native OS selection works on any range.
+  // null = closed; a string = the captured transcript text.
+  const [textSheet, setTextSheet] = useState<string | null>(null);
   // NS-504: when the agent process exits cleanly (the user typed `/exit`, or
   // started a new session that ended the current PTY child), the PTY socket
   // closes with a normal code. Before this fix the terminal just printed
@@ -1270,6 +1281,82 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.options.theme = terminalTheme;
   }, [terminalTheme]);
 
+  // Touch long-press → open the selectable transcript sheet. A single finger
+  // held still for ~500ms captures the full xterm buffer as plain text. We use
+  // raw touch events (not xterm's pointer handling) so the inner TUI's
+  // mouse-events mode can't swallow the gesture; the listeners stay passive and
+  // only read scroll/position, so normal touch-scrolling is unaffected.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const MOVE_TOLERANCE = 12; // px before we treat it as a scroll, not a hold
+    const HOLD_MS = 500;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let startX = 0;
+    let startY = 0;
+    const clear = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+    const bufferText = (): string => {
+      const term = termRef.current;
+      if (!term) return "";
+      const buf = term.buffer.active;
+      // Collect physical rows, then let the tested helper reassemble them into
+      // logical lines (wrap-aware, so a soft-wrapped command/path/URL copies as
+      // one line instead of being split — worst on the narrow phones this sheet
+      // exists for). See lib/terminal-transcript.ts.
+      const rows: TranscriptRow[] = [];
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        if (!line) continue;
+        rows.push({
+          text: line.translateToString(true),
+          isWrapped: line.isWrapped,
+        });
+      }
+      return reassembleWrappedLines(rows);
+    };
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) {
+        clear();
+        return;
+      }
+      const t = e.touches[0];
+      startX = t.clientX;
+      startY = t.clientY;
+      clear();
+      timer = setTimeout(() => {
+        timer = null;
+        const text = bufferText();
+        if (text) setTextSheet(text);
+      }, HOLD_MS);
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!timer) return;
+      const t = e.touches[0];
+      if (
+        Math.abs(t.clientX - startX) > MOVE_TOLERANCE ||
+        Math.abs(t.clientY - startY) > MOVE_TOLERANCE
+      ) {
+        clear();
+      }
+    };
+    host.addEventListener("touchstart", onStart, { passive: true });
+    host.addEventListener("touchmove", onMove, { passive: true });
+    host.addEventListener("touchend", clear, { passive: true });
+    host.addEventListener("touchcancel", clear, { passive: true });
+    return () => {
+      clear();
+      host.removeEventListener("touchstart", onStart);
+      host.removeEventListener("touchmove", onMove);
+      host.removeEventListener("touchend", clear);
+      host.removeEventListener("touchcancel", clear);
+    };
+  }, []);
+
   // Layout:
   //   outer flex column — sits inside the dashboard's content area
   //   row split — terminal pane (flex-1) + sidebar (fixed width, lg+)
@@ -1470,6 +1557,50 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               </span>
             </span>
           </Button>
+
+          {/* Touch transcript sheet (long-press the terminal). A real
+              OS-selectable <textarea> with the full conversation — the reliable
+              way to copy an arbitrary range on a phone, where xterm's own
+              selection only grabs one word. */}
+          {textSheet !== null && (
+            <div className="absolute inset-0 z-30 flex flex-col bg-black/85 backdrop-blur-sm">
+              <div className="flex items-center gap-2 px-3 py-2 text-xs text-white/80">
+                <span className="tracking-wide">Select any text to copy, or</span>
+                <button
+                  type="button"
+                  className="rounded border border-current/40 px-2 py-0.5 hover:border-current/70"
+                  onClick={() => {
+                    // Shared helper: prefers the async Clipboard API on secure
+                    // origins and falls back to a hidden-textarea execCommand
+                    // copy otherwise — the reliable path on the insecure-origin
+                    // LAN dashboards this sheet is meant for.
+                    void copyTextToClipboard(textSheet ?? "");
+                    setTextSheet(null);
+                  }}
+                >
+                  Copy all
+                </button>
+                <span className="flex-1" />
+                <button
+                  type="button"
+                  className="rounded px-2 py-0.5 hover:bg-white/10"
+                  aria-label="Close transcript"
+                  onClick={() => setTextSheet(null)}
+                >
+                  ✕
+                </button>
+              </div>
+              {/* No auto-select-on-focus: it highlights the whole transcript
+                  and fights a press-and-hold range selection. Tap/long-press to
+                  place and drag your own selection; "Copy all" covers the rest. */}
+              <textarea
+                readOnly
+                value={textSheet}
+                className="min-h-0 w-full flex-1 resize-none bg-transparent px-3 pb-3 font-mono text-xs leading-relaxed text-white/90 outline-none"
+                style={{ WebkitUserSelect: "text", userSelect: "text" }}
+              />
+            </div>
+          )}
         </div>
 
         {!narrow && (

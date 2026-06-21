@@ -1,7 +1,7 @@
 """Tests for hermes_constants module."""
 
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -106,6 +106,22 @@ class TestGetHermesHome:
         monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
 
         assert get_hermes_home() == local_appdata / "hermes"
+
+
+class TestDisplayHermesHome:
+    def test_windows_home_relative_path_uses_consistent_placeholder_separators(
+        self, monkeypatch
+    ):
+        home = PureWindowsPath("C:/Users/bryan")
+        hermes_home = home / "AppData" / "Local" / "hermes"
+
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(hermes_constants.Path, "home", lambda: home)
+
+        display = hermes_constants.display_hermes_home()
+
+        assert display == "~/AppData/Local/hermes"
+        assert f"{display}/.env" == "~/AppData/Local/hermes/.env"
 
 
 class TestHermesManagedNode:

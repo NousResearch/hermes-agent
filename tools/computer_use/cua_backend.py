@@ -429,8 +429,12 @@ class CuaDriverBackend(ComputerUseBackend):
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision).
         """
-        # Step 1: enumerate on-screen windows to find target pid/window_id.
-        lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
+        # Step 1: enumerate windows to find target pid/window_id. Use the full
+        # WindowServer inventory instead of on_screen_only=True: cua-driver can
+        # report background-launched or other-Space windows as not on-screen even
+        # when get_window_state can capture them correctly. We still prefer
+        # on-screen candidates below via `off_screen`.
+        lw_out = self._session.call_tool("list_windows", {"on_screen_only": False})
 
         # Prefer structuredContent.windows (MCP 2024-11-05+); fall back to
         # text-line parsing for older cua-driver builds.
@@ -491,42 +495,56 @@ class CuaDriverBackend(ComputerUseBackend):
         if app or not self._last_app:
             self._last_app = app_name
 
-        # Step 2: capture.
+        # Step 2: capture. Use get_window_state for all modes: cua-driver does
+        # not expose a standalone screenshot tool in all versions, and
+        # get_window_state is the canonical screenshot path with
+        # capture_mode='vision'|'som'|'ax'.
         png_b64: Optional[str] = None
         elements: List[UIElement] = []
         width = height = 0
-        window_title = ""
+        window_title = target.get("title") or ""
 
-        if mode == "vision":
-            # screenshot tool: just the PNG, no AX walk.
-            sc_out = self._session.call_tool(
-                "screenshot",
-                {"window_id": self._active_window_id, "format": "jpeg", "quality": 85},
-            )
-            if sc_out["images"]:
-                png_b64 = sc_out["images"][0]
+        gws_out = self._session.call_tool(
+            "get_window_state",
+            {
+                "pid": self._active_pid,
+                "window_id": self._active_window_id,
+                "capture_mode": mode,
+            },
+        )
+        structured = gws_out.get("structuredContent") or {}
+        if isinstance(structured, dict):
+            width = int(structured.get("screenshot_width") or 0)
+            height = int(structured.get("screenshot_height") or 0)
+            structured_tree = structured.get("tree_markdown")
         else:
-            # get_window_state: AX tree + optional screenshot.
-            gws_out = self._session.call_tool(
-                "get_window_state",
-                {"pid": self._active_pid, "window_id": self._active_window_id},
-            )
-            text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
-            summary, tree = _split_tree_text(text)
+            structured_tree = None
 
-            # Parse element count from summary e.g. "✅ AppName — 42 elements, turn 3..."
-            m = re.search(r'(\d+)\s+elements?', summary)
-            if tree and not gws_out["images"]:
-                # ax mode — no screenshot
-                elements = _parse_elements_from_tree(tree)
-            elif gws_out["images"]:
-                png_b64 = gws_out["images"][0]
-                elements = _parse_elements_from_tree(tree)
+        text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
+        summary, parsed_tree = _split_tree_text(text)
+        tree = structured_tree if isinstance(structured_tree, str) else parsed_tree
 
-            # Extract window title from the AX tree first AXWindow line.
-            wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
-            if wt:
-                window_title = wt.group(1)
+        # Fallback: parse `size=460x816` from cua-driver text output when
+        # structuredContent is absent/older.
+        if not width or not height:
+            size_match = re.search(r'\bsize=(\d+)x(\d+)\b', summary)
+            if size_match:
+                width = int(size_match.group(1))
+                height = int(size_match.group(2))
+        if (not width or not height) and isinstance(target.get("bounds"), dict):
+            bounds = target.get("bounds") or {}
+            width = int(bounds.get("width") or width or 0)
+            height = int(bounds.get("height") or height or 0)
+
+        if mode != "vision" and tree:
+            elements = _parse_elements_from_tree(tree)
+        if gws_out["images"] and mode != "ax":
+            png_b64 = gws_out["images"][0]
+
+        # Extract window title from the AX tree first AXWindow line.
+        wt = re.search(r'AXWindow\s+"([^"]+)"', tree or "")
+        if wt:
+            window_title = wt.group(1)
 
         png_bytes_len = 0
         if png_b64:
@@ -718,14 +736,14 @@ class CuaDriverBackend(ComputerUseBackend):
         cua-driver background-automation never needs to bring a window to the
         front: capture(app=...) already selects the right window via
         list_windows. We implement focus_app as a pure window-selector —
-        enumerate on-screen windows, find the best match for *app*, and store
+        enumerate windows, find the best match for *app*, and store
         its pid/window_id so that subsequent click/type calls hit the right
         process.
 
         raise_window=True is intentionally ignored: stealing the user's focus
         is exactly what this backend is designed to avoid.
         """
-        lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
+        lw_out = self._session.call_tool("list_windows", {"on_screen_only": False})
         sc = lw_out.get("structuredContent") or {}
         raw_windows = sc.get("windows") if sc else None
         if raw_windows:

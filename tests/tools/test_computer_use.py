@@ -1412,6 +1412,81 @@ class TestCaptureAppFilterNoMatch:
 
         assert backend._active_pid == 100
 
+    def test_capture_uses_requested_mode_and_structured_dimensions(self):
+        windows = [
+            {"app_name": "Calculator", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": 'window_id=2 pid=200 size=460x816 elements=1\n\n- [0] AXWindow "Calculator"',
+             "images": ["iVBORfake"], "isError": False,
+             "structuredContent": {
+                 "screenshot_width": 460,
+                 "screenshot_height": 816,
+                 "tree_markdown": '- [0] AXWindow "Calculator"',
+             }},
+        ]
+
+        cap = backend.capture(mode="som", app="Calculator")
+
+        assert backend._session.call_tool.call_args_list[1].args[0] == "get_window_state"
+        assert backend._session.call_tool.call_args_list[1].args[1]["capture_mode"] == "som"
+        assert cap.width == 460
+        assert cap.height == 816
+        assert cap.png_b64 == "iVBORfake"
+        assert cap.window_title == "Calculator"
+
+    def test_capture_ax_suppresses_image_even_if_driver_returns_one(self):
+        windows = [
+            {"app_name": "Calculator", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": 'window_id=2 pid=200 size=460x816 elements=1\n\n- [0] AXWindow "Calculator"',
+             "images": ["iVBORfake"], "isError": False,
+             "structuredContent": {
+                 "screenshot_width": 460,
+                 "screenshot_height": 816,
+                 "tree_markdown": '- [0] AXWindow "Calculator"',
+             }},
+        ]
+
+        cap = backend.capture(mode="ax", app="Calculator")
+
+        assert backend._session.call_tool.call_args_list[1].args[1]["capture_mode"] == "ax"
+        assert cap.width == 460
+        assert cap.height == 816
+        assert cap.png_b64 is None
+
+    def test_capture_vision_uses_get_window_state_not_screenshot_tool(self):
+        windows = [
+            {"app_name": "Calculator", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": 'window_id=2 pid=200 size=460x816',
+             "images": ["/9j/fake"], "isError": False,
+             "structuredContent": {"screenshot_width": 460, "screenshot_height": 816}},
+        ]
+
+        cap = backend.capture(mode="vision", app="Calculator")
+
+        assert backend._session.call_tool.call_args_list[1].args[0] == "get_window_state"
+        assert backend._session.call_tool.call_args_list[1].args[1]["capture_mode"] == "vision"
+        assert cap.width == 460
+        assert cap.height == 816
+        assert cap.png_b64 == "/9j/fake"
+        assert cap.elements == []
+
 
 class TestFocusAppFilterNoMatch:
     """focus_app(app=X) must return ok=False when X matches nothing —

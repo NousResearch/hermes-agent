@@ -306,6 +306,37 @@ class TestCaptureResponseRoutedToAuxVision:
         assert observed_path["path"]
         assert not os.path.exists(observed_path["path"])
 
+    def test_routing_creates_missing_cache_directory(self, tmp_path):
+        from tools.computer_use import tool as cu_tool
+
+        missing_cache_dir = tmp_path / "missing" / "cache" / "vision"
+        cap = _make_capture(mode="som")
+
+        def _fake_get(*_args, **_kw):
+            return missing_cache_dir
+
+        def _fake_run_async(_coro):
+            return _stub_aux_analysis("description goes here")
+
+        def _fake_vat(image_path, _prompt):
+            assert os.path.exists(image_path)
+            assert str(missing_cache_dir) in image_path
+            return "<coro>"
+
+        fake_vat = MagicMock(side_effect=_fake_vat)
+
+        with patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=True), \
+             patch("hermes_constants.get_hermes_dir", side_effect=_fake_get), \
+             patch("model_tools._run_async", side_effect=_fake_run_async), \
+             patch("tools.vision_tools.vision_analyze_tool",
+                   new_callable=lambda: fake_vat):
+            resp = cu_tool._capture_response(cap)
+
+        assert missing_cache_dir.exists()
+        body = json.loads(resp)
+        assert body["vision_analysis_routed_via"] == "auxiliary.vision"
+
     def test_empty_aux_analysis_falls_back_to_multimodal(self, tmp_cache_dir):
         from tools.computer_use import tool as cu_tool
 

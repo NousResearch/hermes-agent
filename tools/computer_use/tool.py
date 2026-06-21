@@ -724,6 +724,8 @@ def _route_capture_through_aux_vision(
         try:
             parsed = json.loads(result_json)
             if isinstance(parsed, dict):
+                if parsed.get("success") is False:
+                    return None
                 analysis_text = str(parsed.get("analysis") or "").strip()
         except (TypeError, json.JSONDecodeError):
             analysis_text = result_json.strip()

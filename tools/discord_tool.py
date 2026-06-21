@@ -431,19 +431,22 @@ def _create_thread(
     **_kwargs: Any,
 ) -> str:
     """Create a thread in a channel."""
+    # The tool schema exposes auto_archive_duration as a string enum (Gemini
+    # rejects integer-typed enums), so coerce to the int Discord's API expects.
+    archive_minutes = int(auto_archive_duration)
     if message_id:
         # Create thread from an existing message
         path = f"/channels/{channel_id}/messages/{message_id}/threads"
         body: Dict[str, Any] = {
             "name": name,
-            "auto_archive_duration": auto_archive_duration,
+            "auto_archive_duration": archive_minutes,
         }
     else:
         # Create a standalone thread
         path = f"/channels/{channel_id}/threads"
         body = {
             "name": name,
-            "auto_archive_duration": auto_archive_duration,
+            "auto_archive_duration": archive_minutes,
             "type": 11,  # PUBLIC_THREAD
         }
     thread = _discord_request("POST", path, token, body=body)
@@ -708,8 +711,8 @@ def _build_schema(
             "description": "Snowflake ID for forward pagination (fetch_messages).",
         },
         "auto_archive_duration": {
-            "type": "integer",
-            "enum": [60, 1440, 4320, 10080],
+            "type": "string",
+            "enum": ["60", "1440", "4320", "10080"],
             "description": "Thread archive duration in minutes (create_thread, default 1440).",
         },
     }

@@ -579,7 +579,9 @@ class TestRegistration:
         props = entry.schema["parameters"]["properties"]
         assert props["limit"]["minimum"] == 1
         assert props["limit"]["maximum"] == 100
-        assert props["auto_archive_duration"]["enum"] == [60, 1440, 4320, 10080]
+        # String enum (not integer) so Gemini accepts the schema; see #13486.
+        assert props["auto_archive_duration"]["type"] == "string"
+        assert props["auto_archive_duration"]["enum"] == ["60", "1440", "4320", "10080"]
 
     def test_core_schema_description(self):
         """Core schema description should mention core actions."""
@@ -1140,3 +1142,49 @@ class TestModelToolsIntegration:
         assert "discord" not in names
         assert "discord_admin" not in names
         assert "discord_server" not in names
+
+
+# ---------------------------------------------------------------------------
+# auto_archive_duration schema + coercion (Gemini compatibility)
+# Salvage of #13486 by @dirty-bun-ops.
+# ---------------------------------------------------------------------------
+
+class TestAutoArchiveDurationSchema:
+    """Gemini rejects integer-typed enums; auto_archive_duration must be a
+    string enum in the schema, and _create_thread must coerce it back to int
+    for the Discord REST API."""
+
+    def test_schema_auto_archive_duration_is_string_enum(self):
+        from tools.discord_tool import _build_schema
+
+        schema = _build_schema(["create_thread"])
+        prop = schema["parameters"]["properties"]["auto_archive_duration"]
+        assert prop["type"] == "string"
+        # All enum values must be strings (not ints) so Gemini accepts the schema.
+        assert prop["enum"] == ["60", "1440", "4320", "10080"]
+        assert all(isinstance(v, str) for v in prop["enum"])
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_coerces_string_duration_to_int(self, mock_req):
+        from tools.discord_tool import _create_thread
+
+        mock_req.return_value = {"id": "999", "name": "t"}
+        _create_thread("tok", "chan123", "my thread", auto_archive_duration="4320")
+
+        body = mock_req.call_args.kwargs["body"]
+        assert body["auto_archive_duration"] == 4320
+        assert isinstance(body["auto_archive_duration"], int)
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_from_message_coerces_string_duration(self, mock_req):
+        from tools.discord_tool import _create_thread
+
+        mock_req.return_value = {"id": "999", "name": "t"}
+        _create_thread(
+            "tok", "chan123", "my thread",
+            message_id="msg456", auto_archive_duration="1440",
+        )
+
+        body = mock_req.call_args.kwargs["body"]
+        assert body["auto_archive_duration"] == 1440
+        assert isinstance(body["auto_archive_duration"], int)

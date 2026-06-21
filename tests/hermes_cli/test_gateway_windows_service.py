@@ -166,26 +166,26 @@ class TestPyprojectDependency:
 class TestInstallServiceForceCheck:
     """Test install_service force=False ownership check (Blocker 5)."""
 
-    @patch('hermes_cli.gateway_windows.win32service', create=True)
-    def test_install_service_rejects_non_hermes_service(self, mock_ws):
+    def test_install_service_rejects_non_hermes_service(self):
         """install_service(force=False) should not delete a non-Hermes service."""
         from hermes_cli.gateway_windows import install_service
 
         # Mock SCM and existing service
         mock_scm = MagicMock()
         mock_existing = MagicMock()
+
+        # Create a mock win32service module
+        mock_ws = MagicMock()
         mock_ws.OpenSCManager.return_value = mock_scm
         mock_ws.OpenService.return_value = mock_existing
-
-        # Mock QueryServiceConfig to return a non-Hermes binary
-        # QueryServiceConfig returns tuple where index 3 is binary path
         mock_ws.QueryServiceConfig.return_value = (
             0, 0, 0, "C:\\Windows\\System32\\svchost.exe",  # Not Hermes
             None, None, None, None, None, None, None
         )
 
-        # Should not call DeleteService
-        install_service(force=False, allow_fallback=False)
+        # Patch sys.modules so `import win32service` gets our mock
+        with patch.dict('sys.modules', {'win32service': mock_ws}):
+            install_service(force=False, allow_fallback=False)
 
         # DeleteService should NOT be called for non-Hermes service
         mock_ws.DeleteService.assert_not_called()
@@ -194,30 +194,30 @@ class TestInstallServiceForceCheck:
 class TestExplicitServiceNoFallback:
     """Test explicit --service-type service doesn't fallback (Blocker 6)."""
 
-    @patch('hermes_cli.gateway_windows.win32service', create=True)
-    def test_explicit_service_no_fallback_on_pywin32_missing(self, mock_ws):
+    def test_explicit_service_no_fallback_on_pywin32_missing(self):
         """When allow_fallback=False and pywin32 fails, should not call install()."""
         from hermes_cli.gateway_windows import install_service
 
-        # Make win32service import fail
-        mock_ws.OpenSCManager.side_effect = ImportError("No module")
+        # Remove win32service from sys.modules to simulate missing pywin32
+        with patch.dict('sys.modules', {'win32service': None}):
+            with patch('hermes_cli.gateway_windows.install') as mock_install:
+                install_service(force=False, allow_fallback=False)
+                # Should NOT fallback to install()
+                mock_install.assert_not_called()
 
-        with patch('hermes_cli.gateway_windows.install') as mock_install:
-            install_service(force=False, allow_fallback=False)
-            # Should NOT fallback to install()
-            mock_install.assert_not_called()
-
-    @patch('hermes_cli.gateway_windows.win32service', create=True)
-    def test_explicit_service_no_fallback_on_exception(self, mock_ws):
+    def test_explicit_service_no_fallback_on_exception(self):
         """When allow_fallback=False and install fails, should not call install()."""
         from hermes_cli.gateway_windows import install_service
 
+        # Create a mock win32service module that raises on OpenSCManager
+        mock_ws = MagicMock()
         mock_ws.OpenSCManager.side_effect = Exception("SCM error")
 
-        with patch('hermes_cli.gateway_windows.install') as mock_install:
-            install_service(force=False, allow_fallback=False)
-            # Should NOT fallback to install()
-            mock_install.assert_not_called()
+        with patch.dict('sys.modules', {'win32service': mock_ws}):
+            with patch('hermes_cli.gateway_windows.install') as mock_install:
+                install_service(force=False, allow_fallback=False)
+                # Should NOT fallback to install()
+                mock_install.assert_not_called()
 
 
 class TestGatewayCrashRecovery:

@@ -315,6 +315,28 @@ class PluginContext:
             self._llm = PluginLlm(plugin_id=plugin_id)
         return self._llm
 
+    # -- profile awareness --------------------------------------------------
+
+    @property
+    def profile_name(self) -> str:
+        """Return the active Hermes profile name (e.g. ``"default"``).
+
+        Derived from ``HERMES_HOME`` via
+        :func:`hermes_cli.profiles.get_active_profile_name`, so it works in
+        every execution context — interactive CLI, gateway, and
+        kanban-spawned worker sessions alike — without depending on
+        ``_cli_ref`` (which is ``None`` outside an interactive CLI run).
+
+        Returns ``"default"`` for the default profile, the profile id when
+        running under ``~/.hermes/profiles/<name>``, or ``"custom"`` when
+        ``HERMES_HOME`` points somewhere unrecognized.
+        """
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            return get_active_profile_name()
+        except Exception:
+            return "default"
+
     # -- tool registration --------------------------------------------------
 
     def register_tool(

@@ -329,6 +329,27 @@ class ResponsesApiTransport(ProviderTransport):
             merged_extra_body.setdefault("prompt_cache_key", session_id)
             kwargs["extra_body"] = merged_extra_body
 
+        # AGT-101: forward the Hermes session id as LiteLLM logging metadata so
+        # an OpenAI-wire gateway (LiteLLM) sets the Langfuse trace sessionId on
+        # the Responses path. The Responses API reserves top-level ``metadata``
+        # for the provider, so LiteLLM reads ``litellm_metadata`` instead - which
+        # is NOT a real OpenAI field, so gate strictly to our custom gateway
+        # (never send it to a direct OpenAI / xAI / GitHub Responses endpoint).
+        if (
+            session_id
+            and params.get("is_custom_provider")
+            and not is_xai_responses
+            and not is_github_responses
+            and not is_codex_backend
+        ):
+            _eb = kwargs.get("extra_body")
+            _eb = dict(_eb) if isinstance(_eb, dict) else {}
+            _llm = _eb.get("litellm_metadata")
+            _llm = dict(_llm) if isinstance(_llm, dict) else {}
+            _llm.setdefault("session_id", session_id)
+            _eb["litellm_metadata"] = _llm
+            kwargs["extra_body"] = _eb
+
         return kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:

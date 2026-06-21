@@ -447,6 +447,16 @@ class ChatCompletionsTransport(ProviderTransport):
         if additions:
             extra_body.update(additions)
 
+        # AGT-101: forward the Hermes session id as request metadata so an
+        # OpenAI-wire gateway (LiteLLM) attributes the upstream Langfuse trace
+        # to this session (trace sessionId). metadata is a documented OpenAI
+        # chat-completions field consumed by the LiteLLM Langfuse callback;
+        # gated to custom providers (our gateway path) - known providers route
+        # through the profile path above.
+        _session_id = params.get("session_id")
+        if _session_id and params.get("is_custom_provider"):
+            extra_body.setdefault("metadata", {}).setdefault("session_id", _session_id)
+
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
@@ -563,6 +573,18 @@ class ChatCompletionsTransport(ProviderTransport):
         additions = params.get("extra_body_additions")
         if additions:
             extra_body.update(additions)
+
+        # AGT-101: stamp the Hermes session id as request metadata so an
+        # OpenAI-wire gateway (LiteLLM) sets the Langfuse trace sessionId.
+        # ``metadata`` is a documented OpenAI chat field; gated to our custom
+        # gateway (the CustomProfile path the akasha-trading crons take).
+        _session_id = params.get("session_id")
+        if _session_id and params.get("is_custom_provider"):
+            _md = extra_body.get("metadata")
+            if not isinstance(_md, dict):
+                _md = {}
+            _md.setdefault("session_id", _session_id)
+            extra_body["metadata"] = _md
 
         # Request overrides (user config)
         overrides = params.get("request_overrides")

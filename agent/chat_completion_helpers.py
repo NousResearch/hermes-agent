@@ -646,13 +646,17 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             messages=_msgs_for_codex,
             tools=tools_for_api,
             reasoning_config=agent.reasoning_config,
-            session_id=getattr(agent, "session_id", None),
+            # Prefer the stable origin id so the stamp survives a compaction
+            # rotation (conversation_compression rotates agent.session_id mid-run);
+            # falls back to session_id when no compaction has occurred.
+            session_id=getattr(agent, "_origin_session_id", None) or getattr(agent, "session_id", None),
             max_tokens=agent.max_tokens,
             timeout=agent._resolved_api_call_timeout(),
             request_overrides=agent.request_overrides,
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,
+            is_custom_provider=agent.provider == "custom",  # AGT-101
             github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
             replay_encrypted_reasoning=bool(
                 getattr(agent, "_codex_reasoning_replay_enabled", True)
@@ -752,8 +756,11 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             max_tokens_param_fn=agent._max_tokens_param,
             reasoning_config=agent.reasoning_config,
             request_overrides=agent.request_overrides,
-            session_id=getattr(agent, "session_id", None),
+            # Prefer the stable origin id so the stamp survives a compaction
+            # rotation; falls back to session_id when no compaction has occurred.
+            session_id=getattr(agent, "_origin_session_id", None) or getattr(agent, "session_id", None),
             provider_profile=_profile,
+            is_custom_provider=agent.provider == "custom",  # AGT-101
             ollama_num_ctx=agent._ollama_num_ctx,
             # Context forwarded to profile hooks:
             provider_preferences=_prefs or None,
@@ -784,7 +791,9 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         max_tokens_param_fn=agent._max_tokens_param,
         reasoning_config=agent.reasoning_config,
         request_overrides=agent.request_overrides,
-        session_id=getattr(agent, "session_id", None),
+        # Prefer the stable origin id so the stamp survives a compaction
+        # rotation; falls back to session_id when no compaction has occurred.
+        session_id=getattr(agent, "_origin_session_id", None) or getattr(agent, "session_id", None),
         model_lower=(agent.model or "").lower(),
         is_openrouter=_is_or,
         is_nous=_is_nous,

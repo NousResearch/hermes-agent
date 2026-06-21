@@ -575,6 +575,16 @@ def _run_review_in_thread(
             # if a future code path bypasses the cache.
             review_agent.session_start = agent.session_start
             review_agent.session_id = agent.session_id
+            # Carry the parent's ORIGIN session id (or its current id if the
+            # parent never compacted) so the fork attributes to the same root
+            # session even when the parent rotated session_id during a
+            # compaction before forking — the assignment above would otherwise
+            # leave the fork on the parent's post-compaction child id. The fork
+            # never compresses (compression_enabled is set False below), so it
+            # keeps this stable id for its whole single-lifecycle run.
+            review_agent._origin_session_id = (
+                getattr(agent, "_origin_session_id", None) or agent.session_id
+            )
             # Never let the review fork compress. It shares the parent's
             # session_id, so if it won a compression race it would rotate the
             # parent into a NEW child that the gateway never adopts (the fork

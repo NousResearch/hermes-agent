@@ -293,20 +293,48 @@ def _emit_compaction_announce(agent: Any, *, dedupe_key, **fmt_kwargs) -> None:
     successful emit (D7), so a swallowed emit failure does not suppress the next
     real compaction's announce. The caller holds the compression lock, so the
     read-then-write is serialized per session.
+
+    Loud-fail (§3.5, B3): this site KNOWS the message is a compaction announce
+    (so the marker is announce-specific, never tripped by a generic lifecycle
+    status). When ``status_callback`` is absent the throwaway/gateway caller is
+    expected to deliver → INFO ``PENDING_CALLER_DELIVERY``. When the in-turn
+    ``status_callback`` exists but the send fails →
+    WARNING ``STATUS_CALLBACK_FAILED`` (the in-turn silent hole, now loud).
     """
     line = _format_compaction_announce(**fmt_kwargs)
     if line is None:
         return  # gating skip — do not advance the key
     if getattr(agent, "_last_compaction_announced", None) == dedupe_key:
         return  # already announced this boundary
+    _sid = getattr(agent, "session_id", None) or "?"
     emit = getattr(agent, "_emit_status", None)
     if not callable(emit):
         return
+    _had_callback = bool(getattr(agent, "status_callback", None))
     try:
-        emit(line)
+        delivered = emit(line)
     except Exception:
         logger.debug("compaction announce emit failed", exc_info=True)
         return  # key NOT advanced — next real compaction can still announce
+    # ``_emit_status`` returns True only when a gateway status_callback existed
+    # AND did not raise. Three cases (loud-fail §3.5 / B3):
+    if delivered:
+        agent._last_compaction_announced = dedupe_key  # in-turn live delivery OK
+        return
+    if _had_callback:
+        # callback existed but the send leg raised → the in-turn announce was
+        # LOST. Make it loud (was the one remaining silent-compaction hole).
+        logger.warning("COMPACTION_ANNOUNCE_STATUS_CALLBACK_FAILED session=%s", _sid)
+        return  # key NOT advanced — a retry can still announce
+    # No gateway callback → either a CLI-only agent (the _vprint leg already
+    # showed it) or a throwaway agent (hygiene/compress) whose CALLER delivers
+    # from real facts. Either way it is NOT a silent failure. Mark pending so a
+    # throwaway-path delivery gap is auditable, and advance the key (CLI delivery
+    # via _vprint is complete; the throwaway caller dedupes structurally).
+    logger.info(
+        "COMPACTION_ANNOUNCE_PENDING_CALLER_DELIVERY reason=%s session=%s",
+        fmt_kwargs.get("trigger_reason"), _sid,
+    )
     agent._last_compaction_announced = dedupe_key
 
 

@@ -339,6 +339,122 @@ class TestEmitter:
         _emit_compaction_announce(a, dedupe_key=("lcm", 1), **_base())
 
 
+class TestLoudFailMarkers:
+    """Phase 6 / §3.5 / B3: separable silent-compaction coverage.
+
+    The marker lives at the COMPACTION emit site (knows it's an announce), NOT in
+    the generic _emit_status — so a non-announce lifecycle status can never trip
+    a 'compaction announce failed' alarm (I7 separability).
+    """
+
+    def test_in_turn_callback_failure_is_loud(self, caplog):
+        """An in-turn live agent (HAS status_callback) whose send leg FAILS must
+        log COMPACTION_ANNOUNCE_STATUS_CALLBACK_FAILED (no longer silent)."""
+        import logging
+
+        class _LiveAgentBrokenCallback:
+            def __init__(self):
+                self._last_compaction_announced = None
+                self.session_id = "S1"
+                self.status_callback = lambda *a, **k: None  # exists → in-turn
+
+            def _emit_status(self, msg):
+                # mirrors real _emit_status: callback exists but send fails → False
+                return False
+
+        a = _LiveAgentBrokenCallback()
+        with caplog.at_level(logging.WARNING):
+            _emit_compaction_announce(a, dedupe_key=("lcm", 1), **_base())
+        assert any("COMPACTION_ANNOUNCE_STATUS_CALLBACK_FAILED" in r.message for r in caplog.records)
+        # key NOT advanced — a retry can still announce
+        assert a._last_compaction_announced is None
+
+    def test_in_turn_callback_success_no_warning(self, caplog):
+        """A healthy in-turn delivery logs no STATUS_CALLBACK_FAILED warning."""
+        import logging
+
+        class _LiveAgentOK:
+            def __init__(self):
+                self._last_compaction_announced = None
+                self.session_id = "S1"
+                self.status_callback = lambda *a, **k: None
+
+            def _emit_status(self, msg):
+                return True  # delivered
+
+        a = _LiveAgentOK()
+        with caplog.at_level(logging.WARNING):
+            _emit_compaction_announce(a, dedupe_key=("lcm", 1), **_base())
+        assert not any("STATUS_CALLBACK_FAILED" in r.message for r in caplog.records)
+        assert a._last_compaction_announced == ("lcm", 1)
+
+    def test_throwaway_agent_marks_pending_not_loud(self, caplog):
+        """A throwaway agent (NO status_callback) → INFO PENDING, NOT a warning."""
+        import logging
+
+        class _ThrowawayAgent:
+            def __init__(self):
+                self._last_compaction_announced = None
+                self.session_id = "S1"
+                # no status_callback attribute → caller delivers
+                self.emitted = []
+
+            def _emit_status(self, msg):
+                self.emitted.append(msg)
+                return False  # no callback
+
+        a = _ThrowawayAgent()
+        with caplog.at_level(logging.INFO):
+            _emit_compaction_announce(a, dedupe_key=("lcm", 1), **_base())
+        assert any("COMPACTION_ANNOUNCE_PENDING_CALLER_DELIVERY" in r.message for r in caplog.records)
+        assert not any("STATUS_CALLBACK_FAILED" in r.message for r in caplog.records)
+
+
+class TestCompactionCallSiteCoverage:
+    """Phase 6 (c): every _compress_context / compress_context call site must be
+    a KNOWN-COVERED delivery path. A new uncovered call site fails this test,
+    forcing the author to wire + test delivery (the enumeration teeth)."""
+
+    def test_all_compaction_call_sites_are_covered(self):
+        import inspect
+        import agent.conversation_loop as loop
+        import agent.turn_context as tc
+        import gateway.run as gw
+        import gateway.slash_commands as sc
+
+        # KNOWN-COVERED delivery paths (each maps to a delivery assertion test):
+        #   in-turn live agent (has status_callback) → _emit_compaction_announce
+        #     covered by TestLoudFailMarkers + test_compaction_announce_lcm
+        #   gateway hygiene throwaway → _announce_hygiene_compaction
+        #     covered by test_session_hygiene::test_hygiene_msgcount_announces_real_count
+        #   /compress slash throwaway → user already gets the before/after report
+        #     (D-8: intentionally no second announce)
+        expected = {
+            "agent/turn_context.py": "in-turn live agent (status_callback)",
+            "agent/conversation_loop.py": "in-turn live agent (status_callback)",
+            "run_agent.py": "forwarder to compress_context (no delivery of its own)",
+            "gateway/run.py": "hygiene throwaway → _announce_hygiene_compaction",
+            "gateway/slash_commands.py": "/compress throwaway → user gets before/after report (D-8)",
+        }
+        found = set()
+        for mod in (loop, tc, gw, sc):
+            src = inspect.getsource(mod)
+            relpath = mod.__name__.replace(".", "/") + ".py"
+            if "_compress_context(" in src or "compress_context(" in src:
+                found.add(relpath)
+        # run_agent forwarder
+        import run_agent
+        if "compress_context(" in inspect.getsource(run_agent):
+            found.add("run_agent.py")
+
+        uncovered = found - set(expected)
+        assert not uncovered, (
+            f"New compaction call site(s) {uncovered} not in the known-covered "
+            f"delivery map. Wire delivery (in-turn status_callback OR a gateway "
+            f"_announce_* caller) and add it to `expected` with a delivery test."
+        )
+
+
 # ───────────────────── Task 4: fallback-event capture ────────────────────────
 
 class _FallbackAgent:

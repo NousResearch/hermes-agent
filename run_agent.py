@@ -772,7 +772,7 @@ class AIAgent:
             and getattr(self, "platform", "") == "cli"
         )
 
-    def _emit_status(self, message: str) -> None:
+    def _emit_status(self, message: str) -> bool:
         """Emit a lifecycle status message to both CLI and gateway channels.
 
         CLI users see the message via ``_vprint(force=True)`` so it is always
@@ -781,6 +781,12 @@ class AIAgent:
 
         This helper never raises — exceptions are swallowed so it cannot
         interrupt the retry/fallback logic.
+
+        Returns ``True`` when the gateway-delivery leg succeeded (a
+        ``status_callback`` exists and did not raise); ``False`` when there is no
+        callback (CLI-only context / throwaway agent) or the callback raised.
+        This return is purely additive — existing callers ignore it — and lets a
+        caller that NEEDS delivery (the compaction announce) detect a lost send.
         """
         try:
             self._vprint(f"{self.log_prefix}{message}", force=True)
@@ -789,8 +795,11 @@ class AIAgent:
         if self.status_callback:
             try:
                 self.status_callback("lifecycle", message)
+                return True
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
+                return False
+        return False
 
     def _emit_warning(self, message: str) -> None:
         """Emit a user-visible warning through the same status plumbing.

@@ -1756,7 +1756,10 @@ def resolve_runtime_provider(
         # Dual-path routing: Claude models use AnthropicBedrock SDK for full
         # feature parity (prompt caching, thinking budgets, adaptive thinking).
         # Non-Claude models use the Converse API for multi-model support.
-        _current_model = str(model_cfg.get("default") or "").strip()
+        # Prefer target_model (runtime override) over the config default so
+        # that --model deepseek.v3.2 routes to bedrock_converse even when the
+        # persisted config.yaml default is a Claude model.
+        _current_model = str(target_model or model_cfg.get("default") or "").strip()
         if is_anthropic_bedrock_model(_current_model):
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
             runtime = {

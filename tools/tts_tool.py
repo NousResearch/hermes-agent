@@ -47,6 +47,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Callable, Dict, Any, Optional
@@ -760,7 +761,7 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
 
 
 def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProcess:
-    """Run a command-provider shell command with process-tree timeout cleanup."""
+    """Run a command-provider shell command with process-tree idle cleanup."""
     popen_kwargs: Dict[str, Any] = {
         "shell": True,
         "stdout": subprocess.PIPE,
@@ -773,21 +774,75 @@ def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProces
         popen_kwargs["start_new_session"] = True
 
     proc = subprocess.Popen(command, **popen_kwargs, stdin=subprocess.DEVNULL)
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        _terminate_command_tts_process_tree(proc)
+    output_queue: "queue.Queue[tuple[str, Optional[str]]]" = queue.Queue()
+    chunks: Dict[str, list[str]] = {"stdout": [], "stderr": []}
+    open_streams = {"stdout", "stderr"}
+
+    def read_stream(name: str, stream: Any) -> None:
         try:
-            stdout, stderr = proc.communicate(timeout=1)
-        except Exception:
-            stdout = getattr(exc, "output", None)
-            stderr = getattr(exc, "stderr", None)
+            while True:
+                chunk = stream.read(1)
+                if not chunk:
+                    break
+                output_queue.put((name, chunk))
+        finally:
+            output_queue.put((name, None))
+
+    readers = [
+        threading.Thread(
+            target=read_stream,
+            args=("stdout", proc.stdout),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=read_stream,
+            args=("stderr", proc.stderr),
+            daemon=True,
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+
+    deadline = time.monotonic() + timeout
+    timed_out = False
+    while open_streams:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        try:
+            name, chunk = output_queue.get(timeout=min(0.05, remaining))
+        except queue.Empty:
+            continue
+        if chunk is None:
+            open_streams.discard(name)
+            continue
+        chunks[name].append(chunk)
+        deadline = time.monotonic() + timeout
+
+    if timed_out:
+        _terminate_command_tts_process_tree(proc)
+        for reader in readers:
+            reader.join(timeout=0.5)
+        while True:
+            try:
+                name, chunk = output_queue.get_nowait()
+            except queue.Empty:
+                break
+            if chunk:
+                chunks[name].append(chunk)
+        stdout = "".join(chunks["stdout"])
+        stderr = "".join(chunks["stderr"])
         raise subprocess.TimeoutExpired(
             command,
             timeout,
             output=stdout,
             stderr=stderr,
-        ) from exc
+        )
+
+    stdout = "".join(chunks["stdout"])
+    stderr = "".join(chunks["stderr"])
+    proc.wait()
 
     if proc.returncode:
         raise subprocess.CalledProcessError(

@@ -1,5 +1,6 @@
 const VALID_LANGUAGE_RE = /^[a-z0-9][a-z0-9+#-]*$/i
 const NON_CODE_FENCE_LANGUAGES = new Set(['', 'text', 'plain', 'plaintext', 'md', 'markdown'])
+const COPYABLE_TEXT_FENCE_LANGUAGES = new Set(['text', 'plain', 'plaintext'])
 
 const COMMON_CODE_LANGUAGES = new Set([
   'bash',
@@ -157,6 +158,14 @@ export function isLikelyProseFence(info: string, body: string): boolean {
     return false
   }
 
+  // Explicit plain-text fences are usually intentional copy surfaces: message
+  // drafts, emails, prompts, snippets to paste elsewhere. Do not flatten them
+  // into prose, because that leaks the language tag ("text") into the visible
+  // body and removes the per-block copy button.
+  if (COPYABLE_TEXT_FENCE_LANGUAGES.has(language) && !hasInfoTail) {
+    return false
+  }
+
   if (
     hasInfoTail &&
     signals.codeSignals <= 2 &&
@@ -180,6 +189,10 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
   const signals = codeSignals(code || '')
 
   if (!signals.trimmed || signals.codeSignals >= 3) {
+    return false
+  }
+
+  if (COPYABLE_TEXT_FENCE_LANGUAGES.has(cleanLanguage)) {
     return false
   }
 

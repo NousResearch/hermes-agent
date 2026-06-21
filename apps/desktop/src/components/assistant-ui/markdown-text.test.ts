@@ -70,6 +70,36 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('const value = 1;')
   })
 
+  it('keeps explicit text fences copyable instead of leaking the language label into prose', () => {
+    const fence = '```'
+    const input = [
+      'Send this:',
+      '',
+      `${fence}text`,
+      'Hallo Nicholas, das Teakbett gefällt mir sehr gut.',
+      '',
+      'Wenn alles passt, würde ich es gern nehmen.',
+      '',
+      'Viele Grüße',
+      'Justin',
+      fence
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('```text')
+    expect(output).toContain('Hallo Nicholas')
+    expect(output).not.toContain('\ntext\nHallo Nicholas')
+  })
+
+  it('keeps dangling explicit text fences copyable during streaming', () => {
+    const input = ['```text', 'Hallo Nicholas,', '', 'Viele Grüße', 'Justin'].join('\n')
+    const output = preprocessMarkdown(input)
+
+    expect(output.startsWith('```text')).toBe(true)
+    expect(output).toContain('Hallo Nicholas')
+  })
+
   it('keeps dangling real code fences during streaming', () => {
     const input = ['```ts', 'const value = 1;'].join('\n')
     const output = preprocessMarkdown(input)

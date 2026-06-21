@@ -213,6 +213,64 @@ class TestGoalManager:
         with pytest.raises(ValueError):
             mgr.set("   ")
 
+    def test_draft_goal_waits_for_natural_language_approval(self, hermes_home):
+        """New /goal text must create a pending Goal Packet, not start immediately."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="draft-sid-1", default_max_turns=4)
+        draft = mgr.draft("세컨브레인 개선")
+
+        assert mgr.state is None
+        assert not mgr.is_active()
+        assert mgr.pending_draft() is not None
+        assert draft.raw_goal == "세컨브레인 개선"
+        assert "Goal Packet" in draft.packet
+        assert "세컨브레인 개선" in draft.packet
+        assert "진행" in draft.packet
+
+        state = mgr.approve_draft()
+        assert state.goal == draft.packet
+        assert state.status == "active"
+        assert state.max_turns == 4
+        assert mgr.pending_draft() is None
+
+    def test_goal_draft_classifier_avoids_single_letter_and_negated_cancel(self, hermes_home):
+        from hermes_cli.goals import classify_goal_draft_reply
+
+        assert classify_goal_draft_reply("고") == "edit"
+        assert classify_goal_draft_reply("취소하지 말고 진행해") == "edit"
+        assert classify_goal_draft_reply("취소할게") == "cancel"
+        assert classify_goal_draft_reply("진행") == "approve"
+
+    def test_goal_draft_reply_edit_and_cancel_are_natural_language(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="draft-sid-2")
+        first = mgr.draft("사업 자동화 개선")
+        first_revision = first.revision
+
+        result = mgr.handle_draft_reply("위키는 빼고 Daily Note만 해")
+        edited = mgr.pending_draft()
+        assert result["action"] == "edit"
+        assert edited is not None
+        assert edited.revision == first_revision + 1
+        assert "위키는 빼고 Daily Note만 해" in edited.packet
+        assert mgr.state is None
+
+        result = mgr.handle_draft_reply("삭제해")
+        assert result["action"] == "cancel"
+        assert mgr.pending_draft() is None
+        assert mgr.state is None
+
+    def test_goal_draft_persists_across_managers(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        GoalManager(session_id="draft-persist").draft("장기 작업")
+        reloaded = GoalManager(session_id="draft-persist").pending_draft()
+
+        assert reloaded is not None
+        assert reloaded.raw_goal == "장기 작업"
+
     def test_pause_and_resume(self, hermes_home):
         from hermes_cli.goals import GoalManager
 

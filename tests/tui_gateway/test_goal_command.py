@@ -79,6 +79,12 @@ def _call(server, method, **params):
     return handler(1, params)
 
 
+def _set_active_goal(session_key: str, text: str):
+    from hermes_cli.goals import GoalManager
+
+    return GoalManager(session_key).set(text)
+
+
 # ── command.dispatch /goal ────────────────────────────────────────────
 
 
@@ -103,28 +109,27 @@ def test_goal_status_alias_shows_status(server, session):
     assert "No active goal" in r["result"]["output"]
 
 
-def test_goal_set_returns_send_with_notice(server, session):
+def test_goal_set_returns_pending_packet_without_kickoff(server, session):
     sid, session_key, _ = session
     r = _call(server, "command.dispatch", name="goal", arg="build a rocket", session_id=sid)
     result = r["result"]
-    assert result["type"] == "send"
-    assert result["message"] == "build a rocket"
-    assert "notice" in result
-    assert "Goal set" in result["notice"]
-    assert "20-turn budget" in result["notice"]
+    assert result["type"] == "exec"
+    assert "Goal Packet" in result["output"]
+    assert "build a rocket" in result["output"]
+    assert "진행" in result["output"]
 
-    # Persisted in SessionDB
     from hermes_cli.goals import GoalManager
 
     mgr = GoalManager(session_key)
-    assert mgr.state is not None
-    assert mgr.state.goal == "build a rocket"
-    assert mgr.state.status == "active"
+    assert mgr.state is None
+    draft = mgr.pending_draft()
+    assert draft is not None
+    assert draft.raw_goal == "build a rocket"
 
 
 def test_goal_pause_after_set(server, session):
     sid, session_key, _ = session
-    _call(server, "command.dispatch", name="goal", arg="write a story", session_id=sid)
+    _set_active_goal(session_key, "write a story")
     r = _call(server, "command.dispatch", name="goal", arg="pause", session_id=sid)
     assert r["result"]["type"] == "exec"
     assert "paused" in r["result"]["output"].lower()
@@ -136,7 +141,7 @@ def test_goal_pause_after_set(server, session):
 
 def test_goal_resume_reactivates(server, session):
     sid, session_key, _ = session
-    _call(server, "command.dispatch", name="goal", arg="write a story", session_id=sid)
+    _set_active_goal(session_key, "write a story")
     _call(server, "command.dispatch", name="goal", arg="pause", session_id=sid)
     r = _call(server, "command.dispatch", name="goal", arg="resume", session_id=sid)
     assert r["result"]["type"] == "exec"
@@ -149,7 +154,7 @@ def test_goal_resume_reactivates(server, session):
 
 def test_goal_clear_removes_active_goal(server, session):
     sid, session_key, _ = session
-    _call(server, "command.dispatch", name="goal", arg="write a story", session_id=sid)
+    _set_active_goal(session_key, "write a story")
     r = _call(server, "command.dispatch", name="goal", arg="clear", session_id=sid)
     assert r["result"]["type"] == "exec"
     assert "cleared" in r["result"]["output"].lower()
@@ -166,12 +171,12 @@ def test_goal_clear_removes_active_goal(server, session):
 
 
 def test_goal_stop_and_done_are_clear_aliases(server, session):
-    sid, _, _ = session
-    _call(server, "command.dispatch", name="goal", arg="first goal", session_id=sid)
+    sid, session_key, _ = session
+    _set_active_goal(session_key, "first goal")
     r = _call(server, "command.dispatch", name="goal", arg="stop", session_id=sid)
     assert "cleared" in r["result"]["output"].lower()
 
-    _call(server, "command.dispatch", name="goal", arg="second goal", session_id=sid)
+    _set_active_goal(session_key, "second goal")
     r = _call(server, "command.dispatch", name="goal", arg="done", session_id=sid)
     assert "cleared" in r["result"]["output"].lower()
 

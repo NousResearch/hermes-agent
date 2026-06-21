@@ -54,7 +54,22 @@ async def test_gateway_goal_uses_goals_max_turns_from_full_config(tmp_path, monk
     response = await GatewayRunner._handle_goal_command(runner, event)
 
     try:
-        assert "⊙ Goal set (7-turn budget): ship the benchmark" in response
+        assert "Goal Packet" in response
+        assert "ship the benchmark" in response
+        state = goals.GoalManager("sid-gateway-goal-config").state
+        assert state is None
+
+        approve_event = MessageEvent(
+            text="진행",
+            message_type=MessageType.TEXT,
+            source=event.source,
+            message_id="msg-goal-config-approve",
+        )
+        approved = await GatewayRunner._handle_pending_goal_reply(runner, approve_event)
+        assert approved is not None
+        assert "⊙ Goal set (7-turn budget):" in approved
+        assert "ship the benchmark" in approved
+
         state = goals.GoalManager("sid-gateway-goal-config").state
         assert state is not None
         assert state.max_turns == 7

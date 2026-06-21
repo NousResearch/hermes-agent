@@ -13910,6 +13910,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             user_input = _seed
                         else:
                             continue
+
+                    if not _file_drop and isinstance(user_input, str):
+                        if self._maybe_handle_goal_draft_reply(user_input):
+                            continue
                     
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')

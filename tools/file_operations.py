@@ -2192,10 +2192,16 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")  # Count per file
         
-        # Add pattern and path
+        # Add pattern and path. The leading `--` is an end-of-options marker:
+        # without it a pattern like `--pre=/bin/sh` is shell-escaped (so it is
+        # safe from shell injection) but ripgrep still parses it as a FLAG, and
+        # `--pre=CMD` runs CMD as a preprocessor on every searched file — i.e.
+        # arbitrary command execution driven by the search_files pattern arg.
+        # `--` forces everything after it to be treated as positional operands.
+        cmd_parts.append("--")
         cmd_parts.append(self._escape_shell_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
-        
+
         # Fetch extra rows so we can report the true total before slicing.
         # For context mode, rg emits separator lines ("--") between groups,
         # so we grab generously and filter in Python.
@@ -2322,10 +2328,14 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")
         
-        # Add pattern and path
+        # Add pattern and path. The leading `--` is an end-of-options marker so
+        # a pattern that begins with a dash (e.g. `-f/etc/passwd`, which would
+        # otherwise make grep read its pattern list FROM that file) is treated
+        # as a literal search term rather than a flag. Mirrors the rg path.
+        cmd_parts.append("--")
         cmd_parts.append(self._escape_shell_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
-        
+
         # Fetch generously so we can compute total before slicing
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])

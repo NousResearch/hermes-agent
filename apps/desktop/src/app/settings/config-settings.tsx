@@ -12,8 +12,11 @@ import {
   getHermesConfigSchema,
   saveHermesConfig
 } from '@/hermes'
+import { fieldDescription, fieldLabel, optionLabel } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
+import { $desktopLanguage, type DesktopLanguage } from '@/store/language'
 import { notify, notifyError } from '@/store/notifications'
+import { useStore } from '@nanostores/react'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
@@ -27,6 +30,7 @@ function ConfigField({
   value,
   enumOptions,
   optionLabels,
+  language,
   onChange
 }: {
   schemaKey: string
@@ -34,11 +38,13 @@ function ConfigField({
   value: unknown
   enumOptions?: string[]
   optionLabels?: Record<string, string>
+  language: DesktopLanguage
   onChange: (value: unknown) => void
 }) {
-  const label = FIELD_LABELS[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey)
+  const baseLabel = FIELD_LABELS[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey)
+  const label = fieldLabel(language, schemaKey, baseLabel)
   const normalize = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '')
-  const rawDescription = (FIELD_DESCRIPTIONS[schemaKey] ?? schema.description ?? '').trim()
+  const rawDescription = fieldDescription(language, schemaKey, FIELD_DESCRIPTIONS[schemaKey] ?? schema.description ?? '')?.trim() ?? ''
   const normalizedDesc = normalize(rawDescription)
 
   const description =
@@ -53,7 +59,7 @@ function ConfigField({
   if (schema.type === 'boolean') {
     return row(
       <div className="flex items-center justify-end gap-3">
-        <span className="text-xs text-muted-foreground">{value ? 'On' : 'Off'}</span>
+        <span className="text-xs text-muted-foreground">{value ? optionLabel(language, 'on', 'On') : optionLabel(language, 'off', 'Off')}</span>
         <Switch checked={Boolean(value)} onCheckedChange={onChange} />
       </div>
     )
@@ -74,10 +80,12 @@ function ConfigField({
           {selectOptions.map(option => (
             <SelectItem key={option || EMPTY_SELECT_VALUE} value={option || EMPTY_SELECT_VALUE}>
               {option
-                ? (optionLabels?.[option] ?? prettyName(option))
+                ? optionLabel(language, option, optionLabels?.[option] ?? prettyName(option))
                 : schemaKey === 'display.personality'
-                  ? 'None'
-                  : '(none)'}
+                  ? optionLabel(language, 'none', 'None')
+                  : language === 'zh'
+                    ? '（无）'
+                    : '(none)'}
             </SelectItem>
           ))}
         </SelectContent>
@@ -97,7 +105,7 @@ function ConfigField({
             onChange(n)
           }
         }}
-        placeholder="Not set"
+        placeholder={language === 'zh' ? '未设置' : 'Not set'}
         type="number"
         value={value === undefined || value === null ? '' : String(value)}
       />
@@ -116,7 +124,7 @@ function ConfigField({
               .filter(Boolean)
           )
         }
-        placeholder="comma-separated values"
+        placeholder={language === 'zh' ? '逗号分隔的值' : 'comma-separated values'}
         value={Array.isArray(value) ? value.join(', ') : String(value ?? '')}
       />
     )
@@ -133,7 +141,7 @@ function ConfigField({
             /* keep last valid */
           }
         }}
-        placeholder="Not set"
+        placeholder={language === 'zh' ? '未设置' : 'Not set'}
         spellCheck={false}
         value={JSON.stringify(value, null, 2)}
       />,
@@ -148,14 +156,14 @@ function ConfigField({
       <Textarea
         className={cn('min-h-24 resize-y bg-background', CONTROL_TEXT)}
         onChange={e => onChange(e.target.value)}
-        placeholder="Not set"
+        placeholder={language === 'zh' ? '未设置' : 'Not set'}
         value={String(value ?? '')}
       />
     ) : (
       <Input
         className={cn('h-8', CONTROL_TEXT)}
         onChange={e => onChange(e.target.value)}
-        placeholder="Not set"
+        placeholder={language === 'zh' ? '未设置' : 'Not set'}
         value={String(value ?? '')}
       />
     ),
@@ -173,6 +181,7 @@ export function ConfigSettings({
   onConfigSaved?: () => void
   importInputRef: React.RefObject<HTMLInputElement | null>
 }) {
+  const language = useStore($desktopLanguage)
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [_defaults, setDefaults] = useState<HermesConfigRecord | null>(null)
   const [schema, setSchema] = useState<Record<string, ConfigFieldSchema> | null>(null)
@@ -193,10 +202,10 @@ export function ConfigSettings({
         setDefaults(d)
         setSchema(s.fields)
       })
-      .catch(err => notifyError(err, 'Settings failed to load'))
+      .catch(err => notifyError(err, language === 'zh' ? '设置加载失败' : 'Settings failed to load'))
 
     return () => void (cancelled = true)
-  }, [])
+  }, [language])
 
   useEffect(() => {
     let cancelled = false
@@ -237,14 +246,14 @@ export function ConfigSettings({
           }
         } catch (err) {
           if (saveVersionRef.current === v) {
-            notifyError(err, 'Autosave failed')
+            notifyError(err, language === 'zh' ? '自动保存失败' : 'Autosave failed')
           }
         }
       })()
     }, 550)
 
     return () => window.clearTimeout(t)
-  }, [config, onConfigSaved, saveVersion])
+  }, [config, language, onConfigSaved, saveVersion])
 
   const updateConfig = (next: HermesConfigRecord) => {
     saveVersionRef.current += 1
@@ -306,9 +315,13 @@ export function ConfigSettings({
     reader.onload = () => {
       try {
         updateConfig(JSON.parse(String(reader.result)))
-        notify({ kind: 'success', title: 'Config imported', message: 'Saving…' })
+        notify({
+          kind: 'success',
+          title: language === 'zh' ? '配置已导入' : 'Config imported',
+          message: language === 'zh' ? '正在保存…' : 'Saving…'
+        })
       } catch (err) {
-        notifyError(err, 'Invalid config JSON')
+        notifyError(err, language === 'zh' ? '配置 JSON 无效' : 'Invalid config JSON')
       }
     }
 
@@ -317,18 +330,21 @@ export function ConfigSettings({
   }
 
   if (!config || !schema) {
-    return <LoadingState label="Loading Hermes configuration..." />
+    return <LoadingState label={language === 'zh' ? '正在加载配置...' : 'Loading Hermes configuration...'} />
   }
 
   return (
     <SettingsContent>
       {query.trim() && (
         <div className="mb-4 text-xs text-muted-foreground">
-          {fields.length} result{fields.length === 1 ? '' : 's'}
+          {language === 'zh' ? `${fields.length} 个结果` : `${fields.length} result${fields.length === 1 ? '' : 's'}`}
         </div>
       )}
       {fields.length === 0 ? (
-        <EmptyState description="Try a different search term or choose another section." title="No matching settings" />
+        <EmptyState
+          description={language === 'zh' ? '请尝试其他搜索词，或选择另一个设置分类。' : 'Try a different search term or choose another section.'}
+          title={language === 'zh' ? '没有匹配的设置' : 'No matching settings'}
+        />
       ) : (
         <div className="divide-y divide-border/40">
           {fields.map(([key, field]) => (
@@ -339,6 +355,7 @@ export function ConfigSettings({
                   : enumOptionsFor(key, getNested(config, key), config)
               }
               key={key}
+              language={language}
               onChange={value => updateConfig(setNested(config, key, value))}
               optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
               schema={field}

@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react'
 
 import type { LucideIcon } from '@/lib/icons'
+import type { DesktopLanguage } from '@/store/language'
 import type { EnvVarInfo } from '@/types/hermes'
 
 export type SettingsView = 'gateway' | 'keys' | 'tools' | `config:${string}`
@@ -40,5 +41,6 @@ export interface EnvRowProps {
   onSave: (key: string) => void
   onClear: (key: string) => void
   onReveal: (key: string) => void
+  language: DesktopLanguage
   compact?: boolean
 }

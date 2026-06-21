@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
+import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
+import { $desktopLanguage } from '@/store/language'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
@@ -35,6 +37,7 @@ export function ModelPickerDialog({
   currentProvider,
   onSelect
 }: ModelPickerDialogProps) {
+  const language = useStore($desktopLanguage)
   const [persistGlobal, setPersistGlobal] = useState(!sessionId)
 
   const modelOptions = useQuery({
@@ -75,21 +78,22 @@ export function ModelPickerDialog({
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className={pickerPanelClass}>
         <DialogHeader className="border-b border-border px-4 py-3">
-          <DialogTitle>Switch model</DialogTitle>
+          <DialogTitle>{language === 'zh' ? '切换模型' : 'Switch model'}</DialogTitle>
           <DialogDescription className="font-mono text-xs leading-relaxed">
-            current: {optionsModel || currentModel || '(unknown)'}
+            {language === 'zh' ? '当前' : 'current'}: {optionsModel || currentModel || (language === 'zh' ? '(未知)' : '(unknown)')}
             {optionsProvider || currentProvider ? ` · ${optionsProvider || currentProvider}` : ''}
           </DialogDescription>
         </DialogHeader>
 
         <Command className="rounded-none bg-card">
-          <CommandInput autoFocus placeholder="Filter providers and models..." />
+          <CommandInput autoFocus placeholder={language === 'zh' ? '筛选提供商和模型...' : 'Filter providers and models...'} />
           <CommandList className="max-h-96">
-            {!loading && !error && <CommandEmpty>No models found.</CommandEmpty>}
+            {!loading && !error && <CommandEmpty>{language === 'zh' ? '未找到模型。' : 'No models found.'}</CommandEmpty>}
             <ModelResults
               currentModel={optionsModel || currentModel}
               currentProvider={optionsProvider || currentProvider}
               error={error}
+              language={language}
               loading={loading}
               onSelectModel={selectModel}
               providers={providers}
@@ -104,11 +108,17 @@ export function ModelPickerDialog({
               disabled={!sessionId}
               onCheckedChange={checked => setPersistGlobal(checked === true)}
             />
-            {sessionId ? 'Persist globally (otherwise this session only)' : 'Persist globally'}
+            {language === 'zh'
+              ? sessionId
+                ? '全局保存（否则仅当前会话生效）'
+                : '全局保存'
+              : sessionId
+                ? 'Persist globally (otherwise this session only)'
+                : 'Persist globally'}
           </label>
 
           <Button onClick={() => onOpenChange(false)} variant="outline">
-            Cancel
+            {language === 'zh' ? '取消' : 'Cancel'}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -122,6 +132,7 @@ function ModelResults({
   providers,
   currentModel,
   currentProvider,
+  language,
   onSelectModel
 }: {
   loading: boolean
@@ -129,6 +140,7 @@ function ModelResults({
   providers: ModelOptionProvider[]
   currentModel: string
   currentProvider: string
+  language: 'zh' | 'en'
   onSelectModel: (provider: ModelOptionProvider, model: string) => void
 }) {
   if (loading) {
@@ -138,7 +150,7 @@ function ModelResults({
   if (error) {
     return (
       <div className="px-3 py-3">
-        <InlineNotice kind="error" title="Could not load models">
+        <InlineNotice kind="error" title={language === 'zh' ? '无法加载模型' : 'Could not load models'}>
           {error}
         </InlineNotice>
       </div>
@@ -146,7 +158,11 @@ function ModelResults({
   }
 
   if (providers.length === 0) {
-    return <div className="px-4 py-6 text-sm text-muted-foreground">No authenticated providers.</div>
+    return (
+      <div className="px-4 py-6 text-sm text-muted-foreground">
+        {language === 'zh' ? '没有已认证的模型提供商。' : 'No authenticated providers.'}
+      </div>
+    )
   }
 
   return (

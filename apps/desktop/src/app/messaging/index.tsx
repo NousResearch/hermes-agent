@@ -1,5 +1,6 @@
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useStore } from '@nanostores/react'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
@@ -14,6 +15,7 @@ import {
 } from '@/hermes'
 import { AlertTriangle, ChevronDown, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $desktopLanguage } from '@/store/language'
 import { notify, notifyError } from '@/store/notifications'
 
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -37,6 +39,18 @@ const STATE_LABELS: Record<string, string> = {
   pending_restart: 'Restart needed',
   retrying: 'Retrying',
   startup_failed: 'Startup failed'
+}
+
+const STATE_LABELS_ZH: Record<string, string> = {
+  connected: '已连接',
+  connecting: '连接中',
+  disabled: '已禁用',
+  fatal: '错误',
+  gateway_stopped: '网关已停止',
+  not_configured: '需要配置',
+  pending_restart: '需要重启',
+  retrying: '重试中',
+  startup_failed: '启动失败'
 }
 
 const PLATFORM_TINTS: Record<string, string> = {
@@ -74,7 +88,19 @@ const HINT_BY_STATE: Record<string, string> = {
   gateway_stopped: 'Start the gateway from the status bar to connect.'
 }
 
-const stateLabel = (state?: null | string) => (state ? STATE_LABELS[state] || state.replace(/_/g, ' ') : 'Unknown')
+const HINT_BY_STATE_ZH: Record<string, string> = {
+  pending_restart: '请从状态栏重启网关以应用此更改。',
+  gateway_stopped: '请从状态栏启动网关后再连接。'
+}
+
+const stateLabel = (state: null | string | undefined, language: 'zh' | 'en') =>
+  state
+    ? language === 'zh'
+      ? STATE_LABELS_ZH[state] || state.replace(/_/g, ' ')
+      : STATE_LABELS[state] || state.replace(/_/g, ' ')
+    : language === 'zh'
+      ? '未知'
+      : 'Unknown'
 
 function stateTone({ enabled, state }: MessagingPlatformInfo): StatusTone {
   if (!enabled) {return 'muted'}
@@ -205,6 +231,7 @@ export function MessagingView({
   setTitlebarToolGroup,
   ...props
 }: MessagingViewProps) {
+  const language = useStore($desktopLanguage)
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [edits, setEdits] = useState<EditMap>({})
@@ -222,14 +249,14 @@ export function MessagingView({
       setSelectedId(current => current || result.platforms[0]?.id || null)
     } catch (err) {
       if (!silent) {
-        notifyError(err, 'Messaging platforms failed to load')
+        notifyError(err, language === 'zh' ? '消息平台加载失败' : 'Messaging platforms failed to load')
       }
     } finally {
       if (!silent) {
         setRefreshing(false)
       }
     }
-  }, [])
+  }, [language])
 
   useEffect(() => {
     void refreshPlatforms()
@@ -266,13 +293,13 @@ export function MessagingView({
         disabled: refreshing,
         icon: <RefreshCw className={cn(refreshing && 'animate-spin')} />,
         id: 'refresh-messaging',
-        label: refreshing ? 'Refreshing messaging' : 'Refresh messaging',
+        label: language === 'zh' ? (refreshing ? '正在刷新消息平台' : '刷新消息平台') : refreshing ? 'Refreshing messaging' : 'Refresh messaging',
         onSelect: () => void refreshPlatforms()
       }
     ])
 
     return () => setTitlebarToolGroup('messaging', [])
-  }, [refreshPlatforms, refreshing, setTitlebarToolGroup])
+  }, [language, refreshPlatforms, refreshing, setTitlebarToolGroup])
 
   const selected = useMemo(() => {
     if (!platforms) {
@@ -303,11 +330,11 @@ export function MessagingView({
       )
       notify({
         kind: 'success',
-        title: enabled ? `${platform.name} enabled` : `${platform.name} disabled`,
-        message: 'Restart the gateway for this change to take effect.'
+        title: language === 'zh' ? `${platform.name} 已${enabled ? '启用' : '禁用'}` : enabled ? `${platform.name} enabled` : `${platform.name} disabled`,
+        message: language === 'zh' ? '请重启网关以使此更改生效。' : 'Restart the gateway for this change to take effect.'
       })
     } catch (err) {
-      notifyError(err, `Failed to update ${platform.name}`)
+      notifyError(err, language === 'zh' ? `更新 ${platform.name} 失败` : `Failed to update ${platform.name}`)
     } finally {
       setSaving(null)
     }
@@ -328,11 +355,11 @@ export function MessagingView({
       await refreshPlatforms()
       notify({
         kind: 'success',
-        title: `${platform.name} setup saved`,
-        message: 'Restart the gateway to reconnect with the new credentials.'
+        title: language === 'zh' ? `${platform.name} 配置已保存` : `${platform.name} setup saved`,
+        message: language === 'zh' ? '请重启网关以使用新凭据重新连接。' : 'Restart the gateway to reconnect with the new credentials.'
       })
     } catch (err) {
-      notifyError(err, `Failed to save ${platform.name}`)
+      notifyError(err, language === 'zh' ? `保存 ${platform.name} 失败` : `Failed to save ${platform.name}`)
     } finally {
       setSaving(null)
     }
@@ -351,9 +378,13 @@ export function MessagingView({
         }
       }))
       await refreshPlatforms()
-      notify({ kind: 'success', title: `${key} cleared`, message: `${platform.name} setup was updated.` })
+      notify({
+        kind: 'success',
+        title: language === 'zh' ? `${key} 已清除` : `${key} cleared`,
+        message: language === 'zh' ? `${platform.name} 配置已更新。` : `${platform.name} setup was updated.`
+      })
     } catch (err) {
-      notifyError(err, `Failed to clear ${key}`)
+      notifyError(err, language === 'zh' ? `清除 ${key} 失败` : `Failed to clear ${key}`)
     } finally {
       setSaving(null)
     }
@@ -362,15 +393,23 @@ export function MessagingView({
   return (
     <section {...props} className="flex h-full min-w-0 flex-col overflow-hidden rounded-b-[0.9375rem] bg-background">
       <header className={titlebarHeaderBaseClass}>
-        <h2 className="pointer-events-auto text-base font-semibold leading-none tracking-tight">Messaging</h2>
+        <h2 className="pointer-events-auto text-base font-semibold leading-none tracking-tight">
+          {language === 'zh' ? '消息平台' : 'Messaging'}
+        </h2>
         <span className="pointer-events-auto text-xs text-muted-foreground">
-          {enabledCount === 0 ? 'No platforms enabled' : `${enabledCount} enabled`}
+          {language === 'zh'
+            ? enabledCount === 0
+              ? '未启用平台'
+              : `已启用 ${enabledCount} 个`
+            : enabledCount === 0
+              ? 'No platforms enabled'
+              : `${enabledCount} enabled`}
         </span>
       </header>
 
       <div className="min-h-0 flex-1 overflow-hidden rounded-b-[1.0625rem] border border-border/50 bg-background/85">
         {!platforms ? (
-          <PageLoader label="Loading messaging platforms..." />
+          <PageLoader label={language === 'zh' ? '正在加载消息平台...' : 'Loading messaging platforms...'} />
         ) : (
           <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[16rem_minmax(0,1fr)]">
             <aside className="min-h-0 overflow-y-auto border-b border-border/50 p-2 lg:border-b-0 lg:border-r">
@@ -405,6 +444,7 @@ export function MessagingView({
                   onToggle={enabled => void handleToggle(selected, enabled)}
                   platform={selected}
                   saving={saving}
+                  language={language}
                 />
               )}
             </main>
@@ -462,7 +502,8 @@ function PlatformDetail({
   onSave,
   onToggle,
   platform,
-  saving
+  saving,
+  language
 }: {
   edits: Record<string, string>
   onClear: (key: string) => void
@@ -471,6 +512,7 @@ function PlatformDetail({
   onToggle: (enabled: boolean) => void
   platform: MessagingPlatformInfo
   saving: string | null
+  language: 'zh' | 'en'
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false)
 
@@ -491,13 +533,13 @@ function PlatformDetail({
               <h3 className="text-xl font-semibold tracking-tight">{platform.name}</h3>
               <p className="mt-1 text-sm leading-6 text-muted-foreground">{platform.description}</p>
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <StatePill tone={stateTone(platform)}>{stateLabel(platform.state)}</StatePill>
+                <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, language)}</StatePill>
                 <SetupPill active={platform.configured}>
-                  {platform.configured ? 'Credentials set' : 'Needs setup'}
+                  {language === 'zh' ? (platform.configured ? '凭据已设置' : '需要配置') : platform.configured ? 'Credentials set' : 'Needs setup'}
                 </SetupPill>
-                {!platform.gateway_running && <SetupPill active={false}>Gateway stopped</SetupPill>}
+                {!platform.gateway_running && <SetupPill active={false}>{language === 'zh' ? '网关已停止' : 'Gateway stopped'}</SetupPill>}
               </div>
-              <PlatformHint platform={platform} />
+              <PlatformHint language={language} platform={platform} />
             </div>
           </header>
 
@@ -509,14 +551,14 @@ function PlatformDetail({
           )}
 
           <section>
-            <SectionTitle>Get your credentials</SectionTitle>
+            <SectionTitle>{language === 'zh' ? '获取凭据' : 'Get your credentials'}</SectionTitle>
             <p className="mt-1 text-sm leading-6 text-muted-foreground">
               {introCopy(platform)}
             </p>
             <div className="mt-3">
               <Button asChild size="sm" variant="outline">
                 <a href={platform.docs_url} rel="noreferrer" target="_blank">
-                  Open setup guide
+                  {language === 'zh' ? '打开配置指南' : 'Open setup guide'}
                   <ExternalLink className="size-3.5" />
                 </a>
               </Button>
@@ -524,7 +566,7 @@ function PlatformDetail({
           </section>
 
           <section>
-            <SectionTitle>Required</SectionTitle>
+            <SectionTitle>{language === 'zh' ? '必填' : 'Required'}</SectionTitle>
             <div className="mt-3 space-y-4">
               {requiredFields.length > 0 ? (
                 requiredFields.map(field => (
@@ -535,11 +577,14 @@ function PlatformDetail({
                     onClear={onClear}
                     onEdit={onEdit}
                     saving={saving}
+                    language={language}
                   />
                 ))
               ) : (
                 <p className="text-sm leading-6 text-muted-foreground">
-                  This platform does not need a token here. Use the setup guide above, then enable it below.
+                  {language === 'zh'
+                    ? '此平台不需要在这里填写令牌。请先使用上方配置指南，然后在下方启用。'
+                    : 'This platform does not need a token here. Use the setup guide above, then enable it below.'}
                 </p>
               )}
             </div>
@@ -547,7 +592,7 @@ function PlatformDetail({
 
           {optionalFields.length > 0 && (
             <section>
-              <SectionTitle>Recommended</SectionTitle>
+              <SectionTitle>{language === 'zh' ? '推荐' : 'Recommended'}</SectionTitle>
               <div className="mt-3 space-y-4">
                 {optionalFields.map(field => (
                   <MessagingField
@@ -557,6 +602,7 @@ function PlatformDetail({
                     onClear={onClear}
                     onEdit={onEdit}
                     saving={saving}
+                    language={language}
                   />
                 ))}
               </div>
@@ -570,7 +616,7 @@ function PlatformDetail({
                 onClick={() => setShowAdvanced(value => !value)}
                 type="button"
               >
-                <span>Advanced ({hiddenCount})</span>
+                <span>{language === 'zh' ? '高级' : 'Advanced'} ({hiddenCount})</span>
                 <ChevronDown
                   className={cn('size-3.5 transition-transform', !showAdvanced && '-rotate-90')}
                 />
@@ -585,6 +631,7 @@ function PlatformDetail({
                       onClear={onClear}
                       onEdit={onEdit}
                       saving={saving}
+                      language={language}
                     />
                   ))}
                 </div>
@@ -598,21 +645,27 @@ function PlatformDetail({
         <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
           <label className="flex shrink-0 items-center gap-2 rounded-lg border border-border/50 bg-muted/25 px-3 py-1.5 text-sm">
             <Switch
-              aria-label={platform.enabled ? `Disable ${platform.name}` : `Enable ${platform.name}`}
+              aria-label={
+                language === 'zh'
+                  ? `${platform.enabled ? '禁用' : '启用'} ${platform.name}`
+                  : platform.enabled
+                    ? `Disable ${platform.name}`
+                    : `Enable ${platform.name}`
+              }
               checked={platform.enabled}
               disabled={saving === `enabled:${platform.id}`}
               onCheckedChange={onToggle}
             />
             <span className="text-xs font-medium text-muted-foreground">
-              {platform.enabled ? 'Enabled' : 'Disabled'}
+              {language === 'zh' ? (platform.enabled ? '已启用' : '已禁用') : platform.enabled ? 'Enabled' : 'Disabled'}
             </span>
           </label>
 
           <div className="ml-auto flex items-center gap-2">
-            {hasEdits && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
+            {hasEdits && <span className="text-xs text-muted-foreground">{language === 'zh' ? '有未保存更改' : 'Unsaved changes'}</span>}
             <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
               <Save />
-              {isSavingEnv ? 'Saving...' : 'Save changes'}
+              {language === 'zh' ? (isSavingEnv ? '正在保存...' : '保存更改') : isSavingEnv ? 'Saving...' : 'Save changes'}
             </Button>
           </div>
         </div>
@@ -662,12 +715,14 @@ const introCopy = (platform: MessagingPlatformInfo) => PLATFORM_INTRO[platform.i
 function MessagingField({
   edits,
   field,
+  language,
   onClear,
   onEdit,
   saving
 }: {
   edits: Record<string, string>
   field: MessagingEnvVarInfo
+  language: 'zh' | 'en'
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
   saving: string | null
@@ -680,19 +735,19 @@ function MessagingField({
         <label className="text-sm font-medium text-foreground" htmlFor={`messaging-field-${field.key}`}>
           {copy.label}
         </label>
-        {field.is_set && <span className="text-[0.66rem] font-medium text-primary">Saved</span>}
+        {field.is_set && <span className="text-[0.66rem] font-medium text-primary">{language === 'zh' ? '已保存' : 'Saved'}</span>}
       </div>
       <div className="flex items-center gap-2">
         <Input
           className="h-9 rounded-lg font-mono text-sm"
           id={`messaging-field-${field.key}`}
           onChange={event => onEdit(field.key, event.target.value)}
-          placeholder={field.is_set ? field.redacted_value || 'Replace current value' : copy.placeholder}
+          placeholder={field.is_set ? field.redacted_value || (language === 'zh' ? '替换当前值' : 'Replace current value') : copy.placeholder}
           type={field.is_password ? 'password' : 'text'}
           value={edits[field.key] || ''}
         />
         {field.url && (
-          <Button asChild size="icon-sm" title="Open docs" variant="ghost">
+          <Button asChild size="icon-sm" title={language === 'zh' ? '打开文档' : 'Open docs'} variant="ghost">
             <a href={field.url} rel="noreferrer" target="_blank">
               <ExternalLink className="size-3.5" />
             </a>
@@ -703,7 +758,7 @@ function MessagingField({
             disabled={saving === `clear:${field.key}`}
             onClick={() => onClear(field.key)}
             size="icon-sm"
-            title={`Clear ${field.key}`}
+            title={language === 'zh' ? `清除 ${field.key}` : `Clear ${field.key}`}
             variant="ghost"
           >
             <Trash2 className="size-3.5" />
@@ -721,11 +776,12 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   )
 }
 
-function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
+function PlatformHint({ platform, language }: { platform: MessagingPlatformInfo; language: 'zh' | 'en' }) {
   if (!platform.enabled || platform.state === 'connected') {return null}
 
   const hint =
-    HINT_BY_STATE[platform.state || ''] || (platform.gateway_running ? null : HINT_BY_STATE.gateway_stopped)
+    (language === 'zh' ? HINT_BY_STATE_ZH[platform.state || ''] : HINT_BY_STATE[platform.state || '']) ||
+    (platform.gateway_running ? null : language === 'zh' ? HINT_BY_STATE_ZH.gateway_stopped : HINT_BY_STATE.gateway_stopped)
 
   return hint ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{hint}</p> : null
 }

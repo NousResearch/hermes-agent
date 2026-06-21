@@ -3,8 +3,11 @@ import { useEffect, useRef, useState } from 'react'
 
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
+import { dt } from '@/lib/i18n'
 import { Globe, KeyRound, Package } from '@/lib/icons'
+import { $desktopLanguage } from '@/store/language'
 import { notifyError } from '@/store/notifications'
+import { useStore } from '@nanostores/react'
 
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlaySearchInput } from '../overlays/overlay-search-input'
@@ -21,6 +24,7 @@ import type { SettingsPageProps, SettingsQueryKey, SettingsView as SettingsViewI
 
 export function SettingsView({ onClose, onConfigSaved }: SettingsPageProps) {
   const [activeView, setActiveView] = useState<SettingsViewId>('config:model')
+  const desktopLanguage = useStore($desktopLanguage)
 
   const [queries, setQueries] = useState<Record<SettingsQueryKey, string>>({
     config: '',
@@ -96,7 +100,15 @@ export function SettingsView({ onClose, onConfigSaved }: SettingsPageProps) {
           containerClassName="w-[min(36rem,calc(100vw-32rem))] min-w-80"
           inputRef={searchInputRef}
           onChange={setQuery}
-          placeholder={SEARCH_PLACEHOLDER[queryKey]}
+          placeholder={
+            queryKey === 'config'
+              ? dt(desktopLanguage, 'searchSettings', SEARCH_PLACEHOLDER.config)
+              : queryKey === 'gateway'
+                ? dt(desktopLanguage, 'settingsGatewaySearch', SEARCH_PLACEHOLDER.gateway)
+                : queryKey === 'keys'
+                  ? dt(desktopLanguage, 'searchApiKeys', SEARCH_PLACEHOLDER.keys)
+                  : dt(desktopLanguage, 'searchSkillsTools', SEARCH_PLACEHOLDER.tools)
+          }
           value={query}
         />
       }
@@ -112,7 +124,7 @@ export function SettingsView({ onClose, onConfigSaved }: SettingsPageProps) {
                 active={activeView === view && !queries.config.trim()}
                 icon={s.icon}
                 key={s.id}
-                label={s.label}
+                label={settingsSectionLabel(desktopLanguage, s.id, s.label)}
                 onClick={() => setActiveView(view)}
               />
             )
@@ -121,19 +133,19 @@ export function SettingsView({ onClose, onConfigSaved }: SettingsPageProps) {
           <OverlayNavItem
             active={activeView === 'gateway'}
             icon={Globe}
-            label="Gateway"
+            label={dt(desktopLanguage, 'gateway', 'Gateway')}
             onClick={() => setActiveView('gateway')}
           />
           <OverlayNavItem
             active={activeView === 'keys'}
             icon={KeyRound}
-            label="API Keys"
+            label={dt(desktopLanguage, 'apiKeys', 'API Keys')}
             onClick={() => setActiveView('keys')}
           />
           <OverlayNavItem
             active={activeView === 'tools'}
             icon={Package}
-            label="Skills & Tools"
+            label={dt(desktopLanguage, 'skillsTools', 'Skills & Tools')}
             onClick={() => setActiveView('tools')}
           />
           <div className="mt-auto flex items-center gap-1 pt-2">
@@ -186,3 +198,15 @@ export function SettingsView({ onClose, onConfigSaved }: SettingsPageProps) {
 }
 
 export { SettingsView as SettingsPage }
+
+function settingsSectionLabel(language: ReturnType<typeof $desktopLanguage.get>, id: string, fallback: string): string {
+  if (id === 'model') return dt(language, 'model', fallback)
+  if (id === 'chat') return dt(language, 'chat', fallback)
+  if (id === 'appearance') return dt(language, 'appearance', fallback)
+  if (id === 'workspace') return dt(language, 'workspace', fallback)
+  if (id === 'safety') return dt(language, 'safety', fallback)
+  if (id === 'memory') return dt(language, 'memoryContext', fallback)
+  if (id === 'voice') return dt(language, 'voice', fallback)
+  if (id === 'advanced') return dt(language, 'advanced', fallback)
+  return fallback
+}

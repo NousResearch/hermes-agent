@@ -56,6 +56,40 @@ import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../types'
 
+/**
+ * Decide whether a `session.info` payload's `provider` field is a real,
+ * user-facing provider name (worth persisting into the sticky
+ * `$currentProvider` atom) versus an internal billing-class identity that
+ * would brick the next `session.create` round-trip if written verbatim.
+ *
+ * Backend writes the **resolved billing class** into `agent.provider` for
+ * every named `providers:` / `custom_providers:` entry:
+ *   - the bare string `"custom"`         — for entries resolved via
+ *     `_resolve_named_custom_runtime` (`hermes_cli/runtime_provider.py`)
+ *   - the `"custom:<name>"` slug        — for entries recovered via
+ *     `_runtime_model_config` → `canonical_custom_identity`
+ *     (`tui_gateway/server.py`)
+ * Neither is a routable user-facing slug:
+ *   - `resolve_runtime_provider("custom")`        → falls through to
+ *     OpenRouter default URL with no api_key, then to the Gemini
+ *     fallback endpoint.
+ *   - `resolve_runtime_provider("custom:<x>")`    → looks up
+ *     `_get_named_custom_provider("custom:<x>")`, finds nothing (the
+ *     `custom_providers:` map keys are the bare names, not `custom:<x>`),
+ *     same fallback path.
+ * Either value written to `localStorage` makes the next `session.create`
+ * ship an unresolvable `provider` and surface as the Desktop 400
+ * `unexpected model name format` regression until the user manually
+ * re-picks a model from the picker. Reject both shapes here.
+ */
+export function isStickySafeProvider(provider: string | null | undefined): boolean {
+  if (typeof provider !== 'string') return false
+  const trimmed = provider.trim()
+  if (!trimmed) return false
+  const lower = trimmed.toLowerCase()
+  return lower !== 'custom' && !lower.startsWith('custom:')
+}
+
 interface MessageStreamOptions {
   activeSessionIdRef: MutableRefObject<string | null>
   hydrateFromStoredSession: (
@@ -741,7 +775,22 @@ export function useMessageStream({
           }
 
           if (providerChanged) {
-            setCurrentProvider(payload!.provider || '')
+            // backend pushes `agent.provider` (the resolved billing class) on
+            // every `session.info` event. For any named ``providers:`` /
+            // ``custom_providers:`` entry that value is the literal string
+            // ``"custom"`` — NOT a routable provider identity (see
+            // ``hermes_cli/runtime_provider.py:_resolve_named_custom_runtime``
+            // and ``tui_gateway/server.py:_session_info``). Writing it into
+            // the sticky ``$currentProvider`` atom bricks every subsequent
+            // ``session.create`` round-trip until the user manually re-picks
+            // a model from the picker (Desktop 400 "unexpected model name
+            // format" bug — `?custom` is not a built-in model and gets
+            // routed to the Gemini fallback endpoint). Keep the existing
+            // sticky state until a real provider name arrives.
+            const incomingProvider = (payload!.provider || '').trim()
+            if (isStickySafeProvider(incomingProvider)) {
+              setCurrentProvider(incomingProvider)
+            }
           }
 
           if (typeof payload?.cwd === 'string') {

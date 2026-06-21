@@ -59,6 +59,7 @@ _jobs_file_lock = threading.RLock()
 _jobs_lock_state = threading.local()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+EARLY_DUE_GRACE_SECONDS = 2
 
 
 def _jobs_lock_file() -> Path:
@@ -971,6 +972,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
                 now = _hermes_now().isoformat()
+                previous_next_run_at = job.get("next_run_at")
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
                 job["last_error"] = error if not success else None
@@ -993,8 +995,27 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         save_jobs(jobs)
                         return
                 
-                # Compute next run
-                job["next_run_at"] = compute_next_run(job["schedule"], now)
+                # Compute next run. For recurring jobs, preserve the scheduled
+                # grid instead of anchoring to actual completion time. The
+                # scheduler pre-advances next_run_at before execution for
+                # crash safety; if that future slot is already present, keep
+                # it. If mark_job_run() is called without a prior advance,
+                # advance from the previous scheduled slot rather than from
+                # ``now`` so small ticker jitter does not become interval+tick
+                # cadence drift.
+                schedule_kind = job.get("schedule", {}).get("kind")
+                if schedule_kind in {"cron", "interval"} and previous_next_run_at:
+                    try:
+                        previous_next_dt = _ensure_aware(datetime.fromisoformat(previous_next_run_at))
+                        now_dt = _ensure_aware(datetime.fromisoformat(now))
+                        if previous_next_dt > now_dt:
+                            job["next_run_at"] = previous_next_run_at
+                        else:
+                            job["next_run_at"] = compute_next_run(job["schedule"], previous_next_run_at)
+                    except Exception:
+                        job["next_run_at"] = compute_next_run(job["schedule"], now)
+                else:
+                    job["next_run_at"] = compute_next_run(job["schedule"], now)
 
                 # If no next run, decide whether this is terminal completion
                 # (one-shot) or a transient failure (recurring schedule couldn't
@@ -1050,8 +1071,13 @@ def advance_next_run(job_id: str) -> bool:
                 kind = job.get("schedule", {}).get("kind")
                 if kind not in {"cron", "interval"}:
                     return False
-                now = _hermes_now().isoformat()
-                new_next = compute_next_run(job["schedule"], now)
+                # Advance from the existing scheduled slot, not from wall-clock
+                # now. Otherwise a ticker that arrives milliseconds before the
+                # stored due timestamp misses the run, and the subsequent
+                # actual execution time becomes the new anchor, creating a
+                # repeatable interval+tick cadence.
+                anchor = job.get("next_run_at") or _hermes_now().isoformat()
+                new_next = compute_next_run(job["schedule"], anchor)
                 if new_next and new_next != job.get("next_run_at"):
                     job["next_run_at"] = new_next
                     save_jobs(jobs)
@@ -1190,7 +1216,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     break
 
         next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
-        if next_run_dt <= now:
+        if next_run_dt <= now + timedelta(seconds=EARLY_DUE_GRACE_SECONDS):
             schedule = job.get("schedule", {})
             kind = schedule.get("kind")
 
@@ -1198,7 +1224,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # (gateway was down and missed the window). Fast-forward to
             # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
-            if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
+            lateness = (now - next_run_dt).total_seconds()
+            if kind in {"cron", "interval"} and lateness > grace:
                 # Job is past its catch-up grace window — this is a stale missed run.
                 # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
                 new_next = compute_next_run(schedule, now.isoformat())

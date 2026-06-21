@@ -913,15 +913,25 @@ def _normalize_bedrock_model_name(model: str) -> str:
     """Normalize a Bedrock model id to its bare foundation-model form.
 
     Bedrock cross-region inference profiles prefix the foundation model id
-    with a region scope (``us.`` / ``global.`` / ``eu.`` / ``ap.`` / ``jp.``),
+    with a region scope (``us.`` / ``global.`` / ``eu.`` / ``apac.`` / ...),
     e.g. ``us.anthropic.claude-opus-4-7``.  The pricing table is keyed on the
     bare ``anthropic.claude-*`` id, so the prefix must be stripped before the
-    lookup or every cross-region session prices as unknown.  Mirrors the
-    prefix list in ``bedrock_adapter.is_anthropic_bedrock_model``.  Also
-    normalizes dot-notation version numbers (``4.7`` → ``4-7``).
+    lookup or every cross-region session prices as unknown.  Also normalizes
+    dot-notation version numbers (``4.7`` → ``4-7``).
     """
     name = model.lower().strip()
-    for prefix in ("us.", "global.", "eu.", "ap.", "jp."):
+    for prefix in (
+        "global.",
+        "us.",
+        "eu.",
+        "ap.",
+        "apac.",
+        "jp.",
+        "ca.",
+        "sa.",
+        "me.",
+        "af.",
+    ):
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
@@ -967,6 +977,20 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
             entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
             if entry:
                 return entry
+        bedrock_entries = (
+            (known_model, known_entry)
+            for (provider, known_model), known_entry in _OFFICIAL_DOCS_PRICING.items()
+            if provider == route.provider
+        )
+        for known_model, known_entry in sorted(
+            bedrock_entries,
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            if normalized == known_model or normalized.startswith(
+                (f"{known_model}-", f"{known_model}:")
+            ):
+                return known_entry
     return None
 
 

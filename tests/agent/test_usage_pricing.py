@@ -369,6 +369,43 @@ def test_bedrock_cross_region_profile_prefix_resolves_to_pricing():
         assert scoped.cache_read_cost_per_million == bare.cache_read_cost_per_million
 
 
+def test_bedrock_versioned_inference_profile_resolves_to_bare_pricing():
+    """Bedrock profile IDs may include the provider's dated version suffix.
+
+    The pricing table intentionally uses shorter model-family IDs, so the
+    lookup needs a longest-prefix fallback after stripping the region scope.
+    """
+    bare = get_pricing_entry("anthropic.claude-sonnet-4-6", provider="bedrock")
+    assert bare is not None
+
+    for model in (
+        "us.anthropic.claude-sonnet-4-6-20250514-v1:0",
+        "global.anthropic.claude-sonnet-4-6-20250514-v1:0",
+    ):
+        scoped = get_pricing_entry(model, provider="bedrock")
+        assert scoped is not None, model
+        assert scoped.input_cost_per_million == bare.input_cost_per_million
+        assert scoped.output_cost_per_million == bare.output_cost_per_million
+        assert scoped.cache_read_cost_per_million == bare.cache_read_cost_per_million
+        assert scoped.cache_write_cost_per_million == bare.cache_write_cost_per_million
+
+
+def test_bedrock_pricing_supports_less_common_inference_profile_prefixes():
+    """AWS also exposes profile scopes beyond us./global./eu.; those should
+    not silently fall through to unknown pricing.
+    """
+    entry = get_pricing_entry(
+        "apac.anthropic.claude-haiku-4-5-20251001-v1:0",
+        provider="bedrock",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.8
+    assert float(entry.output_cost_per_million) == 4.0
+    assert float(entry.cache_read_cost_per_million) == 0.08
+    assert float(entry.cache_write_cost_per_million) == 1.0
+
+
 def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     """A Bedrock Claude session with cache hits must produce a dollar estimate,
     not ``unknown`` — the user-visible symptom in #50295.

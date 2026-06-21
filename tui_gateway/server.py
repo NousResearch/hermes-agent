@@ -508,9 +508,16 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
     except Exception:
         pass
     try:
-        agent = session.get("agent")
-        if agent is not None and hasattr(agent, "close"):
-            agent.close()
+        if agent is not None:
+            # Bug #50197: drain memory provider before closing
+            if hasattr(agent, "shutdown_memory_provider"):
+                session_messages = getattr(agent, "_session_messages", None)
+                if isinstance(session_messages, list):
+                    agent.shutdown_memory_provider(session_messages)
+                else:
+                    agent.shutdown_memory_provider()
+            if hasattr(agent, "close"):
+                agent.close()
     except Exception:
         pass
     # NOTE: the slash-worker is closed inside _finalize_session (the single
@@ -7481,12 +7488,20 @@ def _(rid, params: dict) -> dict:
         try:
             from run_agent import AIAgent
 
-            result = AIAgent(
+            agent = AIAgent(
                 **_background_agent_kwargs(session["agent"], task_id)
-            ).run_conversation(
-                user_message=text,
-                task_id=task_id,
             )
+            try:
+                result = agent.run_conversation(
+                    user_message=text,
+                    task_id=task_id,
+                )
+            finally:
+                # Bug #50197: close ephemeral background agent
+                try:
+                    agent.close()
+                except Exception:
+                    pass
             _emit(
                 "background.complete",
                 parent,
@@ -7592,14 +7607,22 @@ def _(rid, params: dict) -> dict:
                 parent,
                 {"task_id": task_id, "text": f"Starting hidden restart agent{history_note}"},
             )
-            result = AIAgent(
+            agent = AIAgent(
                 **_ephemeral_preview_agent_kwargs(session["agent"], task_id),
                 **_preview_restart_callbacks(parent, task_id),
-            ).run_conversation(
-                user_message=prompt,
-                task_id=task_id,
-                conversation_history=parent_history or None,
             )
+            try:
+                result = agent.run_conversation(
+                    user_message=prompt,
+                    task_id=task_id,
+                    conversation_history=parent_history or None,
+                )
+            finally:
+                # Bug #50197: close ephemeral preview-restart agent
+                try:
+                    agent.close()
+                except Exception:
+                    pass
             text = (
                 result.get("final_response", str(result))
                 if isinstance(result, dict)

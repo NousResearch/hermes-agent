@@ -150,18 +150,30 @@ def _host_derived_api_key(base_url: str) -> str:
         labels.pop(0)
     if len(labels) < 2:
         return ""
-    # Take the *registrable* label (second-to-last). For typical provider
-    # hosts this is what users intuitively call "the vendor":
-    #   deepseek.com               → labels[-2] = "deepseek"  ✓
-    #   api.groq.com → groq.com    → labels[-2] = "groq"      ✓
-    #   api.mistral.ai             → labels[-2] = "mistral"   ✓
-    # Crucially, lookalike hosts pick the ATTACKER's label, not the spoofed
-    # vendor:
-    #   api.deepseek.com.attacker.test → labels[-2] = "attacker"
-    # so DEEPSEEK_API_KEY stays put and the chain falls through to
-    # no-key-required. This mirrors how `base_url_host_matches` resists the
-    # same lookalike attack for explicit hosts.
-    vendor = labels[-2]
+    # Known second-level domains that form part of a two-part public suffix
+    # (e.g. ``.co.uk``, ``.com.au``, ``.co.jp``).  When the TLD is exactly
+    # two characters AND the next label inward belongs to this set, the
+    # registrable domain sits at labels[-3] rather than labels[-2].
+    # Without this correction, ``api.myhost.co.uk`` extracts ``CO_API_KEY``
+    # instead of ``MYHOST_API_KEY`` — see GHSA / PR for details.
+    #
+    # The label-based heuristics from #28660 still protect lookalike hosts:
+    #   api.deepseek.com.attacker.test → labels[-2] = "attacker"  ✓
+    _TWO_PART_TLD_SECOND = frozenset({
+        "co", "com", "org", "net", "gov", "edu", "ac", "sch", "nom",
+    })
+    # Take the *registrable* label. For typical provider hosts
+    # (``deepseek.com``, ``groq.com``, ``mistral.ai``) this is labels[-2].
+    # For two-part ccTLDs (``myhost.co.uk``, ``myhost.com.au``) jump one
+    # label deeper so the registrable portion is not a TLD sub-component.
+    if (
+        len(labels) >= 3
+        and labels[-2] in _TWO_PART_TLD_SECOND
+        and len(labels[-1]) == 2
+    ):
+        vendor = labels[-3]
+    else:
+        vendor = labels[-2]
     # Sanitize to env var charset: A-Z, 0-9, underscore.
     sanitized = "".join(ch if ch.isalnum() else "_" for ch in vendor).upper()
     if not sanitized or not sanitized[0].isalpha():

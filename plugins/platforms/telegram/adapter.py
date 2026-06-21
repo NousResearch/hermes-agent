@@ -352,6 +352,38 @@ def _wrap_markdown_tables(text: str) -> str:
     return '\n'.join(out)
 
 
+# ---------------------------------------------------------------------------
+# Rich-message newline normalization
+# ---------------------------------------------------------------------------
+
+# Matches fenced code blocks (```...\n...\n```), used to protect their
+# content from newline normalization.
+_RICH_CODE_FENCE_RE = re.compile(r'(```[^\n]*\n[\s\S]*?```)', re.MULTILINE)
+
+
+def _rich_normalize_linebreaks(text: str) -> str:
+    """Convert single ``\\n`` to Markdown hard breaks for the rich-message path.
+
+    Standard Markdown treats a lone ``\\n`` as whitespace (soft break), so
+    Bot API 10.1 ``sendRichMessage`` collapses multi-line content — e.g.
+    slash-command lists joined with ``"\\n".join(lines)`` — into a single
+    paragraph.  Adding two trailing spaces before each single newline
+    forces a hard line break (``<br>``) in the rendered output.
+
+    Paragraph breaks (``\\n\\n``) and fenced code blocks are left untouched.
+    """
+    if not text or '\n' not in text:
+        return text
+
+    parts = _RICH_CODE_FENCE_RE.split(text)
+    for i, part in enumerate(parts):
+        # Even indices are outside code fences; odd indices are fence content.
+        if i % 2 == 0:
+            # Convert single \n (not adjacent to another \n) to "  \n".
+            parts[i] = re.sub(r'(?<!\n)\n(?!\n)', '  \n', part)
+    return ''.join(parts)
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -1107,8 +1139,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
         Never pass ``format_message(content)`` here — that converts to
         MarkdownV2 and would escape/destroy rich syntax like table pipes.
+
+        Single newlines are normalized to Markdown hard breaks so that
+        multi-line content (slash-command lists, etc.) renders correctly
+        in the rich-message path.  See ``_rich_normalize_linebreaks``.
         """
-        payload: Dict[str, Any] = {"markdown": content}
+        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload

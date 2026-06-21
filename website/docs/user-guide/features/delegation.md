@@ -142,6 +142,20 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
+### Per-Call Overrides
+
+You can override the model and provider for individual delegation calls without changing the global config:
+
+
+
+This is useful when different tasks need different models — a cheap model for simple lookups, an expensive model for deep reasoning — without needing to change  globally.
+
+Per-task overrides are also supported in batch mode:
+
+
+
+**Precedence:**  > top-level  >  from config. When no per-call override is specified, the existing config-based behavior is used.
+
 ## Toolset Selection Tips
 
 The `toolsets` parameter controls what tools the subagent has access to. Choose based on the task:

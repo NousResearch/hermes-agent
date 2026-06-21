@@ -2797,3 +2797,166 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPerCallModelOverride(unittest.TestCase):
+    """Tests for per-call model/provider overrides in delegate_task."""
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_top_level_model_override(self, mock_creds, mock_cfg):
+        """Top-level model override passes through to _build_child_agent."""
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            mock_build.return_value = mock_child
+
+            delegate_task(
+                goal="test",
+                model="deepseek/deepseek-v4-pro",
+                parent_agent=parent,
+            )
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs["model"], "deepseek/deepseek-v4-pro")
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_top_level_provider_override(self, mock_creds, mock_cfg):
+        """Top-level provider override passes through to _build_child_agent."""
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            mock_build.return_value = mock_child
+
+            delegate_task(
+                goal="test",
+                model="deepseek/deepseek-v4-pro",
+                provider="openrouter",
+                parent_agent=parent,
+            )
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs["override_provider"], "openrouter")
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_model_overrides_top_level(self, mock_creds, mock_cfg):
+        """Per-task model overrides top-level model."""
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            mock_build.return_value = mock_child
+
+            delegate_task(
+                model="deepseek/deepseek-v4-pro",
+                tasks=[
+                    {"goal": "task1", "model": "z-ai/glm-5.2"},
+                    {"goal": "task2"},
+                ],
+                parent_agent=parent,
+            )
+            calls = mock_build.call_args_list
+            self.assertEqual(calls[0][1]["model"], "z-ai/glm-5.2")  # task1: per-task wins
+            self.assertEqual(calls[1][1]["model"], "deepseek/deepseek-v4-pro")  # task2: falls back to top-level
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_no_override_uses_config(self, mock_creds, mock_cfg):
+        """Without per-call overrides, config credentials are used."""
+        mock_creds.return_value = {
+            "provider": "openrouter", "base_url": None,
+            "api_key": "sk-test", "api_mode": "chat_completions",
+            "model": "xiaomi/mimo-v2.5",
+        }
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            mock_build.return_value = mock_child
+
+            delegate_task(goal="test", parent_agent=parent)
+            _, kwargs = mock_build.call_args
+            # Config model should be used, not any override
+            self.assertEqual(kwargs["model"], "xiaomi/mimo-v2.5")
+            self.assertEqual(kwargs["override_provider"], "openrouter")
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_provider_overrides_top_level(self, mock_creds, mock_cfg):
+        """Per-task provider overrides top-level provider."""
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "api_calls": 1, "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            mock_build.return_value = mock_child
+
+            delegate_task(
+                model="deepseek/deepseek-v4-pro",
+                provider="openrouter",
+                tasks=[
+                    {"goal": "task1", "provider": "omlx"},
+                    {"goal": "task2"},
+                ],
+                parent_agent=parent,
+            )
+            calls = mock_build.call_args_list
+            self.assertEqual(calls[0][1]["override_provider"], "omlx")  # task1: per-task wins
+            self.assertEqual(calls[1][1]["override_provider"], "openrouter")  # task2: falls back to top-level

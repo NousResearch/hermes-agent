@@ -148,14 +148,14 @@ class TestEditMessageFinalizeSignature:
     @pytest.mark.parametrize(
         "module_path,class_name",
         [
-            ("gateway.platforms.telegram", "TelegramAdapter"),
+            ("plugins.platforms.telegram.adapter", "TelegramAdapter"),
             ("plugins.platforms.discord.adapter", "DiscordAdapter"),
-            ("gateway.platforms.slack", "SlackAdapter"),
-            ("gateway.platforms.matrix", "MatrixAdapter"),
+            ("plugins.platforms.slack.adapter", "SlackAdapter"),
+            ("plugins.platforms.matrix.adapter", "MatrixAdapter"),
             ("plugins.platforms.mattermost.adapter", "MattermostAdapter"),
-            ("gateway.platforms.feishu", "FeishuAdapter"),
-            ("gateway.platforms.whatsapp", "WhatsAppAdapter"),
-            ("gateway.platforms.dingtalk", "DingTalkAdapter"),
+            ("plugins.platforms.feishu.adapter", "FeishuAdapter"),
+            ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
+            ("plugins.platforms.dingtalk.adapter", "DingTalkAdapter"),
         ],
     )
     def test_edit_message_accepts_finalize(self, module_path, class_name):
@@ -993,17 +993,16 @@ class TestFinalContentDeliveredGuard:
         requiring a second finalize edit even when content is unchanged."""
         adapter = MagicMock()
         adapter.REQUIRES_EDIT_FINALIZE = True  # Telegram adapter behavior
-        # First send (initial streaming message) succeeds
-        # Mid-stream finalize edit succeeds
-        # Final finalize edit FAILS (e.g. flood control on Telegram)
-        adapter.edit_message = AsyncMock(side_effect=[
-            SimpleNamespace(success=True),   # mid-stream edit
-            SimpleNamespace(success=True),   # finalize edit on line 548
-            SimpleNamespace(success=False),  # final finalize on line 580 (FAILS)
+        # First send (initial streaming message) succeeds.
+        # Mid-stream edit succeeds.
+        # Final finalize edit fails, and the consumer's own fallback send also
+        # fails, so no path has confirmed the complete final response reached
+        # the user.
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=False))
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=False, error="network down"),
         ])
-        adapter.send = AsyncMock(
-            return_value=SimpleNamespace(success=True, message_id="msg_1"),
-        )
         adapter.MAX_MESSAGE_LENGTH = 4096
 
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
@@ -1013,6 +1012,10 @@ class TestFinalContentDeliveredGuard:
         consumer.on_delta("Part one of the response...\n")
         task = asyncio.create_task(consumer.run())
         await asyncio.sleep(0.05)
+        # Keep the second delta buffered until finish so the complete answer is
+        # not already visible before the final edit attempt fails.
+        consumer.cfg.buffer_threshold = 10_000
+        consumer._current_edit_interval = 10.0
 
         consumer.on_delta("Part two, the complete final answer.\n")
         await asyncio.sleep(0.05)

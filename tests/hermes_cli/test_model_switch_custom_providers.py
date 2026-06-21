@@ -65,6 +65,61 @@ def test_resolve_provider_full_finds_named_custom_provider():
     assert resolved.source == "user-config"
 
 
+def test_list_authenticated_providers_includes_active_bare_custom_endpoint(monkeypatch):
+    """Bare model.provider=custom + model.base_url should still populate /model.
+
+    Users can configure a one-off OpenAI-compatible endpoint directly under
+    ``model:`` without a named ``providers:`` or ``custom_providers:`` row.
+    The gateway picker receives only the current model/base_url slice, so it
+    must surface that active endpoint rather than looking like config was
+    ignored.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://www.ccsub.net/v1",
+        current_model="gpt-4o",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+
+    bare_custom = next((p for p in providers if p["slug"] == "custom"), None)
+    assert bare_custom is not None
+    assert bare_custom["name"] == "Custom endpoint"
+    assert bare_custom["is_current"] is True
+    assert bare_custom["is_user_defined"] is True
+    assert bare_custom["models"] == ["gpt-4o"]
+    assert bare_custom["api_url"] == "https://www.ccsub.net/v1"
+
+
+def test_switch_model_accepts_explicit_bare_custom_current_endpoint(monkeypatch):
+    """Picker selections for bare custom endpoints should route to current base_url."""
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="gpt-4o-mini",
+        current_provider="custom",
+        current_model="gpt-4o",
+        current_base_url="https://www.ccsub.net/v1",
+        current_api_key="sk-test",
+        explicit_provider="custom",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "custom"
+    assert result.provider_label == "Custom endpoint"
+    assert result.new_model == "gpt-4o-mini"
+    assert result.base_url == "https://www.ccsub.net/v1"
+    assert result.api_key == "sk-test"
+
+
 def test_is_aggregator_recognizes_named_custom_provider():
     assert providers_mod.is_aggregator("custom:hpc-ai") is True
     assert providers_mod.is_aggregator("custom:litellm") is True

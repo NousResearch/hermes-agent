@@ -91,6 +91,47 @@ class TestProfileScopedMessagingReads:
         )
         assert resp.status_code == 404
 
+    def test_scoped_read_returns_profile_path_command_and_startup_failure(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+
+        worker_home = isolated_profiles["worker_alpha"]
+        (worker_home / ".env").write_text(
+            "TELEGRAM_BOT_TOKEN=worker-token\n", encoding="utf-8"
+        )
+        (worker_home / "config.yaml").write_text(
+            yaml.safe_dump({"platforms": {"telegram": {"enabled": True}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda: {
+                "gateway_state": "startup_failed",
+                "exit_reason": "all configured messaging platforms failed to connect",
+                "platforms": {},
+            },
+        )
+
+        resp = client.get(
+            "/api/messaging/platforms", params={"profile": "worker_alpha"}
+        )
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["env_path"] == str(worker_home / ".env")
+        assert payload["gateway_start_command"] == (
+            "hermes -p worker_alpha gateway start"
+        )
+        telegram = _telegram(payload)
+        assert telegram["state"] == "startup_failed"
+        assert telegram["error_code"] == "startup_failed"
+        assert telegram["error_message"] == (
+            "all configured messaging platforms failed to connect"
+        )
+
 
 class TestProfileScopedMessagingWrites:
     def test_scoped_write_lands_in_target_profile_env(

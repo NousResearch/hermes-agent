@@ -181,6 +181,7 @@ export interface Translations {
     selectedSessionsDeleted: string;
     failedToDeleteSelected: string;
     resumeInChat: string;
+    newChat: string;
     previousPage: string;
     nextPage: string;
     roles: {
@@ -354,7 +355,8 @@ export interface Translations {
     nameRequired: string;
     nameRule: string;
     invalidName: string;
-    cloneFromDefault: string;
+    cloneFrom: string;
+    cloneFromNone: string;
     allProfiles: string;
     noProfiles: string;
     defaultBadge: string;

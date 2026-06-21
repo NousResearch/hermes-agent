@@ -7,6 +7,7 @@ const {
   appendUniquePathEntries,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
+  normalizeHermesHomeRoot,
   pathEnvKey
 } = require('./backend-env.cjs')
 
@@ -64,6 +65,21 @@ test('buildDesktopBackendEnv extends PYTHONPATH and backend PATH together', () =
   assert.equal(env.PYTHONPATH, '/repo/hermes-agent:/existing/pythonpath')
   assert.ok(env.PATH.startsWith('/Users/test/.hermes/node/bin:/Users/test/.hermes/hermes-agent/venv/bin:'))
   assert.ok(env.PATH.includes('/opt/homebrew/bin'))
+})
+
+test('normalizeHermesHomeRoot maps profile homes back to the global Hermes root', () => {
+  assert.equal(
+    normalizeHermesHomeRoot('/Users/test/.hermes/profiles/oracle', { pathModule: path.posix }),
+    '/Users/test/.hermes'
+  )
+  assert.equal(
+    normalizeHermesHomeRoot('C:\\Users\\test\\AppData\\Local\\hermes\\profiles\\oracle', { pathModule: path.win32 }),
+    'C:\\Users\\test\\AppData\\Local\\hermes'
+  )
+  assert.equal(
+    normalizeHermesHomeRoot('/Users/test/.hermes', { pathModule: path.posix }),
+    '/Users/test/.hermes'
+  )
 })
 
 test('Windows PATH casing and delimiter are preserved without POSIX sane entries', () => {

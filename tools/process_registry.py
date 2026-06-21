@@ -100,6 +100,8 @@ class ProcessSession:
     started_at: float = 0.0                     # time.time() of spawn
     exited: bool = False                        # Whether the process has finished
     exit_code: Optional[int] = None             # Exit code (None if still running)
+    completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
+    termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
@@ -129,6 +131,7 @@ class ProcessSession:
     _watch_cooldown_until: float = field(default=0.0, repr=False)
     _watch_strike_candidate: bool = field(default=False, repr=False)
     _watch_consecutive_strikes: int = field(default=0, repr=False)
+    _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
@@ -168,8 +171,20 @@ class ProcessRegistry:
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
 
         # Track sessions whose completion was already consumed by the agent
-        # via wait/poll/log.  Drain loops skip notifications for these.
+        # via wait/log.  Drain loops AND gateway/tui watchers skip notifications
+        # for these — a blocking wait() or a full read_log() means the agent
+        # has the output in hand and is acting on it this turn.
         self._completion_consumed: set = set()
+
+        # Track sessions the agent merely *observed* exited via poll().  poll()
+        # is a read-only status check, so it does NOT mark _completion_consumed
+        # (that would let a status check suppress the gateway/tui watcher's
+        # autonomous delivery turn — #10156).  But on the CLI the poll result
+        # is returned inline in the same turn, so the idle/post-turn drain must
+        # still skip the queued completion to avoid a duplicate [SYSTEM: ...]
+        # injection (the bug #8228 originally fixed).  drain_notifications()
+        # consults this set; the gateway/tui watchers deliberately do NOT.
+        self._poll_observed: set = set()
 
         # Global watch-match circuit breaker — across all sessions.
         # Prevents sibling processes from collectively flooding the user even
@@ -719,10 +734,14 @@ class ProcessRegistry:
                 session.exit_code = int(result.get("returncode", -1))
                 if session.exit_code == 0:
                     session.exit_code = -1
+                session.completion_reason = "failed_start"
+                session.termination_source = "failed_start"
                 session.output_buffer = result.get("output", "").strip()
         except Exception as e:
             session.exited = True
             session.exit_code = -1
+            session.completion_reason = "failed_start"
+            session.termination_source = "failed_start"
             session.output_buffer = f"Failed to start: {e}"
 
         if not session.exited:
@@ -773,7 +792,9 @@ class ProcessRegistry:
             except Exception as e:
                 logger.debug("Process wait timed out or failed: %s", e)
             session.exited = True
-            session.exit_code = session.process.returncode
+            if session.completion_reason != "killed":
+                session.exit_code = session.process.returncode
+                session.completion_reason = "exited"
             self._move_to_finished(session)
 
     def _env_poller_loop(
@@ -819,6 +840,8 @@ class ProcessRegistry:
                     except (ValueError, IndexError):
                         session.exit_code = -1
                     session.exited = True
+                    if session.completion_reason != "killed":
+                        session.completion_reason = "exited"
                     self._move_to_finished(session)
                     return
 
@@ -826,6 +849,8 @@ class ProcessRegistry:
                 # Environment might be gone (sandbox reaped, etc.)
                 session.exited = True
                 session.exit_code = -1
+                session.completion_reason = "lost"
+                session.termination_source = "backend_lost"
                 self._move_to_finished(session)
                 return
 
@@ -857,7 +882,9 @@ class ProcessRegistry:
         except Exception as e:
             logger.debug("PTY wait timed out or failed: %s", e)
         session.exited = True
-        session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
+        if session.completion_reason != "killed":
+            session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
+            session.completion_reason = "exited"
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession):
@@ -870,6 +897,7 @@ class ProcessRegistry:
         with self._lock:
             was_running = self._running.pop(session.id, None) is not None
             self._finished[session.id] = session
+        session._completion_event.set()
         self._write_checkpoint()
 
         # Only enqueue completion notification on the FIRST move.  Without
@@ -884,20 +912,36 @@ class ProcessRegistry:
                 "session_key": session.session_key,
                 "command": session.command,
                 "exit_code": session.exit_code,
+                "completion_reason": session.completion_reason,
+                "termination_source": session.termination_source,
                 "output": output_tail,
             })
 
     # ----- Query Methods -----
 
     def is_completion_consumed(self, session_id: str) -> bool:
-        """Check if a completion notification was already consumed via wait/poll/log."""
+        """Check if a completion notification was already consumed via wait/log."""
         return session_id in self._completion_consumed
+
+    def _drain_should_skip(self, session_id: str) -> bool:
+        """Whether the CLI drain should skip a completion event for this session.
+
+        Skips when the agent has either truly consumed the output (wait/log →
+        ``_completion_consumed``) or observed the exit inline via poll()
+        (``_poll_observed``).  In both cases the CLI agent already has the
+        result this turn, so injecting a [SYSTEM: ...] completion would be a
+        duplicate (#8228).  The gateway/tui watchers do NOT use this — they
+        check only ``is_completion_consumed`` so a read-only poll never
+        suppresses their autonomous delivery turn (#10156).
+        """
+        return session_id in self._completion_consumed or session_id in self._poll_observed
 
     def drain_notifications(self) -> "list[tuple[dict, str]]":
         """Pop all pending notification events and return formatted pairs.
 
         Returns a list of (raw_event, formatted_text) tuples.
-        Skips completion events that were already consumed via wait/poll/log.
+        Skips completion events the agent already consumed via wait/log or
+        observed inline via poll() (see ``_drain_should_skip``).
         """
         results = []
         while not self.completion_queue.empty():
@@ -906,7 +950,7 @@ class ProcessRegistry:
             except Exception:
                 break
             _evt_sid = evt.get("session_id", "")
-            if evt.get("type") == "completion" and self.is_completion_consumed(_evt_sid):
+            if evt.get("type") == "completion" and self._drain_should_skip(_evt_sid):
                 continue
             text = format_process_notification(evt)
             if text:
@@ -983,7 +1027,9 @@ class ProcessRegistry:
                 if len(session.output_buffer) > session.max_output_chars:
                     session.output_buffer = session.output_buffer[-session.max_output_chars:]
             session.exited = True
-            session.exit_code = rc
+            if session.completion_reason != "killed":
+                session.exit_code = rc
+                session.completion_reason = "exited"
         logger.info(
             "Reconciled session %s: direct child exited with code %s but reader "
             "was still blocked (orphaned pipe). Flipped to exited.",
@@ -1016,7 +1062,19 @@ class ProcessRegistry:
         }
         if session.exited:
             result["exit_code"] = session.exit_code
-            self._completion_consumed.add(session_id)
+            result["completion_reason"] = session.completion_reason
+            result["termination_source"] = session.termination_source
+            # NOTE: poll() is a read-only status query and deliberately does
+            # NOT mark the session _completion_consumed. wait()/read_log()
+            # represent actual output consumption and do mark it. Marking
+            # consumed here would let a status check silently suppress the
+            # notify_on_complete watcher's autonomous delivery turn (#10156).
+            #
+            # We DO record it in _poll_observed so the CLI's inline drain still
+            # dedups (the agent already saw the exit in this turn's poll result)
+            # without affecting the gateway/tui watchers, which only consult
+            # _completion_consumed.
+            self._poll_observed.add(session_id)
         if session.detached:
             result["detached"] = True
             result["note"] = "Process recovered after restart -- output history unavailable"
@@ -1093,6 +1151,8 @@ class ProcessRegistry:
 
         while time.monotonic() < deadline:
             session = self._refresh_detached_session(session)
+            if session is None:
+                return {"status": "not_found", "error": f"No process with ID {session_id}"}
             # Reconcile against real child state — guards against orphaned-
             # pipe reader hangs where the reader is blocked but the direct
             # child has already exited (issue #17327).
@@ -1102,6 +1162,8 @@ class ProcessRegistry:
                 result = {
                     "status": "exited",
                     "exit_code": session.exit_code,
+                    "completion_reason": session.completion_reason,
+                    "termination_source": session.termination_source,
                     "output": strip_ansi(session.output_buffer[-2000:]),
                 }
                 if timeout_note:
@@ -1118,7 +1180,10 @@ class ProcessRegistry:
                     result["timeout_note"] = timeout_note
                 return result
 
-            time.sleep(1)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            session._completion_event.wait(timeout=min(1.0, remaining))
 
         result = {
             "status": "timeout",
@@ -1130,7 +1195,7 @@ class ProcessRegistry:
             result["timeout_note"] = f"Waited {effective_timeout}s, process still running"
         return result
 
-    def kill_process(self, session_id: str) -> dict:
+    def kill_process(self, session_id: str, *, source: str = "process.kill") -> dict:
         """Kill a background process."""
         session = self.get(session_id)
         if session is None:
@@ -1194,9 +1259,16 @@ class ProcessRegistry:
                 }
             session.exited = True
             session.exit_code = -15  # SIGTERM
+            session.completion_reason = "killed"
+            session.termination_source = source
             self._move_to_finished(session)
             self._write_checkpoint()
-            return {"status": "killed", "session_id": session.id}
+            return {
+                "status": "killed",
+                "session_id": session.id,
+                "completion_reason": session.completion_reason,
+                "termination_source": session.termination_source,
+            }
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
@@ -1340,7 +1412,7 @@ class ProcessRegistry:
 
         killed = 0
         for session in targets:
-            result = self.kill_process(session.id)
+            result = self.kill_process(session.id, source="kill_all")
             if result.get("status") in {"killed", "already_exited"}:
                 killed += 1
         return killed
@@ -1358,6 +1430,7 @@ class ProcessRegistry:
         for sid in expired:
             del self._finished[sid]
             self._completion_consumed.discard(sid)
+            self._poll_observed.discard(sid)
 
         # If still over limit, remove oldest finished
         total = len(self._running) + len(self._finished)
@@ -1365,14 +1438,19 @@ class ProcessRegistry:
             oldest_id = min(self._finished, key=lambda sid: self._finished[sid].started_at)
             del self._finished[oldest_id]
             self._completion_consumed.discard(oldest_id)
+            self._poll_observed.discard(oldest_id)
 
-        # Drop any _completion_consumed entries whose sessions are no longer
-        # tracked at all — belt-and-suspenders against module-lifetime growth
-        # on process-registry lookup paths that don't reach the dict prunes.
+        # Drop any _completion_consumed / _poll_observed entries whose sessions
+        # are no longer tracked at all — belt-and-suspenders against
+        # module-lifetime growth on registry lookup paths that don't reach the
+        # dict prunes.
         tracked = self._running.keys() | self._finished.keys()
         stale = self._completion_consumed - tracked
         if stale:
             self._completion_consumed -= stale
+        stale_polls = self._poll_observed - tracked
+        if stale_polls:
+            self._poll_observed -= stale_polls
 
     # ----- Checkpoint (crash recovery) -----
 
@@ -1495,6 +1573,155 @@ class ProcessRegistry:
 process_registry = ProcessRegistry()
 
 
+def _format_age(seconds: float) -> str:
+    """Human-friendly elapsed string ('18m', '2h3m', '45s')."""
+    try:
+        s = int(max(0, seconds))
+    except (TypeError, ValueError):
+        return "?"
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m" if s == 0 else f"{m}m{s}s"
+    h, m = divmod(m, 60)
+    return f"{h}h" if m == 0 else f"{h}h{m}m"
+
+
+def _format_async_delegation(evt: dict) -> str:
+    """Format an async-delegation completion into a self-contained re-injection.
+
+    Carries the FULL original task source (goal, the context the parent
+    supplied, toolsets, role, model) plus dispatch time, status, and the
+    complete result summary. When this re-enters the conversation the agent
+    may be deep in unrelated context and won't remember why the subagent
+    existed, so the block is written to stand entirely on its own — enough to
+    use the result OR re-dispatch if the world has moved on.
+    """
+    import time as _time
+
+    deleg_id = evt.get("delegation_id", "unknown")
+    goal = evt.get("goal", "") or ""
+    context = evt.get("context")
+    toolsets = evt.get("toolsets")
+    role = evt.get("role") or "leaf"
+    model = evt.get("model") or "?"
+    status = evt.get("status") or "completed"
+    summary = evt.get("summary")
+    error = evt.get("error")
+    api_calls = evt.get("api_calls", 0)
+    duration = evt.get("duration_seconds", "?")
+    dispatched_at = evt.get("dispatched_at")
+    completed_at = evt.get("completed_at") or _time.time()
+
+    # ----- Batch (fan-out) completion: consolidated multi-task block -----
+    # A whole delegate_task fan-out dispatched as one background unit finishes
+    # together and carries a per-task `results` list. Render every subagent's
+    # summary in one block so the model gets the consolidated outcome at once.
+    batch_results = evt.get("results")
+    if evt.get("is_batch") or isinstance(batch_results, list):
+        results = batch_results or []
+        goals = evt.get("goals") or []
+        n = len(results) if results else len(goals)
+        total_dur = evt.get("total_duration_seconds", duration)
+        lines = [
+            f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
+            f"A background fan-out of {n} subagent(s) you dispatched earlier "
+            "has finished. All ran in parallel and waited on each other; their "
+            "consolidated results are below. You may have moved on since "
+            "dispatching — act on these or re-dispatch if things have changed.",
+            "",
+        ]
+        if isinstance(dispatched_at, (int, float)):
+            ts = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(dispatched_at))
+            age = f" ({_format_age(completed_at - dispatched_at)} ago)"
+            lines.append(f"Dispatched: {ts}{age}")
+        if context:
+            lines.append(f"Context you provided: {context}")
+        if toolsets:
+            lines.append(f"Toolsets: {', '.join(toolsets)}")
+        lines.append(f"Role: {role}   Model: {model}   Total duration: {total_dur}s")
+        if error and not results:
+            lines.append("--- ERROR ---")
+            lines.append(f"The batch did not complete successfully: {error}")
+            return "\n".join(lines)
+        for r in sorted(results, key=lambda x: x.get("task_index", 0)):
+            idx = r.get("task_index", 0)
+            r_status = r.get("status", "?")
+            r_summary = r.get("summary")
+            r_error = r.get("error")
+            r_goal = goals[idx] if idx < len(goals) else r.get("goal", "")
+            icon = "✓" if r_status in ("completed", "success") else "✗"
+            lines.append("")
+            header = f"--- {icon} TASK {idx + 1}/{n}"
+            if r_goal:
+                header += f": {r_goal}"
+            header += f"  (status={r_status}"
+            if r.get("api_calls"):
+                header += f", api_calls={r['api_calls']}"
+            if r.get("duration_seconds") is not None:
+                header += f", {r['duration_seconds']}s"
+            header += ") ---"
+            lines.append(header)
+            if r_status in ("completed", "success") and r_summary:
+                lines.append(r_summary)
+            elif r_summary:
+                if r_error:
+                    lines.append(f"({r_status}: {r_error})")
+                lines.append("Partial output:")
+                lines.append(r_summary)
+            else:
+                lines.append(
+                    f"(no summary — status={r_status}"
+                    + (f": {r_error}" if r_error else "")
+                    + ")"
+                )
+        return "\n".join(lines)
+
+    age = ""
+    if isinstance(dispatched_at, (int, float)):
+        age = f" ({_format_age(completed_at - dispatched_at)} ago)"
+
+    lines = [
+        f"[ASYNC DELEGATION COMPLETE — {deleg_id}]",
+        "A background subagent you dispatched earlier has finished. You may "
+        "have moved on since dispatching it; the full task source is below so "
+        "you can act on the result or re-dispatch if things have changed.",
+        "",
+    ]
+    if isinstance(dispatched_at, (int, float)):
+        ts = _time.strftime("%Y-%m-%d %H:%M:%S", _time.localtime(dispatched_at))
+        lines.append(f"Dispatched: {ts}{age}")
+    lines.append(f"Original goal: {goal}")
+    if context:
+        lines.append(f"Context you provided: {context}")
+    if toolsets:
+        lines.append(f"Toolsets: {', '.join(toolsets)}")
+    lines.append(f"Role: {role}   Model: {model}")
+    lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s")
+    lines.append("--- RESULT ---")
+    if status in ("completed", "success") and summary:
+        lines.append(summary)
+    elif status == "interrupted":
+        lines.append(
+            "The subagent was interrupted before completing"
+            + (f": {error}" if error else ".")
+        )
+        if summary:
+            lines.append("Partial output:")
+            lines.append(summary)
+    else:
+        # error / timeout / failed
+        lines.append(
+            f"The subagent did not complete successfully (status={status})."
+            + (f"\n{error}" if error else "")
+        )
+        if summary:
+            lines.append("Partial output:")
+            lines.append(summary)
+    return "\n".join(lines)
+
+
 def format_process_notification(evt: dict) -> "str | None":
     """Format a process notification event into a [IMPORTANT: ...] message.
 
@@ -1523,11 +1750,29 @@ def format_process_notification(evt: dict) -> "str | None":
         text += "]"
         return text
 
+    if evt_type == "async_delegation":
+        return _format_async_delegation(evt)
+
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
+    _reason = evt.get("completion_reason") or "exited"
+    _source = evt.get("termination_source") or ""
+    _signal = ""
+    if _exit in {-15, 143, "-15", "143"}:
+        _signal = ", SIGTERM"
+    if _reason == "killed":
+        _status = f"terminated by {_source or 'Hermes'}"
+    elif _reason == "lost":
+        _status = "marked lost because the process backend disappeared"
+    elif _reason == "failed_start":
+        _status = "failed to start"
+    elif _exit == 0:
+        _status = "completed normally"
+    else:
+        _status = "exited"
     return (
-        f"[IMPORTANT: Background process {_sid} completed "
-        f"(exit code {_exit}).\n"
+        f"[IMPORTANT: Background process {_sid} {_status} "
+        f"(exit code {_exit}{_signal}).\n"
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
     )

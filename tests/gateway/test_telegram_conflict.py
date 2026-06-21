@@ -34,7 +34,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -42,9 +42,9 @@ def _no_auto_discovery(monkeypatch):
     """Disable DoH auto-discovery so connect() uses the plain builder chain."""
     async def _noop():
         return []
-    monkeypatch.setattr("gateway.platforms.telegram.discover_fallback_ips", _noop)
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.discover_fallback_ips", _noop)
     # Mock HTTPXRequest so the builder chain doesn't fail
-    monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", lambda **kwargs: MagicMock())
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.HTTPXRequest", lambda **kwargs: MagicMock())
 
 
 @pytest.mark.asyncio
@@ -103,7 +103,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
     builder.build.return_value = app
-    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     # Speed up retries for testing
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
@@ -179,7 +179,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
     builder.build.return_value = app
-    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     # Speed up retries for testing
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
@@ -232,7 +232,7 @@ async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(m
         start=AsyncMock(),
     )
     builder.build.return_value = app
-    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     ok = await adapter.connect()
 
@@ -277,7 +277,7 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
     builder.get_updates_request.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
-        "gateway.platforms.telegram.Application",
+        "plugins.platforms.telegram.adapter.Application",
         SimpleNamespace(builder=MagicMock(return_value=builder)),
     )
 
@@ -301,7 +301,7 @@ async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     adapter._app = app
 
     warning = MagicMock()
-    monkeypatch.setattr("gateway.platforms.telegram.logger.warning", warning)
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.logger.warning", warning)
 
     await adapter.disconnect()
 
@@ -367,7 +367,7 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
     builder.get_updates_request.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
-        "gateway.platforms.telegram.Application",
+        "plugins.platforms.telegram.adapter.Application",
         SimpleNamespace(builder=MagicMock(return_value=builder)),
     )
     monkeypatch.setattr("asyncio.sleep", AsyncMock())

@@ -91,26 +91,60 @@ function isUpdateToastSnoozed(): boolean {
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
 const REQUIRED_BACKEND_CONTRACT = 2
 const SKEW_TOAST_ID = 'backend-contract-skew'
+// The contract check runs on every session.resume (applyRuntimeInfo), so
+// without a snooze the warning re-popped on every thread the user opened, even
+// right after they closed it. Mirror the update toast: persist a cooldown when
+// the user dismisses it. It still reminds again after the window if the backend
+// is still behind, and clears immediately once the backend catches up.
+const SKEW_TOAST_SNOOZE_KEY = 'hermes:backend-skew-toast-snooze-until'
+const SKEW_TOAST_COOLDOWN_MS = 24 * 60 * 60 * 1000
+
+function snoozeSkewToast(): void {
+  persistString(SKEW_TOAST_SNOOZE_KEY, String(Date.now() + SKEW_TOAST_COOLDOWN_MS))
+}
+
+function isSkewToastSnoozed(): boolean {
+  const until = Number(storedString(SKEW_TOAST_SNOOZE_KEY) || 0)
+
+  return Number.isFinite(until) && Date.now() < until
+}
 
 /**
  * Guard against a desktop GUI talking to a backend that predates its contract
  * (e.g. a bb/gui-built app pointed at a `main` checkout). Rather than failing
- * cryptically downstream, surface a persistent warning with a one-click align
- * that runs the normal update flow (which self-heals to the right branch).
+ * cryptically downstream, surface a warning with a one-click align that runs
+ * the normal update flow (which self-heals to the right branch).
+ *
+ * Runs on every session open; closing the toast snoozes it for a cooldown so it
+ * doesn't nag on every thread switch.
  */
 export function reportBackendContract(contract: number | undefined): void {
   if ((contract ?? 0) >= REQUIRED_BACKEND_CONTRACT) {
     dismissNotification(SKEW_TOAST_ID)
+    // Backend caught up — forget any prior snooze so a future regression warns
+    // immediately rather than staying silent for the rest of the window.
+    persistString(SKEW_TOAST_SNOOZE_KEY, null)
 
     return
   }
 
+  if (isSkewToastSnoozed()) {
+    return
+  }
+
   notify({
-    action: { label: translateNow('notifications.updateHermes'), onClick: () => void applyBackendUpdate() },
+    action: {
+      label: translateNow('notifications.updateHermes'),
+      onClick: () => {
+        snoozeSkewToast()
+        void applyBackendUpdate()
+      }
+    },
     durationMs: 0,
     id: SKEW_TOAST_ID,
     kind: 'warning',
     message: translateNow('notifications.backendOutOfDateMessage'),
+    onDismiss: () => snoozeSkewToast(),
     title: translateNow('notifications.backendOutOfDateTitle')
   })
 }
@@ -159,6 +193,20 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
 
 export function openUpdatesWindow(): void {
   openUpdateOverlayFor(isRemoteMode() ? 'backend' : 'client')
+}
+
+/**
+ * Start applying the available update for the active target right away. Opens
+ * the updates overlay first so the user sees apply progress (the overlay
+ * renders ApplyingView once `applying` flips true), then kicks off the install.
+ * Used by the "Update now" affordance on the About panel, which would otherwise
+ * only be able to open the changelog overlay.
+ */
+export function startActiveUpdate(): void {
+  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
+  $updateOverlayTarget.set(target)
+  $updateOverlayOpen.set(true)
+  void (target === 'backend' ? applyBackendUpdate() : applyUpdates())
 }
 
 /** Re-read the running app's version from the Electron main process and

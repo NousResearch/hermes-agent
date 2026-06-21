@@ -851,13 +851,14 @@ class AIAgent:
     # (agent.log) are unaffected — every individual emission site still
     # writes to ``logger.warning`` / ``logger.info`` for diagnosis.
 
-    def _buffer_status(self, message: str) -> None:
+    def _buffer_status(self, message: str, *, emit_on_success: bool = False) -> None:
         """Buffer a retry/fallback status message.
 
         Stored as a (kind, text) tuple where ``kind`` is one of:
-        - ``"status"``  -> replays via ``_emit_status``
-        - ``"vprint"``  -> replays via ``_vprint(force=True)``
-        - ``"warn"``    -> replays via ``_emit_warning``
+        - ``"status"``             -> replays via ``_emit_status`` on terminal failure
+        - ``"status_on_success"``  -> replays via ``_emit_status`` on recovery or failure
+        - ``"vprint"``             -> replays via ``_vprint(force=True)``
+        - ``"warn"``               -> replays via ``_emit_warning``
         Used to defer noisy retry chatter until we know whether the
         turn ultimately recovered or failed.
         """
@@ -866,7 +867,8 @@ class AIAgent:
             if buf is None:
                 buf = []
                 self._retry_status_buffer = buf
-            buf.append(("status", message))
+            kind = "status_on_success" if emit_on_success else "status"
+            buf.append((kind, message))
         except Exception:
             # Never break the retry loop on a buffer hiccup.
             pass
@@ -891,6 +893,30 @@ class AIAgent:
         except Exception:
             pass
 
+    def _flush_recovery_status_buffer(self) -> None:
+        """Emit success-visible fallback notices and drop retry noise.
+
+        Most retry chatter is intentionally buffered and discarded when a turn
+        recovers.  A provider/model fallback is different: after success the
+        user is now on a different backend, so notices marked
+        ``status_on_success`` must survive the recovery path.
+        """
+        try:
+            buf = getattr(self, "_retry_status_buffer", None)
+            if not buf:
+                return
+            messages = list(buf)
+            buf.clear()
+            for kind, msg in messages:
+                if kind != "status_on_success":
+                    continue
+                try:
+                    self._emit_status(msg)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def _flush_status_buffer(self) -> None:
         """Emit buffered retry messages — call on terminal failure.
 
@@ -906,7 +932,7 @@ class AIAgent:
             buf.clear()
             for kind, msg in messages:
                 try:
-                    if kind == "status":
+                    if kind in {"status", "status_on_success"}:
                         self._emit_status(msg)
                     elif kind == "warn":
                         self._emit_warning(msg)

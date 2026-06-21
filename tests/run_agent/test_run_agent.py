@@ -85,6 +85,47 @@ def test_persist_user_message_override_rewrites_text_turns(agent):
     assert messages == [{"role": "user", "content": "hello"}]
 
 
+def test_success_recovery_flushes_only_fallback_status_not_retry_noise(agent):
+    emitted = []
+    agent.status_callback = lambda kind, message: emitted.append((kind, message))
+
+    agent._buffer_status("retrying primary in 5s")
+    agent._buffer_status("switching to fallback: glm via zai", emit_on_success=True)
+
+    agent._flush_recovery_status_buffer()
+
+    assert emitted == [("lifecycle", "switching to fallback: glm via zai")]
+    assert agent._retry_status_buffer == []
+
+
+def test_terminal_failure_flushes_retry_and_fallback_status(agent):
+    emitted = []
+    agent.status_callback = lambda kind, message: emitted.append((kind, message))
+
+    agent._buffer_status("retrying primary in 5s")
+    agent._buffer_status("switching to fallback: glm via zai", emit_on_success=True)
+
+    agent._flush_status_buffer()
+
+    assert emitted == [
+        ("lifecycle", "retrying primary in 5s"),
+        ("lifecycle", "switching to fallback: glm via zai"),
+    ]
+    assert agent._retry_status_buffer == []
+
+
+def test_recovery_status_flush_is_fail_open(agent):
+    def broken_status_callback(_message):
+        raise RuntimeError("display failed")
+
+    agent.status_callback = broken_status_callback
+    agent._buffer_status("switching to fallback", emit_on_success=True)
+
+    agent._flush_recovery_status_buffer()
+
+    assert agent._retry_status_buffer == []
+
+
 def test_persist_user_message_override_preserves_multimodal_turns(agent):
     multimodal_content = [
         {"type": "text", "text": "What color is this?"},
@@ -3784,18 +3825,30 @@ class TestRunConversation:
             agent._fallback_activated = True
             agent.model = "anthropic/claude-sonnet-4"
             agent.provider = "openrouter"
+            agent._buffer_status(
+                "🔄 Primary model failed — switching to fallback: "
+                "anthropic/claude-sonnet-4 via openrouter",
+                emit_on_success=True,
+            )
             return True
+
+        status_messages = []
 
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent, "_try_activate_fallback", side_effect=_mock_fallback),
+            patch.object(agent, "_emit_status", side_effect=status_messages.append),
         ):
             result = agent.run_conversation("answer me")
         assert fallback_called["called"], "Fallback should have been triggered"
         assert result["completed"] is True
         assert result["final_response"] == "Fallback answer."
+        assert status_messages == [
+            "🔄 Primary model failed — switching to fallback: "
+            "anthropic/claude-sonnet-4 via openrouter",
+        ]
 
     def test_empty_response_fallback_also_empty_returns_empty(self, agent):
         """If fallback also returns empty, final response is (empty)."""

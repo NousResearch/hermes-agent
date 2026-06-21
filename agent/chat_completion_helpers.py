@@ -1322,7 +1322,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
         agent._buffer_status(
             f"🔄 Primary model failed — switching to fallback: "
-            f"{fb_model} via {fb_provider}"
+            f"{fb_model} via {fb_provider}",
+            emit_on_success=True,
         )
         logger.info(
             "Fallback activated: %s → %s (%s)",

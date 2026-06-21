@@ -2812,10 +2812,14 @@ def run_conversation(
                     if not pool_may_recover:
                         if classified.reason == FailoverReason.billing:
                             agent._buffer_status(
-                                "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                                "⚠️ Billing or credits exhausted — switching to fallback provider...",
+                                emit_on_success=True,
                             )
                         else:
-                            agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
+                            agent._buffer_status(
+                                "⚠️ Rate limited — switching to fallback provider...",
+                                emit_on_success=True,
+                            )
                         if agent._try_activate_fallback(reason=classified.reason):
                             active_system_prompt = _sync_failover_system_message(
                                 agent, api_messages, active_system_prompt)
@@ -4416,9 +4420,10 @@ def run_conversation(
                 # Reset retry counter/signature on successful content
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
-                # Successful content reached — drop any buffered retry
-                # status from earlier failed attempts in this turn.
-                agent._clear_status_buffer()
+                # Successful content reached — surface fallback notices that
+                # change the user's active backend, but still drop ordinary
+                # retry noise from earlier failed attempts in this turn.
+                agent._flush_recovery_status_buffer()
 
                 if (
                     agent.api_mode == "codex_responses"

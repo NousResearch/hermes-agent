@@ -5658,27 +5658,49 @@ def _find_stale_dashboard_pids(
             # with `hermes_cli.gateway._scan_gateway_pids` and avoids the
             # greedy regex matching unrelated cmdlines that merely contain
             # both words (e.g. a chat session discussing "dashboard").
+            #
+            # Include PPID so we can protect Hermes Desktop-managed dashboard
+            # children even if the update command was launched from a context
+            # that did not inherit HERMES_DESKTOP_CHILD_PID. Killing that child
+            # is visible to the user as "all desktop sessions crashed"; the
+            # Electron app owns restarting/reloading it safely.
             result = subprocess.run(
-                ["ps", "-A", "-o", "pid=,command="],
+                ["ps", "-A", "-o", "pid=,ppid=,command="],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
             if result.returncode == 0:
+                rows: list[tuple[int, int, str]] = []
+                desktop_parent_pids: set[int] = set()
                 for line in getattr(result, "stdout", "").split("\n"):
                     stripped = line.strip()
                     if not stripped or "grep" in stripped:
                         continue
-                    parts = stripped.split(None, 1)
-                    if len(parts) != 2:
+                    parts = stripped.split(None, 2)
+                    if len(parts) != 3:
                         continue
                     try:
                         pid = int(parts[0])
+                        ppid = int(parts[1])
                     except ValueError:
                         continue
-                    command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
-                        dashboard_pids.append(pid)
+                    command = parts[2]
+                    rows.append((pid, ppid, command))
+                    if (
+                        "Hermes.app/Contents/MacOS/Hermes" in command
+                        and "Hermes Helper" not in command
+                    ):
+                        desktop_parent_pids.add(pid)
+
+                for pid, ppid, command in rows:
+                    if pid == self_pid:
+                        continue
+                    if not any(p in command for p in patterns):
+                        continue
+                    if ppid in desktop_parent_pids:
+                        continue
+                    dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
 

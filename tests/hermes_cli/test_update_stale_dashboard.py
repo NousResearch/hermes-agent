@@ -59,9 +59,9 @@ def _refresh_bindings_against_live_module():
     yield
 
 
-def _ps_line(pid: int, cmd: str) -> str:
-    """Format a line as it would appear in ``ps -A -o pid=,command=`` output."""
-    return f"{pid:>7} {cmd}"
+def _ps_line(pid: int, cmd: str, ppid: int = 1) -> str:
+    """Format a line as it would appear in ``ps -A -o pid=,ppid=,command=`` output."""
+    return f"{pid:>7} {ppid:>7} {cmd}"
 
 
 def _ps_runner(stdout: str):
@@ -204,6 +204,63 @@ class TestFindStaleDashboardPids:
         assert 11111 in pids
         assert 22222 not in pids
         assert 33333 in pids
+
+    def test_desktop_managed_dashboard_child_is_protected_by_ppid(self):
+        """Cron/chat updates may not inherit HERMES_DESKTOP_CHILD_PID.
+
+        On macOS/Linux the desktop backend still has Hermes.app as its direct
+        parent. Detect that lineage from ps and do not reap it; otherwise a
+        successful background update drops every active desktop conversation.
+        """
+        desktop_pid = 44444
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(
+                        desktop_pid,
+                        "/Users/u/.hermes/hermes-agent/apps/desktop/release/mac-arm64/Hermes.app/Contents/MacOS/Hermes",
+                        ppid=1,
+                    ),
+                    _ps_line(
+                        55555,
+                        "/Users/u/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main dashboard --no-open --host 127.0.0.1 --port 0",
+                        ppid=desktop_pid,
+                    ),
+                    _ps_line(66666, "hermes dashboard --port 9119", ppid=1),
+                ]) + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids()
+        assert 55555 not in pids
+        assert pids == [66666]
+
+    def test_desktop_helper_is_not_treated_as_dashboard_parent(self):
+        """Electron helper processes also contain Hermes.app in their path.
+
+        Only the main Hermes.app process owns dashboard children; helper
+        processes must not accidentally protect unrelated dashboard PIDs.
+        """
+        helper_pid = 44445
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(
+                        helper_pid,
+                        "/Users/u/.hermes/hermes-agent/apps/desktop/release/mac-arm64/Hermes.app/Contents/Frameworks/Hermes Helper.app/Contents/MacOS/Hermes Helper",
+                        ppid=1,
+                    ),
+                    _ps_line(
+                        55556,
+                        "/Users/u/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main dashboard --no-open",
+                        ppid=helper_pid,
+                    ),
+                ]) + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids()
+        assert pids == [55556]
 
     def test_exclude_pids_none_is_noop(self):
         """Passing exclude_pids=None (the default) changes nothing."""

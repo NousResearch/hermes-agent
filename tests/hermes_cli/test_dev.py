@@ -114,12 +114,28 @@ def test_verify_dry_run_plan_orders_local_checks_before_odin() -> None:
 
     labels = [plan.label for plan in dev.build_plans(args)]
 
-    assert labels[:4] == ["ruff check", "ruff format check", "mypy", "vulture advisory"]
+    assert labels[:6] == [
+        "ruff check",
+        "ruff gateway run undefined names",
+        "compile gateway runtime",
+        "ruff format check",
+        "mypy",
+        "vulture advisory",
+    ]
     assert "focused pytest" in labels
     assert labels.index("rsync to odin") > labels.index("focused pytest")
     assert labels.index("restart gateway") > labels.index("rsync to odin")
     assert labels.index("discord smoke") > labels.index("restart gateway")
     assert labels.index("gateway logs") > labels.index("discord smoke")
+
+
+def test_smoke_plan_uses_odin_venv_python() -> None:
+    args = _parse_dev_args(["smoke", "--odin", "--dry-run"])
+
+    plan = dev.build_plans(args)[0]
+
+    assert dev.ODIN_PYTHON in plan.render()
+    assert "&& python -m gateway.validation.discord_context_smoke" not in plan.render()
 
 
 def test_dev_parser_registers_expected_subcommands() -> None:

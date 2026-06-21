@@ -148,7 +148,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_compact_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -981,6 +981,7 @@ class AIAgent:
         gateway_session_key: str = None,
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
+        compact_skill_prompt: bool = False,
         skip_memory: bool = False,
         session_db=None,
         parent_session_id: str = None,
@@ -1064,6 +1065,7 @@ class AIAgent:
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
         self.load_soul_identity = load_soul_identity
+        self.compact_skill_prompt = compact_skill_prompt
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
@@ -5016,17 +5018,20 @@ class AIAgent:
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
-            avail_toolsets = {
-                toolset
-                for toolset in (
-                    get_toolset_for_tool(tool_name) for tool_name in self.valid_tool_names
+            if self.compact_skill_prompt:
+                skills_prompt = build_compact_skills_system_prompt()
+            else:
+                avail_toolsets = {
+                    toolset
+                    for toolset in (
+                        get_toolset_for_tool(tool_name) for tool_name in self.valid_tool_names
+                    )
+                    if toolset
+                }
+                skills_prompt = build_skills_system_prompt(
+                    available_tools=self.valid_tool_names,
+                    available_toolsets=avail_toolsets,
                 )
-                if toolset
-            }
-            skills_prompt = build_skills_system_prompt(
-                available_tools=self.valid_tool_names,
-                available_toolsets=avail_toolsets,
-            )
         else:
             skills_prompt = ""
         if skills_prompt:

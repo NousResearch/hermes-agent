@@ -46,17 +46,34 @@ def select_gateway_toolsets(
     configured = sorted({str(toolset) for toolset in configured_toolsets})
     if platform != "discord":
         return configured
-    if not _lightweight_enabled():
-        return configured
-    if auto_skill:
-        return configured
-    if WORK_INTENT_RE.search(user_text or ""):
+    if not should_use_lightweight_discord_context(
+        platform=platform,
+        user_text=user_text,
+        auto_skill=auto_skill,
+    ):
         return configured
     preserved_mcp = [name for name in configured if name.startswith("mcp-")]
     selected = sorted(
         (set(configured) & set(LIGHTWEIGHT_DISCORD_TOOLSETS)) | set(preserved_mcp)
     )
     return selected or configured
+
+
+def should_use_lightweight_discord_context(
+    *,
+    platform: str,
+    user_text: str | None = None,
+    auto_skill: object = None,
+) -> bool:
+    """Return whether this Discord turn should use the lightweight base context."""
+
+    if platform != "discord":
+        return False
+    if not _lightweight_enabled():
+        return False
+    if auto_skill:
+        return False
+    return WORK_INTENT_RE.search(user_text or "") is None
 
 
 def _lightweight_enabled() -> bool:

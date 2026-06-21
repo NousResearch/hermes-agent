@@ -56,7 +56,7 @@ from gateway.startup_context import (
     discord_context_channel_id,
     render_reply_chain_payload,
 )
-from gateway.tool_policy import select_gateway_toolsets
+from gateway.tool_policy import select_gateway_toolsets, should_use_lightweight_discord_context
 from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -6543,6 +6543,7 @@ class GatewayRunner:
                         "[Gateway] Auto-loaded skill(s) %s for session %s",
                         _loaded_names, session_key,
                     )
+                    self._record_loaded_skill_names(session_key, _loaded_names)
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
@@ -6965,6 +6966,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=event.message_id,
                 channel_prompt=event.channel_prompt,
+                auto_skill=getattr(event, "auto_skill", None),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -11654,6 +11656,39 @@ class GatewayRunner:
     def _agent_history_for_context_dump(self, history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return agent_history_for_context_dump(history)
 
+    def _record_loaded_skill_names(self, session_key: Optional[str], names: List[str]) -> None:
+        if not session_key or not names:
+            return
+        current = list(getattr(self, "_session_loaded_skill_names", {}).get(session_key, []))
+        seen = set(current)
+        for name in names:
+            value = str(name or "").strip()
+            if value and value not in seen:
+                current.append(value)
+                seen.add(value)
+        if current:
+            store = getattr(self, "_session_loaded_skill_names", None)
+            if store is None:
+                store = {}
+                setattr(self, "_session_loaded_skill_names", store)
+            store[session_key] = current
+
+    def _loaded_skill_names_for_session(self, session_key: Optional[str], event: Optional[MessageEvent] = None) -> List[str]:
+        names: List[str] = []
+        auto_skill = getattr(event, "auto_skill", None) if event is not None else None
+        if auto_skill:
+            names.extend([auto_skill] if isinstance(auto_skill, str) else list(auto_skill))
+        if session_key:
+            names.extend(getattr(self, "_session_loaded_skill_names", {}).get(session_key, []))
+        result: List[str] = []
+        seen = set()
+        for name in names:
+            value = str(name or "").strip()
+            if value and value not in seen:
+                result.append(value)
+                seen.add(value)
+        return result
+
     async def _build_current_context_dump_payload(
         self,
         event: MessageEvent,
@@ -11697,6 +11732,11 @@ class GatewayRunner:
                 user_text=getattr(event, "text", None),
                 auto_skill=getattr(event, "auto_skill", None),
             )
+            lightweight_discord_context = should_use_lightweight_discord_context(
+                platform=platform_key,
+                user_text=getattr(event, "text", None),
+                auto_skill=getattr(event, "auto_skill", None),
+            )
             agent_cfg_local = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
             model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -11709,6 +11749,7 @@ class GatewayRunner:
                 session_key=session_key,
             )
             service_tier = self._load_service_tier()
+            loaded_skill_names = self._loaded_skill_names_for_session(session_key, event)
             tmp_agent = AIAgent(
                 model=model,
                 **runtime_kwargs,
@@ -11730,9 +11771,14 @@ class GatewayRunner:
                 chat_type=source.chat_type,
                 thread_id=source.thread_id,
                 gateway_session_key=session_key,
+                skip_context_files=lightweight_discord_context,
+                load_soul_identity=lightweight_discord_context,
+                compact_skill_prompt=lightweight_discord_context,
                 session_db=self._session_db,
                 fallback_model=self._fallback_model,
             )
+            if lightweight_discord_context:
+                tmp_agent._tool_use_enforcement = False
             base_system_prompt = tmp_agent._build_system_prompt(None)
             effective_system_prompt = base_system_prompt
             if combined_ephemeral:
@@ -11764,7 +11810,7 @@ class GatewayRunner:
                 "captured_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
                 "capture_mode": "zero_inference_current_context",
                 "base_context_version": BASE_CONTEXT_VERSION,
-                "loaded_skill_names": [],
+                "loaded_skill_names": loaded_skill_names,
                 "session_key": session_key,
                 "session_id": session_entry.session_id,
                 "source": {
@@ -11828,13 +11874,6 @@ class GatewayRunner:
             except Exception:
                 _redact_pii = False
             context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-            startup_context_prompt = await self._build_discord_startup_context_prompt(
-                event,
-                event.source,
-                True,
-            )
-            if startup_context_prompt:
-                context_prompt = f"{context_prompt}\n\n{startup_context_prompt}"
             if getattr(event, "channel_prompt", None):
                 context_prompt = f"{context_prompt}\n\n{event.channel_prompt}".strip()
             if self._ephemeral_system_prompt:
@@ -11883,13 +11922,13 @@ class GatewayRunner:
                     context_length=context_length,
                     threshold_tokens=threshold,
                     base_context_version=BASE_CONTEXT_VERSION,
-                    loaded_skill_names=[],
+                    loaded_skill_names=self._loaded_skill_names_for_session(session_key, event),
                 )
             return format_context_window_token_line(
                 approx_tokens=approx_tokens,
                 context_length=0,
                 base_context_version=BASE_CONTEXT_VERSION,
-                loaded_skill_names=[],
+                loaded_skill_names=self._loaded_skill_names_for_session(session_key, event),
             )
         except Exception as exc:
             logger.debug("Failed to estimate startup context tokens for %s: %s", session_key, exc, exc_info=True)
@@ -11912,18 +11951,27 @@ class GatewayRunner:
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        existing_text_path = self._context_dump_text_path(session_key)
+        existing_json_path = self._context_dump_path(session_key)
+        if existing_text_path.exists():
+            send_path = existing_text_path
+        elif existing_json_path.exists():
+            send_path = existing_json_path
+        else:
+            send_path = None
         try:
-            payload = await self._build_current_context_dump_payload(event, session_entry, session_key)
-            path = self._write_context_dump_payload(session_key, payload)
-            text_path = self._write_context_dump_text(session_key, payload)
+            if send_path is None:
+                payload = await self._build_current_context_dump_payload(event, session_entry, session_key)
+                path = self._write_context_dump_payload(session_key, payload)
+                text_path = self._write_context_dump_text(session_key, payload)
+                send_path = text_path if text_path and text_path.exists() else path
         except Exception as exc:
             logger.warning("Failed to build current context dump for %s: %s", session_key, exc, exc_info=True)
             path = self._context_dump_path(session_key)
             text_path = self._context_dump_text_path(session_key)
             if not path.exists() and not text_path.exists():
                 return f"Failed to build context dump: {exc}"
-        send_path = text_path if text_path and text_path.exists() else path
-        path = self._context_dump_path(session_key)
+            send_path = text_path if text_path and text_path.exists() else path
         if not send_path or not send_path.exists():
             return "No context dump could be created for this session."
 
@@ -13722,6 +13770,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        auto_skill: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -13764,7 +13813,12 @@ class GatewayRunner:
             platform=platform_key,
             configured_toolsets=_get_platform_tools(user_config, platform_key),
             user_text=message,
-            auto_skill=getattr(event, "auto_skill", None),
+            auto_skill=auto_skill,
+        )
+        lightweight_discord_context = should_use_lightweight_discord_context(
+            platform=platform_key,
+            user_text=message,
+            auto_skill=auto_skill,
         )
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
@@ -14385,7 +14439,10 @@ class GatewayRunner:
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
-                cache_keys=self._extract_cache_busting_config(user_config),
+                cache_keys={
+                    **self._extract_cache_busting_config(user_config),
+                    "lightweight_discord_context": lightweight_discord_context,
+                },
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -14435,9 +14492,14 @@ class GatewayRunner:
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
+                    skip_context_files=lightweight_discord_context,
+                    load_soul_identity=lightweight_discord_context,
+                    compact_skill_prompt=lightweight_discord_context,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
+                if lightweight_discord_context:
+                    agent._tool_use_enforcement = False
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)
@@ -14782,9 +14844,12 @@ class GatewayRunner:
                     _run_message = message
 
                 _context_dump_payload = {
-                    "schema": "hermes.context_dump.v1",
+                    "schema": "hermes.context_dump.v2",
                     "captured_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
                     "phase": "before_run",
+                    "capture_mode": "actual_agent_run",
+                    "base_context_version": BASE_CONTEXT_VERSION,
+                    "loaded_skill_names": self._loaded_skill_names_for_session(session_key),
                     "session_key": session_key,
                     "session_id": session_id,
                     "source": {
@@ -14845,10 +14910,62 @@ class GatewayRunner:
             _resolved_model = getattr(_agent, "model", None) if _agent else None
             try:
                 _context_dump_payload["phase"] = "after_run"
-                _context_dump_payload["agent_cached_system_prompt"] = (
+                _agent_system_prompt = (
                     getattr(_agent, "_cached_system_prompt", None) if _agent else None
-                )
+                ) or ""
+                _effective_system_prompt = _agent_system_prompt
+                if combined_ephemeral:
+                    _effective_system_prompt = (
+                        _effective_system_prompt + "\n\n" + combined_ephemeral
+                    ).strip()
+                _api_messages: List[Dict[str, Any]] = []
+                if _effective_system_prompt:
+                    _api_messages.append({"role": "system", "content": _effective_system_prompt})
+                _api_messages.extend([m.copy() for m in (self._prefill_messages or [])])
+                _api_messages.extend(agent_history)
+                _api_messages.append({"role": "user", "content": _run_message})
+                _context_dump_payload["agent_cached_system_prompt"] = _agent_system_prompt
                 _context_dump_payload["resolved_model"] = _resolved_model
+                _context_dump_payload["api_messages"] = _api_messages
+                _context_dump_payload["context_layers"] = layers_to_payload(
+                    [
+                        ContextLayer.from_text(
+                            "agent_base_system_prompt",
+                            source="AIAgent._cached_system_prompt",
+                            text=_agent_system_prompt,
+                        ),
+                        ContextLayer.from_text(
+                            "session_context",
+                            source="gateway._run_agent.context_prompt",
+                            text=context_prompt,
+                        ),
+                        ContextLayer.from_text(
+                            "channel_prompt",
+                            source="gateway.channel_prompt",
+                            text=event_channel_prompt,
+                        ),
+                        ContextLayer.from_text(
+                            "ephemeral_system_prompt",
+                            source="gateway.ephemeral_system_prompt",
+                            text=self._ephemeral_system_prompt,
+                        ),
+                        ContextLayer.from_text(
+                            "prefill_messages",
+                            source="gateway.prefill_messages",
+                            text=str(self._prefill_messages or []),
+                        ),
+                        ContextLayer.from_text(
+                            "conversation_history",
+                            source="gateway.session_store",
+                            text=str(agent_history),
+                        ),
+                        ContextLayer.from_text(
+                            "tool_schemas",
+                            source="AIAgent.tools",
+                            text=str(tools_holder[0] or []),
+                        ),
+                    ]
+                )
                 _context_dump_payload["token_metadata"] = {
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
@@ -14861,7 +14978,9 @@ class GatewayRunner:
                     "failed": bool(result.get("failed", False)),
                     "compression_exhausted": bool(result.get("compression_exhausted", False)),
                 }
+                _context_dump_payload["estimated_total_tokens"] = self._estimate_context_dump_tokens(_context_dump_payload)
                 self._write_context_dump_payload(session_key, _context_dump_payload)
+                self._write_context_dump_text(session_key, _context_dump_payload)
             except Exception as _dump_exc:
                 logger.debug("Failed to finalize context dump for %s: %s", session_key, _dump_exc)
 
@@ -15495,6 +15614,7 @@ class GatewayRunner:
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
+                next_auto_skill = auto_skill
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     next_message = await self._prepare_inbound_message_text(
@@ -15506,6 +15626,7 @@ class GatewayRunner:
                         return result
                     next_message_id = getattr(pending_event, "message_id", None)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    next_auto_skill = getattr(pending_event, "auto_skill", None)
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
@@ -15531,6 +15652,7 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    auto_skill=next_auto_skill,
                 )
         finally:
             # Stop progress sender, interrupt monitor, and notification task

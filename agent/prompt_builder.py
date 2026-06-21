@@ -943,6 +943,19 @@ def build_skills_system_prompt(
     return result
 
 
+def build_compact_skills_system_prompt() -> str:
+    """Build the lightweight Discord skill guidance without listing every skill."""
+
+    return (
+        "## Skills (on demand)\n"
+        "Skills are available through skills_list and skill_view. Do not load a skill for ordinary "
+        "casual chat or simple factual answers. Load a skill when the user asks for specialized "
+        "work such as coding/debugging, web research, image/media inspection, document or "
+        "spreadsheet work, or deeper Discord context lookup. If unsure which skill applies, use "
+        "skills_list first, then skill_view for the selected skill."
+    )
+
+
 def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:
     """Build a compact Nous subscription capability block for the system prompt."""
     try:

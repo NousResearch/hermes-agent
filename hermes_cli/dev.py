@@ -21,6 +21,7 @@ ODIN_HOST = "odin"
 ODIN_USER = "hermes"
 ODIN_WORKTREE = "/home/hermes/.hermes/hermes-agent-context-work"
 ODIN_LIVE_TREE = "/home/hermes/.hermes/hermes-agent"
+ODIN_PYTHON = "/home/hermes/.hermes/hermes-agent/venv/bin/python"
 DEFAULT_VALIDATION_CHANNEL_ID = "1501008202630696981"
 PYTHON = sys.executable or "python"
 
@@ -273,7 +274,7 @@ def build_plans(args: argparse.Namespace) -> list[CommandPlan]:
         timeout = int(getattr(args, "timeout_seconds", 60))
         smoke_cmd = (
             f"cd {ODIN_WORKTREE} && "
-            f"python -m gateway.validation.discord_context_smoke "
+            f"{ODIN_PYTHON} -m gateway.validation.discord_context_smoke "
             f"--channel-id {channel_id} "
             f"--timeout-seconds {timeout}"
         )
@@ -292,9 +293,10 @@ def build_plans(args: argparse.Namespace) -> list[CommandPlan]:
             plans.append(
                 _ssh_plan(
                     "discord smoke",
-                    "cd {worktree} && python -m gateway.validation.discord_context_smoke "
+                    "cd {worktree} && {python} -m gateway.validation.discord_context_smoke "
                     "--channel-id {channel_id} --timeout-seconds 60".format(
                         worktree=ODIN_WORKTREE,
+                        python=ODIN_PYTHON,
                         channel_id=os.getenv(
                             "HERMES_CONTEXT_VALIDATION_CHANNEL_ID",
                             DEFAULT_VALIDATION_CHANNEL_ID,
@@ -390,6 +392,21 @@ def _status_plans() -> list[CommandPlan]:
 def _lint_plans() -> list[CommandPlan]:
     return [
         CommandPlan("ruff check", (PYTHON, "-m", "ruff", "check", *TOUCHED_PACKAGES)),
+        CommandPlan(
+            "ruff gateway run undefined names",
+            (PYTHON, "-m", "ruff", "check", "gateway/run.py", "--select", "F821"),
+        ),
+        CommandPlan(
+            "compile gateway runtime",
+            (
+                PYTHON,
+                "-m",
+                "py_compile",
+                "gateway/run.py",
+                "run_agent.py",
+                "agent/prompt_builder.py",
+            ),
+        ),
         CommandPlan(
             "ruff format check",
             (PYTHON, "-m", "ruff", "format", "--check", *TOUCHED_PACKAGES),

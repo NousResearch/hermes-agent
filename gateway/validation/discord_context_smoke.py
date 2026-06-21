@@ -120,8 +120,12 @@ def run_smoke(
     report.checks["context_tokens_visible"] = (
         "context" in content.lower() and "token" in content.lower()
     )
+    report.checks["route_banner_has_base_context_version"] = (
+        "gateway-context-v1" in content
+    )
+    report.checks["route_banner_has_loaded_skill_names"] = "skills:" in content.lower()
 
-    dump_request = client.send_message(channel_id, f"<@{bot_user_id}> /context-dump")
+    dump_request = client.send_message(channel_id, f"/context-dump <@{bot_user_id}>")
     dump_response = _wait_for_bot_message(
         client,
         channel_id=channel_id,
@@ -155,6 +159,9 @@ def run_smoke(
     report.checks["dump_has_estimated_tokens"] = "Estimated total tokens:" in text
     report.checks["dump_has_raw_api_messages"] = "## Raw API Messages" in text
     report.checks["dump_has_tool_schemas"] = "## Tool Schemas" in text
+    report.checks["dump_has_base_context_version"] = "base_context_version" in text
+    report.checks["dump_has_loaded_skill_names"] = "loaded_skill_names" in text
+    report.checks["dump_has_source_metadata"] = '"source"' in text
 
     report.ok = all(report.checks.values()) and not report.errors
     return report

@@ -180,6 +180,7 @@ def run_codex_app_server_turn(
     original_user_message: Any,
     messages: List[Dict[str, Any]],
     effective_task_id: str,
+    conversation_history: List[Dict[str, Any]] = None,
     should_review_memory: bool = False,
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
@@ -257,6 +258,13 @@ def run_codex_app_server_turn(
     # is exactly what curator.py / sessions DB expect.
     if turn.projected_messages:
         messages.extend(turn.projected_messages)
+    if turn.final_text and not any(
+        isinstance(msg, dict)
+        and msg.get("role") == "assistant"
+        and msg.get("content") == turn.final_text
+        for msg in turn.projected_messages
+    ):
+        messages.append({"role": "assistant", "content": turn.final_text})
 
     # Counter ticks for the agent-improvement loop.
     # _turns_since_memory and _user_turn_count are ALREADY incremented
@@ -311,6 +319,56 @@ def run_codex_app_server_turn(
             )
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
+
+    try:
+        # The app-server path bypasses the normal turn finalizer, but the
+        # standard turn prologue has already crash-persisted the inbound user
+        # message in normal turns. Seed the DB flush de-dupe set only for user
+        # messages that are actually already present in the session DB so a
+        # failed turn-start flush can still be recovered by this final flush.
+        current_session_id = getattr(agent, "session_id", None)
+        if getattr(agent, "_flushed_db_message_session_id", None) != current_session_id:
+            agent._flushed_db_message_ids = set()
+            agent._flushed_db_message_session_id = current_session_id
+        flushed_ids = getattr(agent, "_flushed_db_message_ids", None)
+        if not isinstance(flushed_ids, set):
+            flushed_ids = set()
+            agent._flushed_db_message_ids = flushed_ids
+        existing_users = []
+        if getattr(agent, "_session_db", None) is not None and current_session_id:
+            try:
+                for row in agent._session_db.get_messages(current_session_id) or []:
+                    role = row["role"] if hasattr(row, "keys") else row.get("role")
+                    if role == "user":
+                        content = (
+                            row["content"]
+                            if hasattr(row, "keys")
+                            else row.get("content")
+                        )
+                        existing_users.append(content)
+            except Exception:
+                existing_users = []
+        seeded = 0
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            try:
+                idx = existing_users.index(content)
+            except ValueError:
+                continue
+            existing_users.pop(idx)
+            flushed_ids.add(id(msg))
+            seeded += 1
+        if seeded and getattr(agent, "_last_flushed_db_idx", 0) == 0:
+            agent._last_flushed_db_idx = seeded
+        agent._persist_session(messages, conversation_history)
+    except Exception:
+        logger.warning(
+            "codex app-server session persistence failed (session=%s)",
+            getattr(agent, "session_id", None),
+            exc_info=True,
+        )
 
     return {
         "final_response": turn.final_text,

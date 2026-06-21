@@ -10068,7 +10068,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(f"⚠ Git update failed: {e}")
             print("→ Falling back to ZIP download...")
             print()
-            _update_via_zip(args)
+            try:
+                _update_via_zip(args)
+            finally:
+                _resume_windows_gateways_after_update(_windows_gateway_resume)
         else:
             print(f"✗ Update failed: {e}")
             sys.exit(1)

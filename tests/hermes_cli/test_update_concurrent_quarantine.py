@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -622,3 +623,63 @@ def test_cmd_update_force_bypasses_concurrent_check(_winp, tmp_path):
 
     # When --force is set, we should not have even consulted psutil.
     detect.assert_not_called()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_cmd_update_resumes_windows_gateways_after_zip_fallback(
+    _winp,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(sys, "platform", "win32")
+    project_root = tmp_path / "repo"
+    (project_root / ".git").mkdir(parents=True)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", project_root)
+
+    token = {"resume_needed": True, "profiles": {"default": 123}, "unmapped_pids": []}
+    resume = MagicMock()
+
+    args = SimpleNamespace(
+        check=False,
+        gateway=False,
+        yes=True,
+        force=True,
+        backup=False,
+        no_backup=True,
+        branch="main",
+    )
+
+    def fail_fetch(cmd, **_kwargs):
+        if cmd[:5] == [
+            "git",
+            "-c",
+            "windows.appendAtomically=false",
+            "config",
+            "windows.appendAtomically",
+        ]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise subprocess.CalledProcessError(1, cmd)
+
+    with patch.object(
+        cli_main, "_run_pre_update_backup"
+    ), patch.object(
+        cli_main, "_pause_windows_gateways_for_update", return_value=token
+    ), patch.object(
+        cli_main, "_resume_windows_gateways_after_update", resume
+    ), patch.object(
+        cli_main, "_resolve_update_branch", return_value="main"
+    ), patch.object(
+        cli_main, "_get_origin_url", return_value="https://github.com/NousResearch/hermes-agent.git"
+    ), patch.object(
+        cli_main, "_is_fork", return_value=False
+    ), patch.object(
+        cli_main, "_discard_lockfile_churn"
+    ), patch.object(
+        cli_main, "_update_via_zip"
+    ) as update_zip, patch.object(
+        cli_main.subprocess, "run", side_effect=fail_fetch
+    ):
+        cli_main._cmd_update_impl(args, gateway_mode=False)
+
+    update_zip.assert_called_once_with(args)
+    resume.assert_called_once_with(token)

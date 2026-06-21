@@ -277,10 +277,16 @@ def test_dockerfile_bakes_feishu_extra():
     `--extra feishu` explicitly or Feishu silently fails to connect in Docker.
     """
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
-    # Anchor on the `RUN` directive: an abbreviated `# uv sync ...` doc-comment
-    # higher up would otherwise match first and mask the real build line.
+    # Fold `\`-continued lines so a future reformat of the build command
+    # (line wraps, or an env-var prefix like `RUN FOO=bar uv sync ...`) still
+    # presents as one logical line. Then anchor on a `RUN` directive that runs
+    # `uv sync --no-install-project`, so an abbreviated `# uv sync ...`
+    # doc-comment higher up can't match first and mask the real build line.
+    logical = re.sub(r"\\\n\s*", " ", dockerfile)
     m = re.search(
-        r"^RUN uv sync [^\n]*--no-install-project[^\n]*", dockerfile, re.MULTILINE
+        r"^RUN .*?\buv sync\b[^\n]*--no-install-project[^\n]*",
+        logical,
+        re.MULTILINE,
     )
     assert m, "Dockerfile must contain the production `RUN uv sync` line"
     sync_line = m.group(0)

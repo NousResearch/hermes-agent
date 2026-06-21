@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import base64
 import contextvars
 import json
@@ -46,7 +47,10 @@ from acp.schema import (
     ResourceContentBlock,
     SessionCapabilities,
     SessionForkCapabilities,
+    SessionInfoUpdate,
     SessionListCapabilities,
+    SessionMode,
+    SessionModeState,
     SessionModelState,
     SessionResumeCapabilities,
     SessionInfo,
@@ -67,6 +71,7 @@ from acp_adapter.events import (
     make_tool_progress_cb,
 )
 from acp_adapter.permissions import make_approval_callback
+from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start
 
@@ -495,6 +500,20 @@ class HermesACPAgent(acp.Agent):
         },
     )
 
+    _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
+    _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
+    _MODE_DEFAULT = "default"
+    _MODE_ACCEPT_EDITS = "accept_edits"
+    _MODE_DONT_ASK = "dont_ask"
+    _MODE_TO_EDIT_APPROVAL_POLICY = {
+        _MODE_DEFAULT: "ask",
+        _MODE_ACCEPT_EDITS: "workspace_session",
+        _MODE_DONT_ASK: "session",
+    }
+    _EDIT_APPROVAL_POLICY_TO_MODE = {
+        value: key for key, value in _MODE_TO_EDIT_APPROVAL_POLICY.items()
+    }
+
     def __init__(self, session_manager: SessionManager | None = None):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
@@ -506,6 +525,45 @@ class HermesACPAgent(acp.Agent):
         """Store the client connection for sending session updates."""
         self._conn = conn
         logger.info("ACP client connected")
+
+
+    def _session_modes(self, state: SessionState) -> SessionModeState:
+        """Return ACP session modes while preserving Zed's separate model picker.
+
+        Zed renders ``config_options`` in the prominent selector slot where the
+        model picker was visible. Claude/Codex expose policy-like controls as ACP
+        modes, which coexist with the model picker, so Hermes maps edit approval
+        policy onto modes instead of advertising config options.
+        """
+
+        current = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
+        if current not in self._MODE_TO_EDIT_APPROVAL_POLICY:
+            current = self._MODE_DEFAULT
+        return SessionModeState(
+            current_mode_id=current,
+            available_modes=[
+                SessionMode(
+                    id=self._MODE_DEFAULT,
+                    name="Default",
+                    description="Ask before edits.",
+                ),
+                SessionMode(
+                    id=self._MODE_ACCEPT_EDITS,
+                    name="Accept Edits",
+                    description="Auto-allow workspace and /tmp edits; still asks for sensitive paths.",
+                ),
+                SessionMode(
+                    id=self._MODE_DONT_ASK,
+                    name="Don't Ask",
+                    description="Auto-allow file edits for this session except sensitive paths.",
+                ),
+            ],
+        )
+
+    def _edit_approval_policy_for_state(self, state: SessionState) -> tuple[str, str | None]:
+        mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
+        policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
+        return policy, state.cwd
 
     @staticmethod
     def _encode_model_choice(provider: str | None, model: str | None) -> str:
@@ -652,6 +710,74 @@ class HermesACPAgent(acp.Agent):
                 exc_info=True,
             )
 
+    def _provenance_meta(
+        self,
+        acp_session_id: str,
+        current_hermes_session_id: str,
+        previous_hermes_session_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Best-effort ``_meta.hermes.sessionProvenance`` for an ACP session."""
+        try:
+            return session_provenance_meta(
+                self.session_manager._get_db(),
+                acp_session_id,
+                current_hermes_session_id,
+                previous_hermes_session_id=previous_hermes_session_id,
+            )
+        except Exception:
+            logger.debug(
+                "Could not build ACP session provenance for %s", acp_session_id, exc_info=True
+            )
+            return None
+
+    async def _send_session_info_update(
+        self,
+        session_id: str,
+        *,
+        current_hermes_session_id: Optional[str] = None,
+        previous_hermes_session_id: Optional[str] = None,
+    ) -> None:
+        """Send ACP native session metadata after Hermes changes it.
+
+        When the internal Hermes head rotated (e.g. compression-driven session
+        split during a turn), pass ``previous_hermes_session_id`` so the
+        attached ``_meta.hermes.sessionProvenance`` flags the rotation reason.
+        """
+        if not self._conn:
+            return
+        try:
+            row = self.session_manager._get_db().get_session(session_id)
+        except Exception:
+            logger.debug("Could not read ACP session info for %s", session_id, exc_info=True)
+            return
+        if not row:
+            return
+
+        title = row.get("title")
+        # The `sessions` table does not have an `updated_at` column (see
+        # hermes_state.py schema — only started_at/ended_at). Use "now" as
+        # the updated_at since we're emitting this notification precisely
+        # because the title was just refreshed.
+        updated_at = datetime.now(timezone.utc).isoformat()
+        meta = self._provenance_meta(
+            session_id,
+            current_hermes_session_id or session_id,
+            previous_hermes_session_id,
+        )
+        update = SessionInfoUpdate(
+            session_update="session_info_update",
+            title=title if isinstance(title, str) and title.strip() else None,
+            updated_at=updated_at,
+            field_meta=meta,
+        )
+        try:
+            await self._conn.session_update(
+                session_id=session_id,
+                update=update,
+            )
+        except Exception:
+            logger.debug("Could not send ACP session info update for %s", session_id, exc_info=True)
+
     def _schedule_usage_update(self, state: SessionState) -> None:
         """Schedule native context indicator refresh after ACP responses."""
         if not self._conn:
@@ -698,6 +824,7 @@ class HermesACPAgent(acp.Agent):
 
         try:
             from model_tools import get_tool_definitions
+            from agent.memory_manager import inject_memory_provider_tools
 
             enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
@@ -713,6 +840,7 @@ class HermesACPAgent(acp.Agent):
             state.agent.valid_tool_names = {
                 tool["function"]["name"] for tool in state.agent.tools or []
             }
+            inject_memory_provider_tools(state.agent)
             invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
             if callable(invalidate):
                 invalidate()
@@ -992,6 +1120,10 @@ class HermesACPAgent(acp.Agent):
         return NewSessionResponse(
             session_id=state.session_id,
             models=self._build_model_state(state),
+            modes=self._session_modes(state),
+            field_meta=self._provenance_meta(
+                state.session_id, getattr(state.agent, "session_id", state.session_id)
+            ),
         )
 
     async def load_session(
@@ -1033,7 +1165,13 @@ class HermesACPAgent(acp.Agent):
             )
         self._schedule_available_commands_update(session_id)
         self._schedule_usage_update(state)
-        return LoadSessionResponse(models=self._build_model_state(state))
+        return LoadSessionResponse(
+            models=self._build_model_state(state),
+            modes=self._session_modes(state),
+            field_meta=self._provenance_meta(
+                session_id, getattr(state.agent, "session_id", session_id)
+            ),
+        )
 
     async def resume_session(
         self,
@@ -1062,7 +1200,13 @@ class HermesACPAgent(acp.Agent):
             )
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
-        return ResumeSessionResponse(models=self._build_model_state(state))
+        return ResumeSessionResponse(
+            models=self._build_model_state(state),
+            modes=self._session_modes(state),
+            field_meta=self._provenance_meta(
+                state.session_id, getattr(state.agent, "session_id", state.session_id)
+            ),
+        )
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         state = self.session_manager.get_session(session_id)
@@ -1092,7 +1236,11 @@ class HermesACPAgent(acp.Agent):
         logger.info("Forked session %s -> %s", session_id, new_id)
         if new_id:
             self._schedule_available_commands_update(new_id)
-        return ForkSessionResponse(session_id=new_id)
+        return ForkSessionResponse(
+            session_id=new_id,
+            models=self._build_model_state(state) if state is not None else None,
+            modes=self._session_modes(state) if state is not None else None,
+        )
 
     async def list_sessions(
         self,
@@ -1243,11 +1391,19 @@ class HermesACPAgent(acp.Agent):
         tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
         tool_call_meta: dict[str, dict[str, Any]] = {}
         previous_approval_cb = None
+        edit_approval_requester = None
 
         streamed_message = False
 
         if conn:
-            tool_progress_cb = make_tool_progress_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+            tool_progress_cb = make_tool_progress_cb(
+                conn,
+                session_id,
+                loop,
+                tool_call_ids,
+                tool_call_meta,
+                edit_approval_policy_getter=lambda: self._edit_approval_policy_for_state(state),
+            )
             reasoning_cb = make_thinking_cb(conn, session_id, loop)
             step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             message_cb = make_message_cb(conn, session_id, loop)
@@ -1259,6 +1415,17 @@ class HermesACPAgent(acp.Agent):
                 message_cb(text)
 
             approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
+            try:
+                from acp_adapter.edit_approval import make_acp_edit_approval_requester
+
+                edit_approval_requester = make_acp_edit_approval_requester(
+                    conn.request_permission,
+                    loop,
+                    session_id,
+                    auto_approve_getter=lambda: self._edit_approval_policy_for_state(state),
+                )
+            except Exception:
+                logger.debug("Could not create ACP edit approval requester", exc_info=True)
         else:
             tool_progress_cb = None
             reasoning_cb = None
@@ -1288,9 +1455,11 @@ class HermesACPAgent(acp.Agent):
         # which requires a notify_cb registered in _gateway_notify_cbs.
         previous_approval_cb = None
         previous_interactive = None
+        edit_approval_token = None
+        previous_session_id = None
 
         def _run_agent() -> dict:
-            nonlocal previous_approval_cb, previous_interactive
+            nonlocal previous_approval_cb, previous_interactive, edit_approval_token, previous_session_id
             # Bind HERMES_SESSION_KEY for this session so per-session caches
             # (e.g. the interactive sudo password cache in tools.terminal_tool)
             # scope to the ACP session rather than leaking across sessions
@@ -1314,10 +1483,24 @@ class HermesACPAgent(acp.Agent):
                     _terminal_tool.set_approval_callback(approval_cb)
                 except Exception:
                     logger.debug("Could not set ACP approval callback", exc_info=True)
+            if edit_approval_requester:
+                try:
+                    from acp_adapter.edit_approval import set_edit_approval_requester
+
+                    edit_approval_token = set_edit_approval_requester(edit_approval_requester)
+                except Exception:
+                    logger.debug("Could not set ACP edit approval requester", exc_info=True)
             # Signal to tools.approval that we have an interactive callback
             # and the non-interactive auto-approve path must not fire.
             previous_interactive = os.environ.get("HERMES_INTERACTIVE")
             os.environ["HERMES_INTERACTIVE"] = "1"
+            # Propagate the originating ACP session id to tools that want to
+            # tag side-effects with it (e.g. ``kanban_create`` stamps it on
+            # the new task so clients can render a per-session board). Save
+            # and restore around the agent call so a re-used executor thread
+            # never leaks one session's id into the next session's tools.
+            previous_session_id = os.environ.get("HERMES_SESSION_ID")
+            os.environ["HERMES_SESSION_ID"] = session_id
             try:
                 result = agent.run_conversation(
                     user_message=user_content,
@@ -1335,12 +1518,24 @@ class HermesACPAgent(acp.Agent):
                     os.environ.pop("HERMES_INTERACTIVE", None)
                 else:
                     os.environ["HERMES_INTERACTIVE"] = previous_interactive
+                # Restore HERMES_SESSION_ID symmetrically.
+                if previous_session_id is None:
+                    os.environ.pop("HERMES_SESSION_ID", None)
+                else:
+                    os.environ["HERMES_SESSION_ID"] = previous_session_id
                 if approval_cb:
                     try:
                         from tools import terminal_tool as _terminal_tool
                         _terminal_tool.set_approval_callback(previous_approval_cb)
                     except Exception:
                         logger.debug("Could not restore approval callback", exc_info=True)
+                if edit_approval_token is not None:
+                    try:
+                        from acp_adapter.edit_approval import reset_edit_approval_requester
+
+                        reset_edit_approval_requester(edit_approval_token)
+                    except Exception:
+                        logger.debug("Could not restore ACP edit approval requester", exc_info=True)
                 if session_tokens is not None and clear_session_vars is not None:
                     try:
                         clear_session_vars(session_tokens)
@@ -1348,6 +1543,11 @@ class HermesACPAgent(acp.Agent):
                         logger.debug("Could not clear ACP session context", exc_info=True)
 
         try:
+            # Snapshot the internal Hermes DB session id before the turn so we
+            # can detect a compression-driven session rotation afterwards. The
+            # ACP `session_id` stays the stable client handle; agent.session_id
+            # is the live internal head that compression may rotate.
+            pre_turn_hermes_id = getattr(state.agent, "session_id", None)
             # Wrap the executor call in a fresh copy of the current context so
             # concurrent ACP sessions on the shared ThreadPoolExecutor don't
             # stomp on each other's ContextVar writes (HERMES_SESSION_KEY in
@@ -1366,10 +1566,50 @@ class HermesACPAgent(acp.Agent):
             # Persist updated history so sessions survive process restarts.
             self.session_manager.save_session(session_id)
 
+        # Detect a compression-driven internal session rotation. If the agent's
+        # DB head moved during the turn, emit a session_info_update carrying
+        # _meta.hermes.sessionProvenance so ACP clients can render the boundary
+        # and keep old/new ids in lineage. The ACP session_id is unchanged.
+        post_turn_hermes_id = getattr(state.agent, "session_id", None)
+        if (
+            conn
+            and post_turn_hermes_id
+            and pre_turn_hermes_id
+            and post_turn_hermes_id != pre_turn_hermes_id
+        ):
+            try:
+                await self._send_session_info_update(
+                    session_id,
+                    current_hermes_session_id=post_turn_hermes_id,
+                    previous_hermes_session_id=pre_turn_hermes_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Could not emit ACP provenance update after rotation for %s",
+                    session_id,
+                    exc_info=True,
+                )
+
         final_response = result.get("final_response", "")
-        if final_response:
+        cancelled = bool(state.cancel_event and state.cancel_event.is_set())
+        interrupted = bool(result.get("interrupted")) or cancelled
+        # Hermes' local "waiting for model response" interrupt status is metadata,
+        # not assistant prose — clients get cancellation from stop_reason instead.
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        suppress_interrupt_response = interrupted and final_response.startswith(
+            INTERRUPT_WAITING_FOR_MODEL_PREFIX
+        )
+        if final_response and not suppress_interrupt_response:
             try:
                 from agent.title_generator import maybe_auto_title
+
+                def _notify_title_update(_title: str) -> None:
+                    if conn:
+                        loop.call_soon_threadsafe(
+                            asyncio.create_task,
+                            self._send_session_info_update(session_id),
+                        )
 
                 maybe_auto_title(
                     self.session_manager._get_db(),
@@ -1377,10 +1617,20 @@ class HermesACPAgent(acp.Agent):
                     user_text,
                     final_response,
                     state.history,
+                    title_callback=_notify_title_update,
                 )
             except Exception:
                 logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
-        if final_response and conn and not streamed_message:
+        if (
+            final_response
+            and conn
+            and not suppress_interrupt_response
+            and (not streamed_message or result.get("response_transformed"))
+        ):
+            # Deliver the final response when streaming did not already send it,
+            # or when a plugin hook transformed the response after streaming
+            # finished (e.g. transform_llm_output) — otherwise the appended /
+            # rewritten text never reaches the client.
             update = acp.update_agent_message_text(final_response)
             await conn.session_update(session_id, update)
 
@@ -1418,7 +1668,7 @@ class HermesACPAgent(acp.Agent):
 
         await self._send_usage_update(state)
 
-        stop_reason = "cancelled" if state.cancel_event and state.cancel_event.is_set() else "end_turn"
+        stop_reason = "cancelled" if cancelled else "end_turn"
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     # ---- Slash commands (headless) -------------------------------------------
@@ -1531,10 +1781,25 @@ class HermesACPAgent(acp.Agent):
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:
             from model_tools import get_tool_definitions
+            from types import SimpleNamespace
+            from agent.memory_manager import inject_memory_provider_tools
+
             toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
             )
             tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+            tool_view = SimpleNamespace(
+                tools=list(tools or []),
+                valid_tool_names={
+                    tool.get("function", {}).get("name")
+                    for tool in tools or []
+                    if isinstance(tool, dict)
+                },
+                enabled_toolsets=toolsets,
+                _memory_manager=getattr(state.agent, "_memory_manager", None),
+            )
+            inject_memory_provider_tools(tool_view)
+            tools = tool_view.tools
             if not tools:
                 return "No tools available."
             lines = [f"Available tools ({len(tools)}):"]
@@ -1763,9 +2028,12 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.warning("Session %s: mode switch requested for missing session", session_id)
             return None
-        setattr(state, "mode", mode_id)
+        normalized_mode = str(mode_id or "").strip()
+        if normalized_mode not in self._MODE_TO_EDIT_APPROVAL_POLICY:
+            normalized_mode = self._MODE_DEFAULT
+        setattr(state, "mode", normalized_mode)
         self.session_manager.save_session(session_id)
-        logger.info("Session %s: mode switched to %s", session_id, mode_id)
+        logger.info("Session %s: mode switched to %s", session_id, normalized_mode)
         return SetSessionModeResponse()
 
     async def set_config_option(
@@ -1777,11 +2045,15 @@ class HermesACPAgent(acp.Agent):
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None
 
-        options = getattr(state, "config_options", None)
-        if not isinstance(options, dict):
-            options = {}
-        options[str(config_id)] = value
-        setattr(state, "config_options", options)
+        if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
+            mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
+            setattr(state, "mode", mode)
+        else:
+            options = getattr(state, "config_options", None)
+            if not isinstance(options, dict):
+                options = {}
+            options[str(config_id)] = value
+            setattr(state, "config_options", options)
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
         return SetSessionConfigOptionResponse(config_options=[])

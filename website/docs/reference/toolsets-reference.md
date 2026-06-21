@@ -65,9 +65,10 @@ Or in-session:
 | `file` | `patch`, `read_file`, `search_files`, `write_file` | File reading, writing, searching, and editing. |
 | `homeassistant` | `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services` | Smart home control via Home Assistant. Only available when `HASS_TOKEN` is set. |
 | `computer_use` | `computer_use` | Background macOS desktop control via cua-driver — does not steal cursor/focus. Works with any tool-capable model. macOS only; requires `cua-driver` on `$PATH`. |
+| `context_engine` | (varies) | Runtime tools exposed by the active context-engine plugin (empty until a plugin populates it). |
 | `image_gen` | `image_generate` | Text-to-image generation via FAL.ai (with opt-in OpenAI / xAI backends). |
 | `video_gen` | `video_generate` | Text-to-video and image-to-video via plugin-registered backends (xAI Grok-Imagine, FAL.ai Veo 3.1 / Pixverse v6 / Kling O3). Pass `image_url` to animate an image; omit it for text-to-video. |
-| `kanban` | `kanban_block`, `kanban_comment`, `kanban_complete`, `kanban_create`, `kanban_heartbeat`, `kanban_link`, `kanban_show` | Multi-agent coordination tools — only registered when the agent is spawned by the kanban dispatcher (`HERMES_KANBAN_TASK` env set). Lets workers mark tasks done with structured handoffs, block for human input, heartbeat during long ops, comment on threads, and (for orchestrators) fan out into child tasks. |
+| `kanban` | `kanban_block`, `kanban_comment`, `kanban_complete`, `kanban_create`, `kanban_heartbeat`, `kanban_link`, `kanban_list`, `kanban_show`, `kanban_unblock` | Multi-agent coordination tools. Registered for dispatcher-spawned task workers (`HERMES_KANBAN_TASK`) and for profiles that explicitly list the `kanban` toolset by name (the `all`/`*` wildcard does **not** enable it). Workers mark tasks done, block, heartbeat, comment, and create/link follow-up tasks; orchestrator profiles additionally get board-routing tools like list/unblock. |
 | `memory` | `memory` | Persistent cross-session memory management. |
 | `messaging` | `send_message` | Send messages to other platforms (Telegram, Discord, etc.) from within a session. |
 | `moa` | `mixture_of_agents` | Multi-model consensus via Mixture of Agents. |
@@ -155,6 +156,11 @@ custom_toolsets:
 ### Wildcards
 
 - `all` or `*` — expands to every registered toolset (built-in + dynamic + plugin)
+
+A handful of tools have an additional availability check on top of toolset membership and are **not** turned on by `all`/`*` alone:
+
+- **Capability-gated** tools (browser, `computer_use`, `code_execution`, Feishu, Home Assistant, cronjob) appear only when their backend/credential prerequisite is configured.
+- **Workflow-gated** tools — the `kanban` toolset — are deliberately opt-in. `all`/`*` does **not** enable kanban; you must list `kanban` explicitly (or be a dispatcher-spawned worker with `HERMES_KANBAN_TASK` set). Kanban tools mutate shared board state, so they stay off by default even under `all`.
 
 ## Relationship to `hermes tools`
 

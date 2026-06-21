@@ -3,6 +3,7 @@ name: kanban-worker
 description: Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper detail on specific scenarios.
 version: 2.0.0
 platforms: [linux, macos, windows]
+environments: [kanban]
 metadata:
   hermes:
     tags: [kanban, multi-agent, collaboration, workflow, pitfalls]
@@ -21,7 +22,7 @@ Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORK
 |---|---|---|
 | `scratch` | Fresh tmp dir, yours alone | Read/write freely; it gets GC'd when the task is archived. |
 | `dir:<path>` | Shared persistent directory | Other runs will read what you write. Treat it like long-lived state. Path is guaranteed absolute (the kernel rejects relative paths). |
-| `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> <branch>` from the main repo first, then cd and work normally. Commit work here. |
+| `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> ${HERMES_KANBAN_BRANCH:-wt/$HERMES_KANBAN_TASK}` from the main repo first, then cd and work normally. Commit work here. |
 
 ## Tenant isolation
 
@@ -99,6 +100,27 @@ kanban_complete(
 
 Shape `metadata` so downstream parsers (reviewers, aggregators, schedulers) can use it without re-reading your prose.
 
+## Shipping deliverables (`artifacts=[...]`)
+
+If your task produced files a human actually wants — a chart, a PDF, a spreadsheet, a generated image, an archive — pass their **absolute paths** to `kanban_complete(artifacts=[...])`. The gateway notifier uploads each one as a native attachment to whoever subscribed to the task, so the deliverable lands in their chat alongside the completion message instead of being a path they have to go fetch.
+
+```python
+kanban_complete(
+    summary="Q3 revenue analysis: 14% QoQ growth, EMEA the laggard. Chart + full PDF attached.",
+    artifacts=["/tmp/q3-revenue.png", "/tmp/q3-report.pdf"],
+    metadata={"rows_analyzed": 48000, "growth_qoq": 0.14},
+)
+```
+
+Images and video embed inline; PDFs, docx, csv/xlsx/json/yaml, pptx, zip/tar/gz, audio, and html upload as files. Rules:
+
+- **Absolute paths only**, and the file must still exist when you complete — don't point at a scratch file you already deleted.
+- **Only real deliverables.** Skip intermediate logs, scratch files, and inputs the human already has.
+- `artifacts` is the **top-level** parameter the notifier reads. Do not bury deliverable paths in `metadata` (e.g. `metadata.codex_lane.artifacts`) and expect them to upload — the notifier only scans the top-level `artifacts` list, with a best-effort fallback over your `summary`/`result` text. Metadata paths are for downstream-worker bookkeeping, not delivery.
+- A bare string is auto-promoted to a one-element list, and it merges with any pre-existing `metadata.artifacts` without dupes.
+
+Same primitive works outside kanban: any agent surface delivers a file just by writing its absolute path into the response, and Slack/Discord/Telegram/etc. upload it natively — the `artifacts` param is the structured kanban entry point.
+
 ## Claiming cards you actually created
 
 If your run produced new kanban tasks (via `kanban_create`), pass the ids in `created_cards` on `kanban_complete`. The kernel verifies each id exists and was created by your profile; any phantom id blocks the completion with an error listing what went wrong, and the rejected attempt is permanently recorded on the task's event log. **Only list ids you captured from a successful `kanban_create` return value — never invent ids from prose, never paste ids from earlier runs, never claim cards another worker created.**
@@ -157,9 +179,17 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 - `outcome: "reclaimed"` + `summary: "task archived..."` — operator archived the task out from under the previous run; you probably shouldn't be running at all, check status carefully.
 - `outcome: "blocked"` — a previous attempt blocked; the unblock comment should be in the thread by now.
 
+## Notification routing
+
+You can configure the gateway to receive cross-profile Kanban task notifications by adding `notification_sources` to `~/.hermes/config.yaml`.
+- `notification_sources: ['*']` accepts subscriptions from all profiles.
+- `notification_sources: ['default', 'zilor-ppt']` or `"default,zilor-ppt"` restricts subscriptions to specified profiles.
+- Omitting the key keeps the default behavior (profile isolation).
+
 ## Do NOT
 
 - Call `delegate_task` as a substitute for `kanban_create`. `delegate_task` is for short reasoning subtasks inside YOUR run; `kanban_create` is for cross-agent handoffs that outlive one API loop.
+- Call `clarify` to ask the human a question. You are running headless — there is no live user to answer. The call will time out (default ~120s) and the task will sit silently in `running` with no signal that it needs input. Use `kanban_comment` (context) + `kanban_block(reason=...)` (decision needed) instead — the task surfaces on the board as blocked, the operator sees it, unblocks with their answer in a comment, and you respawn with the thread.
 - Modify files outside `$HERMES_KANBAN_WORKSPACE` unless the task body says to.
 - Create follow-up tasks assigned to yourself — assign to the right specialist.
 - Complete a task you didn't actually finish. Block it instead.

@@ -6,12 +6,8 @@ having LSP output prepended to the lint string.
 """
 from __future__ import annotations
 
-import os
-import sys
-import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import (

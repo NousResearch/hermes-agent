@@ -18,9 +18,8 @@ opts into a single trusted guild.
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
-from gateway.platforms.discord import DiscordAdapter
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 def _set_dm_role_auth_guild(monkeypatch, guild_id=None):

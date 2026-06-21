@@ -23,7 +23,7 @@ class TestFindSingularityExecutable:
     def test_prefers_apptainer(self):
         """When both are available, apptainer should be preferred."""
         def which_both(name):
-            return f"/usr/bin/{name}" if name in ("apptainer", "singularity") else None
+            return f"/usr/bin/{name}" if name in {"apptainer", "singularity"} else None
 
         with patch("shutil.which", side_effect=which_both):
             assert _find_singularity_executable() == "apptainer"

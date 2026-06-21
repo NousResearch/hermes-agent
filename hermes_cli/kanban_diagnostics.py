@@ -41,6 +41,15 @@ import time
 SEVERITY_ORDER = ("warning", "error", "critical")
 
 
+def severity_at_or_above(severity: Optional[str], threshold: Optional[str]) -> bool:
+    """Return True when ``severity`` meets or exceeds ``threshold``."""
+    if threshold is None:
+        return True
+    if severity not in SEVERITY_ORDER or threshold not in SEVERITY_ORDER:
+        return False
+    return SEVERITY_ORDER.index(severity) >= SEVERITY_ORDER.index(threshold)
+
+
 @dataclass
 class DiagnosticAction:
     """A single recovery action attached to a diagnostic.
@@ -182,23 +191,6 @@ def _active_hallucination_events(
         elif k == kind:
             active.append(ev)
     return active
-
-
-def _latest_clean_event_ts(events: Iterable[Any]) -> int:
-    """Timestamp of the most recent clean completion / edit event.
-
-    Kept for general "has this task ever been successfully completed"
-    lookups; hallucination rules use ``_active_hallucination_events``
-    instead because they need strict ordering.
-    """
-    latest = 0
-    for ev in events:
-        if _event_kind(ev) in {"completed", "edited"}:
-            t = _event_ts(ev)
-            latest = max(latest, t)
-    return latest
-
-
 # Standard always-available actions. Every diagnostic can offer these as
 # fallbacks regardless of kind — they're the two baseline recovery
 # primitives the kernel supports.
@@ -228,6 +220,106 @@ def _generic_recovery_actions(task: Any, *, running: bool) -> list[DiagnosticAct
 # shape — for test convenience).
 
 RuleFn = Callable[[Any, list[Any], list[Any], int, dict], list[Diagnostic]]
+
+
+def _aux_slot_explicit(slot: Any) -> bool:
+    """Return True if the auxiliary slot has user-supplied non-default fields.
+
+    Defaults from ``DEFAULT_CONFIG`` use ``provider: "auto"`` with empty
+    model/base_url/api_key — that path falls through to the main model. An
+    "explicit" config is one where the user actively set a provider (not
+    "auto"), or supplied a model / base_url / api_key.
+    """
+    if not isinstance(slot, dict):
+        return False
+    provider = str(slot.get("provider") or "").strip().lower()
+    if provider and provider != "auto":
+        return True
+    for key in ("model", "base_url", "api_key"):
+        if str(slot.get(key) or "").strip():
+            return True
+    return False
+
+
+def _main_model_visible(raw_config: Any) -> bool:
+    """Best-effort check that a main model is configured.
+
+    Diagnostics runs in the dashboard process which may not share the CLI's
+    runtime state, so we read the raw config dict. If we cannot prove the
+    main model is set, we err on the side of NOT firing the diagnostic.
+    """
+    if not isinstance(raw_config, dict):
+        return False
+    model_cfg = raw_config.get("model")
+    if isinstance(model_cfg, dict):
+        provider = str(model_cfg.get("provider") or "").strip()
+        model = str(
+            model_cfg.get("default")
+            or model_cfg.get("model")
+            or model_cfg.get("name")
+            or ""
+        ).strip()
+        return bool(provider and model)
+    return bool(str(model_cfg or "").strip())
+
+
+def triage_aux_status(config: Optional[dict]) -> Optional[dict]:
+    """Inspect raw config and report whether triage paths look configured.
+
+    Returns ``None`` when config context is unavailable (suppress diagnostic
+    to avoid noisy false positives in tests / low-level callers). Otherwise
+    returns a dict with:
+
+      - ``auto_decompose``: bool — whether the dispatcher auto-runs decompose
+      - ``decomposer_explicit``: bool — user-supplied decomposer slot
+      - ``specifier_explicit``: bool — user-supplied specifier slot
+      - ``main_model_visible``: bool — main model can serve as auto fallback
+    """
+    if not isinstance(config, dict):
+        return None
+
+    explicit = config.get("triage_aux_status")
+    if isinstance(explicit, dict):
+        return explicit
+
+    aux = config.get("auxiliary")
+    kanban_cfg = config.get("kanban") if isinstance(config.get("kanban"), dict) else {}
+
+    # Have we been handed any config context at all? When neither auxiliary
+    # nor kanban nor model keys are present, the caller is a low-level test
+    # passing {} — stay silent.
+    if (
+        not isinstance(aux, dict)
+        and not kanban_cfg
+        and "model" not in config
+    ):
+        return None
+
+    decomposer_explicit = False
+    specifier_explicit = False
+    if isinstance(aux, dict):
+        decomposer_explicit = _aux_slot_explicit(aux.get("kanban_decomposer"))
+        specifier_explicit = _aux_slot_explicit(aux.get("triage_specifier"))
+
+    # ``auto_decompose`` defaults to True per kanban DEFAULT_CONFIG.
+    auto_decompose = True
+    if isinstance(kanban_cfg, dict) and "auto_decompose" in kanban_cfg:
+        auto_decompose = bool(kanban_cfg.get("auto_decompose"))
+
+    return {
+        "auto_decompose": auto_decompose,
+        "decomposer_explicit": decomposer_explicit,
+        "specifier_explicit": specifier_explicit,
+        "main_model_visible": _main_model_visible(config),
+    }
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 1 else default
 
 
 def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
@@ -277,6 +369,118 @@ def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_triage_aux_unavailable(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A triage task cannot leave triage without an auxiliary helper.
+
+    With the auto-decompose dispatcher (kanban.auto_decompose, default True),
+    triage tasks fan out via ``auxiliary.kanban_decomposer`` and fall back to
+    ``auxiliary.triage_specifier`` when the decomposer returns ``fanout=false``.
+    With auto-decompose off, the user must run ``hermes kanban specify``,
+    which only needs ``auxiliary.triage_specifier``.
+
+    The default slot is ``provider: auto`` → auto-falls back to the main model,
+    so this rule only fires when:
+
+      - the relevant slot is explicitly set to something broken, OR
+      - the auto fallback has no main model to fall back to.
+
+    Config context is required; pass {} from tests to keep the rule silent.
+    """
+    if _task_field(task, "status") != "triage":
+        return []
+
+    status = triage_aux_status(cfg)
+    if status is None:
+        return []
+
+    auto_decompose = bool(status.get("auto_decompose"))
+    decomposer_explicit = bool(status.get("decomposer_explicit"))
+    specifier_explicit = bool(status.get("specifier_explicit"))
+    main_visible = bool(status.get("main_model_visible"))
+
+    # Determine the primary slot and whether it is usable.
+    if auto_decompose:
+        primary_slot = "auxiliary.kanban_decomposer"
+        primary_explicit = decomposer_explicit
+        fallback_slot = "auxiliary.triage_specifier"
+        fallback_explicit = specifier_explicit
+        primary_desc = "decomposer"
+        detail_path = (
+            "Auto-decompose is on, so the dispatcher needs "
+            "auxiliary.kanban_decomposer (with auxiliary.triage_specifier as "
+            "a fallback for non-fan-out tasks)."
+        )
+    else:
+        primary_slot = "auxiliary.triage_specifier"
+        primary_explicit = specifier_explicit
+        fallback_slot = "auxiliary.kanban_decomposer"
+        fallback_explicit = decomposer_explicit
+        primary_desc = "specifier"
+        detail_path = (
+            "Auto-decompose is off, so triage tasks need "
+            "`hermes kanban specify`, which uses auxiliary.triage_specifier."
+        )
+
+    # The primary slot is usable when either: it was explicitly configured by
+    # the user, OR the default `provider: auto` can fall back to the main
+    # model. If both fail, we have a real configuration gap.
+    if primary_explicit or main_visible:
+        return []
+
+    task_id = _task_field(task, "id") or "<task_id>"
+    actions = [
+        DiagnosticAction(
+            kind="cli_hint",
+            label=f"Configure {primary_slot}",
+            payload={
+                "command": (
+                    f"hermes config set {primary_slot}.provider auto"
+                )
+            },
+            suggested=True,
+        ),
+    ]
+    if not fallback_explicit and not main_visible:
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label=f"Or configure fallback {fallback_slot}",
+            payload={
+                "command": (
+                    f"hermes config set {fallback_slot}.provider auto"
+                )
+            },
+        ))
+    if not auto_decompose:
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label=f"Specify manually: hermes kanban specify {task_id}",
+            payload={"command": f"hermes kanban specify {task_id}"},
+        ))
+
+    return [Diagnostic(
+        kind="triage_aux_unavailable",
+        severity="warning",
+        title=f"Triage {primary_desc} has no usable model",
+        detail=(
+            f"This task is still in triage and no working auxiliary model is "
+            f"visible to the dispatcher. {detail_path} The default slot uses "
+            f"`provider: auto` which falls back to the main model, but no main "
+            f"model is configured either. Configure the slot directly or set a "
+            f"main model so the auto fallback can take over."
+        ),
+        actions=actions,
+        first_seen_at=now,
+        last_seen_at=now,
+        count=1,
+        data={
+            "task_id": task_id,
+            "auto_decompose": auto_decompose,
+            "primary_slot": primary_slot,
+            "main_model_visible": main_visible,
+        },
+    )]
+
+
 def _rule_prose_phantom_refs(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Advisory prose-scan: the completion summary mentions ``t_<hex>``
     ids that don't resolve. Non-blocking; surfaced as a warning only.
@@ -319,18 +523,19 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     all look the same: the kernel keeps retrying and the operator
     needs to intervene.
 
-    Threshold: cfg["failure_threshold"] (default 3). A threshold of 3
-    is one below the circuit-breaker's default (5), so the diagnostic
-    surfaces BEFORE the breaker trips — giving operators a window to
-    fix the problem while the dispatcher's still retrying.
+    Threshold: cfg["failure_threshold"]. Runtime callers should derive
+    this from ``kanban.failure_limit`` unless the user explicitly set a
+    diagnostics threshold, so the signal does not lag behind the
+    dispatcher's circuit breaker.
 
     Accepts the legacy ``spawn_failure_threshold`` config key for
     back-compat.
     """
-    threshold = int(cfg.get(
+    threshold = _positive_int(cfg.get(
         "failure_threshold",
         cfg.get("spawn_failure_threshold", 3),
-    ))
+    ), 3)
+    failure_limit = _positive_int(cfg.get("failure_limit"), threshold)
     # Read the new unified counter name, with a fallback to the legacy
     # column name so this rule keeps working against old DB rows the
     # caller somehow materialised without running the migration.
@@ -402,10 +607,9 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
             f"This task has failed {failures} times in a row "
             f"(most recent: {outcome_label}). Full last error:\n\n"
             f"{err_snippet}\n\n"
-            f"The dispatcher will keep retrying until the consecutive-"
-            f"failures counter trips the circuit breaker (default 5), "
-            f"at which point the task auto-blocks. Fix the root cause "
-            f"and reclaim to retry."
+            f"The dispatcher circuit breaker is configured for "
+            f"{failure_limit} consecutive non-success attempts. Fix the "
+            f"root cause and reclaim or unblock the task to retry."
         )
     else:
         title = f"Agent {outcome_label} x{failures} (no error recorded)"
@@ -427,6 +631,8 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
             "consecutive_failures": failures,
             "most_recent_outcome": most_recent_outcome,
             "last_error": last_err,
+            "failure_threshold": threshold,
+            "failure_limit": failure_limit,
         },
     )]
 
@@ -568,6 +774,83 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_block_unblock_cycling(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Task has cycled through blocked → unblocked many times — the
+    ``unblock`` is not fixing the underlying problem and the worker
+    keeps re-blocking for substantially the same reason.
+
+    ``_rule_stuck_in_blocked`` resets its timer on any ``commented`` /
+    ``unblocked`` event, so a task that cycles every few minutes is
+    invisible to it regardless of how many times it cycles (#29747
+    gap 1). This rule complements that one by counting block→unblock
+    cycles in a sliding window.
+
+    Threshold: cfg["block_cycle_threshold"] (default 3) cycles within
+    cfg["block_cycle_window_seconds"] (default 24h).
+    """
+    threshold = _positive_int(cfg.get("block_cycle_threshold"), 3)
+    window_seconds = float(cfg.get("block_cycle_window_seconds", 24 * 3600))
+    cycle_cutoff = now - window_seconds
+
+    # Walk events chronologically (arrival order — callers pre-sort by
+    # id, which is the canonical chronological order; ``created_at``
+    # alone is insufficient because multiple events can share the same
+    # second).  Count "blocked after unblocked" transitions: every time
+    # a blocked event follows at least one unblocked event since the
+    # last cycle was counted, that's a new cycle.
+    cycles = 0
+    seen_unblock_since_last_cycle = False
+    initial_blocked_ts = 0
+    last_cycle_blocked_ts = 0
+    for ev in events:
+        ts = _event_ts(ev)
+        if ts < cycle_cutoff:
+            continue
+        kind = _event_kind(ev)
+        if kind == "blocked":
+            if initial_blocked_ts == 0:
+                initial_blocked_ts = ts
+            if seen_unblock_since_last_cycle:
+                cycles += 1
+                last_cycle_blocked_ts = ts
+                seen_unblock_since_last_cycle = False
+        elif kind == "unblocked":
+            seen_unblock_since_last_cycle = True
+
+    if cycles < threshold:
+        return []
+
+    task_id = _task_field(task, "id")
+    actions: list[DiagnosticAction] = []
+    if task_id:
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label=f"Check block reasons: hermes kanban events {task_id}",
+            payload={"command": f"hermes kanban events {task_id}"},
+            suggested=True,
+        ))
+    return [Diagnostic(
+        kind="block_unblock_cycling",
+        severity="warning",
+        title=f"Task block→unblock cycled {cycles}x in {int(window_seconds/3600)}h",
+        detail=(
+            f"This task has been blocked {cycles} times after being "
+            "unblocked, suggesting the unblock is not addressing the "
+            "root cause and the worker keeps hitting the same wall. "
+            "Review the block reasons in the event history; a different "
+            "intervention (reassign, change scope, archive) may be needed."
+        ),
+        actions=actions,
+        first_seen_at=int(initial_blocked_ts) if initial_blocked_ts else int(now),
+        last_seen_at=int(last_cycle_blocked_ts) if last_cycle_blocked_ts else int(now),
+        count=cycles,
+        data={
+            "cycles": cycles,
+            "window_seconds": int(window_seconds),
+        },
+    )]
+
+
 def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Task has been in ``ready`` status for too long without any worker
     claiming it.
@@ -695,10 +978,12 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
 # severity ties. Add new rules here.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
+    _rule_triage_aux_unavailable,
     _rule_prose_phantom_refs,
     _rule_repeated_failures,
     _rule_repeated_crashes,
     _rule_stuck_in_blocked,
+    _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
 ]
 
@@ -707,18 +992,22 @@ _RULES: list[RuleFn] = [
 # rules are added.
 DIAGNOSTIC_KINDS = (
     "hallucinated_cards",
+    "triage_aux_unavailable",
     "prose_phantom_refs",
     "repeated_failures",
     "repeated_crashes",
     "stuck_in_blocked",
+    "block_unblock_cycling",
     "stranded_in_ready",
 )
 
 
 DEFAULT_CONFIG = {
-    "failure_threshold": 3,
+    # Match the dispatcher default (kanban.failure_limit) so repeated-failure
+    # diagnostics do not lag behind the default auto-block threshold.
+    "failure_threshold": 2,
     # Legacy alias accepted at read time by _rule_repeated_failures.
-    "spawn_failure_threshold": 3,
+    "spawn_failure_threshold": 2,
     "crash_threshold": 2,
     "blocked_stale_hours": 24,
     # Stranded-task threshold. 30 min by default — below that, the
@@ -726,6 +1015,51 @@ DEFAULT_CONFIG = {
     # next dispatcher tick (default 60s) and would just be noise.
     "stranded_threshold_seconds": 30 * 60,
 }
+
+
+def config_from_kanban_config(kanban_cfg: Optional[dict]) -> dict:
+    """Build diagnostics config from the runtime ``kanban`` config section.
+
+    ``kanban.diagnostics.failure_threshold`` remains an explicit override.
+    Otherwise, derive the repeated-failure threshold from
+    ``kanban.failure_limit`` so CLI/dashboard diagnostics match the
+    dispatcher's actual circuit-breaker threshold.
+    """
+    kanban_cfg = kanban_cfg or {}
+    diag_cfg = dict(kanban_cfg.get("diagnostics") or {})
+    diag_cfg.setdefault(
+        "failure_limit",
+        kanban_cfg.get("failure_limit", DEFAULT_CONFIG["failure_threshold"]),
+    )
+    if (
+        "failure_threshold" not in diag_cfg
+        and "spawn_failure_threshold" not in diag_cfg
+    ):
+        diag_cfg["failure_threshold"] = diag_cfg["failure_limit"]
+    return diag_cfg
+
+
+def config_from_runtime_config(raw_config: Optional[dict]) -> dict:
+    """Build diagnostics config from the full Hermes runtime config.
+
+    Carries through ``kanban``, ``auxiliary``, and ``model`` keys so triage-
+    aware rules can inspect the active aux-helper and main-model state.
+    Folds the ``kanban`` block through ``config_from_kanban_config`` so the
+    repeated-failure threshold derivation still applies.
+    """
+    raw_config = raw_config or {}
+    if not isinstance(raw_config, dict):
+        return {}
+    cfg: dict = {}
+    kanban_cfg = raw_config.get("kanban")
+    if isinstance(kanban_cfg, dict):
+        cfg.update(config_from_kanban_config(kanban_cfg))
+        cfg["kanban"] = kanban_cfg
+    for key in ("auxiliary", "model"):
+        value = raw_config.get(key)
+        if value is not None:
+            cfg[key] = value
+    return cfg
 
 
 def compute_task_diagnostics(
@@ -743,7 +1077,17 @@ def compute_task_diagnostics(
     most-recent ``last_seen_at``.
     """
     now_ts = int(now if now is not None else time.time())
-    cfg = {**DEFAULT_CONFIG, **(config or {})}
+    config = config or {}
+    cfg = {**DEFAULT_CONFIG, **config}
+    if (
+        "failure_threshold" not in config
+        and "spawn_failure_threshold" not in config
+        and "failure_limit" in config
+    ):
+        cfg["failure_threshold"] = _positive_int(
+            config.get("failure_limit"),
+            DEFAULT_CONFIG["failure_threshold"],
+        )
     out: list[Diagnostic] = []
     for rule in _RULES:
         try:
@@ -761,16 +1105,3 @@ def compute_task_diagnostics(
         )
     )
     return out
-
-
-def severity_of_highest(diagnostics: Iterable[Diagnostic]) -> Optional[str]:
-    """Highest severity present in the list, or None if empty. Useful
-    for card badges that need a single color."""
-    highest_idx = -1
-    highest = None
-    for d in diagnostics:
-        idx = SEVERITY_ORDER.index(d.severity) if d.severity in SEVERITY_ORDER else -1
-        if idx > highest_idx:
-            highest_idx = idx
-            highest = d.severity
-    return highest

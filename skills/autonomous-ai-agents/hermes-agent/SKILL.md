@@ -1,7 +1,7 @@
 ---
 name: hermes-agent
 description: "Configure, extend, or contribute to Hermes Agent."
-version: 2.1.0
+version: 2.2.0
 author: Hermes Agent + Teknium
 license: MIT
 platforms: [linux, macos, windows]
@@ -31,11 +31,21 @@ People use Hermes for software development, research, system administration, dat
 
 **Docs:** https://hermes-agent.nousresearch.com/docs/
 
+## Scope & Verification
+
+This skill is a concise operating guide, not the complete source of truth for every Hermes feature. If a Hermes feature, command, or setting is not mentioned here, do not treat that absence as evidence that it does not exist. Check the live repository and official docs before giving a negative answer.
+
+Good verification targets:
+
+- CLI commands: `hermes --help`, `hermes <command> --help`, and `hermes_cli/main.py`
+- User documentation: https://hermes-agent.nousresearch.com/docs/
+- Source tree: https://github.com/NousResearch/hermes-agent
+
 ## Quick Start
 
 ```bash
 # Install
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 # Interactive chat (default)
 hermes
@@ -100,8 +110,10 @@ hermes config path          Print config.yaml path
 hermes config env-path      Print .env path
 hermes config check         Check for missing/outdated config
 hermes config migrate       Update config with new options
-hermes login [--provider P] OAuth login (nous, openai-codex)
-hermes logout               Clear stored auth
+hermes auth                 Interactive credential manager
+hermes auth add PROVIDER    Add OAuth or API-key credential (e.g. nous, openai-codex, qwen-oauth)
+hermes auth list            List stored credentials
+hermes auth remove PROVIDER Remove a stored credential
 hermes doctor [--fix]       Check dependencies and config
 hermes status [--all]       Show component status
 ```
@@ -137,6 +149,10 @@ hermes mcp list             List configured servers
 hermes mcp test NAME        Test connection
 hermes mcp configure NAME   Toggle tool selection
 ```
+
+How the built-in MCP client connects servers (stdio/HTTP), auto-discovers
+their tools, and exposes them as first-class tools, plus catalog install
+(`hermes mcp install <name>`): `skill_view(name="hermes-agent", file_path="references/native-mcp.md")`.
 
 ### Gateway (Messaging Platforms)
 
@@ -185,6 +201,9 @@ hermes webhook list         List subscriptions
 hermes webhook remove NAME  Remove a subscription
 hermes webhook test NAME    Send a test POST
 ```
+
+Full setup, route config, payload templating, and event-driven agent-run
+patterns: `skill_view(name="hermes-agent", file_path="references/webhooks.md")`.
 
 ### Profiles
 
@@ -334,9 +353,10 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 
 ```
 ~/.hermes/config.yaml       Main configuration
-~/.hermes/.env              API keys and secrets
+~/.hermes/.env              API keys and secrets (under $HERMES_HOME if set)
 $HERMES_HOME/skills/        Installed skills
-~/.hermes/sessions/         Session transcripts
+~/.hermes/sessions/         Gateway routing index, request dumps, *.jsonl transcripts (and optional per-session JSON snapshots when sessions.write_json_snapshots: true)
+~/.hermes/state.db          Canonical session store (SQLite + FTS5)
 ~/.hermes/logs/             Gateway and error logs
 ~/.hermes/auth.json         OAuth tokens and credential pools
 ~/.hermes/hermes-agent/     Source code (if git-installed)
@@ -386,10 +406,9 @@ Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/con
 | Alibaba / DashScope | API key | `DASHSCOPE_API_KEY` |
 | Xiaomi MiMo | API key | `XIAOMI_API_KEY` |
 | Kilo Code | API key | `KILOCODE_API_KEY` |
-| AI Gateway (Vercel) | API key | `AI_GATEWAY_API_KEY` |
 | OpenCode Zen | API key | `OPENCODE_ZEN_API_KEY` |
 | OpenCode Go | API key | `OPENCODE_GO_API_KEY` |
-| Qwen OAuth | OAuth | `hermes login --provider qwen-oauth` |
+| Qwen OAuth | OAuth | `hermes auth add qwen-oauth` |
 | Custom endpoint | Config | `model.base_url` + `model.api_key` in config.yaml |
 | GitHub Copilot ACP | External | `COPILOT_CLI_PATH` or Copilot CLI |
 
@@ -438,21 +457,70 @@ Tool changes take effect on `/reset` (new session). They do NOT apply mid-conver
 
 ---
 
+## Project Context Files
+
+Hermes injects project-level instructions into the system prompt by reading context files from the working directory. The discovery order is **first match wins** — only one project context source is loaded per session.
+
+| File (in priority order) | Discovery | Use when |
+|---|---|---|
+| `.hermes.md` / `HERMES.md` | Walks parents up to the git root, stops at git root | You want hierarchical project rules (root + per-package overrides) |
+| `AGENTS.md` / `agents.md` | **Cwd only** — subdirectory and parent copies are ignored | You want portable agent instructions that work the same in Hermes, Claude Code, Codex, etc. |
+| `CLAUDE.md` / `claude.md` | Cwd only | Same as AGENTS.md, Claude-flavored |
+| `.cursorrules` / `.cursor/rules/*.mdc` | Cwd only | Migrating from Cursor |
+
+`SOUL.md` (in `$HERMES_HOME`) is independent and always loaded when present — it sets the agent's identity, not project rules.
+
+### Pick the right one
+
+- **Use `.hermes.md`** when you want Hermes-specific behavior that lives above the cwd (root + subtree), or when you want rules to inherit from a parent directory. The parent walk stops at the git root, so a home-level `.hermes.md` won't leak into every project (a git repo's root is the boundary).
+- **Use `AGENTS.md`** when the same project will also be worked on by other agents (Codex, Claude Code, OpenCode). Those tools all have their own conventions for `AGENTS.md`, and the "cwd only" contract keeps the file portable.
+- **Don't put project rules in `~/.hermes/AGENTS.md`** (or any other home-level location). When Hermes runs with that directory as cwd, the file loads — but only for that one directory. For cross-project context, use `SOUL.md` (in `$HERMES_HOME`, identity-only) or install a skill via `hermes skills install`.
+
+### Size and truncation
+
+Each context file is capped at 20,000 characters. Files longer than that get **head + tail** truncated (the middle is dropped, with a `[...truncated...]` marker). For large project rules, prefer splitting into multiple skills over cramming one file.
+
+### Security
+
+All context files pass through the threat-pattern scanner before reaching the system prompt. Patterns matching prompt injection or promptware are replaced with a `[BLOCKED: ...]` placeholder. This means an `AGENTS.md` containing obvious injection attempts won't reach the model — the scanner blocks the content, not the file, so the rest of the file still loads.
+
+### Disable for one session
+
+`hermes --ignore-rules` skips auto-injection of all project context files (`.hermes.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`) **and** `SOUL.md` identity, plus user config, plugins, and MCP servers. Use it to isolate whether a problem is your setup or Hermes itself.
+
+### Example: a small `.hermes.md`
+
+```markdown
+# My Project
+
+Hermes: when working in this repo, follow these rules.
+
+## Build
+- Always run `make test` before declaring a change done.
+- Use `uv run` for Python, not `pip install`.
+
+## Style
+- Prefer `pathlib.Path` over `os.path`.
+- No `print()` in production code — use the `logger`.
+```
+
+That file at `/home/me/projects/myrepo/.hermes.md` is auto-loaded when Hermes runs in any subdirectory of `/home/me/projects/myrepo`, but not when it runs in `/home/me/other-project`.
+
 ## Security & Privacy Toggles
 
 Common "why is Hermes doing X to my output / tool calls / commands?" toggles — and the exact commands to change them. Most of these need a fresh session (`/reset` in chat, or start a new `hermes` invocation) because they're read once at startup.
 
 ### Secret redaction in tool output
 
-Secret redaction is **off by default** — tool output (terminal stdout, `read_file`, web content, subagent summaries, etc.) passes through unmodified. If the user wants Hermes to auto-mask strings that look like API keys, tokens, and secrets before they enter the conversation context and logs:
+Secret redaction is **on by default** — tool output (terminal stdout, `read_file`, web content, subagent summaries, etc.) is scanned for strings that look like API keys, tokens, and secrets before it enters the conversation context and logs. Leave it enabled for normal use:
 
 ```bash
-hermes config set security.redact_secrets true       # enable globally
+hermes config set security.redact_secrets true       # keep enabled globally
 ```
 
-**Restart required.** `security.redact_secrets` is snapshotted at import time — toggling it mid-session (e.g. via `export HERMES_REDACT_SECRETS=true` from a tool call) will NOT take effect for the running process. Tell the user to run `hermes config set security.redact_secrets true` in a terminal, then start a new session. This is deliberate — it prevents an LLM from flipping the toggle on itself mid-task.
+**Restart required.** `security.redact_secrets` is snapshotted at import time — toggling it mid-session (e.g. via `export HERMES_REDACT_SECRETS=false` from a tool call) will NOT take effect for the running process. Tell the user to change it in config from a terminal, then start a new session. This is deliberate — it prevents an LLM from flipping the toggle on itself mid-task.
 
-Disable again with:
+Disable only when you deliberately need raw credential-like strings for debugging or redactor development:
 ```bash
 hermes config set security.redact_secrets false
 ```
@@ -680,19 +748,25 @@ User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/curato
 
 Durable SQLite board for multi-profile / multi-worker collaboration.
 Users drive it via `hermes kanban <verb>`; dispatcher-spawned workers
-see a focused `kanban_*` toolset gated by `HERMES_KANBAN_TASK` so the
-schema footprint is zero outside worker processes.
+see a focused `kanban_*` toolset gated by `HERMES_KANBAN_TASK`, and
+orchestrator profiles can opt into the broader `kanban` toolset. Normal
+sessions still have zero `kanban_*` schema footprint unless configured.
 
 - **CLI verbs (common):** `init`, `create`, `list` (alias `ls`),
   `show`, `assign`, `link`, `unlink`, `comment`, `complete`, `block`,
   `unblock`, `archive`, `tail`. Less common: `watch`, `stats`, `runs`,
   `log`, `dispatch`, `daemon`, `gc`.
-- **Worker toolset:** `kanban_show`, `kanban_complete`, `kanban_block`,
-  `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`.
+- **Worker/orchestrator toolset:** `kanban_show`, `kanban_complete`,
+  `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`,
+  `kanban_link`; profiles that explicitly enable the `kanban` toolset
+  outside a dispatcher-spawned task also get `kanban_list` and
+  `kanban_unblock` for board routing.
 - **Dispatcher** runs inside the gateway by default
   (`kanban.dispatch_in_gateway: true`) — reclaims stale claims,
   promotes ready tasks, atomically claims, spawns assigned profiles.
-  Auto-blocks a task after ~5 consecutive spawn failures.
+  Auto-blocks a task after `failure_limit` consecutive spawn failures
+  (default 2; configurable via `kanban.failure_limit` or per-task
+  `max_retries`).
 - **Isolation:** board is the hard boundary (workers get
   `HERMES_KANBAN_BOARD` pinned in env); tenant is a soft namespace
   within a board for workspace-path + memory-key isolation.
@@ -805,7 +879,7 @@ and logs — avoids shell-escaping backslashes in bash.
 
 ### Model/provider issues
 1. `hermes doctor` — check config and dependencies
-2. `hermes login` — re-authenticate OAuth providers
+2. `hermes auth` — re-authenticate OAuth providers (or `hermes auth add <provider>`)
 3. Check `.env` has the right API key
 4. **Copilot 403**: `gh auth login` tokens do NOT work for Copilot API. You must use the Copilot-specific OAuth device code flow via `hermes model` → GitHub Copilot.
 
@@ -861,7 +935,7 @@ hermes config set auxiliary.vision.model <model_name>
 | Env variables | `hermes config env-path` or [Env vars reference](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) |
 | CLI commands | `hermes --help` or [CLI reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands) |
 | Gateway logs | `~/.hermes/logs/gateway.log` |
-| Session files | `~/.hermes/sessions/` or `hermes sessions browse` |
+| Session files | `hermes sessions browse` (reads state.db) |
 | Source code | `~/.hermes/hermes-agent/` |
 
 ---
@@ -893,7 +967,7 @@ hermes-agent/
 └── website/              # Docusaurus docs site
 ```
 
-Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys).
+Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys) — both under `$HERMES_HOME` when it is set.
 
 ### Adding a Tool (3 files)
 
@@ -986,7 +1060,7 @@ See `tests/agent/test_prompt_builder.py::TestEnvironmentHints` for a worked exam
 Factual guidance about the host OS, user home, cwd, terminal backend, and shell (bash vs. PowerShell on Windows) is emitted from `agent/prompt_builder.py::build_environment_hints()`. This is also where the WSL hint and per-backend probe logic live. The convention:
 
 - **Local terminal backend** → emit host info (OS, `$HOME`, cwd) + Windows-specific notes (hostname ≠ username, `terminal` uses bash not PowerShell).
-- **Remote terminal backend** (anything in `_REMOTE_TERMINAL_BACKENDS`: `docker, singularity, modal, daytona, ssh, vercel_sandbox, managed_modal`) → **suppress** host info entirely and describe only the backend. A live `uname`/`whoami`/`pwd` probe runs inside the backend via `tools.environments.get_environment(...).execute(...)`, cached per process in `_BACKEND_PROBE_CACHE`, with a static fallback if the probe times out.
+- **Remote terminal backend** (anything in `_REMOTE_TERMINAL_BACKENDS`: `docker, singularity, modal, daytona, ssh, managed_modal`) → **suppress** host info entirely and describe only the backend. A live `uname`/`whoami`/`pwd` probe runs inside the backend via `tools.environments.get_environment(...).execute(...)`, cached per process in `_BACKEND_PROBE_CACHE`, with a static fallback if the probe times out.
 - **Key fact for prompt authoring:** when `TERMINAL_ENV != "local"`, *every* file tool (`read_file`, `write_file`, `patch`, `search_files`) runs inside the backend container, not on the host. The system prompt must never describe the host in that case — the agent can't touch it.
 
 Full design notes, the exact emitted strings, and testing pitfalls:

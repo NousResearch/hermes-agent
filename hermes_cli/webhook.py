@@ -11,8 +11,10 @@ hot-reloaded by the webhook adapter without a gateway restart.
 """
 
 import json
+import os
 import re
 import secrets
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict
@@ -23,6 +25,7 @@ from hermes_cli.config import cfg_get
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
+_SUBSCRIPTIONS_FILE_MODE = 0o600
 
 
 def _hermes_home() -> Path:
@@ -48,12 +51,33 @@ def _load_subscriptions() -> Dict[str, dict]:
 def _save_subscriptions(subs: Dict[str, dict]) -> None:
     path = _subscriptions_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".tmp")
-    tmp_path.write_text(
-        json.dumps(subs, indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    # webhook_subscriptions.json contains per-route HMAC secrets — write
+    # via tempfile + chmod 0o600 before the atomic rename so a permissive
+    # umask cannot leave the secrets readable to other local users in the
+    # window between create and rename.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        text=True,
     )
-    atomic_replace(tmp_path, path)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(subs, fh, indent=2, ensure_ascii=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_path, _SUBSCRIPTIONS_FILE_MODE)
+        atomic_replace(tmp_path, path)
+        # Re-assert after rename in case the destination existed with a
+        # broader mode and atomic_replace preserved it.
+        os.chmod(path, _SUBSCRIPTIONS_FILE_MODE)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _get_webhook_config() -> dict:

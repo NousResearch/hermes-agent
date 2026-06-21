@@ -621,6 +621,31 @@ class StreamingRefineAgent:
         }
 
 
+class AlreadyStreamedInterimAgent:
+    """Regression for already-streamed interim commentary reopening the stream
+    as a second message instead of continuing the active edit path."""
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("Thinking...")
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("Thinking...", already_streamed=True)
+        time.sleep(0.1)
+        if self.stream_delta_callback:
+            self.stream_delta_callback(" Final answer.")
+        return {
+            "final_response": "Thinking... Final answer.",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class QueuedCommentaryAgent:
     calls = 0
 
@@ -941,6 +966,27 @@ async def test_run_agent_matrix_streaming_omits_cursor(monkeypatch, tmp_path):
     assert all_text, "expected streamed Matrix content to be sent or edited"
     assert all("▉" not in text for text in all_text)
     assert any("Continuing to refine:" in text for text in all_text)
+
+
+@pytest.mark.asyncio
+async def test_already_streamed_interim_does_not_force_stream_segment_break(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        AlreadyStreamedInterimAgent,
+        session_id="sess-already-streamed-interim",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": True},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        adapter_cls=MetadataEditProgressCaptureAdapter,
+    )
+
+    assert result.get("already_sent") is True
+    assert len(adapter.sent) == 1
+    all_text = [call["content"] for call in adapter.sent] + [call["content"] for call in adapter.edits]
+    assert any("Thinking..." in text for text in all_text)
+    assert any("Final answer." in text for text in all_text)
 
 
 class TransformedStreamAgent:

@@ -4347,12 +4347,11 @@ def run_conversation(
                                ". No fallback providers configured.")
                         )
 
-                if reasoning_text and final_response != "(empty)":
-                    # Reasoning text was set as the response above —
-                    # no need for the "(empty)" fallback.
-                    break
-                else:
-                    final_response = "(empty)"
+                    if reasoning_text:
+                        # Reasoning was already set as the response above.
+                        pass
+                    else:
+                        final_response = "(empty)"
                     break
                 
                 # Reset retry counter/signature on successful content

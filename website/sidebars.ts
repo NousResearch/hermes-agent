@@ -135,11 +135,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-apple',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/apple/apple-apple-notes',
-                    'user-guide/skills/bundled/apple/apple-apple-reminders',
-                    'user-guide/skills/bundled/apple/apple-findmy',
-                    'user-guide/skills/bundled/apple/apple-imessage',
-                    'user-guide/skills/bundled/apple/apple-macos-computer-use',
+                    'user-guide/skills/bundled/apple/apple-apple-automation',
                   ],
                 },
                 {
@@ -148,11 +144,17 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-autonomous-ai-agents',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code',
-                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex',
+                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-cli-coding-agents',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent',
-                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-kanban-codex-lane',
-                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode',
+                  ],
+                },
+                {
+                  type: 'category',
+                  label: 'communication-platforms',
+                  key: 'skills-bundled-communication-platforms',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/communication-platforms/communication-platforms-communication-platforms',
                   ],
                 },
                 {
@@ -161,22 +163,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-creative',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/creative/creative-architecture-diagram',
-                    'user-guide/skills/bundled/creative/creative-ascii-art',
-                    'user-guide/skills/bundled/creative/creative-ascii-video',
-                    'user-guide/skills/bundled/creative/creative-baoyu-infographic',
-                    'user-guide/skills/bundled/creative/creative-claude-design',
-                    'user-guide/skills/bundled/creative/creative-comfyui',
-                    'user-guide/skills/bundled/creative/creative-design-md',
-                    'user-guide/skills/bundled/creative/creative-excalidraw',
-                    'user-guide/skills/bundled/creative/creative-humanizer',
-                    'user-guide/skills/bundled/creative/creative-manim-video',
-                    'user-guide/skills/bundled/creative/creative-p5js',
-                    'user-guide/skills/bundled/creative/creative-popular-web-designs',
-                    'user-guide/skills/bundled/creative/creative-pretext',
-                    'user-guide/skills/bundled/creative/creative-sketch',
-                    'user-guide/skills/bundled/creative/creative-songwriting-and-ai-music',
-                    'user-guide/skills/bundled/creative/creative-touchdesigner-mcp',
+                    'user-guide/skills/bundled/creative/creative-creative-production',
                   ],
                 },
                 {
@@ -194,26 +181,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-devops',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/devops/devops-kanban-orchestrator',
-                    'user-guide/skills/bundled/devops/devops-kanban-worker',
-                  ],
-                },
-                {
-                  type: 'category',
-                  label: 'dogfood',
-                  key: 'skills-bundled-dogfood',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/dogfood/dogfood-dogfood',
-                  ],
-                },
-                {
-                  type: 'category',
-                  label: 'email',
-                  key: 'skills-bundled-email',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/email/email-himalaya',
+                    'user-guide/skills/bundled/devops/devops-kanban-operations',
                   ],
                 },
                 {
@@ -222,12 +190,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-github',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/github/github-codebase-inspection',
-                    'user-guide/skills/bundled/github/github-github-auth',
-                    'user-guide/skills/bundled/github/github-github-code-review',
-                    'user-guide/skills/bundled/github/github-github-issues',
-                    'user-guide/skills/bundled/github/github-github-pr-workflow',
-                    'user-guide/skills/bundled/github/github-github-repo-management',
+                    'user-guide/skills/bundled/github/github-github-workflows',
                   ],
                 },
                 {
@@ -236,10 +199,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-media',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/media/media-gif-search',
-                    'user-guide/skills/bundled/media/media-heartmula',
-                    'user-guide/skills/bundled/media/media-songsee',
-                    'user-guide/skills/bundled/media/media-youtube-content',
+                    'user-guide/skills/bundled/media/media-media-content-production',
                   ],
                 },
                 {
@@ -248,22 +208,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-mlops',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/mlops/mlops-models-audiocraft',
-                    'user-guide/skills/bundled/mlops/mlops-huggingface-hub',
-                    'user-guide/skills/bundled/mlops/mlops-inference-llama-cpp',
-                    'user-guide/skills/bundled/mlops/mlops-evaluation-lm-evaluation-harness',
-                    'user-guide/skills/bundled/mlops/mlops-models-segment-anything',
-                    'user-guide/skills/bundled/mlops/mlops-inference-vllm',
-                    'user-guide/skills/bundled/mlops/mlops-evaluation-weights-and-biases',
-                  ],
-                },
-                {
-                  type: 'category',
-                  label: 'note-taking',
-                  key: 'skills-bundled-note-taking',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/note-taking/note-taking-obsidian',
+                    'user-guide/skills/bundled/mlops/mlops-mlops-model-operations',
                   ],
                 },
                 {
@@ -272,14 +217,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-productivity',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/productivity/productivity-airtable',
-                    'user-guide/skills/bundled/productivity/productivity-google-workspace',
-                    'user-guide/skills/bundled/productivity/productivity-maps',
-                    'user-guide/skills/bundled/productivity/productivity-nano-pdf',
-                    'user-guide/skills/bundled/productivity/productivity-notion',
-                    'user-guide/skills/bundled/productivity/productivity-ocr-and-documents',
-                    'user-guide/skills/bundled/productivity/productivity-powerpoint',
-                    'user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline',
+                    'user-guide/skills/bundled/productivity/productivity-productivity-integrations',
                   ],
                 },
                 {
@@ -288,11 +226,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-research',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/research/research-arxiv',
-                    'user-guide/skills/bundled/research/research-blogwatcher',
-                    'user-guide/skills/bundled/research/research-llm-wiki',
-                    'user-guide/skills/bundled/research/research-polymarket',
-                    'user-guide/skills/bundled/research/research-research-paper-writing',
+                    'user-guide/skills/bundled/research/research-research-workflows',
                   ],
                 },
                 {
@@ -306,37 +240,13 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
-                  label: 'social-media',
-                  key: 'skills-bundled-social-media',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/social-media/social-media-xurl',
-                  ],
-                },
-                {
-                  type: 'category',
                   label: 'software-development',
                   key: 'skills-bundled-software-development',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring',
-                    'user-guide/skills/bundled/software-development/software-development-node-inspect-debugger',
+                    'user-guide/skills/bundled/software-development/software-development-development-quality-workflows',
                     'user-guide/skills/bundled/software-development/software-development-plan',
-                    'user-guide/skills/bundled/software-development/software-development-python-debugpy',
-                    'user-guide/skills/bundled/software-development/software-development-requesting-code-review',
-                    'user-guide/skills/bundled/software-development/software-development-simplify-code',
-                    'user-guide/skills/bundled/software-development/software-development-spike',
-                    'user-guide/skills/bundled/software-development/software-development-systematic-debugging',
-                    'user-guide/skills/bundled/software-development/software-development-test-driven-development',
-                  ],
-                },
-                {
-                  type: 'category',
-                  label: 'yuanbao',
-                  key: 'skills-bundled-yuanbao',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/yuanbao/yuanbao-yuanbao',
+                    'user-guide/skills/bundled/software-development/software-development-runtime-debugging',
                   ],
                 },
               ],

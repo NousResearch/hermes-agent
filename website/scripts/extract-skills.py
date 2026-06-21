@@ -255,7 +255,8 @@ def extract_local_skills():
         if not os.path.isdir(base_path):
             continue
 
-        for root, _dirs, files in os.walk(base_path):
+        for root, dirs, files in os.walk(base_path):
+            dirs[:] = [d for d in dirs if d != ".archive"]
             if "SKILL.md" not in files:
                 continue
 

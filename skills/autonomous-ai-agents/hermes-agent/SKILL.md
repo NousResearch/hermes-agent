@@ -879,6 +879,18 @@ hermes config set auxiliary.vision.model <model_name>
 | Session files | `hermes sessions browse` (reads state.db) |
 | Source code | `~/.hermes/hermes-agent/` |
 
+## Skill authoring and curation
+
+Use Hermes skills for reusable class-level procedures, not one-session bug notes. A good skill has YAML frontmatter, a clear trigger in `description`, concise workflow steps, pitfalls, and verification. Put session-specific knowledge in `references/`, starter artifacts in `templates/`, and reusable probes in `scripts/`.
+
+When editing skills in this repository:
+
+- Keep skill roots under `skills/<category>/<skill-name>/`.
+- Use `SKILL.md` plus optional `references/`, `templates/`, `scripts/`, and `assets/`.
+- Do not flatten a skill package into another skill without re-homing every referenced support file and updating paths.
+- Prefer broad class-level umbrellas with labeled subsections over many one-session micro-skills.
+- Validate frontmatter and linked files before finishing.
+
 ---
 
 ## Contributor Quick Reference

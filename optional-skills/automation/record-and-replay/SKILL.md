@@ -164,8 +164,54 @@ you can:
 - Click anywhere on screen, type in any field, scroll, drag
 - Switch Spaces / virtual desktops (macOS) or workspaces (Linux)
 
-The only thing it can't capture: **password fields** (secure input mode
-blocks key logging — this is a security feature, not a bug).
+### Password fields — handled, not captured
+
+macOS **Secure Input Mode** deliberately blocks keyloggers from seeing
+keystrokes in password fields (`AXSecureTextField`). This is a security
+feature — the recording script cannot and should not bypass it.
+
+When the recording encounters a password field, keystrokes are silently
+skipped. The analysis script detects this pattern (click into a field →
+no keystrokes → click elsewhere) and marks it as a password step.
+
+During **replay**, the generated skill handles password fields via **password
+manager integration** instead of recording the actual password:
+
+1. **macOS Keychain** (built-in, no install):
+   ```bash
+   security find-generic-password -s "YouTube" -w
+   ```
+2. **1Password CLI** (`op`):
+   ```bash
+   op item get "YouTube Login" --field password
+   ```
+3. **Bitwarden CLI** (`bw`):
+   ```bash
+   bw get password "YouTube Login"
+   ```
+
+The generated skill includes a password step like:
+
+```markdown
+### Step 3: Enter password
+- App: Safari
+- Field: AXSecureTextField (password)
+- Action: retrieve from keychain and type
+
+# Retrieve password (never logged, never stored in the skill)
+PASSWORD=$(security find-generic-password -s "YouTube" -w 2>/dev/null)
+computer_use(action="type", text="$PASSWORD")
+```
+
+**Security rules for password steps in generated skills:**
+- Never store the actual password in the SKILL.md — always reference the
+  keychain/service name
+- Never log the password value in events.jsonl
+- The `type` action for passwords is not captured during recording — it's
+  reconstructed during generation from context (the field was a
+  `AXSecureTextField`, the user clicked into it, paused, then proceeded)
+- If no password manager is configured, the replay pauses and asks the user
+  to type the password manually
 
 ### Recording Output Structure
 
@@ -337,8 +383,11 @@ When the user says "run the <name> skill" or "replay <name>":
   for full window/element tree capture.
 - **cua-driver not found (macOS):** AX trees fall back to osascript (less
   detail). Install cua-driver for best results.
-- **Password fields not captured:** This is intentional — macOS secure input
-  mode blocks key logging in password fields. A security feature.
+- **Password fields not captured:** This is intentional — macOS Secure Input
+  Mode blocks key logging in `AXSecureTextField` fields. This is a security
+  feature. During replay, password fields are handled via password manager
+  integration (Keychain, 1Password, Bitwarden) or manual entry. See the
+  "Password fields" section above.
 
 ### Generation Issues
 

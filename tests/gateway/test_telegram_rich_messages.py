@@ -301,25 +301,48 @@ async def test_oversized_content_skips_rich_and_chunks():
     assert adapter._bot.send_message.await_count > 1
 
 
-@pytest.mark.asyncio
-async def test_rich_limit_is_characters_not_bytes():
-    """Telegram's rich limit is UTF-8 characters, not encoded bytes."""
+def test_rich_limit_is_characters_not_bytes():
+    """The 32,768 rich cap is counted in UTF-8 characters, not encoded bytes.
+
+    Exercised at the predicate level: an accented body of 20k chars / 40k UTF-8
+    bytes is over the byte count but under the character cap, so the cap that
+    governs the streaming-accumulation paths still admits it. (A *fresh* send of
+    this length is separately capped at the visible message limit — see
+    :func:`test_long_single_rich_send_over_visible_limit_chunks`.)
+    """
     adapter = _make_adapter()
-    # Rich-eligible (table) so the content takes the rich path; the accented
-    # body is 20k chars / 40k UTF-8 bytes — over the byte count, under the
-    # character cap. CJK is intentionally avoided here because affected
-    # Telegram Desktop clients render CJK rich drafts incorrectly.
-    accented = "| a | b |\n|---|---|\n" + "é" * 20000
+    accented = "é" * 20000
     assert len(accented.encode("utf-8")) > TelegramAdapter.RICH_MESSAGE_MAX_BYTES
     assert len(accented) <= TelegramAdapter.RICH_MESSAGE_MAX_CHARS
 
-    result = await adapter.send("12345", accented)
+    assert adapter._content_fits_rich_limits(accented) is True
+
+
+@pytest.mark.asyncio
+async def test_long_single_rich_send_over_visible_limit_chunks():
+    """A fresh rich send over the visible message limit falls back to chunking.
+
+    The raw rich endpoint accepts up to 32,768 chars, but a single non-streamed
+    send of a long body renders poorly / appears truncated on clients, so the
+    fresh-send gate caps rich delivery at the normal 4,096-UTF-16-unit visible
+    limit. The streaming-accumulation paths (drafts, in-place finalize) are NOT
+    affected — see ``test_finalize_edit_rich_over_markdownv2_limit_not_split``.
+    """
+    adapter = _make_adapter()
+    big_table = "| a | b |\n|---|---|\n" + "\n".join(
+        f"| {'x' * 50} | {'y' * 50} |" for _ in range(40)
+    )
+    assert adapter.message_len_fn(big_table) > TelegramAdapter.MAX_MESSAGE_LENGTH
+    assert len(big_table) <= TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+
+    result = await adapter.send("12345", big_table)
 
     assert result.success is True
     bot = adapter._bot
     assert bot is not None
-    bot.do_api_request.assert_awaited_once()
-    bot.send_message.assert_not_called()
+    # Not sent as one oversized rich blob; split onto the legacy chunking path.
+    bot.do_api_request.assert_not_called()
+    assert bot.send_message.await_count > 1
 
 
 @pytest.mark.asyncio

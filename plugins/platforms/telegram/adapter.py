@@ -1128,12 +1128,31 @@ class TelegramAdapter(BasePlatformAdapter):
             and self._bot_supports_rich()
         )
 
+    def _content_fits_visible_limit(self, content: str) -> bool:
+        """True when content fits Telegram's normal visible message limit.
+
+        The raw rich endpoint accepts up to ``RICH_MESSAGE_MAX_CHARS`` (32,768),
+        but a single non-streamed rich send of a very long body still renders
+        poorly on clients and can appear truncated. A fresh ``send`` therefore
+        caps rich delivery at the regular 4,096-UTF-16-unit visible limit and
+        lets longer bodies fall back to the legacy MarkdownV2 chunking path.
+
+        This is deliberately *only* applied on the fresh-send gate
+        (:meth:`_should_attempt_rich`). The streaming-accumulation paths — rich
+        draft previews (:meth:`_should_attempt_rich_draft`) and the in-place
+        ``editMessageText`` finalize (:meth:`_try_edit_rich`) — keep using the
+        full 32,768 cap via :meth:`_content_fits_rich_limits`, so a long table
+        streamed to its final form is still delivered as one rich message.
+        """
+        return utf16_len(content) <= self.MAX_MESSAGE_LENGTH
+
     def _should_attempt_rich(
         self, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
         return bool(
             not (metadata or {}).get("expect_edits")
             and self._rich_eligible(content)
+            and self._content_fits_visible_limit(content)
         )
 
     def prefers_fresh_final_streaming(

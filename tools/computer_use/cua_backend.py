@@ -543,10 +543,11 @@ class CuaDriverBackend(ComputerUseBackend):
             self._bridge.stop()
 
     def is_available(self) -> bool:
-        # cua-driver itself is cross-platform; we constrain Hermes to
-        # macOS + Windows because cua-driver-rs Linux is alpha (most rows
-        # in its PARITY matrix are OPEN). Flip when Linux goes VERIFIED.
-        if sys.platform not in ("darwin", "win32"):
+        # cua-driver runs on macOS, Windows, and Linux. The Linux path is
+        # the most recent addition (X11 + Wayland both supported upstream
+        # as of mid-2026). Override the platform check at your own risk:
+        # other Unix-likes haven't been exercised end-to-end.
+        if sys.platform not in ("darwin", "win32", "linux"):
             return False
         return cua_driver_binary_available()
 

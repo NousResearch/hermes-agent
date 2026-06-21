@@ -11,6 +11,8 @@ Arcee models like trinity-large-preview or trinity-mini.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from agent.auxiliary_client import (
@@ -19,6 +21,7 @@ from agent.auxiliary_client import (
     _is_arcee_trinity_thinking,
     _is_codex_gpt55,
 )
+from run_agent import AIAgent
 
 
 @pytest.mark.parametrize(
@@ -157,3 +160,48 @@ def test_compression_threshold_opt_out_does_not_disable_trinity() -> None:
         )
         == 0.75
     )
+
+
+def test_codex_gpt55_autoraise_does_not_queue_gateway_warning() -> None:
+    """Autoraise should tune compression without sending startup notices to chat."""
+
+    def fake_load_config():
+        return {
+            "agent": {},
+            "compression": {
+                "enabled": True,
+                "threshold": 0.70,
+                "target_ratio": 0.15,
+                "protect_last_n": 20,
+                "codex_gpt55_autoraise": True,
+            },
+        }
+
+    fake_client = type(
+        "FakeClient",
+        (),
+        {
+            "api_key": "test-token",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        },
+    )()
+
+    with (
+        patch("hermes_cli.config.load_config", side_effect=fake_load_config),
+        patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fake_client, "gpt-5.5"),
+        ),
+    ):
+        agent = AIAgent(
+            provider="openai-codex",
+            model="gpt-5.5",
+            quiet_mode=True,
+            enabled_toolsets=[],
+            skip_memory=True,
+            load_soul_identity=False,
+        )
+
+    assert agent.context_compressor.threshold_percent == 0.85
+    assert agent._compression_threshold_autoraised == {"from": 0.70, "to": 0.85}
+    assert agent._compression_warning is None

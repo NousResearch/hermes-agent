@@ -11061,7 +11061,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             request_overrides=turn_route.get("request_overrides"),
         ):
             return None
-        
+
+        # Apply session autopilot state to the (re)created agent so a /autopilot
+        # toggle survives model/route changes that rebuild the agent.
+        if getattr(self, "_autopilot_on", False):
+            self.agent.autopilot_mode = True
+        if getattr(self, "_autopilot_goal", ""):
+            self.agent._autopilot_goal = self._autopilot_goal
+
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
         #            translate for Anthropic/Gemini/Bedrock).

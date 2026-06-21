@@ -379,6 +379,15 @@ def _handle_send(args):
     # JPGs where Telegram's sendPhoto recompresses to 1280px).
     force_document_attachments = "[[as_document]]" in message
 
+    # Capture [[plain]] directive: send with NO parse_mode (plain text), bypassing
+    # both HTML auto-detection and MarkdownV2 conversion. Used by status notifiers
+    # (cron heartbeats, escalation alerts) whose dynamic content legitimately
+    # contains <placeholder> tokens, commit messages, and markdown metacharacters
+    # that the HTML/MarkdownV2 parsers misread and mangle. Stripped before send.
+    force_plain = args.get("plain", False) or "[[plain]]" in message
+    if "[[plain]]" in message:
+        message = message.replace("[[plain]]", "").strip()
+
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
@@ -441,6 +450,7 @@ def _handle_send(args):
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document_attachments,
+                force_plain=force_plain,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -713,7 +723,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, force_plain=False):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -791,6 +801,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 disable_link_previews=disable_link_previews,
                 force_document=force_document,
+                force_plain=force_plain,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -980,7 +991,7 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, force_plain=False):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -996,7 +1007,16 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # Inspired by github.com/ashaney — PR #1568.
         _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
 
-        if _has_html:
+        if force_plain:
+            # Explicit plain-text: no parse_mode at all. Bypasses both HTML
+            # auto-detection (which false-positives on literal <placeholder>
+            # tokens like <x>/<file>) and MarkdownV2 escaping. Emojis and bare
+            # URLs still render/auto-link; only formatting syntax is inert.
+            # Used by status notifiers via [[plain]] / args["plain"].
+            formatted = message
+            send_parse_mode = None
+            _has_html = False
+        elif _has_html:
             formatted = message
             send_parse_mode = ParseMode.HTML
         else:

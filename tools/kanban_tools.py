@@ -55,7 +55,20 @@ def _profile_has_kanban_toolset() -> bool:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        toolsets = cfg.get("toolsets", [])
+        agent_cfg = cfg.get("agent") or {}
+        disabled_toolsets = {str(ts) for ts in agent_cfg.get("disabled_toolsets") or []}
+        if "kanban" in disabled_toolsets:
+            return False
+
+        platform_toolsets = cfg.get("platform_toolsets") or {}
+        cli_toolsets = platform_toolsets.get("cli")
+        if isinstance(cli_toolsets, list):
+            return "kanban" in {str(ts) for ts in cli_toolsets}
+
+        # Legacy orchestrator profiles used top-level ``toolsets: [kanban]``.
+        # Keep that working, but only when the newer per-platform config has
+        # not made an explicit CLI selection.
+        toolsets = {str(ts) for ts in cfg.get("toolsets", [])}
         return "kanban" in toolsets
     except Exception:
         return False

@@ -1817,6 +1817,32 @@ def _nous_invoke_jwt_is_usable(
     )
 
 
+def _nous_static_api_key_is_usable(token: Any) -> bool:
+    """Return True for Portal-issued static inference API keys."""
+    return isinstance(token, str) and token.strip().startswith("sk-")
+
+
+def _nous_runtime_token_is_usable(
+    token: Any,
+    *,
+    scope: Any = None,
+    expires_at: Any = None,
+    min_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
+) -> bool:
+    """Accept either a static Nous API key or a valid invoke JWT."""
+    if not isinstance(token, str) or not token.strip():
+        return False
+    token = token.strip()
+    if _nous_static_api_key_is_usable(token):
+        return True
+    return _nous_invoke_jwt_is_usable(
+        token,
+        scope=scope,
+        expires_at=expires_at,
+        min_ttl_seconds=min_ttl_seconds,
+    )
+
+
 def _assert_nous_inference_jwt_usable(
     state: Dict[str, Any],
     *,
@@ -5235,9 +5261,7 @@ def fetch_nous_models(
 
 def _agent_key_is_usable(state: Dict[str, Any], min_ttl_seconds: int) -> bool:
     key = state.get("agent_key")
-    if not isinstance(key, str) or not key.strip():
-        return False
-    return _nous_invoke_jwt_is_usable(
+    return _nous_runtime_token_is_usable(
         key,
         scope=state.get("scope"),
         expires_at=state.get("agent_key_expires_at"),
@@ -5561,11 +5585,12 @@ def resolve_nous_runtime_credentials(
     """
     Resolve Nous inference credentials for runtime use.
 
-    Ensures access_token is a valid inference-scoped JWT, refreshing it when
-    needed. Concurrent processes coordinate through the auth store file lock.
+    Accepts static Portal API keys stored in ``agent_key``. Otherwise ensures
+    access_token is a valid inference-scoped JWT, refreshing it when needed.
+    Concurrent processes coordinate through the auth store file lock.
 
     Returns dict with: provider, base_url, api_key, key_id, expires_at,
-    expires_in, source ("invoke_jwt"), and auth_path.
+    expires_in, source ("api_key" or "invoke_jwt"), and auth_path.
     """
     sequence_id = uuid.uuid4().hex[:12]
 
@@ -5640,6 +5665,35 @@ def resolve_nous_runtime_credentials(
             sequence_id=sequence_id,
             refresh_token_fp=_token_fingerprint(state.get("refresh_token")),
         )
+
+        static_agent_key = state.get("agent_key")
+        if _nous_static_api_key_is_usable(static_agent_key):
+            if force_refresh:
+                raise AuthError(
+                    "Nous API keys cannot be refreshed automatically. "
+                    "Update the key with: hermes auth add nous",
+                    provider="nous",
+                    code="api_key_refresh_unavailable",
+                    relogin_required=True,
+                )
+            api_key = str(static_agent_key).strip()
+            expires_at = state.get("agent_key_expires_at")
+            expires_epoch = _parse_iso_timestamp(expires_at)
+            expires_in = (
+                max(0, int(expires_epoch - time.time()))
+                if expires_epoch is not None
+                else _coerce_ttl_seconds(state.get("agent_key_expires_in"))
+            )
+            return {
+                "provider": "nous",
+                "base_url": inference_base_url,
+                "api_key": api_key,
+                "key_id": state.get("agent_key_id"),
+                "expires_at": expires_at,
+                "expires_in": expires_in,
+                "source": "api_key",
+                "auth_path": "api_key",
+            }
 
         with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
             access_token = state.get("access_token")
@@ -5953,9 +6007,10 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
         try:
             creds = resolve_nous_runtime_credentials()
             refreshed_state = get_provider_auth_state("nous") or state
+            runtime_source = str(creds.get("source") or "portal")
             base_status.update(
                 {
-                    "logged_in": True,
+                    "logged_in": bool(refreshed_state.get("access_token")),
                     "portal_base_url": refreshed_state.get("portal_base_url") or base_status.get("portal_base_url"),
                     "inference_base_url": creds.get("base_url")
                     or refreshed_state.get("inference_base_url")
@@ -5967,7 +6022,7 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
                     "has_refresh_token": bool(refreshed_state.get("refresh_token")),
                     "inference_credential_present": True,
                     "credential_source": "auth_store",
-                    "source": f"runtime:{creds.get('source', 'portal')}",
+                    "source": f"runtime:{runtime_source}",
                     "key_id": creds.get("key_id"),
                 }
             )

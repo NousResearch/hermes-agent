@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from hermes_cli import runtime_provider as rp
@@ -975,6 +977,80 @@ def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
     assert resolved["base_url"] == "https://inference-api.nousresearch.com/v1"
     assert resolved["api_key"] == "nous-runtime-key"
     assert resolved["requested_provider"] == "nous"
+
+
+def test_resolve_runtime_provider_nous_uses_static_auth_store_agent_key(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "active_provider": "nous",
+        "providers": {
+            "nous": {
+                "portal_base_url": "https://portal.example.com",
+                "inference_base_url": "https://inference.example.com/v1",
+                "client_id": "hermes-cli",
+                "token_type": "Bearer",
+                "scope": "inference:invoke",
+                "access_token": "",
+                "refresh_token": "",
+                "agent_key": "sk-nous-static-key",
+                "agent_key_expires_at": None,
+            }
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "nous"})
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="nous")
+
+    assert resolved["provider"] == "nous"
+    assert resolved["base_url"] == "https://inference.example.com/v1"
+    assert resolved["api_key"] == "sk-nous-static-key"
+    assert resolved["source"] == "api_key"
+
+
+def test_resolve_runtime_provider_nous_uses_static_pool_agent_key(monkeypatch):
+    class _Entry:
+        agent_key = "sk-nous-pool-key"
+        runtime_api_key = "sk-nous-pool-key"
+        agent_key_expires_at = None
+        scope = "inference:invoke"
+        source = "manual"
+        base_url = "https://inference.pool.example/v1"
+        runtime_base_url = "https://inference.pool.example/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "nous"})
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        rp,
+        "resolve_nous_runtime_credentials",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("static Nous pool key should not trigger JWT refresh")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="nous")
+
+    assert resolved["provider"] == "nous"
+    assert resolved["base_url"] == "https://inference.pool.example/v1"
+    assert resolved["api_key"] == "sk-nous-pool-key"
+    assert resolved["source"] == "manual"
+    assert resolved.get("credential_pool") is not None
 
 
 def test_named_custom_provider_wins_over_builtin_alias(monkeypatch):

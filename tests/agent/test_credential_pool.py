@@ -1293,6 +1293,26 @@ def test_load_pool_mirrors_nous_invoke_jwt_agent_key_runtime_api_key(tmp_path, m
     assert pool_entry["agent_key_expires_at"] == expires_at
 
 
+def test_nous_runtime_api_key_accepts_static_sk_agent_key():
+    from agent.credential_pool import PooledCredential
+
+    entry = PooledCredential(
+        provider="nous",
+        id="nous-api-key",
+        label="manual",
+        auth_type="api_key",
+        priority=0,
+        source="manual",
+        access_token="",
+        refresh_token=None,
+        agent_key="sk-nous-static-key",
+        agent_key_expires_at=None,
+        extra={"scope": "inference:invoke"},
+    )
+
+    assert entry.runtime_api_key == "sk-nous-static-key"
+
+
 def test_nous_runtime_api_key_rejects_opaque_agent_key():
     from agent.credential_pool import PooledCredential
 

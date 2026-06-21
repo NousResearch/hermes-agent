@@ -645,6 +645,133 @@ def test_get_nous_auth_status_pool_opaque_key_is_not_inference_credential(tmp_pa
     invalidate_nous_auth_status_cache()
 
 
+def test_get_nous_auth_status_pool_static_sk_key_is_inference_credential(tmp_path, monkeypatch):
+    from hermes_cli.auth import get_nous_auth_status, invalidate_nous_auth_status_cache
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    invalidate_nous_auth_status_cache()
+
+    from agent.credential_pool import PooledCredential, load_pool
+    pool = load_pool("nous")
+    entry = PooledCredential.from_dict("nous", {
+        "access_token": "",
+        "agent_key": "sk-nous-static-key",
+        "label": "manual api key",
+        "auth_type": "api_key",
+        "source": "manual",
+        "base_url": "https://inference.example.com/v1",
+        "inference_base_url": "https://inference.example.com/v1",
+    })
+    pool.add_entry(entry)
+
+    status = get_nous_auth_status()
+
+    assert status["logged_in"] is False
+    assert status["inference_credential_present"] is True
+    assert status["credential_source"] == "pool:manual api key"
+    assert status["inference_base_url"] == "https://inference.example.com/v1"
+    invalidate_nous_auth_status_cache()
+
+
+def test_get_nous_auth_status_auth_store_static_sk_key_is_not_portal_login(tmp_path, monkeypatch):
+    from hermes_cli.auth import get_nous_auth_status, invalidate_nous_auth_status_cache
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "active_provider": "nous",
+        "providers": {
+            "nous": {
+                "portal_base_url": "https://portal.example.com",
+                "inference_base_url": "https://inference.example.com/v1",
+                "client_id": "hermes-cli",
+                "token_type": "Bearer",
+                "scope": "inference:invoke",
+                "access_token": "",
+                "refresh_token": "",
+                "agent_key": "sk-nous-static-key",
+                "agent_key_expires_at": None,
+            }
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    invalidate_nous_auth_status_cache()
+
+    status = get_nous_auth_status()
+
+    assert status["logged_in"] is False
+    assert status["inference_credential_present"] is True
+    assert status["credential_source"] == "auth_store"
+    assert status["source"] == "runtime:api_key"
+    assert status["inference_base_url"] == "https://inference.example.com/v1"
+    invalidate_nous_auth_status_cache()
+
+
+def test_resolve_nous_runtime_credentials_accepts_static_sk_agent_key(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "active_provider": "nous",
+        "providers": {
+            "nous": {
+                "portal_base_url": "https://portal.example.com",
+                "inference_base_url": "https://inference.example.com/v1",
+                "client_id": "hermes-cli",
+                "token_type": "Bearer",
+                "scope": "inference:invoke",
+                "access_token": "",
+                "refresh_token": "",
+                "agent_key": "sk-nous-static-key",
+                "agent_key_expires_at": None,
+            }
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    creds = resolve_nous_runtime_credentials()
+
+    assert creds["api_key"] == "sk-nous-static-key"
+    assert creds["base_url"] == "https://inference.example.com/v1"
+    assert creds["source"] == "api_key"
+    assert creds["auth_path"] == "api_key"
+
+
+def test_resolve_nous_runtime_credentials_cannot_force_refresh_static_sk_key(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "active_provider": "nous",
+        "providers": {
+            "nous": {
+                "portal_base_url": "https://portal.example.com",
+                "inference_base_url": "https://inference.example.com/v1",
+                "client_id": "hermes-cli",
+                "token_type": "Bearer",
+                "scope": "inference:invoke",
+                "access_token": "",
+                "refresh_token": "",
+                "agent_key": "sk-nous-static-key",
+                "agent_key_expires_at": None,
+            }
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(AuthError) as exc:
+        resolve_nous_runtime_credentials(force_refresh=True)
+
+    assert exc.value.code == "api_key_refresh_unavailable"
+
+
 def test_get_nous_auth_status_auth_store_fallback(tmp_path, monkeypatch):
     """get_nous_auth_status() falls back to auth store when credential
     pool is empty.

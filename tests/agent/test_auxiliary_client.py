@@ -1071,6 +1071,40 @@ class TestAuxiliaryPoolAwareness:
         assert mock_openai.call_args.kwargs["api_key"] == pooled_token
         assert mock_openai.call_args.kwargs["base_url"] == "https://inference.pool.example/v1"
 
+    def test_resolve_nous_runtime_api_returns_none_when_refresh_raises(self):
+        from hermes_cli.auth import AuthError
+        from agent.auxiliary_client import _resolve_nous_runtime_api
+
+        with patch(
+            "hermes_cli.auth.resolve_nous_runtime_credentials",
+            side_effect=AuthError(
+                "stale Nous auth",
+                provider="nous",
+                code="invalid_grant",
+                relogin_required=True,
+            ),
+        ):
+            assert _resolve_nous_runtime_api() is None
+
+    def test_try_nous_uses_static_sk_agent_key_when_runtime_refresh_unavailable(self):
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value={
+                "agent_key": "sk-nous-static-key",
+                "inference_base_url": "https://inference.example.com/v1",
+            }),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=None),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
+        ):
+            from agent.auxiliary_client import _try_nous
+
+            client, model = _try_nous()
+
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+        assert mock_openai.call_args.kwargs["api_key"] == "sk-nous-static-key"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://inference.example.com/v1"
+
     def test_try_nous_uses_portal_recommendation_for_text(self):
         """When the Portal recommends a compaction model, _try_nous honors it."""
         fresh_base = "https://inference-api.nousresearch.com/v1"

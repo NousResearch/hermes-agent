@@ -1298,8 +1298,8 @@ def _resolve_explicit_runtime(
             or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/")
         )
         # Only use the agent_key compatibility field for inference when it
-        # contains a NAS invoke JWT; raw OAuth access_token fallback is handled
-        # by resolve_nous_runtime_credentials().
+        # contains a static API key or usable invoke JWT; raw OAuth
+        # access_token fallback is handled by resolve_nous_runtime_credentials().
         api_key = explicit_api_key or (
             str(state.get("agent_key") or "").strip()
             if _agent_key_is_usable(
@@ -1497,10 +1497,10 @@ def resolve_runtime_provider(
                 or getattr(entry, "access_token", "")
             )
         # For Nous, the pool entry's runtime_api_key is the agent_key
-        # compatibility field. It must be an invoke JWT. The pool doesn't
-        # refresh it during selection (that would trigger network calls in
-        # non-runtime contexts like `hermes auth list`).  If the key is
-        # expired, clear pool_api_key so we fall through to
+        # compatibility field. It may be a static API key or an invoke JWT.
+        # The pool doesn't refresh it during selection (that would trigger
+        # network calls in non-runtime contexts like `hermes auth list`). If
+        # the key is expired, clear pool_api_key so we fall through to
         # resolve_nous_runtime_credentials() which handles refresh.
         if provider == "nous" and entry is not None and pool_api_key:
             min_ttl = max(60, env_int("HERMES_NOUS_MIN_KEY_TTL_SECONDS", 1800))

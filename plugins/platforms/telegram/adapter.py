@@ -2517,11 +2517,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
-                        # Re-trigger typing like the legacy success path does.
-                        try:
-                            await self.send_typing(chat_id, metadata=metadata)
-                        except Exception:
-                            pass  # Typing failures are non-fatal
+                        # Re-trigger typing like the legacy success path does,
+                        # but ONLY for intermediate sends. On the final reply
+                        # (metadata["notify"]) the gateway has already torn down
+                        # the typing refresh loop; re-arming Telegram's ~5s timer
+                        # here would leave the "...typing" bubble lingering after
+                        # the answer (no Bot API call cancels it). See #48678.
+                        if not (metadata or {}).get("notify"):
+                            try:
+                                await self.send_typing(chat_id, metadata=metadata)
+                            except Exception:
+                                pass  # Typing failures are non-fatal
                     return rich_result
 
             # Format and split message if needed
@@ -2746,10 +2752,16 @@ class TelegramAdapter(BasePlatformAdapter):
             # so without this the "...typing" bubble disappears mid-response
             # (especially noticeable when the agent sends intermediate progress
             # messages like "Checking:" before running tools).
-            try:
-                await self.send_typing(chat_id, metadata=metadata)
-            except Exception:
-                pass  # Typing failures are non-fatal
+            # Skip this on the FINAL reply (metadata["notify"]): the gateway has
+            # already cancelled the typing refresh loop by the time the final
+            # send returns, so re-arming Telegram's ~5s timer here would leave
+            # the indicator lingering after the answer with nothing to cancel
+            # it (Telegram exposes no stop-typing API). See #48678.
+            if not (metadata or {}).get("notify"):
+                try:
+                    await self.send_typing(chat_id, metadata=metadata)
+                except Exception:
+                    pass  # Typing failures are non-fatal
 
             return SendResult(
                 success=True,

@@ -100,6 +100,27 @@ kanban_complete(
 
 Shape `metadata` so downstream parsers (reviewers, aggregators, schedulers) can use it without re-reading your prose.
 
+## Shipping deliverables (`artifacts=[...]`)
+
+If your task produced files a human actually wants — a chart, a PDF, a spreadsheet, a generated image, an archive — pass their **absolute paths** to `kanban_complete(artifacts=[...])`. The gateway notifier uploads each one as a native attachment to whoever subscribed to the task, so the deliverable lands in their chat alongside the completion message instead of being a path they have to go fetch.
+
+```python
+kanban_complete(
+    summary="Q3 revenue analysis: 14% QoQ growth, EMEA the laggard. Chart + full PDF attached.",
+    artifacts=["/tmp/q3-revenue.png", "/tmp/q3-report.pdf"],
+    metadata={"rows_analyzed": 48000, "growth_qoq": 0.14},
+)
+```
+
+Images and video embed inline; PDFs, docx, csv/xlsx/json/yaml, pptx, zip/tar/gz, audio, and html upload as files. Rules:
+
+- **Absolute paths only**, and the file must still exist when you complete — don't point at a scratch file you already deleted.
+- **Only real deliverables.** Skip intermediate logs, scratch files, and inputs the human already has.
+- `artifacts` is the **top-level** parameter the notifier reads. Do not bury deliverable paths in `metadata` (e.g. `metadata.codex_lane.artifacts`) and expect them to upload — the notifier only scans the top-level `artifacts` list, with a best-effort fallback over your `summary`/`result` text. Metadata paths are for downstream-worker bookkeeping, not delivery.
+- A bare string is auto-promoted to a one-element list, and it merges with any pre-existing `metadata.artifacts` without dupes.
+
+Same primitive works outside kanban: any agent surface delivers a file just by writing its absolute path into the response, and Slack/Discord/Telegram/etc. upload it natively — the `artifacts` param is the structured kanban entry point.
+
 ## Claiming cards you actually created
 
 If your run produced new kanban tasks (via `kanban_create`), pass the ids in `created_cards` on `kanban_complete`. The kernel verifies each id exists and was created by your profile; any phantom id blocks the completion with an error listing what went wrong, and the rejected attempt is permanently recorded on the task's event log. **Only list ids you captured from a successful `kanban_create` return value — never invent ids from prose, never paste ids from earlier runs, never claim cards another worker created.**

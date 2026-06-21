@@ -239,15 +239,19 @@ export function useComposerPopoutGestures({
         return
       }
 
-      liveRef.current = setComposerPopoutPosition({
-        bottom: state.startBottom - (pending.y - state.startY),
-        right: state.startRight - (pending.x - state.startX)
-      })
+      const composer = composerRef.current
+      const size = composer ? { height: composer.offsetHeight, width: composer.offsetWidth } : undefined
 
-      const rect = composerRef.current?.getBoundingClientRect()
+      liveRef.current = setComposerPopoutPosition(
+        {
+          bottom: state.startBottom - (pending.y - state.startY),
+          right: state.startRight - (pending.x - state.startX)
+        },
+        { size }
+      )
 
-      if (rect) {
-        setDockProximity(dockProximityOf(rect))
+      if (composer) {
+        setDockProximity(dockProximityOf(composer.getBoundingClientRect()))
       }
     }
 
@@ -297,13 +301,15 @@ export function useComposerPopoutGestures({
       cancelRaf()
 
       if (state.armed && state.mode === 'float') {
-        const rect = composerRef.current?.getBoundingClientRect()
+        const composer = composerRef.current
+        const rect = composer?.getBoundingClientRect()
 
         if (rect && dockProximityOf(rect) >= 1) {
           onDock()
         } else {
           // Persist the resting position once, on release — never per move.
-          setComposerPopoutPosition(liveRef.current, true)
+          const size = composer ? { height: composer.offsetHeight, width: composer.offsetWidth } : undefined
+          setComposerPopoutPosition(liveRef.current, { persist: true, size })
         }
       }
 

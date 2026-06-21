@@ -33,13 +33,49 @@ function readPosition(): PopoutPosition {
     const parsed = JSON.parse(raw) as Partial<PopoutPosition>
 
     if (typeof parsed.bottom === 'number' && typeof parsed.right === 'number') {
-      return { bottom: parsed.bottom, right: parsed.right }
+      // Clamp on load — a position persisted on a larger/other monitor must not
+      // strand the box off-screen on this one.
+      return clampPosition({ bottom: parsed.bottom, right: parsed.right })
     }
   } catch {
     // Corrupt value — fall back to the default corner.
   }
 
   return DEFAULT_POSITION
+}
+
+export interface PopoutSize {
+  height: number
+  width: number
+}
+
+interface SetPositionOptions {
+  persist?: boolean
+  /** Measured box size; falls back to the compact width + a min height so the
+   *  box stays grabbable even when the caller can't measure it. */
+  size?: PopoutSize
+}
+
+// Keep at least this much of every edge between the box and the viewport, so the
+// floating composer can never be dragged (or restored) out of reach.
+const EDGE_MARGIN = 8
+// Height floor used when the real box height is unknown (init / load).
+const MIN_VISIBLE_HEIGHT = 56
+
+const clampRange = (value: number, lo: number, hi: number) => Math.min(Math.max(value, lo), Math.max(lo, hi))
+
+const rootFontSize = () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+
+// Bound the bottom-right inset so the WHOLE box stays on-screen — the corner
+// anchor alone would let the box's width/height push it past the left/top edges.
+function clampPosition({ bottom, right }: PopoutPosition, size?: PopoutSize): PopoutPosition {
+  const width = size?.width || POPOUT_WIDTH_REM * rootFontSize()
+  const height = size?.height || MIN_VISIBLE_HEIGHT
+
+  return {
+    bottom: clampRange(bottom, EDGE_MARGIN, window.innerHeight - height - EDGE_MARGIN),
+    right: clampRange(right, EDGE_MARGIN, window.innerWidth - width - EDGE_MARGIN)
+  }
 }
 
 export const $composerPoppedOut = atom(storedBoolean(POPOUT_ENABLED_STORAGE_KEY, false))
@@ -50,19 +86,12 @@ export function setComposerPoppedOut(value: boolean) {
   persistBoolean(POPOUT_ENABLED_STORAGE_KEY, value)
 }
 
-const clamp = (value: number, max: number) => Math.min(Math.max(0, value), Math.max(0, max))
-
-// Clamp the corner inset so a viewport shrink (or a stale persisted value) can't
-// strand the box fully off-screen.
-const clampPosition = ({ bottom, right }: PopoutPosition): PopoutPosition => ({
-  bottom: clamp(bottom, window.innerHeight - 60),
-  right: clamp(right, window.innerWidth - 80)
-})
-
-/** Move the box (state only). Used per-frame during a drag — no IO. Returns the
- *  clamped position so callers can keep their live ref in sync. */
-export function setComposerPopoutPosition(position: PopoutPosition, persist = false): PopoutPosition {
-  const next = clampPosition(position)
+/** Move the box (state only by default). Used per-frame during a drag — no IO
+ *  unless `persist`. Returns the clamped position so callers can sync their live
+ *  ref. Pass the measured `size` for exact bounds; otherwise a fallback keeps it
+ *  on-screen. */
+export function setComposerPopoutPosition(position: PopoutPosition, { persist, size }: SetPositionOptions = {}): PopoutPosition {
+  const next = clampPosition(position, size)
   $composerPopoutPosition.set(next)
 
   if (persist) {

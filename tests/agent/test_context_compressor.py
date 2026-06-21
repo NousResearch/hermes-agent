@@ -1,5 +1,7 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
+import concurrent.futures
+
 import pytest
 import time
 from unittest.mock import patch, MagicMock
@@ -1366,6 +1368,61 @@ class TestSummaryFailureTrackingForGatewayWarning:
         assert len(fallback) <= 8300
         assert "deterministic fallback" in fallback
         assert "important detail" in fallback
+
+    def test_compress_hard_timeout_uses_existing_fallback_path(self):
+        events = {"shutdown_calls": []}
+
+        class _TimeoutFuture:
+            def cancel(self):
+                events["cancel_called"] = True
+                return False
+
+            def result(self, timeout=None):
+                events["result_timeout"] = timeout
+                raise concurrent.futures.TimeoutError("timed out")
+
+        class _FakeExecutor:
+            def __init__(self, max_workers=1):
+                events["max_workers"] = max_workers
+
+            def submit(self, fn, *args, **kwargs):
+                events["submitted_fn"] = getattr(fn, "__name__", repr(fn))
+                events["submitted_kwargs"] = kwargs
+                return _TimeoutFuture()
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                events["shutdown_calls"].append((wait, cancel_futures))
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+        with patch("agent.context_compressor._get_task_timeout", return_value=12.5), \
+             patch("agent.context_compressor.concurrent.futures.ThreadPoolExecutor", _FakeExecutor):
+            result = c.compress(msgs)
+
+        assert events["max_workers"] == 1
+        assert events["submitted_fn"] == "call_llm"
+        assert events["submitted_kwargs"]["task"] == "compression"
+        assert events["result_timeout"] == 12.5
+        assert events["cancel_called"] is True
+        assert events["shutdown_calls"] == [(False, True)]
+        assert c._last_summary_fallback_used is True
+        assert "hard-timed out after 12.5s" in (c._last_summary_error or "")
+        assert any(
+            isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
+            for m in result
+        )
 
     def test_compress_clears_fallback_flag_on_subsequent_success(self):
         mock_response = MagicMock()

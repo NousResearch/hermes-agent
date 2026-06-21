@@ -999,7 +999,7 @@ def switch_model(
         elif target_provider == "custom" and current_base_url:
             api_key = current_api_key
             base_url = current_base_url
-            api_mode = determine_api_mode(target_provider, base_url)
+            api_mode = determine_api_mode(target_provider, base_url, new_model)
         else:
             try:
                 runtime = resolve_runtime_provider(
@@ -1131,7 +1131,7 @@ def switch_model(
 
     # --- Determine api_mode if not already set ---
     if not api_mode:
-        api_mode = determine_api_mode(target_provider, base_url)
+        api_mode = determine_api_mode(target_provider, base_url, new_model)
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the

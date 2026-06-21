@@ -3281,6 +3281,40 @@ def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:
     return None
 
 
+def openai_model_api_mode(model_name: Optional[str]) -> Optional[str]:
+    """Infer the api_mode for a direct ``api.openai.com`` model.
+
+    OpenAI serves two wire protocols on the same host and they are NOT
+    interchangeable per model:
+
+    * Reasoning families (GPT-5.x, o1/o3/o4, codex) require the Responses
+      API (``codex_responses``).  ``/chat/completions`` 400s on these.
+    * Chat models (GPT-4.1, GPT-4o, GPT-4 Turbo, GPT-3.5, …) require
+      Chat Completions.  The Responses API rejects them with HTTP 400
+      ("Encrypted content is not supported with this model").
+
+    Hardcoding ``api.openai.com → codex_responses`` (the prior behaviour)
+    therefore broke every non-reasoning OpenAI model.  This mirrors
+    ``azure_foundry_model_api_mode`` — Azure Foundry hosts the same OpenAI
+    families, so the Responses-only prefix set is identical.
+
+    Returns ``None`` for an unknown/empty model so callers preserve their
+    existing default (api.openai.com historically defaulted to the
+    Responses API, which is correct for the GPT-5.x family Hermes ships as
+    the ``openai-api`` default).
+    """
+    raw = str(model_name or "").strip().lower()
+    if not raw:
+        return None
+    # Strip any vendor/ prefix a user may have copied from OpenRouter / Copilot.
+    if "/" in raw:
+        raw = raw.rsplit("/", 1)[-1]
+    for prefix in _AZURE_FOUNDRY_RESPONSES_PREFIXES:
+        if raw.startswith(prefix):
+            return "codex_responses"
+    return "chat_completions"
+
+
 def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[str]) -> str:
     """Normalize OpenCode config IDs to the bare model slug used in API requests."""
     provider = normalize_provider(provider_id)

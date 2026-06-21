@@ -14,11 +14,13 @@ future update to the detection logic lives in one place.
 
 from __future__ import annotations
 
+from hermes_cli.models import openai_model_api_mode
 from hermes_cli.runtime_provider import _detect_api_mode_for_url
 
 
 class TestCodexResponsesDetection:
     def test_openai_api_returns_codex_responses(self):
+        # No model supplied → historical Responses-API default is preserved.
         assert _detect_api_mode_for_url("https://api.openai.com/v1") == "codex_responses"
 
     def test_xai_api_returns_codex_responses(self):
@@ -66,6 +68,48 @@ class TestAnthropicMessagesDetection:
         # The helper requires ``/anthropic`` as the path SUFFIX, not anywhere.
         # Protects against false positives on e.g. /anthropic/v1/models.
         assert _detect_api_mode_for_url("https://api.example.com/anthropic/v1/models") is None
+
+
+class TestOpenAIModelAwareDetection:
+    """api.openai.com serves reasoning families on the Responses API and chat
+    families on Chat Completions — the helper must pick per-model when a model
+    is known (regression: GPT-4.1 / GPT-4o 400'd on the forced Responses API).
+    """
+
+    def test_chat_model_uses_chat_completions(self):
+        assert _detect_api_mode_for_url("https://api.openai.com/v1", "gpt-4.1") == "chat_completions"
+
+    def test_gpt_4o_uses_chat_completions(self):
+        assert _detect_api_mode_for_url("https://api.openai.com/v1", "gpt-4o") == "chat_completions"
+
+    def test_reasoning_model_uses_codex_responses(self):
+        assert _detect_api_mode_for_url("https://api.openai.com/v1", "gpt-5.5") == "codex_responses"
+
+    def test_o_series_uses_codex_responses(self):
+        assert _detect_api_mode_for_url("https://api.openai.com/v1", "o4-mini") == "codex_responses"
+
+    def test_unknown_model_preserves_responses_default(self):
+        assert _detect_api_mode_for_url("https://api.openai.com/v1", "") == "codex_responses"
+
+
+class TestOpenAIModelApiMode:
+    """Unit coverage for the shared hermes_cli.models.openai_model_api_mode helper."""
+
+    def test_gpt_chat_families_are_chat_completions(self):
+        for model in ("gpt-4.1", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"):
+            assert openai_model_api_mode(model) == "chat_completions", model
+
+    def test_reasoning_families_are_codex_responses(self):
+        for model in ("gpt-5", "gpt-5.5", "gpt-5.5-pro", "o1", "o1-preview", "o3-mini", "o4-mini", "codex-mini"):
+            assert openai_model_api_mode(model) == "codex_responses", model
+
+    def test_vendor_prefix_is_stripped(self):
+        assert openai_model_api_mode("openai/gpt-4.1") == "chat_completions"
+        assert openai_model_api_mode("openai/gpt-5.5") == "codex_responses"
+
+    def test_unknown_or_empty_returns_none(self):
+        assert openai_model_api_mode("") is None
+        assert openai_model_api_mode(None) is None
 
 
 class TestDefaultCase:

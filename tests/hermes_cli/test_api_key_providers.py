@@ -669,6 +669,45 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "copilot"
         assert result["api_mode"] == "codex_responses"
 
+    def test_runtime_openai_api_chat_model_uses_chat_completions(self, monkeypatch):
+        """Regression: --provider openai-api -m gpt-4.1 forced codex_responses,
+        and the Responses API 400s chat models ("Encrypted content is not
+        supported with this model"). It must resolve to chat_completions."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"provider": "openai-api", "default": "gpt-5.5"},
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="openai-api", target_model="gpt-4.1")
+        assert result["provider"] == "openai-api"
+        assert result["api_mode"] == "chat_completions"
+        assert result["base_url"] == "https://api.openai.com/v1"
+        assert result["api_key"] == "sk-openai-test"
+
+    def test_runtime_openai_api_reasoning_model_uses_codex_responses(self, monkeypatch):
+        """GPT-5.x / o-series remain on the Responses API — they require it."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"provider": "openai-api", "default": "gpt-4.1"},
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        for model in ("gpt-5.5", "o4-mini"):
+            result = resolve_runtime_provider(requested="openai-api", target_model=model)
+            assert result["api_mode"] == "codex_responses", model
+
+    def test_runtime_openai_api_defaults_to_config_model(self, monkeypatch):
+        """With no target_model, the config default model selects the api_mode."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"provider": "openai-api", "default": "gpt-4o"},
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="openai-api")
+        assert result["api_mode"] == "chat_completions"
+
     def test_runtime_copilot_acp_uses_process_runtime(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
         monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio --debug")

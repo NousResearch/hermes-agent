@@ -499,14 +499,21 @@ def is_aggregator(provider: str) -> bool:
     return pdef.is_aggregator if pdef else False
 
 
-def determine_api_mode(provider: str, base_url: str = "") -> str:
+def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> str:
     """Determine the API mode (wire protocol) for a provider/endpoint.
 
     Resolution order:
       1. Known provider → transport → TRANSPORT_TO_API_MODE.
       2. URL heuristics for unknown / custom providers.
       3. Default: 'chat_completions'.
+
+    ``model`` disambiguates api.openai.com, which serves reasoning families
+    (GPT-5.x, o-series, codex) on the Responses API and chat families
+    (GPT-4.1, GPT-4o, …) on Chat Completions. Omitting it preserves the
+    historical Responses-API default for that host.
     """
+    from hermes_cli.models import openai_model_api_mode
+
     pdef = get_provider(provider)
     if pdef is not None:
         # Even for known providers, check URL heuristics for special endpoints
@@ -518,7 +525,7 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
             if url_lower.endswith("/anthropic") or "api.anthropic.com" in url_lower:
                 return "anthropic_messages"
             if "api.openai.com" in url_lower:
-                return "codex_responses"
+                return openai_model_api_mode(model) or "codex_responses"
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
 
     # Direct provider checks for providers not in HERMES_OVERLAYS
@@ -534,7 +541,7 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
         if hostname == "api.kimi.com" and "/coding" in url_lower:
             return "anthropic_messages"
         if hostname == "api.openai.com":
-            return "codex_responses"
+            return openai_model_api_mode(model) or "codex_responses"
         if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
             return "bedrock_converse"
 

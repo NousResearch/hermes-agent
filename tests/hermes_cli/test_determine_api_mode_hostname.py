@@ -12,6 +12,25 @@ from __future__ import annotations
 from hermes_cli.providers import determine_api_mode
 
 
+class TestOpenAIModelAware:
+    """api.openai.com is model-dependent: reasoning families → Responses API,
+    chat families → Chat Completions. Threading the model fixes GPT-4.1/GPT-4o
+    which 400'd on the previously-forced Responses API.
+    """
+
+    def test_chat_model_is_chat_completions(self):
+        assert determine_api_mode("openai-api", "https://api.openai.com/v1", "gpt-4.1") == "chat_completions"
+
+    def test_reasoning_model_is_codex_responses(self):
+        assert determine_api_mode("openai-api", "https://api.openai.com/v1", "gpt-5.5") == "codex_responses"
+
+    def test_o_series_is_codex_responses(self):
+        assert determine_api_mode("openai-api", "https://api.openai.com/v1", "o4-mini") == "codex_responses"
+
+    def test_no_model_preserves_responses_default(self):
+        assert determine_api_mode("openai-api", "https://api.openai.com/v1") == "codex_responses"
+
+
 class TestOpenAIHostHardening:
     def test_native_openai_url_is_codex_responses(self):
         assert determine_api_mode("", "https://api.openai.com/v1") == "codex_responses"

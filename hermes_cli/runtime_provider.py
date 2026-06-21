@@ -88,11 +88,14 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     return _loopback_hostname(base_url_hostname(bu))
 
 
-def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
+def _detect_api_mode_for_url(base_url: str, model: Optional[str] = None) -> Optional[str]:
     """Auto-detect api_mode from the resolved base URL.
 
-    - Direct api.openai.com endpoints need the Responses API for GPT-5.x
-      tool calls with reasoning (chat/completions returns 400).
+    - Direct api.openai.com endpoints serve reasoning families (GPT-5.x,
+      o1/o3/o4, codex) on the Responses API and chat families (GPT-4.1,
+      GPT-4o, …) on Chat Completions — the two are NOT interchangeable per
+      model. ``model`` selects the right one via ``openai_model_api_mode``;
+      when ``model`` is unknown we keep the historical Responses default.
     - Third-party Anthropic-compatible gateways (MiniMax, Zhipu GLM,
       LiteLLM proxies, etc.) conventionally expose the native Anthropic
       protocol under a ``/anthropic`` suffix — treat those as
@@ -107,7 +110,9 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     if hostname == "api.x.ai":
         return "codex_responses"
     if hostname == "api.openai.com":
-        return "codex_responses"
+        from hermes_cli.models import openai_model_api_mode
+
+        return openai_model_api_mode(model) or "codex_responses"
     path = urlparse(normalized).path.rstrip("/")
     if path.endswith("/anthropic") or path.endswith("/anthropic/v1"):
         return "anthropic_messages"
@@ -409,9 +414,9 @@ def _resolve_runtime_from_pool_entry(
             api_mode = configured_mode
         else:
             # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
-            # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
-            # codex_responses).
-            detected = _detect_api_mode_for_url(base_url)
+            # Kimi /coding, api.openai.com → model-aware Responses/Chat,
+            # api.x.ai → codex_responses).
+            detected = _detect_api_mode_for_url(base_url, effective_model)
             if detected:
                 api_mode = detected
 
@@ -929,6 +934,7 @@ def _resolve_openrouter_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     model_cfg = _get_model_config()
     cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
@@ -1056,7 +1062,7 @@ def _resolve_openrouter_runtime(
     return {
         "provider": effective_provider,
         "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
-        or _detect_api_mode_for_url(base_url)
+        or _detect_api_mode_for_url(base_url, target_model or model_cfg.get("default", ""))
         or "chat_completions",
         "base_url": base_url,
         "api_key": api_key,
@@ -1240,6 +1246,7 @@ def _resolve_explicit_runtime(
     model_cfg: Dict[str, Any],
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
@@ -1368,8 +1375,11 @@ def _resolve_explicit_runtime(
                 api_mode = configured_mode
             else:
                 # Auto-detect from URL (Anthropic /anthropic suffix,
-                # api.openai.com → Responses, Kimi /coding, etc.).
-                detected = _detect_api_mode_for_url(base_url)
+                # api.openai.com → model-aware Responses/Chat, Kimi /coding,
+                # etc.).
+                detected = _detect_api_mode_for_url(
+                    base_url, target_model or model_cfg.get("default", "")
+                )
                 if detected:
                     api_mode = detected
 
@@ -1460,6 +1470,7 @@ def resolve_runtime_provider(
         model_cfg=model_cfg,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if explicit_runtime:
         return explicit_runtime
@@ -1823,8 +1834,11 @@ def resolve_runtime_provider(
             else:
                 # Auto-detect Anthropic-compatible endpoints by URL convention
                 # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
-                # plus api.openai.com → codex_responses and api.x.ai → codex_responses.
-                detected = _detect_api_mode_for_url(base_url)
+                # plus api.openai.com → model-aware Responses/Chat and
+                # api.x.ai → codex_responses.
+                detected = _detect_api_mode_for_url(
+                    base_url, target_model or model_cfg.get("default", "")
+                )
                 if detected:
                     api_mode = detected
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
@@ -1843,6 +1857,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     runtime["requested_provider"] = requested_provider
     return runtime

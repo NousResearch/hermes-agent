@@ -139,6 +139,97 @@ def test_auth_add_anthropic_oauth_sets_active_provider(tmp_path, monkeypatch):
     assert entry["access_token"] == "sk-ant-oauth-test"
 
 
+def test_auth_add_anthropic_oauth_does_not_mark_active_when_persist_fails(
+    tmp_path, monkeypatch
+):
+    """A failing pool.add_entry() must not leave anthropic marked active.
+
+    active_provider is written only after the credential is persisted. If
+    pool.add_entry() raises (e.g. disk/permission error), auth.json must NOT
+    report anthropic as the active provider with no backing credential.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.run_hermes_oauth_login_pure",
+        lambda: {
+            "access_token": "sk-ant-oauth-test",
+            "refresh_token": "ant-refresh",
+            "expires_at_ms": 9999999999000,
+        },
+    )
+
+    from agent.credential_pool import CredentialPool
+
+    def _boom(self, entry):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(CredentialPool, "add_entry", _boom)
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "anthropic"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    with pytest.raises(OSError):
+        auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    # regression: persist failed, so anthropic must NOT be marked active
+    assert payload.get("active_provider") != "anthropic"
+    assert "anthropic" not in payload.get("providers", {})
+
+
+def test_auth_add_anthropic_oauth_preserves_existing_provider_metadata(
+    tmp_path, monkeypatch
+):
+    """Re-running auth add must not discard pre-existing anthropic metadata.
+
+    _mark_anthropic_oauth_active() must merge into the existing
+    providers['anthropic'] entry rather than overwriting it wholesale, so
+    unrelated stored fields (labels/config/migration artifacts) survive.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "anthropic": {"label": "work", "custom_field": "keep-me"}
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.run_hermes_oauth_login_pure",
+        lambda: {
+            "access_token": "sk-ant-oauth-test",
+            "refresh_token": "ant-refresh",
+            "expires_at_ms": 9999999999000,
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "anthropic"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    state = payload["providers"]["anthropic"]
+    # regression: pre-existing metadata preserved through the merge
+    assert state["label"] == "work"
+    assert state["custom_field"] == "keep-me"
+    # function-owned key still written
+    assert state["expires_at_ms"] == 9999999999000
+
+
 def test_auth_add_google_gemini_cli_sets_active_provider(tmp_path, monkeypatch):
     """hermes auth add google-gemini-cli must set active_provider in auth.json.
 

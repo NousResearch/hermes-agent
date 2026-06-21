@@ -2163,7 +2163,13 @@ def _mark_anthropic_oauth_active(creds: Dict[str, Any]) -> None:
     """
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        state: Dict[str, Any] = {}
+        # Start from any existing anthropic provider state so re-running
+        # `hermes auth add anthropic` does not discard previously stored
+        # metadata (e.g. future labels/config/migration artifacts). We only
+        # overwrite the keys this function owns.
+        providers = auth_store.get("providers")
+        existing = providers.get("anthropic") if isinstance(providers, dict) else None
+        state: Dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
         if creds.get("expires_at_ms"):
             state["expires_at_ms"] = int(creds["expires_at_ms"])
         _save_provider_state(auth_store, "anthropic", state)

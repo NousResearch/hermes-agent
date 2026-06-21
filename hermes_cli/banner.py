@@ -602,6 +602,21 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                     f"[red]— failed[/]"
                 )
 
+    # AXI Tools section (only if installed)
+    try:
+        from tools.mcp_tool import get_axi_status
+        axi_status = get_axi_status()
+    except Exception:
+        axi_status = []
+
+    if axi_status:
+        right_lines.append("")
+        right_lines.append(f"[bold {accent}]AXI Tools[/]")
+        for axi in axi_status:
+            right_lines.append(
+                f"[dim {dim}]{axi['name']}[/] [{text}]({axi['type']})[/]"
+            )
+
     right_lines.append("")
     right_lines.append(f"[bold {accent}]Available Skills[/]")
     skills_by_category = get_available_skills()
@@ -626,6 +641,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     summary_parts = [f"{len(tools)} tools", f"{total_skills} skills"]
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
+    if axi_status:
+        summary_parts.append(f"{len(axi_status)} AXI tools")
     summary_parts.append("/help for commands")
     # Indicate when the codex_app_server runtime is active so users
     # understand why tool counts may not match what's actually reachable

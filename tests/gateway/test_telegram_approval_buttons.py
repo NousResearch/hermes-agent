@@ -623,7 +623,7 @@ class TestTelegramRequestChangesButton:
         rather than introspecting the assembled markup object — that works
         whether the SDK is mocked (local) or real (CI with
         python-telegram-bot installed)."""
-        import gateway.platforms.telegram as tg
+        import plugins.platforms.telegram.adapter as tg
 
         adapter = _make_adapter()
         mock_msg = MagicMock()

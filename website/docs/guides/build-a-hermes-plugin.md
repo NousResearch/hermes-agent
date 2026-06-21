@@ -800,6 +800,10 @@ def register(ctx):
             {
                 "goal": raw_args,
                 "toolsets": ["terminal", "file", "web"],
+                # Optional: route this delegated child to a specialist runtime.
+                # Omit these, or pass "self", to inherit the parent/default.
+                # "model": "openai/gpt-5-nano",
+                # "provider": "openrouter",
             },
         )
         return result

@@ -14,7 +14,7 @@ The `delegate_task` tool spawns child AIAgent instances with isolated context, r
 delegate_task(
     goal="Debug why tests fail",
     context="Error: assertion in test_foo.py line 42",
-    toolsets=["terminal", "file"]
+    toolsets=["terminal", "file"],
 )
 ```
 
@@ -29,6 +29,49 @@ delegate_task(tasks=[
     {"goal": "Fix the build", "toolsets": ["terminal", "file"]}
 ])
 ```
+
+## Runtime Model and Provider Selection
+
+Subagents normally inherit the parent's model/provider, or the defaults set in
+`delegation.model` and `delegation.provider`. For one-off work, the agent can
+choose a specific runtime directly in the `delegate_task` call:
+
+```python
+delegate_task(
+    goal="Summarize these logs and identify the likely root cause",
+    context="Logs are in /tmp/service.log. Return only findings and next steps.",
+    toolsets=["terminal", "file"],
+    model="openai/gpt-5-nano",
+    provider="openrouter",
+)
+```
+
+In batch mode, put `model` and `provider` at the top level to apply them to all
+children, or set them per task when different subtasks should use different
+models:
+
+```python
+delegate_task(tasks=[
+    {
+        "goal": "Cheap mechanical scan of the changed files",
+        "context": "Use git diff and report obvious mistakes only.",
+        "toolsets": ["terminal", "file"],
+        "model": "openai/gpt-5-nano",
+        "provider": "openrouter",
+    },
+    {
+        "goal": "Careful design review of the public API change",
+        "context": "Focus on backwards compatibility and hidden edge cases.",
+        "toolsets": ["file"],
+        "model": "anthropic/claude-sonnet-4",
+        "provider": "openrouter",
+    },
+])
+```
+
+Use `provider` whenever the requested model lives on a different provider than
+the parent. Omit `model`/`provider`, or pass `"self"`, `"inherit"`, or
+`"parent"`, to keep the inherited/default delegation runtime.
 
 ## How Subagent Context Works
 
@@ -129,9 +172,9 @@ When you provide a `tasks` array, subagents run in **parallel** using a thread p
 
 Single-task delegation runs directly without thread pool overhead.
 
-## Model Override
+## Default Delegation Model
 
-You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
+You can also configure a different default model for subagents via `config.yaml` — useful for routing routine subtasks to cheaper/faster models unless a specific `delegate_task` call overrides it:
 
 ```yaml
 # In ~/.hermes/config.yaml
@@ -140,7 +183,8 @@ delegation:
   provider: "openrouter"              # Optional: route subagents to a different provider
 ```
 
-If omitted, subagents use the same model as the parent.
+If omitted, subagents use the same model as the parent. A per-call `model` or
+`provider` value always wins over these config defaults for that child.
 
 ## Toolset Selection Tips
 

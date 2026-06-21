@@ -960,10 +960,22 @@ interrupted, the child is cancelled.
 
 Two shapes:
 
-- **Single:** pass `goal` (+ optional `context`, `toolsets`).
+- **Single:** pass `goal` (+ optional `context`, `toolsets`, `model`,
+  `provider`).
 - **Batch (parallel):** pass `tasks: [...]` — each gets its own subagent
   running concurrently. Concurrency is capped by
   `delegation.max_concurrent_children` (default 3).
+
+Runtime model selection:
+
+- `delegate_task(model="...", provider="...")` routes all children from
+  that call to the requested model/provider.
+- In batch mode, individual task objects may include their own `model` and
+  `provider` to mix cheap scans, deep reviewers, and specialist models in one
+  fan-out.
+- Omit both fields, or pass `"self"`, `"inherit"`, or `"parent"`, to inherit
+  the parent/configured delegation runtime. Pass `provider` whenever the model
+  is served by a different provider than the parent.
 
 Roles:
 
@@ -976,7 +988,7 @@ Roles:
 Key config knobs (under `delegation:` in `config.yaml`):
 `max_concurrent_children`, `max_spawn_depth`, `child_timeout_seconds`,
 `orchestrator_enabled`, `subagent_auto_approve`, `inherit_mcp_toolsets`,
-`max_iterations`.
+`max_iterations`, `model`, `provider`, `base_url`, `api_key`.
 
 Synchronicity rule: delegate_task is **not** durable. For long-running
 work that must outlive the current turn, use `cronjob` or

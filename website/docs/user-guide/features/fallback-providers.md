@@ -374,7 +374,9 @@ If no provider is available for compression, Hermes drops middle conversation tu
 
 ## Delegation Provider Override
 
-Subagents spawned by `delegate_task` inherit the parent agent's primary fallback chain. You can still route subagents to a different primary provider:model pair for cost optimization:
+Subagents spawned by `delegate_task` inherit the parent agent's primary fallback chain. You can route subagents to a different primary provider:model pair for cost optimization either by default config or per tool call.
+
+Default for all subagents:
 
 ```yaml
 delegation:
@@ -383,6 +385,21 @@ delegation:
   # base_url: "http://localhost:1234/v1"      # or use a direct endpoint
   # api_key: "local-key"
 ```
+
+One-off per-call routing:
+
+```python
+delegate_task(
+    goal="Quickly review this diff for obvious regressions",
+    toolsets=["terminal", "file"],
+    model="openai/gpt-5-nano",
+    provider="openrouter",
+)
+```
+
+Batch task objects can also carry their own `model` and `provider` fields, so a
+single fan-out can mix cheap scans with deeper specialist reviewers. Omit the
+fields, or pass `"self"`, to inherit the parent/configured delegation runtime.
 
 See [Subagent Delegation](/user-guide/features/delegation) for full configuration details.
 
@@ -421,5 +438,5 @@ See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration d
 | Approval classification | Layered (see above) | `auxiliary.approval` |
 | Title generation | Layered (see above) | `auxiliary.title_generation` |
 | Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
-| Delegation | Provider override only (no automatic fallback) | `delegation.provider` / `delegation.model` |
+| Delegation | Provider override only (no automatic fallback) | Per-call `delegate_task` `provider` / `model`, or config `delegation.provider` / `delegation.model` |
 | Cron jobs | Per-job provider override only (no automatic fallback) | Per-job `provider` / `model` |

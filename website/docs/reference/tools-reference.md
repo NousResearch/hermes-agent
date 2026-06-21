@@ -68,7 +68,7 @@ Opt-in Cursor SDK bridge for running Composer 2.5 and other Cursor models throug
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `delegate_task` | Spawn one or more subagents to work on tasks in isolated contexts. Each subagent gets its own conversation, terminal session, and toolset. Only the final summary is returned -- intermediate tool results never enter your context window. TWO… | — |
+| `delegate_task` | Spawn one or more subagents to work on tasks in isolated contexts. Each child gets its own conversation, terminal session, and toolset. Use optional `model` and `provider` fields to route a child, or individual batch tasks, to a specific model/provider; omit them or pass `"self"` to inherit. | — |
 
 ## `feishu_doc` toolset
 

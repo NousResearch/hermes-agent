@@ -653,7 +653,7 @@ There is no hard limit. Each profile is just a directory under `~/.hermes/profil
 
 **Scenario:** You use GPT-5.4 as your daily driver, but Gemini or Grok writes better social media content. Manually switching models every time is tedious.
 
-**Solution: Delegation config.** Hermes can route subagents to a different model automatically. Set this in `~/.hermes/config.yaml`:
+**Solution: Delegation config or per-call delegation routing.** Hermes can route subagents to a different model automatically. To make every subagent use a default specialist model, set this in `~/.hermes/config.yaml`:
 
 ```yaml
 delegation:
@@ -662,6 +662,24 @@ delegation:
 ```
 
 Now when you tell Hermes "write me a Twitter thread about X" and it spawns a `delegate_task` subagent, that subagent runs on Gemini instead of your main model. Your primary conversation stays on GPT-5.4.
+
+For one-off routing, the agent can pass `model` and `provider` directly to
+`delegate_task` without changing config:
+
+```python
+delegate_task(
+    goal="Draft three social posts for this launch",
+    context="Tone: concise, specific, no hashtags. Include three variants.",
+    toolsets=["file"],
+    model="google/gemini-3-flash-preview",
+    provider="openrouter",
+)
+```
+
+Batch tasks can also set `model`/`provider` per task, so cheap scans and deep
+reviews can run on different subagent models in the same delegation call. Omit
+the fields, or use `"self"`, when the child should inherit the parent or the
+configured delegation default.
 
 You can also be explicit in your prompt: *"Delegate a task to write social media posts about our product launch. Use your subagent for the actual writing."* The agent will use `delegate_task`, which automatically picks up the delegation config.
 

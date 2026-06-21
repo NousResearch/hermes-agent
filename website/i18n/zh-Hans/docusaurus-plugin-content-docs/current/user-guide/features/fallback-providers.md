@@ -409,5 +409,5 @@ cronjob(
 | 审批分类 | 分层（见上文） | `auxiliary.approval` |
 | 标题生成 | 分层（见上文） | `auxiliary.title_generation` |
 | Triage Specifier | 分层（见上文） | `auxiliary.triage_specifier` |
-| 委派 | 仅提供商覆盖（无自动备用） | `delegation.provider` / `delegation.model` |
+| 委派 | 仅提供商覆盖（无自动备用） | 每次 `delegate_task` 调用的 `provider` / `model`，或配置中的 `delegation.provider` / `delegation.model` |
 | Cron 任务 | 仅每任务提供商覆盖（无自动备用） | 每任务 `provider` / `model` |

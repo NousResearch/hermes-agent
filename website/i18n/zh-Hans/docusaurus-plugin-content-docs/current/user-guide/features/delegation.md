@@ -14,7 +14,7 @@ description: "使用 delegate_task 为并行工作流生成隔离的子智能体
 delegate_task(
     goal="Debug why tests fail",
     context="Error: assertion in test_foo.py line 42",
-    toolsets=["terminal", "file"]
+    toolsets=["terminal", "file"],
 )
 ```
 
@@ -29,6 +29,47 @@ delegate_task(tasks=[
     {"goal": "Fix the build", "toolsets": ["terminal", "file"]}
 ])
 ```
+
+## 运行时模型和提供商选择
+
+子智能体通常继承父智能体的模型/提供商，或使用 `delegation.model` 和
+`delegation.provider` 中配置的默认值。对于一次性任务，智能体可以在
+`delegate_task` 调用中直接指定运行时：
+
+```python
+delegate_task(
+    goal="Summarize these logs and identify the likely root cause",
+    context="Logs are in /tmp/service.log. Return only findings and next steps.",
+    toolsets=["terminal", "file"],
+    model="openai/gpt-5-nano",
+    provider="openrouter",
+)
+```
+
+批处理模式下，可在顶层设置 `model` 和 `provider` 应用于所有子智能体，
+也可在每个 task 对象中分别设置，让不同子任务使用不同模型：
+
+```python
+delegate_task(tasks=[
+    {
+        "goal": "Cheap mechanical scan of the changed files",
+        "context": "Use git diff and report obvious mistakes only.",
+        "toolsets": ["terminal", "file"],
+        "model": "openai/gpt-5-nano",
+        "provider": "openrouter",
+    },
+    {
+        "goal": "Careful design review of the public API change",
+        "context": "Focus on backwards compatibility and hidden edge cases.",
+        "toolsets": ["file"],
+        "model": "anthropic/claude-sonnet-4",
+        "provider": "openrouter",
+    },
+])
+```
+
+当目标模型不在父智能体同一 provider 上时，请传入 `provider`。省略
+`model`/`provider`，或传入 `"self"`、`"inherit"`、`"parent"`，表示继承父智能体或默认委派运行时。
 
 ## 子智能体上下文的工作方式
 
@@ -129,9 +170,9 @@ delegate_task(
 
 单任务委派直接运行，无线程池开销。
 
-## 模型覆盖
+## 默认委派模型
 
-你可以通过 `config.yaml` 为子智能体配置不同的模型——适用于将简单任务委派给更便宜/更快的模型：
+你也可以通过 `config.yaml` 为所有子智能体配置默认模型——适用于默认将常规子任务路由到更便宜/更快的模型，除非某次 `delegate_task` 调用显式覆盖：
 
 ```yaml
 # In ~/.hermes/config.yaml
@@ -140,7 +181,8 @@ delegation:
   provider: "openrouter"              # Optional: route subagents to a different provider
 ```
 
-如果省略，子智能体将使用与父智能体相同的模型。
+如果省略，子智能体将使用与父智能体相同的模型。某次调用中的 `model` 或
+`provider` 会优先于这些配置默认值。
 
 ## 工具集选择建议
 

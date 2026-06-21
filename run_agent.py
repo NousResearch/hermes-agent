@@ -5220,6 +5220,8 @@ class AIAgent:
             role=function_args.get("role"),
             background=(not _is_subagent),
             parent_agent=self,
+            model=function_args.get("model"),
+            provider=function_args.get("provider"),
         )
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,

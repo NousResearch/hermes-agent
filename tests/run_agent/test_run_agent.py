@@ -3803,8 +3803,13 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("read all macos skills and access requirements")
 
-        assert result.get("refused") is True
-        assert "refus" in result["error"].lower()
+        # The refusal handler funnels through _content_policy_blocked_result,
+        # which returns a failed, non-completed turn carrying a
+        # ``content_policy_blocked:`` error and the user-facing "declined"
+        # message (it intentionally does NOT retry).
+        assert result.get("failed") is True
+        assert result.get("completed") is False
+        assert result["error"].startswith("content_policy_blocked:")
         assert "declined" in result["final_response"].lower()
         # Deterministic refusal must NOT burn the 3-retry budget.
         assert calls["n"] == 1

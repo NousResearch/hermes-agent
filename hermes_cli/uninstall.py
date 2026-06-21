@@ -100,18 +100,37 @@ def remove_wrapper_script():
     """Remove the hermes wrapper script if it exists."""
     wrapper_paths = [
         Path.home() / ".local" / "bin" / "hermes",
-        Path("/usr/local/bin/hermes"),
     ]
     
+    # Windows: uv pip installs place a .cmd wrapper (or .exe) in the same dir.
+    # /usr/local/bin does not exist on Windows so it is guarded below.
+    is_win = sys.platform == "win32"
+    if is_win:
+        wrapper_paths.append(Path.home() / ".local" / "bin" / "hermes.cmd")
+        wrapper_paths.append(Path.home() / ".local" / "bin" / "hermes.exe")
+    elif sys.platform == "linux":
+        wrapper_paths.append(Path("/usr/local/bin/hermes"))
+
     removed = []
     for wrapper in wrapper_paths:
         if wrapper.exists():
             try:
-                # Check if it's our wrapper (contains hermes_cli reference)
-                content = wrapper.read_text()
-                if 'hermes_cli' in content or 'hermes-agent' in content:
+                # For text wrappers (.sh, .py) check content to avoid removing
+                # something else the user placed there.  For binary .exe and
+                # .cmd batch wrappers the shebang content check does not work
+                # well (binary .exe, batch files may not contain the marker),
+                # so remove them based on the path alone since we know the
+                # installer placed them.
+                suffix = wrapper.suffix.lower()
+                if suffix in ('.exe', '.cmd'):
                     wrapper.unlink()
                     removed.append(wrapper)
+                else:
+                    # Text file: verify it references Hermes before removing
+                    content = wrapper.read_text()
+                    if 'hermes_cli' in content or 'hermes-agent' in content:
+                        wrapper.unlink()
+                        removed.append(wrapper)
             except Exception as e:
                 log_warn(f"Could not remove {wrapper}: {e}")
     

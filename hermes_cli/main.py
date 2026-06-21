@@ -8293,6 +8293,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
     try:
         from gateway.status import terminate_pid
         from hermes_cli.gateway import (
+            _capture_gateway_argv,
             _get_restart_drain_timeout,
             find_gateway_pids,
             find_profile_gateway_processes,
@@ -8338,6 +8339,21 @@ def _pause_windows_gateways_for_update() -> dict | None:
     )
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes]
 
+    # Snapshot each unmapped gateway's command line *before* we force-kill it,
+    # so ``_resume_windows_gateways_after_update`` can respawn it by replaying
+    # its own argv. Unmapped gateways are ones with no profile→PID-file mapping
+    # — e.g. a Windows Scheduled Task running ``pythonw.exe -m hermes_cli.main
+    # gateway run``. Without this snapshot they were force-killed and never
+    # restarted (the "Restart manually after update" dead-end from #50090).
+    unmapped: list[dict] = []
+    for pid in unmapped_pids:
+        argv = None
+        try:
+            argv = _capture_gateway_argv(int(pid))
+        except Exception as exc:
+            logger.debug("Could not capture argv for unmapped gateway %s: %s", pid, exc)
+        unmapped.append({"pid": int(pid), "argv": argv})
+
     force_killed = []
     for pid in sorted(set(survivors).union(unmapped_pids)):
         try:
@@ -8352,15 +8368,20 @@ def _pause_windows_gateways_for_update() -> dict | None:
         print(f"  → Force-stopped {len(force_killed)} gateway process(es)")
 
     if unmapped_pids:
+        respawnable = sum(1 for u in unmapped if u.get("argv"))
         print(
             f"  → Stopped {len(unmapped_pids)} gateway process(es) without profile mapping"
         )
-        print("    Restart manually after update: hermes gateway run")
+        if respawnable < len(unmapped_pids):
+            # Some had no recoverable command line (psutil missing, access
+            # denied, already gone): those still need a manual restart.
+            print("    Restart manually after update: hermes gateway run")
 
     return {
         "resume_needed": True,
         "profiles": profiles,
         "unmapped_pids": unmapped_pids,
+        "unmapped": unmapped,
     }
 
 
@@ -8373,11 +8394,15 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
         return
 
     profiles = token.get("profiles") or {}
-    if not profiles:
+    unmapped = token.get("unmapped") or []
+    if not profiles and not any(u.get("argv") for u in unmapped):
         return
 
     try:
-        from hermes_cli.gateway import launch_detached_profile_gateway_restart
+        from hermes_cli.gateway import (
+            launch_detached_gateway_restart_by_cmdline,
+            launch_detached_profile_gateway_restart,
+        )
     except Exception as exc:
         logger.debug("Could not load Windows gateway restart helper: %s", exc)
         return
@@ -8394,9 +8419,33 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
                 exc,
             )
 
+    # Respawn unmapped gateways (no profile→PID-file mapping, e.g. a Scheduled
+    # Task) by replaying the argv we snapshotted before force-killing them.
+    unmapped_relaunched = 0
+    for entry in unmapped:
+        argv = entry.get("argv")
+        old_pid = entry.get("pid")
+        if not argv or not old_pid:
+            continue
+        try:
+            if launch_detached_gateway_restart_by_cmdline(int(old_pid), list(argv)):
+                unmapped_relaunched += 1
+        except Exception as exc:
+            logger.debug(
+                "Could not restart unmapped Windows gateway (pid %s) after update: %s",
+                old_pid,
+                exc,
+            )
+
     if relaunched:
         print()
         print(f"  ✓ Restarting Windows gateway profile(s): {', '.join(relaunched)}")
+    if unmapped_relaunched:
+        if not relaunched:
+            print()
+        print(
+            f"  ✓ Restarting {unmapped_relaunched} unmapped Windows gateway process(es)"
+        )
 
 
 def _discard_lockfile_churn(git_cmd, repo_root):

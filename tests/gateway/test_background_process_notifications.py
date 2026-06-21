@@ -556,3 +556,80 @@ def test_parse_session_key_too_short():
 def test_parse_session_key_wrong_prefix():
     assert _parse_session_key("cron:main:telegram:dm:123") is None
     assert _parse_session_key("agent:cron:telegram:dm:123") is None
+
+
+@pytest.mark.asyncio
+async def test_finished_text_notification_strips_ansi(monkeypatch, tmp_path):
+    """The text-only 'finished with exit code' notification must strip ANSI.
+
+    Salvage of #13122 by @euyua9. The agent_notify completion branch already
+    strips ANSI; the plain text-only delivery branch (notify_mode in
+    all/result/error) still emitted raw output_buffer, leaking escape codes
+    into Telegram/Discord/etc. messages.
+    """
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="\x1b[31mFATAL\x1b[0m: \x1b[1mboom\x1b[0m\n",
+            exited=True,
+            exit_code=1,
+        )
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    assert adapter.send.await_count == 1
+    sent_message = adapter.send.await_args.args[1]
+    assert "\x1b[" not in sent_message, f"ANSI leaked: {sent_message!r}"
+    assert "FATAL: boom" in sent_message
+
+
+@pytest.mark.asyncio
+async def test_still_running_text_notification_strips_ansi(monkeypatch, tmp_path):
+    """The periodic 'still running' status update must strip ANSI too."""
+    import tools.process_registry as pr_module
+
+    # First poll: not exited, has new colored output -> status update.
+    # Second poll: exited so the watcher loop terminates.
+    sessions = [
+        SimpleNamespace(
+            output_buffer="\x1b[32mprogress 50%\x1b[0m\n",
+            exited=False,
+            exit_code=None,
+        ),
+        SimpleNamespace(
+            output_buffer="\x1b[32mprogress 50%\x1b[0m\n",
+            exited=True,
+            exit_code=0,
+        ),
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    # At least the "still running" status update was sent; none may contain ANSI.
+    assert adapter.send.await_count >= 1
+    running_msgs = [
+        c.args[1] for c in adapter.send.await_args_list
+        if "still running" in c.args[1]
+    ]
+    assert running_msgs, "expected a 'still running' status update"
+    for msg in running_msgs:
+        assert "\x1b[" not in msg, f"ANSI leaked: {msg!r}"
+        assert "progress 50%" in msg

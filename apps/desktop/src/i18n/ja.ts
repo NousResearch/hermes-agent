@@ -147,6 +147,12 @@ export const ja = defineLocale({
     }
   },
 
+  remoteDisplayBanner: {
+    message: reason =>
+      `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`,
+    dismiss: '閉じる'
+  },
+
   titlebar: {
     hideSidebar: 'サイドバーを非表示',
     showSidebar: 'サイドバーを表示',
@@ -695,12 +701,13 @@ export const ja = defineLocale({
       connectAnother: '別のプロバイダーを接続',
       otherProviders: 'その他のプロバイダー',
       removeConfirm: provider => `${provider} を削除しますか？`,
-      removeExternal: (provider, command) => `${provider} は Hermes の外部で管理されています。${command} で削除してください。`,
       removeKeyManaged: provider => `${provider} は API キーで設定されています。API Keys から削除してください。`,
       removedTitle: 'アカウントを削除しました',
       removedMessage: provider => `${provider} を削除しました。`,
       failedRemove: provider => `${provider} を削除できませんでした`,
       noProviderKeys: '利用可能なプロバイダー API キーがありません。',
+      searchKeys: 'プロバイダーを検索…',
+      noKeysMatch: '一致するプロバイダーがありません。',
       loading: 'プロバイダーを読み込み中...'
     },
     sessions: {
@@ -882,7 +889,8 @@ export const ja = defineLocale({
     gatewayRunning: 'メッセージングゲートウェイが実行中',
     gatewayStopped: 'メッセージングゲートウェイが停止中',
     hermesActiveSessions: (version, count) => `Hermes ${version} · アクティブセッション ${count}`,
-    restartMessaging: 'メッセージングを再起動',
+    restartGateway: 'ゲートウェイを再起動',
+    gatewayRestartFailed: 'ゲートウェイの再起動に失敗しました。',
     updateHermes: 'Hermes を更新',
     actionRunning: '実行中',
     actionDone: '完了',
@@ -952,9 +960,9 @@ export const ja = defineLocale({
     disableAria: name => `${name} を無効にする`,
     platformEnabled: name => `${name} を有効にしました`,
     platformDisabled: name => `${name} を無効にしました`,
-    restartToApply: 'この変更を有効にするにはゲートウェイを再起動してください。',
+    restartToApply: 'この変更はゲートウェイの再起動後に有効になります。',
     setupSaved: name => `${name} の設定を保存しました`,
-    restartToReconnect: '新しい認証情報で再接続するにはゲートウェイを再起動してください。',
+    restartToReconnect: '新しい認証情報はゲートウェイの再起動後に有効になります。',
     keyCleared: key => `${key} をクリアしました`,
     setupUpdated: name => `${name} の設定が更新されました。`,
     failedUpdate: name => `${name} の更新に失敗しました`,
@@ -1638,8 +1646,6 @@ export const ja = defineLocale({
     unknown: '(不明)',
     search: 'プロバイダーとモデルをフィルター...',
     noModels: 'モデルが見つかりません。',
-    persistGlobalSession: 'グローバルに保持（それ以外はこのセッションのみ）',
-    persistGlobal: 'グローバルに保持',
     addProvider: 'プロバイダーを追加',
     loadFailed: 'モデルを読み込めませんでした',
     noAuthenticatedProviders: '認証済みプロバイダーがありません。',
@@ -1665,6 +1671,7 @@ export const ja = defineLocale({
       search: 'モデルを検索',
       noModels: 'モデルが見つかりません',
       editModels: 'モデルを編集…',
+      refreshModels: 'モデルを更新',
       fast: '高速',
       medium: '中'
     },
@@ -1719,6 +1726,7 @@ export const ja = defineLocale({
       gatewayChecking: '確認中',
       gatewayConnecting: '接続中',
       gatewayOffline: 'オフライン',
+      gatewayRestarting: '再起動中…',
       gatewayTitle: 'Hermes 推論ゲートウェイのステータス',
       agents: 'エージェント',
       closeAgents: 'エージェントを閉じる',
@@ -1867,6 +1875,7 @@ export const ja = defineLocale({
       refresh: '更新',
       moreActions: 'その他のアクション',
       branchNewChat: '新しいチャットでブランチ',
+      dismissError: 'エラーを閉じる',
       readAloudFailed: '読み上げに失敗しました',
       preparingAudio: '音声を準備中...',
       stopReading: '読み上げを停止',
@@ -1976,6 +1985,9 @@ export const ja = defineLocale({
     regenerateFailed: '再生成に失敗しました',
     editFailed: '編集に失敗しました',
     resumeFailed: '再開に失敗しました',
+    resumeStrandedTitle: 'このセッションを読み込めませんでした',
+    resumeStrandedBody: 'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
+    resumeRetry: '再試行',
     nothingToBranch: 'ブランチするものがありません',
     branchNeedsChat: 'ブランチする前にチャットを開始または再開してください。',
     sessionBusy: 'セッションが使用中',

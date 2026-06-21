@@ -421,7 +421,7 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
 
     Three detectors run in order:
 
-    * cross-profile (#TBD) — writes that hit another profile's
+    * cross-profile — writes that hit another profile's
       ``skills/plugins/cron/memories`` directory.
     * sandbox-mirror (#32049) — writes that hit the
       ``…/sandboxes/<backend>/<task>/home/.hermes/…`` mirror created by a
@@ -1478,7 +1478,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
                     m.content = redact_sensitive_text(m.content, code_file=True)
-        result_dict = result.to_dict()
+        result_dict = result.to_dict(densify=True)
 
         if count >= 3:
             result_dict["_warning"] = (

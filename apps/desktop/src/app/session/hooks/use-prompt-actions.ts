@@ -32,6 +32,7 @@ import {
   clearComposerAttachments,
   type ComposerAttachment,
   setComposerAttachmentUploadState,
+  setComposerDraft,
   terminalContextBlocksFromDraft,
   updateComposerAttachment
 } from '@/store/composer'
@@ -58,6 +59,7 @@ import { clearSessionTodos } from '@/store/todos'
 
 import type {
   ClientSessionState,
+  BrowserManageResponse,
   FileAttachResponse,
   HandoffFailResponse,
   HandoffRequestResponse,
@@ -913,31 +915,7 @@ export function usePromptActions({
           return
         }
 
-        try {
-          const result = await requestGateway<SlashExecResponse>('slash.exec', {
-            session_id: sessionId,
-            command: command.replace(/^\/+/, '')
-          })
-
-          const body = result?.output || `/${name}: no output`
-          renderSlashOutput(result?.warning ? `warning: ${result.warning}\n${body}` : body)
-
-          return
-        } catch {
-          // Fall back to command.dispatch for skill/send/alias directives.
-        }
-
-        try {
-          const dispatch = parseCommandDispatch(
-            await requestGateway<unknown>('command.dispatch', { session_id: sessionId, name, arg })
-          )
-
-          if (!dispatch) {
-            renderSlashOutput('error: invalid response: command.dispatch')
-
-            return
-          }
-
+        const handleDispatch = async (dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>): Promise<void> => {
           if (dispatch.type === 'exec' || dispatch.type === 'plugin') {
             renderSlashOutput(dispatch.output ?? '(no output)')
 
@@ -950,7 +928,25 @@ export function usePromptActions({
             return
           }
 
+          // send / prefill carry an optional `notice` (e.g. "⊙ Goal set …")
+          // that the backend wants shown as a system line before the message
+          // is acted on. Mirrors the TUI's createSlashHandler — without it a
+          // `/goal <text>` looked like it did nothing.
+          if ((dispatch.type === 'send' || dispatch.type === 'prefill') && dispatch.notice?.trim()) {
+            renderSlashOutput(dispatch.notice.trim())
+          }
+
           const message = ('message' in dispatch ? dispatch.message : '')?.trim() ?? ''
+
+          // /undo returns a prefill directive: drop the backed-up message into
+          // the composer for editing instead of submitting it immediately.
+          if (dispatch.type === 'prefill') {
+            if (message) {
+              setComposerDraft(message)
+            }
+
+            return
+          }
 
           if (!message) {
             renderSlashOutput(
@@ -971,6 +967,43 @@ export function usePromptActions({
           }
 
           await submitPromptText(message)
+        }
+
+        try {
+          const result = await requestGateway<unknown>('slash.exec', {
+            session_id: sessionId,
+            command: command.replace(/^\/+/, '')
+          })
+
+          const dispatch = parseCommandDispatch(result)
+
+          if (dispatch) {
+            await handleDispatch(dispatch)
+
+            return
+          }
+
+          const output = result && typeof result === 'object' ? (result as SlashExecResponse) : null
+          const body = output?.output || `/${name}: no output`
+          renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
+
+          return
+        } catch {
+          // Fall back to command.dispatch for skill/send/alias directives.
+        }
+
+        try {
+          const dispatch = parseCommandDispatch(
+            await requestGateway<unknown>('command.dispatch', { session_id: sessionId, name, arg })
+          )
+
+          if (!dispatch) {
+            renderSlashOutput('error: invalid response: command.dispatch')
+
+            return
+          }
+
+          await handleDispatch(dispatch)
         } catch (err) {
           renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
         }
@@ -1138,6 +1171,81 @@ export function usePromptActions({
             const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sessionId })
 
             renderSlashOutput(renderCommandsCatalog(catalog, copy))
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        },
+        // /browser connect|disconnect|status manages the live CDP connection on
+        // the gateway host, mirroring the TUI's browser.manage RPC. It mutates
+        // BROWSER_CDP_URL (and may launch Chrome) in the gateway process — only
+        // meaningful when that process runs on this machine, so it's gated to
+        // local connections. A remote gateway would act on the wrong host.
+        browser: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+
+          if ($connection.get()?.mode === 'remote') {
+            renderSlashOutput(
+              '/browser manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
+            )
+
+            return
+          }
+
+          const [rawAction = 'status', ...rest] = ctx.arg.trim().split(/\s+/).filter(Boolean)
+          const cmdAction = rawAction.toLowerCase()
+
+          if (!['connect', 'disconnect', 'status'].includes(cmdAction)) {
+            renderSlashOutput(
+              'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
+            )
+
+            return
+          }
+
+          const url = cmdAction === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
+
+          if (url) {
+            renderSlashOutput(`checking Chromium-family browser remote debugging at ${url}...`)
+          }
+
+          try {
+            const result = await requestGateway<BrowserManageResponse>('browser.manage', {
+              action: cmdAction,
+              session_id: sessionId,
+              ...(url && { url })
+            })
+
+            // Without a streamed session subscription, the gateway bundles its
+            // progress lines into `messages` — flush them inline.
+            result?.messages?.forEach(message => renderSlashOutput(message))
+
+            if (cmdAction === 'status') {
+              renderSlashOutput(
+                result?.connected
+                  ? `browser connected: ${result.url || '(url unavailable)'}`
+                  : 'browser not connected (try /browser connect <url> or set browser.cdp_url in config.yaml)'
+              )
+
+              return
+            }
+
+            if (cmdAction === 'disconnect') {
+              renderSlashOutput('browser disconnected')
+
+              return
+            }
+
+            if (result?.connected) {
+              renderSlashOutput('Browser connected to live Chromium-family browser via CDP')
+              renderSlashOutput(`Endpoint: ${result.url || '(url unavailable)'}`)
+              renderSlashOutput('next browser tool call will use this CDP endpoint')
+            }
           } catch (err) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }

@@ -1702,6 +1702,21 @@ def run_doctor(args):
     _probes: list = []  # list of (label, callable) submitted in display order
 
     def _probe_openrouter() -> _ConnectivityResult:
+        # Only check OpenRouter if the user is actually using it
+        # Skip if using a custom endpoint (e.g., local Litellm, Ollama, etc.)
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            model_cfg = cfg.get("model", {})
+            if isinstance(model_cfg, dict):
+                provider = str(model_cfg.get("provider", "")).strip().lower()
+                # Skip OpenRouter check if provider is custom (with or without name)
+                # or any provider other than openrouter/auto
+                if provider.startswith("custom") or provider not in ("openrouter", "auto", ""):
+                    return _ConnectivityResult("OpenRouter API", [], [])
+        except Exception:
+            pass  # If config loading fails, fall through to original check
+
         key = os.getenv("OPENROUTER_API_KEY")
         if not key:
             return _ConnectivityResult(

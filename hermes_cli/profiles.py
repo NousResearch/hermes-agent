@@ -34,6 +34,11 @@ from typing import List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_WRAPPER_PROFILE_RE = re.compile(
+    r"(?:^|[/\\\s])hermes(?:\.exe)?\s+-p\s+([a-z0-9][a-z0-9_-]{0,63})\b",
+    re.IGNORECASE,
+)
+_WRAPPER_SCAN_MAX_BYTES = 64 * 1024
 
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
@@ -486,6 +491,82 @@ def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
         pass
 
 
+def _is_wrapper_candidate(entry: Path, *, is_windows: bool) -> bool:
+    """Return True when *entry* could be a Hermes profile wrapper."""
+    if not entry.is_file():
+        return False
+    if is_windows:
+        return entry.suffix.lower() == ".bat"
+    return not entry.suffix
+
+
+def _read_wrapper_candidate(entry: Path) -> Optional[str]:
+    """Read a small wrapper candidate, skipping binaries/large executables.
+
+    Hermes-created wrappers are tiny shell/batch scripts.  ``~/.local/bin`` also
+    commonly contains large extensionless binaries (node, claude, agy, etc.);
+    reading each of those for every profile turns ``profile list`` into a large
+    repeated I/O scan.  Oversized files cannot be wrappers we created, so skip
+    them before opening the file at all.
+    """
+    try:
+        if entry.stat().st_size > _WRAPPER_SCAN_MAX_BYTES:
+            return None
+        return entry.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _wrapper_target_profile(content: str) -> Optional[str]:
+    match = _WRAPPER_PROFILE_RE.search(content)
+    if not match:
+        return None
+    try:
+        return normalize_profile_name(match.group(1))
+    except ValueError:
+        return None
+
+
+def _scan_profile_aliases(profile_names: List[str]) -> dict[str, str]:
+    """Return ``profile_name -> alias_name`` for Hermes wrappers.
+
+    Scans ``~/.local/bin`` once for all requested profiles.  A custom alias is
+    preferred over the profile-named wrapper, matching the historical
+    ``find_alias_for_profile`` contract.
+    """
+    wanted = {normalize_profile_name(name) for name in profile_names}
+    if not wanted:
+        return {}
+
+    wrapper_dir = _get_wrapper_dir()
+    if not wrapper_dir.is_dir():
+        return {}
+
+    is_windows = sys.platform == "win32"
+    custom: dict[str, str] = {}
+    profile_named: dict[str, str] = {}
+
+    for entry in sorted(wrapper_dir.iterdir()):
+        if not _is_wrapper_candidate(entry, is_windows=is_windows):
+            continue
+        content = _read_wrapper_candidate(entry)
+        if not content:
+            continue
+        target = _wrapper_target_profile(content)
+        if target not in wanted:
+            continue
+        alias = entry.stem if is_windows else entry.name
+        if alias == target:
+            profile_named.setdefault(target, alias)
+        else:
+            custom.setdefault(target, alias)
+
+    aliases = dict(custom)
+    for profile, alias in profile_named.items():
+        aliases.setdefault(profile, alias)
+    return aliases
+
+
 def find_alias_for_profile(profile_name: str) -> Optional[str]:
     """Return the alias name of the wrapper that activates *profile_name*, or None.
 
@@ -499,35 +580,8 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
     so ``profile list``/``show`` surface the command the user actually typed.
     Results are sorted for deterministic output when several aliases match.
     """
-    wrapper_dir = _get_wrapper_dir()
-    if not wrapper_dir.is_dir():
-        return None
     canon = normalize_profile_name(profile_name)
-    is_windows = sys.platform == "win32"
-    needle = f"hermes -p {canon}"
-
-    custom: Optional[str] = None
-    profile_named: Optional[str] = None
-    for entry in sorted(wrapper_dir.iterdir()):
-        if not entry.is_file():
-            continue
-        # Only our own wrappers are named with the alias and (on Windows) .bat.
-        if is_windows and entry.suffix != ".bat":
-            continue
-        if not is_windows and entry.suffix:
-            continue
-        try:
-            content = entry.read_text()
-        except (OSError, UnicodeDecodeError):
-            continue
-        if needle not in content:
-            continue
-        alias = entry.stem if is_windows else entry.name
-        if alias == canon:
-            profile_named = alias
-        elif custom is None:
-            custom = alias
-    return custom if custom is not None else profile_named
+    return _scan_profile_aliases([canon]).get(canon)
 
 
 # ---------------------------------------------------------------------------
@@ -742,6 +796,7 @@ def list_profiles() -> List[ProfileInfo]:
 
     # Named profiles
     profiles_root = _get_profiles_root()
+    named_entries: List[Tuple[str, Path]] = []
     if profiles_root.is_dir():
         for entry in sorted(profiles_root.iterdir()):
             if not entry.is_dir():
@@ -751,32 +806,36 @@ def list_profiles() -> List[ProfileInfo]:
                 continue  # already added as the built-in default above
             if not _PROFILE_ID_RE.match(name):
                 continue
-            model, provider = _read_config_model(entry)
-            alias_name = find_alias_for_profile(name)
-            if alias_name:
-                is_windows = sys.platform == "win32"
-                alias_path = wrapper_dir / (f"{alias_name}.bat" if is_windows else alias_name)
-            else:
-                alias_path = None
-            dist_name, dist_version, dist_source = _read_distribution_meta(entry)
-            meta = read_profile_meta(entry)
-            profiles.append(ProfileInfo(
-                name=name,
-                path=entry,
-                is_default=False,
-                gateway_running=_check_gateway_running(entry),
-                model=model,
-                provider=provider,
-                has_env=(entry / ".env").exists(),
-                skill_count=_count_skills(entry),
-                alias_path=alias_path if (alias_path and alias_path.exists()) else None,
-                alias_name=alias_name,
-                distribution_name=dist_name,
-                distribution_version=dist_version,
-                distribution_source=dist_source,
-                description=meta.get("description", ""),
-                description_auto=meta.get("description_auto", False),
-            ))
+            named_entries.append((name, entry))
+
+    alias_by_profile = _scan_profile_aliases([name for name, _ in named_entries])
+    for name, entry in named_entries:
+        model, provider = _read_config_model(entry)
+        alias_name = alias_by_profile.get(name)
+        if alias_name:
+            is_windows = sys.platform == "win32"
+            alias_path = wrapper_dir / (f"{alias_name}.bat" if is_windows else alias_name)
+        else:
+            alias_path = None
+        dist_name, dist_version, dist_source = _read_distribution_meta(entry)
+        meta = read_profile_meta(entry)
+        profiles.append(ProfileInfo(
+            name=name,
+            path=entry,
+            is_default=False,
+            gateway_running=_check_gateway_running(entry),
+            model=model,
+            provider=provider,
+            has_env=(entry / ".env").exists(),
+            skill_count=_count_skills(entry),
+            alias_path=alias_path if (alias_path and alias_path.exists()) else None,
+            alias_name=alias_name,
+            distribution_name=dist_name,
+            distribution_version=dist_version,
+            distribution_source=dist_source,
+            description=meta.get("description", ""),
+            description_auto=meta.get("description_auto", False),
+        ))
 
     return profiles
 

@@ -617,6 +617,53 @@ class TestListProfiles:
         assert profiles[0].name == "default"
         assert profiles[0].is_default is True
 
+    def test_alias_lookup_scans_wrapper_dir_once(self, profile_env, monkeypatch):
+        create_profile("alpha", no_alias=True)
+        create_profile("beta", no_alias=True)
+        wrapper_dir = profile_env / ".local" / "bin"
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        (wrapper_dir / "alpha").write_text('#!/bin/sh\nexec hermes -p alpha "$@"\n')
+        (wrapper_dir / "custom-beta").write_text('#!/bin/sh\nexec hermes -p beta "$@"\n')
+
+        original_read_text = Path.read_text
+        reads = []
+
+        def counting_read_text(self, *args, **kwargs):
+            if self.parent == wrapper_dir:
+                reads.append(self.name)
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", counting_read_text)
+
+        profiles = list_profiles()
+        by_name = {profile.name: profile for profile in profiles}
+
+        assert by_name["alpha"].alias_name == "alpha"
+        assert by_name["beta"].alias_name == "custom-beta"
+        assert reads.count("alpha") == 1
+        assert reads.count("custom-beta") == 1
+
+    def test_alias_lookup_skips_oversized_wrapper_candidates(self, profile_env, monkeypatch):
+        create_profile("alpha", no_alias=True)
+        wrapper_dir = profile_env / ".local" / "bin"
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        (wrapper_dir / "alpha").write_text('#!/bin/sh\nexec hermes -p alpha "$@"\n')
+        oversized = wrapper_dir / "node"
+        oversized.write_bytes(b"not a hermes wrapper" * 8192)
+
+        original_open = Path.open
+
+        def guarded_open(self, *args, **kwargs):
+            if self == oversized:
+                raise AssertionError("profile list must not open oversized wrapper-dir entries")
+            return original_open(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", guarded_open)
+
+        profiles = list_profiles()
+        by_name = {profile.name: profile for profile in profiles}
+        assert by_name["alpha"].alias_name == "alpha"
+
 
 # ===================================================================
 # TestActiveProfile

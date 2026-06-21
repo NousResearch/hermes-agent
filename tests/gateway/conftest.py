@@ -2,7 +2,7 @@
 
 The ``_ensure_telegram_mock`` helper guarantees that a minimal mock of
 the ``telegram`` package is registered in :data:`sys.modules` **before**
-any test file triggers ``from gateway.platforms.telegram import ...``.
+any test file triggers ``from plugins.platforms.telegram.adapter import ...``.
 
 Without this, ``pytest-xdist`` workers that happen to collect
 ``test_telegram_caption_merge.py`` (bare top-level import, no per-file

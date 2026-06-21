@@ -1741,13 +1741,34 @@ def _build_media_placeholder(event) -> str:
     parts = []
     media_urls = getattr(event, "media_urls", None) or []
     media_types = getattr(event, "media_types", None) or []
+    _image_exts = {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+        ".tif", ".tiff", ".heic", ".heif", ".avif",
+    }
     for i, url in enumerate(media_urls):
-        mtype = media_types[i] if i < len(media_types) else ""
-        if mtype.startswith("image/") or getattr(event, "message_type", None) == MessageType.PHOTO:
+        mtype = (media_types[i] if i < len(media_types) else "") or ""
+        _mtype = mtype.lower()
+        _ext = os.path.splitext(url or "")[1].lower()
+
+        # Classify by MIME first; only fall back to the PHOTO message_type when
+        # MIME is absent/ambiguous, and even then do NOT upcast mixed
+        # attachments (albums/documents) to images — a PHOTO event can carry a
+        # non-image document whose MIME is text/*, application/*, etc.
+        _is_image = False
+        if _mtype.startswith("image/"):
+            _is_image = True
+        elif _mtype.startswith(("text/", "application/", "audio/", "video/")):
+            _is_image = False
+        elif getattr(event, "message_type", None) == MessageType.PHOTO:
+            _is_image = (_ext in _image_exts) or (
+                len(media_urls) <= 1 and _mtype in {"", "application/octet-stream"}
+            )
+
+        if _is_image:
             parts.append(f"[User sent an image: {url}]")
-        elif mtype.startswith("audio/"):
+        elif _mtype.startswith("audio/"):
             parts.append(f"[User sent audio: {url}]")
-        elif mtype.startswith("video/") or getattr(event, "message_type", None) == MessageType.VIDEO:
+        elif _mtype.startswith("video/") or getattr(event, "message_type", None) == MessageType.VIDEO:
             parts.append(f"[User sent a video: {url}]")
         else:
             parts.append(f"[User sent a file: {url}]")
@@ -8436,9 +8457,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if event.media_urls:
             image_paths = []
             audio_paths = []
+            _image_exts = {
+                ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+                ".tif", ".tiff", ".heic", ".heif", ".avif",
+            }
             for i, path in enumerate(event.media_urls):
-                mtype = event.media_types[i] if i < len(event.media_types) else ""
-                if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
+                mtype = (event.media_types[i] if i < len(event.media_types) else "") or ""
+                _mtype = mtype.lower()
+                _ext = os.path.splitext(path or "")[1].lower()
+                # Classify by MIME first; fall back to the PHOTO message_type only
+                # when MIME is absent/ambiguous, and don't upcast mixed
+                # albums/documents (a PHOTO event can carry a non-image document).
+                _is_image = False
+                if _mtype.startswith("image/"):
+                    _is_image = True
+                elif _mtype.startswith(("text/", "application/", "audio/", "video/")):
+                    _is_image = False
+                elif event.message_type == MessageType.PHOTO:
+                    _is_image = (_ext in _image_exts) or (
+                        len(event.media_urls) <= 1
+                        and _mtype in {"", "application/octet-stream"}
+                    )
+                if _is_image:
                     image_paths.append(path)
                 # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a) — never STT
                 # MessageType.VOICE = voice message (Opus/OGG) — always STT

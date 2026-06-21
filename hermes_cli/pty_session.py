@@ -109,3 +109,67 @@ class PtySession:
             self.bridge.close()
         except Exception:
             pass
+
+
+from typing import Callable, Dict, Tuple
+
+
+class RegistryFull(Exception):
+    pass
+
+
+class PtySessionRegistry:
+    def __init__(self, *, ttl: float, max_sessions: int,
+                 buffer_cap: int, read_timeout: float) -> None:
+        self._ttl = ttl
+        self._max = max_sessions
+        self._buffer_cap = buffer_cap
+        self._read_timeout = read_timeout
+        self._sessions: Dict[str, PtySession] = {}
+
+    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object]
+                              ) -> Tuple[PtySession, bool]:
+        await self.reap_idle()
+        existing = self._sessions.get(key)
+        if existing is not None and existing.alive:
+            return existing, False
+        if existing is not None:                       # dead remnant
+            await existing.close()
+            self._sessions.pop(key, None)
+        if len(self._sessions) >= self._max:
+            self._reap_one_idle_or_raise()
+        bridge = spawn()
+        session = PtySession(key, bridge, buffer_cap=self._buffer_cap,
+                             read_timeout=self._read_timeout)
+        await session.start()
+        self._sessions[key] = session
+        return session, True
+
+    def detach(self, key: str, ws) -> None:
+        s = self._sessions.get(key)
+        if s is not None:
+            s.detach(ws)
+
+    async def reap_idle(self, now: Optional[float] = None) -> None:
+        now = time.monotonic() if now is None else now
+        doomed = [
+            key for key, s in self._sessions.items()
+            if (not s.alive)
+            or (not s.attached and s.last_detached_at is not None
+                and (now - s.last_detached_at) > self._ttl)
+        ]
+        for key in doomed:
+            await self._sessions.pop(key).close()
+
+    def _reap_one_idle_or_raise(self) -> None:
+        idle = [s for s in self._sessions.values()
+                if not s.attached and s.last_detached_at is not None]
+        if not idle:
+            raise RegistryFull()
+        oldest = min(idle, key=lambda s: s.last_detached_at or 0.0)
+        self._sessions.pop(oldest.key, None)
+        asyncio.create_task(oldest.close())
+
+    async def close_all(self) -> None:
+        for key in list(self._sessions):
+            await self._sessions.pop(key).close()

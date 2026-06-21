@@ -129,16 +129,20 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     scheduler provider here (no live adapters; delivery falls back to the
     per-platform send path).
 
-    Cross-process safe: the built-in provider's ``cron.scheduler.tick`` takes
-    the ``cron/.tick.lock`` file lock, so this never double-fires alongside a
-    real gateway on the same HERMES_HOME — whichever process grabs the lock
-    first wins the tick.
+    Defers to the gateway: ``cron/.tick.lock`` only gives at-most-once
+    execution — whichever process grabs it first runs the tick — which is not
+    enough on macOS, where TCC / Full Disk Access provenance depends on the
+    executing process ancestry. So we pass ``defer_to_gateway_owner=True``:
+    when a gateway already owns the scheduler for this profile, this ticker
+    skips execution and lets the authorised gateway process chain run the job.
+    Only when no gateway is running (a desktop-only setup) does this ticker
+    execute jobs itself.
     """
     from cron.scheduler_provider import resolve_cron_scheduler
 
     provider = resolve_cron_scheduler()
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
-    provider.start(stop_event, interval=interval)
+    provider.start(stop_event, interval=interval, defer_to_gateway_owner=True)
 
 
 @asynccontextmanager

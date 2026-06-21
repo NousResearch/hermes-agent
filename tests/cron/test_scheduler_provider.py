@@ -153,6 +153,30 @@ def test_inprocess_provider_ticks_and_stops():
     assert calls[0].get("sync") is False
 
 
+def test_inprocess_provider_forwards_defer_to_gateway_owner():
+    """A non-authoritative caller (Desktop dashboard) passes
+    defer_to_gateway_owner=True; the built-in must forward it to tick() so the
+    ownership guard actually engages. The gateway's own ticker forwards False."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    for flag in (True, False):
+        calls = []
+        stop = threading.Event()
+        with patch("cron.scheduler.tick", side_effect=lambda *a, **k: calls.append(k) or 0):
+            t = threading.Thread(
+                target=InProcessCronScheduler().start,
+                args=(stop,),
+                kwargs={"interval": 0, "defer_to_gateway_owner": flag},
+                daemon=True,
+            )
+            t.start()
+            time.sleep(0.2)
+            stop.set()
+            t.join(timeout=5)
+        assert calls, "provider never called tick()"
+        assert calls[0].get("defer_to_gateway_owner") is flag
+
+
 def test_inprocess_provider_stop_is_noop():
     """The default stop() hook is a safe no-op (the stop_event is the real
     stop signal for the built-in)."""

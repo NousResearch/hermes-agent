@@ -157,6 +157,12 @@ class QQAdapter(BasePlatformAdapter):
     # QQ Bot API does not support editing sent messages.
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    # QQ chunks long output natively: send() splits via truncate_message() and
+    # emits every chunk.  Declare splits_long_messages so the delivery router
+    # bypasses its 4000-char cron/automation truncation (which would otherwise
+    # drop everything past the first chunk and append a file-save footer),
+    # matching the 12 sibling native-chunking adapters flagged in #50778.
+    splits_long_messages = True
     _TYPING_INPUT_SECONDS = 60  # input_notify duration reported to QQ
     _TYPING_DEBOUNCE_SECONDS = 50  # refresh before it expires
 

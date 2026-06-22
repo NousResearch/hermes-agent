@@ -97,6 +97,69 @@ class TestQQAdapterInit:
 
 
 # ---------------------------------------------------------------------------
+# splits_long_messages (cron/automation delivery, follow-up to #50778)
+# ---------------------------------------------------------------------------
+
+class TestQQChunkingFlag:
+    """QQ chunks natively, so it must declare splits_long_messages=True or the
+    delivery router truncates QQ cron/automation output at MAX_PLATFORM_OUTPUT."""
+
+    def _make(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    def test_splits_long_messages_flag_set(self):
+        from gateway.platforms.qqbot import QQAdapter
+        # Class attribute must be True (base default is False); #50778 set this
+        # on the 12 native-chunking adapters but missed QQ.
+        assert QQAdapter.splits_long_messages is True
+
+    @pytest.mark.asyncio
+    async def test_send_emits_every_chunk_in_order_losslessly(self):
+        """The flag is only safe if send() actually emits EVERY chunk of long
+        output. Prove send() iterates all truncate_message() chunks in order and
+        drops nothing, so bypassing the router's truncation is lossless."""
+        import re
+        from gateway.platforms.qqbot import QQAdapter
+
+        adapter = self._make(app_id="a", client_secret="b")
+        # Make is_connected True without a real gateway (same pattern as
+        # TestWaitForReconnection.test_send_succeeds_immediately_when_connected).
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._http_client = mock.MagicMock()
+
+        sent = []
+
+        async def fake_send_chunk(chat_id, content, reply_to=None):
+            sent.append({"chat_id": chat_id, "content": content, "reply_to": reply_to})
+            return SimpleNamespace(success=True, error=None)
+
+        adapter._send_chunk = fake_send_chunk
+
+        content = "x" * (QQAdapter.MAX_MESSAGE_LENGTH * 3)
+        result = await adapter.send("openid_1", content, reply_to="anchor_msg")
+        assert result.success
+
+        # send() must emit exactly the chunks truncate_message() produces, in
+        # order — no chunk dropped, duplicated, or reordered.
+        formatted = adapter.format_message(content)
+        expected_chunks = QQAdapter.truncate_message(formatted, QQAdapter.MAX_MESSAGE_LENGTH)
+        assert len(expected_chunks) > 1  # sanity: this content really multi-chunks
+        assert [c["content"] for c in sent] == expected_chunks
+
+        # Losslessness: stripping the per-chunk "(i/total)" indicator and
+        # rejoining reconstructs the full formatted body (nothing lost at the
+        # chunk boundaries).
+        bodies = [re.sub(r" \(\d+/\d+\)$", "", c["content"]) for c in sent]
+        assert "".join(bodies) == formatted
+
+        # Only the first chunk carries the reply anchor; the rest must not.
+        assert sent[0]["reply_to"] == "anchor_msg"
+        assert all(c["reply_to"] is None for c in sent[1:])
+
+
+# ---------------------------------------------------------------------------
 # _coerce_list
 # ---------------------------------------------------------------------------
 

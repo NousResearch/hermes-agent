@@ -1,9 +1,7 @@
-# PINNED PR HEAD SHAs — regenerated from live GitHub on 2026-06-21 22:16
-# Source of truth: gh pr list --repo NousResearch/hermes-agent --author arminanton --state open
-# Total open PRs: 42 (8 ready-for-review, 34 draft)
-# NOTE: #50626 added this session to re-home 3 previously-orphaned files
-#       (agent/subdirectory_hints.py, hermes_cli/providers.py, tests/agent/test_subdirectory_hints.py).
-#       #50064 advanced to restore a dropped @patch decorator (real collection-error fix).
+# PINNED PR HEAD SHAs — regenerated from live GitHub on 2026-06-21 23:36
+# Total open PRs: 41 (8 ready-for-review, 33 draft)
+# CHANGES THIS RUN: #50457 CLOSED (stale opus-context, conftest relocated to #50555).
+#   #49916 rebased->MERGEABLE. #50555 gained the agy-cli conftest.
 
 #48024   feat/expose-reasoning-api-server                     c5346ea34f8ec55b07e98fba3fb64af6a22ec746 draft=false
 #48057   feat/drop-empty-name-tools                           a4589b1650a294d460988c14c34952425153a44c draft=false
@@ -14,7 +12,7 @@
 #49449   feat/copilot-codex-true-limits-pr                    cd27defe2bea6d3f36ab27d2272242eed96520f6 draft=false
 #49644   feat/reasoning-max-effort                            bda59d73b7c7472bb580a9d957ffc7de129998b3 draft=false
 #49915   feat/tui-ctrlc-interrupt-vscode                      e33e4f781fd80d7357fb7131db88f13e837adfa3 draft=true
-#49916   fix/tui-yolo-badge-approval-mode                     1da02f7484cd39da856a627a9cd837876a70822d draft=true
+#49916   fix/tui-yolo-badge-approval-mode                     caa1daea311ada975e7f1e758c7c1dc8eb54aeb1 draft=true
 #49917   fix/tui-notify-autodispatch-gate                     09a6734a878ab92f49c7238a67ed4577ad68247a draft=true
 #50021   feat/tool-timing-sidecar                             80ce952014d0b506af8ddeb243ed64090bd73b33 draft=true
 #50022   feat/model-router-proxy-tool                         6f6ab5839962b8bd5ef9b9b18eaa22b4b0357477 draft=true
@@ -40,10 +38,9 @@
 #50078   tests/orphan-test-catchup-and-discord-max            6be7d823107362afc7327f295552a43d565e81fc draft=true
 #50080   tests/context-engine-unwrap-and-compression-runtime  139e57647e84ded09307a9767d0d04cd86c44c91 draft=true
 #50086   fix/web-server-profiles-sessions-dedupe              c7e2620c904e62c66985015a8c42d71aff21c2f8 draft=true
-#50111   deferred/residual-lines-on-v0.17.0                   3161ba80c1aea678b8c10b33c617b31295cebeb1 draft=true
+#50111   deferred/residual-lines-on-v0.17.0                   17277d5d675b0a81a931f657bc06254e8f796920 draft=true
 #50146   feat/gateway-media-image-classification              b674df63082bc6c0edc3c83d4baece18c5a37c3c draft=true
 #50155   feat/cmx-grounding-enforcement-hook                  02e537931a2e8b7ae4b2aa82d499f317c50b1735 draft=true
 #50296   fix/background-review-session-isolation              084b79bed93102e43aa130c43779f64b322fd706 draft=true
-#50457   tests/copilot-opus-context-integration               9d3b3b99adc53ae62763db5c64caced481ca209a draft=true
-#50555   feat/agy-cli-provider-isolated                       405a6b571dc83bf4c7f61fb038e8dbd1c8dbecae draft=true
+#50555   feat/agy-cli-provider-isolated                       d6c626665c762a00cde09f715700bdbe1198b857 draft=true
 #50626   feat/subdir-hints-and-xai-label                      a11fc394c2df5a1ae9dfcaba2b3a389fbf1ff0ea draft=true

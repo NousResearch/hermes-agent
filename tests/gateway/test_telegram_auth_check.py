@@ -13,7 +13,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageType
 
 
-def _make_adapter(allow_from=None, allowed_chats=None, group_allowed_chats=None, callback_auth=None):
+def _make_adapter(allow_from=None, allowed_chats=None, group_allowed_chats=None, callback_auth=None, **extra_overrides):
     try:
         from plugins.platforms.telegram.adapter import TelegramAdapter
     except ModuleNotFoundError:  # PR branch before Telegram plugin extraction
@@ -26,6 +26,7 @@ def _make_adapter(allow_from=None, allowed_chats=None, group_allowed_chats=None,
         extra["allowed_chats"] = allowed_chats
     if group_allowed_chats is not None:
         extra["group_allowed_chats"] = group_allowed_chats
+    extra.update(extra_overrides)
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -350,3 +351,46 @@ async def test_media_from_removed_user_blocked_before_event_building(monkeypatch
     assert build_called is False
     adapter.handle_message.assert_not_awaited()
     document.get_file.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unmentioned_group_text_from_removed_user_not_observed():
+    """Removed users must not persist unmentioned group text into observed context."""
+    adapter = _make_adapter(
+        allow_from=["222"],
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        require_mention=True,
+        observe_unmentioned_group_messages=True,
+    )
+    observed = []
+    adapter._observe_unmentioned_group_message = lambda *args, **kwargs: observed.append((args, kwargs))
+
+    msg = _make_message(text="side chatter", from_user_id=111, chat_id=-100, chat_type="group")
+    update = SimpleNamespace(update_id=1, message=msg, effective_message=None)
+
+    await adapter._handle_text_message(update, SimpleNamespace())
+
+    assert observed == []
+
+
+@pytest.mark.asyncio
+async def test_unmentioned_group_location_from_removed_user_not_observed():
+    """Removed users must not persist unmentioned group locations into observed context."""
+    adapter = _make_adapter(
+        allow_from=["222"],
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        require_mention=True,
+        observe_unmentioned_group_messages=True,
+    )
+    observed = []
+    adapter._observe_unmentioned_group_message = lambda *args, **kwargs: observed.append((args, kwargs))
+
+    msg = _make_message(text=None, from_user_id=111, chat_id=-100, chat_type="group")
+    msg.location = SimpleNamespace(latitude=53.3498, longitude=-6.2603)
+    update = SimpleNamespace(update_id=1, message=msg, effective_message=None)
+
+    await adapter._handle_location_message(update, SimpleNamespace())
+
+    assert observed == []

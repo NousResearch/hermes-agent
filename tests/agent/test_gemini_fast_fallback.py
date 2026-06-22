@@ -5,10 +5,11 @@ rotation and fallback-provider activation.  For CloudCode (Gemini CLI /
 Gemini OAuth) the 429 is an account-wide throttle, so waiting for pool
 rotation is pointless — prefer fallback immediately.
 """
-import inspect
 from unittest.mock import MagicMock
 
 from agent import conversation_loop
+from agent.error_classifier import FailoverReason
+import run_agent
 from run_agent import _pool_may_recover_from_rate_limit
 
 
@@ -64,15 +65,49 @@ def test_no_pool_skips_rotation():
     assert _pool_may_recover_from_rate_limit(None) is False
 
 
-def test_conversation_loop_resolves_pool_helper_through_run_agent_module():
-    """Extracted conversation loop must honor tests/patches on run_agent.
+def test_conversation_loop_resolves_pool_helper_through_run_agent_module(monkeypatch):
+    """Extracted fallback helper must honor tests/patches on run_agent.
 
-    conversation_loop intentionally lazy-loads run_agent via _ra().  If this
-    call site uses a bare imported helper, monkeypatching run_agent in tests (and
-    production wrappers that patch run_agent) will not propagate into the
+    conversation_loop intentionally lazy-loads run_agent via _ra().  If the
+    fallback gate uses a bare imported helper, monkeypatching run_agent in tests
+    (and production wrappers that patch run_agent) will not propagate into the
     extracted loop; older code also hit NameError in this branch.
     """
-    source = inspect.getsource(conversation_loop.run_conversation)
+    credential_pool = object()
+    helper_results = [True, False]
+    calls = []
 
-    assert "_ra()._pool_may_recover_from_rate_limit(" in source
-    assert "pool_may_recover = _pool_may_recover_from_rate_limit(" not in source
+    def fake_pool_may_recover_from_rate_limit(pool, *, provider=None, base_url=None):
+        calls.append((pool, provider, base_url))
+        return helper_results.pop(0)
+
+    monkeypatch.setattr(
+        run_agent,
+        "_pool_may_recover_from_rate_limit",
+        fake_pool_may_recover_from_rate_limit,
+    )
+
+    assert (
+        conversation_loop._should_attempt_eager_error_fallback(
+            FailoverReason.rate_limit,
+            retry_count=99,
+            credential_pool=credential_pool,
+            provider="patched-provider",
+            base_url="https://patched.example/v1",
+        )
+        is False
+    )
+    assert (
+        conversation_loop._should_attempt_eager_error_fallback(
+            FailoverReason.rate_limit,
+            retry_count=99,
+            credential_pool=credential_pool,
+            provider="patched-provider",
+            base_url="https://patched.example/v1",
+        )
+        is True
+    )
+    assert calls == [
+        (credential_pool, "patched-provider", "https://patched.example/v1"),
+        (credential_pool, "patched-provider", "https://patched.example/v1"),
+    ]

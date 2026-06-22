@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli.config import get_hermes_home
+from gateway.support_ops_routing import classify_support_ops_case_signal
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +299,8 @@ class CanonicalBrainAuditBridge:
         if platform != "discord":
             return
         message_id = getattr(event, "message_id", None)
+        message_text = getattr(event, "text", "") or ""
+        case_signal = classify_support_ops_case_signal(message_text)
         idempotency = f"inbound:{platform}:{getattr(source, 'chat_id', '')}:{getattr(source, 'thread_id', '')}:{message_id or getattr(event, 'timestamp', '')}"
         actor_ref = self.ref(getattr(source, "user_id", None) or getattr(source, "user_name", None) or "unknown", "person")
         envelope = self.envelope(
@@ -313,10 +316,11 @@ class CanonicalBrainAuditBridge:
                 "status": "received",
                 "platform": platform,
                 "message_ref": self.ref(message_id, "message") if message_id else None,
-                "message_length": len(getattr(event, "text", "") or ""),
+                "message_length": len(message_text),
                 "message_type": str(getattr(getattr(event, "message_type", None), "value", getattr(event, "message_type", ""))),
                 "has_media": bool(getattr(event, "media_urls", None)),
                 "media_count": len(getattr(event, "media_urls", None) or []),
+                "support_ops_case_signal": case_signal,
             },
         )
         await self.append(envelope)

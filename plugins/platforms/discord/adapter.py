@@ -119,6 +119,7 @@ from gateway.platforms.base import (
     _TEXT_INJECT_EXTENSIONS,
     validate_inbound_media_size,
 )
+from gateway.support_ops_routing import lint_and_resolve_discord_content
 from tools.url_safety import is_safe_url
 
 
@@ -1688,6 +1689,16 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
+
+        lint = lint_and_resolve_discord_content(content)
+        if not lint.ok:
+            logger.warning(
+                "[%s] Blocking Discord send with unresolved teammate mention placeholder: %s",
+                self.name,
+                lint.blocked_reason,
+            )
+            return SendResult(success=False, error=lint.blocked_reason or "blocked_unresolved_mention")
+        content = lint.content
 
         try:
             # Determine target channel: thread_id in metadata takes precedence.

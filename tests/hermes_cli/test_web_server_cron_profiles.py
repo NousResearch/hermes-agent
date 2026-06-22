@@ -1,5 +1,7 @@
 """Regression tests for dashboard cron job profile routing."""
 
+import json
+
 import pytest
 from fastapi import HTTPException
 
@@ -7,6 +9,7 @@ from fastapi import HTTPException
 @pytest.fixture()
 def isolated_profiles(tmp_path, monkeypatch):
     """Give profile discovery an isolated default home with one named profile."""
+    import hermes_constants
     from hermes_cli import profiles
 
     default_home = tmp_path / ".hermes"
@@ -19,10 +22,12 @@ def isolated_profiles(tmp_path, monkeypatch):
 
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
     monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: default_home)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
     return {"default": default_home, "worker_alpha": worker_home}
 
 
-def test_call_cron_for_profile_routes_storage_and_restores_globals(isolated_profiles):
+def test_call_cron_for_profile_routes_storage_to_root_and_restores_globals(isolated_profiles):
     from cron import jobs as cron_jobs
     from hermes_cli import web_server
 
@@ -42,8 +47,8 @@ def test_call_cron_for_profile_routes_storage_and_restores_globals(isolated_prof
     assert job["profile_name"] == "worker_alpha"
     assert job["hermes_home"] == str(isolated_profiles["worker_alpha"])
     assert job["is_default_profile"] is False
-    assert (isolated_profiles["worker_alpha"] / "cron" / "jobs.json").exists()
-    assert not (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+    assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+    assert not (isolated_profiles["worker_alpha"] / "cron" / "jobs.json").exists()
 
     assert cron_jobs.CRON_DIR == old_cron_dir
     assert cron_jobs.JOBS_FILE == old_jobs_file
@@ -104,6 +109,34 @@ async def test_list_cron_jobs_specific_profile_filters_results(isolated_profiles
 
     assert [job["id"] for job in jobs] == [worker_job["id"]]
     assert jobs[0]["profile"] == "worker_alpha"
+    assert jobs[0]["hermes_home"] == str(isolated_profiles["worker_alpha"])
+
+
+@pytest.mark.asyncio
+async def test_dashboard_ignores_legacy_profile_local_cron_store(isolated_profiles):
+    from hermes_cli import web_server
+
+    legacy_store = isolated_profiles["worker_alpha"] / "cron" / "jobs.json"
+    legacy_store.parent.mkdir(parents=True, exist_ok=True)
+    legacy_store.write_text(
+        json.dumps({
+            "jobs": [
+                {
+                    "id": "legacy-worker-job",
+                    "name": "stale legacy job",
+                    "prompt": "do not show this",
+                    "enabled": True,
+                    "profile": "worker_alpha",
+                    "schedule": {"kind": "interval", "minutes": 60},
+                }
+            ]
+        }),
+        encoding="utf-8",
+    )
+
+    assert not (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+    assert await web_server.list_cron_jobs(profile="all") == []
+    assert await web_server.list_cron_jobs(profile="worker_alpha") == []
 
 
 @pytest.mark.asyncio
@@ -169,15 +202,15 @@ async def test_cron_delete_with_profile_deletes_only_target_profile(isolated_pro
         schedule="every 1h",
         name="shared-name",
     )
-    worker_job = web_server._call_cron_for_profile(
+    web_server._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="same-ish worker",
         schedule="every 1h",
-        name="shared-name-worker",
+        name="shared-name",
     )
 
-    deleted = await web_server.delete_cron_job(worker_job["id"], profile="worker_alpha")
+    deleted = await web_server.delete_cron_job("shared-name", profile="worker_alpha")
     assert deleted == {"ok": True}
 
     remaining_default = await web_server.list_cron_jobs(profile="default")

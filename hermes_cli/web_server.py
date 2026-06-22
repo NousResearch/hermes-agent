@@ -7637,30 +7637,97 @@ def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[st
     return annotated
 
 
-def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwargs):
-    """Run cron.jobs helpers against the selected profile's cron directory.
+def _cron_root_home() -> Path:
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root().resolve()
+
+
+def _cron_profile_name_for_job(job: Dict[str, Any]) -> str:
+    raw = job.get("profile")
+    return (str(raw).strip() if isinstance(raw, str) and raw.strip() else "default")
+
+
+def _annotate_cron_jobs(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    annotated: List[Dict[str, Any]] = []
+    for job in jobs:
+        profile_name = _cron_profile_name_for_job(job)
+        try:
+            _selected, home = _cron_profile_home(profile_name)
+        except HTTPException:
+            home = _cron_root_home() if profile_name == "default" else _cron_root_home() / "profiles" / profile_name
+        annotated.append(_annotate_cron_job(job, profile_name, home))
+    return annotated
+
+
+def _call_cron_root(func_name: str, *args, **kwargs):
+    """Run cron.jobs helpers against the shared root cron store.
 
     cron.jobs keeps CRON_DIR/JOBS_FILE/OUTPUT_DIR as module globals resolved
-    from the process HERMES_HOME at import time. The dashboard is a single
-    process that can inspect many profiles, so temporarily retarget those
-    globals while holding a lock and restore them immediately after the call.
+    at import time. The dashboard may be imported before tests or a managed
+    process finish setting the effective Hermes home, so retarget the module to
+    the root cron store for each API operation and restore it afterward.
     """
-    profile_name, home = _cron_profile_home(profile)
     with _CRON_PROFILE_LOCK:
         from cron import jobs as cron_jobs
 
+        root = _cron_root_home()
         old_cron_dir = cron_jobs.CRON_DIR
         old_jobs_file = cron_jobs.JOBS_FILE
         old_output_dir = cron_jobs.OUTPUT_DIR
-        cron_jobs.CRON_DIR = home / "cron"
+        cron_jobs.CRON_DIR = root / "cron"
         cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
         cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
         try:
-            result = getattr(cron_jobs, func_name)(*args, **kwargs)
+            return getattr(cron_jobs, func_name)(*args, **kwargs)
         finally:
             cron_jobs.CRON_DIR = old_cron_dir
             cron_jobs.JOBS_FILE = old_jobs_file
             cron_jobs.OUTPUT_DIR = old_output_dir
+
+
+def _resolve_cron_job_for_profile(profile_name: str, job_ref: str) -> Optional[Dict[str, Any]]:
+    jobs = _call_cron_root("list_jobs", True)
+    profile_jobs = [j for j in jobs if _cron_profile_name_for_job(j) == profile_name]
+    for job in profile_jobs:
+        if job.get("id") == job_ref:
+            return job
+    ref_lower = job_ref.lower()
+    matches = [job for job in profile_jobs if (job.get("name") or "").lower() == ref_lower]
+    if len(matches) > 1:
+        from cron.jobs import AmbiguousJobReference
+
+        raise AmbiguousJobReference(job_ref, matches)
+    return matches[0] if matches else None
+
+
+def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwargs):
+    """Run cron.jobs helpers against the shared root store for a profile.
+
+    Since #32091, every profile's cron jobs live in the root jobs.json and the
+    per-job ``profile`` field scopes execution. The dashboard keeps a profile
+    query parameter for filtering and mutations, but it must not read legacy
+    ``profiles/<name>/cron/jobs.json`` files as active jobs.
+    """
+    profile_name, home = _cron_profile_home(profile)
+
+    if func_name == "create_job":
+        kwargs.setdefault("profile", profile_name)
+        result = _call_cron_root(func_name, *args, **kwargs)
+    elif func_name == "list_jobs":
+        result = [
+            job for job in _call_cron_root(func_name, *args, **kwargs)
+            if _cron_profile_name_for_job(job) == profile_name
+        ]
+    elif args and isinstance(args[0], str):
+        job = _resolve_cron_job_for_profile(profile_name, args[0])
+        if not job:
+            if func_name == "remove_job":
+                return False
+            return None
+        result = _call_cron_root(func_name, job["id"], *args[1:], **kwargs)
+    else:
+        result = _call_cron_root(func_name, *args, **kwargs)
 
     if isinstance(result, list):
         return [_annotate_cron_job(j, profile_name, home) for j in result]
@@ -7670,13 +7737,14 @@ def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwar
 
 
 def _find_cron_job_profile(job_id: str) -> Optional[str]:
-    for profile in _cron_profile_dicts():
-        name = str(profile.get("name") or "")
-        if not name:
-            continue
-        jobs = _call_cron_for_profile(name, "list_jobs", True)
-        if any(j.get("id") == job_id or j.get("name") == job_id for j in jobs):
-            return name
+    jobs = _call_cron_root("list_jobs", True)
+    for job in jobs:
+        if job.get("id") == job_id:
+            return _cron_profile_name_for_job(job)
+    ref_lower = job_id.lower()
+    for job in jobs:
+        if (job.get("name") or "").lower() == ref_lower:
+            return _cron_profile_name_for_job(job)
     return None
 
 
@@ -7686,16 +7754,7 @@ async def list_cron_jobs(profile: str = "all"):
     if requested.lower() != "all":
         return _call_cron_for_profile(requested, "list_jobs", True)
 
-    jobs: List[Dict[str, Any]] = []
-    for item in _cron_profile_dicts():
-        name = str(item.get("name") or "")
-        if not name:
-            continue
-        try:
-            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
-        except Exception:
-            _log.exception("Failed to list cron jobs for profile %s", name)
-    return jobs
+    return _annotate_cron_jobs(_call_cron_root("list_jobs", True))
 
 
 @app.get("/api/cron/jobs/{job_id}")
@@ -7865,27 +7924,31 @@ def _fire_cron_job_for_profile(profile: str, job_id: str) -> bool:
     """Run ONE due cron job end-to-end for ``profile`` via the resolved
     scheduler provider's ``fire_due`` (store CAS claim + ``run_one_job``).
 
-    Retargets the ``cron.jobs`` module globals to the profile's cron dir under
-    the shared lock — same mechanism as ``_call_cron_for_profile`` — so the
-    claim and the run operate on the right profile's ``jobs.json``. Runs with
-    no live adapters; delivery falls back to the per-platform send path (the
+    The claim operates on the shared root ``jobs.json``. The job record's own
+    ``profile`` field then scopes execution to the owning profile. Runs with no
+    live adapters; delivery falls back to the per-platform send path (the
     dashboard process has no gateway adapter handles, exactly like the desktop
     cron path above).
     """
-    _profile_name, home = _cron_profile_home(profile)
+    profile_name, _home = _cron_profile_home(profile)
+    job = _resolve_cron_job_for_profile(profile_name, job_id)
+    if not job:
+        return False
+
     with _CRON_PROFILE_LOCK:
         from cron import jobs as cron_jobs
         from cron.scheduler_provider import resolve_cron_scheduler
 
+        root = _cron_root_home()
         old_cron_dir = cron_jobs.CRON_DIR
         old_jobs_file = cron_jobs.JOBS_FILE
         old_output_dir = cron_jobs.OUTPUT_DIR
-        cron_jobs.CRON_DIR = home / "cron"
+        cron_jobs.CRON_DIR = root / "cron"
         cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
         cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
         try:
             provider = resolve_cron_scheduler()
-            return bool(provider.fire_due(job_id, adapters=None, loop=None))
+            return bool(provider.fire_due(job["id"], adapters=None, loop=None))
         finally:
             cron_jobs.CRON_DIR = old_cron_dir
             cron_jobs.JOBS_FILE = old_jobs_file

@@ -306,26 +306,69 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
     async def _run_stream(self) -> None:
-        """Run the async stream client with auto-reconnection."""
+        """Run the async stream client with auto-reconnection.
+
+        Uses exponential backoff (RECONNECT_BACKOFF) capped at 60 s.
+        A circuit breaker prevents a hot reconnection storm: if the same
+        *type* of error recurs _RECONNECT_CIRCUIT_BREAKER_TRIPS consecutive
+        times without a successful connection, the loop sleeps for
+        _RECONNECT_CIRCUIT_BREAKER_DELAY seconds before trying again so
+        the gateway does not generate hundreds of megabytes of logs.
+        The backoff index is reset after a successful start() call so that
+        a recovered connection is treated as a fresh attempt.
+        """
+        _RECONNECT_CIRCUIT_BREAKER_TRIPS = 5
+        _RECONNECT_CIRCUIT_BREAKER_DELAY = 300  # 5 minutes
         backoff_idx = 0
+        consecutive_same_error = 0
+        last_error_type: type | None = None
         while self._running:
             try:
                 logger.debug("[%s] Starting stream client...", self.name)
                 await self._stream_client.start()
+                # start() returned normally (clean disconnect) — reset state.
+                backoff_idx = 0
+                consecutive_same_error = 0
+                last_error_type = None
             except asyncio.CancelledError:
                 return
             except Exception as e:
                 if not self._running:
                     return
-                logger.warning("[%s] Stream client error: %s", self.name, e)
+                # Circuit breaker: suppress repeated identical errors to
+                # avoid flooding the log with thousands of duplicate lines.
+                error_type = type(e)
+                if error_type is last_error_type:
+                    consecutive_same_error += 1
+                else:
+                    consecutive_same_error = 1
+                    last_error_type = error_type
+                if consecutive_same_error <= _RECONNECT_CIRCUIT_BREAKER_TRIPS:
+                    logger.warning("[%s] Stream client error: %s", self.name, e)
+                elif consecutive_same_error == _RECONNECT_CIRCUIT_BREAKER_TRIPS + 1:
+                    logger.error(
+                        "[%s] Stream client error repeated %d times: %s — "
+                        "entering circuit-breaker pause (%ds). "
+                        "Further attempts suppressed until next pause cycle.",
+                        self.name, consecutive_same_error, e,
+                        _RECONNECT_CIRCUIT_BREAKER_DELAY,
+                    )
+                # else: suppress repeated log line to avoid storm
 
             if not self._running:
                 return
 
-            delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
-            logger.info("[%s] Reconnecting in %ds...", self.name, delay)
-            await asyncio.sleep(delay)
-            backoff_idx += 1
+            if consecutive_same_error > _RECONNECT_CIRCUIT_BREAKER_TRIPS:
+                # Use a long pause to prevent log storms.
+                await asyncio.sleep(_RECONNECT_CIRCUIT_BREAKER_DELAY)
+                # Reset consecutive counter after the pause so we get at least
+                # one fresh warning log on the next attempt.
+                consecutive_same_error = 0
+            else:
+                delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
+                logger.info("[%s] Reconnecting in %ds...", self.name, delay)
+                await asyncio.sleep(delay)
+                backoff_idx += 1
 
     async def disconnect(self) -> None:
         """Disconnect from DingTalk."""

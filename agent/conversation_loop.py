@@ -885,6 +885,12 @@ def run_conversation(
         approx_request_tokens = estimate_request_tokens_rough(
             api_messages, tools=agent.tools or None
         )
+        try:
+            agent.context_compressor.last_prompt_tokens = approx_request_tokens
+            agent.context_compressor.last_completion_tokens = 0
+            agent.context_compressor.last_total_tokens = approx_request_tokens
+        except Exception:
+            pass
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, approx_request_tokens

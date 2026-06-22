@@ -16,6 +16,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
+from gateway.session_context import clear_session_vars, get_session_env
 
 
 class _MediaRoutingAdapter(BasePlatformAdapter):
@@ -261,3 +262,30 @@ async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_pa
 
     adapter.send_document.assert_not_awaited()
     adapter.send_voice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_tts_restores_telegram_session_context_after_agent_handler(tmp_path, monkeypatch):
+    """Auto-TTS runs after the agent handler returns, so it must set session context itself."""
+    adapter = _MediaRoutingAdapter()
+    adapter._auto_tts_default = True
+    event = _event()
+    event.message_type = MessageType.VOICE
+    adapter._message_handler = AsyncMock(return_value="Голосовой ответ")
+    audio_file = tmp_path / "reply.ogg"
+    captured = {}
+
+    def fake_tts_tool(*, text):
+        captured["platform"] = get_session_env("HERMES_SESSION_PLATFORM", "")
+        audio_file.write_bytes(b"opus")
+        return '{"success": true, "file_path": "%s"}' % str(audio_file)
+
+    clear_session_vars([])
+    monkeypatch.setattr("tools.tts_tool.check_tts_requirements", lambda: True)
+    monkeypatch.setattr("tools.tts_tool.text_to_speech_tool", fake_tts_tool)
+    adapter.play_tts = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert captured["platform"] == "telegram"
+    adapter.play_tts.assert_awaited_once()

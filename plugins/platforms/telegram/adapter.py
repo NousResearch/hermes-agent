@@ -4103,6 +4103,11 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
 
+        # --- Medical reminder callbacks (med:event_id:item_id) ---
+        if data.startswith("med:"):
+            await self._handle_med_reminder_callback(query, data)
+            return
+
         # --- Exec approval callbacks (ea:choice:id) ---
         if data.startswith("ea:"):
             parts = data.split(":", 2)
@@ -4416,6 +4421,106 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    async def _handle_med_reminder_callback(self, query, data: str) -> None:
+        """Resolve a medication-reminder inline button via profile script."""
+        try:
+            from hermes_constants import get_hermes_home
+
+            script_path = (
+                get_hermes_home()
+                / "scripts"
+                / "medical-reminders"
+                / "nastya_med_reminder.py"
+            )
+            if not script_path.exists():
+                await query.answer(text="❌ Скрипт напоминаний не найден.")
+                logger.error("[%s] medical reminder script missing: %s", self.name, script_path)
+                return
+
+            query_message = getattr(query, "message", None)
+            chat_id = str(getattr(query_message, "chat_id", "")) if query_message else ""
+            message_id = str(getattr(query_message, "message_id", "")) if query_message else ""
+            user_id = str(getattr(getattr(query, "from_user", None), "id", ""))
+            env = os.environ.copy()
+            env["HERMES_HOME"] = str(get_hermes_home())
+
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                str(script_path),
+                "ack",
+                "--callback-data",
+                data,
+                "--chat-id",
+                chat_id,
+                "--message-id",
+                message_id,
+                "--user-id",
+                user_id,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(script_path.parent),
+                env=env,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=30)
+            stdout_text = stdout_bytes.decode("utf-8", errors="replace").strip()
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+            if proc.returncode != 0:
+                logger.error(
+                    "[%s] medical reminder callback failed rc=%s stderr=%s",
+                    self.name,
+                    proc.returncode,
+                    stderr_text,
+                )
+                await query.answer(text="❌ Не удалось отметить. Попробуйте ещё раз.")
+                return
+
+            try:
+                payload = json.loads(stdout_text or "{}")
+            except Exception:
+                logger.error("[%s] invalid medical reminder callback output: %r", self.name, stdout_text)
+                await query.answer(text="❌ Некорректный ответ напоминаний.")
+                return
+
+            answer = str(payload.get("answer") or "Отмечено")[:200]
+            await query.answer(text=answer)
+
+            edit_text = payload.get("edit_text")
+            if not edit_text or not query_message:
+                return
+
+            reply_markup = None
+            raw_markup = payload.get("reply_markup")
+            if isinstance(raw_markup, dict):
+                rows = []
+                for row in raw_markup.get("inline_keyboard", []) or []:
+                    buttons = []
+                    for button in row or []:
+                        if not isinstance(button, dict):
+                            continue
+                        text = str(button.get("text") or "✓")
+                        callback_data = button.get("callback_data")
+                        if callback_data:
+                            buttons.append(InlineKeyboardButton(text, callback_data=str(callback_data)))
+                    if buttons:
+                        rows.append(buttons)
+                if rows:
+                    reply_markup = InlineKeyboardMarkup(rows)
+
+            try:
+                await query.edit_message_text(
+                    text=str(edit_text),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                    **self._link_preview_kwargs(),
+                )
+            except Exception as exc:
+                logger.debug("[%s] medical reminder edit skipped/failed: %s", self.name, exc)
+        except asyncio.TimeoutError:
+            await query.answer(text="❌ Напоминание не успело отметиться, попробуйте ещё раз.")
+        except Exception as exc:
+            logger.error("[%s] medical reminder callback exception: %s", self.name, exc, exc_info=True)
+            await query.answer(text="❌ Ошибка напоминания.")
 
     # Maps `gt:<verb>` -> (script-name, extra-args, success-label, is_state).
     # Scripts live in ~/.hermes/scripts/gmail-triage/. `arg` from the callback

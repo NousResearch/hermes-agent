@@ -126,3 +126,18 @@ def test_codex_no_cache_fields(monkeypatch):
     agent = _make_agent(monkeypatch, "codex_responses", "openai-codex", resp)
     agent.run_conversation("hi")
     assert agent.context_compressor.last_prompt_tokens == 3000
+
+
+def test_context_counter_falls_back_to_request_estimate_when_provider_omits_usage(monkeypatch):
+    resp = lambda: SimpleNamespace(
+        choices=[SimpleNamespace(index=0, message=SimpleNamespace(
+            role="assistant", content="ok", tool_calls=None, reasoning_content=None,
+        ), finish_reason="stop")],
+        usage=None,
+        model="test-model",
+    )
+    agent = _make_agent(monkeypatch, "chat_completions", "openrouter", resp)
+
+    agent.run_conversation("hi")
+
+    assert agent.context_compressor.last_prompt_tokens > 0

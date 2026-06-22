@@ -129,7 +129,7 @@ export function RemoteFolderPicker() {
             ))}
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          <div className="min-h-0 flex-1 overflow-y-auto p-2 max-h-[55vh]">
             <FolderRow disabled={currentPath === '/'} name=".." onClick={() => setCurrentPath(parentDir(currentPath))} />
             {loading ? (
               <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground">

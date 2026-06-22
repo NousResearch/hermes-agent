@@ -12,6 +12,7 @@ import {
   useRef,
   useState
 } from 'react'
+import { createPortal } from 'react-dom'
 
 import { hermesDirectiveFormatter, type SlashChipKind } from '@/components/assistant-ui/directive-text'
 import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
@@ -1923,7 +1924,7 @@ export function ChatBar({
     </div>
   )
 
-  return (
+  const composerOverlay = (
     <>
       {dragging && poppedOut && (
         <div
@@ -2106,6 +2107,19 @@ export function ChatBar({
           </div>
         </ComposerPrimitive.Root>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>
+    </>
+  )
+
+  return (
+    <>
+      {/* Floating: portal to <body> so position:fixed resolves against the
+          viewport. The chat content wrapper sets `contain: layout paint`, which
+          makes it a containing block for (and clips) fixed descendants — left
+          inline, the popped-out composer is positioned/clipped relative to the
+          chat column (which shifts with the sidebars), not the viewport, so the
+          viewport-based clamp can't keep it on-screen. Docked stays inline: it's
+          `absolute` within that column by design. */}
+      {poppedOut ? createPortal(composerOverlay, document.body) : composerOverlay}
 
       <UrlDialog
         inputRef={urlInputRef}

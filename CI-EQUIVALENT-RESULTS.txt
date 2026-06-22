@@ -1,0 +1,5 @@
+CI-equivalent run on integration tree d41395cd (base v0.17.0 2bd1977d8):
+  ruff check .          -> All checks passed! (exit 0) [the blocking lint gate, PLW1514]
+  ty check .            -> exit 0 [the type-check gate]
+  pytest (PR tests)     -> 111 passed earlier batch + this batch, 0 failed
+  3 warnings = pre-existing upstream deprecations (discord/audioop, websockets), not our code

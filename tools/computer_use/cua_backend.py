@@ -746,6 +746,28 @@ class _CuaDriverSession:
             return capability in self._capabilities.get(tool, set())
         return any(capability in caps for caps in self._capabilities.values())
 
+    def _has_tool(self, name: str) -> bool:
+        """Return True when ``tools/list`` advertised a tool by this name.
+
+        Used to route capture(): cua-driver dropped the standalone
+        ``screenshot`` tool and folded full-window PNG capture into
+        ``get_window_state`` (whose own description notes it "Also captures
+        a PNG screenshot of the specified window"). Older drivers that still
+        expose ``screenshot`` keep using it; newer ones fall through to
+        ``get_window_state``.
+
+        Returns False when discovery hasn't populated the map yet — callers
+        treat that as "unknown" and probe defensively rather than trusting it.
+        """
+        return name in self._capabilities
+
+    @property
+    def capabilities_discovered(self) -> bool:
+        """True once ``tools/list`` populated the per-tool map. When False,
+        ``_has_tool`` answers are not trustworthy (discovery failed or the
+        session hasn't started) and capture() should probe defensively."""
+        return bool(self._capabilities)
+
     @property
     def capability_version(self) -> str:
         """Driver-advertised capability vocabulary version (empty string
@@ -846,6 +868,45 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
         "structuredContent": structured,
         "isError": is_error,
     }
+
+
+def _image_from_tool_result(out: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """Pull a (png_b64, mime_type) pair out of a flattened tool result.
+
+    cua-driver delivers window screenshots in two shapes depending on tool +
+    transport:
+
+      * As an MCP ``image`` content part — surfaced by ``_extract_tool_result``
+        in ``out["images"]`` with a parallel ``image_mime_types`` entry. This
+        is what ``get_window_state`` emits over the stdio MCP transport.
+      * As a base64 field inside ``structuredContent`` —
+        ``screenshot_png_b64`` (+ ``screenshot_mime_type``). This is what
+        ``get_window_state`` returns when its structured payload carries the
+        image instead of a content part (newer driver builds; also the shape
+        seen via the ``cua-driver call`` CLI surface).
+
+    Checking both makes capture() robust to either delivery shape, so the
+    image never silently drops just because the driver moved it between the
+    content list and structuredContent. Returns ``(None, None)`` when neither
+    location carries an image.
+    """
+    images = out.get("images") or []
+    if images and images[0]:
+        mimes = out.get("image_mime_types") or []
+        mime = mimes[0] if mimes and mimes[0] else None
+        return images[0], mime
+
+    structured = out.get("structuredContent") or {}
+    b64 = structured.get("screenshot_png_b64") or structured.get("png_b64")
+    if b64:
+        mime = (
+            structured.get("screenshot_mime_type")
+            or structured.get("mime_type")
+            or None
+        )
+        return b64, mime
+
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -1062,28 +1123,61 @@ class CuaDriverBackend(ComputerUseBackend):
         window_title = ""
 
         if mode == "vision":
-            # Newer cua-driver releases no longer expose a standalone
-            # `screenshot` MCP tool. Request a screenshot-only capture via
-            # get_window_state instead; this keeps vision mode working while
-            # avoiding the AX walk used by som/ax captures.
-            sc_out = self._session.call_tool(
-                "get_window_state",
-                {
-                    "pid": self._active_pid,
-                    "window_id": self._active_window_id,
-                    "capture_mode": "vision",
-                    "session": self._session_id,
-                },
+            # Plain screenshot, no AX walk. cua-driver dropped the standalone
+            # `screenshot` tool (≥0.5.x) and folded full-window PNG capture
+            # into `get_window_state`. Route accordingly:
+            #   * Driver advertises `screenshot` (older builds) → use it; it's
+            #     the cheapest path (no AX tree walked server-side).
+            #   * Otherwise (current drivers) → call `get_window_state` but
+            #     DISCARD the AX tree/elements, returning only the PNG. Vision
+            #     mode's whole contract is "just the pixels, no element noise",
+            #     so we drop everything but the image.
+            # When capability discovery hasn't run (empty map), we don't trust
+            # a negative `_has_tool` answer — we still try `screenshot` first
+            # and fall back if the driver rejects it, so the path self-heals on
+            # any driver version.
+            use_screenshot = (
+                self._session._has_tool("screenshot")
+                or not self._session.capabilities_discovered
             )
-            if sc_out["images"]:
-                png_b64 = sc_out["images"][0]
-                # Pick up the explicit mimeType cua-driver attaches to image
-                # parts (Surface 7). Empty string means the driver didn't
-                # carry one — callers will fall back to magic-byte sniffing.
-                mimes = sc_out.get("image_mime_types") or []
-                image_mime_type = mimes[0] if mimes and mimes[0] else None
+            sc_out: Optional[Dict[str, Any]] = None
+            if use_screenshot:
+                sc_out = self._session.call_tool(
+                    "screenshot",
+                    {
+                        "window_id": self._active_window_id,
+                        "format": "jpeg",
+                        "quality": 85,
+                        "session": self._session_id,
+                    },
+                )
+                png_b64, image_mime_type = _image_from_tool_result(sc_out)
+                if not png_b64:
+                    # Driver had no usable `screenshot` (e.g. "Unknown tool:
+                    # screenshot" on ≥0.5.x, or an empty image part). Fall
+                    # through to the get_window_state path below.
+                    sc_out = None
+
+            if sc_out is None:
+                gws_out = self._session.call_tool(
+                    "get_window_state",
+                    {
+                        "pid": self._active_pid,
+                        "window_id": self._active_window_id,
+                        "session": self._session_id,
+                    },
+                )
+                png_b64, image_mime_type = _image_from_tool_result(gws_out)
+                # Still grab the window title — it's cheap and useful in the
+                # vision response — but deliberately leave `elements` empty so
+                # vision stays free of AX-tree noise.
+                text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
+                _, tree = _split_tree_text(text)
+                wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
+                if wt:
+                    window_title = wt.group(1)
         else:
-            # get_window_state: AX tree + optional screenshot.
+            # get_window_state: AX tree + screenshot.
             gws_out = self._session.call_tool(
                 "get_window_state",
                 {
@@ -1120,10 +1214,10 @@ class CuaDriverBackend(ComputerUseBackend):
                 if e.element_token
             }
 
-            if gws_out["images"]:
-                png_b64 = gws_out["images"][0]
-                mimes = gws_out.get("image_mime_types") or []
-                image_mime_type = mimes[0] if mimes and mimes[0] else None
+            # Image may arrive as an MCP image part or inside
+            # structuredContent (screenshot_png_b64) depending on the driver
+            # build — _image_from_tool_result handles both.
+            png_b64, image_mime_type = _image_from_tool_result(gws_out)
 
             # Extract window title from the AX tree first AXWindow line.
             wt = re.search(r'AXWindow\s+"([^"]+)"', tree)

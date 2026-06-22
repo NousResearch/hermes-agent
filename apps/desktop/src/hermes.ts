@@ -8,6 +8,7 @@ import type {
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
+  ComputerUseStatus,
   ConfigSchemaResponse,
   CronJob,
   CronJobCreatePayload,
@@ -59,6 +60,9 @@ export type {
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
+  ComputerUseCheck,
+  ComputerUsePermissionSource,
+  ComputerUseStatus,
   ConfigFieldSchema,
   ConfigSchemaResponse,
   CronJob,
@@ -513,6 +517,21 @@ export function runToolsetPostSetup(name: string, key: string): Promise<ActionRe
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
     method: 'POST',
     body: { key }
+  })
+}
+
+export function getComputerUseStatus(): Promise<ComputerUseStatus> {
+  return window.hermesDesktop.api<ComputerUseStatus>({
+    ...profileScoped(),
+    path: '/api/tools/computer-use/status'
+  })
+}
+
+export function grantComputerUsePermissions(): Promise<ActionResponse> {
+  return window.hermesDesktop.api<ActionResponse>({
+    ...profileScoped(),
+    path: '/api/tools/computer-use/permissions/grant',
+    method: 'POST'
   })
 }
 

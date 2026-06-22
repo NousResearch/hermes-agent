@@ -667,102 +667,31 @@ def _pip_install(
 
 
 
-def _check_cua_driver_asset_for_arch() -> bool:
-    """Check whether the latest CUA release ships an asset for this OS+arch.
-
-    Returns True if the asset likely exists (or if we cannot determine it).
-    Returns False and prints a warning when the asset is confirmed missing,
-    so callers can skip the install attempt and avoid a raw 404.
-
-    Recognizes release-asset names across all supported platforms:
-
-    * macOS (``Darwin``)  — arm64 always ships; x86_64/amd64 probed.
-    * Windows (``AMD64``/``ARM64``) — amd64/x86_64 and arm64 probed.
-    * Linux (``x86_64``/``aarch64``) — x86_64/amd64 and aarch64/arm64 probed.
-    """
-    import platform as _plat
-    import urllib.request
-
-    system = _plat.system()
-    machine = _plat.machine().lower()  # e.g. "x86_64", "arm64", "amd64", "aarch64"
-
-    # arm64 (Apple Silicon) macOS assets are always published — short-circuit
-    # to preserve the original fail-open behaviour and avoid a network call.
-    if system == "Darwin" and machine == "arm64":
-        return True
-
-    # Map this host's arch to the set of asset-name substrings we'll accept.
-    # Asset names vary by OS (darwin-x86_64, windows-amd64, linux-aarch64, …),
-    # so we match on the architecture token only and let any of the common
-    # aliases satisfy the probe.
-    if machine in {"x86_64", "amd64", "x64"}:
-        arch_names = {"x86_64", "amd64", "x64"}
-        arch_label = "x86_64/amd64"
-    elif machine in {"arm64", "aarch64"}:
-        arch_names = {"arm64", "aarch64"}
-        arch_label = "arm64/aarch64"
-    else:
-        # Unknown arch — fail open and let the installer surface the error.
-        return True
-
-    # Probe the cua-driver release for an OS+arch asset before falling through
-    # to the upstream installer.
-    #
-    # The cua-driver-rs binaries are published to the trycua/cua monorepo under
-    # tag prefix ``cua-driver-rs-v*``. The repo's ``releases/latest`` is NOT
-    # that — it floats across the monorepo's other components (agent-*,
-    # computer-*, lume-*, train-*), most of which ship zero binary assets. So
-    # we list releases and pick the newest ``cua-driver-rs-v*`` tag, matching
-    # what the upstream install.sh does. Failing to find one => fail open and
-    # let the installer (which resolves the tag itself) be the source of truth.
-    driver_tag_prefix = "cua-driver-rs-v"
-    api_url = (
-        "https://api.github.com/repos/trycua/cua/releases?per_page=100"
-    )
-    try:
-        req = urllib.request.Request(api_url, headers={"Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            releases = _json.loads(resp.read().decode())
-        if not isinstance(releases, list):
-            return True
-        # GitHub returns releases newest-first; take the first cua-driver-rs tag.
-        driver_release = next(
-            (
-                r for r in releases
-                if str(r.get("tag_name", "")).startswith(driver_tag_prefix)
-            ),
-            None,
-        )
-        if driver_release is None:
-            # No cua-driver-rs release surfaced (API hiccup / unexpected shape).
-            # Fail open — the installer resolves the tag on its own.
-            return True
-        tag = driver_release.get("tag_name", "")
-        assets = driver_release.get("assets", [])
-        # OS token gates the asset alongside arch so a darwin asset can't
-        # satisfy a Linux probe (every cua-driver-rs release ships all three
-        # OSes, so the arch token alone would always match).
-        os_token = {"Darwin": "darwin", "Windows": "windows", "Linux": "linux"}.get(system, "")
-        has_asset = any(
-            os_token in (name := a_info.get("name", "").lower())
-            and any(a in name for a in arch_names)
-            for a_info in assets
-        )
-        if not has_asset:
-            _print_warning(
-                f"    Latest cua-driver release ({tag}) has no {system} {arch_label} asset."
-            )
-            _print_info(
-                "    CUA Driver may not yet ship a build for this platform."
-            )
-            _print_info(
-                "    See: https://github.com/trycua/cua/releases"
-            )
-            return False
-    except Exception:
-        # Network / API failure — proceed and let the installer handle it.
-        pass
-    return True
+# The asset-probe that lived here used to hit `/releases/latest` on
+# trycua/cua and inspect the release's asset list before piping the
+# installer to bash. It was broken in two places:
+#
+#   1. cua-driver-rs releases are marked **prerelease** on every cut,
+#      and GitHub's `/releases/latest` endpoint explicitly skips
+#      prereleases. On the live trycua/cua repo today, `/releases/latest`
+#      returns the Python `cua-agent v0.8.3` package (zero binary
+#      assets) instead of `cua-driver-rs-v0.6.0` (19 binary assets).
+#      The probe then reported "no asset for this arch" and skipped the
+#      install on every non-arm64 host — Linux x86_64, Windows, macOS
+#      Intel, Linux arm64 — even when the upstream installer would have
+#      succeeded.
+#   2. Even with the right endpoint, we'd be duplicating tag-resolution
+#      logic the upstream installer already does correctly via
+#      `CUA_DRIVER_RS_BAKED_VERSION` (auto-baked by CD on every release,
+#      with an API fallback). Drift between our probe and theirs is a
+#      maintenance hazard.
+#
+# Resolution: trust the upstream installer. For fresh installs, run
+# install.sh directly — it errors clean if the target arch has no
+# asset. For the upgrade path, `cua_driver_update_check()` (which calls
+# `cua-driver check-update --json`) gives us the canonical update
+# answer from the binary itself — same tag-resolution as the installer,
+# no Python-side duplication.
 
 
 def install_cua_driver(upgrade: bool = False) -> bool:
@@ -811,8 +740,9 @@ def install_cua_driver(upgrade: bool = False) -> bool:
             _print_warning(f"    {fetch_tool} not found — install manually:")
             _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
             return False
-        if not _check_cua_driver_asset_for_arch():
-            return False
+        # Pre-install asset probe deleted — see comment near the top of
+        # tools_config.py for why. install.sh has CUA_DRIVER_RS_BAKED_VERSION
+        # baked in by CD and errors cleanly on missing-arch assets.
         return _run_cua_driver_installer(label="Installing")
 
     # Already installed and caller didn't ask to upgrade → just confirm.
@@ -841,8 +771,10 @@ def install_cua_driver(upgrade: bool = False) -> bool:
         _print_warning(f"    {fetch_tool} not found — cannot refresh cua-driver.")
         return bool(binary)
 
-    if not _check_cua_driver_asset_for_arch():
-        return bool(binary)
+    # Pre-install asset probe deleted (see top-of-file comment). The
+    # `cua_driver_update_check()` call further down asks the installed
+    # cua-driver binary itself whether an update exists — same
+    # tag-resolution as the installer, no duplication.
 
     # Skip the (network) re-install when the driver itself reports it's already
     # on the latest release. Best-effort: an older driver (no check-update

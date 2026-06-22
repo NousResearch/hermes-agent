@@ -76,6 +76,7 @@ function persist(states: Record<string, PaneStateSnapshot>) {
 }
 
 export const $paneStates = atom<Record<string, PaneStateSnapshot>>(load())
+export const $paneHoverRevealSuppressed = atom(false)
 
 $paneStates.subscribe(persist)
 
@@ -143,3 +144,4 @@ export function setPaneWidthOverride(id: string, width: number | undefined) {
 
 export const clearPaneWidthOverride = (id: string) => setPaneWidthOverride(id, undefined)
 export const getPaneStateSnapshot = (id: string) => $paneStates.get()[id]
+export const setPaneHoverRevealSuppressed = (suppressed: boolean) => $paneHoverRevealSuppressed.set(suppressed)

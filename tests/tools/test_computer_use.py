@@ -2139,14 +2139,18 @@ class TestStructuredElementsConsumption:
         # Markdown surface doesn't carry bounds — lossy by design.
         assert cap.elements[0].bounds == (0, 0, 0, 0)
 
-    def test_vision_capture_uses_get_window_state_not_removed_screenshot_tool(self):
-        """cua-driver 0.6.x returns vision screenshots from
-        get_window_state(capture_mode="vision"); the old standalone
-        screenshot tool is no longer available."""
+    def test_vision_capture_falls_back_to_get_window_state_when_screenshot_dropped(self):
+        """cua-driver >=0.5.x dropped the standalone `screenshot` MCP tool and
+        folded full-window PNG capture into `get_window_state`. When the driver
+        no longer advertises `screenshot`, vision capture must route through
+        `get_window_state` (discarding the AX tree) and still return a PNG."""
         from tools.computer_use.cua_backend import CuaDriverBackend
 
         backend = CuaDriverBackend()
         backend._session = MagicMock()
+        # Modern driver: capabilities discovered, `screenshot` not advertised.
+        backend._session._has_tool.return_value = False
+        backend._session.capabilities_discovered = True
 
         windows_payload = {
             "windows": [{
@@ -2164,12 +2168,11 @@ class TestStructuredElementsConsumption:
                 return {"data": "", "images": [], "image_mime_types": [],
                         "structuredContent": windows_payload, "isError": False}
             if name == "get_window_state":
-                assert args["capture_mode"] == "vision"
                 return {"data": "", "images": [png_b64],
                         "image_mime_types": ["image/png"],
                         "structuredContent": None, "isError": False}
             if name == "screenshot":
-                raise AssertionError("vision capture must not call removed screenshot tool")
+                raise AssertionError("driver dropped screenshot; must not be called")
             return {"data": "", "images": [], "image_mime_types": [],
                     "structuredContent": None, "isError": False}
 
@@ -2182,6 +2185,8 @@ class TestStructuredElementsConsumption:
         assert cap.image_mime_type == "image/png"
         assert cap.width == 1
         assert cap.height == 1
+        # Vision mode stays free of AX element noise.
+        assert cap.elements == []
 
     def test_capture_app_screen_targets_desktop_window(self):
         """capture(app='screen') resolves to the OS shell/desktop window

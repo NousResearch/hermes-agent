@@ -5861,8 +5861,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         if cached is None:
+            # Only reachable for images that fail validation now — any other
+            # file type is always cached (authorization is the gate, not the
+            # extension).
             event.text = self._append_observed_note(
-                event.text, "[Observed Telegram attachment: unsupported type, not cached.]"
+                event.text, "[Observed Telegram attachment could not be read, not cached.]"
             )
             return
 

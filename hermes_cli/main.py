@@ -300,6 +300,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.novnc import build_novnc_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -11555,6 +11556,12 @@ def cmd_claw(args):
     claw_command(args)
 
 
+def cmd_novnc(args):
+    from hermes_cli.novnc import novnc_command
+
+    novnc_command(args)
+
+
 def main():
     """Main entry point for hermes CLI."""
     # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
@@ -12481,6 +12488,11 @@ def main():
     # prompt-size command  (parser built in hermes_cli/subcommands/prompt_size.py)
     # =========================================================================
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
+
+    # =========================================================================
+    # novnc command  (parser built in hermes_cli/subcommands/novnc.py)
+    # =========================================================================
+    build_novnc_parser(subparsers, cmd_novnc=cmd_novnc)
 
     # =========================================================================
     # Parse and execute

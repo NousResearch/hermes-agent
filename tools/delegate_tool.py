@@ -978,6 +978,10 @@ def _build_child_agent(
     max_iterations: int,
     task_count: int,
     parent_agent,
+    profile_name: Optional[str] = None,
+    profile_toolsets: Optional[List[str]] = None,
+    profile_approval_policy: Optional[str] = None,
+    profile_reasoning: Optional[Dict[str, Any]] = None,
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
@@ -1044,11 +1048,26 @@ def _build_child_agent(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
-    if toolsets:
+    expanded_parent = _expand_parent_toolsets(parent_toolsets)
+    profile_allowlist = list(profile_toolsets or [])
+    if profile_toolsets is not None:
+        # A profile is a policy object: its toolsets are an upper bound.  The
+        # per-call toolsets may narrow that bound but must never widen it.
+        requested_toolsets = list(toolsets or profile_allowlist)
+        child_toolsets = [
+            t for t in requested_toolsets
+            if t in profile_allowlist and t in expanded_parent
+        ]
+        if _get_inherit_mcp_toolsets() and profile_allowlist:
+            child_toolsets = [
+                t for t in _preserve_parent_mcp_toolsets(child_toolsets, parent_toolsets)
+                if t in profile_allowlist
+            ]
+        child_toolsets = _strip_blocked_tools(child_toolsets)
+    elif toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks.
         # Expand composite toolsets (e.g. hermes-cli) so that individual
         # toolset names (e.g. web, terminal) are recognised during intersection.
-        expanded_parent = _expand_parent_toolsets(parent_toolsets)
         child_toolsets = [t for t in toolsets if t in expanded_parent]
         if _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
@@ -1161,24 +1180,27 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: profile override > delegation override > parent inherit.
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
+        reasoning_cfg = profile_reasoning if isinstance(profile_reasoning, dict) else None
+        profile_effort = str((reasoning_cfg or {}).get("effort") or "").strip()
         delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
+        selected_effort = profile_effort or delegation_effort
+        if selected_effort:
             from hermes_constants import parse_reasoning_effort
 
-            parsed = parse_reasoning_effort(delegation_effort)
+            parsed = parse_reasoning_effort(selected_effort)
             if parsed is not None:
                 child_reasoning = parsed
             else:
                 logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
+                    "Unknown delegation reasoning effort '%s', inheriting parent level",
+                    selected_effort,
                 )
     except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+        logger.debug("Could not load delegation reasoning config: %s", exc)
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
@@ -1248,6 +1270,10 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    child._delegation_profile = profile_name
+    child._delegation_approval_policy = profile_approval_policy
+    child._delegation_transport = "acp" if effective_acp_command else "native"
+    child._delegation_provider = effective_provider
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -1828,6 +1854,14 @@ def _run_single_child(
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
 
+        def _json_str_attr(name: str) -> Optional[str]:
+            value = getattr(child, name, None)
+            return value if isinstance(value, str) else None
+
+        def _json_list_attr(name: str) -> list:
+            value = getattr(child, name, None)
+            return list(value) if isinstance(value, list) else []
+
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
@@ -1835,6 +1869,16 @@ def _run_single_child(
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
+            "profile": _json_str_attr("_delegation_profile"),
+            "provider": _json_str_attr("_delegation_provider"),
+            "transport": _json_str_attr("_delegation_transport"),
+            "toolsets": _json_list_attr("enabled_toolsets"),
+            "approval_policy": _json_str_attr("_delegation_approval_policy"),
+            "max_iterations": (
+                int(getattr(child, "max_iterations", 0))
+                if isinstance(getattr(child, "max_iterations", None), (int, float))
+                else None
+            ),
             "exit_reason": exit_reason,
             "tokens": {
                 "input": (
@@ -2062,6 +2106,60 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+
+def _normalise_profile_toolsets(value: Any) -> Optional[List[str]]:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return None
+    return [str(v) for v in value if isinstance(v, str) and v.strip()]
+
+
+def _resolve_delegation_profile(cfg: dict, profile_name: Optional[str]) -> tuple[Optional[dict], Optional[str]]:
+    """Resolve a named delegation profile from trusted config.
+
+    Profiles are policy objects under ``delegation.profiles``.  The model may
+    select a profile by name, but it may not supply raw provider/model/API/ACP
+    policy dynamically.  Unknown or malformed profiles fail closed.
+    """
+    if not profile_name:
+        return None, None
+    name = str(profile_name).strip()
+    if not name:
+        return None, "profile must be a non-empty string."
+    profiles = cfg.get("profiles") or {}
+    if not isinstance(profiles, dict):
+        return None, "delegation.profiles must be a mapping of profile names to policy objects."
+    raw = profiles.get(name)
+    if raw is None:
+        return None, f"Unknown delegation profile '{name}'. Define it under delegation.profiles.{name}."
+    if not isinstance(raw, dict):
+        return None, f"delegation profile '{name}' must be an object."
+    profile = dict(raw)
+    profile["name"] = name
+    profile_toolsets = _normalise_profile_toolsets(profile.get("toolsets"))
+    if profile.get("toolsets") is not None and profile_toolsets is None:
+        return None, f"delegation profile '{name}'.toolsets must be a list of strings."
+    if profile_toolsets is not None:
+        profile["toolsets"] = profile_toolsets
+    if "max_iterations" in profile:
+        try:
+            profile["max_iterations"] = max(1, int(profile["max_iterations"]))
+        except (TypeError, ValueError):
+            return None, f"delegation profile '{name}'.max_iterations must be an integer."
+    reasoning = profile.get("reasoning")
+    if reasoning is not None and not isinstance(reasoning, dict):
+        return None, f"delegation profile '{name}'.reasoning must be an object."
+    if "acp_command" in profile and not isinstance(profile.get("acp_command"), str):
+        return None, f"delegation profile '{name}'.acp_command must be a string."
+    if "acp_args" in profile:
+        acp_args = profile.get("acp_args")
+        if not isinstance(acp_args, list) or not all(isinstance(v, str) for v in acp_args):
+            return None, f"delegation profile '{name}'.acp_args must be a list of strings."
+    if "approval_policy" in profile and not isinstance(profile.get("approval_policy"), str):
+        return None, f"delegation profile '{name}'.approval_policy must be a string."
+    return profile, None
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2070,6 +2168,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    profile: Optional[str] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
@@ -2173,7 +2272,7 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role, "profile": profile}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2210,6 +2309,28 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            task_profile_name = t.get("profile") or profile
+            profile_cfg, profile_error = _resolve_delegation_profile(cfg, task_profile_name)
+            if profile_error:
+                return tool_error(profile_error)
+            if profile_cfg and (
+                "acp_command" in t
+                or acp_command is not None
+                or "acp_args" in t
+                or acp_args is not None
+            ):
+                return tool_error(
+                    "delegate_task profile cannot be combined with per-call "
+                    "acp_command/acp_args; put ACP transport policy in the "
+                    "trusted delegation profile instead."
+                )
+
+            task_cfg = {**cfg, **(profile_cfg or {})}
+            try:
+                task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
+
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
@@ -2219,21 +2340,30 @@ def delegate_task(
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
-                max_iterations=effective_max_iter,
+                model=task_creds["model"],
+                max_iterations=int(task_cfg.get("max_iterations", effective_max_iter)),
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                profile_name=profile_cfg.get("name") if profile_cfg else None,
+                profile_toolsets=profile_cfg.get("toolsets") if profile_cfg else None,
+                profile_approval_policy=profile_cfg.get("approval_policy") if profile_cfg else None,
+                profile_reasoning=profile_cfg.get("reasoning") if profile_cfg else None,
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or ((profile_cfg or {}).get("acp_command"))
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (
+                        acp_args
+                        if acp_args is not None
+                        else (profile_cfg or {}).get("acp_args", task_creds.get("args"))
+                    )
                 ),
                 role=effective_role,
             )
@@ -2926,7 +3056,7 @@ def _build_top_level_description() -> str:
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
-        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
+        "- Subagent runtime can be selected by named delegation profile when configured: pass profile='name' to use trusted delegation.profiles.<name> policy. Do not invent profile names; unknown profiles fail closed. Without a profile, children inherit the parent model (plus its fallback chain) unless globally pinned via delegation.provider / delegation.model.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     )
@@ -3066,6 +3196,10 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
                         },
+                        "profile": {
+                            "type": "string",
+                            "description": "Configured delegation profile for this task. Must exist under delegation.profiles; unknown names fail closed.",
+                        },
                         "acp_command": {
                             "type": "string",
                             "description": (
@@ -3096,6 +3230,15 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Name of a configured delegation profile to use for this "
+                    "subagent. Profiles are trusted config policy objects under "
+                    "delegation.profiles and may set provider/model/reasoning/"
+                    "ACP/toolset/iteration policy. Unknown profiles fail closed."
+                ),
             },
             "background": {
                 "type": "boolean",

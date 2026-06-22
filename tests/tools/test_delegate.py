@@ -32,6 +32,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _resolve_delegation_profile,
 )
 
 
@@ -69,6 +70,8 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("profile", props)
+        self.assertIn("profile", props["tasks"]["items"]["properties"])
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -155,6 +158,181 @@ class TestStripBlockedTools(unittest.TestCase):
     def test_empty_input(self):
         result = _strip_blocked_tools([])
         self.assertEqual(result, [])
+
+
+    def test_resolve_delegation_profile_validates_policy_object(self):
+        cfg = {
+            "profiles": {
+                "senior_review": {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-sonnet-4",
+                    "toolsets": ["file", "web"],
+                    "max_iterations": "80",
+                    "approval_policy": "review_only",
+                    "reasoning": {"effort": "high", "on_unsupported": "warn"},
+                }
+            }
+        }
+
+        profile, error = _resolve_delegation_profile(cfg, "senior_review")
+
+        self.assertIsNone(error)
+        self.assertEqual(profile["name"], "senior_review")
+        self.assertEqual(profile["max_iterations"], 80)
+        self.assertEqual(profile["toolsets"], ["file", "web"])
+
+    def test_resolve_delegation_profile_unknown_fails_closed(self):
+        profile, error = _resolve_delegation_profile({"profiles": {}}, "missing")
+
+        self.assertIsNone(profile)
+        self.assertIn("Unknown delegation profile", error)
+
+
+    def test_profile_rejects_malformed_acp_args(self):
+        profile, error = _resolve_delegation_profile(
+            {"profiles": {"bad": {"acp_args": "--stdio"}}}, "bad"
+        )
+
+        self.assertIsNone(profile)
+        self.assertIn("acp_args must be a list of strings", error)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_profile_applies_policy_to_child_build(self, mock_run, mock_build, mock_load):
+        mock_load.return_value = {
+            "profiles": {
+                "senior_review": {
+                    "provider": "",
+                    "model": "review-model",
+                    "toolsets": ["file", "web"],
+                    "max_iterations": 7,
+                    "approval_policy": "review_only",
+                    "reasoning": {"effort": "high"},
+                }
+            }
+        }
+        child = MagicMock()
+        mock_build.return_value = child
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "ok",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(
+                goal="review",
+                profile="senior_review",
+                toolsets=["file", "terminal"],
+                parent_agent=parent,
+            )
+        )
+
+        self.assertEqual(result["results"][0]["summary"], "ok")
+        kwargs = mock_build.call_args.kwargs
+        self.assertEqual(kwargs["model"], "review-model")
+        self.assertEqual(kwargs["max_iterations"], 7)
+        self.assertEqual(kwargs["profile_name"], "senior_review")
+        self.assertEqual(kwargs["profile_toolsets"], ["file", "web"])
+        self.assertEqual(kwargs["profile_approval_policy"], "review_only")
+        self.assertEqual(kwargs["profile_reasoning"], {"effort": "high"})
+
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_profile_can_supply_trusted_acp_transport(self, mock_run, mock_build, mock_load):
+        mock_load.return_value = {
+            "profiles": {
+                "oracle_review": {
+                    "acp_command": "oracle-aa-review",
+                    "acp_args": ["-e", "browser"],
+                    "max_iterations": 9,
+                }
+            }
+        }
+        child = MagicMock()
+        mock_build.return_value = child
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "ok",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(goal="review", profile="oracle_review", parent_agent=parent)
+        )
+
+        self.assertEqual(result["results"][0]["summary"], "ok")
+        kwargs = mock_build.call_args.kwargs
+        self.assertEqual(kwargs["override_acp_command"], "oracle-aa-review")
+        self.assertEqual(kwargs["override_acp_args"], ["-e", "browser"])
+        self.assertEqual(kwargs["max_iterations"], 9)
+
+
+    @patch("tools.delegate_tool._load_config")
+    def test_profile_rejects_empty_acp_args_override_conflict(self, mock_load):
+        mock_load.return_value = {"profiles": {"oracle_review": {"acp_command": "oracle", "acp_args": ["--safe"]}}}
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(
+                goal="review",
+                profile="oracle_review",
+                acp_args=[],
+                parent_agent=parent,
+            )
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("profile cannot be combined", result["error"])
+
+    @patch("run_agent.AIAgent")
+    def test_profile_empty_toolsets_does_not_fall_back_to_requested_tools(self, mock_agent):
+        child = MagicMock()
+        mock_agent.return_value = child
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file", "web"]
+
+        _build_child_agent(
+            task_index=0,
+            goal="locked down",
+            context=None,
+            toolsets=["terminal", "file"],
+            model=None,
+            max_iterations=3,
+            task_count=1,
+            parent_agent=parent,
+            profile_name="locked",
+            profile_toolsets=[],
+        )
+
+        kwargs = mock_agent.call_args.kwargs
+        self.assertEqual(kwargs["enabled_toolsets"], [])
+
+    @patch("tools.delegate_tool._load_config")
+    def test_profile_rejects_legacy_acp_override_conflict(self, mock_load):
+        mock_load.return_value = {"profiles": {"oracle_review": {"acp_command": "oracle"}}}
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(
+                goal="review",
+                profile="oracle_review",
+                acp_command="copilot",
+                parent_agent=parent,
+            )
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("profile cannot be combined", result["error"])
 
 
 class TestDelegateTask(unittest.TestCase):

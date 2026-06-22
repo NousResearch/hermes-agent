@@ -861,11 +861,11 @@ def _handle_create(args: dict, **kw) -> str:
             subscribed = False
             if auto_subscribe:
                 subscribed = _maybe_auto_subscribe(conn, new_tid)
-            if parents:
-                if _inherit_parent_subs(
-                    kb, conn, new_tid, list(parents),
-                ):
-                    subscribed = True
+                if parents:
+                    if _inherit_parent_subs(
+                        kb, conn, new_tid, list(parents),
+                    ):
+                        subscribed = True
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,

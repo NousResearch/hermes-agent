@@ -42,7 +42,7 @@ listed for transparency but do not double-count.
 | `agent/model_metadata.py.bak.20260603100620` | DISCARD (bak) | — | — |
 | `agent/models_dev.py` | PR | #49449 | — |
 | `agent/prompt_builder.py` | PR | #49917 | — |
-| `agent/subdirectory_hints.py` | PR | #50626 | — |
+| `agent/subdirectory_hints.py` | SUPERSEDED | #29433 | upstream PR ships same fix + test |
 | `agent/system_prompt.py` | PR | #48101 | #49917 |
 | `agent/system_prompt.py.bak.20260614_131421` | DISCARD (bak) | — | — |
 | `agent/system_prompt_prelude.py` | PR | #48101 | — |
@@ -95,7 +95,7 @@ listed for transparency but do not double-count.
 | `tests/agent/test_copilot_opus_context_fix_2026_06_04.py` | PR | #50664 | — |
 | `tests/agent/test_model_metadata.py` | PR | #50078 | — |
 | `tests/agent/test_p2_p3_oversized_handling.py` | PR | #50073 | — |
-| `tests/agent/test_subdirectory_hints.py` | PR | #50626 | — |
+| `tests/agent/test_subdirectory_hints.py` | SUPERSEDED | #29433 | upstream PR ships same fix + test |
 | `tests/agent/transports/test_codex_app_server_session.py` | PR | #50038 | — |
 | `tests/cli/test_autopilot_kick.py` | PR | #49917 | — |
 | `tests/cli/test_reasoning_command.py` | PR | #50078 | — |

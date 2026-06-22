@@ -48,13 +48,22 @@ tests/agent/test_agy_cli_client_v3.py
 tests/plugins/test_agy_cli_plugin_v2.py
 EOF
 
+# SUPERSEDED-BY-UPSTREAM (the change is fully covered by an existing upstream PR; deferring
+# loses nothing). subdir-hint RuntimeError guard == maintainer-preferred open #29433 (which
+# also ships its own test). #50626 was trimmed to its unique xAI-label half; these two defer.
+cat > /tmp/_cov_superseded.txt <<'EOF'
+agent/subdirectory_hints.py
+tests/agent/test_subdirectory_hints.py
+EOF
+
 echo "== 4. classify every delta file =="
-COVERED=0; DISCARD=0; WITHDRAWN=0; ORPHAN=0; : > /tmp/_cov_orphans.txt
+COVERED=0; DISCARD=0; WITHDRAWN=0; SUPERSEDED=0; ORPHAN=0; : > /tmp/_cov_orphans.txt
 while read -r f; do
   case "$f" in
     *.bak|*.bak.*|*/.project-intel/*|.project-intel/*|transcripts/*) DISCARD=$((DISCARD+1)); continue;;
   esac
   if grep -qxF "$f" /tmp/_cov_withdrawn.txt; then WITHDRAWN=$((WITHDRAWN+1)); continue; fi
+  if grep -qxF "$f" /tmp/_cov_superseded.txt; then SUPERSEDED=$((SUPERSEDED+1)); continue; fi
   if grep -qxF "$f" /tmp/_cov_union.txt; then COVERED=$((COVERED+1)); else ORPHAN=$((ORPHAN+1)); echo "$f" >> /tmp/_cov_orphans.txt; fi
 done < /tmp/_cov_delta.txt
 
@@ -64,11 +73,12 @@ printf "  total src-delta files : %d\n" "$TOTAL"
 printf "  covered by open PR    : %d\n" "$COVERED"
 printf "  DISCARD (.bak/intel/txt): %d\n" "$DISCARD"
 printf "  WITHDRAWN (maintainer): %d\n" "$WITHDRAWN"
+printf "  SUPERSEDED (upstream #29433): %d\n" "$SUPERSEDED"
 printf "  ORPHANS               : %d\n" "$ORPHAN"
-printf "  check: %d + %d + %d + %d = %d (== %d ? %s)\n" \
-  "$COVERED" "$DISCARD" "$WITHDRAWN" "$ORPHAN" \
-  "$((COVERED+DISCARD+WITHDRAWN+ORPHAN))" "$TOTAL" \
-  "$([ $((COVERED+DISCARD+WITHDRAWN+ORPHAN)) -eq "$TOTAL" ] && echo YES || echo NO)"
+printf "  check: %d + %d + %d + %d + %d = %d (== %d ? %s)\n" \
+  "$COVERED" "$DISCARD" "$WITHDRAWN" "$SUPERSEDED" "$ORPHAN" \
+  "$((COVERED+DISCARD+WITHDRAWN+SUPERSEDED+ORPHAN))" "$TOTAL" \
+  "$([ $((COVERED+DISCARD+WITHDRAWN+SUPERSEDED+ORPHAN)) -eq "$TOTAL" ] && echo YES || echo NO)"
 if [ "$ORPHAN" -ne 0 ]; then echo "  ORPHAN FILES:"; sed 's/^/    /' /tmp/_cov_orphans.txt; fi
 echo "========================================================"
 [ "$ORPHAN" -eq 0 ] && exit 0 || exit 1

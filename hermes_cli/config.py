@@ -1597,6 +1597,10 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "show_reasoning": False,
+        # When reasoning display is on, the post-response "Reasoning" recap box
+        # collapses long thinking to the first 10 lines. Set true to print the
+        # complete thinking text uncollapsed (live streaming is always full).
+        "reasoning_full": False,
         # Background self-improvement review notifications surfaced in chat.
         #   "off"     — no chat notification (the review still runs and writes)
         #   "on"      — generic "💾 Memory updated" line (default)

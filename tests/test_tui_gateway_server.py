@@ -3064,6 +3064,33 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     assert server._sessions["sid"]["show_reasoning"] is False
     assert server._load_cfg()["display"]["sections"]["thinking"] == "hidden"
 
+    # /reasoning full | clamp — parity with the classic CLI reasoning_full
+    # toggle. In the TUI these map to the thinking section's expand/collapse
+    # rendering (no fixed 10-line recap exists here).
+    resp_full = server.handle_request(
+        {
+            "id": "4",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "full"},
+        }
+    )
+    assert resp_full["result"]["value"] == "full"
+    cfg_full = server._load_cfg()
+    assert cfg_full["display"]["reasoning_full"] is True
+    assert cfg_full["display"]["sections"]["thinking"] == "expanded"
+
+    resp_clamp = server.handle_request(
+        {
+            "id": "5",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "clamp"},
+        }
+    )
+    assert resp_clamp["result"]["value"] == "clamp"
+    cfg_clamp = server._load_cfg()
+    assert cfg_clamp["display"]["reasoning_full"] is False
+    assert cfg_clamp["display"]["sections"]["thinking"] == "collapsed"
+
 
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)

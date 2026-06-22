@@ -811,6 +811,13 @@ class HermesACPAgent(acp.Agent):
                         "url": server.url,
                         "headers": {item.name: item.value for item in server.headers},
                     }
+                    # McpServerHttp and McpServerSse share the url/headers shape,
+                    # but the downstream registrar (tools/mcp_tool.py) selects the
+                    # SSE client only when config["transport"] == "sse"; without
+                    # this marker an SSE server is contacted as streamable-HTTP
+                    # and the handshake fails.
+                    if isinstance(server, McpServerSse):
+                        config["transport"] = "sse"
                 config_map[name] = config
 
             await asyncio.to_thread(register_mcp_servers, config_map)

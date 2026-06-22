@@ -16,6 +16,7 @@ from acp.schema import (
     EnvVariable,
     HttpHeader,
     McpServerHttp,
+    McpServerSse,
     McpServerStdio,
     NewSessionResponse,
     PromptResponse,
@@ -107,6 +108,43 @@ class TestMcpRegistrationE2E:
         assert state.agent.valid_tool_names == {
             "mcp_test_fs_read", "mcp_test_fs_write", "mcp_test_api_search", "terminal"
         }
+
+    @pytest.mark.asyncio
+    async def test_sse_server_preserves_transport_marker(self, acp_agent, mock_manager):
+        """An SSE MCP server must register with transport=sse, not as plain HTTP.
+
+        McpServerHttp and McpServerSse share the url/headers shape, so without an
+        explicit ``transport`` marker the downstream registrar
+        (``tools/mcp_tool.py``, which gates on ``config["transport"] == "sse"``)
+        would contact an SSE endpoint as streamable-HTTP and the handshake fails.
+        """
+        servers = [
+            McpServerSse(
+                name="test-sse",
+                url="https://sse.example.com/sse",
+                headers=[HttpHeader(name="Authorization", value="Bearer sse-tok")],
+            ),
+        ]
+
+        registered_configs = {}
+
+        def mock_register(config_map):
+            registered_configs.update(config_map)
+            return ["mcp_test_sse_query"]
+
+        fake_tools = [{"function": {"name": "mcp_test_sse_query"}}]
+
+        with patch("tools.mcp_tool.register_mcp_servers", side_effect=mock_register), \
+             patch("model_tools.get_tool_definitions", return_value=fake_tools):
+            resp = await acp_agent.new_session(cwd="/tmp", mcp_servers=servers)
+
+        assert isinstance(resp, NewSessionResponse)
+
+        assert "test-sse" in registered_configs
+        sse_cfg = registered_configs["test-sse"]
+        assert sse_cfg["transport"] == "sse"
+        assert sse_cfg["url"] == "https://sse.example.com/sse"
+        assert sse_cfg["headers"] == {"Authorization": "Bearer sse-tok"}
 
     @pytest.mark.asyncio
     async def test_prompt_with_tool_calls_emits_acp_events(self, acp_agent, mock_manager):

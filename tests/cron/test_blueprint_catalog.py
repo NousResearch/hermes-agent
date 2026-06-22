@@ -72,6 +72,28 @@ class TestScheduleResolution:
         spec = fill_blueprint(get_blueprint("morning-brief"), {})
         assert spec["schedule"] == "0 8 * * *"
 
+    def test_loose_threads_renders_selected_schedule_name_and_count(self):
+        blueprint = get_blueprint("loose-threads")
+        assert blueprint is not None
+        spec = fill_blueprint(blueprint, {"time": "09:45", "count": "8"})
+        assert spec["schedule"] == "45 9 * * *"
+        assert spec["name"] == "Loose-threads report"
+        assert "Rank at most 8 items" in spec["prompt"]
+        assert "{count}" not in spec["prompt"]
+
+    def test_loose_threads_no_findings_request_delivery_silence(self):
+        from cron.scheduler import SILENT_MARKER, _is_cron_silence_response
+
+        blueprint = get_blueprint("loose-threads")
+        assert blueprint is not None
+        spec = fill_blueprint(blueprint, {})
+
+        # The report's no-findings path must use the cron sentinel, whose
+        # scheduler contract suppresses a delivery rather than sending noise.
+        assert "no meaningful unresolved threads" in spec["prompt"].lower()
+        assert SILENT_MARKER in spec["prompt"]
+        assert _is_cron_silence_response(SILENT_MARKER)
+
 
 class TestValidation:
     def test_invalid_time_rejected(self):

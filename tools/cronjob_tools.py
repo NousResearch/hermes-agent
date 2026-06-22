@@ -471,6 +471,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if "script_args" in job:
+        result["script_args"] = job["script_args"]
     return result
 
 
@@ -539,6 +541,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    script_args: Optional[List[str]] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -605,6 +608,7 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                script_args=script_args,
             )
             _notify_provider_jobs_changed_safe()
             return json.dumps(
@@ -771,6 +775,14 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if script_args is not None:
+                if isinstance(script_args, list):
+                    updates["script_args"] = [str(a) for a in script_args]
+                else:
+                    return tool_error(
+                        f"script_args must be a list of strings, got {type(script_args).__name__}",
+                        success=False,
+                    )
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -871,6 +883,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
             },
+            "script_args": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of string arguments to pass to the script. When set, these are appended to the subprocess argv after the script path (e.g. ['--mode', 'close']). When omitted or empty, the script runs with no extra arguments."
+            },
             "no_agent": {
                 "type": "boolean",
                 "default": False,
@@ -966,6 +983,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        script_args=args.get("script_args"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

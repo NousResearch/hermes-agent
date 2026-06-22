@@ -918,6 +918,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         loop,
                     )
                     if future is None:
+                        logger.warning(
+                            "Job '%s': live adapter schedule failed for %s:%s, falling back to standalone",
+                            job["id"], platform_name, chat_id,
+                        )
                         adapter_ok = False
                         target_errors.append("live adapter event loop scheduling failed")
                     else:
@@ -1067,6 +1071,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     job["id"], err_msg,
                 )
 
+        elif runtime_adapter is not None:
+            # Gateway is running (adapter exists) but the event loop is
+            # unavailable — this is unexpected and means live delivery
+            # can't be attempted.  Fall through to standalone.
+            reason = "loop is None" if loop is None else "loop is not running"
+            logger.warning(
+                "Job '%s': live adapter exists for %s but %s, falling back to standalone",
+                job["id"], platform_name, reason,
+            )
+
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
             coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
@@ -1140,7 +1154,7 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(script_path: str, script_args: Optional[list[str]] = None) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -1171,6 +1185,9 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
+    if not script_path:
+        return False, "Script path is empty or None"
+
     scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
@@ -1221,6 +1238,9 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         argv = [_bash, str(path)]
     else:
         argv = [sys.executable, str(path)]
+
+    if script_args:
+        argv.extend(script_args)
 
     try:
         from tools.environments.local import _sanitize_subprocess_env
@@ -1311,11 +1331,12 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     # Run data-collection script if configured, inject output as context.
     script_path = job.get("script")
+    script_args = job.get("script_args")
     if script_path:
         if prerun_script is not None:
             success, script_output = prerun_script
         else:
-            success, script_output = _run_job_script(script_path)
+            success, script_output = _run_job_script(script_path, script_args)
         if success:
             if script_output:
                 prompt = (
@@ -1591,6 +1612,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     #                               is no agent to wake
     if job.get("no_agent"):
         script_path = job.get("script")
+        script_args = job.get("script_args")
         if not script_path:
             err = "no_agent=True but no script is set for this job"
             logger.error("Job '%s': %s", job_id, err)
@@ -1609,7 +1631,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script(script_path, script_args)
         finally:
             if _prior_cwd is not None:
                 try:
@@ -1697,8 +1719,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     # the script is only executed once.
     prerun_script = None
     script_path = job.get("script")
+    script_args = job.get("script_args")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        prerun_script = _run_job_script(script_path, script_args)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(

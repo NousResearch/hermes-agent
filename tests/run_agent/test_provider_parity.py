@@ -56,6 +56,15 @@ class _FakeOpenAI:
         pass
 
 
+@pytest.fixture(autouse=True)
+def _reset_auxiliary_provider_state():
+    from agent.auxiliary_client import _reset_aux_unhealthy_cache
+
+    _reset_aux_unhealthy_cache()
+    yield
+    _reset_aux_unhealthy_cache()
+
+
 def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="https://openrouter.ai/api/v1", model=None):
     monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
     monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
@@ -148,14 +157,57 @@ class TestBuildApiKwargsOpenRouter:
         assert "codex_reasoning_items" not in assistant_msg
         assert tool_call["id"] == "call_123"
         assert tool_call["function"]["name"] == "terminal"
-        assert tool_call["extra_content"] == {"thought_signature": "opaque"}
+        # extra_content (Gemini thought_signature) is stripped for non-Gemini
+        # targets — strict providers like Fireworks 400 on it. The agent here
+        # is not a Gemini model, so it must be dropped.
+        assert "extra_content" not in tool_call
+        assert "call_id" not in tool_call
+        assert "response_item_id" not in tool_call
+
+        # Original stored history must remain unchanged (only the outgoing copy
+        # is sanitized) — Codex/Responses replay relies on these fields.
+        assert messages[1]["tool_calls"][0]["call_id"] == "call_123"
+        assert messages[1]["tool_calls"][0]["response_item_id"] == "fc_123"
+        assert "codex_reasoning_items" in messages[1]
+        assert messages[1]["tool_calls"][0]["extra_content"] == {"thought_signature": "opaque"}
+
+    def test_keeps_extra_content_for_gemini_target(self, monkeypatch):
+        """Gemini-family targets must keep extra_content (thought_signature) —
+        Gemini 3 thinking models 400 without it replayed on the next turn.
+        """
+        agent = _make_agent(monkeypatch, "openrouter", model="google/gemini-3-pro-preview")
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "Checking now.",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "call_id": "call_123",
+                        "response_item_id": "fc_123",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{\"command\":\"pwd\"}"},
+                        "extra_content": {"google": {"thought_signature": "opaque"}},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_123", "content": "/tmp"},
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+        tool_call = kwargs["messages"][1]["tool_calls"][0]
+        assert tool_call["extra_content"] == {"google": {"thought_signature": "opaque"}}
+        # call_id/response_item_id still stripped regardless of model
         assert "call_id" not in tool_call
         assert "response_item_id" not in tool_call
 
         # Original stored history must remain unchanged for Responses replay mode.
         assert messages[1]["tool_calls"][0]["call_id"] == "call_123"
         assert messages[1]["tool_calls"][0]["response_item_id"] == "fc_123"
-        assert "codex_reasoning_items" in messages[1]
+        assert messages[1]["tool_calls"][0]["extra_content"] == {
+            "google": {"thought_signature": "opaque"}
+        }
 
     def test_gemini_native_passes_base_url_for_top_level_thinking_config(self, monkeypatch):
         agent = _make_agent(
@@ -203,6 +255,47 @@ class TestBuildApiKwargsOpenRouter:
         anthropic_agent = _make_agent(monkeypatch, "openrouter")
         anthropic_agent.api_mode = "anthropic_messages"
         assert anthropic_agent._should_sanitize_tool_calls() is True
+
+    def _api_msg_with_extra_content(self):
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "call_1", "call_id": "call_1", "type": "function",
+                 "extra_content": {"google": {"thought_signature": "SIG_123"}},
+                 "function": {"name": "t", "arguments": "{}"}},
+            ],
+        }
+
+    def test_sanitize_tool_calls_strips_extra_content_for_strict_model(self, monkeypatch):
+        """Strict providers reject extra_content; strip it for non-Gemini models."""
+        agent = _make_agent(monkeypatch, "openrouter")
+        api_msg = self._api_msg_with_extra_content()
+        result = agent._sanitize_tool_calls_for_strict_api(
+            api_msg, model="accounts/fireworks/models/llama-v3p1-70b"
+        )
+        assert "extra_content" not in result["tool_calls"][0]
+        assert "call_id" not in result["tool_calls"][0]
+
+    def test_sanitize_tool_calls_strips_extra_content_when_model_none(self, monkeypatch):
+        """Default (no model) strips extra_content — safe for strict providers."""
+        agent = _make_agent(monkeypatch, "openrouter")
+        api_msg = self._api_msg_with_extra_content()
+        result = agent._sanitize_tool_calls_for_strict_api(api_msg)
+        assert "extra_content" not in result["tool_calls"][0]
+
+    def test_sanitize_tool_calls_keeps_extra_content_for_gemini(self, monkeypatch):
+        """Gemini thinking models 400 without the replayed thought_signature."""
+        agent = _make_agent(monkeypatch, "openrouter")
+        api_msg = self._api_msg_with_extra_content()
+        result = agent._sanitize_tool_calls_for_strict_api(
+            api_msg, model="google/gemini-3-pro-preview"
+        )
+        assert result["tool_calls"][0]["extra_content"] == {
+            "google": {"thought_signature": "SIG_123"}
+        }
+        # call_id/response_item_id still stripped regardless of model
+        assert "call_id" not in result["tool_calls"][0]
 
 
 class TestDeveloperRoleSwap:

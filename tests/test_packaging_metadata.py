@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import tomllib
 
 import pytest
@@ -12,6 +13,22 @@ find_packages = pytest.importorskip("setuptools", exc_type=ImportError).find_pac
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _distribution_name(requirement: str) -> str:
+    """Extract the PEP 508 distribution name from a requirement string.
+
+    Robust to markers (``; python_version < '3.12'``), direct references
+    (``name @ https://...``), extras (``name[extra]``) and every version
+    operator (``==``, ``>=``, ``<=``, ``~=``, ``!=``, ``<``, ``>``), so a
+    future dep declared with any valid specifier shape doesn't silently
+    mis-parse here.
+    """
+    spec = requirement.split(";", 1)[0]  # drop environment markers
+    spec = spec.split("@", 1)[0]  # drop direct-reference URLs
+    spec = spec.split("[", 1)[0]  # drop extras
+    spec = re.split(r"[=<>!~]", spec, maxsplit=1)[0]  # drop any version operator
+    return spec.strip().lower()
 
 
 def _packages_find_include():
@@ -58,6 +75,27 @@ def test_every_on_disk_subpackage_is_covered_by_packages_find():
         "These packages exist on disk but are dropped from the wheel because "
         "[tool.setuptools.packages.find] include is missing a wildcard. Add the "
         f"matching '<name>.*' entry in pyproject.toml: {missing}"
+    )
+
+
+def test_packaging_declared_as_core_dependency():
+    """Regression for #40503.
+
+    ``packaging`` is imported directly on three production paths
+    (plugins/memory/hindsight/__init__.py, tools/lazy_deps.py,
+    hermes_cli/main.py) yet was undeclared, so it only reached users
+    transitively. The slim Docker image shipped without it, silently
+    disabling Hindsight append-mode and version-constraint checks. It must
+    be a declared core dependency so it installs everywhere and the
+    update-repair step (``_verify_core_dependencies_installed``) guards it.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    core = data["project"]["dependencies"]
+    names = {_distribution_name(dep) for dep in core}
+    assert "packaging" in names, (
+        "packaging is imported on production paths (hindsight version compare, "
+        "lazy_deps version constraints, requirement parsing) and must be a "
+        "declared core dependency, not a transitive — see #40503"
     )
 
 
@@ -200,3 +238,30 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
             f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))} — regenerate the "
             f"lockfile after bumping the pin"
         )
+
+
+def test_locale_catalogs_ship_in_both_wheel_and_sdist():
+    """Regression test for #27632 / #35374 / #23943.
+
+    locales/ is a bare data directory (no __init__.py), so it is invisible to
+    packages.find and to package-data (which attaches to a package). It must be
+    declared as setuptools data-files (wheel) AND grafted in MANIFEST.in
+    (sdist). Without both, sealed installs drop the catalogs and gateway/CLI
+    commands surface raw i18n keys like `gateway.reset.header_default`.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data_files = data["tool"]["setuptools"].get("data-files", {})
+    assert data_files.get("locales") == ["locales/*.yaml"], (
+        "pyproject [tool.setuptools.data-files] must declare "
+        'locales = ["locales/*.yaml"] so the wheel ships i18n catalogs'
+    )
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft locales" in manifest, (
+        "MANIFEST.in must `graft locales` so the sdist ships i18n catalogs"
+    )
+
+    # Every on-disk catalog has the .yaml extension the globs above match.
+    on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
+    assert on_disk, "expected locales/*.yaml catalogs on disk"
+

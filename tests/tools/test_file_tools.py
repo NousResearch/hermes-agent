@@ -92,6 +92,33 @@ class TestWriteFileHandler:
         assert not any(r.levelno >= logging.ERROR for r in caplog.records)
 
     @patch("tools.file_tools._get_file_ops")
+    def test_rejects_read_file_line_numbered_content(self, mock_get):
+        """#19798 — do not persist read_file's LINE_NUM|CONTENT display format."""
+        from tools.file_tools import write_file_tool
+
+        content = " 1|setting: new_value\n 2|other: thing\n"
+        result = json.loads(write_file_tool("/tmp/config.yaml", content))
+
+        assert "error" in result
+        assert "line-number" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_allows_sparse_literal_pipe_content(self, mock_get):
+        """A single literal N| line should not be treated as read_file output."""
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/out.txt", "bytes": 21}
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool("/tmp/out.txt", "1|literal value\nplain line\n"))
+
+        assert result["status"] == "ok"
+        mock_ops.write_file.assert_called_once()
+
+    @patch("tools.file_tools._get_file_ops")
     def test_unexpected_exception_still_logs_error(self, mock_get, caplog):
         mock_get.side_effect = RuntimeError("boom")
 
@@ -400,6 +427,70 @@ class TestSearchHints:
 # ---------------------------------------------------------------------------
 # PATCH_SCHEMA shape tests (issue #15524)
 # ---------------------------------------------------------------------------
+
+
+class TestSensitivePathCheck:
+    """Verify that _check_sensitive_path blocks writes to protected locations."""
+
+    def test_hermes_config_blocked_for_write_file(self, tmp_path, monkeypatch):
+        fake_config = tmp_path / "config.yaml"
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
+        assert "error" in result
+        assert "Hermes config" in result["error"]
+
+    def test_hermes_config_blocked_via_tilde_path(self, tmp_path, monkeypatch):
+        fake_config = tmp_path / "config.yaml"
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
+        assert "error" in result
+        assert "Hermes config" in result["error"]
+
+    def test_hermes_config_blocked_for_patch(self, tmp_path, monkeypatch):
+        fake_config = tmp_path / "config.yaml"
+        fake_config.write_text("approvals:\n  mode: manual\n")
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="replace",
+            path=str(fake_config),
+            old_string="mode: manual",
+            new_string="mode: off",
+        ))
+        assert "error" in result
+        assert "Hermes config" in result["error"]
+
+    def test_system_path_still_blocked(self, monkeypatch):
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/some/other/path")
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool("/etc/passwd", "evil"))
+        assert "error" in result
+        assert "sensitive system path" in result["error"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_normal_file_not_blocked(self, mock_get, monkeypatch):
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/other.txt", "bytes": 5}
+        mock_ops.write_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool("/tmp/other.txt", "hello"))
+        assert result["status"] == "ok"
+
 
 class TestPatchSchemaShape:
     """PATCH_SCHEMA must advertise per-mode required params via description

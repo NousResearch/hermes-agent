@@ -95,7 +95,8 @@ def test_dashboard_slot_reports_up_when_enabled(
          # would fail closed and the slot would never come up. Pin the
          # explicit insecure opt-in to keep this test focused on the s6
          # supervision contract, not the auth gate.
-         "-e", "HERMES_DASHBOARD_INSECURE=1",
+         "-e", "HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin",
+         "-e", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=test-dashboard-pw",
          built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,
     )
@@ -122,10 +123,12 @@ def test_dashboard_opt_in_starts(
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
          "-e", "HERMES_DASHBOARD=1",
-         # Default bind is 0.0.0.0; pin insecure opt-in so the auth gate
-         # doesn't fail-closed before the process can come up. See
-         # test_dashboard_slot_reports_up_when_enabled for the full rationale.
-         "-e", "HERMES_DASHBOARD_INSECURE=1",
+         # Default bind is 0.0.0.0, which engages the auth gate. Register the
+         # bundled basic password provider so the gate has a provider and the
+         # dashboard binds (vs fail-closed). Keeps the test focused on s6
+         # supervision, not auth.
+         "-e", "HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin",
+         "-e", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=test-dashboard-pw",
          built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,
     )
@@ -145,10 +148,11 @@ def test_dashboard_port_override(
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
          "-e", "HERMES_DASHBOARD=1", "-e", "HERMES_DASHBOARD_PORT=9120",
-         # Default bind is 0.0.0.0; pin insecure opt-in so the auth gate
-         # doesn't fail-closed before the port is bound. See
+         # Default bind is 0.0.0.0; register the basic password provider so
+         # the auth gate has a provider and the dashboard binds. See
          # test_dashboard_slot_reports_up_when_enabled for the full rationale.
-         "-e", "HERMES_DASHBOARD_INSECURE=1",
+         "-e", "HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin",
+         "-e", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=test-dashboard-pw",
          built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,
     )
@@ -179,11 +183,12 @@ def test_dashboard_restarts_after_crash(
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
          "-e", "HERMES_DASHBOARD=1",
-         # Default bind is 0.0.0.0; pin insecure opt-in so the auth gate
-         # doesn't fail-closed before the supervised dashboard can come up.
+         # Default bind is 0.0.0.0; register the basic password provider so
+         # the auth gate has a provider and the supervised dashboard binds.
          # See test_dashboard_slot_reports_up_when_enabled for the full
          # rationale.
-         "-e", "HERMES_DASHBOARD_INSECURE=1",
+         "-e", "HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin",
+         "-e", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=test-dashboard-pw",
          built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,
     )
@@ -383,17 +388,15 @@ def test_dashboard_oauth_gate_engages_on_non_loopback_bind(
     )
 
 
-def test_dashboard_insecure_env_var_opts_out_of_gate(
+def test_dashboard_insecure_env_var_no_longer_bypasses_gate(
     built_image: str, container_name: str,
 ) -> None:
-    """``HERMES_DASHBOARD_INSECURE=1`` re-enables the legacy no-gate mode
-    for operators running on trusted LANs behind a reverse proxy without
-    the OAuth contract. Same opt-out shape as the rest of the s6 boolean
-    envs (``HERMES_DASHBOARD``, ``HERMES_DASHBOARD_TUI``).
-
-    With the gate off, ``/api/status`` (a public endpoint under the
-    legacy ``_SESSION_TOKEN`` middleware) returns 200 with the
-    ``auth_required: false`` body — proves the gate is bypassed.
+    """``HERMES_DASHBOARD_INSECURE=1`` NO LONGER disables the auth gate
+    (June 2026 hardening). With insecure set on a 0.0.0.0 bind and NO auth
+    provider registered, start_server fails closed — the dashboard never
+    binds, so ``/api/status`` is unreachable. This proves the unauthenticated
+    public-dashboard escape hatch is gone: there is no env that serves the
+    dashboard on a public bind without an auth provider.
     """
     subprocess.run(
         ["docker", "run", "-d", "--name", container_name,
@@ -403,13 +406,16 @@ def test_dashboard_insecure_env_var_opts_out_of_gate(
          built_image, "sleep", "120"],
         check=True, capture_output=True, timeout=30,
     )
-    status_code, body = _http_probe(container_name, "/api/status")
-    assert status_code == 200, (
-        f"/api/status should return 200 with the auth gate disabled; "
-        f"got {status_code} body={body!r}"
+    # Fail-closed: the dashboard process must NOT successfully serve. Probe
+    # for a few seconds; /api/status should never become reachable because
+    # start_server raised SystemExit before binding.
+    ok, _ = _poll(
+        container_name,
+        "curl -fsS -m 2 http://127.0.0.1:9119/api/status >/dev/null 2>&1",
+        deadline_s=12.0,
     )
-    status = json.loads(body)
-    assert status.get("auth_required") is False, (
-        "HERMES_DASHBOARD_INSECURE=1 must disable the auth gate (explicit "
-        f"opt-in for trusted-LAN deployments). Got: {status!r}"
+    assert not ok, (
+        "Dashboard must NOT serve on a public bind with --insecure and no "
+        "auth provider — the gate fails closed. /api/status became reachable, "
+        "meaning the unauthenticated escape hatch is still open."
     )

@@ -14,7 +14,7 @@ If you only have time to set up one thing, set up this. The fastest path:
 hermes setup --portal
 ```
 
-That single command runs the Portal OAuth, sets Nous as your inference provider in `config.yaml`, and turns on the Tool Gateway. You're ready to `hermes chat` immediately after.
+That single command runs the Portal OAuth, lets you pick a Nous model, sets Nous as your inference provider in `config.yaml`, and turns on the Tool Gateway. You're ready to `hermes chat` immediately after.
 
 Don't have a subscription yet? [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) — sign up, then come back and run the command above.
 
@@ -70,7 +70,7 @@ Because everything routes through one OAuth-authenticated Portal session, you do
 
 ### Cross-platform parity
 
-[Native Windows](/user-guide/windows-native) is still early beta, and per-tool API key setup is its rough edge — installing a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
+[Native Windows](/user-guide/windows-native) makes per-tool API key setup its rough edge — installing a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
 
 ## A note on Hermes 4
 
@@ -99,9 +99,10 @@ This runs the full setup in one shot:
 
 1. Opens your browser to portal.nousresearch.com for OAuth login
 2. Stores the refresh token at `~/.hermes/auth.json`
-3. Sets Nous as your inference provider in `~/.hermes/config.yaml`
-4. Turns on the Tool Gateway (web, image, TTS, browser routing)
-5. Returns you to your terminal ready to `hermes chat`
+3. Lets you pick a Nous model from the curated list (or skip to keep your current one)
+4. Sets Nous as your inference provider in `~/.hermes/config.yaml` (when you pick a model)
+5. Turns on the Tool Gateway (web, image, TTS, browser routing)
+6. Returns you to your terminal ready to `hermes chat`
 
 If you don't have a subscription yet, sign up at [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) first.
 
@@ -130,12 +131,16 @@ If you use [Hermes profiles](/user-guide/profiles), the Portal refresh token is 
 ### Inspecting what's wired up
 
 ```bash
-hermes portal status     # login status, subscription info, model + gateway routing
+hermes portal            # log in to Nous Portal + set it up (one-shot onboarding)
+hermes portal info       # login status, subscription info, model + gateway routing
+hermes portal status     # alias for `portal info`
 hermes portal tools      # detailed Tool Gateway catalog with per-tool routing
 hermes portal open       # open the subscription management page in your browser
 ```
 
-`hermes portal status` (or just `hermes portal`) gives you the high-level overview:
+`hermes portal` (with no subcommand) is the human-readable alias for `hermes auth add nous --type oauth` — it logs you in, lets you pick a Nous model, sets Nous as your inference provider, and offers the Tool Gateway opt-in (identical to `hermes setup --portal`, and the same Nous flow as the first-time quick setup).
+
+`hermes portal info` gives you the high-level overview:
 
 ```
   Nous Portal
@@ -234,12 +239,12 @@ If the Portal invalidates the refresh token (password change, manual revoke, ses
 
 ## Troubleshooting
 
-### `hermes portal status` shows "not logged in"
+### `hermes portal info` shows "not logged in"
 
 You haven't completed the OAuth flow, or your refresh token was wiped. Run:
 
 ```bash
-hermes auth add nous --type oauth
+hermes portal
 ```
 
 or use `hermes model` and re-select Nous Portal.
@@ -260,7 +265,7 @@ If a model is genuinely missing, [open an issue](https://github.com/NousResearch
 
 ### Bills not appearing on my Portal account
 
-Check `hermes portal status` first — if it shows you're using a different provider (`Model: currently openrouter` instead of `using Nous as inference provider`), your local config has drifted. Run `hermes model`, pick Nous Portal, and the next request will route through your subscription.
+Check `hermes portal info` first — if it shows you're using a different provider (`Model: currently openrouter` instead of `using Nous as inference provider`), your local config has drifted. Run `hermes model`, pick Nous Portal, and the next request will route through your subscription.
 
 ## See also
 

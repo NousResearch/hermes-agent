@@ -34,11 +34,11 @@ The plugin system lets you add a platform adapter without modifying any core Her
 
 ```
 ~/.hermes/plugins/my-platform/
-  PLUGIN.yaml      # Plugin metadata
+  plugin.yaml      # Plugin metadata
   adapter.py       # Adapter class + register() entry point
 ```
 
-### PLUGIN.yaml
+### plugin.yaml
 
 Plugin metadata. The `requires_env` and `optional_env` blocks auto-populate `hermes config` UI entries (see [Surfacing Env Vars](#surfacing-env-vars-in-hermes-config) below).
 
@@ -476,7 +476,7 @@ class Platform(str, Enum):
 
 ### 2. Adapter File
 
-Create `gateway/platforms/newplat.py`:
+Create `plugins/platforms/newplat/adapter.py`:
 
 ```python
 from gateway.config import Platform, PlatformConfig
@@ -689,4 +689,4 @@ async def disconnect(self):
 | `bluebubbles.py` | REST + webhook | Medium | Simple REST API integration |
 | `weixin.py` | Long-poll + CDN | High | Media handling, encryption |
 | `wecom_callback.py` | Callback/webhook | Medium | HTTP server, AES crypto, multi-app |
-| `telegram.py` | Long-poll + Bot API | High | Full-featured adapter with groups, threads |
+| `plugins/platforms/irc/adapter.py` | Long-poll + IRC protocol | High | Full-featured plugin adapter with scoped token lock |

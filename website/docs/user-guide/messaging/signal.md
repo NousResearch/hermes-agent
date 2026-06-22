@@ -6,12 +6,12 @@ description: "Set up Hermes Agent as a Signal messenger bot via signal-cli daemo
 
 # Signal Setup
 
-Hermes connects to Signal through the [signal-cli](https://github.com/AsamK/signal-cli) daemon running in HTTP mode. The adapter streams messages in real-time via SSE (Server-Sent Events) and sends responses via JSON-RPC.
+Hermes connects to Signal through [signal-cli](https://github.com/AsamK/signal-cli), typically via the [bbernhard/signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) container (`MODE=json-rpc`). The adapter receives messages over a WebSocket (`/v1/receive/<number>`) and sends responses via the REST API (`/v2/send`, reactions, attachments, and related routes).
 
 Signal is the most privacy-focused mainstream messenger — end-to-end encrypted by default, open-source protocol, minimal metadata collection. This makes it ideal for security-sensitive agent workflows.
 
-:::info No New Python Dependencies
-The Signal adapter uses `httpx` (already a core Hermes dependency) for all communication. No additional Python packages are required. You just need signal-cli installed externally.
+:::info Dependencies
+The Signal adapter uses `httpx` (already a core Hermes dependency) for outbound REST calls and `aiohttp` (included in the `[messaging]` extra) for the inbound WebSocket listener. You need signal-cli ≥ **0.14.5** running behind signal-cli-rest-api v0.99+.
 :::
 
 ---
@@ -58,22 +58,29 @@ signal-cli link -n "HermesAgent"
 
 ---
 
-## Step 2: Start the signal-cli Daemon
+## Step 2: Start signal-cli-rest-api
+
+The recommended setup is the Docker image with `MODE=json-rpc`:
 
 ```bash
-# Replace +1234567890 with your Signal phone number (E.164 format)
-signal-cli --account +1234567890 daemon --http 127.0.0.1:8080
+docker run -d --name signal-api \
+  -p 127.0.0.1:8080:8080 \
+  -e MODE=json-rpc \
+  -v $HOME/.local/share/signal-cli:/home/.local/share/signal-cli \
+  bbernhard/signal-cli-rest-api:latest
 ```
 
-:::tip
-Keep this running in the background. You can use `systemd`, `tmux`, `screen`, or run it as a service.
+:::caution signal-cli version
+Use **signal-cli 0.14.5 or newer**. Older builds (including 0.14.3) can fail to decrypt inbound messages (`getServerGuid must not be null`). On Apple Silicon you may need `platform: linux/amd64` because native Linux arm64 0.14.5 builds are not always available.
 :::
+
+You can also run a native daemon (`signal-cli --account +1234567890 daemon --http 127.0.0.1:8080`) on older setups, but current Hermes targets signal-cli-rest-api v0.99+.
 
 Verify it's running:
 
 ```bash
-curl http://127.0.0.1:8080/api/v1/check
-# Should return: {"versions":{"signal-cli":...}}
+curl http://127.0.0.1:8080/v1/about
+# Should return version info for signal-cli-rest-api and signal-cli
 ```
 
 ---
@@ -212,7 +219,7 @@ Just send a message to yourself from your phone — signal-cli picks it up and H
 
 ### Health Monitoring
 
-The adapter monitors the SSE connection and automatically reconnects if:
+The adapter monitors the WebSocket connection and automatically reconnects if:
 - The connection drops (with exponential backoff: 2s → 60s)
 - No activity is detected for 120 seconds (pings signal-cli to verify)
 

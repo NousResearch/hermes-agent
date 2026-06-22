@@ -38,6 +38,7 @@ from agent.prompt_builder import (
     SKILLS_GUIDANCE,
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
+    AUTOPILOT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
 )
 from agent.runtime_cwd import resolve_context_cwd
@@ -59,9 +60,14 @@ def _ra():
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
-    """Assemble the system prompt as three ordered parts.
+    """Assemble the system prompt as ordered parts.
 
-    Returns a dict with three keys:
+    Returns a dict with these keys:
+      * ``prelude``  : optional operator-supplied prelude files resolved per
+        model via the ``system_prompt_prelude`` config map. Injected as the
+        VERY FIRST system content (ahead of ``stable``) so a model receives a
+        full model-appropriate operating prompt before Hermes' own layers.
+        Empty string when no prelude is configured/matched.
       * ``stable``   — identity, tool guidance, skills prompt,
         environment hints, platform hints, model-family operational
         guidance.
@@ -80,6 +86,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # patch ``run_agent.get_toolset_for_tool`` and similar helpers, so
     # we resolve through ``_ra()`` to honor those patches.
     _r = _ra()
+
+    # ── Prelude tier (operator-supplied, per-model) ────────────────
+    # Resolved first and placed ahead of everything Hermes adds. Fail-soft:
+    # any error yields an empty prelude and never breaks prompt build.
+    prelude_text = ""
+    try:
+        from agent.system_prompt_prelude import resolve_prelude
+
+        _pre = resolve_prelude(
+            getattr(agent, "model", None), getattr(agent, "provider", None)
+        )
+        prelude_text = _pre.text
+    except Exception:  # pragma: no cover - defensive; resolver logs internally
+        prelude_text = ""
 
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
@@ -175,6 +195,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # existing tools, replies with plans instead of executing).
             if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+
+    # AUTOPILOT: injected when the agent is run unattended. The model is
+    # told to NEVER ask the user clarifying / confirmation questions and to
+    # proceed with documented best-judgment assumptions. Triggered by:
+    #   * env: HERMES_AUTOPILOT=1 / true / yes / on
+    #   * agent attr: agent.autopilot_mode (set by --autopilot flag or
+    #     /autopilot toggle)
+    #   * agent attr: agent.kanban_worker (kanban workers always autopilot)
+    # Pairs with /yolo (which only bypasses dangerous-command approvals).
+    import os as _os
+    _autopilot = (
+        getattr(agent, "autopilot_mode", False)
+        or getattr(agent, "_kanban_worker_guidance", None) is not None
+        or _os.environ.get("HERMES_AUTOPILOT", "").strip().lower() in ("1", "true", "yes", "on")
+    )
+    if _autopilot:
+        stable_parts.append(AUTOPILOT_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:
@@ -300,7 +337,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Volatile tier (changes per session/turn — never cached) ───
     volatile_parts: List[str] = []
 
-    if agent._memory_store:
+    # When the cmx context engine is active it OWNS memory injection: cmx ingests
+    # MEMORY.md/USER.md into its durable store and injects only the turn-relevant,
+    # budget-sized slices (retrieval-first), instead of this verbatim full-file dump
+    # that otherwise costs ~200K tokens EVERY turn (fatal for small-context models).
+    # The legacy store stays alive (memory WRITE tools + on-disk files unchanged): we
+    # suppress only the verbatim read-dump; the content still reaches the model, via
+    # cmx retrieval + on-demand cmx_grep (nothing is dropped). No-op for any other
+    # engine, so non-cmx setups are unaffected.
+    _cmx_owns_memory = getattr(
+        getattr(agent, "context_compressor", None), "name", "") == "cmx"
+    if agent._memory_store and not _cmx_owns_memory:
         if agent._memory_enabled:
             mem_block = agent._memory_store.format_for_system_prompt("memory")
             if mem_block:
@@ -338,6 +385,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts.append(timestamp_line)
 
     return {
+        "prelude":  prelude_text.strip() if prelude_text else "",
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
         "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
         "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
@@ -360,7 +408,9 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     warm across turns.
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
-    return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    return "\n\n".join(
+        p for p in (parts.get("prelude", ""), parts["stable"], parts["context"], parts["volatile"]) if p
+    )
 
 
 def invalidate_system_prompt(agent: Any) -> None:

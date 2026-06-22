@@ -1125,6 +1125,7 @@ class MCPServerTask:
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
         "_rpc_lock", "_pending_refresh_tasks",
         "initialize_result",
+        "_inflight_tasks", "_reconnecting",
     )
 
     def __init__(self, name: str):
@@ -1161,6 +1162,16 @@ class MCPServerTask:
         # ``.capabilities.prompts``) instead of assuming every ``ClientSession``
         # method attribute corresponds to a supported server method. See #18051.
         self.initialize_result: Optional[Any] = None
+        # In-flight tool-call tasks (asyncio.Task running session.call_tool on
+        # the MCP loop). Tracked so a reconnect/shutdown can FAIL them cleanly
+        # instead of orphaning their run_coroutine_threadsafe futures. An
+        # orphaned future makes the calling agent thread poll to the full
+        # tool_timeout (hours). Also used to suppress the keepalive while a call
+        # is active (a busy server is provably alive). Single-loop access, so
+        # no lock needed. ``_reconnecting`` flags a deliberate teardown so the
+        # cancelled call surfaces a retryable error rather than a raw cancel.
+        self._inflight_tasks: set = set()
+        self._reconnecting: bool = False
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -1310,6 +1321,12 @@ class MCPServerTask:
         # LB / NAT idle-timeout (commonly 300-600s).
         _KEEPALIVE_INTERVAL = 180  # 3 minutes
 
+        # Entering a healthy wait state means the session is established and
+        # ready, so clear any lingering "deliberate teardown" flag from a prior
+        # cycle. New in-flight calls on this fresh session must not be treated
+        # as reconnect casualties.
+        self._reconnecting = False
+
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
         try:
@@ -1325,11 +1342,23 @@ class MCPServerTask:
                 # Timeout — no lifecycle event fired.  Send a keepalive
                 # to exercise the connection and detect stale sockets.
                 if self.session:
+                    # CRITICAL: never keepalive while a tool call is in flight.
+                    # The stdio transport is a SINGLE JSON-RPC stream; a
+                    # concurrent list_tools wedges the in-flight call, which
+                    # then times out → false reconnect → the call is orphaned
+                    # and the agent hangs to tool_timeout (root cause of the
+                    # multi-thousand-second council hang). A server actively
+                    # serving a call is provably alive, so skip this cycle.
+                    # We also wrap the keepalive in the SAME _rpc_lock tool
+                    # calls use, so a call starting concurrently can't overlap.
+                    if self._rpc_lock.locked() or self._inflight_tasks:
+                        continue
                     try:
-                        await asyncio.wait_for(
-                            self.session.list_tools(),
-                            timeout=30.0,
-                        )
+                        async with self._rpc_lock:
+                            await asyncio.wait_for(
+                                self.session.list_tools(),
+                                timeout=30.0,
+                            )
                     except Exception as exc:
                         logger.warning(
                             "MCP server '%s' keepalive failed, "
@@ -1348,9 +1377,36 @@ class MCPServerTask:
                         pass
 
         if self._shutdown_event.is_set():
+            self._fail_inflight_calls("shutdown")
             return "shutdown"
         self._reconnect_event.clear()
+        self._fail_inflight_calls("reconnect")
         return "reconnect"
+
+    def _fail_inflight_calls(self, reason: str) -> None:
+        """Cancel in-flight tool-call tasks before the session is torn down.
+
+        The MCP session is about to close (reconnect/shutdown). Any pending
+        ``session.call_tool`` await would otherwise be orphaned: the SDK does
+        not always fail the call when its streams close, so the
+        ``run_coroutine_threadsafe`` future never resolves and the calling
+        agent thread polls to the full ``tool_timeout`` (up to hours). We flag
+        a deliberate teardown and cancel the tasks; ``_call`` converts that
+        cancellation into a clean, retryable error so the agent recovers and
+        the next call runs on the freshly rebuilt session (self-healing).
+        Runs on the MCP event loop, same as the call tasks. No lock needed.
+        """
+        if not self._inflight_tasks:
+            return
+        self._reconnecting = True
+        pending = [t for t in self._inflight_tasks if not t.done()]
+        if pending:
+            logger.warning(
+                "MCP server '%s': failing %d in-flight call(s) due to %s",
+                self.name, len(pending), reason,
+            )
+        for task in pending:
+            task.cancel()
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
@@ -2630,8 +2686,26 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         async def _call():
-            async with server._rpc_lock:
-                result = await server.session.call_tool(tool_name, arguments=args)
+            task = asyncio.current_task()
+            if task is not None:
+                server._inflight_tasks.add(task)
+            try:
+                async with server._rpc_lock:
+                    result = await server.session.call_tool(tool_name, arguments=args)
+            except asyncio.CancelledError:
+                # A deliberate reconnect/shutdown teardown cancelled us
+                # (see _fail_inflight_calls). Convert to a clean, retryable
+                # error instead of propagating a raw cancellation. The agent
+                # then retries on the freshly rebuilt session.
+                if getattr(server, "_reconnecting", False):
+                    raise RuntimeError(
+                        f"MCP server '{server_name}' reconnected during the "
+                        f"call (transport reset); retry the tool."
+                    ) from None
+                raise
+            finally:
+                if task is not None:
+                    server._inflight_tasks.discard(task)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""

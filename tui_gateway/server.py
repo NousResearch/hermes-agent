@@ -300,6 +300,44 @@ def _load_busy_input_mode() -> str:
     return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
 
 
+def _load_notify_autodispatch() -> str:
+    """When the notification poller may auto-START an agent turn for a completed
+    background process.
+
+    The poller always EMITS the completion to the TUI (status.update) so the user
+    sees that a background job finished. This flag controls only whether it also
+    injects an autonomous agent turn (rid ``__notif__``) to react to it:
+
+      - ``always``    legacy behavior: auto-react in every idle session.
+      - ``autopilot`` (default) only auto-react when the session is in autopilot;
+                      otherwise just show the notification. This stops a plain
+                      chat from "responding by itself" when a backgrounded job
+                      (subagent, terminal background task, watch match) completes.
+      - ``never``     never auto-react; only ever show the notification.
+    """
+    display = _load_cfg().get("display")
+    if not isinstance(display, dict):
+        display = {}
+    raw = str(display.get("notify_autodispatch", "") or "").strip().lower()
+    return raw if raw in {"always", "autopilot", "never"} else "autopilot"
+
+
+def _notify_should_autodispatch(session: dict) -> bool:
+    """Whether the notification poller may auto-start an agent turn for this
+    session, per ``display.notify_autodispatch`` (see _load_notify_autodispatch).
+    """
+    mode = _load_notify_autodispatch()
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    # "autopilot": only when this session has autopilot engaged.
+    if session.get("autopilot"):
+        return True
+    agent = session.get("agent")
+    return bool(getattr(agent, "autopilot_mode", False))
+
+
 def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
     """Fire session lifecycle hooks with CLI parity."""
     try:
@@ -1770,21 +1808,33 @@ def _session_info(agent, session: dict | None = None) -> dict:
     try:
         from tools.approval import (
             _YOLO_MODE_FROZEN,
-            _get_approval_mode,
             is_session_yolo_enabled,
         )
 
         session_key = (session or {}).get("session_key")
         session_yolo = bool(is_session_yolo_enabled(session_key)) if session_key else False
-        yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or _get_approval_mode() == "off"
+        # YOLO badge reflects ONLY a real approval-bypass: the process-start
+        # --yolo flag (frozen) or an explicit per-session `/yolo on`. Do NOT OR
+        # in `_get_approval_mode() == "off"`: a global `approvals.mode: off`
+        # config means "don't prompt for approvals", which is a separate concept
+        # from YOLO (per-session bypass). Conflating them lit the TUI's ⚠ YOLO
+        # badge permanently for anyone who set approvals.mode: off (note YAML
+        # parses bare `off` as False, which _normalize_approval_mode maps back to
+        # "off"), even though /yolo was never enabled.
+        yolo = bool(_YOLO_MODE_FROZEN) or session_yolo
     except Exception:
         yolo = False
     info: dict = {
         "model": getattr(agent, "model", ""),
+        # Canonical persisted SessionDB id for this conversation lineage.
+        # Exposed to dashboard clients so they can reopen the same session
+        # after page refresh (instead of always starting a new conversation).
+        "session_key": getattr(agent, "session_id", "") or "",
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
         "yolo": yolo,
+        "autopilot": bool(getattr(agent, "autopilot_mode", False)),
         "tools": {},
         "skills": {},
         "cwd": cwd,
@@ -2491,6 +2541,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     finally:
         _clear_session_context(tokens)
     session["agent"] = new_agent
+    _apply_autopilot_to_agent(session, new_agent)
     session["attached_images"] = []
     session["edit_snapshots"] = {}
     session["image_counter"] = 0
@@ -4396,6 +4447,13 @@ def _notification_poller_loop(
             _emit("status.update", sid, {"kind": "process", "text": text})
             _emitted.add(_dedup_key)
 
+        # The notification has been shown to the TUI above. Only auto-START an
+        # agent turn to react to it when policy allows (default: autopilot only).
+        # Otherwise a plain idle chat would "respond by itself" whenever a
+        # backgrounded job completes. See _load_notify_autodispatch().
+        if not _notify_should_autodispatch(session):
+            continue
+
         with session["history_lock"]:
             if session.get("running"):
                 process_registry.completion_queue.put(evt)
@@ -4438,6 +4496,11 @@ def _notification_poller_loop(
         if _dedup_key not in _emitted:
             _emit("status.update", sid, {"kind": "process", "text": text})
             _emitted.add(_dedup_key)
+
+        # Notification shown above; only auto-start a turn when policy allows
+        # (default: autopilot only). See _load_notify_autodispatch().
+        if not _notify_should_autodispatch(session):
+            continue
 
         with session["history_lock"]:
             if session.get("running"):
@@ -4937,13 +5000,71 @@ def _(rid, params: dict) -> dict:
     )
 
 
+def _materialize_data_url_image(session: dict, data_url: str, original_path: str = "") -> "Path | None":
+    """Persist a base64 ``data:`` image URL into the server's ``images/`` dir.
+
+    Used by ``image.attach`` when the client-supplied path does not resolve to a
+    real file on THIS host -- the remote-backend case where the desktop app runs
+    on one machine (e.g. a Mac) and the gateway/agent runs on another (e.g. EC2),
+    so the Mac-local ``composer-images/`` path the app sends cannot be opened
+    server-side. The desktop already computes the image bytes as a data URL for
+    its thumbnail preview, so it can ship them inline; here we decode and save
+    them so the rest of the attach pipeline (vision pre-analysis, model attach)
+    works exactly as it does for a locally-resolved path. Mirrors the
+    ``clipboard.paste`` handler's save-into-images/ behavior.
+
+    Returns the saved ``Path``, or ``None`` if the data URL is malformed/empty.
+    """
+    import base64
+    import re as _re
+
+    m = _re.match(r"^data:image/([\w.+-]+);base64,(.*)$", data_url, _re.DOTALL)
+    if not m:
+        return None
+    subtype = (m.group(1) or "png").lower()
+    try:
+        blob = base64.b64decode(m.group(2) or "", validate=False)
+    except Exception:
+        return None
+    if not blob:
+        return None
+
+    # Resolve a sane file extension: prefer the original filename's extension,
+    # then a small subtype->ext map, then the subtype itself, else .png.
+    ext_map = {"jpeg": ".jpg", "svg+xml": ".svg", "x-icon": ".ico"}
+    orig_ext = Path(original_path).suffix.lower() if original_path else ""
+    if orig_ext and _re.match(r"^\.[a-z0-9]{1,5}$", orig_ext):
+        ext = orig_ext
+    elif subtype in ext_map:
+        ext = ext_map[subtype]
+    elif _re.match(r"^[a-z0-9]{1,5}$", subtype):
+        ext = "." + subtype
+    else:
+        ext = ".png"
+
+    session["image_counter"] = session.get("image_counter", 0) + 1
+    img_dir = _hermes_home / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    img_path = (
+        img_dir
+        / f"upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}{ext}"
+    )
+    try:
+        img_path.write_bytes(blob)
+    except Exception:
+        session["image_counter"] = max(0, session["image_counter"] - 1)
+        return None
+    return img_path
+
+
 @method("image.attach")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
     raw = str(params.get("path", "") or "").strip()
-    if not raw:
+    data_url = str(params.get("data_url", "") or "").strip()
+    if not raw and not data_url:
         return _err(rid, 4015, "path required")
     try:
         from cli import (
@@ -4953,15 +5074,30 @@ def _(rid, params: dict) -> dict:
             _split_path_input,
         )
 
-        dropped = _detect_file_drop(raw)
-        if dropped:
-            image_path = dropped["path"]
-            remainder = dropped["remainder"]
-        else:
-            path_token, remainder = _split_path_input(raw)
-            image_path = _resolve_attachment_path(path_token)
-            if image_path is None:
-                return _err(rid, 4016, f"image not found: {path_token}")
+        image_path = None
+        remainder = ""
+        if raw:
+            dropped = _detect_file_drop(raw)
+            if dropped:
+                candidate = dropped["path"]
+                remainder = dropped["remainder"]
+            else:
+                path_token, remainder = _split_path_input(raw)
+                candidate = _resolve_attachment_path(path_token)
+            # ``candidate`` may be None (unresolved) or name a path that does not
+            # exist on THIS host -- the classic remote-backend case where the
+            # desktop sent a client-local path the gateway can't see. Only treat
+            # it as the image when it resolves to a real local file.
+            if candidate is not None and Path(candidate).exists():
+                image_path = Path(candidate)
+
+        # Remote-mode fallback: the path didn't resolve to a real file here, but
+        # the client shipped the bytes inline as a data: URL. Persist them.
+        if image_path is None and data_url:
+            image_path = _materialize_data_url_image(session, data_url, raw)
+
+        if image_path is None:
+            return _err(rid, 4016, f"image not found: {raw or 'image'}")
         if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
             return _err(rid, 4016, f"unsupported image: {image_path.name}")
         session.setdefault("attached_images", []).append(str(image_path))
@@ -5743,7 +5879,39 @@ def _(rid, params: dict) -> dict:
             if bool((cfg.get("display") or {}).get("show_reasoning", False))
             else "hide"
         )
-        return _ok(rid, {"value": effort, "display": display})
+        # Surface any per-model effort clamp recorded by the anthropic adapter
+        # (copilot+claude often clamps xhigh→medium because GitHub's catalog
+        # caps opus-4.7/4.8 at effort=[medium]). The TUI status line can render
+        # this honestly: `effort: medium (xhigh requested → Copilot capped)`.
+        # See agent.anthropic_adapter._record_effort_clamp (Phase A6).
+        clamp_payload: Optional[dict] = None
+        try:
+            session_id = str(params.get("session_id", "") or "")
+            session = _sessions.get(session_id)
+            agent = session.get("agent") if session else None
+            model_id = (
+                str(getattr(agent, "model", "") or "")
+                if agent
+                else str((cfg.get("agent") or {}).get("model", "") or "")
+            )
+            if model_id:
+                from agent.anthropic_adapter import get_last_effort_clamp
+                clamp = get_last_effort_clamp(model_id)
+                if clamp and clamp.get("requested") and clamp.get("effective"):
+                    if clamp["requested"] != clamp["effective"]:
+                        clamp_payload = {
+                            "model": model_id,
+                            "requested": clamp["requested"],
+                            "effective": clamp["effective"],
+                            "note": clamp.get("note", ""),
+                        }
+        except Exception:
+            clamp_payload = None
+        out: dict[str, Any] = {"value": effort, "display": display}
+        if clamp_payload is not None:
+            out["effective_effort"] = clamp_payload["effective"]
+            out["clamp"] = clamp_payload
+        return _ok(rid, out)
     if key == "fast":
         return _ok(
             rid,
@@ -7230,6 +7398,72 @@ def _(rid, params: dict) -> dict:
 # ── Methods: slash.exec ──────────────────────────────────────────────
 
 
+def _kick_autopilot_turn(sid: str, session: dict) -> bool:
+    """Start a resume turn when /autopilot is enabled on an idle TUI session.
+
+    Autopilot is reactive (the engine engages at the end of a running turn), so
+    flipping it on while idle would otherwise do nothing. This injects a resume
+    turn using the same autonomous-turn mechanism as the process-notification
+    poller. No-op when there's no agent, nothing to resume, or a turn is already
+    running. Returns True if a turn was started.
+    """
+    agent = session.get("agent")
+    if agent is None:
+        return False
+    goal = (session.get("autopilot_goal") or "").strip()
+    history = session.get("history") or []
+    # Fresh session with no history: only start if an autopilot goal was set
+    # (e.g. `/autopilot goal <text>`): start ON the goal. With neither history
+    # nor a goal there is nothing to resume.
+    if not history and not goal:
+        return False
+    with session["history_lock"]:
+        if session.get("running") or isinstance(session.get("inflight_turn"), dict):
+            return False
+        session["running"] = True
+    if not history and goal:
+        # Cold start from `/autopilot goal <text>`: drive the goal itself as the
+        # opening task (parity with `/goal <text>`), instead of a generic resume
+        # nudge that has no prior work to build on.
+        kick = goal
+    else:
+        target = f" toward this goal: {goal}" if goal else ""
+        kick = (
+            f"[Autopilot] Resume and keep working{target} until it is verifiably "
+            "complete. Take the next concrete action now. Do not stop, "
+            "summarize-and-wait, or ask the user; make the most defensible decision "
+            "from context and act on it."
+        )
+    rid = f"__autopilot__{int(time.time() * 1000)}"
+    try:
+        _emit("message.start", sid)
+        _run_prompt_submit(rid, sid, session, kick)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        with session["history_lock"]:
+            session["running"] = False
+        print(f"[tui_gateway] autopilot kick failed: {exc}", file=sys.stderr)
+        return False
+
+
+def _apply_autopilot_to_agent(session: dict, agent) -> None:
+    """Apply the session's autopilot state to a (re)built live agent.
+
+    Autopilot state lives on the session dict so it survives agent rebuilds
+    (e.g. model switch). The engine reads ``agent.autopilot_mode`` /
+    ``agent._autopilot_goal`` via ``is_autopilot_active`` / ``resolve_goal``.
+    """
+    if agent is None:
+        return
+    try:
+        agent.autopilot_mode = bool(session.get("autopilot", False))
+        # Assign unconditionally so a cleared goal ("") also propagates to the
+        # live agent (and to a rebuilt agent after a model switch).
+        agent._autopilot_goal = session.get("autopilot_goal", "") or ""
+    except Exception:
+        pass
+
+
 def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     """Apply side effects that must also hit the gateway's live agent."""
     parts = command.lstrip("/").split(None, 1)
@@ -7273,6 +7507,49 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             elif mode in {"normal", "off"}:
                 agent.service_tier = None
             _emit("session.info", sid, _session_info(agent, session))
+        elif name == "autopilot" and agent:
+            # Autopilot is engine-enforced goal-chasing read live from
+            # ``agent.autopilot_mode`` by agent/autopilot. The /autopilot slash
+            # runs in the persistent _SlashWorker subprocess, so its os.environ /
+            # self.agent mutations never reach this live gateway agent, we must
+            # mirror the toggle here (same reason /fast is mirrored). State is
+            # held on the session dict so it survives agent rebuilds (model
+            # switch) via _apply_autopilot_to_agent.
+            #
+            # Parser parity with the classic CLI (_toggle_autopilot): the goal is
+            # set ONLY via the explicit ``goal`` subcommand. A bare positional is
+            # NOT a goal (that overload made ``/autopilot off now`` enable with
+            # goal "off now"). Unknown args leave state unchanged.
+            toks = command.lstrip("/").split(None, 2)
+            sub = toks[1].strip().lower() if len(toks) > 1 else ""
+            rest = toks[2].strip() if len(toks) > 2 else ""
+            was_on = bool(session.get("autopilot", False))
+            if sub in {"status", "?"}:
+                pass  # query only, no state change
+            elif sub == "clear":
+                session["autopilot_goal"] = ""
+            elif sub == "goal":
+                if rest and rest.lower() != "clear":
+                    session["autopilot_goal"] = rest
+                    session["autopilot"] = True
+                elif rest.lower() == "clear":
+                    session["autopilot_goal"] = ""
+                # bare `/autopilot goal` → query only, no change
+            elif sub in {"on", "enable", "1", "true", "yes"}:
+                session["autopilot"] = True
+            elif sub in {"off", "disable", "0", "false", "no"}:
+                session["autopilot"] = False
+            elif sub == "":
+                session["autopilot"] = not was_on
+            else:
+                pass  # unknown argument: leave state unchanged
+            _apply_autopilot_to_agent(session, agent)
+            _emit("session.info", sid, _session_info(agent, session))
+            # Enable-kick: if autopilot just turned ON and the session is idle
+            # with history, start a resume turn so it actually drives (parity
+            # with the classic CLI _maybe_kick_autopilot).
+            if session.get("autopilot") and not was_on:
+                _kick_autopilot_turn(sid, session)
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()
         elif name == "stop":

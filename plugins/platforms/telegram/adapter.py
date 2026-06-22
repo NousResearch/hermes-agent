@@ -83,6 +83,7 @@ from gateway.platforms.base import (
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
     utf16_len,
 )
+from gateway.platforms._http_client_limits import platform_httpx_limits
 from plugins.platforms.telegram.telegram_network import (
     TelegramFallbackTransport,
     discover_fallback_ips,
@@ -1495,48 +1496,51 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return False
 
-    async def _drain_polling_connections(self) -> None:
-        """Reset the httpx connection pool used for getUpdates polling.
+    async def _drain_request_connections(self, index: int, label: str) -> None:
+        """Reset one PTB httpx request pool by index.
 
         Network errors (especially through proxies like sing-box) can leave
         httpx connections in a half-closed state that still occupy pool slots.
         After enough reconnect cycles the pool fills up entirely, causing
         ``Pool timeout: All connections in the connection pool are occupied.``
 
-        We reset ONLY ``_request[0]`` (the getUpdates request) — the general
-        request (``_request[1]``) is left untouched so concurrent
-        ``send_message`` / ``edit_message`` calls are never interrupted.
-
         Implementation note: accesses ``Bot._request[0]`` which is the
         get-updates ``BaseRequest`` in the PTB 22.x internal tuple
         ``(get_updates_request, general_request)``.  There is no public
-        accessor for the polling request; review if upgrading to PTB 23+.
+        accessor for these request pools; review if upgrading to PTB 23+.
         """
         if not (self._app and self._app.bot):
             return
         try:
-            # PTB 22.x: _request is a (get_updates, general) tuple;
-            # no public accessor exists for the polling request.
-            polling_req = self._app.bot._request[0]  # noqa: SLF001
+            # PTB 22.x: _request is a (get_updates, general) tuple.
+            request = self._app.bot._request[index]  # noqa: SLF001
         except Exception:
             return
         try:
-            await polling_req.shutdown()
+            await request.shutdown()
         except Exception:
             logger.debug(
-                "[%s] Polling request shutdown failed (non-fatal)",
-                self.name, exc_info=True,
+                "[%s] %s request shutdown failed (non-fatal)",
+                self.name, label,
+                exc_info=True,
             )
         try:
-            await polling_req.initialize()
-            logger.debug(
-                "[%s] Polling request pool drained before reconnect", self.name
-            )
+            await request.initialize()
+            logger.debug("[%s] %s request pool drained", self.name, label)
         except Exception:
             logger.debug(
-                "[%s] Polling request re-initialize failed (non-fatal)",
-                self.name, exc_info=True,
+                "[%s] %s request re-initialize failed (non-fatal)",
+                self.name, label,
+                exc_info=True,
             )
+
+    async def _drain_polling_connections(self) -> None:
+        """Reset the httpx connection pool used for getUpdates polling."""
+        await self._drain_request_connections(0, "Polling")
+
+    async def _drain_general_connections(self) -> None:
+        """Reset the httpx connection pool used for Bot API sends."""
+        await self._drain_request_connections(1, "General")
 
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
@@ -1596,6 +1600,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Telegram polling resumed after network error (attempt %d)",
                 self.name, attempt,
             )
+            await self._drain_general_connections()
             self._polling_network_error_count = 0
             # start_polling() returning is necessary but not sufficient:
             # PTB's Updater can be left in a state where `running` is True
@@ -2154,12 +2159,24 @@ class TelegramAdapter(BasePlatformAdapter):
                     return default
 
             request_kwargs = {
-                "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
+                "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 20),
                 "pool_timeout": _env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
                 "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
+            connection_pool_size = request_kwargs["connection_pool_size"]
+            httpx_kwargs = {}
+            httpx_limits = platform_httpx_limits()
+            if httpx_limits is not None:
+                max_keepalive = getattr(httpx_limits, "max_keepalive_connections", None)
+                if max_keepalive is not None:
+                    max_keepalive = min(max_keepalive, connection_pool_size)
+                httpx_kwargs["limits"] = type(httpx_limits)(
+                    max_connections=connection_pool_size,
+                    max_keepalive_connections=max_keepalive,
+                    keepalive_expiry=getattr(httpx_limits, "keepalive_expiry", None),
+                )
 
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
             fallback_ips = self._fallback_ips()
@@ -2183,21 +2200,38 @@ class TelegramAdapter(BasePlatformAdapter):
                 # polling reconnect + bot API bootstrap/delete_webhook calls.
                 request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                    httpx_kwargs={
+                        **httpx_kwargs,
+                        "transport": TelegramFallbackTransport(fallback_ips),
+                    },
                 )
                 get_updates_request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                    httpx_kwargs={
+                        **httpx_kwargs,
+                        "transport": TelegramFallbackTransport(fallback_ips),
+                    },
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                request = HTTPXRequest(
+                    **request_kwargs,
+                    proxy=proxy_url,
+                    httpx_kwargs=httpx_kwargs,
+                )
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs,
+                    proxy=proxy_url,
+                    httpx_kwargs=httpx_kwargs,
+                )
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-                request = HTTPXRequest(**request_kwargs)
-                get_updates_request = HTTPXRequest(**request_kwargs)
+                request = HTTPXRequest(**request_kwargs, httpx_kwargs=httpx_kwargs)
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs,
+                    httpx_kwargs=httpx_kwargs,
+                )
 
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
@@ -2709,6 +2743,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                             # Other BadRequest errors are permanent — don't retry
                             raise
+                        await self._drain_general_connections()
                         # TimedOut is also a subclass of NetworkError. A
                         # generic timeout may have reached Telegram, so don't
                         # retry; a wrapped ConnectTimeout means no connection

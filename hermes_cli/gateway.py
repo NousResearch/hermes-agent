@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -3801,9 +3802,29 @@ def _wait_for_gateway_exit(
     return True
 
 
+def _launchd_bootstrap_with_retry(domain: str, target: str, plist_path: Path) -> None:
+    """Bootstrap a launchd job, tolerating the short bootout unload race."""
+    attempts = 5
+    for attempt in range(attempts):
+        try:
+            subprocess.run(
+                ["launchctl", "bootstrap", domain, str(plist_path)],
+                check=True,
+                timeout=30,
+            )
+            return
+        except subprocess.CalledProcessError as exc:
+            if exc.returncode != 5 or attempt == attempts - 1:
+                raise
+            time.sleep(min(0.5 * (2 ** attempt), 2.0))
+            subprocess.run(["launchctl", "bootout", target], check=False, timeout=90)
+
+
 def launchd_restart():
     label = get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
+    domain = _launchd_domain()
+    target = f"{domain}/{label}"
+    plist_path = get_launchd_plist_path()
     drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
 
@@ -3823,23 +3844,31 @@ def launchd_restart():
                     print(
                         f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
                     )
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        if not plist_path.exists() or not launchd_plist_is_current():
+            new_plist = generate_launchd_plist()
+            if _refuse_temp_home_service_write(new_plist, "launchd plist"):
+                return
+            plist_path.parent.mkdir(parents=True, exist_ok=True)
+            plist_path.write_text(new_plist, encoding="utf-8")
+            print("↻ Updated gateway launchd service definition before restart")
+
+        # bootout/bootstrap forces launchd to re-read runtime-only plist keys
+        # such as ResourceLimits; kickstart -k alone keeps the old definition.
+        subprocess.run(["launchctl", "bootout", target], check=False, timeout=90)
+        _launchd_bootstrap_with_retry(domain, target, plist_path)
+        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
-            # Not a "job unloaded" code. If the domain is fundamentally
-            # unmanageable (error 5), degrade to detached; the old process was
-            # already drained/terminated above. Otherwise re-raise.
             if _launchctl_domain_unsupported(e.returncode):
-                _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
+                _launchd_fallback_to_detached(f"launchctl exit {e.returncode}")
                 return
             raise
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
-        plist_path = get_launchd_plist_path()
         try:
             subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                ["launchctl", "bootstrap", domain, str(plist_path)],
                 check=True,
                 timeout=30,
             )

@@ -181,9 +181,12 @@ def _make_mock_app():
     mock_polling_req = AsyncMock()
     mock_polling_req.shutdown = AsyncMock()
     mock_polling_req.initialize = AsyncMock()
+    mock_general_req = AsyncMock()
+    mock_general_req.shutdown = AsyncMock()
+    mock_general_req.initialize = AsyncMock()
 
     mock_bot = MagicMock()
-    mock_bot._request = (mock_polling_req, MagicMock())  # (getUpdates, general)
+    mock_bot._request = (mock_polling_req, mock_general_req)
 
     mock_updater = MagicMock()
     mock_updater.running = True
@@ -197,12 +200,8 @@ def _make_mock_app():
 
 
 @pytest.mark.asyncio
-async def test_reconnect_drains_polling_request_only():
-    """During reconnect, only the polling request (_request[0]) must be cycled.
-
-    The general request (_request[1]) must NOT be touched — doing so would
-    break concurrent send_message / edit_message calls.
-    """
+async def test_reconnect_drains_polling_then_general_request():
+    """During reconnect, stale polling and send pools should both be cycled."""
     adapter = _make_adapter()
     adapter._polling_network_error_count = 1
 
@@ -218,9 +217,10 @@ async def test_reconnect_drains_polling_request_only():
     mock_polling_req.shutdown.assert_called_once()
     mock_polling_req.initialize.assert_called_once()
 
-    # General request must NOT be touched
-    general_req.shutdown.assert_not_called()
-    general_req.initialize.assert_not_called()
+    # The general request pool can accumulate dead proxy sockets across
+    # reconnect cycles, so a successful reconnect drains it as well.
+    general_req.shutdown.assert_called_once()
+    general_req.initialize.assert_called_once()
 
     # Reconnect must still succeed
     mock_app.updater.start_polling.assert_called_once()
@@ -294,6 +294,7 @@ async def test_drain_helper_noop_without_app():
     adapter._app = None
     # Should not raise
     await adapter._drain_polling_connections()
+    await adapter._drain_general_connections()
 
 
 # ── Heartbeat probe ──────────────────────────────────────────────────────

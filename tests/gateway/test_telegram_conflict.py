@@ -288,6 +288,69 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_connect_bounds_telegram_httpx_keepalive_pool(monkeypatch):
+    class FakeLimits:
+        def __init__(
+            self,
+            max_connections=None,
+            max_keepalive_connections=None,
+            keepalive_expiry=None,
+        ):
+            self.max_connections = max_connections
+            self.max_keepalive_connections = max_keepalive_connections
+            self.keepalive_expiry = keepalive_expiry
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    captured_requests = []
+
+    monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", "12")
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.platform_httpx_limits",
+        lambda: FakeLimits(max_keepalive_connections=50, keepalive_expiry=2.5),
+    )
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.HTTPXRequest",
+        lambda **kwargs: captured_requests.append(kwargs) or MagicMock(),
+    )
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    app = SimpleNamespace(
+        bot=SimpleNamespace(delete_webhook=AsyncMock(), set_my_commands=AsyncMock()),
+        updater=SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True),
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert len(captured_requests) == 2
+    for kwargs in captured_requests:
+        assert kwargs["connection_pool_size"] == 12
+        limits = kwargs["httpx_kwargs"]["limits"]
+        assert limits.max_connections == 12
+        assert limits.max_keepalive_connections == 12
+        assert limits.keepalive_expiry == 2.5
+
+
+@pytest.mark.asyncio
 async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
 
@@ -309,6 +372,36 @@ async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     app.stop.assert_not_awaited()
     app.shutdown.assert_awaited_once()
     warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_network_error_drains_general_pool_before_retry(monkeypatch):
+    from telegram.error import NetworkError
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    polling_req = SimpleNamespace(shutdown=AsyncMock(), initialize=AsyncMock())
+    general_req = SimpleNamespace(shutdown=AsyncMock(), initialize=AsyncMock())
+    adapter._app = SimpleNamespace(
+        bot=SimpleNamespace(_request=(polling_req, general_req))
+    )
+    adapter._bot = SimpleNamespace(
+        send_message=AsyncMock(
+            side_effect=[
+                NetworkError("proxy reset"),
+                SimpleNamespace(message_id=42),
+            ]
+        )
+    )
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    result = await adapter.send("123", "hello")
+
+    assert result.success is True
+    assert adapter._bot.send_message.await_count == 2
+    general_req.shutdown.assert_awaited_once()
+    general_req.initialize.assert_awaited_once()
+    polling_req.shutdown.assert_not_awaited()
+    polling_req.initialize.assert_not_awaited()
 
 
 @pytest.mark.asyncio

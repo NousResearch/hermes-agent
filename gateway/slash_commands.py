@@ -2239,6 +2239,69 @@ class GatewaySlashCommandsMixin:
             lines.append(f"Model: {result.model}")
         return "\n".join(lines)
 
+    async def _handle_apikey_d_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /apikey-d — hot-swap credentials used by subagent delegation.
+
+        Usage:
+            /apikey-d                   — show current delegation provider/model/key
+            /apikey-d <key>             — hotswap delegation API key
+            /apikey-d --provider <slug> — change delegation provider
+            /apikey-d --model <name>    — change delegation model
+            /apikey-d --save <key>      — hotswap and persist to config.yaml
+            /apikey-d --reload          — reload .env and apply provider's key
+        """
+        from hermes_cli.apikey_switch import mask_api_key
+        from hermes_cli.delegation_switch import (
+            apply_api_d_switch,
+            format_api_d_status,
+            get_delegation_config,
+            parse_api_d_args,
+            reload_delegation_key_from_env,
+        )
+
+        raw_args = event.get_command_args().strip() if event else ""
+        args, errors = parse_api_d_args(raw_args)
+        if errors:
+            return "\n".join(f"✗ {err}" for err in errors)
+
+        cfg = get_delegation_config()
+        provider = str(cfg.get("provider") or "").strip()
+        model = str(cfg.get("model") or "").strip()
+
+        if args.reload:
+            new_key = reload_delegation_key_from_env(provider)
+            if not new_key:
+                from hermes_cli.apikey_switch import resolve_provider_key_env
+
+                key_env = resolve_provider_key_env(provider)
+                return f"✗ No key found in {key_env}"
+        else:
+            new_key = args.key
+
+        if not new_key and not args.provider and not args.model:
+            current_key = str(cfg.get("api_key") or "").strip()
+            return format_api_d_status(provider, model, current_key)
+
+        result = apply_api_d_switch(
+            provider=args.provider,
+            model=args.model,
+            api_key=new_key,
+            save_to_config=args.save,
+        )
+
+        if not result.success:
+            return f"✗ {result.message}"
+
+        lines = [
+            f"✓ {result.message}",
+            f"Provider: {result.provider or '(inherit from parent)'}",
+            f"Model:    {result.model or '(inherit from parent)'}",
+            f"Key:      {mask_api_key(result.api_key)}",
+        ]
+        if result.saved_to_config:
+            lines.append("Saved to config.yaml")
+        return "\n".join(lines)
+
     async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
         """Handle /codex-runtime command in the gateway.
 

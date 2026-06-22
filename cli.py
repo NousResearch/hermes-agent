@@ -8461,6 +8461,72 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(f"    Saved to {result.key_env}")
         _cprint(f"    Model: {result.model or '(unknown)'}")
 
+    def _handle_apikey_d_command(self, cmd_original: str) -> None:
+        """Handle /apikey-d — hot-swap credentials used by subagent delegation.
+
+        Usage:
+            /apikey-d                   — show current delegation provider/model/key
+            /apikey-d <key>             — hotswap delegation API key
+            /apikey-d --provider <slug> — change delegation provider
+            /apikey-d --model <name>    — change delegation model
+            /apikey-d --save <key>      — hotswap and persist to config.yaml
+            /apikey-d --reload          — reload .env and apply provider's key
+        """
+        from hermes_cli.delegation_switch import (
+            apply_api_d_switch,
+            format_api_d_status,
+            get_delegation_config,
+            parse_api_d_args,
+            reload_delegation_key_from_env,
+        )
+        from hermes_cli.apikey_switch import mask_api_key
+
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        args, errors = parse_api_d_args(raw_args)
+        if errors:
+            for err in errors:
+                _cprint(f"  ✗ {err}")
+            return
+
+        cfg = get_delegation_config()
+        provider = str(cfg.get("provider") or "").strip()
+        model = str(cfg.get("model") or "").strip()
+
+        if args.reload:
+            new_key = reload_delegation_key_from_env(provider)
+            if not new_key:
+                from hermes_cli.apikey_switch import resolve_provider_key_env
+
+                key_env = resolve_provider_key_env(provider)
+                _cprint(f"  No key found in {key_env}")
+                return
+        else:
+            new_key = args.key
+
+        if not new_key and not args.provider and not args.model:
+            current_key = str(cfg.get("api_key") or "").strip()
+            _cprint(f"  {format_api_d_status(provider, model, current_key)}")
+            return
+
+        result = apply_api_d_switch(
+            provider=args.provider,
+            model=args.model,
+            api_key=new_key,
+            save_to_config=args.save,
+        )
+
+        if not result.success:
+            _cprint(f"  ✗ {result.message}")
+            return
+
+        _cprint(f"  ✓ {result.message}")
+        _cprint(f"    Provider: {result.provider or '(inherit from parent)'}")
+        _cprint(f"    Model:    {result.model or '(inherit from parent)'}")
+        _cprint(f"    Key:      {mask_api_key(result.api_key)}")
+        if result.saved_to_config:
+            _cprint("    Saved to config.yaml")
+
     def _handle_codex_runtime(self, cmd_original: str) -> None:
         """Handle /codex-runtime — toggle the codex app-server runtime opt-in.
 
@@ -8829,6 +8895,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_model_switch(cmd_original)
         elif canonical == "apikey":
             self._handle_apikey_command(cmd_original)
+        elif canonical == "apikey-d":
+            self._handle_apikey_d_command(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
 

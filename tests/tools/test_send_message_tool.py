@@ -315,6 +315,7 @@ class TestSendMessageTool:
             thread_id=None,
             media_files=[],
             force_document=False,
+            force_plain=False,
         )
 
 
@@ -354,6 +355,7 @@ class TestSendMessageTool:
             thread_id=None,
             media_files=[],
             force_document=False,
+            force_plain=False,
         )
 
     def test_top_level_send_failure_redacts_query_token(self):

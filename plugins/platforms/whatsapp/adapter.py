@@ -262,6 +262,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    _TEXT_INJECT_EXTENSIONS,
     cache_image_from_url,
     cache_audio_from_url,
 )
@@ -1241,7 +1242,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 for doc_path in cached_urls:
                     ext = Path(doc_path).suffix.lower()
-                    if ext in {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}:
+                    # Inline the same broad text/code/config set as
+                    # discord/slack/telegram (#50563), with a text/* MIME
+                    # fallback, instead of the old narrow allowlist — so
+                    # WhatsApp users' .toml/.ini/.sh/.sql/.rs/.go/etc. uploads
+                    # are read inline rather than cached-but-invisible.
+                    doc_mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "")
+                    if ext in _TEXT_INJECT_EXTENSIONS or (doc_mime or "").startswith("text/"):
                         try:
                             file_size = Path(doc_path).stat().st_size
                             if file_size > MAX_TEXT_INJECT_BYTES:

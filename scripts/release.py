@@ -69,6 +69,7 @@ AUTHOR_MAP = {
     "804436395@qq.com": "LaPhilosophie",
     "maxmitcham@mac.home": "maxtrigify",
     "ccook@nvms.com": "ccook1963",
+    "libre-7@users.noreply.github.com": "libre-7",
     "kristian@agrointel.no": "kristianvast",
     "thomas.paquette@gmail.com": "RyTsYdUp",
     "techxacm@gmail.com": "ProgramCaiCai",
@@ -593,6 +594,7 @@ AUTHOR_MAP = {
     "79389617+txbxxx@users.noreply.github.com": "txbxxx",
     "liuhao03@bilibili.com": "liuhao1024",
     "130918800+devorun@users.noreply.github.com": "devorun",
+    "27793551+iaji@users.noreply.github.com": "iaji",
     "surat.s@itm.kmutnb.ac.th": "beesrsj2500",
     "beesr@bee.localdomain": "beesrsj2500",
     "mind-dragon@nous.research": "Mind-Dragon",
@@ -1374,6 +1376,8 @@ AUTHOR_MAP = {
     "caojiguang@gmail.com": "caojiguang",  # PR #35117 carries #31853 (weixin _api_post/_api_get wait_for)
     "gooku94123@gmail.com": "goku94123",  # PR #46609 salvage (MiniMax reasoning extra_body)
     # pander: empty email, salvaged via PR #19665 from #16126 by @ms-alan
+    "chaithanya.kumar42a@gmail.com": "chaithanyak42",  # PR #15624
+    "kartik.labhshetwar@mem0.ai": "kartik-mem0",  # PR #15624
     "ayman.a.kamal@hotmail.com": "A-kamal",  # PR #18678 (xAI image resolution fix)
     # Kanban bug-fix batch salvage (May 2026)
     "frowte3k@gmail.com": "Frowtek",  # salvage of #23206 (gateway --board auto-subscribe)

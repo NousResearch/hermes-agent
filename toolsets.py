@@ -142,9 +142,9 @@ TOOLSETS = {
 
     "computer_use": {
         "description": (
-            "Background macOS desktop control via cua-driver — screenshots, "
-            "mouse, keyboard, scroll, drag. Does NOT steal the user's cursor "
-            "or keyboard focus. Works with any tool-capable model."
+            "Background desktop control via cua-driver (macOS/Windows/Linux) — "
+            "screenshots, mouse, keyboard, scroll, drag. Does NOT steal the "
+            "user's cursor or keyboard focus. Works with any tool-capable model."
         ),
         "tools": ["computer_use"],
         "includes": []

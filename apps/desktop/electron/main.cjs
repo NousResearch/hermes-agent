@@ -568,6 +568,16 @@ function previewFileMetadata(filePath, mimeType) {
 }
 
 app.setName(APP_NAME)
+// Windows toast notifications silently no-op unless an AppUserModelID is set:
+// `new Notification().show()` returns without error and nothing appears. The
+// AUMID must match the installed Start Menu shortcut's AUMID, which
+// electron-builder derives from the build `appId` (com.nousresearch.hermes) —
+// keep this string in sync with package.json `build.appId`. macOS/Linux don't
+// need this, so gate it on Windows. (Fixes: desktop approval/turn notifications
+// never firing on Windows.)
+if (IS_WINDOWS) {
+  app.setAppUserModelId('com.nousresearch.hermes')
+}
 // Seed the native About panel with the live Hermes version. This is refreshed
 // on every open via the explicit "About" menu handler (refreshAboutPanel), so
 // an in-place `hermes update` mid-session is reflected without an app restart;

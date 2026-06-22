@@ -1316,13 +1316,28 @@ def _build_child_agent(
     # handler. Best-effort: never let attribution break delegation.
     try:
         from gateway.session_context import get_session_env as _gse
+        # Grandchild chaining (PRD v2 §5.5): when this spawn happens INSIDE a
+        # subagent run (an orchestrator child spawning a grandchild), the
+        # HERMES_SESSION_* vars are unset (the child runs with its own
+        # `platform="subagent"` identity), so fall back to the routing-only
+        # send-origin the parent child is holding — that carries the REAL
+        # grandparent channel, making origin transitive through any nesting.
+        try:
+            from gateway.session_context import get_send_origin as _gso
+            _so_plat, _so_chat, _so_thread = _gso()
+        except Exception:
+            _so_plat = _so_chat = _so_thread = ""
         child._blackbox_is_subagent = True
         child._blackbox_parent_turn_id = _gse("HERMES_SESSION_KEY", "") or getattr(
             parent_agent, "session_id", None)
         child._blackbox_parent_platform = (
-            _gse("HERMES_SESSION_PLATFORM", "") or getattr(parent_agent, "platform", "") or "")
-        child._blackbox_parent_chat_id = _gse("HERMES_SESSION_CHAT_ID", "") or ""
+            _gse("HERMES_SESSION_PLATFORM", "") or _so_plat
+            or getattr(parent_agent, "platform", "") or "")
+        child._blackbox_parent_chat_id = _gse("HERMES_SESSION_CHAT_ID", "") or _so_chat or ""
         child._blackbox_parent_chat_name = _gse("HERMES_SESSION_CHAT_NAME", "") or ""
+        # Routing-only thread id for the child's bare sends (kept separate from
+        # the blackbox attribution fields, which don't carry a thread).
+        child._send_origin_thread_id = _gse("HERMES_SESSION_THREAD_ID", "") or _so_thread or ""
     except Exception as _bb_exc:
         logger.debug("blackbox subagent attribution skipped: %s", _bb_exc)
 
@@ -1471,6 +1486,43 @@ def _dump_subagent_timeout_diagnostic(
     except Exception as exc:
         logger.warning("Subagent timeout diagnostic dump failed: %s", exc)
         return None
+
+
+def _bind_child_send_origin(child):
+    """Bind the routing-only send-origin for a subagent run from the parent
+    origin captured on the child at spawn (``_blackbox_parent_platform/_chat_id``,
+    plus ``_send_origin_thread_id``). Returns reset tokens for the ``finally``
+    clear, or ``None`` when no parent origin is available (CLI/cron-spawned
+    child) — in which case the child's bare sends fall to home, unchanged.
+
+    Routing-only: sets dedicated ``_SEND_ORIGIN_*`` contextvars read ONLY by
+    send_message's resolver. Does NOT touch ``HERMES_SESSION_PLATFORM``, so the
+    child's approval/skills/TTS identity stays ``subagent`` (PRD v2 I5).
+    """
+    try:
+        platform = (getattr(child, "_blackbox_parent_platform", "") or "").strip()
+        chat_id = (getattr(child, "_blackbox_parent_chat_id", "") or "").strip()
+        thread_id = (getattr(child, "_send_origin_thread_id", "") or "").strip()
+        # `subagent` is the child's own identity, never a real channel — never
+        # bind it as an origin (that's the un-chained grandchild case).
+        if platform and platform.lower() != "subagent" and chat_id:
+            from gateway.session_context import set_send_origin
+            return set_send_origin(platform, chat_id, thread_id)
+    except Exception as exc:
+        logger.debug("send-origin bind skipped: %s", exc)
+    return None
+
+
+def _clear_child_send_origin(tokens):
+    """Restore the send-origin contextvars after a child run. No-op when no
+    origin was bound. Never raises."""
+    if not tokens:
+        return
+    try:
+        from gateway.session_context import clear_send_origin
+        clear_send_origin(tokens)
+    except Exception as exc:
+        logger.debug("send-origin clear skipped: %s", exc)
 
 
 def _run_single_child(
@@ -1660,10 +1712,20 @@ def _run_single_child(
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
-            return child.run_conversation(
-                user_message=goal,
-                task_id=child_task_id,
-            )
+            # Bind the routing-only send-origin so the child's bare send_message/
+            # react calls resolve to the PARENT's channel, not the global home
+            # (PRD v2 RC#1). Uses dedicated contextvars read ONLY by the send
+            # resolver — the child keeps its own `platform="subagent"` identity
+            # for approval/skills/TTS. Cleared in finally (nestable: a grandchild
+            # restores the child's origin, not blank).
+            _origin_tokens = _bind_child_send_origin(child)
+            try:
+                return child.run_conversation(
+                    user_message=goal,
+                    task_id=child_task_id,
+                )
+            finally:
+                _clear_child_send_origin(_origin_tokens)
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:

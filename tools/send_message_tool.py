@@ -154,22 +154,44 @@ _SEND_TARGET_NOT_IN_TURN = "not_in_turn"
 
 
 def _has_messaging_origin() -> bool:
-    """True only when a real messaging platform is bound for this turn.
+    """True when a messaging origin is bound for this turn — a real gateway
+    session platform OR a subagent's routing-only send-origin.
 
     Deliberately narrower than ``approval._is_gateway_approval_context()``: the
     TUI/desktop/ACP gateways set ``HERMES_GATEWAY_SESSION`` (process env) WITHOUT
     binding a messaging platform (``set_session_vars(session_key=…)`` leaves the
     platform empty), so that helper would flag them as interactive and turn a
     legitimate bare→home send into a hard error. The correct gate is "is a
-    messaging platform bound?" — i.e. a non-empty session platform — excluding
-    cron (which sets HERMES_CRON_SESSION and clears the platform).
+    messaging origin bound?".
+
+    Fixed resolution order (fail-closed-to-home throughout):
+      1. HERMES_CRON_SESSION set -> False (cron always home; a cron-spawned
+         subagent must never be treated as a messaging turn).
+      2. live session platform bound -> True (real gateway main turn).
+      3. routing-only send-origin bound -> True (subagent with a parent origin).
+      4. else -> False.
     """
     try:
         from utils import env_var_enabled
         if env_var_enabled("HERMES_CRON_SESSION"):
             return False
         from tools.approval import _get_session_platform
-        return bool(_get_session_platform())
+        if _get_session_platform():
+            return True
+        # Subagent send-origin (routing-only contextvars). Wrapped so an
+        # import/lookup failure fails toward home, never an in-turn error.
+        # Require BOTH platform AND chat_id so this stays consistent with
+        # _interactive_origin (which needs both) — otherwise a platform-only
+        # send-origin would flip this True while _interactive_origin returns
+        # None, surfacing a hard error instead of falling closed to home.
+        try:
+            from gateway.session_context import get_send_origin
+            so_platform, so_chat, _so_thread = get_send_origin()
+            if so_platform and so_chat:
+                return True
+        except Exception:
+            pass
+        return False
     except Exception:
         # Fail toward today's behavior (no messaging origin -> home fallback),
         # never toward an in-turn error that could swallow a legitimate send.
@@ -179,27 +201,37 @@ def _has_messaging_origin() -> bool:
 def _interactive_origin(platform_name):
     """Resolve the current turn's own (chat_id, thread_id) for ``platform_name``.
 
-    Reads the task-local HERMES_SESSION_* ContextVars the gateway binds per turn
-    (concurrency-safe — see gateway/session_context.py). Returns ``None`` when
-    no same-platform origin can be determined (e.g. the turn is on a different
-    platform than the one being sent to).
+    Resolution order (a real gateway turn always wins over a send-origin):
+      1. live HERMES_SESSION_* contextvars (gateway main turn) for this platform.
+      2. routing-only send-origin contextvars (subagent's captured parent origin).
+      3. session-key parse fallback.
+    Returns ``None`` when no same-platform origin can be determined.
     """
     try:
         from gateway.session_context import get_session_env
     except Exception:
         return None
 
-    sess_platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
     want = (platform_name or "").strip().lower()
 
-    # Same-platform origin from the directly-bound chat id.
+    # 1. Live gateway session platform (the v1 main-turn path).
+    sess_platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
     if sess_platform and sess_platform == want:
         chat_id = (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip()
         thread_id = (get_session_env("HERMES_SESSION_THREAD_ID", "") or "").strip() or None
         if chat_id:
             return (chat_id, thread_id)
 
-    # Fallback: parse the session key (same parse the gateway's background
+    # 2. Subagent routing-only send-origin (set by the delegate child-run wrapper).
+    try:
+        from gateway.session_context import get_send_origin
+        so_platform, so_chat, so_thread = get_send_origin()
+        if so_platform and so_platform.strip().lower() == want and so_chat:
+            return (so_chat.strip(), (so_thread or "").strip() or None)
+    except Exception:
+        pass
+
+    # 3. Fallback: parse the session key (same parse the gateway's background
     # delivery path uses) when the chat-id env wasn't populated.
     try:
         from tools.approval import get_current_session_key
@@ -225,11 +257,49 @@ def _resolve_send_target(platform_name):
     with an unresolvable target reaches the home channel.
     """
     if not _has_messaging_origin():
+        _warn_unexpected_home_fallback(platform_name)
         return (_SEND_TARGET_NOT_IN_TURN, None, None)
     origin = _interactive_origin(platform_name)
     if origin is not None:
         return (_SEND_TARGET_ORIGIN, origin[0], origin[1])
     return (_SEND_TARGET_IN_TURN_UNRESOLVABLE, None, None)
+
+
+def _warn_unexpected_home_fallback(platform_name):
+    """Tripwire (RC#2): we are about to home-fallback (NOT_IN_TURN), but a
+    session_key is nonetheless resolvable — i.e. *something* says we're in a
+    session yet no messaging origin is bound. This is the diagnostic for any
+    remaining/unknown leak path. Observation-only: never alters routing, never
+    raises, logs NO message body or secrets. Silent on cron (expected home).
+    """
+    try:
+        from utils import env_var_enabled
+        if env_var_enabled("HERMES_CRON_SESSION"):
+            return  # cron legitimately homes; not a tripwire case
+        from tools.approval import get_current_session_key, _get_session_platform
+        session_key = get_current_session_key("") or ""
+        if not session_key:
+            return  # true CLI/no-session — home is correct, nothing to flag
+        # session_key present but we concluded NOT_IN_TURN -> worth recording.
+        import threading
+        try:
+            from gateway.session_context import get_send_origin
+            so_set = bool(get_send_origin()[0])
+        except Exception:
+            so_set = False
+        logger.warning(
+            "send_message home-fallback despite session_key present "
+            "(possible origin-leak path) — platform_req=%s platform_bound=%s "
+            "send_origin_set=%s thread=%s session_key=%s",
+            (platform_name or "")[:32],
+            bool(_get_session_platform()),
+            so_set,
+            threading.current_thread().name,
+            session_key[:64],
+        )
+    except Exception:
+        # Diagnostics must never affect the send path.
+        pass
 
 
 def _origin_unresolvable_error(platform_name):

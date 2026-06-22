@@ -195,3 +195,71 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+# ---------------------------------------------------------------------------
+# Send-origin context (routing-only) — fixes the subagent send_message leak.
+# ---------------------------------------------------------------------------
+# A delegate_task child runs in a bare ThreadPoolExecutor worker with an EMPTY
+# contextvars context, so the HERMES_SESSION_* vars above are unset inside it.
+# A subagent calling send_message/react with a bare target therefore had no
+# session origin and silently fell back to the global home channel (the v2
+# leak). These dedicated vars carry ONLY the routing origin (platform/chat/
+# thread) the send resolver needs — they are read EXCLUSIVELY by
+# send_message_tool's origin resolver, never by approval/skills/TTS/cache, so a
+# child keeps its own `platform="subagent"` identity for everything else.
+#
+# CONTEXTVAR-ONLY by design: NO os.environ fallback. An os.environ fallback
+# would re-introduce the exact cross-executor leakage we are fixing (a child
+# would read the parent process-global). The delegate child-run wrapper binds
+# these from the captured parent origin and clears them in a finally.
+_SEND_ORIGIN_PLATFORM: ContextVar = ContextVar("HERMES_SEND_ORIGIN_PLATFORM", default=_UNSET)
+_SEND_ORIGIN_CHAT_ID: ContextVar = ContextVar("HERMES_SEND_ORIGIN_CHAT_ID", default=_UNSET)
+_SEND_ORIGIN_THREAD_ID: ContextVar = ContextVar("HERMES_SEND_ORIGIN_THREAD_ID", default=_UNSET)
+
+
+def set_send_origin(platform: str, chat_id: str, thread_id: str = "") -> list:
+    """Bind the routing-only send origin for the current context (e.g. a
+    subagent run). Returns reset tokens; pass to ``clear_send_origin`` in a
+    ``finally``. Contextvar-only — never touches os.environ.
+    """
+    return [
+        _SEND_ORIGIN_PLATFORM.set(platform or ""),
+        _SEND_ORIGIN_CHAT_ID.set(chat_id or ""),
+        _SEND_ORIGIN_THREAD_ID.set(thread_id or ""),
+    ]
+
+
+def clear_send_origin(tokens: list) -> None:
+    """Restore the send-origin vars to their prior values (true reset, so this
+    IS nestable — a grandchild's clear restores the child's origin, not blank).
+    ``tokens`` is the list returned by ``set_send_origin``; ``None``/empty is a
+    safe no-op (used when no origin was bound).
+    """
+    if not tokens:
+        return
+    for var, token in zip(
+        (_SEND_ORIGIN_PLATFORM, _SEND_ORIGIN_CHAT_ID, _SEND_ORIGIN_THREAD_ID),
+        tokens,
+    ):
+        try:
+            var.reset(token)
+        except Exception:
+            # Token from a different context (shouldn't happen — same thread
+            # set+clear) — fall back to clearing to empty.
+            var.set("")
+
+
+def get_send_origin() -> tuple:
+    """Return ``(platform, chat_id, thread_id)`` for the routing-only send
+    origin, or ``("", "", "")`` when unset. Contextvar-only (no os.environ).
+    """
+    def _v(var):
+        val = var.get()
+        return "" if val is _UNSET else val
+
+    return (
+        _v(_SEND_ORIGIN_PLATFORM),
+        _v(_SEND_ORIGIN_CHAT_ID),
+        _v(_SEND_ORIGIN_THREAD_ID),
+    )

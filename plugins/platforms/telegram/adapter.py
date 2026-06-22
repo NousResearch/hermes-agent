@@ -13,6 +13,7 @@ import inspect
 import json
 import logging
 import os
+import time
 import tempfile
 import html as _html
 import re
@@ -544,6 +545,16 @@ class TelegramAdapter(BasePlatformAdapter):
         # While True, send() short-circuits to a failure so callers
         # (cron live-adapter branch) fall through to standalone delivery.
         self._send_path_degraded: bool = False
+        # Per-chat Telegram RetryAfter cooldowns. Long flood-control waits must
+        # not block gateway delivery coroutines for minutes or trigger immediate
+        # duplicate fallback sends for content that was already partially shown.
+        self._flood_cooldowns: Dict[str, float] = {}
+        self._max_inline_flood_wait_seconds = self._env_float_clamped(
+            "HERMES_TELEGRAM_MAX_INLINE_FLOOD_WAIT_SECONDS",
+            5.0,
+            min_value=0.0,
+            max_value=30.0,
+        )
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # Track forum chats where we've already registered bot commands
@@ -864,6 +875,65 @@ class TelegramAdapter(BasePlatformAdapter):
             if any(marker in err_lower for marker in topic_markers):
                 return True
         return False
+
+    def _flood_cooldowns_map(self) -> Dict[str, float]:
+        """Return the mutable per-chat flood-control cooldown map."""
+        cooldowns = getattr(self, "_flood_cooldowns", None)
+        if cooldowns is None:
+            cooldowns = {}
+            self._flood_cooldowns = cooldowns
+        return cooldowns
+
+    @staticmethod
+    def _retry_after_seconds(error: Exception) -> Optional[float]:
+        retry_after = getattr(error, "retry_after", None)
+        if retry_after is not None:
+            try:
+                wait = float(retry_after)
+            except (TypeError, ValueError):
+                wait = 1.0
+            return max(wait, 0.0)
+        match = re.search(
+            r"retry\s+(?:in|after)\s+([0-9]+(?:\.[0-9]+)?)",
+            str(error),
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        try:
+            return max(float(match.group(1)), 0.0)
+        except ValueError:
+            return 1.0
+
+    def _record_flood_control(self, chat_id: str, wait: float) -> float:
+        try:
+            wait_seconds = float(wait)
+        except (TypeError, ValueError):
+            wait_seconds = 1.0
+        if wait_seconds <= 0:
+            wait_seconds = 1.0
+        cooldowns = self._flood_cooldowns_map()
+        key = str(chat_id)
+        until = time.monotonic() + wait_seconds
+        cooldowns[key] = max(cooldowns.get(key, 0.0), until)
+        return wait_seconds
+
+    def _flood_cooldown_remaining(self, chat_id: str) -> float:
+        cooldowns = self._flood_cooldowns_map()
+        key = str(chat_id)
+        until = cooldowns.get(key)
+        if not until:
+            return 0.0
+        remaining = until - time.monotonic()
+        if remaining <= 0:
+            cooldowns.pop(key, None)
+            return 0.0
+        return remaining
+
+    @staticmethod
+    def _flood_control_result(wait: float) -> SendResult:
+        wait = max(float(wait), 1.0)
+        return SendResult(success=False, error=f"flood_control:{wait:.1f}", retryable=False)
 
     async def _send_with_dm_topic_reply_anchor_retry(
         self,
@@ -2508,7 +2578,17 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        
+
+        cooldown = self._flood_cooldown_remaining(chat_id)
+        if cooldown > 0:
+            logger.debug(
+                "[%s] Telegram flood cooldown active for chat %s; skipping send for %.1fs",
+                self.name,
+                chat_id,
+                cooldown,
+            )
+            return self._flood_control_result(cooldown)
+
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
@@ -2733,19 +2813,30 @@ class TelegramAdapter(BasePlatformAdapter):
                         else:
                             raise
                     except Exception as send_err:
-                        retry_after = getattr(send_err, "retry_after", None)
-                        if retry_after is not None or "retry after" in str(send_err).lower():
-                            if _send_attempt < 2:
-                                wait = float(retry_after) if retry_after is not None else 1.0
+                        retry_after = self._retry_after_seconds(send_err)
+                        if retry_after is not None:
+                            wait = self._record_flood_control(chat_id, retry_after)
+                            max_inline = getattr(
+                                self, "_max_inline_flood_wait_seconds", 5.0
+                            )
+                            if wait > max_inline or _send_attempt >= 2:
                                 logger.warning(
-                                    "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s",
+                                    "[%s] Telegram flood control on send; deferring for %.1fs: %s",
                                     self.name,
-                                    _send_attempt + 1,
                                     wait,
                                     send_err,
                                 )
-                                await asyncio.sleep(wait)
-                                continue
+                                return self._flood_control_result(wait)
+                            logger.warning(
+                                "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s",
+                                self.name,
+                                _send_attempt + 1,
+                                wait,
+                                send_err,
+                            )
+                            await asyncio.sleep(wait)
+                            self._flood_cooldowns_map().pop(str(chat_id), None)
+                            continue
                         raise
                 message_ids.append(str(msg.message_id))
 
@@ -3113,6 +3204,17 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     break
                 except Exception as send_err:
+                    flood_wait = self._retry_after_seconds(send_err)
+                    if flood_wait is not None:
+                        wait = self._record_flood_control(chat_id, flood_wait)
+                        logger.warning(
+                            "[%s] Overflow continuation hit Telegram flood control; deferring for %.1fs: %s",
+                            self.name,
+                            wait,
+                            send_err,
+                        )
+                        sent_msg = None
+                        break
                     if "reply message not found" in str(send_err).lower():
                         # Drop the reply anchor and try again.  Private DM
                         # topic fallback needs the anchor and topic id together;

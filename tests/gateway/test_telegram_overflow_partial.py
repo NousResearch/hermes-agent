@@ -23,6 +23,12 @@ def telegram_adapter() -> TelegramAdapter:
     return adapter
 
 
+class FakeRetryAfter(Exception):
+    def __init__(self, seconds: float):
+        super().__init__(f"Flood control exceeded. Retry in {seconds:g} seconds")
+        self.retry_after = seconds
+
+
 @pytest.mark.asyncio
 async def test_edit_overflow_split_reports_success_when_all_continuations_land(telegram_adapter):
     """Complete overflow delivery keeps the existing successful contract."""
@@ -93,6 +99,26 @@ async def test_edit_overflow_split_reports_partial_failure_when_continuation_fai
     assert result.raw_response["last_message_id"] == "201"
     assert result.raw_response["delivered_prefix"]
     assert result.continuation_message_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_edit_overflow_split_does_not_plain_retry_after_flood_control(telegram_adapter):
+    """A RetryAfter on a Markdown continuation must not immediately retry plain text."""
+    content = "word " * 120
+    telegram_adapter._bot.edit_message_text = AsyncMock(return_value=True)
+    telegram_adapter._bot.send_message = AsyncMock(side_effect=FakeRetryAfter(120))
+
+    result = await telegram_adapter._edit_overflow_split(
+        "12345", "201", content, finalize=True, metadata={"thread_id": "77"}
+    )
+
+    assert result.success is False
+    assert result.error == "overflow_continuation_failed"
+    assert result.retryable is True
+    assert result.raw_response["partial_overflow"] is True
+    assert result.raw_response["delivered_chunks"] == 1
+    assert telegram_adapter._bot.send_message.await_count == 1
+    assert telegram_adapter._flood_cooldown_remaining("12345") > 0
 
 
 @pytest.mark.asyncio

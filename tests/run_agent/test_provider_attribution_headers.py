@@ -144,6 +144,8 @@ def test_routed_client_preserves_openai_sdk_default_headers(mock_openai):
     headers = agent._client_kwargs["default_headers"]
     assert headers["copilot-integration-id"] == "vscode-chat"
 
+
+@patch("run_agent.OpenAI")
 def test_copilot_base_url_uses_canonical_text_header_profile(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = AIAgent(

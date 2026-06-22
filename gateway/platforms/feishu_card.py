@@ -107,6 +107,159 @@ def parse_markdown_tables(text: str) -> list[tuple[str, ...]]:
 
 from typing import Optional
 
+MAX_MARKDOWN_CHARS = 4000
+MAX_TABLES = 5
+MAX_ELEMENTS = 30
+MAX_CARD_BYTES = 24000
+
+_TRUNCATION_NOTICE = "...(内容过长已截断)"
+
+
+class CardElementValidator:
+    """Pre-flight validation for Feishu card elements."""
+
+    @staticmethod
+    def validate(elements: list[dict]) -> list[dict]:
+        result = _enforce_table_limit(elements)
+        result = _split_long_markdown(result)
+        result = _merge_adjacent_markdown(result)
+        result = _enforce_byte_limit(result)
+        return result
+
+
+def _enforce_table_limit(elements: list[dict]) -> list[dict]:
+    table_count = 0
+    result = []
+    for el in elements:
+        if el.get("tag") == "table":
+            table_count += 1
+            if table_count > MAX_TABLES:
+                result.append({"tag": "markdown", "content": _table_to_markdown(el)})
+                continue
+        result.append(el)
+    return result
+
+
+def _table_to_markdown(table_el: dict) -> str:
+    cols = table_el.get("columns", [])
+    rows = table_el.get("rows", [])
+    if not cols:
+        return ""
+    headers = [c.get("display_name", c.get("name", "")) for c in cols]
+    col_keys = [c.get("name", "") for c in cols]
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    for row in rows:
+        cells = [str(row.get(k, "")) for k in col_keys]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def _split_long_markdown(elements: list[dict]) -> list[dict]:
+    result = []
+    for el in elements:
+        if el.get("tag") != "markdown":
+            result.append(el)
+            continue
+        content = el["content"]
+        if len(content) <= MAX_MARKDOWN_CHARS:
+            result.append(el)
+            continue
+        chunks = _split_by_paragraphs(content, MAX_MARKDOWN_CHARS)
+        for chunk in chunks:
+            result.append({"tag": "markdown", "content": chunk})
+    return result
+
+
+def _split_by_paragraphs(text: str, max_chars: int) -> list[str]:
+    paragraphs = text.split("\n\n")
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for para in paragraphs:
+        if len(para) > max_chars:
+            if current:
+                chunks.append("\n\n".join(current))
+                current = []
+                current_len = 0
+            chunks.append(para[:max_chars - len(_TRUNCATION_NOTICE)] + _TRUNCATION_NOTICE)
+            continue
+        added_len = len(para) + (2 if current else 0)
+        if current and current_len + added_len > max_chars:
+            chunks.append("\n\n".join(current))
+            current = [para]
+            current_len = len(para)
+        else:
+            current.append(para)
+            current_len += added_len
+    if current:
+        chunks.append("\n\n".join(current))
+    return chunks if chunks else [text[:max_chars - len(_TRUNCATION_NOTICE)] + _TRUNCATION_NOTICE]
+
+
+def _merge_adjacent_markdown(elements: list[dict]) -> list[dict]:
+    if len(elements) <= MAX_ELEMENTS:
+        return elements
+    result: list[dict] = []
+    for el in elements:
+        if (
+            el.get("tag") == "markdown"
+            and result
+            and result[-1].get("tag") == "markdown"
+            and len(result) >= MAX_ELEMENTS
+        ):
+            merged = result[-1]["content"] + "\n\n" + el["content"]
+            if len(merged) <= MAX_MARKDOWN_CHARS:
+                result[-1] = {"tag": "markdown", "content": merged}
+                continue
+        result.append(el)
+    if len(result) > MAX_ELEMENTS:
+        result = result[:MAX_ELEMENTS]
+    return result
+
+
+def _enforce_byte_limit(elements: list[dict]) -> list[dict]:
+    import json as _json
+    encoded = _json.dumps(elements, ensure_ascii=False).encode()
+    if len(encoded) <= MAX_CARD_BYTES:
+        return elements
+    while len(elements) > 1:
+        elements = elements[:-1]
+        encoded = _json.dumps(elements, ensure_ascii=False).encode()
+        if len(encoded) <= MAX_CARD_BYTES:
+            break
+    if elements and elements[-1].get("tag") == "markdown":
+        content = elements[-1]["content"]
+        while len(_json.dumps(elements, ensure_ascii=False).encode()) > MAX_CARD_BYTES and len(content) > 100:
+            content = content[:len(content) // 2]
+            elements[-1] = {"tag": "markdown", "content": content + _TRUNCATION_NOTICE}
+    return elements
+
+
+def build_progress_card_json(
+    *,
+    accumulated_text: str,
+    tool_lines: list[str],
+    status_line: str,
+) -> dict:
+    card = {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "elements": [],
+    }
+    parts: list[str] = []
+    if accumulated_text:
+        parts.append(accumulated_text)
+    if tool_lines:
+        parts.append(" → ".join(tool_lines))
+    if status_line:
+        parts.append(f"*{status_line}*")
+    body = "\n\n".join(parts) if parts else status_line
+    card["elements"].append({"tag": "markdown", "content": body})
+    card["elements"] = CardElementValidator.validate(card["elements"])
+    return card
+
 
 def build_card_json(
     *,

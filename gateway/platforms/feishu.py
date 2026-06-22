@@ -1409,6 +1409,113 @@ def check_feishu_requirements() -> bool:
     return ensure_and_bind("platform.feishu", _import, globals(), prompt=False)
 
 
+# ---------------------------------------------------------------------------
+# Live Card Manager — real-time progress card state machine
+# ---------------------------------------------------------------------------
+
+import enum as _enum
+
+
+class LiveCardState(_enum.Enum):
+    IDLE = "idle"
+    ACK_SENT = "ack_sent"
+    LIVE = "live"
+    FINALIZING = "finalizing"
+
+
+MIN_PATCH_INTERVAL = 1.5
+HEARTBEAT_INTERVAL = 5.0
+
+
+class LiveCardManager:
+    """Per-chat state machine for the live progress card lifecycle."""
+
+    __slots__ = (
+        "state", "card_message_id", "accumulated_text", "tool_lines",
+        "started_at", "last_tool", "last_patch_ts", "heartbeat_task",
+        "degraded", "_deferred_handle",
+    )
+
+    def __init__(self) -> None:
+        self.state = LiveCardState.IDLE
+        self.card_message_id: Optional[str] = None
+        self.accumulated_text: str = ""
+        self.tool_lines: list[str] = []
+        self.started_at: float = 0.0
+        self.last_tool: Optional[str] = None
+        self.last_patch_ts: float = 0.0
+        self.heartbeat_task: Optional[asyncio.Task] = None
+        self.degraded: bool = False
+        self._deferred_handle: Optional[asyncio.TimerHandle] = None
+
+    def start(self, card_message_id: str, *, started_at: float) -> None:
+        self.state = LiveCardState.ACK_SENT
+        self.card_message_id = card_message_id
+        self.started_at = started_at
+        self.accumulated_text = ""
+        self.tool_lines = []
+        self.last_tool = None
+        self.last_patch_ts = 0.0
+        self.degraded = False
+
+    def update_text(self, text: str) -> None:
+        self.accumulated_text = text
+        if self.state == LiveCardState.ACK_SENT:
+            self.state = LiveCardState.LIVE
+
+    def append_tool(self, tool_name: str) -> None:
+        from gateway.platforms.feishu_card import TOOL_SEMANTICS
+        self.last_tool = tool_name
+        entry = TOOL_SEMANTICS.get(tool_name)
+        if entry:
+            icon = {"Read": "📖", "Bash": "💻", "Edit": "✏️", "Write": "📝",
+                    "Grep": "🔍", "Glob": "📁", "WebFetch": "🌐",
+                    "WebSearch": "🔎", "Agent": "🤖", "TodoWrite": "📋",
+                    "MultiEdit": "✏️"}.get(entry[0], "🔧")
+            self.tool_lines.append(f"{icon} {entry[1]}")
+        else:
+            self.tool_lines.append(f"🔧 {tool_name}")
+        if self.state == LiveCardState.ACK_SENT:
+            self.state = LiveCardState.LIVE
+
+    def reset(self) -> None:
+        self.state = LiveCardState.IDLE
+        self.card_message_id = None
+        self.accumulated_text = ""
+        self.tool_lines = []
+        self.last_tool = None
+        self.last_patch_ts = 0.0
+        self.degraded = False
+        if self._deferred_handle is not None:
+            self._deferred_handle.cancel()
+            self._deferred_handle = None
+
+    def mark_degraded(self) -> None:
+        self.degraded = True
+
+    def should_throttle(self, *, now: float) -> bool:
+        if self.last_patch_ts == 0.0:
+            return False
+        return (now - self.last_patch_ts) < MIN_PATCH_INTERVAL
+
+    def build_card(self, *, now: float) -> dict:
+        from gateway.platforms.feishu_card import build_progress_card_json, TOOL_SEMANTICS
+        elapsed = int(now - self.started_at)
+        semantic = ""
+        if self.last_tool:
+            entry = TOOL_SEMANTICS.get(self.last_tool)
+            if entry:
+                semantic = entry[1]
+        status = f"⏳ 已思考 {elapsed}s"
+        if semantic:
+            status += f" · {semantic}"
+        return build_progress_card_json(
+            accumulated_text=self.accumulated_text,
+            tool_lines=list(self.tool_lines),
+            status_line=status,
+        )
+
+
 class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
@@ -1483,6 +1590,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # processing start; consumed by the first send() to patch in-place.
         self._pending_ack_cards: Dict[str, str] = {}
         self._card_mode_enabled = True
+        self._live_cards: Dict[str, LiveCardManager] = {}
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1879,12 +1987,53 @@ class FeishuAdapter(BasePlatformAdapter):
 
         formatted = self.format_message(content)
 
+        # Live card interception
+        _meta = metadata or {}
+        live = self._live_cards.get(chat_id)
+        if live and not live.degraded:
+            is_final = bool(_meta.get("footer_line") or _meta.get("status_text"))
+            if not is_final and chat_id in self._pending_ack_cards:
+                live.update_text(formatted)
+                logger.debug("[Feishu] LiveCard intercepted progress send: %s", chat_id)
+                if not live.should_throttle(now=time.monotonic()):
+                    card = live.build_card(now=time.monotonic())
+                    result = await self._patch_card(
+                        message_id=live.card_message_id, card=card,
+                    )
+                    if result.success:
+                        live.last_patch_ts = time.monotonic()
+                    return result
+                return SendResult(success=True, message_id=live.card_message_id)
+
+            if is_final or chat_id in self._pending_ack_cards:
+                try:
+                    from gateway.platforms.feishu_card import build_card_json
+                    ack_msg_id = self._pending_ack_cards.pop(chat_id, None)
+                    card = build_card_json(
+                        content=formatted,
+                        footer_line=_meta.get("footer_line"),
+                        status_text=_meta.get("status_text"),
+                    )
+                    target_id = ack_msg_id or live.card_message_id
+                    if live.heartbeat_task is not None:
+                        live.heartbeat_task.cancel()
+                    result = await self._patch_card(
+                        message_id=target_id, card=card,
+                    )
+                    self._live_cards.pop(chat_id, None)
+                    live.reset()
+                    logger.info("[Feishu] LiveCard finalized: %s", chat_id)
+                    if result.success:
+                        return result
+                    logger.warning("[Feishu] LiveCard final patch failed: %s", result.error)
+                except Exception as exc:
+                    logger.warning("[Feishu] LiveCard finalize failed: %s", exc)
+
         # Card mode: wrap content in interactive card
         if getattr(self, "_card_mode_enabled", False):
             try:
                 from gateway.platforms.feishu_card import build_card_json
                 card = build_card_json(content=formatted)
-                # Consume pending ACK card — patch it instead of sending new
                 ack_msg_id = self._pending_ack_cards.pop(chat_id, None)
                 if ack_msg_id:
                     logger.info("[Feishu] Consuming ACK card %s for %s", ack_msg_id, chat_id)
@@ -1966,6 +2115,21 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
+
+        # Live card interception — streaming text updates
+        live = self._live_cards.get(chat_id)
+        if live and live.state in (LiveCardState.ACK_SENT, LiveCardState.LIVE) and not live.degraded:
+            live.update_text(content)
+            logger.debug("[Feishu] LiveCard intercepted edit: %s", chat_id)
+            if not live.should_throttle(now=time.monotonic()):
+                card = live.build_card(now=time.monotonic())
+                result = await self._patch_card(
+                    message_id=live.card_message_id, card=card,
+                )
+                if result.success:
+                    live.last_patch_ts = time.monotonic()
+                return result
+            return SendResult(success=True, message_id=live.card_message_id)
 
         # Card mode: patch as interactive card
         if getattr(self, "_card_mode_enabled", False):
@@ -3271,7 +3435,6 @@ class FeishuAdapter(BasePlatformAdapter):
         if reaction_id:
             self._remember_processing_reaction(message_id, reaction_id)
 
-        # Send an ACK card as reply so the user sees immediate feedback.
         _src = getattr(event, "source", None)
         chat_id = getattr(_src, "chat_id", None) or ""
         if chat_id and getattr(self, "_card_mode_enabled", False):
@@ -3284,14 +3447,31 @@ class FeishuAdapter(BasePlatformAdapter):
                     reply_to=message_id,
                 )
                 if result.success and result.message_id:
-                    self._pending_ack_cards[chat_id] = str(result.message_id)
-                    logger.info("[Feishu] ACK card sent: %s → %s", chat_id, result.message_id)
+                    ack_msg_id = str(result.message_id)
+                    self._pending_ack_cards[chat_id] = ack_msg_id
+                    live = LiveCardManager()
+                    live.start(ack_msg_id, started_at=time.monotonic())
+                    self._live_cards[chat_id] = live
+                    live.heartbeat_task = asyncio.ensure_future(
+                        self._heartbeat_loop(chat_id)
+                    )
+                    logger.info("[Feishu] LiveCard created: %s → %s", chat_id, ack_msg_id)
             except Exception as exc:
                 logger.debug("[Feishu] ACK card send failed: %s", exc)
 
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome
     ) -> None:
+        _src = getattr(event, "source", None)
+        chat_id = getattr(_src, "chat_id", None) or ""
+        if chat_id:
+            live = self._live_cards.pop(chat_id, None)
+            if live:
+                if live.heartbeat_task is not None:
+                    live.heartbeat_task.cancel()
+                live.reset()
+                logger.debug("[Feishu] LiveCard cleanup: %s", chat_id)
+
         if not self._reactions_enabled():
             return
         message_id = event.message_id
@@ -3301,14 +3481,35 @@ class FeishuAdapter(BasePlatformAdapter):
         start_reaction_id = self._pending_processing_reactions.get(message_id)
         if start_reaction_id:
             if not await self._remove_reaction(message_id, start_reaction_id):
-                # Don't stack a second badge on top of a Typing we couldn't
-                # remove — UI would read as both "working" and "done/failed"
-                # simultaneously. Keep the handle so LRU eventually evicts it.
                 return
             self._pop_processing_reaction(message_id)
 
         if outcome is ProcessingOutcome.FAILURE:
             await self._add_reaction(message_id, _FEISHU_REACTION_FAILURE)
+
+    async def _heartbeat_loop(self, chat_id: str) -> None:
+        """Periodically patch the live card with elapsed time."""
+        try:
+            while True:
+                await asyncio.sleep(HEARTBEAT_INTERVAL)
+                live = self._live_cards.get(chat_id)
+                if not live or live.state not in (LiveCardState.ACK_SENT, LiveCardState.LIVE):
+                    break
+                if live.degraded:
+                    break
+                try:
+                    card = live.build_card(now=time.monotonic())
+                    result = await self._patch_card(
+                        message_id=live.card_message_id, card=card,
+                    )
+                    if result.success:
+                        live.last_patch_ts = time.monotonic()
+                    else:
+                        logger.debug("[Feishu] LiveCard heartbeat patch failed: %s", result.error)
+                except Exception as exc:
+                    logger.debug("[Feishu] LiveCard heartbeat patch failed: %s", exc)
+        except asyncio.CancelledError:
+            pass
 
     # =========================================================================
     # Webhook server and security

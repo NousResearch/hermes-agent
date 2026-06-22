@@ -347,11 +347,11 @@ class SlackAdapter(BasePlatformAdapter):
         self._approval_resolved: Dict[str, bool] = {}
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
-        self._bot_message_ts: set = set()
+        self._bot_message_ts: set[str] = set()
         self._BOT_TS_MAX = 5000  # cap to avoid unbounded growth
         # Track threads where the bot has been @mentioned — once mentioned,
         # respond to ALL subsequent messages in that thread automatically.
-        self._mentioned_threads: set = set()
+        self._mentioned_threads: set[str] = set()
         self._MENTIONED_THREADS_MAX = 5000
         # Assistant thread metadata keyed by (channel_id, thread_ts). Slack's
         # AI Assistant lifecycle events can arrive before/alongside message
@@ -379,6 +379,43 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+
+    @staticmethod
+    def _slack_timestamp_sort_key(ts: str) -> Tuple[int, int, str]:
+        """Return a chronological, deterministic sort key for Slack timestamps."""
+        seconds, _, fraction = str(ts).partition(".")
+        try:
+            seconds_int = int(seconds)
+        except ValueError:
+            seconds_int = 0
+        try:
+            fraction_int = int((fraction + "000000")[:6] or "0")
+        except ValueError:
+            fraction_int = 0
+        return seconds_int, fraction_int, str(ts)
+
+    @classmethod
+    def _discard_oldest_slack_timestamps(
+        cls, timestamps: set[str], count: int
+    ) -> None:
+        """Discard the oldest Slack timestamps from a bounded tracking set."""
+        if count <= 0:
+            return
+        for old_ts in sorted(timestamps, key=cls._slack_timestamp_sort_key)[:count]:
+            timestamps.discard(old_ts)
+
+    def _trim_bot_message_timestamps(self) -> None:
+        if len(self._bot_message_ts) <= self._BOT_TS_MAX:
+            return
+        excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
+        self._discard_oldest_slack_timestamps(self._bot_message_ts, excess)
+
+    def _trim_mentioned_threads(self) -> None:
+        if len(self._mentioned_threads) <= self._MENTIONED_THREADS_MAX:
+            return
+        self._discard_oldest_slack_timestamps(
+            self._mentioned_threads, self._MENTIONED_THREADS_MAX // 2
+        )
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -1192,10 +1229,7 @@ class SlackAdapter(BasePlatformAdapter):
                 # Also register the thread root so replies-to-my-replies work
                 if thread_ts:
                     self._bot_message_ts.add(thread_ts)
-                if len(self._bot_message_ts) > self._BOT_TS_MAX:
-                    excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
-                    for old_ts in list(self._bot_message_ts)[:excess]:
-                        self._bot_message_ts.discard(old_ts)
+                self._trim_bot_message_timestamps()
 
             return SendResult(
                 success=True,
@@ -1544,10 +1578,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not thread_ts:
             return
         self._bot_message_ts.add(thread_ts)
-        if len(self._bot_message_ts) > self._BOT_TS_MAX:
-            excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
-            for old_ts in list(self._bot_message_ts)[:excess]:
-                self._bot_message_ts.discard(old_ts)
+        self._trim_bot_message_timestamps()
 
     def _is_retryable_upload_error(self, exc: Exception) -> bool:
         """Best-effort detection for transient Slack upload failures."""
@@ -2536,12 +2567,7 @@ class SlackAdapter(BasePlatformAdapter):
             # defeat the feature (and re-enable agent-to-agent ack loops).
             if event_thread_ts and not self._slack_strict_mention():
                 self._mentioned_threads.add(event_thread_ts)
-                if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
-                    to_remove = list(self._mentioned_threads)[
-                        : self._MENTIONED_THREADS_MAX // 2
-                    ]
-                    for t in to_remove:
-                        self._mentioned_threads.discard(t)
+                self._trim_mentioned_threads()
 
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.

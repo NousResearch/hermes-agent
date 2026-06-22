@@ -684,18 +684,21 @@ class TestThreadEngagement:
         # Thread root should also be tracked
         assert "8000.0" in adapter._bot_message_ts
 
-    @pytest.mark.asyncio
-    async def test_bot_message_ts_cap(self):
-        """Verify memory is bounded when many messages are sent."""
+    def test_bot_message_ts_cap_evicts_oldest_timestamps(self):
+        """Bot thread tracking evicts the oldest Slack timestamps first."""
         adapter = _make_adapter()
-        adapter._BOT_TS_MAX = 10  # low cap for testing
-        mock_client = adapter._team_clients["T1"]
+        adapter._BOT_TS_MAX = 4
 
-        for i in range(20):
-            mock_client.chat_postMessage = AsyncMock(return_value={"ts": f"{i}.0"})
-            await adapter.send(chat_id="C1", content=f"msg {i}")
+        for ts in [
+            "1000.000002",
+            "999.999999",
+            "1000.000004",
+            "1000.000001",
+            "1000.000003",
+        ]:
+            adapter._record_uploaded_file_thread("C1", ts)
 
-        assert len(adapter._bot_message_ts) <= 10
+        assert adapter._bot_message_ts == {"1000.000003", "1000.000004"}
 
     def test_mentioned_threads_populated_on_mention(self):
         """When bot is @mentioned in a thread, that thread is tracked."""
@@ -704,14 +707,24 @@ class TestThreadEngagement:
         adapter._mentioned_threads.add("1000.0")
         assert "1000.0" in adapter._mentioned_threads
 
-    def test_mentioned_threads_cap(self):
-        """Verify _mentioned_threads is bounded."""
+    def test_mentioned_threads_cap_evicts_oldest_timestamps(self):
+        """Mentioned-thread tracking evicts the oldest Slack timestamps first."""
         adapter = _make_adapter()
-        adapter._MENTIONED_THREADS_MAX = 10
-        for i in range(15):
-            adapter._mentioned_threads.add(f"{i}.0")
-            if len(adapter._mentioned_threads) > adapter._MENTIONED_THREADS_MAX:
-                to_remove = list(adapter._mentioned_threads)[:adapter._MENTIONED_THREADS_MAX // 2]
-                for t in to_remove:
-                    adapter._mentioned_threads.discard(t)
-        assert len(adapter._mentioned_threads) <= 10
+        adapter._MENTIONED_THREADS_MAX = 4
+        adapter._mentioned_threads.update(
+            {
+                "1000.000002",
+                "999.999999",
+                "1000.000004",
+                "1000.000001",
+                "1000.000003",
+            }
+        )
+
+        adapter._trim_mentioned_threads()
+
+        assert adapter._mentioned_threads == {
+            "1000.000002",
+            "1000.000003",
+            "1000.000004",
+        }

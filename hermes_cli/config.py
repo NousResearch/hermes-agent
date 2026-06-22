@@ -1222,6 +1222,14 @@ DEFAULT_CONFIG = {
     # small so a slow/dead server adds little to first-response latency.
     "mcp_discovery_timeout": 1.5,
 
+    # MCP client settings. Project-local .mcp.json files can define stdio
+    # commands, so they are opt-in for runtime sessions. Use
+    # `hermes mcp list --include-project` or `hermes mcp test --from-project`
+    # to inspect a project file without enabling it globally.
+    "mcp": {
+        "use_project_mcp_json": False,
+    },
+
     # Tool-output truncation thresholds. When terminal output or a
     # single read_file page exceeds these limits, Hermes truncates the
     # payload sent to the model (keeping head + tail for terminal,
@@ -4417,7 +4425,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+    "sessions", "streaming", "updates", "mcp", "mcp_servers",
 }
 
 # Valid fields inside a custom_providers list entry

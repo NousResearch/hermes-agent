@@ -26,6 +26,12 @@ from hermes_cli.config import (
 from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
+from hermes_cli.mcp_project import (
+    PROJECT_MCP_FILENAME,
+    load_project_mcp_servers,
+    mcp_server_source_map,
+    merge_mcp_server_configs,
+)
 from tools.mcp_tool import _ENV_VAR_PATTERN
 
 logger = logging.getLogger(__name__)
@@ -82,6 +88,19 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     servers = config.get("mcp_servers")
     if not servers or not isinstance(servers, dict):
         return {}
+    return servers
+
+
+def _display_mcp_servers(
+    config_servers: Dict[str, dict],
+    project_servers: Dict[str, dict],
+) -> Dict[str, dict]:
+    """Order config servers first, then project-only servers."""
+
+    servers = dict(config_servers)
+    for name, cfg in project_servers.items():
+        if name not in servers:
+            servers[name] = cfg
     return servers
 
 
@@ -534,7 +553,15 @@ def cmd_mcp_remove(args):
 
 def cmd_mcp_list(args=None):
     """List all configured MCP servers."""
-    servers = _get_mcp_servers()
+    config = load_config()
+    config_servers = _get_mcp_servers(config)
+    include_project = bool(getattr(args, "include_project", False))
+    project_config = load_project_mcp_servers(
+        config=config,
+        force=include_project,
+    )
+    servers = _display_mcp_servers(config_servers, project_config.servers)
+    sources = mcp_server_source_map(config_servers, project_config)
 
     if not servers:
         print()
@@ -548,11 +575,13 @@ def cmd_mcp_list(args=None):
 
     print()
     print(color("  MCP Servers:", Colors.CYAN + Colors.BOLD))
+    if project_config.path and project_config.servers:
+        _info(f"Project MCP: {project_config.path}")
     print()
 
     # Table header
-    print(f"  {'Name':<16} {'Transport':<30} {'Tools':<12} {'Status':<10}")
-    print(f"  {'─' * 16} {'─' * 30} {'─' * 12} {'─' * 10}")
+    print(f"  {'Name':<16} {'Transport':<30} {'Source':<12} {'Tools':<12} {'Status':<10}")
+    print(f"  {'─' * 16} {'─' * 30} {'─' * 12} {'─' * 12} {'─' * 10}")
 
     for name, cfg in servers.items():
         # Transport info
@@ -594,7 +623,8 @@ def cmd_mcp_list(args=None):
             enabled = enabled.lower() in {"true", "1", "yes"}
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
 
-        print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
+        source = sources.get(name, "config.yaml")
+        print(f"  {name:<16} {transport:<30} {source:<12} {tools_str:<12} {status}")
 
     print()
 
@@ -604,10 +634,21 @@ def cmd_mcp_list(args=None):
 def cmd_mcp_test(args):
     """Test connection to an MCP server."""
     name = args.name
-    servers = _get_mcp_servers()
+    config = load_config()
+    config_servers = _get_mcp_servers(config)
+    if bool(getattr(args, "from_project", False)):
+        project_config = load_project_mcp_servers(config=config, force=True)
+        servers = project_config.servers
+        sources = {server_name: PROJECT_MCP_FILENAME for server_name in servers}
+        missing_source = f"project {PROJECT_MCP_FILENAME}"
+    else:
+        project_config = load_project_mcp_servers(config=config)
+        servers = merge_mcp_server_configs(config_servers, project_config.servers)
+        sources = mcp_server_source_map(config_servers, project_config)
+        missing_source = "config"
 
     if name not in servers:
-        _error(f"Server '{name}' not found in config.")
+        _error(f"Server '{name}' not found in {missing_source}.")
         available = list(servers.keys())
         if available:
             _info(f"Available: {', '.join(available)}")
@@ -616,6 +657,7 @@ def cmd_mcp_test(args):
     cfg = servers[name]
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
+    _info(f"Source: {sources.get(name, 'config.yaml')}")
 
     # Show transport info
     if "url" in cfg:

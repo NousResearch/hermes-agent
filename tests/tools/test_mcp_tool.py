@@ -81,6 +81,40 @@ class TestLoadMCPConfig:
             result = _load_mcp_config()
             assert result == {}
 
+    def test_project_mcp_opt_in_merges_with_config_precedence(self, tmp_path, monkeypatch):
+        """Project .mcp.json entries join runtime config only when opted in."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "dup": {"url": "https://project.example/mcp"},
+                        "project-only": {"url": "https://project-only.example/mcp"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        monkeypatch.delenv("HERMES_SAFE_MODE", raising=False)
+        monkeypatch.delenv("HERMES_USE_PROJECT_MCP_JSON", raising=False)
+
+        config = {
+            "mcp": {"use_project_mcp_json": True},
+            "mcp_servers": {
+                "dup": {"url": "https://config.example/mcp"},
+            },
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config):
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result["dup"]["url"] == "https://config.example/mcp"
+        assert result["project-only"]["url"] == "https://project-only.example/mcp"
+
 
 class TestMCPStatus:
     def test_status_distinguishes_configured_connecting_failed_and_disabled(

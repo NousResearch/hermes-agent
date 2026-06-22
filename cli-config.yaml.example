@@ -821,6 +821,13 @@ platform_toolsets:
 # Each server's tools are automatically discovered and registered.
 # See website/docs/user-guide/features/mcp.md for full documentation.
 #
+# Runtime use of project-local .mcp.json is opt-in because project files can
+# define stdio commands. You can inspect one without enabling it:
+#   hermes mcp list --include-project
+#   hermes mcp test --from-project <name>
+# mcp:
+#   use_project_mcp_json: false
+#
 # Stdio servers (spawn a subprocess):
 #   command: the executable to run
 #   args: command-line arguments

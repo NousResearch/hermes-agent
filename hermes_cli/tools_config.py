@@ -1360,6 +1360,18 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     flag or an unrecognized value is treated as enabled.
     """
     mcp_servers = (config or {}).get("mcp_servers") or {}
+    if not isinstance(mcp_servers, dict):
+        mcp_servers = {}
+    try:
+        from hermes_cli.mcp_project import (
+            load_project_mcp_servers,
+            merge_mcp_server_configs,
+        )
+
+        project_config = load_project_mcp_servers(config=config)
+        mcp_servers = merge_mcp_server_configs(mcp_servers, project_config.servers)
+    except Exception:
+        pass
     return {
         str(name)
         for name, server_cfg in mcp_servers.items()

@@ -2342,6 +2342,13 @@ def cmd_chat(args):
     if getattr(args, "ignore_rules", False):
         os.environ["HERMES_IGNORE_RULES"] = "1"
 
+    # --use-project-mcp: one-session opt-in for project-local .mcp.json.
+    # Set before CLI/TUI startup imports trigger MCP discovery.
+    if getattr(args, "use_project_mcp", False):
+        from hermes_cli.mcp_project import PROJECT_MCP_ENV_FLAG
+
+        os.environ[PROJECT_MCP_ENV_FLAG] = "1"
+
     # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source

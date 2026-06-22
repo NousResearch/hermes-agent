@@ -339,6 +339,12 @@ def build_top_level_parser():
         help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)",
     )
     chat_parser.add_argument(
+        "--use-project-mcp",
+        action="store_true",
+        default=False,
+        help="Use MCP servers from the nearest project .mcp.json for this session",
+    )
+    chat_parser.add_argument(
         "--max-turns",
         type=int,
         default=None,

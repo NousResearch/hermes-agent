@@ -363,6 +363,39 @@ def test_get_platform_tools_includes_enabled_mcp_servers_by_default():
     assert "disabled-server" not in enabled
 
 
+def test_get_platform_tools_includes_project_mcp_when_opted_in(tmp_path, monkeypatch):
+    (tmp_path / ".mcp.json").write_text(
+        '{"mcpServers":{"project-srv":{"url":"http://127.0.0.1:8000/mcp"}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    enabled = _get_platform_tools(
+        {"mcp": {"use_project_mcp_json": True}},
+        "cli",
+    )
+
+    assert "project-srv" in enabled
+
+
+def test_get_platform_tools_no_mcp_sentinel_excludes_project_mcp(tmp_path, monkeypatch):
+    (tmp_path / ".mcp.json").write_text(
+        '{"mcpServers":{"project-srv":{"url":"http://127.0.0.1:8000/mcp"}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    enabled = _get_platform_tools(
+        {
+            "mcp": {"use_project_mcp_json": True},
+            "platform_toolsets": {"cli": ["web", "terminal", "no_mcp"]},
+        },
+        "cli",
+    )
+
+    assert "project-srv" not in enabled
+
+
 def test_get_platform_tools_keeps_enabled_mcp_servers_with_explicit_builtin_selection():
     config = {
         "platform_toolsets": {"cli": ["web", "memory"]},

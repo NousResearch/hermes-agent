@@ -70,10 +70,22 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
     mcp_rm_p.add_argument("name", help="Server name to remove")
 
-    mcp_sub.add_parser("list", aliases=["ls"], help="List configured MCP servers")
+    mcp_list_p = mcp_sub.add_parser(
+        "list", aliases=["ls"], help="List configured MCP servers"
+    )
+    mcp_list_p.add_argument(
+        "--include-project",
+        action="store_true",
+        help="Also include MCP servers from the nearest project .mcp.json",
+    )
 
     mcp_test_p = mcp_sub.add_parser("test", help="Test MCP server connection")
     mcp_test_p.add_argument("name", help="Server name to test")
+    mcp_test_p.add_argument(
+        "--from-project",
+        action="store_true",
+        help="Test the server from the nearest project .mcp.json instead of config.yaml",
+    )
 
     mcp_cfg_p = mcp_sub.add_parser(
         "configure", aliases=["config"], help="Toggle tool selection"

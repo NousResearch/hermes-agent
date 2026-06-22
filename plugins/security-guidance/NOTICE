@@ -7,7 +7,7 @@ licensed under the Apache License, Version 2.0.
 
     Source:    https://github.com/anthropics/claude-plugins-official
     Subpath:   plugins/security-guidance/hooks/patterns.py
-    Commit:    0bde168 (2026-05-26)
+    Commit:    12a5376 (2026-05-29)
     License:   Apache License 2.0 (see LICENSE in this directory)
 
 Forked content

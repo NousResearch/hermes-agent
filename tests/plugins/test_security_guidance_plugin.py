@@ -157,6 +157,27 @@ class TestScanContent:
         )
         assert "react_dangerously_set_html" in [n for n, _ in findings]
 
+    @pytest.mark.parametrize(
+        ("rule_name", "content"),
+        [
+            ("new_function_injection", "const f = new Function(src)"),
+            ("react_dangerously_set_html", "<div dangerouslySetInnerHTML={{__html: x}} />"),
+            ("document_write_xss", "document.write(userHtml)"),
+            ("innerHTML_xss", "el.innerHTML = userHtml"),
+            ("outerHTML_xss", "el.outerHTML = userHtml"),
+            ("insertAdjacentHTML_xss", "el.insertAdjacentHTML('beforeend', userHtml)"),
+        ],
+    )
+    def test_js_xss_rules_are_gated_to_js_family_paths(self, rule_name, content):
+        """Upstream 12a5376 gates JS-only XSS substrings away from prose/docs."""
+        mod = _load_plugin_init()
+
+        js_findings = mod._scan_content("/tmp/component.tsx", content)
+        assert rule_name in [n for n, _ in js_findings]
+
+        markdown_findings = mod._scan_content("/tmp/security-notes.md", content)
+        assert rule_name not in [n for n, _ in markdown_findings]
+
     def test_github_workflow_path_check_fires_on_path_alone(self):
         """github_actions_workflow has no regex/substring — fires on path."""
         mod = _load_plugin_init()

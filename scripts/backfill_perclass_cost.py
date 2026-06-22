@@ -31,7 +31,8 @@ the per-class breakdown — rather than a system-installed hermes-agent.)
 from __future__ import annotations
 
 import argparse
-import shutil
+import glob
+import os
 import sqlite3
 import sys
 import time
@@ -44,6 +45,62 @@ from agent.usage_pricing import (
 )
 
 _REPRICEABLE = frozenset({"estimated", "included", "actual"})
+DEFAULT_KEEP_BACKUPS = 2
+
+
+def _safe_backup(path: str, *, keep: int = DEFAULT_KEEP_BACKUPS) -> str:
+    """Checkpoint-consistent backup of ``path`` → ``<path>.bak-perclass-<ts>``,
+    then prune older ``.bak-perclass-*`` for this DB to the newest ``keep``.
+
+    Consistency (SPEC-D INV-2): uses ``VACUUM INTO`` (folds the WAL into one
+    defragmented file, no ``-wal``/``-shm`` sidecars), falling back to the
+    SQLite online-backup API for very old SQLite. NEVER a raw ``copy2`` of a
+    live WAL-mode DB (which can tear / strand sidecars).
+
+    Bounded (INV-3): after writing the new backup, delete older backups beyond
+    ``keep`` (newest-first by mtime), plus any stranded ``-wal``/``-shm``
+    sidecar from a legacy ``copy2`` backup (D-5). The just-written backup is
+    NEVER a prune candidate (D-4). Write-then-prune ordering (D-3) guarantees
+    ≥1 valid backup at every instant. Prune failures are swallowed (INV-4) —
+    a cleanup error must never abort the reprice or drop the current backup.
+    """
+    backup = f"{path}.bak-perclass-{int(time.time())}"
+    # avoid clobbering a same-second prior backup
+    if os.path.exists(backup):
+        backup = f"{path}.bak-perclass-{int(time.time())}-{os.getpid()}"
+    src = sqlite3.connect(path)
+    try:
+        try:
+            # quote the destination (VACUUM INTO won't take a bound param)
+            src.execute("VACUUM INTO ?", (backup,))
+        except sqlite3.OperationalError:
+            # SQLite < 3.27: online-backup API (also checkpoint-consistent)
+            dst = sqlite3.connect(backup)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+    finally:
+        src.close()
+
+    # prune older backups to `keep`, never the one just written.
+    try:
+        candidates = [
+            p for p in glob.glob(f"{path}.bak-perclass-*")
+            if not p.endswith(("-wal", "-shm")) and p != backup
+        ]
+        candidates.sort(key=os.path.getmtime, reverse=True)
+        # keep the newest (keep-1) priors alongside the just-written backup
+        for stale in candidates[max(0, keep - 1):]:
+            for victim in (stale, stale + "-wal", stale + "-shm"):
+                try:
+                    os.unlink(victim)
+                except OSError:
+                    pass
+    except Exception:
+        pass  # INV-4: prune is best-effort; never abort the reprice
+    return backup
+
 _PERCLASS_COLS = (
     "cost_uncached_usd", "cost_cache_read_usd",
     "cost_cache_write_usd", "cost_output_usd",
@@ -135,7 +192,7 @@ def reprice_row(
 
 
 def backfill_db(path: str, *, apply: bool, rate_drift_bound: float = DEFAULT_RATE_DRIFT_BOUND,
-                routes: dict | None = None) -> dict:
+                routes: dict | None = None, keep_backups: int = DEFAULT_KEEP_BACKUPS) -> dict:
     """Backfill one DB. Returns a stats dict. Backs up before writing when apply."""
     if routes is None:
         routes = audit_routes([path])
@@ -144,8 +201,7 @@ def backfill_db(path: str, *, apply: bool, rate_drift_bound: float = DEFAULT_RAT
         "skipped_route": 0, "skipped_guardrail": 0,
     }
     if apply:
-        backup = f"{path}.bak-perclass-{int(time.time())}"
-        shutil.copy2(path, backup)
+        backup = _safe_backup(path, keep=keep_backups)
         stats["backup"] = backup
 
     conn = sqlite3.connect(path)
@@ -216,6 +272,8 @@ def main(argv=None):
     g.add_argument("--dry-run", action="store_true", help="show the plan, write nothing")
     g.add_argument("--apply", action="store_true", help="back up + write")
     ap.add_argument("--rate-drift-bound", type=float, default=DEFAULT_RATE_DRIFT_BOUND)
+    ap.add_argument("--keep-backups", type=int, default=DEFAULT_KEEP_BACKUPS,
+                    help=f"per-DB .bak-perclass-* files to retain (default {DEFAULT_KEEP_BACKUPS})")
     a = ap.parse_args(argv)
 
     routes = audit_routes(a.dbs)
@@ -225,7 +283,8 @@ def main(argv=None):
 
     grand = {}
     for path in a.dbs:
-        st = backfill_db(path, apply=a.apply, rate_drift_bound=a.rate_drift_bound, routes=routes)
+        st = backfill_db(path, apply=a.apply, rate_drift_bound=a.rate_drift_bound,
+                         routes=routes, keep_backups=a.keep_backups)
         print(f"{path}: {st}", flush=True)
         for k, v in st.items():
             if isinstance(v, int):

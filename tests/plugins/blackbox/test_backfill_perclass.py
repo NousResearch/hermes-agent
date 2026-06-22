@@ -149,3 +149,93 @@ def test_backfill_preserves_existing_cost_usd_and_scales_split(tmp_path):
     assert abs(parts - 50.00) < 0.01, "scaled split must sum to the stored total"
     # proportions preserved: cache-read dominates an Opus turn
     assert r["cost_cache_read_usd"] > r["cost_output_usd"]
+
+
+# ---------------------------------------------------------------------------
+# SPEC-D — backup hygiene: checkpoint-safe + self-pruning _safe_backup.
+# ---------------------------------------------------------------------------
+def _make_db(path, rows=3):
+    conn = sqlite3.connect(str(path))
+    conn.execute("CREATE TABLE turns (turn_id TEXT PRIMARY KEY, cost_usd REAL)")
+    for i in range(rows):
+        conn.execute("INSERT INTO turns VALUES (?,?)", (f"t{i}", float(i)))
+    conn.commit(); conn.close()
+
+
+def test_safe_backup_is_consistent_single_file(tmp_path):
+    db = tmp_path / "turns.db"
+    _make_db(db, rows=5)
+    bak = bf._safe_backup(str(db), keep=2)
+    import os
+    assert os.path.exists(bak)
+    # no WAL/SHM sidecars left next to the backup (VACUUM INTO folds the WAL)
+    assert not os.path.exists(bak + "-wal")
+    assert not os.path.exists(bak + "-shm")
+    # consistent + same data
+    c = sqlite3.connect(bak)
+    assert c.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+    assert c.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 5
+    c.close()
+
+
+def test_safe_backup_prunes_to_keep_newest(tmp_path):
+    import glob, os, time
+    db = tmp_path / "turns.db"
+    _make_db(db)
+    made = []
+    for _ in range(4):
+        made.append(bf._safe_backup(str(db), keep=2))
+        time.sleep(0.02)  # distinct mtimes
+    remaining = sorted(glob.glob(str(db) + ".bak-perclass-*"))
+    assert len(remaining) == 2, f"expected 2, got {remaining}"
+    # the just-written one is always present
+    assert made[-1] in remaining
+    # the 2 remaining are the 2 newest by mtime
+    by_mtime = sorted(remaining, key=os.path.getmtime, reverse=True)
+    assert by_mtime[0] == made[-1]
+
+
+def test_safe_backup_prune_failure_is_swallowed(tmp_path, monkeypatch):
+    import os
+    db = tmp_path / "turns.db"
+    _make_db(db)
+    bf._safe_backup(str(db), keep=2)
+    bf._safe_backup(str(db), keep=2)
+    # now a 3rd call must prune — make unlink raise; helper must still return a
+    # valid new backup and NOT crash.
+    monkeypatch.setattr(os, "unlink", lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
+    bak = bf._safe_backup(str(db), keep=1)
+    assert os.path.exists(bak)  # current backup survived the prune failure
+
+
+def test_safe_backup_cleans_legacy_wal_shm_sidecars(tmp_path):
+    import glob, os, time
+    db = tmp_path / "turns.db"
+    _make_db(db)
+    # plant a LEGACY copy2-style backup with stranded -wal/-shm sidecars
+    legacy = str(db) + ".bak-perclass-1"
+    import shutil
+    shutil.copy2(str(db), legacy)
+    open(legacy + "-wal", "w").write("stale-wal")
+    open(legacy + "-shm", "w").write("stale-shm")
+    time.sleep(0.02)
+    # a fresh backup with keep=1 must prune the legacy one AND its sidecars
+    bf._safe_backup(str(db), keep=1)
+    assert not os.path.exists(legacy)
+    assert not os.path.exists(legacy + "-wal")
+    assert not os.path.exists(legacy + "-shm")
+
+
+def test_backfill_db_apply_bounds_backups(tmp_path):
+    import glob
+    db = tmp_path / "t.db"
+    _seed_db(db, [
+        dict(turn_id="ok", model="claude-opus-4-8", provider="claude-api-proxy",
+             cost_status="estimated", cost_usd=None, input_tokens=0,
+             output_tokens=130000, cache_read=109_700_000, cache_write=646000,
+             reasoning=0),
+    ])
+    for _ in range(3):
+        bf.backfill_db(str(db), apply=True, rate_drift_bound=2.0, keep_backups=2)
+    baks = glob.glob(str(db) + ".bak-perclass-*")
+    assert len(baks) <= 2, f"unbounded backups: {baks}"

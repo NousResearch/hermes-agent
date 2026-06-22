@@ -287,3 +287,56 @@ class TestRestoreSessionCwdMarkup:
             assert "Working directory" in printed or "working" in printed.lower()
         finally:
             os.chdir(original_cwd)
+
+
+class TestCliResumeLastCommand:
+    """Tests for /resume-last — resume the most recent session in one step."""
+
+    def test_resume_last_delegates_to_resume_with_most_recent_id(self):
+        """Finds the most recent session and delegates to _handle_resume_command."""
+        cli_obj = _make_cli()
+        cli_obj._list_recent_sessions = MagicMock(return_value=[
+            {"id": "sess_most_recent", "title": "Latest"},
+        ])
+        cli_obj._session_db.get_session.return_value = {"id": "sess_most_recent", "title": "Latest"}
+        cli_obj._session_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "hello"},
+        ]
+        cli_obj._session_db.resolve_resume_session_id.return_value = "sess_most_recent"
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
+            patch("cli._cprint") as mock_cprint,
+        ):
+            cli_obj._handle_resume_last_command("/resume-last")
+
+        # Should have switched to the most recent session.
+        assert cli_obj.session_id == "sess_most_recent"
+        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
+        assert "Resumed session sess_most_recent" in printed
+
+    def test_resume_last_no_sessions_shows_message(self):
+        """When there are no previous sessions, shows a helpful message."""
+        cli_obj = _make_cli()
+        cli_obj._list_recent_sessions = MagicMock(return_value=[])
+
+        with patch("cli._cprint") as mock_cprint:
+            cli_obj._handle_resume_last_command("/resume-last")
+
+        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
+        assert "No previous sessions to resume" in printed
+        # Session should not have changed.
+        assert cli_obj.session_id == "current_session"
+
+    def test_resume_last_uses_limit_one(self):
+        """Only fetches a single session (the most recent) for efficiency."""
+        cli_obj = _make_cli()
+        cli_obj._list_recent_sessions = MagicMock(return_value=[])
+        cli_obj._handle_resume_command = MagicMock()
+
+        with patch("cli._cprint"):
+            cli_obj._handle_resume_last_command("/resume-last")
+
+        # _list_recent_sessions must be called with limit=1.
+        cli_obj._list_recent_sessions.assert_called_once_with(limit=1)
+

@@ -255,6 +255,9 @@ gateway:
     resumed_many:          "↻ Resumed session **{title}** ({count} messages). Conversation restored."
     resumed_no_count:      "↻ Resumed session **{title}**. Conversation restored."
 
+  resume_last:
+    no_sessions:           "(._.) No previous sessions to resume."
+
   retry:
     no_previous:           "No previous message to retry."
 

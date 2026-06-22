@@ -3157,6 +3157,42 @@ class GatewaySlashCommandsMixin:
             return t("gateway.resume.resumed_one", title=title, count=msg_count)
         return t("gateway.resume.resumed_many", title=title, count=msg_count)
 
+    async def _handle_resume_last_command(self, event: MessageEvent) -> str:
+        """Handle /resume-last — resume the most recent session in one keystroke.
+
+        Finds the most recent session for this user/platform (excluding the
+        current one) and delegates to ``_handle_resume_command`` so all
+        existing resume logic (compression-chain resolution, matrix room
+        scoping, session switching, agent eviction) is reused unchanged.
+        """
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
+
+        source = event.source
+        user_source = source.platform.value if source.platform else None
+
+        # Identify the current session so we can skip it.
+        current_entry = self.session_store.get_or_create_session(source)
+        current_session_id = current_entry.session_id
+
+        try:
+            sessions = self._session_db.list_sessions_rich(source=user_source, limit=10)
+        except Exception as e:
+            logger.debug("Failed to list sessions for /resume-last: %s", e)
+            return t("gateway.resume.list_failed", error=e)
+
+        recent = [s for s in sessions if s.get("id") != current_session_id]
+        if not recent:
+            return t("gateway.resume_last.no_sessions")
+
+        target_id = recent[0].get("id")
+        if not target_id:
+            return t("gateway.resume_last.no_sessions")
+
+        resume_event = dataclasses.replace(event, text=f"/resume {target_id}")
+        return await self._handle_resume_command(resume_event)
+
     async def _handle_sessions_command(self, event: MessageEvent) -> str:
         """Handle /sessions — list previous sessions for gateway chats."""
         if not self._session_db:

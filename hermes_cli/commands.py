@@ -118,6 +118,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("resume-last", "Resume the most recent session", "Session",
+               aliases=("rl",)),
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),

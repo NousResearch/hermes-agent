@@ -811,6 +811,25 @@ class CLICommandsMixin:
         # /sessions <id_or_title> behaves the same as /resume <id_or_title>.
         self._handle_resume_command(f"/resume {arg}")
 
+    def _handle_resume_last_command(self, cmd_original: str) -> None:
+        """Handle /resume-last — resume the most recent session in one keystroke.
+
+        Looks up the most recent session (excluding the current one) and
+        delegates to ``_handle_resume_command`` with its ID, so all existing
+        resume logic (compression-chain resolution, session switching, history
+        recap, memory-provider notification) is reused unchanged.
+        """
+        from cli import _cprint
+
+        sessions = self._list_recent_sessions(limit=1)
+        if not sessions:
+            _cprint("  (._.) No previous sessions to resume.")
+            _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
+            return
+
+        target_id = sessions[0]["id"]
+        self._handle_resume_command(f"/resume {target_id}")
+
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy.
 

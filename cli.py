@@ -7926,6 +7926,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
+        elif canonical == "resume-last":
+            self._handle_resume_last_command(cmd_original)
         elif canonical == "sessions":
             self._handle_sessions_command(cmd_original)
         elif canonical == "model":

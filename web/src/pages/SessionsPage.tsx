@@ -29,7 +29,7 @@ import {
   Check,
   Archive,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, authedFetch } from "@/lib/api";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
 import type {
   SessionInfo,
@@ -1132,14 +1132,7 @@ export default function SessionsPage() {
   const handleExport = useCallback(
     async (id: string) => {
       try {
-        const res = await fetch(api.exportSessionUrl(id), {
-          credentials: "include",
-          headers: {
-            "X-Hermes-Session-Token":
-              (window as unknown as { __HERMES_SESSION_TOKEN__?: string })
-                .__HERMES_SESSION_TOKEN__ ?? "",
-          },
-        });
+        const res = await authedFetch(api.exportSessionUrl(id));
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);

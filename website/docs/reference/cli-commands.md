@@ -60,6 +60,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `hermes doctor` | Diagnose config and dependency issues. |
+| `hermes health` | Run offline, automation-friendly health checks with stable exit codes. |
 | `hermes security audit` | On-demand supply-chain audit (OSV.dev) for the venv, plugin requirements, and pinned MCP servers. |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
 | `hermes prompt-size` | Show a byte breakdown of the system prompt + tool schemas (skills index, memory, profile). Runs offline. |
@@ -684,6 +685,25 @@ hermes doctor [--fix]
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+
+## `hermes health`
+
+```bash
+hermes health [--json] [--quiet]
+```
+
+Runs offline, read-only checks for profile/config readability, the state database,
+cron storage and latest persisted run, disk space, provider-route configuration,
+and core runtime modules. It does not call model providers or probe the network.
+
+Exit codes are stable for automation: `0` healthy, `1` warning/degraded, and `2`
+critical. `--json` emits the versioned machine-readable payload. `--quiet` emits
+nothing when healthy while retaining diagnostics for warning and critical states.
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Emit a machine-readable payload (`schema_version: 1`) with stable check IDs. |
+| `--quiet` | Suppress healthy output; warning and critical diagnostics are still printed. |
 
 ## `hermes dump`
 

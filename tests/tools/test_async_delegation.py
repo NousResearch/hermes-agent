@@ -589,3 +589,148 @@ def test_gateway_cli_origin_event_left_unrouted():
     assert "platform" not in evt
 
 
+# ---------------------------------------------------------------------------
+# Tests: list_async_completions / mark_async_delegation_consumed
+# ---------------------------------------------------------------------------
+
+
+def test_list_async_completions_returns_unconsumed_for_session():
+    """list_async_completions returns only unconsumed completed records
+    matching the given session_key."""
+    from tools.async_delegation import (
+        list_async_completions,
+        mark_async_delegation_consumed,
+    )
+
+    def runner():
+        return {"status": "completed", "summary": "done", "api_calls": 1,
+                "duration_seconds": 0.1, "model": "m"}
+
+    # Dispatch two delegations with different session keys
+    ad.dispatch_async_delegation(
+        goal="task-a", context=None, toolsets=None, role="leaf", model="m",
+        session_key="sess:1", runner=runner, max_async_children=3,
+    )
+    ad.dispatch_async_delegation(
+        goal="task-b", context=None, toolsets=None, role="leaf", model="m",
+        session_key="sess:2", runner=runner, max_async_children=3,
+    )
+
+    # Wait for both to finish
+    for _ in range(100):
+        if ad.active_count() == 0:
+            break
+        time.sleep(0.05)
+    assert ad.active_count() == 0
+
+    # sess:1 should see task-a but not task-b
+    completions = list_async_completions("sess:1")
+    assert len(completions) == 1
+    assert completions[0]["goal"] == "task-a"
+    assert completions[0]["session_key"] == "sess:1"
+
+    # sess:2 should see task-b
+    completions2 = list_async_completions("sess:2")
+    assert len(completions2) == 1
+    assert completions2[0]["goal"] == "task-b"
+
+    # Non-existent session gets nothing
+    assert list_async_completions("sess:999") == []
+
+
+def test_mark_consumed_hides_from_completions():
+    """After marking a delegation consumed, it no longer appears in
+    list_async_completions."""
+    from tools.async_delegation import (
+        list_async_completions,
+        mark_async_delegation_consumed,
+    )
+
+    def runner():
+        return {"status": "completed", "summary": "done", "api_calls": 1,
+                "duration_seconds": 0.1, "model": "m"}
+
+    res = ad.dispatch_async_delegation(
+        goal="task-x", context=None, toolsets=None, role="leaf", model="m",
+        session_key="sess:x", runner=runner, max_async_children=3,
+    )
+    deleg_id = res["delegation_id"]
+
+    for _ in range(100):
+        if ad.active_count() == 0:
+            break
+        time.sleep(0.05)
+    assert ad.active_count() == 0
+
+    # Before consumed: visible
+    assert len(list_async_completions("sess:x")) == 1
+
+    # Mark consumed
+    assert mark_async_delegation_consumed(deleg_id) is True
+
+    # After consumed: hidden
+    assert len(list_async_completions("sess:x")) == 0
+
+
+def test_mark_consumed_returns_false_for_already_consumed():
+    """Double-marking returns False."""
+    from tools.async_delegation import mark_async_delegation_consumed
+
+    def runner():
+        return {"status": "completed", "summary": "done", "api_calls": 1,
+                "duration_seconds": 0.1, "model": "m"}
+
+    res = ad.dispatch_async_delegation(
+        goal="task-y", context=None, toolsets=None, role="leaf", model="m",
+        session_key="sess:y", runner=runner, max_async_children=3,
+    )
+    deleg_id = res["delegation_id"]
+
+    for _ in range(100):
+        if ad.active_count() == 0:
+            break
+        time.sleep(0.05)
+
+    assert mark_async_delegation_consumed(deleg_id) is True
+    assert mark_async_delegation_consumed(deleg_id) is False
+
+
+def test_mark_consumed_returns_false_for_unknown_id():
+    """Non-existent delegation ID returns False."""
+    from tools.async_delegation import mark_async_delegation_consumed
+    assert mark_async_delegation_consumed("deleg_nonexistent") is False
+
+
+def test_running_delegations_not_in_completions():
+    """list_async_completions excludes still-running delegations."""
+    gate = threading.Event()
+
+    def runner():
+        gate.wait(timeout=5)
+        return {"status": "completed", "summary": "done", "api_calls": 1,
+                "duration_seconds": 0.1, "model": "m"}
+
+    ad.dispatch_async_delegation(
+        goal="slow-task", context=None, toolsets=None, role="leaf", model="m",
+        session_key="sess:slow", runner=runner, max_async_children=3,
+    )
+    assert ad.active_count() == 1
+
+    from tools.async_delegation import list_async_completions
+    # Should not appear while running
+    assert list_async_completions("sess:slow") == []
+
+    # Release and wait
+    gate.set()
+    for _ in range(100):
+        if ad.active_count() == 0:
+            break
+        time.sleep(0.05)
+    assert ad.active_count() == 0
+
+    # Now should appear
+    completions = list_async_completions("sess:slow")
+    assert len(completions) == 1
+    assert completions[0]["goal"] == "slow-task"
+
+

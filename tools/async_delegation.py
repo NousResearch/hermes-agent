@@ -271,6 +271,7 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
             return
         record["status"] = status
         record["completed_at"] = time.time()
+        record["consumed"] = False  # not yet picked up by a poller
         record["interrupt_fn"] = None  # drop the closure; child is done
         # Snapshot fields needed for the event while holding the lock.
         event_record = dict(record)
@@ -458,6 +459,7 @@ def _finalize_batch(
             return
         record["status"] = status
         record["completed_at"] = time.time()
+        record["consumed"] = False  # not yet picked up by a poller
         record["interrupt_fn"] = None
         event_record = dict(record)
         _prune_completed_locked()
@@ -514,6 +516,41 @@ def list_async_delegations() -> List[Dict[str, Any]]:
             {k: v for k, v in r.items() if k != "interrupt_fn"}
             for r in _records.values()
         ]
+
+
+def list_async_completions(session_key: str) -> List[Dict[str, Any]]:
+    """Return unconsumed completed delegations for *session_key*.
+
+    Used by the tui_gateway recovery sweep: on session connect, the poller
+    calls this to find any completions that were pushed while no poller was
+    running (session closed, tab disconnected, etc.). Each returned record
+    should be injected as a new turn and then marked consumed via
+    ``mark_async_delegation_consumed()`` to prevent re-injection.
+
+    Safe to call from any thread.
+    """
+    with _records_lock:
+        return [
+            {k: v for k, v in r.items() if k != "interrupt_fn"}
+            for r in _records.values()
+            if r.get("status") != "running"
+            and not r.get("consumed", False)
+            and r.get("session_key", "") == session_key
+        ]
+
+
+def mark_async_delegation_consumed(delegation_id: str) -> bool:
+    """Mark a completed delegation as consumed so it is not re-injected.
+
+    Returns True if the record was found and marked, False if already
+    consumed or not found.
+    """
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None or record.get("consumed", False):
+            return False
+        record["consumed"] = True
+        return True
 
 
 def interrupt_all(reason: str = "shutdown") -> int:

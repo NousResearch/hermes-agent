@@ -1,0 +1,10 @@
+=== pull_down_onto.sh  2026-06-22T10:31:56Z ===
+TARGET_REF=aa83213c530dc0a70fc525358c810b749888c7af -> aa83213c530dc0a70fc525358c810b749888c7af
+  (= aa83213c5 Merge pull request #50740 from NousResearch/salvage/preflight-token-progress)
+resolution patches from #50111 @ a73622f2c
+open PRs: 40  =  39 code PRs  +  1 manifest/#50111 (excluded from apply)
+✓ ASSERT worktree HEAD == TARGET_REF
+apply onto aa83213c530dc0a70fc525358c810b749888c7af: clean=39 resolved=0 failed=0 (applied=39/39) ->
+compile-fail=0
+
+RESULT: PASS — 39/39 code PRs pull down onto aa83213c530dc0a70fc525358c810b749888c7af (39 clean + 0 resolved), tree compiles

@@ -250,8 +250,10 @@ def _observed_github_actor() -> Optional[str]:
     """Best-effort current GitHub write actor for attribution preflight.
 
     Cron should not require GitHub for unrelated jobs, so this is only called
-    inside the opt-in ORBIT guard. The observed actor must come from the real
-    write credential. Spoofable environment variables are deliberately ignored.
+    inside the opt-in ORBIT guard. The observed writer must come from the real
+    GitHub credential, not spoofable job environment variables; `gh api user`
+    mirrors the write identity used by GitHub CLI driven comment/review/receipt
+    scripts.
     """
     gh = shutil.which("gh")
     if not gh:
@@ -372,7 +374,10 @@ def _check_orbit_worker_guards(job: dict) -> None:
             if repo_name not in allowed_qualified and bare not in allowed_bare:
                 details["observed_remote"] = remote
                 details["observed_repo"] = repo_name or ""
-                details["allowed_repos"] = ",".join(sorted([*allowed_qualified, *allowed_bare]))
+                allowed_rendered = sorted(allowed_qualified) + [
+                    f"bare:{name}" for name in sorted(allowed_bare)
+                ]
+                details["allowed_repos"] = ",".join(allowed_rendered)
                 details["reason"] = "git remote is outside ORBIT allowlist"
                 logger.error("%s: %s", WORKSPACE_ALLOWLIST_VIOLATION, details)
                 raise CronWorkerIsolationViolation(WORKSPACE_ALLOWLIST_VIOLATION, details)

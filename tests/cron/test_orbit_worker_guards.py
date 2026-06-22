@@ -22,7 +22,13 @@ def test_orbit_worker_rejects_non_allowlisted_git_remote_before_script(tmp_path)
     workspace = tmp_path / "t_orbit"
     workspace.mkdir()
     _git("init", cwd=workspace)
-    _git("remote", "add", "origin", "https://github.com/adavidson510/glucapet.git", cwd=workspace)
+    _git(
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/adavidson510/glucapet.git",
+        cwd=workspace,
+    )
 
     job = {
         "id": "job-workspace-guard",
@@ -81,7 +87,37 @@ def test_orbit_worker_rejects_same_repo_name_wrong_owner_before_script(tmp_path)
     assert sched.WORKSPACE_ALLOWLIST_VIOLATION in (error or "")
     assert sched.WORKSPACE_ALLOWLIST_VIOLATION in output
     assert "not-orbit/orbit-governance" in output
+    assert "adavidson510/orbit-governance" in output
     assert "script failed" not in output.lower()
+
+
+def test_orbit_worker_allows_bare_repo_name_only_when_explicitly_configured(tmp_path):
+    import cron.scheduler as sched
+
+    workspace = tmp_path / "t_bare_opt_in"
+    workspace.mkdir()
+    _git("init", cwd=workspace)
+    _git(
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/not-orbit/orbit-governance.git",
+        cwd=workspace,
+    )
+
+    job = {
+        "id": "job-bare-opt-in",
+        "name": "orbit guarded worker",
+        "no_agent": True,
+        "script": "would-run-if-guard-failed.sh",
+        "workdir": str(workspace),
+        "orbit_worker_guard": True,
+        "allowed_repos": ["orbit-governance"],
+    }
+
+    # The guard itself should permit explicitly configured bare-name matching;
+    # the no_agent script path is intentionally not executed in this unit check.
+    sched._check_orbit_worker_guards(job)
 
 
 def test_observed_github_actor_ignores_spoofable_env(monkeypatch):

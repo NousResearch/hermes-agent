@@ -426,7 +426,7 @@ class TestCompactionCallSiteCoverage:
         #   in-turn live agent (has status_callback) → _emit_compaction_announce
         #     covered by TestLoudFailMarkers + test_compaction_announce_lcm
         #   gateway hygiene throwaway → _announce_hygiene_compaction
-        #     covered by test_session_hygiene::test_hygiene_msgcount_announces_real_count
+        #     covered by test_session_hygiene::test_hygiene_msgcount_announces_limit_not_count
         #   /compress slash throwaway → user already gets the before/after report
         #     (D-8: intentionally no second announce)
         expected = {
@@ -932,6 +932,146 @@ class TestToolResultSubSplit:
         assert s.folded_tool_tokens + s.folded_other_tokens == s.folded_tokens
         ok, reason = s.validate()
         assert ok, reason
+
+
+# ───────────────── 2026-06-22 hygiene degrade fix — D-3/D-4/INV gates ─────────
+
+
+class TestHygieneMessageLimitClause:
+    """D-4 / INV-4: the message-count clause shows the configured LIMIT, never the
+    live count. The count appears only in the X→Y body. (The live bug rendered
+    'safety limit: 1075 messages' where 1075 was the count, repeated.)"""
+
+    def test_clause_shows_limit_not_count(self):
+        # mirror the gateway: the clause is GIVEN the configured limit (the gateway
+        # passes _HARD_MSG_LIMIT), the body carries the current count. Use a
+        # reconciling stats object so the granular form renders (body "1075 → 33").
+        s = _good_stats(
+            pre_messages=1075, post_messages=34, eligible_count=659,
+            kept_messages=32, summary_messages=1, anchor_messages=1,
+            cleared_count=416, folded_count=627,
+            pre_tokens=397767, post_tokens=17811,
+            kept_tokens=11211, summary_tokens=4800, anchor_tokens=1800,
+            cleared_tokens=247262, folded_tokens=139294,
+        )
+        assert s.validate()[0], s.validate()[1]
+        out = _format_compaction_announce(
+            engine_name="lcm", status="compacted",
+            old_session_id="a", new_session_id="b",
+            old_messages=1075, new_messages=34,
+            pre_tokens=s.pre_tokens, post_tokens=s.post_tokens,
+            model="claude-opus-4-8", provider="claude-app",
+            trigger_reason="hygiene_messages", trigger_value=1000,  # the LIMIT
+            stats=s,
+        )
+        # the clause carries the LIMIT (1000), the body carries the COUNT (1075→34)
+        assert "message-count safety limit: 1000 messages" in out
+        assert "1075 → 34" in out
+        # the two numbers are DISTINCT — the live bug had them equal
+        assert "limit: 1075" not in out
+
+    def test_clause_value_is_independent_of_body_count(self):
+        # a different limit value must flow through unchanged (proves it's the arg,
+        # not the count) — config-drift safe (RC6)
+        out = _format_compaction_announce(
+            engine_name="lcm", status="compacted",
+            old_session_id="a", new_session_id="b",
+            old_messages=600, new_messages=20, pre_tokens=300000, post_tokens=9000,
+            model="claude-opus-4-8", provider="claude-app",
+            trigger_reason="hygiene_messages", trigger_value=500,
+        )
+        assert "message-count safety limit: 500 messages" in out
+
+
+class TestGranularBodyTiesOut:
+    """INV-3 / B3: the granular display sources EVERY token number from the stats
+    object (pre_tokens), so the headline 'before' and the sub-lines always tie out
+    — even when the gateway-passed pre_tokens arg differs (API-reported vs
+    estimator). The live 691K-headline-over-534K-buckets mismatch can't recur."""
+
+    def test_granular_uses_stats_pre_tokens_not_arg(self):
+        s = _good_stats()  # s.pre_tokens == 397767
+        out = _format_compaction_announce(
+            engine_name="lcm", status="compacted",
+            old_session_id="a", new_session_id="b",
+            old_messages=s.pre_messages, new_messages=s.post_messages,
+            # gateway passes the API-reported number here — MUST NOT appear in the
+            # granular body (which renders from stats.pre_tokens)
+            pre_tokens=999_999, post_tokens=s.post_tokens,
+            model="claude-opus-4-8", provider="claude-app", stats=s,
+        )
+        from agent.conversation_compression import _abbrev_tokens
+        assert _abbrev_tokens(s.pre_tokens) in out        # 398K from stats
+        assert _abbrev_tokens(999_999) not in out          # the arg must NOT leak in
+        assert "Removed from live context" in out          # it IS the granular form
+
+    def test_granular_context_line_ties_to_buckets(self):
+        # the Context "before" equals cleared+folded+kept (the bucket sum, ±tol)
+        s = _good_stats()
+        assert abs(s.pre_tokens - (s.cleared_tokens + s.folded_tokens + s.kept_tokens)) <= 8
+
+
+class TestContentlessRail:
+    """RC9 / AC-7: the granular form ships only counts + token totals + fixed
+    labels, never row CONTENT. A sentinel in a tool row must not reach chat."""
+
+    def test_no_tool_content_in_granular_announce(self):
+        SENTINEL = "SUPERSECRET_TOOL_PAYLOAD_e3f1"
+        from agent.compaction_stats import build_hygiene_stats
+
+        def _est(msgs):
+            return sum(len((m.get("content") or "")) for m in msgs) // 4
+
+        raw = []
+        for i in range(5):
+            raw.append({"role": "user", "content": f"u{i} " * 10})
+            raw.append({"role": "assistant", "content": f"a{i} " * 10})
+            raw.append({"role": "tool", "content": f"{SENTINEL} {i} " * 20, "tool_call_id": f"t{i}"})
+        raw_history = [dict(m) for m in raw]
+        eligible = [m for m in raw if m["role"] in ("user", "assistant") and m.get("content")]
+        kept = [dict(m) for m in eligible[-2:]]
+        summary = {"role": "assistant", "content": "[Recent Summary (d0, node 1)]\nx\n[Expand for details: y]"}
+        anchor = {"role": "system", "content": "SYS " * 20}
+        compressed = [anchor, summary] + kept
+        s = build_hygiene_stats(raw_history=raw_history, eligible_msgs=eligible, compressed=compressed, estimator=_est)
+        assert s.validate()[0]
+        out = _format_compaction_announce(
+            engine_name="lcm", status="compacted",
+            old_session_id="a", new_session_id="b",
+            old_messages=s.pre_messages, new_messages=s.post_messages,
+            pre_tokens=s.pre_tokens, post_tokens=s.post_tokens,
+            model="claude-opus-4-8", provider="claude-app",
+            summary_snippet=None,  # channel rail is contentless
+            stats=s,
+        )
+        assert SENTINEL not in out  # tool content never reaches chat
+
+
+class TestTokenGuardStillBites:
+    """INV-1 / B1 / AC-3: the fix must NOT make validate() a tautology. A stats
+    object with a correct message axis but a WRONG token bucket must still fail
+    validate() and degrade to two-line."""
+
+    def test_token_axis_only_break_still_fails_validate(self):
+        # message axis correct; cleared_tokens deliberately wrong (off by 50k)
+        s = _good_stats(cleared_tokens=247262 + 50000)
+        ok, reason = s.validate()
+        assert not ok
+        assert "token" in reason.lower()
+
+    def test_token_break_degrades_formatter_to_two_line(self, caplog):
+        import logging
+        s = _good_stats(cleared_tokens=247262 + 50000)
+        with caplog.at_level(logging.WARNING):
+            out = _format_compaction_announce(
+                engine_name="lcm", status="compacted",
+                old_session_id="a", new_session_id="b",
+                old_messages=748, new_messages=34, pre_tokens=397767, post_tokens=17811,
+                model="claude-opus-4-8", provider="claude-app", stats=s,
+            )
+        assert "Removed from live context" not in out  # degraded
+        assert "748→34 messages" in out
+        assert "COMPACTION_STATS_RECONCILE_FAILED" in caplog.text
 
 
 

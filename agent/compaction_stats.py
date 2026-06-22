@@ -190,6 +190,22 @@ class CompactionStats:
 _LCM_SUMMARY_RE = None  # lazy-compiled below
 
 
+def hygiene_eligible_msgs(history: List[dict]) -> List[dict]:
+    """The session-hygiene eligible filter: user/assistant rows WITH content.
+
+    This is the SINGLE source of truth for which transcript rows the hygiene
+    compressor operates on (tool / system / contentless-assistant rows are
+    removed). The gateway hygiene block and the reconciliation replay probe both
+    call this so the filter can never drift between production and verification.
+    Returns shallow `{role, content}` dicts, matching the gateway's snapshot.
+    """
+    return [
+        {"role": m.get("role"), "content": m.get("content")}
+        for m in (history or [])
+        if m.get("role") in {"user", "assistant"} and m.get("content")
+    ]
+
+
 def _is_summary_message(content: str) -> bool:
     global _LCM_SUMMARY_RE
     if _LCM_SUMMARY_RE is None:
@@ -214,12 +230,31 @@ def build_hygiene_stats(
 
     - ``pre`` = the full raw transcript (`raw_history`).
     - ``eligible`` = the role-filtered subset fed to the throwaway compressor
-      (`eligible_msgs` = user/assistant-with-content). ``cleared = pre - eligible``
-      (tool + system + contentless-assistant rows the filter removed).
+      (`eligible_msgs` = user/assistant-with-content).
     - ``compressed`` = the LCM output written back. Within it: summary message(s)
-      (LCM markers), the system anchor (role == "system"), and the kept tail
-      (everything else). ``kept`` rows are a subset of ``eligible``; ``folded =
-      eligible - kept``.
+      (LCM markers), the system anchor (role == "system"), and the **kept tail**
+      (everything else).
+
+    Partition (the 2026-06-22 fix — identity-aware, robust to a kept tail that is
+    NOT a clean subset of ``eligible``):
+
+      Every ``pre`` row lands in exactly one of three disjoint buckets, classified
+      by whether it survived verbatim into the kept tail and whether the filter
+      kept it as eligible:
+
+        * ``kept``    — pre rows that appear verbatim in the compressed kept tail
+                        (matched by identity, then by full-content signature for
+                        copied populations). Any role: if LCM ever keeps a raw
+                        tool/system row in the fresh tail, it counts here, NOT
+                        double-counted in ``cleared``.
+        * ``folded``  — eligible rows that were NOT kept (folded into the summary).
+        * ``cleared`` — non-eligible rows (tool/system/contentless-assistant the
+                        filter removed) that were NOT kept.
+
+      ``cleared + folded + kept == pre`` holds BY CONSTRUCTION over identity-
+      partitioned rows, and each bucket's tokens are an INDEPENDENT estimator call
+      over its own disjoint row set (never ``pre - others`` — that would make
+      ``validate()`` a tautology and kill the guard).
 
     Token sums all use the SAME ``estimator`` over each subset (same-estimator
     contract). Returns a stats object; the caller validates + degrades on failure.
@@ -230,21 +265,54 @@ def build_hygiene_stats(
 
     summary_rows = [m for m in comp if _is_summary_message(m.get("content") or "")]
     anchor_rows = [m for m in comp if m.get("role") == "system"]
-    kept_rows = [
+    kept_compressed_rows = [
         m for m in comp
         if m.get("role") != "system" and not _is_summary_message(m.get("content") or "")
     ]
 
+    # ── Identity-aware three-way partition of `pre` ──
+    # The gateway hands us `raw_history` as COPIES and `eligible_msgs` as the
+    # filtered ORIGINALS, and `compressed`'s kept tail as yet more copies — so
+    # id() identity does NOT line up across the three lists. We therefore
+    # partition `pre` by walking it once and classifying each row by signature
+    # membership (consume-once multisets) against the kept tail and the eligible
+    # set, in that priority order:
+    #   kept   = pre rows whose signature matches a kept-tail row  (survived verbatim)
+    #   folded = remaining pre rows whose signature matches an eligible row
+    #   cleared= everything else (tool/system/contentless the filter removed,
+    #            not kept)
+    # Priority kept > folded ensures a row LCM kept verbatim is counted ONCE in
+    # `kept`, never double-counted in `cleared`/`folded`. Each bucket's tokens
+    # are then an INDEPENDENT estimator call over its own rows.
+    from collections import Counter as _Counter
+    _kept_want = _Counter(_row_signature(m) for m in kept_compressed_rows)
+    _elig_want = _Counter(_row_signature(m) for m in elig)
+    kept_rows: List[dict] = []
+    folded_rows: List[dict] = []
+    cleared_rows: List[dict] = []
+    for m in pre_msgs:
+        sig = _row_signature(m)
+        if _kept_want.get(sig, 0) > 0:
+            _kept_want[sig] -= 1
+            kept_rows.append(m)
+            # consume an eligible slot if this kept row was eligible (keeps the
+            # eligible multiset honest so a folded row can't reuse the slot)
+            if _elig_want.get(sig, 0) > 0:
+                _elig_want[sig] -= 1
+        elif _elig_want.get(sig, 0) > 0:
+            _elig_want[sig] -= 1
+            folded_rows.append(m)
+        else:
+            cleared_rows.append(m)
+
     pre_messages = len(pre_msgs)
-    eligible_count = len(elig)
-    cleared_count = pre_messages - eligible_count
     kept_messages = len(kept_rows)
-    folded_count = eligible_count - kept_messages
+    folded_count = len(folded_rows)
+    cleared_count = len(cleared_rows)
     summary_messages = len(summary_rows)
     anchor_messages = len(anchor_rows)
     post_messages = kept_messages + summary_messages + anchor_messages
 
-    cleared_rows = _disjoint_remainder(pre_msgs, elig)
     cleared_tokens = int(estimator(cleared_rows)) if cleared_rows else 0
     # Optional tool/other sub-split of the cleared population (derive-by-subtraction,
     # parent `cleared_tokens` untouched). Degrade to None on any failure (D-6).
@@ -257,7 +325,16 @@ def build_hygiene_stats(
     return CompactionStats(
         pre_messages=pre_messages,
         post_messages=post_messages,
-        eligible_count=eligible_count,
+        # eligible_count must satisfy validate()'s two coupled identities:
+        #   cleared == pre - eligible   AND   kept + folded == eligible.
+        # Under the identity partition `cleared + folded + kept == pre`, BOTH hold
+        # iff `eligible == kept + folded` (every retained row — folded into the
+        # summary OR kept verbatim — is on the "eligible/retained" side; `cleared`
+        # is exactly what was removed). This generalises the old `kept ⊆ eligible`
+        # case (where kept+folded did equal the filtered eligible set) to the LCM
+        # case where the kept tail may include a tool/system row: it's still a
+        # retained row, so it belongs on the eligible side of the axis, not cleared.
+        eligible_count=kept_messages + folded_count,
         kept_messages=kept_messages,
         summary_messages=summary_messages,
         anchor_messages=anchor_messages,
@@ -265,16 +342,17 @@ def build_hygiene_stats(
         folded_count=folded_count,
         pre_tokens=int(estimator(pre_msgs)),
         post_tokens=int(estimator(comp)),
-        kept_tokens=int(estimator(kept_rows)),
+        kept_tokens=int(estimator(kept_rows)) if kept_rows else 0,
         summary_tokens=int(estimator(summary_rows)) if summary_rows else 0,
         anchor_tokens=int(estimator(anchor_rows)) if anchor_rows else 0,
         cleared_tokens=cleared_tokens,
-        folded_tokens=int(estimator(_fold_rows(elig, kept_rows))),
+        folded_tokens=int(estimator(folded_rows)) if folded_rows else 0,
         cleared_tool_count=_ctc,
         cleared_tool_tokens=_ctt,
         cleared_other_count=_coc,
         cleared_other_tokens=_cot,
     )
+
 
 
 def _row_signature(m: dict) -> Tuple[Optional[str], str]:

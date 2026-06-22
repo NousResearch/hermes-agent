@@ -252,8 +252,126 @@ def test_build_hygiene_stats_zero_fold_reconciles():
 
 
 # ---------------------------------------------------------------------------
-# Greptile PR#76 P2 fixes — regression guards
+# LCM hygiene degrade fix (2026-06-22) — the fresh tail keeps RAW tool/system
+# rows verbatim, which are NOT in the user/assistant-only `eligible` set.  The
+# pre-fix producer assumed kept ⊆ eligible and mis-partitioned, so validate()
+# failed and the announce silently degraded to two-line on every tool-heavy
+# session (the live 1075→33 message Ace flagged).  These reproduce that and
+# guard the fix.
 # ---------------------------------------------------------------------------
+
+def _est_formula(msgs):
+    """Documented estimator formula oracle (RC-A): estimate_messages_tokens_rough
+    is ceil(Σ chars / 3.5) + image tokens.  Mirrors the constant, does NOT wrap
+    the production function, so the expectations are an INDEPENDENT oracle."""
+    import math
+    total = 0
+    for m in msgs:
+        c = m.get("content")
+        if isinstance(c, str):
+            total += len(c)
+    return math.ceil(total / 3.5)
+
+
+def _gateway_shaped_tool_heavy():
+    """Reproduce the gateway's real shapes: raw_history is COPIES, eligible is the
+    user/assistant-with-content filtered ORIGINALS, compressed = [anchor, summary]
+    + a raw fresh tail that INCLUDES a tool row (LCM keeps recent turns verbatim)."""
+    raw = []
+    for i in range(8):
+        raw.append({"role": "user", "content": f"u{i} " * 20})
+        raw.append({"role": "assistant", "content": f"a{i} " * 40})
+        raw.append({"role": "tool", "content": f"TOOL {i} " * 200, "tool_call_id": f"t{i}"})
+    # gateway: _hyg_pre_history = [{**m} ...] (copies); _hyg_msgs = filtered originals
+    raw_history = [dict(m) for m in raw]
+    eligible = [m for m in raw if m["role"] in ("user", "assistant") and m.get("content")]
+    # LCM fresh tail = last 3 RAW turns kept verbatim → includes a tool row
+    tail = [dict(m) for m in raw[-3:]]
+    summary = {"role": "assistant", "content": "[Recent Summary (d0, node 1)]\nfolded\n[Expand for details: x]"}
+    anchor = {"role": "system", "content": "SYS " * 30}
+    compressed = [anchor, summary] + tail
+    return raw, raw_history, eligible, compressed, tail
+
+
+def test_build_hygiene_stats_tool_in_fresh_tail_reconciles():
+    """REGRESSION: LCM fresh tail contains a tool row not in eligible → must still
+    reconcile (this is the exact 2026-06-22 live degrade)."""
+    from agent.compaction_stats import build_hygiene_stats
+    raw, raw_history, eligible, compressed, tail = _gateway_shaped_tool_heavy()
+    assert any(m["role"] == "tool" for m in tail), "fixture must put a tool row in the tail"
+    stats = build_hygiene_stats(
+        raw_history=raw_history, eligible_msgs=eligible, compressed=compressed, estimator=_est_formula,
+    )
+    ok, reason = stats.validate()
+    assert ok, f"tool-in-tail must reconcile, got: {reason}"
+    # the message axis must cover pre exactly
+    assert stats.cleared_count + stats.folded_count + stats.kept_messages == stats.pre_messages
+    # the kept tail (3 rows) all survive into post
+    assert stats.kept_messages == 3
+
+
+def test_build_hygiene_stats_tool_in_tail_independent_oracle():
+    """RC-A: bucket tokens equal hand-computed expectations from the documented
+    estimator formula — an oracle independent of the production estimator AND of
+    the code under test."""
+    from agent.compaction_stats import build_hygiene_stats
+    raw, raw_history, eligible, compressed, tail = _gateway_shaped_tool_heavy()
+    stats = build_hygiene_stats(
+        raw_history=raw_history, eligible_msgs=eligible, compressed=compressed, estimator=_est_formula,
+    )
+    # Independent oracle: partition pre by identity into kept / folded / cleared.
+    # map tail (copies) back to raw by content+role since they are dict copies:
+    #  kept   = raw rows whose (role, content) matches a tail row (verbatim survivors)
+    #  folded = eligible rows not kept
+    #  cleared= pre rows removed by the filter (tool/system/contentless) and not kept
+    tail_keys = [(m["role"], m["content"]) for m in tail]
+    import collections
+    want = collections.Counter(tail_keys)
+    kept_rows, rest = [], []
+    for m in raw:
+        k = (m["role"], m.get("content"))
+        if want.get(k, 0) > 0:
+            want[k] -= 1
+            kept_rows.append(m)
+        else:
+            rest.append(m)
+    # folded = eligible rows not in kept
+    kept_ids = {id(m) for m in kept_rows}
+    folded_rows = [m for m in eligible if id(m) not in kept_ids]
+    cleared_rows = [m for m in rest if m not in eligible]  # tool/contentless not kept
+    exp_kept = _est_formula(kept_rows)
+    exp_folded = _est_formula(folded_rows)
+    exp_cleared = _est_formula(cleared_rows)
+    # the producer's buckets must equal these independent expectations (±estimator non-additivity)
+    assert abs(stats.kept_tokens - exp_kept) <= 2, (stats.kept_tokens, exp_kept)
+    assert abs(stats.folded_tokens - exp_folded) <= 2, (stats.folded_tokens, exp_folded)
+    assert abs(stats.cleared_tokens - exp_cleared) <= 2, (stats.cleared_tokens, exp_cleared)
+
+
+def test_build_hygiene_stats_duplicate_tool_rows_collision():
+    """RC-C/B4: many byte-identical tool rows (signature collisions) must partition
+    correctly by IDENTITY, not by content-signature subtraction."""
+    from agent.compaction_stats import build_hygiene_stats
+    raw = []
+    IDENTICAL = "DUPLICATE TOOL OUTPUT " * 50
+    for i in range(3):
+        raw.append({"role": "user", "content": f"u{i} " * 20})
+        raw.append({"role": "assistant", "content": f"a{i} " * 40})
+    # 20 byte-identical tool rows
+    for i in range(20):
+        raw.append({"role": "tool", "content": IDENTICAL, "tool_call_id": f"t{i}"})
+    raw_history = [dict(m) for m in raw]
+    eligible = [m for m in raw if m["role"] in ("user", "assistant") and m.get("content")]
+    # fresh tail keeps 2 of the identical tool rows verbatim + 1 chat row
+    tail = [dict(raw[-1]), dict(raw[-2]), dict(eligible[-1])]
+    summary = {"role": "assistant", "content": "[Recent Summary (d0, node 1)]\nx\n[Expand for details: y]"}
+    anchor = {"role": "system", "content": "SYS " * 30}
+    compressed = [anchor, summary] + tail
+    stats = build_hygiene_stats(
+        raw_history=raw_history, eligible_msgs=eligible, compressed=compressed, estimator=_est_formula,
+    )
+    ok, reason = stats.validate()
+    assert ok, f"duplicate-tool-row collision must reconcile, got: {reason}"
 
 def test_freed_check_tolerates_compounded_axis_error():
     """The freed identity is the difference of the two ±_TOKEN_TOL axis checks, so

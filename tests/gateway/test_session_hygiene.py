@@ -915,9 +915,11 @@ def _hyg_event():
 
 
 @pytest.mark.asyncio
-async def test_hygiene_msgcount_announces_real_count(monkeypatch, tmp_path):
-    """A message-count hygiene trip delivers a 🗜️ announce with the message-count
-    reason and a like-for-like eligible→compressed delta (NOT the raw 416)."""
+async def test_hygiene_msgcount_announces_limit_not_count(monkeypatch, tmp_path):
+    """A message-count hygiene trip delivers a 🗜️ announce whose 'why it fired'
+    clause shows the configured LIMIT (the hard message limit), with the current
+    count only in the X→Y body — NOT the count in both places (the 2026-06-22
+    live bug rendered 'safety limit: 1075 messages' where 1075 was the count)."""
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *a, **k: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
@@ -960,9 +962,10 @@ async def test_hygiene_msgcount_announces_real_count(monkeypatch, tmp_path):
     announces = [s for s in adapter.sent if "Context compacted" in s["content"]]
     assert len(announces) == 1, f"expected exactly 1 announce, got {adapter.sent}"
     line = announces[0]["content"]
-    # message-count reason with the REAL count that tripped the valve
-    assert "message-count safety limit: 410 messages" in line
-    # like-for-like delta: eligible (410) → compressed (33)
+    # the clause shows the configured LIMIT (400 default), NOT the count (410)
+    assert "message-count safety limit: 400 messages" in line
+    assert "limit: 410" not in line  # the live bug: count masquerading as limit
+    # the COUNT appears only in the like-for-like delta: eligible (410) → compressed (33)
     assert "410→33 messages" in line
     # LCM lossless recovery guidance, contentless (no Summary:)
     assert "lcm_grep" in line

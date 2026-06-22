@@ -4942,3 +4942,43 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert "a@example.com" in result
         assert "b@example.com" in result
         assert mock_pool.submit.call_count == 2
+
+
+class TestSetCronSessionTitle:
+    """Robust cron session titling: #50535/#50536/#50537."""
+
+    def test_sets_title_when_no_collision(self):
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock()
+        db.set_session_title.return_value = True
+        out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
+        assert out == "Nightly Synthesis"
+        db.set_session_title.assert_called_once_with("sess-1", "Nightly Synthesis")
+
+    def test_dedupes_on_duplicate_title(self):
+        # First write collides (ValueError); helper falls back to lineage #N.
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock()
+        db.set_session_title.side_effect = [ValueError("in use"), True]
+        db.get_next_title_in_lineage.return_value = "Nightly Synthesis #2"
+        out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
+        assert out == "Nightly Synthesis #2"
+        db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
+
+    def test_reraises_when_no_lineage_support(self):
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock(spec=["set_session_title"])
+        db.set_session_title.side_effect = ValueError("in use")
+        with pytest.raises(ValueError):
+            _set_cron_session_title(db, "sess-1", "Dup")
+
+    def test_returns_none_for_blank_base(self):
+        from cron.scheduler import _set_cron_session_title
+        db = MagicMock()
+        assert _set_cron_session_title(db, "sess-1", "   ") is None
+        db.set_session_title.assert_not_called()
+
+    def test_returns_none_without_db_or_session(self):
+        from cron.scheduler import _set_cron_session_title
+        assert _set_cron_session_title(None, "sess-1", "X") is None
+        assert _set_cron_session_title(MagicMock(), "", "X") is None

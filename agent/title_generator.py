@@ -138,6 +138,53 @@ def generate_title(
         return None
 
 
+def _persist_session_title(session_db, session_id, title):
+    """Persist a generated title, recovering from duplicate-title collisions.
+
+    The write goes through ``set_auto_title_if_empty`` (predicate + write in
+    one transaction) so a manual ``/title`` set while LLM generation was in
+    flight is never overwritten — a plain ``set_session_title`` fallback keeps
+    older stores working. ``set_session_title`` raises ValueError when the
+    title would collide with another session (the unique-title index). Rather
+    than swallow it and leave the session untitled (#50537), append a #N
+    suffix via get_next_title_in_lineage() when the store supports lineage
+    dedup; otherwise re-raise so the caller can decide.
+
+    Returns the title actually persisted, or None when a concurrent manual
+    title won the race (nothing was written).
+    """
+    atomic_fn = getattr(session_db, "set_auto_title_if_empty", None)
+
+    def _set(t):
+        if atomic_fn is not None:
+            if not atomic_fn(session_id, t):
+                # Predicate failed: a title appeared while generation was in
+                # flight (manual /title wins), or the session vanished.
+                logger.debug(
+                    "Skipping auto-generated session title because a title "
+                    "was set while generation was in flight"
+                )
+                return None
+            return t
+        ok = session_db.set_session_title(session_id, t)
+        if ok is False:
+            raise RuntimeError(
+                f"session {session_id} not found when storing title"
+            )
+        return t
+
+    try:
+        return _set(title)
+    except ValueError:
+        next_title_fn = getattr(session_db, "get_next_title_in_lineage", None)
+        if next_title_fn is None:
+            raise
+        deduped = next_title_fn(title)
+        if not deduped or deduped == title:
+            raise
+        return _set(deduped)
+
+
 def auto_title_session(
     session_db,
     session_id: str,
@@ -237,15 +284,13 @@ def _auto_title_session(
         return
 
     try:
-        if not session_db.set_auto_title_if_empty(session_id, title):
-            logger.debug(
-                "Skipping auto-generated session title because a title was set while generation was in flight"
-            )
+        persisted = _persist_session_title(session_db, session_id, title)
+        if persisted is None:
             return
-        logger.debug("Auto-generated session title: %s", title)
+        logger.debug("Auto-generated session title: %s", persisted)
         if title_callback is not None:
             try:
-                title_callback(title)
+                title_callback(persisted)
             except Exception:
                 logger.debug("Auto-title callback failed", exc_info=True)
     except Exception as e:

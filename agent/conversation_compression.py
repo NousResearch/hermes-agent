@@ -324,6 +324,23 @@ def _format_compaction_announce(
     return line
 
 
+def _append_subsplit_lines(lines, *, tool_count, tool_tokens, other_count, other_tokens, other_desc):
+    """Append the tool/other sub-split sub-lines for a bucket, with zero-count
+    suppression (CHANGE-C): a populated-zero count never headlines a `0 … → ~0K`
+    line. The tool parenthetical is DESCRIPTIVE ("raw tool output"), not a
+    superlative the numbers could falsify (BLOCKER-1)."""
+    if tool_count > 0:
+        lines.append(
+            f"     • {tool_count} tool-result messages  →  {_abbrev_tokens(tool_tokens)} reclaimed"
+            f"   (raw tool output)"
+        )
+    if other_count > 0:
+        lines.append(
+            f"     • {other_count} other messages  →  {_abbrev_tokens(other_tokens)} reclaimed"
+            f"   ({other_desc})"
+        )
+
+
 def _format_granular_announce(
     head: str, stats: "Any", model_part: str,
     after_fallback: bool, window_from: "int | None", window_to: "int | None",
@@ -357,16 +374,38 @@ def _format_granular_announce(
     removed = stats.cleared_count + stats.folded_count
     if removed > 0:
         lines.append(f"   Removed from live context ({removed} messages):")
+        # cleared bucket: render the tool/other sub-split when populated, else coarse line
         if stats.cleared_count > 0:
-            lines.append(
-                f"     • {stats.cleared_count} cleared messages  →  {_abbrev_tokens(stats.cleared_tokens)} reclaimed"
-                f"   (tool results + system + tool-call-only turns)"
-            )
+            if stats.cleared_tool_count is not None:
+                _append_subsplit_lines(
+                    lines,
+                    tool_count=stats.cleared_tool_count or 0,
+                    tool_tokens=stats.cleared_tool_tokens or 0,
+                    other_count=stats.cleared_other_count or 0,
+                    other_tokens=stats.cleared_other_tokens or 0,
+                    other_desc="system + tool-call turns, cleared",
+                )
+            else:
+                lines.append(
+                    f"     • {stats.cleared_count} cleared messages  →  {_abbrev_tokens(stats.cleared_tokens)} reclaimed"
+                    f"   (tool results + system + tool-call-only turns)"
+                )
+        # folded bucket: same, with the in-turn "other" description
         if stats.folded_count > 0:
-            lines.append(
-                f"     • {stats.folded_count} folded messages   →  {_abbrev_tokens(stats.folded_tokens)} reclaimed"
-                f"   (older chat condensed into {stats.summary_messages or 1} summary)"
-            )
+            if stats.folded_tool_count is not None:
+                _append_subsplit_lines(
+                    lines,
+                    tool_count=stats.folded_tool_count or 0,
+                    tool_tokens=stats.folded_tool_tokens or 0,
+                    other_count=stats.folded_other_count or 0,
+                    other_tokens=stats.folded_other_tokens or 0,
+                    other_desc=f"chat + tool-call turns + system, folded into {stats.summary_messages or 1} summary",
+                )
+            else:
+                lines.append(
+                    f"     • {stats.folded_count} folded messages   →  {_abbrev_tokens(stats.folded_tokens)} reclaimed"
+                    f"   (older chat condensed into {stats.summary_messages or 1} summary)"
+                )
         replacement = stats.summary_tokens + stats.anchor_tokens
         if replacement > 0:
             lines.append(

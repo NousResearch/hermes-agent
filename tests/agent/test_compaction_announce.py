@@ -837,4 +837,101 @@ class TestGranularLayout:
         assert "custom store hint (state.db + lcm.db)" in out
 
 
+class TestToolResultSubSplit:
+    """Phase 4 — formatter renders the tool/other sub-split when populated."""
+
+    def _render(self, s):
+        return _format_compaction_announce(
+            engine_name="lcm", status="compacted",
+            old_session_id="a", new_session_id="b",
+            old_messages=s.pre_messages, new_messages=s.post_messages,
+            pre_tokens=s.pre_tokens, post_tokens=s.post_tokens,
+            model="claude-app/claude-opus-4-8", provider="claude-app",
+            trigger_reason="threshold", reasoning="xhigh", stats=s,
+        )
+
+    def test_inturn_folded_subsplit_renders_tool_and_other(self):
+        # in-turn shape: cleared=0, folded carries the sub-split.
+        # axes: pre = folded+kept = 695000+18000 = 713000; post = kept+summary+anchor = 23000
+        s = _good_stats(
+            pre_messages=752, post_messages=34, eligible_count=752,
+            kept_messages=33, summary_messages=1, anchor_messages=0,
+            cleared_count=0, folded_count=719,
+            pre_tokens=713000, post_tokens=23000,
+            kept_tokens=18000, summary_tokens=5000, anchor_tokens=0,
+            cleared_tokens=0, folded_tokens=695000,
+            folded_tool_count=600, folded_tool_tokens=601000,
+            folded_other_count=119, folded_other_tokens=94000,
+        )
+        ok, why = s.validate()
+        assert ok, why
+        out = self._render(s)
+        assert "600 tool-result messages" in out
+        assert "119 other messages" in out
+        assert "raw tool output" in out
+        # descriptive, NOT the hardcoded superlative
+        assert "the bulk" not in out
+        # the coarse "folded messages" line must NOT appear (replaced by sub-lines)
+        assert "719 folded messages" not in out
+
+    def test_hygiene_cleared_subsplit_label_no_chat(self):
+        # hygiene shape: cleared carries the sub-split; "other" must NOT say "chat" or "folded"
+        s = _good_stats(
+            cleared_tool_count=356, cleared_other_count=60,
+            cleared_tool_tokens=200000, cleared_other_tokens=47262,
+        )
+        out = self._render(s)
+        assert "356 tool-result messages" in out
+        assert "60 other messages" in out
+        # hygiene "other" line must not claim chat content or a summary fold
+        cleared_other_line = [ln for ln in out.splitlines() if "60 other messages" in ln][0]
+        assert "chat" not in cleared_other_line
+        assert "folded into" not in cleared_other_line
+        assert "cleared" in cleared_other_line
+
+    def test_zero_tool_count_suppresses_tool_line(self):
+        # CHANGE-C: a tool-free fold (tool_count==0) renders NO zero tool-result line.
+        # axes: pre = folded+kept = 69000+8000 = 77000; post = kept+summary+anchor = 12000
+        s = _good_stats(
+            pre_messages=200, post_messages=34, eligible_count=200,
+            kept_messages=32, summary_messages=1, anchor_messages=1,
+            cleared_count=0, folded_count=168,
+            pre_tokens=77000, post_tokens=12000,
+            kept_tokens=8000, summary_tokens=3000, anchor_tokens=1000,
+            cleared_tokens=0, folded_tokens=69000,
+            folded_tool_count=0, folded_tool_tokens=0,
+            folded_other_count=168, folded_other_tokens=69000,
+        )
+        ok, why = s.validate()
+        assert ok, why
+        out = self._render(s)
+        assert "0 tool-result messages" not in out
+        assert "168 other messages" in out
+
+    def test_no_subsplit_is_backcompat_coarse_line(self):
+        # absent sub-split → today's coarse "folded messages" line, unchanged
+        s = _good_stats()  # no sub-split fields
+        out = self._render(s)
+        assert "416 cleared messages" in out
+        assert "300 folded messages" in out
+        assert "tool-result messages" not in out
+
+    def test_subsplit_reconciles_against_bucket(self):
+        s = _good_stats(
+            pre_messages=752, post_messages=34, eligible_count=752,
+            kept_messages=33, summary_messages=1, anchor_messages=0,
+            cleared_count=0, folded_count=719,
+            pre_tokens=713000, post_tokens=23000,
+            kept_tokens=18000, summary_tokens=5000, anchor_tokens=0,
+            cleared_tokens=0, folded_tokens=695000,
+            folded_tool_count=600, folded_tool_tokens=601000,
+            folded_other_count=119, folded_other_tokens=94000,
+        )
+        # numbers tie out: tool+other == folded (count and tokens)
+        assert s.folded_tool_count + s.folded_other_count == s.folded_count
+        assert s.folded_tool_tokens + s.folded_other_tokens == s.folded_tokens
+        ok, reason = s.validate()
+        assert ok, reason
+
+
 

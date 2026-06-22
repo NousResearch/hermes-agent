@@ -53,11 +53,16 @@ class CompactionStats:
     anchor_tokens: int
     cleared_tokens: int
     folded_tokens: int
-    # ── optional sub-split of `cleared` (only when Phase-0 attribution is clean) ──
+    # ── optional sub-split of `cleared` (only when attribution is clean) ──
     cleared_tool_count: Optional[int] = None
     cleared_tool_tokens: Optional[int] = None
     cleared_other_count: Optional[int] = None
     cleared_other_tokens: Optional[int] = None
+    # ── optional sub-split of `folded` (in-turn path; only when attribution is clean) ──
+    folded_tool_count: Optional[int] = None
+    folded_tool_tokens: Optional[int] = None
+    folded_other_count: Optional[int] = None
+    folded_other_tokens: Optional[int] = None
 
     # NOTE: deliberately NO validation in __post_init__ (keeps any raise off the
     # hot path; callers invoke validate()/assert_reconciles() explicitly).
@@ -142,13 +147,35 @@ class CompactionStats:
                 f"- summary {self.summary_tokens} - anchor {self.anchor_tokens} "
                 f"= {freed_check} != freed {self.freed_tokens} (tol {_FREED_TOL})"
             )
-        # ── optional sub-split must sum to cleared ──
+        # ── optional sub-split of `cleared` must sum to cleared (count + tokens) ──
+        # tokens are EXACT: other_tokens is derived as (cleared_tokens - tool_tokens)
+        # by the producer (D-7), so any drift here is a real producer bug, not rounding.
         if self.cleared_tool_count is not None or self.cleared_other_count is not None:
             t = self.cleared_tool_count or 0
             o = self.cleared_other_count or 0
             if t + o != self.cleared_count:
                 return False, (
-                    f"sub-split: tool {t} + other {o} != cleared {self.cleared_count}"
+                    f"cleared sub-split: tool {t} + other {o} != cleared {self.cleared_count}"
+                )
+            tt = self.cleared_tool_tokens or 0
+            ot = self.cleared_other_tokens or 0
+            if tt + ot != self.cleared_tokens:
+                return False, (
+                    f"cleared sub-split tokens: {tt}+{ot} != cleared {self.cleared_tokens}"
+                )
+        # ── optional sub-split of `folded` must sum to folded (count + tokens, EXACT) ──
+        if self.folded_tool_count is not None or self.folded_other_count is not None:
+            t = self.folded_tool_count or 0
+            o = self.folded_other_count or 0
+            if t + o != self.folded_count:
+                return False, (
+                    f"folded sub-split: tool {t} + other {o} != folded {self.folded_count}"
+                )
+            tt = self.folded_tool_tokens or 0
+            ot = self.folded_other_tokens or 0
+            if tt + ot != self.folded_tokens:
+                return False, (
+                    f"folded sub-split tokens: {tt}+{ot} != folded {self.folded_tokens}"
                 )
         return True, ""
 
@@ -218,6 +245,14 @@ def build_hygiene_stats(
     post_messages = kept_messages + summary_messages + anchor_messages
 
     cleared_rows = _disjoint_remainder(pre_msgs, elig)
+    cleared_tokens = int(estimator(cleared_rows)) if cleared_rows else 0
+    # Optional tool/other sub-split of the cleared population (derive-by-subtraction,
+    # parent `cleared_tokens` untouched). Degrade to None on any failure (D-6).
+    _ctc = _ctt = _coc = _cot = None
+    try:
+        _ctc, _ctt, _coc, _cot = _tool_other_split(cleared_rows, cleared_tokens, estimator)
+    except Exception:
+        _ctc = _ctt = _coc = _cot = None
 
     return CompactionStats(
         pre_messages=pre_messages,
@@ -233,8 +268,12 @@ def build_hygiene_stats(
         kept_tokens=int(estimator(kept_rows)),
         summary_tokens=int(estimator(summary_rows)) if summary_rows else 0,
         anchor_tokens=int(estimator(anchor_rows)) if anchor_rows else 0,
-        cleared_tokens=int(estimator(cleared_rows)) if cleared_rows else 0,
+        cleared_tokens=cleared_tokens,
         folded_tokens=int(estimator(_fold_rows(elig, kept_rows))),
+        cleared_tool_count=_ctc,
+        cleared_tool_tokens=_ctt,
+        cleared_other_count=_coc,
+        cleared_other_tokens=_cot,
     )
 
 
@@ -301,6 +340,25 @@ def _fold_rows(eligible: List[dict], kept: List[dict]) -> List[dict]:
     return out
 
 
+def _tool_other_split(rows, parent_tokens, estimator):
+    """Split a row-list into (tool_count, tool_tokens, other_count, other_tokens).
+
+    ``other_tokens`` is DERIVED by subtraction (``parent_tokens - tool_tokens``),
+    NOT estimated — so ``tool+other == parent_tokens`` EXACTLY despite the
+    estimator's ceil-of-sum non-additivity, and the parent total is left untouched
+    (D-7; keeps the freed/pre/post axes provably unperturbed). The caller MUST pass
+    the SAME list whose length is the parent bucket's count and whose estimate is
+    ``parent_tokens`` (the post-fold list), so counts and tokens both partition by
+    construction regardless of which dedup branch produced it. ``estimator`` returns
+    an int, so no ``int()`` wrap is needed.
+    """
+    tool = [m for m in rows if m.get("role") == "tool"]
+    other = [m for m in rows if m.get("role") != "tool"]
+    tool_tokens = estimator(tool) if tool else 0
+    other_tokens = parent_tokens - tool_tokens
+    return (len(tool), tool_tokens, len(other), other_tokens)
+
+
 def build_inturn_stats(
     *,
     messages: List[dict],
@@ -336,6 +394,16 @@ def build_inturn_stats(
     anchor_messages = len(anchor_rows)
     post_messages = kept_messages + summary_messages + anchor_messages
 
+    fold_rows = _fold_rows(pre_msgs, kept_rows)
+    folded_tokens = int(estimator(fold_rows))
+    # Optional tool/other sub-split of the folded population (derive-by-subtraction,
+    # parent `folded_tokens` untouched). Degrade to None on any failure (D-6).
+    _ftc = _ftt = _foc = _fot = None
+    try:
+        _ftc, _ftt, _foc, _fot = _tool_other_split(fold_rows, folded_tokens, estimator)
+    except Exception:
+        _ftc = _ftt = _foc = _fot = None
+
     return CompactionStats(
         pre_messages=pre_messages,
         post_messages=post_messages,
@@ -351,5 +419,9 @@ def build_inturn_stats(
         summary_tokens=int(estimator(summary_rows)) if summary_rows else 0,
         anchor_tokens=int(estimator(anchor_rows)) if anchor_rows else 0,
         cleared_tokens=0,
-        folded_tokens=int(estimator(_fold_rows(pre_msgs, kept_rows))),
+        folded_tokens=folded_tokens,
+        folded_tool_count=_ftc,
+        folded_tool_tokens=_ftt,
+        folded_other_count=_foc,
+        folded_other_tokens=_fot,
     )

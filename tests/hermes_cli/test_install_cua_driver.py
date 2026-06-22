@@ -108,38 +108,40 @@ class TestCheckCuaDriverAssetForArch:
     def test_x86_64_with_asset_returns_true(self):
         from hermes_cli import tools_config
 
-        release = {
-            "tag_name": "cua-driver-v0.1.6",
+        releases = [{
+            "tag_name": "cua-driver-rs-v0.1.6",
             "assets": [
-                {"name": "cua-driver-0.1.6-darwin-arm64.tar.gz"},
-                {"name": "cua-driver-0.1.6-darwin-x86_64.tar.gz"},
+                {"name": "cua-driver-rs-0.1.6-darwin-arm64.tar.gz"},
+                {"name": "cua-driver-rs-0.1.6-darwin-x86_64.tar.gz"},
             ],
-        }
+        }]
         mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps(release).encode()
+        mock_resp.read.return_value = json.dumps(releases).encode()
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("platform.machine", return_value="x86_64"), \
+        with patch("platform.system", return_value="Darwin"), \
+             patch("platform.machine", return_value="x86_64"), \
              patch("urllib.request.urlopen", return_value=mock_resp):
             assert tools_config._check_cua_driver_asset_for_arch() is True
 
     def test_x86_64_without_asset_returns_false(self):
         from hermes_cli import tools_config
 
-        release = {
-            "tag_name": "cua-driver-v0.1.6",
+        releases = [{
+            "tag_name": "cua-driver-rs-v0.1.6",
             "assets": [
-                {"name": "cua-driver-0.1.6-darwin-arm64.tar.gz"},
-                {"name": "cua-driver.tar.gz"},
+                {"name": "cua-driver-rs-0.1.6-darwin-arm64.tar.gz"},
+                {"name": "cua-driver-rs.tar.gz"},
             ],
-        }
+        }]
         mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps(release).encode()
+        mock_resp.read.return_value = json.dumps(releases).encode()
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("platform.machine", return_value="x86_64"), \
+        with patch("platform.system", return_value="Darwin"), \
+             patch("platform.machine", return_value="x86_64"), \
              patch("urllib.request.urlopen", return_value=mock_resp), \
              patch.object(tools_config, "_print_warning") as warn, \
              patch.object(tools_config, "_print_info"):
@@ -159,12 +161,12 @@ class TestCheckCuaDriverAssetForArch:
         """When the latest release has no Intel asset, skip the installer."""
         from hermes_cli import tools_config
 
-        release = {
-            "tag_name": "cua-driver-v0.1.6",
-            "assets": [{"name": "cua-driver-0.1.6-darwin-arm64.tar.gz"}],
-        }
+        releases = [{
+            "tag_name": "cua-driver-rs-v0.1.6",
+            "assets": [{"name": "cua-driver-rs-0.1.6-darwin-arm64.tar.gz"}],
+        }]
         mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps(release).encode()
+        mock_resp.read.return_value = json.dumps(releases).encode()
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
@@ -183,12 +185,12 @@ class TestCheckCuaDriverAssetForArch:
         """On upgrade with no Intel asset, return whether binary existed."""
         from hermes_cli import tools_config
 
-        release = {
-            "tag_name": "cua-driver-v0.1.6",
-            "assets": [{"name": "cua-driver-0.1.6-darwin-arm64.tar.gz"}],
-        }
+        releases = [{
+            "tag_name": "cua-driver-rs-v0.1.6",
+            "assets": [{"name": "cua-driver-rs-0.1.6-darwin-arm64.tar.gz"}],
+        }]
         mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps(release).encode()
+        mock_resp.read.return_value = json.dumps(releases).encode()
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
@@ -346,10 +348,12 @@ class TestCheckCuaDriverAssetCrossPlatform:
 
     @staticmethod
     def _mock_release(asset_names):
-        release = {"tag_name": "cua-driver-v0.5.0",
-                   "assets": [{"name": n} for n in asset_names]}
+        # The probe lists /releases and picks the newest cua-driver-rs-v* tag,
+        # so the mock returns a LIST of releases with that tag prefix.
+        releases = [{"tag_name": "cua-driver-rs-v0.5.0",
+                     "assets": [{"name": n} for n in asset_names]}]
         resp = MagicMock()
-        resp.read.return_value = json.dumps(release).encode()
+        resp.read.return_value = json.dumps(releases).encode()
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
         return resp
@@ -358,8 +362,8 @@ class TestCheckCuaDriverAssetCrossPlatform:
         from hermes_cli import tools_config
 
         resp = self._mock_release([
-            "cua-driver-0.5.0-windows-amd64.zip",
-            "cua-driver-0.5.0-darwin-arm64.tar.gz",
+            "cua-driver-rs-0.5.0-windows-x86_64.zip",
+            "cua-driver-rs-0.5.0-darwin-arm64.tar.gz",
         ])
         with patch("platform.system", return_value="Windows"), \
              patch("platform.machine", return_value="AMD64"), \
@@ -370,7 +374,7 @@ class TestCheckCuaDriverAssetCrossPlatform:
         from hermes_cli import tools_config
 
         resp = self._mock_release([
-            "cua-driver-0.5.0-windows-amd64.zip",
+            "cua-driver-rs-0.5.0-windows-x86_64.zip",
         ])
         with patch("platform.system", return_value="Windows"), \
              patch("platform.machine", return_value="ARM64"), \
@@ -385,7 +389,7 @@ class TestCheckCuaDriverAssetCrossPlatform:
         from hermes_cli import tools_config
 
         resp = self._mock_release([
-            "cua-driver-0.5.0-linux-x86_64.tar.gz",
+            "cua-driver-rs-0.5.0-linux-x86_64.tar.gz",
         ])
         with patch("platform.system", return_value="Linux"), \
              patch("platform.machine", return_value="x86_64"), \
@@ -396,7 +400,7 @@ class TestCheckCuaDriverAssetCrossPlatform:
         from hermes_cli import tools_config
 
         resp = self._mock_release([
-            "cua-driver-0.5.0-linux-aarch64.tar.gz",
+            "cua-driver-rs-0.5.0-linux-arm64.tar.gz",
         ])
         with patch("platform.system", return_value="Linux"), \
              patch("platform.machine", return_value="aarch64"), \
@@ -407,7 +411,7 @@ class TestCheckCuaDriverAssetCrossPlatform:
         from hermes_cli import tools_config
 
         resp = self._mock_release([
-            "cua-driver-0.5.0-linux-x86_64.tar.gz",
+            "cua-driver-rs-0.5.0-linux-x86_64.tar.gz",
         ])
         with patch("platform.system", return_value="Linux"), \
              patch("platform.machine", return_value="aarch64"), \
@@ -416,3 +420,27 @@ class TestCheckCuaDriverAssetCrossPlatform:
              patch.object(tools_config, "_print_info"):
             assert tools_config._check_cua_driver_asset_for_arch() is False
             warn.assert_called_once()
+
+    def test_releases_latest_tag_ignored_picks_driver_rs_tag(self):
+        """A non-driver tag at the head of the list must not gate the probe.
+
+        Regression guard: the monorepo's newest release is often a Python
+        component (agent-*, computer-*) with zero binary assets. The probe
+        must skip past it to the newest cua-driver-rs-v* release.
+        """
+        from hermes_cli import tools_config
+
+        releases = [
+            {"tag_name": "agent-v0.8.3", "assets": []},
+            {"tag_name": "computer-v0.5.19", "assets": []},
+            {"tag_name": "cua-driver-rs-v0.6.0",
+             "assets": [{"name": "cua-driver-rs-0.6.0-linux-x86_64-binary.tar.gz"}]},
+        ]
+        resp = MagicMock()
+        resp.read.return_value = json.dumps(releases).encode()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        with patch("platform.system", return_value="Linux"), \
+             patch("platform.machine", return_value="x86_64"), \
+             patch("urllib.request.urlopen", return_value=resp):
+            assert tools_config._check_cua_driver_asset_for_arch() is True

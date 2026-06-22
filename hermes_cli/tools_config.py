@@ -689,24 +689,52 @@ def _check_cua_driver_asset_for_arch() -> bool:
         # Unknown arch — fail open and let the installer surface the error.
         return True
 
-    # Probe the latest release for an OS+arch asset before falling through to
-    # the upstream installer.
+    # Probe the cua-driver release for an OS+arch asset before falling through
+    # to the upstream installer.
+    #
+    # The cua-driver-rs binaries are published to the trycua/cua monorepo under
+    # tag prefix ``cua-driver-rs-v*``. The repo's ``releases/latest`` is NOT
+    # that — it floats across the monorepo's other components (agent-*,
+    # computer-*, lume-*, train-*), most of which ship zero binary assets. So
+    # we list releases and pick the newest ``cua-driver-rs-v*`` tag, matching
+    # what the upstream install.sh does. Failing to find one => fail open and
+    # let the installer (which resolves the tag itself) be the source of truth.
+    driver_tag_prefix = "cua-driver-rs-v"
     api_url = (
-        "https://api.github.com/repos/trycua/cua/releases/latest"
+        "https://api.github.com/repos/trycua/cua/releases?per_page=100"
     )
     try:
         req = urllib.request.Request(api_url, headers={"Accept": "application/vnd.github+json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
-            release = _json.loads(resp.read().decode())
-        tag = release.get("tag_name", "")
-        assets = release.get("assets", [])
+            releases = _json.loads(resp.read().decode())
+        if not isinstance(releases, list):
+            return True
+        # GitHub returns releases newest-first; take the first cua-driver-rs tag.
+        driver_release = next(
+            (
+                r for r in releases
+                if str(r.get("tag_name", "")).startswith(driver_tag_prefix)
+            ),
+            None,
+        )
+        if driver_release is None:
+            # No cua-driver-rs release surfaced (API hiccup / unexpected shape).
+            # Fail open — the installer resolves the tag on its own.
+            return True
+        tag = driver_release.get("tag_name", "")
+        assets = driver_release.get("assets", [])
+        # OS token gates the asset alongside arch so a darwin asset can't
+        # satisfy a Linux probe (every cua-driver-rs release ships all three
+        # OSes, so the arch token alone would always match).
+        os_token = {"Darwin": "darwin", "Windows": "windows", "Linux": "linux"}.get(system, "")
         has_asset = any(
-            any(a in a_info.get("name", "").lower() for a in arch_names)
+            os_token in (name := a_info.get("name", "").lower())
+            and any(a in name for a in arch_names)
             for a_info in assets
         )
         if not has_asset:
             _print_warning(
-                f"    Latest CUA release ({tag}) has no {system} {arch_label} asset."
+                f"    Latest cua-driver release ({tag}) has no {system} {arch_label} asset."
             )
             _print_info(
                 "    CUA Driver may not yet ship a build for this platform."

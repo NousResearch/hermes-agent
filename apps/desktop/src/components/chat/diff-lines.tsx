@@ -5,7 +5,7 @@ import * as React from 'react'
 import { useShikiHighlighter } from 'react-shiki'
 import type { ShikiTransformer } from 'shiki'
 
-import { exceedsHighlightBudget } from '@/components/chat/shiki-highlighter'
+import { exceedsHighlightBudget, SHIKI_THEME } from '@/components/chat/shiki-highlighter'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
 
@@ -18,8 +18,6 @@ import { cn } from '@/lib/utils'
  * Both drop git file-headers + `@@` hunk noise and the `+/-` gutter so changes
  * read by color + a 2px gutter accent, the way Cursor does.
  */
-const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
-
 type DiffKind = 'add' | 'context' | 'remove'
 
 interface DiffLine {

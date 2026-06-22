@@ -1253,6 +1253,14 @@ canvas {
   display: grid;
 }
 
+/* The github-dark token palette reads candy-bright at our small code size.
+   `github-dark-dimmed` only dims the *background* (which we strip), so soften
+   the token *foregrounds* directly — a small saturation + brightness pullback,
+   hues preserved — for both code blocks and inline diffs. Dark mode only. */
+.dark .shiki {
+  filter: saturate(0.82) brightness(0.92);
+}
+
 /* File edits (write_file / edit_file / patch) are the deliverable, not
    scaffolding — the diff is what the user reviews, like a PR. An *expanded*
    edit stays at full strength; collapsed it fades like any other row. The

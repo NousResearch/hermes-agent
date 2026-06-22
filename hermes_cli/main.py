@@ -11751,6 +11751,13 @@ def cmd_claw(args):
 
 def main():
     """Main entry point for hermes CLI."""
+    # Set the active platform early so downstream code that reads
+    # HERMES_PLATFORM (skill filtering, platform_disabled lookup, etc.)
+    # sees 'cli' when the agent is invoked from the terminal.
+    # setdefault() ensures a gateway-imported main() that already set
+    # the variable is never overwritten.
+    os.environ.setdefault("HERMES_PLATFORM", "cli")
+
     # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
     # in ps/top/htop.  Non-fatal — just a nicer UX.
     _set_process_title()

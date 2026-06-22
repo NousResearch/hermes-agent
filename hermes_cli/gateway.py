@@ -210,8 +210,48 @@ def _is_pid_ancestor_of_current_process(target_pid: int) -> bool:
     return False
 
 
+def _is_running_inside_gateway() -> bool:
+    """Return True if the current process is running inside a Hermes gateway.
+
+    Dual detection:
+      (a) ``_HERMES_GATEWAY`` env var — set by gateway/run.py on the gateway process.
+      (b) Ancestry walk — checks whether the current process is a descendant of
+          any running gateway PID (PID file → process scan fallback).
+
+    Either signal is sufficient to indicate we are inside the gateway; the check
+    is designed to be called BEFORE any kill/stop/restart operations.
+    """
+    if os.getenv("_HERMES_GATEWAY") == "1":
+        return True
+
+    # Ancestry-based detection: check if current process is a descendant
+    # of a running gateway.  Catches edge cases where _HERMES_GATEWAY may
+    # be cleared but the process hierarchy still traces back to the gateway.
+    try:
+        from gateway.status import get_running_pid
+
+        gw_pid = get_running_pid()
+        if gw_pid and _is_pid_ancestor_of_current_process(gw_pid):
+            return True
+    except ImportError:
+        pass  # gateway.status module not available
+    except (FileNotFoundError, OSError):
+        pass  # PID file missing or unreadable
+    except (RuntimeError, ValueError, UnicodeDecodeError, AttributeError):
+        logger.debug(
+            "Unexpected error during gateway ancestry check", exc_info=True
+        )
+    return False
+
+
 def _request_gateway_self_restart(pid: int) -> bool:
-    """Ask a running gateway ancestor to restart itself asynchronously."""
+    """Ask a running gateway ancestor to restart itself asynchronously.
+
+    This function is only used in service-manager mode (systemd/launchd),
+    where SIGUSR1 triggers a drain-aware restart via the service supervisor.
+    Direct in-process calls should be intercepted at the CLI layer
+    (see ``hermes gateway restart`` defense check).
+    """
     if not hasattr(signal, "SIGUSR1"):
         return False
     if not _is_pid_ancestor_of_current_process(pid):
@@ -6122,7 +6162,10 @@ def _gateway_command_inner(args):
     elif subcmd == "stop":
         # Defense: refuse self-targeting gateway stop from inside the gateway.
         # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
-        if os.getenv("_HERMES_GATEWAY") == "1":
+        # Dual detection via _is_running_inside_gateway():
+        #   (a) _HERMES_GATEWAY env var (set by gateway/run.py)
+        #   (b) Process ancestry walk (catch cleared/missing env var)
+        if _is_running_inside_gateway():
             print_error(
                 "Refusing to stop the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
@@ -6215,11 +6258,15 @@ def _gateway_command_inner(args):
     elif subcmd == "restart":
         # Defense: refuse self-targeting gateway restart from inside the gateway.
         # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
-        if os.getenv("_HERMES_GATEWAY") == "1":
+        # Dual detection via _is_running_inside_gateway():
+        #   (a) _HERMES_GATEWAY env var (set by gateway/run.py)
+        #   (b) Process ancestry walk (catch cleared/missing env var)
+        if _is_running_inside_gateway():
             print_error(
                 "Refusing to restart the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway restart` from a shell outside the running gateway."
+                "Use `hermes gateway restart` from a shell outside the running gateway.\n"
+                "The gateway process is still alive — no action was taken."
             )
             sys.exit(1)
 

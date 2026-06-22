@@ -564,13 +564,63 @@ function badRequest(res, msg) {
   res.end(JSON.stringify({ ok: false, error: msg }));
 }
 
-function serverError(res) {
+function classifySidecarError(error) {
+  const raw = error && error.stack ? error.stack : String(error || "");
+  const lower = raw.toLowerCase();
+  if (lower.includes("target not allowed for this project")) {
+    return {
+      code: "target_not_allowed",
+      retryable: false,
+      error: "target not allowed for this Photon project",
+    };
+  }
+  if (
+    lower.includes("invalid credentials") ||
+    lower.includes("status code 401") ||
+    lower.includes(" 401") ||
+    lower.includes("unauthenticated") ||
+    lower.includes("tokenexpired") ||
+    lower.includes("token expired")
+  ) {
+    return {
+      code: "invalid_credentials",
+      retryable: false,
+      error: "Photon credentials are invalid; run `hermes photon setup` and restart the gateway",
+    };
+  }
+  if (
+    lower.includes("connection dropped") ||
+    lower.includes("catchupevents") ||
+    lower.includes("service unavailable") ||
+    lower.includes("unavailable") ||
+    lower.includes("deadline exceeded") ||
+    lower.includes("upstream connect error") ||
+    lower.includes("reset reason") ||
+    lower.includes("overflow")
+  ) {
+    return {
+      code: "upstream_transient",
+      retryable: true,
+      error: "Photon upstream connection dropped; retrying may succeed",
+    };
+  }
+  if (lower.includes("authentication failed")) {
+    return {
+      code: "authentication_failed",
+      retryable: false,
+      error: "Photon upstream authentication failed; refresh credentials with `hermes photon setup`",
+    };
+  }
+  return { code: "internal", retryable: false, error: "internal sidecar error" };
+}
+
+function serverError(res, error) {
   res.statusCode = 500;
   res.setHeader("Content-Type", "application/json");
-  // Don't leak stack traces or raw exception text to the caller — even
-  // though we listen on loopback, the supervisor logs the real error
-  // and the client only needs a generic failure signal.
-  res.end(JSON.stringify({ ok: false, error: "internal sidecar error" }));
+  // Do not leak stack traces or raw exception text over the loopback API. Return
+  // a bounded, machine-readable classification so Python can distinguish
+  // transient reconnect windows from permanent auth/config failures.
+  res.end(JSON.stringify({ ok: false, ...classifySidecarError(error) }));
 }
 
 function ok(res, data) {
@@ -829,7 +879,7 @@ const server = http.createServer(async (req, res) => {
     );
     // serverError() intentionally returns a generic message — see its
     // body for the rationale.
-    return serverError(res);
+    return serverError(res, e);
   }
 });
 

@@ -43,11 +43,7 @@ class _FakeAsyncClient:
 
 @pytest.mark.asyncio
 async def test_photon_standalone_send_retries_transient_sidecar_500(monkeypatch):
-    """Transient Photon/Spectrum send failures should be retried, not dropped.
-
-    This protects iMessage outbound deliveries from short-lived Spectrum
-    `Connection dropped` / `Authentication failed` windows after sidecar reconnect.
-    """
+    """Transient Photon/Spectrum connection failures should be retried."""
 
     monkeypatch.setattr(photon, "HTTPX_AVAILABLE", True)
     monkeypatch.setattr(photon, "httpx", types.SimpleNamespace(AsyncClient=_FakeAsyncClient))
@@ -71,6 +67,32 @@ async def test_photon_standalone_send_retries_transient_sidecar_500(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_photon_standalone_send_uses_sidecar_retryable_flag(monkeypatch):
+    monkeypatch.setattr(photon, "HTTPX_AVAILABLE", True)
+    monkeypatch.setattr(photon, "httpx", types.SimpleNamespace(AsyncClient=_FakeAsyncClient))
+    monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "token")
+    monkeypatch.setattr(photon.asyncio, "sleep", lambda _delay: _noop_sleep())
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.responses = [
+        _FakeResponse(
+            500,
+            {"ok": False, "error": "Photon upstream connection dropped", "retryable": True},
+            '{"ok":false,"error":"Photon upstream connection dropped","retryable":true}',
+        ),
+        _FakeResponse(200, {"ok": True, "messageId": "msg-ok"}),
+    ]
+
+    result = await photon._standalone_send(
+        PlatformConfig(extra={}),
+        "any;-;+15551234567",
+        "hello",
+    )
+
+    assert result == {"success": True, "message_id": "msg-ok"}
+    assert len(_FakeAsyncClient.calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_photon_standalone_send_does_not_retry_non_retryable(monkeypatch):
     monkeypatch.setattr(photon, "HTTPX_AVAILABLE", True)
     monkeypatch.setattr(photon, "httpx", types.SimpleNamespace(AsyncClient=_FakeAsyncClient))
@@ -78,7 +100,11 @@ async def test_photon_standalone_send_does_not_retry_non_retryable(monkeypatch):
     monkeypatch.setattr(photon.asyncio, "sleep", lambda _delay: _noop_sleep())
     _FakeAsyncClient.calls = []
     _FakeAsyncClient.responses = [
-        _FakeResponse(500, {"ok": False}, '{"ok":false,"error":"Target not allowed for this project"}'),
+        _FakeResponse(
+            500,
+            {"ok": False, "error": "target not allowed for this Photon project", "retryable": False},
+            '{"ok":false,"error":"target not allowed for this Photon project","retryable":false}',
+        ),
         _FakeResponse(200, {"ok": True, "messageId": "should-not-send"}),
     ]
 
@@ -88,8 +114,34 @@ async def test_photon_standalone_send_does_not_retry_non_retryable(monkeypatch):
         "hello",
     )
 
-    assert "Target not allowed" in result["error"]
+    assert "target not allowed" in result["error"]
     assert len(_FakeAsyncClient.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_sidecar_call_preserves_retryable_error_classification(monkeypatch):
+    monkeypatch.setattr(photon, "httpx", types.SimpleNamespace(AsyncClient=_FakeAsyncClient))
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.responses = [
+        _FakeResponse(
+            500,
+            {
+                "ok": False,
+                "code": "upstream_transient",
+                "error": "Photon upstream connection dropped; retrying may succeed",
+                "retryable": True,
+            },
+        )
+    ]
+    adapter = photon.PhotonAdapter(PlatformConfig(extra={}))
+    adapter._http_client = object()  # type: ignore[assignment]
+
+    with pytest.raises(photon.PhotonSidecarError) as exc_info:
+        await adapter._sidecar_call("/send", {"spaceId": "any;-;+15551234567", "text": "hello"})
+
+    assert exc_info.value.retryable is True
+    assert exc_info.value.code == "upstream_transient"
+    assert "connection dropped" in str(exc_info.value)
 
 
 def test_photon_sidecar_resolves_dm_space_before_phone_create():
@@ -103,6 +155,16 @@ def test_photon_sidecar_resolves_dm_space_before_phone_create():
     dm_get = source.index("photon-sidecar: DM space.get failed")
     phone_create = source.index("photon-sidecar: phone->DM space.create failed")
     assert dm_get < phone_create
+
+
+def test_photon_sidecar_returns_sanitized_error_classifications():
+    source = Path("plugins/platforms/photon/sidecar/index.mjs").read_text()
+    assert "function classifySidecarError" in source
+    assert 'code: "target_not_allowed"' in source
+    assert 'code: "invalid_credentials"' in source
+    assert 'code: "upstream_transient"' in source
+    assert "e && e.stack ? e.stack" in source  # logs keep detail server-side
+    assert "...classifySidecarError(error)" in source  # API returns only classification
 
 
 async def _noop_sleep():

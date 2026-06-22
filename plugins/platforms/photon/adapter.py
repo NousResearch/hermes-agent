@@ -96,8 +96,23 @@ _PHOTON_RETRYABLE_PATTERNS = (
     "reset reason: overflow",
     "upstream_overflow",
     "upstream_unavailable",
-    "authentication failed",
 )
+
+
+class PhotonSidecarError(RuntimeError):
+    """Sanitized sidecar failure with retry semantics from the sidecar."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: Optional[str] = None,
+        retryable: bool = False,
+    ):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
 
 # Minimum seconds between typing-indicator calls for the same chat.
 # iMessage is a personal channel — suppressing rapid repeats reduces
@@ -1382,6 +1397,19 @@ class PhotonAdapter(BasePlatformAdapter):
             body["format"] = "markdown"
         try:
             data = await self._sidecar_call("/send", body)
+        except PhotonSidecarError as e:
+            return SendResult(
+                success=False,
+                error=str(e),
+                retryable=e.retryable,
+                error_kind=(
+                    "transient"
+                    if e.retryable
+                    else "forbidden"
+                    if e.code == "target_not_allowed"
+                    else "unknown"
+                ),
+            )
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
@@ -1431,6 +1459,19 @@ class PhotonAdapter(BasePlatformAdapter):
             body["caption"] = caption
         try:
             data = await self._sidecar_call("/send-attachment", body)
+        except PhotonSidecarError as e:
+            return SendResult(
+                success=False,
+                error=str(e),
+                retryable=e.retryable,
+                error_kind=(
+                    "transient"
+                    if e.retryable
+                    else "forbidden"
+                    if e.code == "target_not_allowed"
+                    else "unknown"
+                ),
+            )
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
@@ -1450,13 +1491,27 @@ class PhotonAdapter(BasePlatformAdapter):
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, json=body, headers=headers)
         if resp.status_code != 200:
-            raise RuntimeError(
-                f"Photon sidecar {path} returned {resp.status_code}: {resp.text[:200]}"
+            error_text = resp.text[:200]
+            code = None
+            retryable = False
+            try:
+                payload = resp.json() or {}
+                error_text = payload.get("error") or error_text
+                code = payload.get("code")
+                retryable = bool(payload.get("retryable"))
+            except Exception:
+                pass
+            raise PhotonSidecarError(
+                f"Photon sidecar {path} returned {resp.status_code}: {error_text}",
+                code=code,
+                retryable=retryable,
             )
         data = resp.json() or {}
         if not data.get("ok"):
-            raise RuntimeError(
-                f"Photon sidecar {path} reported error: {data.get('error')}"
+            raise PhotonSidecarError(
+                f"Photon sidecar {path} reported error: {data.get('error')}",
+                code=data.get("code"),
+                retryable=bool(data.get("retryable")),
             )
         return data
 
@@ -1592,18 +1647,27 @@ async def _standalone_send(
     async def _post_with_retry(client: httpx.AsyncClient, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
         last_error = ""
         for attempt in range(1, 4):
+            retryable = False
             try:
                 resp = await client.post(f"{base}{path}", json=body, headers=headers)
                 if resp.status_code != 200:
-                    last_error = f"sidecar returned {resp.status_code}: {resp.text[:200]}"
+                    try:
+                        data = resp.json() or {}
+                        last_error = data.get("error") or f"sidecar returned {resp.status_code}: {resp.text[:200]}"
+                        retryable = bool(data.get("retryable")) or _standalone_retryable_error(last_error)
+                    except Exception:
+                        last_error = f"sidecar returned {resp.status_code}: {resp.text[:200]}"
+                        retryable = _standalone_retryable_error(last_error)
                 else:
                     data = resp.json() or {}
                     if data.get("ok"):
                         return data
                     last_error = data.get("error") or "sidecar reported failure"
+                    retryable = bool(data.get("retryable")) or _standalone_retryable_error(last_error)
             except Exception as exc:
                 last_error = f"Photon standalone send failed: {exc}"
-            if attempt >= 3 or not _standalone_retryable_error(last_error):
+                retryable = _standalone_retryable_error(last_error)
+            if attempt >= 3 or not retryable:
                 break
             logger.warning(
                 "[photon] standalone send failed (attempt %d/3, retrying in %ds): %s",

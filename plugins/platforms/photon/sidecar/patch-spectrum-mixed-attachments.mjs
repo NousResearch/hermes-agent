@@ -101,6 +101,22 @@ function patchInbound(source) {
 }
 
 export function patchSpectrumTs(root = scriptDir()) {
+  const pkgPath = path.join(root, "node_modules", "spectrum-ts", "package.json");
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+      const major = Number(String(pkg.version || "0").split(".")[0]);
+      if (major >= 5) {
+        return {
+          patched: false,
+          file: pkgPath,
+          reason: `spectrum-ts ${pkg.version} has the newer inbound mapper`,
+        };
+      }
+    } catch {
+      // Fall through to the structural patch attempt below.
+    }
+  }
   const dist = path.join(root, "node_modules", "spectrum-ts", "dist");
   if (!fs.existsSync(dist)) {
     throw new Error(`spectrum-ts dist not found: ${dist}`);

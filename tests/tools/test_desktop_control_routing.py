@@ -115,3 +115,32 @@ def test_sensitive_native_task_is_unsupported_before_backend_choice():
     assert decision.route == "unsupported"
     assert decision.available is False
     assert "sensitive" in decision.reason.lower()
+
+
+def test_action_risk_classifier_blocks_sensitive_gui_tasks():
+    from tools.computer_use.routing import classify_desktop_action_risk
+
+    decision = classify_desktop_action_risk(
+        action="click",
+        surface="browser",
+        task="approve the 2FA login prompt",
+    )
+
+    assert decision.risk == "blocked"
+    assert decision.allowed is False
+    assert decision.requires_approval is True
+    assert "Sensitive" in decision.reason
+
+
+def test_action_risk_classifier_marks_external_side_effects_high_risk():
+    from tools.computer_use.routing import classify_desktop_action_risk
+
+    decision = classify_desktop_action_risk(
+        action="publish",
+        surface="browser",
+        external_side_effect=True,
+    )
+
+    assert decision.risk == "high"
+    assert decision.allowed is True
+    assert decision.requires_approval is True

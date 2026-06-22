@@ -238,6 +238,23 @@ class TestComputerUseStatusLines:
         assert "screenshots -> vision" in joined
         assert "native Windows GUI mutation -> unsupported" in joined
 
+    def test_status_json_exposes_structured_capabilities(self, monkeypatch):
+        from hermes_cli import main as hermes_main
+
+        monkeypatch.setattr(hermes_main.sys, "platform", "win32")
+        status = hermes_main._computer_use_status_json(probe_browser=False)
+
+        assert status["platform"] == "win32"
+        assert status["computer_use"]["available"] is False
+        assert status["computer_use"]["native_gui_mutation_allowed"] is False
+        assert "browser" in status
+        assert "routes" in status
+        assert set(status["risk_policy"]["windows_native_gui_forbidden_actions"]) >= {
+            "click",
+            "drag",
+            "type",
+        }
+
     def test_macos_status_without_driver_keeps_install_hint(self, monkeypatch):
         from hermes_cli import main as hermes_main
 

@@ -106,6 +106,14 @@ def _safe_desktop_control_route_lines(platform_id: str) -> list[str]:
     return lines
 
 
+def _computer_use_status_json(*, probe_browser: bool = True) -> dict:
+    """Return structured `hermes computer-use status --json` data."""
+
+    from tools.computer_use.capabilities import computer_use_capability_status
+
+    return computer_use_capability_status(platform=sys.platform, probe_browser=probe_browser)
+
+
 def _computer_use_status_lines() -> list[str]:
     """Return user-facing `hermes computer-use status` lines.
 
@@ -124,6 +132,14 @@ def _computer_use_status_lines() -> list[str]:
             "  Use the browser toolset for cross-platform web UI automation.",
             "  Use terminal/file tools for local Windows/Linux tasks, or run Hermes on a Mac for computer_use.",
         ]
+        try:
+            from tools.computer_use.capabilities import diagnose_browser_availability
+
+            browser = diagnose_browser_availability(probe_cdp=False)
+            availability = "available" if browser.available else "unavailable"
+            lines.append(f"  browser diagnosis: {availability} ({browser.mode}) — {browser.reason}")
+        except Exception:
+            pass
         lines.extend(_safe_desktop_control_route_lines(sys.platform))
         return lines
 
@@ -12137,9 +12153,19 @@ def main():
             "so this performs an in-place upgrade."
         ),
     )
-    computer_use_sub.add_parser(
+    computer_use_status = computer_use_sub.add_parser(
         "status",
-        help="Print whether cua-driver is installed and on PATH",
+        help="Print whether cua-driver is installed and browser/UI routes are available",
+    )
+    computer_use_status.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit structured capability/status JSON for computer_use, browser diagnosis, routes, and risk policy.",
+    )
+    computer_use_status.add_argument(
+        "--no-probe-browser",
+        action="store_true",
+        help="Do not probe an already-configured browser CDP endpoint for reachability.",
     )
 
     def cmd_computer_use(args):
@@ -12149,6 +12175,10 @@ def main():
             install_cua_driver(upgrade=bool(getattr(args, "upgrade", False)))
             return
         if action == "status":
+            probe_browser = not bool(getattr(args, "no_probe_browser", False))
+            if bool(getattr(args, "json", False)):
+                print(json.dumps(_computer_use_status_json(probe_browser=probe_browser), indent=2, sort_keys=True))
+                return
             for line in _computer_use_status_lines():
                 print(line)
             return

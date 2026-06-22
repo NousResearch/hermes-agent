@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Optional
 from urllib.parse import urlparse
@@ -28,12 +28,78 @@ class DesktopRouteDecision:
     next_safe_action: str
 
 
+@dataclass(frozen=True)
+class DesktopActionRiskDecision:
+    """Safety classification for a proposed desktop/browser action."""
+
+    risk: str
+    allowed: bool
+    requires_approval: bool
+    reason: str
+    action: str
+    surface: str
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-serializable representation."""
+        return asdict(self)
+
+
 _SENSITIVE_TASK_PATTERN = re.compile(
     r"\b(password|passcode|2fa|mfa|totp|otp|security|payment|checkout|bank|"
     r"wire transfer|permission dialog|approve login|login prompt)\b",
     re.IGNORECASE,
 )
 
+_BLOCKED_ACTION_PATTERN = re.compile(
+    r"\b(password|passcode|2fa|mfa|totp|otp|security code|recovery code|"
+    r"credit card|card number|cvv|payment|bank|wire transfer|captcha|api key|"
+    r"secret|token|uac|admin|administrator|permission dialog|approve login|"
+    r"login prompt)\b",
+    re.IGNORECASE,
+)
+
+_HIGH_RISK_ACTIONS = {
+    "submit",
+    "send",
+    "publish",
+    "delete",
+    "remove",
+    "upload",
+    "purchase",
+    "buy",
+    "checkout",
+    "order",
+    "book",
+    "reserve",
+    "confirm",
+    "approve",
+    "install",
+    "uninstall",
+}
+
+_MEDIUM_RISK_ACTIONS = {
+    "type",
+    "input",
+    "paste",
+    "download",
+    "navigate_external",
+    "launch",
+    "open_app",
+    "click",
+}
+
+_LOW_RISK_ACTIONS = {
+    "read",
+    "inspect",
+    "observe",
+    "screenshot",
+    "scroll",
+    "search",
+    "navigate",
+    "back",
+    "forward",
+    "hover",
+}
 
 _FILEISH_SUFFIXES = {
     ".cfg",
@@ -48,7 +114,6 @@ _FILEISH_SUFFIXES = {
     ".yaml",
     ".yml",
 }
-
 
 _SCREENSHOT_WORDS = ("screenshot", "screen shot", "image", "png", "jpg", "jpeg")
 
@@ -207,6 +272,76 @@ def route_desktop_request(
     )
 
 
+def classify_desktop_action_risk(
+    *,
+    action: str,
+    surface: str = "desktop",
+    target: str = "",
+    task: str = "",
+    text: str = "",
+    external_side_effect: bool = False,
+) -> DesktopActionRiskDecision:
+    """Classify a proposed GUI/browser action before any execution.
+
+    This is policy-only: it never clicks, types, focuses, reads files, or probes
+    live UI state. It is intentionally conservative so callers can present an
+    auditable proposal queue before mutation-capable backends exist.
+    """
+
+    normalized_action = (action or "").strip().lower().replace("-", "_")
+    normalized_surface = (surface or "desktop").strip().lower()
+    combined = " ".join(part for part in [normalized_action, target, task, text] if part)
+
+    if _BLOCKED_ACTION_PATTERN.search(combined):
+        return _risk_decision(
+            "blocked",
+            False,
+            True,
+            "Sensitive credential, payment, 2FA, CAPTCHA, admin/UAC, or secret-related action is blocked by default.",
+            normalized_action,
+            normalized_surface,
+        )
+
+    if external_side_effect or normalized_action in _HIGH_RISK_ACTIONS:
+        return _risk_decision(
+            "high",
+            True,
+            True,
+            "External side-effect or consequential action requires explicit user approval before execution.",
+            normalized_action,
+            normalized_surface,
+        )
+
+    if normalized_action in _MEDIUM_RISK_ACTIONS:
+        return _risk_decision(
+            "medium",
+            True,
+            True,
+            "Mutation-capable but non-consequential action should be previewed and approved in supervised mode.",
+            normalized_action,
+            normalized_surface,
+        )
+
+    if normalized_action in _LOW_RISK_ACTIONS:
+        return _risk_decision(
+            "low",
+            True,
+            False,
+            "Read-only or reversible navigation action can proceed when the selected backend is available.",
+            normalized_action,
+            normalized_surface,
+        )
+
+    return _risk_decision(
+        "medium",
+        True,
+        True,
+        "Unknown GUI action defaults to approval-required medium risk.",
+        normalized_action or "unknown",
+        normalized_surface,
+    )
+
+
 def _decision(
     route: str,
     available: bool,
@@ -222,6 +357,24 @@ def _decision(
         platform=platform,
         read_only=read_only,
         next_safe_action=next_safe_action,
+    )
+
+
+def _risk_decision(
+    risk: str,
+    allowed: bool,
+    requires_approval: bool,
+    reason: str,
+    action: str,
+    surface: str,
+) -> DesktopActionRiskDecision:
+    return DesktopActionRiskDecision(
+        risk=risk,
+        allowed=allowed,
+        requires_approval=requires_approval,
+        reason=reason,
+        action=action,
+        surface=surface,
     )
 
 
@@ -264,4 +417,9 @@ def _is_macos(platform_id: str) -> bool:
     return platform_id.lower() == "darwin"
 
 
-__all__ = ["DesktopRouteDecision", "route_desktop_request"]
+__all__ = [
+    "DesktopActionRiskDecision",
+    "DesktopRouteDecision",
+    "classify_desktop_action_risk",
+    "route_desktop_request",
+]

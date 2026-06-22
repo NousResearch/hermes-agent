@@ -215,6 +215,13 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--safe-mode",
+        action="store_true",
+        default=False,
+        help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules)",
+    )
+    _inherited_flag(
+        parser,
         "--tui",
         action="store_true",
         default=False,
@@ -365,6 +372,13 @@ def build_top_level_parser():
         action="store_true",
         default=argparse.SUPPRESS,
         help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--safe-mode",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules). Use to isolate whether a problem comes from your setup or from Hermes itself.",
     )
     chat_parser.add_argument(
         "--source",

@@ -225,7 +225,8 @@ class CLICommandsMixin:
             print("  Usage: /snapshot [list|create [label]|restore <id>|prune [N]]")
 
     def _handle_stop_command(self):
-        """Handle /stop — kill all running background processes.
+        """Handle /stop — kill all running background processes and
+        background (async) delegations.
 
         Inspired by OpenAI Codex's separation of interrupt (stop current turn)
         from /stop (clean up background processes). See openai/codex#14602.
@@ -235,13 +236,26 @@ class CLICommandsMixin:
         processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]
 
-        if not running:
+        # Background subagents dispatched via delegate_task(background=true)
+        # live in their own registry, not the process registry.
+        try:
+            from tools.async_delegation import active_count, interrupt_all
+            n_async = active_count()
+        except Exception:
+            n_async = 0
+            interrupt_all = None
+
+        if not running and not n_async:
             print("  No running background processes.")
             return
 
-        print(f"  Stopping {len(running)} background process(es)...")
-        killed = process_registry.kill_all()
-        print(f"  ✅ Stopped {killed} process(es).")
+        if running:
+            print(f"  Stopping {len(running)} background process(es)...")
+            killed = process_registry.kill_all()
+            print(f"  ✅ Stopped {killed} process(es).")
+        if n_async and interrupt_all is not None:
+            stopped = interrupt_all(reason="/stop")
+            print(f"  ✅ Interrupted {stopped} background delegation(s).")
 
     def _handle_agents_command(self):
         """Handle /agents — show background processes and agent status."""
@@ -260,6 +274,22 @@ class CLICommandsMixin:
 
         if finished:
             _cprint(f"  Recently finished: {len(finished)}")
+
+        # Background (async) delegations — delegate_task(background=true)
+        try:
+            from tools.async_delegation import list_async_delegations
+            delegations = list_async_delegations()
+        except Exception:
+            delegations = []
+        running_d = [d for d in delegations if d.get("status") == "running"]
+        if delegations:
+            _cprint(f"  Background delegations: {len(running_d)} running")
+            for d in delegations:
+                goal = (d.get("goal") or "")[:60]
+                _cprint(
+                    f"    {d.get('delegation_id', '?')} · "
+                    f"{d.get('status', '?')} · {goal}"
+                )
 
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
@@ -917,52 +947,6 @@ class CLICommandsMixin:
         _cprint(f"  Original session: {parent_session_id}")
         _cprint(f"  Branch session:   {new_session_id}")
 
-    def _handle_gquota_command(self, cmd_original: str) -> None:
-        """Show Google Gemini Code Assist quota usage for the current OAuth account."""
-        try:
-            from agent.google_oauth import get_valid_access_token, GoogleOAuthError, load_credentials
-            from agent.google_code_assist import retrieve_user_quota, CodeAssistError
-        except ImportError as exc:
-            self._console_print(f"  [red]Gemini modules unavailable: {exc}[/]")
-            return
-
-        try:
-            access_token = get_valid_access_token()
-        except GoogleOAuthError as exc:
-            self._console_print(f"  [yellow]{exc}[/]")
-            self._console_print("  Run [bold]/model[/] and pick 'Google Gemini (OAuth)' to sign in.")
-            return
-
-        creds = load_credentials()
-        project_id = (creds.project_id if creds else "") or ""
-
-        try:
-            buckets = retrieve_user_quota(access_token, project_id=project_id)
-        except CodeAssistError as exc:
-            self._console_print(f"  [red]Quota lookup failed:[/] {exc}")
-            return
-
-        if not buckets:
-            self._console_print("  [dim]No quota buckets reported (account may be on legacy/unmetered tier).[/]")
-            return
-
-        # Sort for stable display, group by model
-        buckets.sort(key=lambda b: (b.model_id, b.token_type))
-        self._console_print()
-        self._console_print(f"  [bold]Gemini Code Assist quota[/]  (project: {project_id or '(auto / free-tier)'})")
-        self._console_print()
-        for b in buckets:
-            pct = max(0.0, min(1.0, b.remaining_fraction))
-            width = 20
-            filled = int(round(pct * width))
-            bar = "▓" * filled + "░" * (width - filled)
-            pct_str = f"{int(pct * 100):3d}%"
-            header = b.model_id
-            if b.token_type:
-                header += f" [{b.token_type}]"
-            self._console_print(f"    {header:40s}  {bar}  {pct_str}")
-        self._console_print()
-
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
         from cli import save_config_value
@@ -1254,6 +1238,57 @@ class CLICommandsMixin:
 
         print(f"(._.) Unknown cron command: {subcommand}")
         print("  Available: list, add, edit, pause, resume, run, remove")
+
+    def _handle_suggestions_command(self, cmd: str):
+        """Handle /suggestions — review/accept/dismiss suggested automations.
+
+        Delegates to the shared handler so CLI and gateway never drift. CLI
+        origin is the local platform so an accepted job's "origin" delivery
+        resolves to a configured home channel.
+        """
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(tokens)
+        try:
+            from hermes_cli.suggestions_cmd import handle_suggestions_command
+            output = handle_suggestions_command(args)
+        except Exception as e:
+            output = f"Suggestions command failed: {e}"
+        self._console_print(output)
+
+    def _handle_blueprint_command(self, cmd: str):
+        """Handle /blueprint — set up an automation from a blueprint template.
+
+        Delegates to the shared handler. A bare ``/blueprint`` lists the
+        catalog; ``/blueprint <name>`` name-matches a blueprint and seeds the
+        agent to ask the user for each value conversationally (the result's
+        ``agent_seed``); ``/blueprint <name> slot=val …`` creates the job
+        directly. When a seed is returned it is stashed as a one-shot pending
+        message the interactive loop runs as the next agent turn.
+        """
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(shlex.quote(t) for t in tokens)
+        try:
+            from hermes_cli.blueprint_cmd import handle_blueprint_command
+            result = handle_blueprint_command(args)
+        except Exception as e:
+            self._console_print(f"Cron blueprint command failed: {e}")
+            return
+        self._console_print(result.text)
+        seed = getattr(result, "agent_seed", None)
+        if seed:
+            # One-shot: the interactive loop picks this up right after the
+            # slash command returns and runs it as a normal agent turn.
+            self._pending_agent_seed = seed
 
     def _handle_curator_command(self, cmd: str):
         """Handle /curator slash command.
@@ -1925,6 +1960,79 @@ class CLICommandsMixin:
         if self._apply_tui_skin_style():
             print("  Prompt + TUI colors updated.")
 
+    def _compose_in_editor(self, initial_text: str = "") -> str:
+        """Open ``$VISUAL``/``$EDITOR`` on a temp markdown file and return the
+        saved buffer (comment lines starting with ``#!`` stripped).
+
+        Returns the composed prompt text, or an empty string if the editor
+        could not be launched or the buffer was left empty. Factored out so
+        the read-back/strip logic is unit-testable without spawning an editor.
+        """
+        import os
+        import shlex
+        import subprocess
+        import tempfile
+
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+        if not editor:
+            editor = "notepad" if os.name == "nt" else "nano"
+
+        header = (
+            "#! Compose your prompt below. Lines starting with '#!' are ignored.\n"
+            "#! Save and quit to send; leave empty to cancel.\n\n"
+        )
+        fd, path = tempfile.mkstemp(suffix=".md", prefix="hermes_prompt_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(header)
+                if initial_text:
+                    fh.write(initial_text)
+            try:
+                subprocess.call([*shlex.split(editor), path])
+            except Exception:
+                # Fall back to a bare invocation (editor value may not be a
+                # simple argv-splittable string on some platforms).
+                subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
+            with open(path, "r", encoding="utf-8") as fh:
+                raw = fh.read()
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+        lines = [ln for ln in raw.splitlines() if not ln.startswith("#!")]
+        return "\n".join(lines).strip()
+
+    def _handle_prompt_compose_command(self, cmd_original: str) -> None:
+        """Handle /prompt — compose the next prompt in $EDITOR and send it.
+
+        Opens the user's editor on a temporary markdown file (optionally
+        seeded with text passed after the command), then queues the saved
+        buffer as the next agent turn via the one-shot ``_pending_agent_seed``
+        the interactive loop already consumes (same path as /blueprint).
+        """
+        from cli import _DIM, _RST, _cprint
+
+        initial = ""
+        parts = (cmd_original or "").strip().split(None, 1)
+        if len(parts) > 1:
+            initial = parts[1]
+
+        try:
+            composed = self._compose_in_editor(initial)
+        except Exception as exc:
+            _cprint(f"  {_DIM}(>_<) Could not open editor: {exc}{_RST}")
+            return
+
+        if not composed:
+            _cprint(f"  {_DIM}(._.) Empty prompt — nothing sent.{_RST}")
+            return
+
+        # One-shot seed: the interactive loop runs this as the next agent turn
+        # right after process_command() returns (see cli.py main loop).
+        self._pending_agent_seed = composed
+
     def _handle_footer_command(self, cmd_original: str) -> None:
         """Toggle or inspect ``display.runtime_footer.enabled`` from the CLI.
 
@@ -1986,6 +2094,8 @@ class CLICommandsMixin:
             /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
             /reasoning show|on      Show model thinking/reasoning in output
             /reasoning hide|off     Hide model thinking/reasoning from output
+            /reasoning full         Show complete thinking (no 10-line clamp)
+            /reasoning clamp        Collapse long thinking to the first 10 lines
         """
         from cli import _ACCENT, _DIM, _RST, _cprint, _parse_reasoning_config, save_config_value
         parts = cmd.strip().split(maxsplit=1)
@@ -2000,9 +2110,10 @@ class CLICommandsMixin:
             else:
                 level = rc.get("effort", "medium")
             display_state = "on ✓" if self.show_reasoning else "off"
+            full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
-            _cprint(f"  {_ACCENT}Reasoning display: {display_state}{_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide>{_RST}")
+            _cprint(f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide|full|clamp>{_RST}")
             return
 
         arg = parts[1].strip().lower()
@@ -2022,6 +2133,21 @@ class CLICommandsMixin:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", False)
             _cprint(f"  {_ACCENT}✓ Reasoning display: OFF (saved){_RST}")
+            return
+
+        # Full / clamped recap toggle
+        if arg in {"full", "all"}:
+            self.reasoning_full = True
+            save_config_value("display.reasoning_full", True)
+            _cprint(f"  {_ACCENT}✓ Reasoning display: FULL (saved){_RST}")
+            _cprint(f"  {_DIM}  The post-response recap box will print complete thinking.{_RST}")
+            if not self.show_reasoning:
+                _cprint(f"  {_DIM}  Note: reasoning display is OFF — run /reasoning show to see it.{_RST}")
+            return
+        if arg in {"clamp", "collapse", "short"}:
+            self.reasoning_full = False
+            save_config_value("display.reasoning_full", False)
+            _cprint(f"  {_ACCENT}✓ Reasoning display: CLAMPED to 10 lines (saved){_RST}")
             return
 
         # Effort level change

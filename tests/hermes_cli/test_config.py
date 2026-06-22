@@ -955,6 +955,17 @@ class TestInterimAssistantMessageConfig:
         assert raw["display"]["interim_assistant_messages"] is True
 
 
+class TestCliRefreshIntervalConfig:
+    """Test the CLI refresh_interval config default (#45592 / #48309)."""
+
+    def test_default_config_enables_cli_refresh_interval(self):
+        """cli_refresh_interval defaults to 1.0 so the idle status-bar
+        clock keeps ticking and the bottom chrome stays alive during
+        idle (#45592). Users on emulators where the periodic redraw
+        fights auto-scroll can set it to 0 (#48309)."""
+        assert DEFAULT_CONFIG["display"]["cli_refresh_interval"] == 1.0
+
+
 class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}
@@ -1045,7 +1056,6 @@ class TestEnvWriteDenylist:
     @pytest.mark.parametrize(
         "allowed_key",
         [
-            "HERMES_GEMINI_CLIENT_ID",
             "HERMES_LANGFUSE_PUBLIC_KEY",
             "HERMES_SPOTIFY_CLIENT_ID",
             "HERMES_QWEN_BASE_URL",

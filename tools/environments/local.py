@@ -7,6 +7,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -227,11 +228,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     _inject_context_hermes_home(sanitized)
 
-    # Per-profile HOME isolation for background processes (same as _make_run_env).
-    from hermes_constants import get_subprocess_home
-    _profile_home = get_subprocess_home()
-    if _profile_home:
-        sanitized["HOME"] = _profile_home
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(sanitized)
 
     return sanitized
 
@@ -298,6 +296,85 @@ _SANE_PATH = (
     "/opt/homebrew/bin:/opt/homebrew/sbin:"
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
+
+# Cached directory containing the ``hermes`` console-script.
+# ``_SENTINEL`` distinguishes "not resolved yet" from a resolved ``None``.
+_SENTINEL = object()
+_HERMES_BIN_DIR: "str | None | object" = _SENTINEL
+
+
+def _resolve_hermes_bin_dir() -> str | None:
+    """Return the directory holding the ``hermes`` console-script, or None.
+
+    The terminal tool runs in a freshly-spawned subshell whose PATH is the
+    agent process's PATH plus a static set of system dirs (``_SANE_PATH``).
+    When the gateway is launched by something that does NOT source the user's
+    shell rc — systemd, a service manager, a desktop launcher, cron — the
+    hermes install dir (``~/.local/bin``, the venv ``bin``/``Scripts``, pipx,
+    nix) is absent from that PATH, so plugins shelling out to bare ``hermes``
+    via the terminal tool hit ``command not found`` (exit 127) even though
+    ``hermes`` works fine in the user's own interactive terminal.
+
+    We resolve the install dir once (it never changes within a process) and
+    prepend-if-missing it to the subshell PATH so bare ``hermes`` resolves
+    regardless of how the gateway was started.
+
+    Resolution order (cheap, no heavy imports):
+      1. ``shutil.which("hermes")`` — normal PATH-installed shim.
+      2. The directory of ``sys.argv[0]`` when it's an absolute path to a
+         real ``hermes`` executable (covers nix-store / venv wrappers).
+      3. The directory of ``sys.executable`` — the running interpreter's
+         venv ``bin``/``Scripts`` is where its console-scripts live.
+    """
+    global _HERMES_BIN_DIR
+    if _HERMES_BIN_DIR is not _SENTINEL:
+        return _HERMES_BIN_DIR  # type: ignore[return-value]
+
+    candidate: str | None = None
+
+    which = shutil.which("hermes")
+    if which:
+        candidate = os.path.dirname(which)
+
+    if candidate is None:
+        argv0 = sys.argv[0] if sys.argv else ""
+        base = os.path.basename(argv0).lower()
+        if (
+            os.path.isabs(argv0)
+            and (base == "hermes" or base.startswith("hermes."))
+            and os.path.isfile(argv0)
+        ):
+            candidate = os.path.dirname(argv0)
+
+    if candidate is None:
+        exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
+        if exe_dir:
+            shim = "hermes.exe" if _IS_WINDOWS else "hermes"
+            if os.path.isfile(os.path.join(exe_dir, shim)):
+                candidate = exe_dir
+
+    if candidate and not os.path.isdir(candidate):
+        candidate = None
+
+    _HERMES_BIN_DIR = candidate
+    return candidate
+
+
+def _prepend_hermes_bin_dir(existing_path: str) -> str:
+    """Prepend the hermes install dir to ``existing_path`` if it's missing.
+
+    Cross-platform (uses ``os.pathsep``). First-occurrence wins, so a PATH
+    that already contains the dir is returned unchanged. Returns the input
+    unchanged when the install dir can't be resolved.
+    """
+    bin_dir = _resolve_hermes_bin_dir()
+    if not bin_dir:
+        return existing_path
+    sep = os.pathsep
+    entries = [e for e in existing_path.split(sep) if e] if existing_path else []
+    if bin_dir in entries:
+        return existing_path
+    return sep.join([bin_dir, *entries])
 
 
 def _append_missing_sane_path_entries(existing_path: str) -> str:
@@ -383,17 +460,16 @@ def _make_run_env(env: dict) -> dict:
             run_env[k] = v
     path_key = _path_env_key(run_env)
     if path_key is not None:
-        run_env[path_key] = _append_missing_sane_path_entries(run_env.get(path_key, ""))
+        new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
+        # Ensure the hermes install dir is reachable so plugins can shell out
+        # to bare ``hermes`` via the terminal tool even when the gateway was
+        # launched without it on PATH (systemd, service managers, cron, etc.).
+        run_env[path_key] = _prepend_hermes_bin_dir(new_path)
 
     _inject_context_hermes_home(run_env)
 
-    # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
-    # npm …) into {HERMES_HOME}/home/ when that directory exists.  Only the
-    # subprocess sees the override — the Python process keeps the real HOME.
-    from hermes_constants import get_subprocess_home
-    _profile_home = get_subprocess_home()
-    if _profile_home:
-        run_env["HOME"] = _profile_home
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(run_env)
 
     # Inject ContextVar-based session vars into subprocess env.
     # ContextVars don't propagate to child processes, so we bridge them here.

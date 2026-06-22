@@ -4,20 +4,24 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { getProfiles, transcribeAudio } from '@/hermes'
 import { translateNow, type Translations, useI18n } from '@/i18n'
+import { stripAnsi } from '@/lib/ansi'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
   optimisticAttachmentRef,
   parseCommandDispatch,
   parseSlashCommand,
   pathLabel,
+  sessionTitle,
   SLASH_COMMAND_RE
 } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
+  type DesktopActionId,
+  type DesktopPickerId,
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
   isDesktopSlashCommand,
-  isModelPickerCommand
+  resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
@@ -28,9 +32,11 @@ import {
   clearComposerAttachments,
   type ComposerAttachment,
   setComposerAttachmentUploadState,
+  setComposerDraft,
   terminalContextBlocksFromDraft,
   updateComposerAttachment
 } from '@/store/composer'
+import { resetSessionBackground } from '@/store/composer-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -38,23 +44,46 @@ import {
   $busy,
   $connection,
   $messages,
+  $sessions,
   $yoloActive,
   setAwaitingResponse,
   setBusy,
   setMessages,
   setModelPickerOpen,
+  setSessionPickerOpen,
   setSessions,
   setYoloActive
 } from '@/store/session'
+import { clearSessionSubagents } from '@/store/subagents'
+import { clearSessionTodos } from '@/store/todos'
 
 import type {
   ClientSessionState,
+  BrowserManageResponse,
   FileAttachResponse,
+  HandoffFailResponse,
+  HandoffRequestResponse,
+  HandoffStateResponse,
   ImageAttachResponse,
   SessionSteerResponse,
   SessionTitleResponse,
   SlashExecResponse
 } from '../../types'
+
+interface HandoffResult {
+  ok: boolean
+  error?: string
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function isSessionIdCandidate(value: string): boolean {
+  const trimmed = value.trim()
+
+  return /^\d{8}_\d{6}_[A-Fa-f0-9]{6}$/.test(trimmed) || /^[A-Fa-f0-9]{32}$/.test(trimmed)
+}
 
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -82,6 +111,46 @@ function inlineErrorMessage(error: unknown, fallback: string): string {
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
 
   return (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw).replace(/^Error:\s*/, '').trim()
+}
+
+function isSessionNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /session not found/i.test(message)
+}
+
+// The gateway refuses prompt.submit while a turn is running (4009 "session
+// busy"). It's a transient concurrency guard, never a user-facing error: a
+// submit racing the settle edge (or a rewind interrupting mid-turn) just waits
+// a beat for the turn to wind down, then lands. Bounded so a genuinely stuck
+// turn still surfaces eventually.
+const SESSION_BUSY_RETRY_TIMEOUT_MS = 6_000
+const SESSION_BUSY_RETRY_INTERVAL_MS = 150
+
+function isSessionBusyError(error: unknown): boolean {
+  return /session busy/i.test(error instanceof Error ? error.message : String(error))
+}
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
+// Retry a gateway call across transient "session busy" so it never reaches the
+// user — the turn settles within the deadline and the call lands.
+async function withSessionBusyRetry<T>(call: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + SESSION_BUSY_RETRY_TIMEOUT_MS
+
+  for (;;) {
+    try {
+      return await call()
+    } catch (err) {
+      if (isSessionBusyError(err) && Date.now() < deadline) {
+        await sleep(SESSION_BUSY_RETRY_INTERVAL_MS)
+
+        continue
+      }
+
+      throw err
+    }
+  }
 }
 
 function base64FromDataUrl(dataUrl: string): string {
@@ -245,6 +314,7 @@ interface PromptActionsOptions {
   handleSkinCommand: (arg: string) => string
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
   sttEnabled: boolean
@@ -258,6 +328,15 @@ interface PromptActionsOptions {
 interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
   fromQueue?: boolean
+}
+
+/** Everything a slash handler needs about the invocation it's serving. */
+interface SlashActionCtx {
+  arg: string
+  command: string
+  name: string
+  recordInput: boolean
+  sessionHint?: string
 }
 
 function renderCommandsCatalog(catalog: CommandsCatalogLike, copy: Translations['desktop']): string {
@@ -310,6 +389,7 @@ export function usePromptActions({
   handleSkinCommand,
   refreshSessions,
   requestGateway,
+  resumeStoredSession,
   selectedStoredSessionIdRef,
   startFreshSessionDraft,
   sttEnabled,
@@ -320,7 +400,11 @@ export function usePromptActions({
 
   const appendSessionTextMessage = useCallback(
     (sessionId: string, role: ChatMessage['role'], text: string) => {
-      const body = text.trim()
+      // Strip ANSI: slash-command output from the backend worker carries SGR
+      // color codes (e.g. "Unknown command" in red). The ESC byte is invisible
+      // in the chat panel, so without this the `[1;31m…[0m` payload leaks as
+      // literal text.
+      const body = stripAnsi(text).trim()
 
       if (!body) {
         return
@@ -478,6 +562,7 @@ export function usePromptActions({
       // Images use their base64 preview so the thumbnail renders inline without
       // a (remote-mode 403-prone) /api/media fetch — see optimisticAttachmentRef.
       let attachmentRefs = attachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
+
       const buildContextText = (atts: ComposerAttachment[]): string => {
         const contextRefs = atts
           .map(a => a.refText)
@@ -495,6 +580,7 @@ export function usePromptActions({
       // bounce the drained send. The drain lock serializes them; the user path
       // keeps the guard so a stray Enter mid-turn can't double-submit.
       const hasSendable = Boolean(visibleText || terminalContextBlocks || attachments.length || hasImage)
+
       if (!hasSendable || (!options?.fromQueue && busyRef.current)) {
         return false
       }
@@ -607,6 +693,7 @@ export function usePromptActions({
         const syncedAttachments = await syncAttachmentsForSubmit(sessionId, attachments, {
           updateComposerAttachments: usingComposerAttachments
         })
+
         // Rewrite the optimistic message + prompt text with the synced refs so
         // the gateway receives @file: paths that resolve in its workspace.
         // (Images keep their inline base64 preview — see optimisticAttachmentRef.)
@@ -620,20 +707,19 @@ export function usePromptActions({
         let submitErr: unknown = null
 
         try {
-          await requestGateway('prompt.submit', { session_id: sessionId, text })
+          await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: sessionId, text }))
         } catch (firstErr) {
-          const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr)
-
-          if (/session not found/i.test(firstMsg) && selectedStoredSessionIdRef.current) {
+          if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
             // Re-register the session in the gateway and get a fresh live ID.
             const resumed = await requestGateway<{ session_id: string }>('session.resume', {
               session_id: selectedStoredSessionIdRef.current
             })
+
             const recoveredId = resumed?.session_id
 
             if (recoveredId) {
               activeSessionIdRef.current = recoveredId
-              await requestGateway('prompt.submit', { session_id: recoveredId, text })
+              await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: recoveredId, text }))
             } else {
               submitErr = firstErr
             }
@@ -652,9 +738,17 @@ export function usePromptActions({
 
         return true
       } catch (err) {
+        releaseBusy()
+
+        // A queued drain that raced a not-yet-settled turn gets a transient
+        // "session busy" (4009). Don't surface an error bubble/toast — the entry
+        // stays queued and the composer's bounded auto-drain retries when idle.
+        if (options?.fromQueue && isSessionBusyError(err)) {
+          return false
+        }
+
         const message = inlineErrorMessage(err, copy.promptFailed)
 
-        releaseBusy()
         updateSessionState(sessionId, state => ({
           ...state,
           messages: [
@@ -696,39 +790,239 @@ export function usePromptActions({
     ]
   )
 
+  // Queue a handoff of this session to a messaging platform and watch it to
+  // a terminal state. We only write the request through the gateway; the
+  // separate `hermes gateway` process performs the actual transfer, so we
+  // poll `handoff.state` (mirror of the CLI's block-poll) for the result.
+  const handoffSession = useCallback(
+    async (
+      platform: string,
+      options?: { onProgress?: (state: string) => void; sessionId?: string }
+    ): Promise<HandoffResult> => {
+      const sid = options?.sessionId || activeSessionIdRef.current
+
+      if (!sid) {
+        return { error: copy.sessionUnavailable, ok: false }
+      }
+
+      const target = platform.trim().toLowerCase()
+
+      if (!target) {
+        return { error: copy.handoff.failed(''), ok: false }
+      }
+
+      try {
+        options?.onProgress?.('pending')
+        await requestGateway<HandoffRequestResponse>('handoff.request', {
+          platform: target,
+          session_id: sid
+        })
+      } catch (err) {
+        return { error: inlineErrorMessage(err, copy.handoff.failed(target)), ok: false }
+      }
+
+      const deadline = Date.now() + 60_000
+      let lastState = 'pending'
+
+      while (Date.now() < deadline) {
+        await delay(800)
+
+        let record: HandoffStateResponse
+
+        try {
+          record = await requestGateway<HandoffStateResponse>('handoff.state', { session_id: sid })
+        } catch {
+          continue
+        }
+
+        const state = record.state || 'pending'
+
+        if (state !== lastState) {
+          options?.onProgress?.(state)
+          lastState = state
+        }
+
+        if (state === 'completed') {
+          appendSessionTextMessage(sid, 'system', copy.handoff.systemNote(target))
+          notify({ kind: 'success', message: copy.handoff.success(target) })
+
+          return { ok: true }
+        }
+
+        if (state === 'failed') {
+          return { error: record.error || copy.handoff.failed(target), ok: false }
+        }
+      }
+
+      const cleanup = await requestGateway<HandoffFailResponse>('handoff.fail', {
+        error: copy.handoff.timedOut,
+        session_id: sid
+      }).catch(() => null)
+
+      if (cleanup?.state === 'completed') {
+        appendSessionTextMessage(sid, 'system', copy.handoff.systemNote(target))
+        notify({ kind: 'success', message: copy.handoff.success(target) })
+
+        return { ok: true }
+      }
+
+      return { error: copy.handoff.timedOut, ok: false }
+    },
+    [activeSessionIdRef, appendSessionTextMessage, copy, requestGateway]
+  )
+
   const executeSlashCommand = useCallback(
     async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
-      const runSlash = async (commandText: string, sessionHint?: string, recordInput = true): Promise<void> => {
-        const command = commandText.trim()
-        const { name, arg } = parseSlashCommand(command)
-        const normalizedName = name.toLowerCase()
+      const ensureSessionId = async (sessionHint?: string) =>
+        sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
 
-        if (!name) {
-          const sessionId = sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
+      // Resolve the target session plus a writer for inline slash output, or
+      // notify + return null when none can be created. Folds the ensure / bail /
+      // build-renderSlashOutput boilerplate every exec-style handler repeats.
+      const withSlashOutput = async (
+        ctx: SlashActionCtx
+      ): Promise<{ render: (text: string) => void; sessionId: string } | null> => {
+        const sessionId = await ensureSessionId(ctx.sessionHint)
 
-          if (sessionId) {
-            appendSessionTextMessage(sessionId, 'system', copy.emptySlashCommand)
+        if (!sessionId) {
+          notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
+
+          return null
+        }
+
+        const render = (text: string) =>
+          appendSessionTextMessage(sessionId, 'system', ctx.recordInput ? slashStatusText(ctx.command, text) : text)
+
+        return { render, sessionId }
+      }
+
+      // `exec` commands (and unknown skill / quick commands the backend owns)
+      // run on the gateway and render their text output inline. This is the only
+      // path that talks to slash.exec / command.dispatch.
+      async function runExec(ctx: SlashActionCtx): Promise<void> {
+        const { arg, command, name } = ctx
+        const resolved = await withSlashOutput(ctx)
+
+        if (!resolved) {
+          return
+        }
+
+        const { render: renderSlashOutput, sessionId } = resolved
+
+        if (!isDesktopSlashCommand(name)) {
+          renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
+
+          return
+        }
+
+        const handleDispatch = async (dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>): Promise<void> => {
+          if (dispatch.type === 'exec' || dispatch.type === 'plugin') {
+            renderSlashOutput(dispatch.output ?? '(no output)')
+
+            return
           }
 
-          return
+          if (dispatch.type === 'alias') {
+            await runSlash(`/${dispatch.target}${arg ? ` ${arg}` : ''}`, sessionId, false)
+
+            return
+          }
+
+          // send / prefill carry an optional `notice` (e.g. "⊙ Goal set …")
+          // that the backend wants shown as a system line before the message
+          // is acted on. Mirrors the TUI's createSlashHandler — without it a
+          // `/goal <text>` looked like it did nothing.
+          if ((dispatch.type === 'send' || dispatch.type === 'prefill') && dispatch.notice?.trim()) {
+            renderSlashOutput(dispatch.notice.trim())
+          }
+
+          const message = ('message' in dispatch ? dispatch.message : '')?.trim() ?? ''
+
+          // /undo returns a prefill directive: drop the backed-up message into
+          // the composer for editing instead of submitting it immediately.
+          if (dispatch.type === 'prefill') {
+            if (message) {
+              setComposerDraft(message)
+            }
+
+            return
+          }
+
+          if (!message) {
+            renderSlashOutput(
+              `/${name}: ${dispatch.type === 'skill' ? 'skill payload missing message' : 'empty message'}`
+            )
+
+            return
+          }
+
+          if (dispatch.type === 'skill') {
+            renderSlashOutput(`⚡ loading skill: ${dispatch.name}`)
+          }
+
+          if (busyRef.current) {
+            renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+
+            return
+          }
+
+          await submitPromptText(message)
         }
 
-        if (normalizedName === 'new' || normalizedName === 'reset') {
+        try {
+          const result = await requestGateway<unknown>('slash.exec', {
+            session_id: sessionId,
+            command: command.replace(/^\/+/, '')
+          })
+
+          const dispatch = parseCommandDispatch(result)
+
+          if (dispatch) {
+            await handleDispatch(dispatch)
+
+            return
+          }
+
+          const output = result && typeof result === 'object' ? (result as SlashExecResponse) : null
+          const body = output?.output || `/${name}: no output`
+          renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
+
+          return
+        } catch {
+          // Fall back to command.dispatch for skill/send/alias directives.
+        }
+
+        try {
+          const dispatch = parseCommandDispatch(
+            await requestGateway<unknown>('command.dispatch', { session_id: sessionId, name, arg })
+          )
+
+          if (!dispatch) {
+            renderSlashOutput('error: invalid response: command.dispatch')
+
+            return
+          }
+
+          await handleDispatch(dispatch)
+        } catch (err) {
+          renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
+      // One handler per `action` command. Adding a desktop-native command is a
+      // registry row in desktop-slash-commands.ts plus an entry here — never a
+      // new branch in a dispatch ladder.
+      const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
+        new: async () => {
           startFreshSessionDraft()
-
-          return
-        }
-
-        if (normalizedName === 'branch' || normalizedName === 'fork') {
+        },
+        branch: async () => {
           await branchCurrentSession()
-
-          return
-        }
-
+        },
         // /yolo maps to the status-bar YOLO control — a per-session approval
         // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
         // it locally; the session-create path applies it on the first message.
-        if (normalizedName === 'yolo') {
+        yolo: async ({ sessionHint }) => {
           const sid = sessionHint || activeSessionIdRef.current
           const next = !$yoloActive.get()
 
@@ -745,72 +1039,44 @@ export function usePromptActions({
           } catch {
             notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloToggleFailed })
           }
+        },
+        // /handoff hands this session to a messaging platform. The platform is
+        // completed inline in the slash popover (backend _handoff_completions),
+        // so there is no overlay: `/handoff <platform>` runs the desktop's own
+        // handoff RPC. cli_only on the backend, so it must not reach slash.exec.
+        handoff: async ({ arg, command, recordInput, sessionHint }) => {
+          const platform = arg.trim()
 
-          return
-        }
-
-        // /model opens the desktop model picker overlay — the same full
-        // provider+model picker reachable from the status-bar model button —
-        // instead of the headless prompt_toolkit modal the slash worker can't
-        // render. With explicit args (`/model <name> [--provider ...]`) run the
-        // switch directly through slash.exec so power users can still type it.
-        if (isModelPickerCommand(`/${normalizedName}`)) {
-          if (!arg.trim()) {
-            setModelPickerOpen(true)
+          if (!platform) {
+            notify({ kind: 'success', message: copy.handoff.pickPlatform })
 
             return
           }
 
-          const sid = sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
+          const sid = sessionHint || activeSessionIdRef.current
 
           if (!sid) {
-            notify({ kind: 'error', title: 'Session unavailable', message: 'Could not create a new session' })
+            notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
 
             return
           }
 
-          try {
-            const result = await requestGateway<SlashExecResponse>('slash.exec', {
-              session_id: sid,
-              command: command.replace(/^\/+/, '')
-            })
+          const result = await handoffSession(platform, { sessionId: sid })
 
-            const body = result?.output || `/${name}: model switched`
-            appendSessionTextMessage(
-              sid,
-              'system',
-              recordInput ? slashStatusText(command, body) : body
-            )
-          } catch (err) {
-            appendSessionTextMessage(
-              sid,
-              'system',
-              `error: ${err instanceof Error ? err.message : String(err)}`
-            )
+          if (!result.ok && result.error) {
+            appendSessionTextMessage(sid, 'system', recordInput ? slashStatusText(command, result.error) : result.error)
           }
-
-          return
-        }
-
-        if (normalizedName === 'skin' && !sessionHint && !activeSessionIdRef.current) {
-          notify({ kind: 'success', message: handleSkinCommand(arg) })
-
-          return
-        }
-
+        },
         // /profile selects which profile new chats open in — no app relaunch.
         // A profile is per-session now, so an existing thread can't change its
-        // profile mid-stream; `/profile <name>` instead points the next new chat
-        // (and the current empty draft) at that profile's backend.
-        if (normalizedName === 'profile') {
+        // profile mid-stream; `/profile <name>` points the next new chat (and
+        // the current empty draft) at that profile's backend.
+        profile: async ({ arg }) => {
           const target = arg.trim()
           const current = normalizeProfileKey($activeGatewayProfile.get())
 
           if (!target) {
-            notify({
-              kind: 'success',
-              message: copy.profileStatus(current)
-            })
+            notify({ kind: 'success', message: copy.profileStatus(current) })
 
             return
           }
@@ -832,54 +1098,46 @@ export function usePromptActions({
             const key = normalizeProfileKey(match.name)
 
             $newChatProfile.set(key)
-            // Swap the live gateway now so an empty draft sends into this
-            // profile immediately; an existing thread keeps its own profile.
             await ensureGatewayProfile(key)
             notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
           } catch (err) {
             notifyError(err, copy.setProfileFailed)
           }
+        },
+        skin: async ({ arg, command, recordInput, sessionHint }) => {
+          const sid = sessionHint || activeSessionIdRef.current
+          const message = handleSkinCommand(arg)
 
-          return
-        }
+          // No session to print into yet — surface it as a toast instead of
+          // spinning up a backend session just to change the theme.
+          if (!sid) {
+            notify({ kind: 'success', message })
 
-        const sessionId = sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
+            return
+          }
 
-        if (!sessionId) {
-          notify({
-            kind: 'error',
-            title: copy.sessionUnavailable,
-            message: copy.createSessionFailed
-          })
+          appendSessionTextMessage(sid, 'system', recordInput ? slashStatusText(command, message) : message)
+        },
+        // /title <name> renames via the gateway's session.title RPC — the same
+        // path the TUI uses, NOT REST renameSession (which 404s on runtime ids)
+        // nor the slash worker (whose DB write can silently fail). Bare /title
+        // shows the current title, which the worker owns, so delegate to exec.
+        title: async ctx => {
+          if (!ctx.arg) {
+            await runExec(ctx)
 
-          return
-        }
+            return
+          }
 
-        const renderSlashOutput = (text: string) =>
-          appendSessionTextMessage(sessionId, 'system', recordInput ? slashStatusText(command, text) : text)
+          const resolved = await withSlashOutput(ctx)
 
-        // /title <name> renames the session. Route through the gateway's
-        // `session.title` RPC — the same path the TUI uses — NOT the REST
-        // renameSession endpoint and NOT the slash worker.
-        //
-        // Why not the slash worker: it's a separate HermesCLI subprocess whose
-        // SQLite write to the shared state.db can silently fail (notably on
-        // Windows), and it never refreshes the sidebar.
-        //
-        // Why not REST renameSession: `sessionId` here is the *runtime* session
-        // id returned by session.create — it is NOT the stored DB `sessions.id`,
-        // and session.create deliberately does not persist a DB row until the
-        // first turn. The REST PATCH endpoint resolves against the sessions
-        // table, so a runtime id (or a brand-new, not-yet-persisted session)
-        // 404s with "Session not found" on every platform. See #38508 / #38576.
-        //
-        // session.title maps the runtime id to the in-memory session, writes
-        // through the gateway's own DB connection, and QUEUES the title
-        // (`pending: true`) when the row isn't persisted yet — so it works for a
-        // fresh chat too. refreshSessions() then pulls the authoritative title
-        // back into the sidebar. A bare `/title` (no arg) still falls through to
-        // the worker to display the current title.
-        if (normalizedName === 'title' && arg) {
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+          const { arg } = ctx
+
           try {
             const result = await requestGateway<SessionTitleResponse>('session.title', {
               session_id: sessionId,
@@ -899,17 +1157,16 @@ export function usePromptActions({
           } catch (err) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
+        },
+        help: async ctx => {
+          const resolved = await withSlashOutput(ctx)
 
-          return
-        }
+          if (!resolved) {
+            return
+          }
 
-        if (normalizedName === 'skin') {
-          renderSlashOutput(handleSkinCommand(arg))
+          const { render: renderSlashOutput, sessionId } = resolved
 
-          return
-        }
-
-        if (name === 'help' || name === 'commands') {
           try {
             const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sessionId })
 
@@ -917,80 +1174,168 @@ export function usePromptActions({
           } catch (err) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
+        },
+        // /browser connect|disconnect|status manages the live CDP connection on
+        // the gateway host, mirroring the TUI's browser.manage RPC. It mutates
+        // BROWSER_CDP_URL (and may launch Chrome) in the gateway process — only
+        // meaningful when that process runs on this machine, so it's gated to
+        // local connections. A remote gateway would act on the wrong host.
+        browser: async ctx => {
+          const resolved = await withSlashOutput(ctx)
 
-          return
-        }
-
-        if (!isDesktopSlashCommand(name)) {
-          renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
-
-          return
-        }
-
-        try {
-          const result = await requestGateway<SlashExecResponse>('slash.exec', {
-            session_id: sessionId,
-            command: command.replace(/^\/+/, '')
-          })
-
-          const body = result?.output || `/${name}: no output`
-          renderSlashOutput(result?.warning ? `warning: ${result.warning}\n${body}` : body)
-
-          return
-        } catch {
-          // Fall back to command.dispatch for skill/send/alias directives.
-        }
-
-        try {
-          const dispatch = parseCommandDispatch(
-            await requestGateway<unknown>('command.dispatch', {
-              session_id: sessionId,
-              name,
-              arg
-            })
-          )
-
-          if (!dispatch) {
-            renderSlashOutput('error: invalid response: command.dispatch')
-
+          if (!resolved) {
             return
           }
 
-          if (dispatch.type === 'exec' || dispatch.type === 'plugin') {
-            renderSlashOutput(dispatch.output ?? '(no output)')
+          const { render: renderSlashOutput, sessionId } = resolved
 
-            return
-          }
-
-          if (dispatch.type === 'alias') {
-            await runSlash(`/${dispatch.target}${arg ? ` ${arg}` : ''}`, sessionId, false)
-
-            return
-          }
-
-          const message = ('message' in dispatch ? dispatch.message : '')?.trim() ?? ''
-
-          if (!message) {
+          if ($connection.get()?.mode === 'remote') {
             renderSlashOutput(
-              `/${name}: ${dispatch.type === 'skill' ? 'skill payload missing message' : 'empty message'}`
+              '/browser manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
             )
 
             return
           }
 
-          if (dispatch.type === 'skill') {
-            renderSlashOutput(`⚡ loading skill: ${dispatch.name}`)
-          }
+          const [rawAction = 'status', ...rest] = ctx.arg.trim().split(/\s+/).filter(Boolean)
+          const cmdAction = rawAction.toLowerCase()
 
-          if (busyRef.current) {
-            renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+          if (!['connect', 'disconnect', 'status'].includes(cmdAction)) {
+            renderSlashOutput(
+              'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
+            )
 
             return
           }
 
-          await submitPromptText(message)
-        } catch (err) {
-          renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          const url = cmdAction === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
+
+          if (url) {
+            renderSlashOutput(`checking Chromium-family browser remote debugging at ${url}...`)
+          }
+
+          try {
+            const result = await requestGateway<BrowserManageResponse>('browser.manage', {
+              action: cmdAction,
+              session_id: sessionId,
+              ...(url && { url })
+            })
+
+            // Without a streamed session subscription, the gateway bundles its
+            // progress lines into `messages` — flush them inline.
+            result?.messages?.forEach(message => renderSlashOutput(message))
+
+            if (cmdAction === 'status') {
+              renderSlashOutput(
+                result?.connected
+                  ? `browser connected: ${result.url || '(url unavailable)'}`
+                  : 'browser not connected (try /browser connect <url> or set browser.cdp_url in config.yaml)'
+              )
+
+              return
+            }
+
+            if (cmdAction === 'disconnect') {
+              renderSlashOutput('browser disconnected')
+
+              return
+            }
+
+            if (result?.connected) {
+              renderSlashOutput('Browser connected to live Chromium-family browser via CDP')
+              renderSlashOutput(`Endpoint: ${result.url || '(url unavailable)'}`)
+              renderSlashOutput('next browser tool call will use this CDP endpoint')
+            }
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
+      }
+
+      // Picker commands open a desktop overlay; a typed arg is resolved by that
+      // picker so the command never dead-ends or falls through to the backend.
+      const openPicker = async (pickerId: DesktopPickerId, ctx: SlashActionCtx): Promise<void> => {
+        if (pickerId === 'model') {
+          if (!ctx.arg.trim()) {
+            setModelPickerOpen(true)
+
+            return
+          }
+
+          // Power users can still type `/model <name>` — run it on the backend.
+          await runExec(ctx)
+
+          return
+        }
+
+        // session picker — /resume, /sessions, /switch
+        const query = ctx.arg.trim()
+
+        if (!query) {
+          setSessionPickerOpen(true)
+
+          return
+        }
+
+        const sessions = $sessions.get()
+        const lower = query.toLowerCase()
+
+        const match =
+          sessions.find(session => session.id === query) ||
+          sessions.find(session => sessionTitle(session).toLowerCase().includes(lower)) ||
+          sessions.find(session => (session.preview ?? '').toLowerCase().includes(lower))
+
+        if (!match) {
+          if (isSessionIdCandidate(query)) {
+            await resumeStoredSession(query)
+
+            return
+          }
+
+          notify({ kind: 'error', message: copy.resumeFailed })
+
+          return
+        }
+
+        await resumeStoredSession(match.id)
+      }
+
+      // The whole dispatcher: resolve the command's desktop surface, then act on
+      // its kind. No per-command ladder — behavior lives in the registry.
+      async function runSlash(commandText: string, sessionHint?: string, recordInput = true): Promise<void> {
+        const command = commandText.trim()
+        const { name, arg } = parseSlashCommand(command)
+
+        if (!name) {
+          const sessionId = await ensureSessionId(sessionHint)
+
+          if (sessionId) {
+            appendSessionTextMessage(sessionId, 'system', copy.emptySlashCommand)
+          }
+
+          return
+        }
+
+        const ctx: SlashActionCtx = { arg, command, name, recordInput, sessionHint }
+        const surface = resolveDesktopCommand(`/${name}`)?.surface
+
+        switch (surface?.kind) {
+          case 'unavailable': {
+            const resolved = await withSlashOutput(ctx)
+            resolved?.render(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
+
+            return
+          }
+
+          case 'picker':
+            return openPicker(surface.picker, ctx)
+
+          case 'action':
+            return actionHandlers[surface.action](ctx)
+
+          default:
+            // exec spec, or an unknown skill / quick command the backend owns.
+            return runExec(ctx)
         }
       }
 
@@ -1004,8 +1349,10 @@ export function usePromptActions({
       copy,
       createBackendSessionForSend,
       handleSkinCommand,
+      handoffSession,
       refreshSessions,
       requestGateway,
+      resumeStoredSession,
       startFreshSessionDraft,
       submitPromptText
     ]
@@ -1044,12 +1391,13 @@ export function usePromptActions({
 
   const cancelRun = useCallback(async () => {
     const sessionId = activeSessionId || activeSessionIdRef.current
+    const releaseBusy = () => {
+      setMutableRef(busyRef, false)
+      setBusy(false)
+    }
 
     setAwaitingResponse(false)
 
-    // Interrupting keeps whatever was already generated and just
-    // stops — no "[interrupted]" marker. A pending/streaming message with no
-    // body text is dropped entirely so we never leave an empty bubble behind.
     const finalizeMessages = (messages: ChatMessage[], streamId?: string | null) =>
       messages
         .filter(
@@ -1061,8 +1409,7 @@ export function usePromptActions({
         )
 
     if (!sessionId) {
-      setMutableRef(busyRef, false)
-      setBusy(false)
+      releaseBusy()
       setMessages(finalizeMessages($messages.get()))
 
       return
@@ -1070,13 +1417,12 @@ export function usePromptActions({
 
     updateSessionState(sessionId, state => {
       const streamId = state.streamId
-
       const messages = finalizeMessages(state.messages, streamId)
 
       return {
         ...state,
         messages,
-        busy: true,
+        busy: false,
         awaitingResponse: false,
         streamId: null,
         pendingBranchGroup: null,
@@ -1084,14 +1430,48 @@ export function usePromptActions({
       }
     })
 
+    clearSessionTodos(sessionId)
+    clearSessionSubagents(sessionId)
+    resetSessionBackground(sessionId)
+
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })
+      releaseBusy()
     } catch (err) {
-      setMutableRef(busyRef, false)
-      setBusy(false)
-      notifyError(err, copy.stopFailed)
+      let stopError = err
+
+      if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
+        try {
+          const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+            session_id: selectedStoredSessionIdRef.current
+          })
+
+          const recoveredId = resumed?.session_id
+
+          if (recoveredId) {
+            activeSessionIdRef.current = recoveredId
+            await requestGateway('session.interrupt', { session_id: recoveredId })
+            releaseBusy()
+
+            return
+          }
+        } catch (resumeErr) {
+          stopError = resumeErr
+        }
+      }
+
+      releaseBusy()
+      notifyError(stopError, copy.stopFailed)
     }
-  }, [activeSessionId, activeSessionIdRef, busyRef, copy.stopFailed, requestGateway, updateSessionState])
+  }, [
+    activeSessionId,
+    activeSessionIdRef,
+    busyRef,
+    copy.stopFailed,
+    requestGateway,
+    selectedStoredSessionIdRef,
+    updateSessionState
+  ])
 
   // Steer = nudge the live turn without interrupting: the gateway appends the
   // text to the next tool result so the model reads it on its next iteration
@@ -1203,13 +1583,101 @@ export function usePromptActions({
     [activeSessionId, copy.regenerateFailed, requestGateway, updateSessionState]
   )
 
+  // Cursor-style "restore checkpoint": rewind the conversation to a past user
+  // prompt and run it again from there. Reuses the edit composer's rewind
+  // mechanism — `prompt.submit` with `truncate_before_user_ordinal` drops that
+  // user turn and everything after it from the session history, then the same
+  // text is submitted as a fresh turn. Callers confirm before invoking; errors
+  // are rethrown so the confirmation dialog can surface them inline.
+  // Submit a rewind (truncate-before-ordinal + resubmit). Because edit/restore
+  // can fire while a turn is streaming, interrupt the live turn first — the
+  // cooperative interrupt takes a beat, so the shared busy-retry rides it out.
+  const submitRewindPrompt = useCallback(
+    async (sessionId: string, text: string, truncateOrdinal: number | undefined, wasRunning: boolean) => {
+      if (wasRunning) {
+        try {
+          await requestGateway('session.interrupt', { session_id: sessionId })
+        } catch {
+          // Best-effort — the busy-retry below still gates the submit.
+        }
+      }
+
+      await withSessionBusyRetry(() =>
+        requestGateway('prompt.submit', {
+          session_id: sessionId,
+          text,
+          ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
+        })
+      )
+    },
+    [requestGateway]
+  )
+
+  const restoreToMessage = useCallback(
+    async (messageId: string) => {
+      const sessionId = activeSessionId || activeSessionIdRef.current
+
+      if (!sessionId) {
+        return
+      }
+
+      const messages = $messages.get()
+      const sourceIndex = messages.findIndex(m => m.id === messageId)
+      const source = messages[sourceIndex]
+
+      if (!source || source.role !== 'user') {
+        return
+      }
+
+      const text = chatMessageText(source).trim()
+
+      if (!text) {
+        return
+      }
+
+      const wasRunning = $busy.get()
+      const truncateBeforeUserOrdinal = visibleUserOrdinal(messages, sourceIndex)
+
+      // The turns we're discarding may have spawned todos and background
+      // processes; they belong to the abandoned timeline, so wipe their status
+      // rows (and kill the live processes) before the fresh run repopulates.
+      clearSessionTodos(sessionId)
+      resetSessionBackground(sessionId)
+
+      clearNotifications()
+      setMutableRef(busyRef, true)
+      setBusy(true)
+      setAwaitingResponse(true)
+      updateSessionState(sessionId, state => ({
+        ...state,
+        busy: true,
+        awaitingResponse: true,
+        pendingBranchGroup: null,
+        sawAssistantPayload: false,
+        interrupted: false,
+        messages: state.messages.slice(0, sourceIndex + 1)
+      }))
+
+      try {
+        await submitRewindPrompt(sessionId, text, truncateBeforeUserOrdinal, wasRunning)
+      } catch (err) {
+        setMutableRef(busyRef, false)
+        setBusy(false)
+        setAwaitingResponse(false)
+        updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false }))
+        throw err
+      }
+    },
+    [activeSessionId, activeSessionIdRef, busyRef, submitRewindPrompt, updateSessionState]
+  )
+
   const editMessage = useCallback(
     async (edited: AppendMessage) => {
       const sessionId = activeSessionId || activeSessionIdRef.current
       const sourceId = edited.sourceId || edited.parentId
       const text = appendText(edited)
 
-      if (!sessionId || !sourceId || !text || edited.role !== 'user' || $busy.get()) {
+      if (!sessionId || !sourceId || !text || edited.role !== 'user') {
         return
       }
 
@@ -1221,11 +1689,22 @@ export function usePromptActions({
         return
       }
 
+      // Sending an edit is a revert: rewind to this prompt and re-run with the
+      // new text. It can fire mid-turn, so capture the live state — the submit
+      // helper interrupts first when a turn is running.
+      const wasRunning = $busy.get()
+
       // Failed turn: optimistic user msg never reached the gateway, so truncating
       // by ordinal would 422. Submit as a plain resend instead.
       const nextMessage = messages[sourceIndex + 1]
       const isFailedTurn = nextMessage?.role === 'assistant' && Boolean(nextMessage.error)
       const editedMessage: ChatMessage = { ...source, parts: [textPart(text)] }
+
+      // Editing rewinds the conversation to this prompt — same as restore — so
+      // drop the abandoned timeline's todos/background rows (and kill the live
+      // processes) before the re-run repopulates them.
+      clearSessionTodos(sessionId)
+      resetSessionBackground(sessionId)
 
       clearNotifications()
       setMutableRef(busyRef, true)
@@ -1241,24 +1720,18 @@ export function usePromptActions({
         messages: [...state.messages.slice(0, sourceIndex), editedMessage]
       }))
 
-      const submit = (truncateOrdinal?: number) =>
-        requestGateway('prompt.submit', {
-          session_id: sessionId,
-          text,
-          ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
-        })
-
       const isStaleTargetError = (err: unknown) =>
         /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
 
       try {
-        await submit(isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex))
+        await submitRewindPrompt(sessionId, text, isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex), wasRunning)
       } catch (err) {
         let surfaced = err
 
         if (!isFailedTurn && isStaleTargetError(err)) {
           try {
-            await submit()
+            // Already interrupted on the first attempt — submit as a plain resend.
+            await submitRewindPrompt(sessionId, text, undefined, false)
 
             return
           } catch (retryErr) {
@@ -1273,7 +1746,7 @@ export function usePromptActions({
         notifyError(surfaced, copy.editFailed)
       }
     },
-    [activeSessionId, activeSessionIdRef, busyRef, copy.editFailed, requestGateway, updateSessionState]
+    [activeSessionId, activeSessionIdRef, busyRef, copy.editFailed, submitRewindPrompt, updateSessionState]
   )
 
   const handleThreadMessagesChange = useCallback(
@@ -1314,7 +1787,9 @@ export function usePromptActions({
     cancelRun,
     editMessage,
     handleThreadMessagesChange,
+    handoffSession,
     reloadFromMessage,
+    restoreToMessage,
     steerPrompt,
     submitText,
     transcribeVoiceAudio

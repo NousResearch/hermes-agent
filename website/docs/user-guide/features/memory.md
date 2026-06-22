@@ -245,6 +245,31 @@ This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background
 ones — waits for your yes/no before it ever enters your profile.
 
+## Background review notifications (`display.memory_notifications`)
+
+After a turn, the background self-improvement review may quietly save a memory
+or update a skill. This is Hermes' consent-aware learning loop: repeated
+corrections and durable workflow lessons become compact memory entries or
+procedural skills, while `write_approval` can stage those writes for review
+before they affect future sessions. By default it surfaces a short
+`💾 Memory updated` line in chat so you know it happened. Control how chatty
+that is:
+
+```yaml
+display:
+  memory_notifications: on    # off | on (default) | verbose
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `off` | No chat notification. The review still runs and still writes — you just don't see a line for it. |
+| `on` (default) | Generic line, e.g. `💾 Memory updated`, `💾 Skill 'foo' patched`. |
+| `verbose` | Includes a compact preview of what changed, e.g. `💾 Memory ➕ User prefers terse replies` or a `"old" → "new"` skill diff snippet. |
+
+> This only governs the **gateway** chat notification. The review itself, and
+> writes to your memory/skill stores, are unaffected by this setting. Set it
+> per-platform via `display.platforms.<platform>.memory_notifications`.
+
 ## Controlling skill writes (`skills.write_approval`)
 
 Skills use the same on/off gate, but the review UX differs because a
@@ -270,6 +295,7 @@ inline, but the full diff stays out-of-band:
 On a messaging platform, approve a skill from its gist + metadata, or open
 `/skills diff` on the CLI / dashboard / the staged file under
 `~/.hermes/pending/skills/<id>.json` when you want to read the whole change.
+Full details in [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
 
 
 ## External Memory Providers

@@ -145,7 +145,7 @@ BlueBubbles iMessage channel uses.
 ## Start the gateway
 
 ```bash
-hermes gateway start --platform photon
+hermes gateway start
 ```
 
 You'll see something like:

@@ -47,6 +47,11 @@ export interface OAuthProviderStatus {
 
 export interface OAuthProvider {
   cli_command: string
+  /** Shell command that clears an external provider's credentials, run in the
+   *  embedded terminal. Null when Hermes doesn't know how to remove it. */
+  disconnect_command?: null | string
+  disconnect_hint?: null | string
+  disconnectable?: boolean
   docs_url: string
   flow: 'device_code' | 'external' | 'loopback' | 'pkce'
   id: string
@@ -103,9 +108,40 @@ export interface EnvVarInfo {
   description: string
   is_password: boolean
   is_set: boolean
+  // Backend-derived provider grouping hints (from the unified provider catalog
+  // in hermes_cli/provider_catalog.py). When present, the Keys tab groups by
+  // this provider identity — the SAME one `hermes model` uses — instead of
+  // desktop-only env-var prefix guesses. Empty for non-provider env vars.
+  provider?: string
+  provider_label?: string
   redacted_value: null | string
   tools: string[]
   url: null | string
+}
+
+export type MemoryProviderFieldKind = 'secret' | 'select' | 'text'
+
+export interface MemoryProviderFieldOption {
+  description: string
+  label: string
+  value: string
+}
+
+export interface MemoryProviderField {
+  description: string
+  is_set: boolean
+  key: string
+  kind: MemoryProviderFieldKind
+  label: string
+  options: MemoryProviderFieldOption[]
+  placeholder: string
+  value: string
+}
+
+export interface MemoryProviderConfig {
+  fields: MemoryProviderField[]
+  label: string
+  name: string
 }
 
 export interface MessagingEnvVarInfo {
@@ -470,7 +506,7 @@ export interface CronJobUpdates {
 
 export interface ProfileCreatePayload {
   clone_all?: boolean
-  clone_from?: string
+  clone_from?: null | string
   clone_from_default?: boolean
   name: string
   no_skills?: boolean
@@ -638,6 +674,10 @@ export interface AuxiliaryModelsResponse {
 }
 
 export interface ModelAssignmentRequest {
+  /** Optional API key for a custom/local endpoint. Persisted to model.api_key
+   *  (where the runtime reads it) for self-hosted endpoints that require auth.
+   *  Only honored for custom/local providers on the main slot. */
+  api_key?: string
   /** OpenAI-compatible endpoint URL. Only honored for custom/local providers
    *  on the main slot — wires a self-hosted endpoint into runtime resolution. */
   base_url?: string

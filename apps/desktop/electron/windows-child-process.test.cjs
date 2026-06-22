@@ -8,7 +8,7 @@ const path = require('node:path')
 const ELECTRON_DIR = __dirname
 
 function readElectronFile(name) {
-  return fs.readFileSync(path.join(ELECTRON_DIR, name), 'utf8')
+  return fs.readFileSync(path.join(ELECTRON_DIR, name), 'utf8').replace(/\r\n/g, '\n')
 }
 
 function requireHiddenChildOptions(source, needle) {
@@ -42,6 +42,9 @@ test('intentional or interactive desktop child processes stay documented', () =>
   const source = readElectronFile('main.cjs')
 
   assert.match(source, /windowsHide: false/)
+  assert.match(source, /handOffWindowsBootstrapRecovery/)
+  assert.match(source, /'--repair', '--branch'/)
+  assert.match(source, /'--update', '--branch'/)
   assert.match(source, /nodePty\.spawn\(command, args/)
   assert.match(source, /spawn\('cmd\.exe', \['\/c', 'start'/)
 })

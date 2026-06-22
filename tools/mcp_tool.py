@@ -907,11 +907,23 @@ class SamplingHandler:
 
     @staticmethod
     def _extract_tool_result_text(block) -> str:
-        """Extract text from a ToolResultContent block."""
+        """Extract text from a ToolResultContent block.
+
+        Handles both TextContent blocks (.text) and EmbeddedResource
+        blocks (.resource.text) per the MCP spec.
+        """
         if not hasattr(block, "content") or block.content is None:
             return ""
         items = block.content if isinstance(block.content, list) else [block.content]
-        return "\n".join(item.text for item in items if hasattr(item, "text"))
+        parts: List[str] = []
+        for item in items:
+            if hasattr(item, "text") and item.text:
+                parts.append(item.text)
+            elif hasattr(item, "resource"):
+                resource = item.resource
+                if hasattr(resource, "text") and resource.text:
+                    parts.append(resource.text)
+        return "\n".join(parts)
 
     def _convert_messages(self, params) -> List[dict]:
         """Convert MCP SamplingMessages to OpenAI format.
@@ -3174,6 +3186,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 for block in (result.content or []):
                     if hasattr(block, "text"):
                         error_text += block.text
+                    elif hasattr(block, "resource"):
+                        resource = block.resource
+                        if hasattr(resource, "text") and resource.text:
+                            error_text += resource.text
                 return json.dumps({
                     "error": _sanitize_error(
                         error_text or "MCP tool returned an error"
@@ -3196,6 +3212,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 if hasattr(block, "text") and block.text:
                     parts.append(block.text)
                     continue
+                # EmbeddedResource blocks carry payload in .resource.text
+                if hasattr(block, "resource"):
+                    resource = block.resource
+                    if hasattr(resource, "text") and resource.text:
+                        parts.append(resource.text)
+                        continue
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:
                     parts.append(image_tag)

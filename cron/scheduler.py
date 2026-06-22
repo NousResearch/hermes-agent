@@ -112,6 +112,287 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+WORKSPACE_ALLOWLIST_VIOLATION = "WORKSPACE_ALLOWLIST_VIOLATION"
+WORKER_ATTRIBUTION_MISMATCH = "WORKER_ATTRIBUTION_MISMATCH"
+
+_DEFAULT_ORBIT_ALLOWED_REPOS = frozenset({
+    "orbit-governance",
+    "orbitgrc-ui",
+    "orbit-docs",
+})
+
+
+class CronWorkerIsolationViolation(RuntimeError):
+    """Raised when an ORBIT/control-plane worker invariant fails closed."""
+
+    def __init__(self, code: str, details: dict):
+        self.code = code
+        self.details = details
+        rendered = ", ".join(
+            f"{key}={value!r}" for key, value in sorted(details.items())
+        )
+        super().__init__(f"{code}: {rendered}")
+
+
+def _job_is_orbit_guarded(job: dict) -> bool:
+    """Return True when a cron job has opted into ORBIT worker invariants.
+
+    The guard is deliberately opt-in so ordinary personal cron jobs are not
+    retroactively constrained to ORBIT repositories. ORBIT schedulers can set
+    any of the explicit fields below on the job record; hand-edited legacy jobs
+    keep their previous behavior.
+    """
+    truthy_fields = (
+        "orbit_worker_guard",
+        "orbit_worker",
+        "worker_isolation_guard",
+        "workspace_allowlist_guard",
+    )
+    if any(bool(job.get(field)) for field in truthy_fields):
+        return True
+    board = str(job.get("board") or job.get("kanban_board") or "").strip().lower()
+    return board == "orbit"
+
+
+def _path_is_relative_to(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _normalize_allowed_repo_names(raw) -> set[str]:
+    if raw is None or raw is False or raw == "":
+        return set(_DEFAULT_ORBIT_ALLOWED_REPOS)
+    items = raw
+    if isinstance(raw, str):
+        items = re.split(r"[,\s]+", raw)
+    allowed: set[str] = set()
+    for item in items or []:
+        text = str(item or "").strip().lower()
+        if not text:
+            continue
+        text = text.rstrip("/")
+        if text.endswith(".git"):
+            text = text[:-4]
+        # Accept either "owner/repo" or bare "repo" allowlist entries.
+        allowed.add(text)
+        allowed.add(text.rsplit("/", 1)[-1])
+    return allowed or set(_DEFAULT_ORBIT_ALLOWED_REPOS)
+
+
+def _repo_name_from_remote(url: str) -> Optional[str]:
+    text = str(url or "").strip()
+    if not text:
+        return None
+    text = text.rstrip("/")
+    if text.endswith(".git"):
+        text = text[:-4]
+    # git@github.com:owner/repo -> owner/repo; https://.../owner/repo -> owner/repo
+    if ":" in text and "/" in text and not text.startswith(("http://", "https://")):
+        text = text.split(":", 1)[1]
+    parts = [part for part in text.split("/") if part]
+    if len(parts) >= 2:
+        return "/".join(parts[-2:]).lower()
+    if parts:
+        return parts[-1].lower()
+    return None
+
+
+def _git_output(args: list[str], cwd: Path) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip()
+
+
+def _git_toplevel_for_guard(cwd: Path) -> Optional[Path]:
+    out = _git_output(["rev-parse", "--show-toplevel"], cwd)
+    if not out:
+        return None
+    return Path(out).expanduser().resolve(strict=False)
+
+
+def _git_remote_urls_for_guard(repo_root: Path) -> list[str]:
+    out = _git_output(["remote", "-v"], repo_root)
+    if not out:
+        return []
+    urls: list[str] = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] not in urls:
+            urls.append(parts[1])
+    return urls
+
+
+def _observed_github_actor() -> Optional[str]:
+    """Best-effort current GitHub write actor for attribution preflight.
+
+    Cron should not require GitHub for unrelated jobs, so this is only called
+    inside the opt-in ORBIT guard. Env overrides make the helper cheap and easy
+    to test; falling back to `gh api user` mirrors the write identity used by
+    GitHub CLI driven comment/review/receipt scripts.
+    """
+    for name in (
+        "HERMES_GITHUB_ACTOR",
+        "GITHUB_ACTOR",
+        "GH_ACTOR",
+    ):
+        value = os.environ.get(name)
+        if value and value.strip():
+            return value.strip()
+    gh = shutil.which("gh")
+    if not gh:
+        return None
+    try:
+        result = subprocess.run(
+            [gh, "api", "user", "--jq", ".login"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    actor = (result.stdout or "").strip()
+    return actor or None
+
+
+def _expected_github_actor(job: dict) -> Optional[str]:
+    explicit = job.get("expected_github_actor") or job.get("github_actor")
+    if explicit:
+        return str(explicit).strip() or None
+    profile = str(job.get("profile") or job.get("run_profile") or "").strip()
+    mapping = job.get("profile_github_actors") or job.get("github_actor_map") or {}
+    if profile and isinstance(mapping, dict) and mapping.get(profile):
+        return str(mapping[profile]).strip() or None
+    # Default invariant: a scheduled profile must write as itself unless the
+    # job carries an explicit credential mapping above.
+    return profile or None
+
+
+def _build_worker_violation_doc(job: dict, violation: CronWorkerIsolationViolation) -> str:
+    details = violation.details
+    lines = [
+        f"# Cron Job: {job.get('name') or job.get('id') or 'cron job'} (BLOCKED)",
+        "",
+        f"**Job ID:** {job.get('id', 'unknown')}",
+        f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"**Status:** {violation.code}",
+        "",
+        "The ORBIT worker/control-plane isolation guard failed closed before the job ran.",
+        "",
+        "## Guard receipt",
+    ]
+    for key in sorted(details):
+        lines.append(f"- **{key}:** `{details[key]}`")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _check_orbit_worker_guards(job: dict) -> None:
+    """Fail closed before an ORBIT worker job can read/write out of lane."""
+    if not _job_is_orbit_guarded(job):
+        return
+
+    job_id = str(job.get("id") or "unknown")
+    task_id = str(job.get("task_id") or job.get("kanban_task") or job_id)
+    run_id = str(job.get("run_id") or job.get("current_run_id") or "")
+    profile = str(job.get("profile") or job.get("run_profile") or "").strip()
+
+    workdir_raw = str(job.get("workdir") or "").strip()
+    assigned_raw = str(
+        job.get("assigned_workspace")
+        or job.get("workspace_path")
+        or workdir_raw
+        or ""
+    ).strip()
+    details = {
+        "job_id": job_id,
+        "task_id": task_id,
+        "run_id": run_id,
+        "profile": profile,
+        "workspace_path": assigned_raw,
+    }
+
+    if not assigned_raw:
+        details["reason"] = "missing assigned workspace/workdir"
+        logger.error("%s: %s", WORKSPACE_ALLOWLIST_VIOLATION, details)
+        raise CronWorkerIsolationViolation(WORKSPACE_ALLOWLIST_VIOLATION, details)
+
+    assigned = Path(assigned_raw).expanduser().resolve(strict=False)
+    if workdir_raw:
+        effective_cwd = Path(workdir_raw).expanduser().resolve(strict=False)
+    else:
+        effective_cwd = Path.cwd().resolve(strict=False)
+    details["workspace_path"] = str(assigned)
+    details["effective_cwd"] = str(effective_cwd)
+    if not effective_cwd.is_absolute() or not _path_is_relative_to(effective_cwd, assigned):
+        details["reason"] = "effective cwd is outside assigned workspace"
+        logger.error("%s: %s", WORKSPACE_ALLOWLIST_VIOLATION, details)
+        raise CronWorkerIsolationViolation(WORKSPACE_ALLOWLIST_VIOLATION, details)
+    if not assigned.exists() or not assigned.is_dir():
+        details["reason"] = "assigned workspace missing or not a directory"
+        logger.error("%s: %s", WORKSPACE_ALLOWLIST_VIOLATION, details)
+        raise CronWorkerIsolationViolation(WORKSPACE_ALLOWLIST_VIOLATION, details)
+
+    allowed = _normalize_allowed_repo_names(
+        job.get("allowed_repos") or job.get("orbit_allowed_repos")
+    )
+    repo_root = _git_toplevel_for_guard(effective_cwd)
+    if repo_root is not None:
+        details["git_root"] = str(repo_root)
+        if not _path_is_relative_to(repo_root, assigned):
+            details["reason"] = "git root is outside assigned workspace"
+            logger.error("%s: %s", WORKSPACE_ALLOWLIST_VIOLATION, details)
+            raise CronWorkerIsolationViolation(WORKSPACE_ALLOWLIST_VIOLATION, details)
+        remotes = _git_remote_urls_for_guard(repo_root)
+        details["git_remotes"] = ",".join(remotes)
+        if not remotes:
+            details["reason"] = "git root has no configured remotes"
+            logger.error("%s: %s", WORKSPACE_ALLOWLIST_VIOLATION, details)
+            raise CronWorkerIsolationViolation(WORKSPACE_ALLOWLIST_VIOLATION, details)
+        for remote in remotes:
+            repo_name = _repo_name_from_remote(remote)
+            bare = repo_name.rsplit("/", 1)[-1] if repo_name else None
+            if repo_name not in allowed and bare not in allowed:
+                details["observed_remote"] = remote
+                details["observed_repo"] = repo_name or ""
+                details["allowed_repos"] = ",".join(sorted(allowed))
+                details["reason"] = "git remote is outside ORBIT allowlist"
+                logger.error("%s: %s", WORKSPACE_ALLOWLIST_VIOLATION, details)
+                raise CronWorkerIsolationViolation(WORKSPACE_ALLOWLIST_VIOLATION, details)
+
+    expected_actor = _expected_github_actor(job)
+    if expected_actor:
+        observed_actor = _observed_github_actor()
+        attr_details = {
+            "job_id": job_id,
+            "task_id": task_id,
+            "run_id": run_id,
+            "profile": profile,
+            "expected_writer_identity": expected_actor,
+            "observed_writer_identity": observed_actor or "<unknown>",
+            "workspace_path": str(assigned),
+        }
+        if not observed_actor or observed_actor != expected_actor:
+            logger.error("%s: %s", WORKER_ATTRIBUTION_MISMATCH, attr_details)
+            raise CronWorkerIsolationViolation(WORKER_ATTRIBUTION_MISMATCH, attr_details)
+
+
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
@@ -1611,6 +1892,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+
+    try:
+        _check_orbit_worker_guards(job)
+    except CronWorkerIsolationViolation as violation:
+        doc = _build_worker_violation_doc(job, violation)
+        return False, doc, "", str(violation)
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.

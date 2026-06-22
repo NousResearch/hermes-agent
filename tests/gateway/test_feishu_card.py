@@ -259,6 +259,7 @@ class TestFeishuSendCardIntegration:
         adapter.send = FeishuAdapter.send.__get__(adapter)
         adapter._card_mode_enabled = True
         adapter._pending_ack_cards = {}
+        adapter._live_cards = {}
         return adapter
 
     @pytest.mark.asyncio
@@ -315,6 +316,7 @@ class TestAckCardConsumption:
         adapter.send = FeishuAdapter.send.__get__(adapter)
         adapter._card_mode_enabled = True
         adapter._pending_ack_cards = {"oc_123": "msg_ack_1"}
+        adapter._live_cards = {}
         return adapter
 
     @pytest.mark.asyncio
@@ -388,6 +390,7 @@ class TestFeishuEditCardIntegration:
         )
         adapter.edit_message = FeishuAdapter.edit_message.__get__(adapter)
         adapter._card_mode_enabled = True
+        adapter._live_cards = {}
         return adapter
 
     @pytest.mark.asyncio
@@ -509,6 +512,7 @@ class TestFeishuEditMetadata:
         )
         adapter.edit_message = FeishuAdapter.edit_message.__get__(adapter)
         adapter._card_mode_enabled = True
+        adapter._live_cards = {}
         return adapter
 
     @pytest.mark.asyncio

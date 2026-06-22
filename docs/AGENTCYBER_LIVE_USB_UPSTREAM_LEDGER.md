@@ -848,3 +848,49 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 - Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
 - Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If no upstream drift or new Live USB gap is found, continue treating the lane as verification/no-op.
+
+### 2026-06-22T02:11:52Z — sync upstream and verify Live USB lane remains complete
+
+**Commands / status**
+
+- `git status --short --branch && git remote -v && git branch --show-current`: started clean on `agentcyber/upstream-sync-20260621-194355...origin/agentcyber/upstream-sync-20260621-194355`; no `MERGE_HEAD` or unmerged files.
+- `git fetch upstream main --prune && git fetch origin main --prune && git fetch origin agentcyber/upstream-sync-20260621-194355 --prune`: fetched cleanly; upstream advanced from `2b3a4f0af` to `41fe086eb`.
+- Drift after fetch before merge: `HEAD..upstream/main` -> `6`; `upstream/main..HEAD` -> `97`; `HEAD..origin/main` -> `0`; `origin/main..HEAD` -> `271`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`.
+- `git merge --no-ff upstream/main`: merged cleanly with the `ort` strategy; merge commit `a42bc2413823f4136acdd9b5a41364f2b7de6be1` with `HEAD^2` equal to upstream `41fe086eb6f5a96da909d1127e40aef8829dbf18`.
+- Drift after merge before this follow-up: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `98`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `7`.
+
+**Changed files**
+
+- Upstream merge changed 16 upstream files: `docker/s6-rc.d/dashboard/run`, `gateway/platforms/api_server.py`, `gateway/run.py`, `hermes_cli/mcp_security.py`, `hermes_cli/security_audit_startup.py`, `hermes_cli/subcommands/dashboard.py`, `hermes_cli/web_server.py`, `mini_swe_runner.py`, `tests/docker/test_dashboard.py`, `tests/gateway/test_weak_credential_guard.py`, `tests/hermes_cli/test_dashboard_auth_gate.py`, `tests/hermes_cli/test_mcp_security.py`, `tests/hermes_cli/test_security_audit_startup.py`, `trajectory_compressor.py`, `website/docs/user-guide/docker.md`, and `website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/docker.md`.
+- `mini_swe_runner.py`: fixed one trailing-whitespace line introduced by the upstream merge after `git diff --check HEAD~1..HEAD` reported `mini_swe_runner.py:680: trailing whitespace`.
+- Required AgentCyber/Live USB files remained present and tracked: `tools/cyber_live_usb.py`, `tests/cyber/test_live_usb_tool.py`, `tests/cyber/test_live_usb_docs.py`, `scripts/agentcyber`, this ledger, `docs/AGENTCYBER_STANDALONE_RUNBOOK.md`, and `live-usb/{build_iso.sh,write_usb.sh,provision.sh}`.
+- No Live USB implementation, toolset, README, or runbook behavior was changed because focused verification and review found no new safety/test/docs gap.
+
+**Verification**
+
+- `scripts/run_tests.sh tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py tests/docker/test_dashboard.py tests/gateway/test_weak_credential_guard.py tests/hermes_cli/test_dashboard_auth_gate.py tests/hermes_cli/test_mcp_security.py tests/hermes_cli/test_security_audit_startup.py` -> `379 tests passed, 0 failed`.
+- `scripts/agentcyber status --json` -> `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, local runtime health `ok: true`, git `dirty: false` at that point, and secret fields as booleans/presence only.
+- `scripts/agentcyber hermes tools list` -> `cyber` enabled and `live_usb` disabled.
+- Required file presence check found all required Live USB files present.
+- Conflict marker check for lines starting `<<<<<<< ` or `>>>>>>> ` returned no matches.
+- `git diff --check` and `git diff --cached --check` passed after the whitespace cleanup.
+- Subagent upstream preservation review: `PASS`; no unmerged entries, no conflict markers, required AgentCyber files present/tracked, AgentCyber path count unchanged across the merge, and no AgentCyber paths changed by the merge.
+- Subagent Live USB safety/docs next-gap review: `PASS`; no smallest safety/test/docs gap worth changing this run.
+
+**Blockers / boundaries**
+
+- No cron jobs were scheduled, created, updated, paused, resumed, or removed.
+- No default `~/.hermes`, default gateway, default cron, or default profiles were modified.
+- No files were deleted.
+- No USB/block-device writes, ISO builds as root, `sudo`, package installs, hardware actions, external security actions, cloud spend, credential access/disclosure, or public disclosure were performed.
+- Status commands contacted only the configured local Ollama health endpoint and printed booleans/status fields, not secrets.
+
+**Commit / push**
+
+- Completed upstream merge commit: `a42bc2413823f4136acdd9b5a41364f2b7de6be1`.
+- This is the bounded follow-up recording the merge, whitespace cleanup, and verification facts. After committing and pushing this follow-up, final verification should check local `HEAD` equals the remote sync branch tip and stop rather than amending the ledger again solely to mention the follow-up commit SHA.
+
+**Next lane**
+
+- Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
+- Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If no upstream drift or new Live USB gap is found, continue treating the lane as verification/no-op.

@@ -677,7 +677,7 @@ def main(
         format='%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%H:%M:%S'
     )
-    
+
     # Initialize runner
     runner = MiniSWERunner(
         model=model,

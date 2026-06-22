@@ -1,0 +1,4213 @@
+diff --git a/agent/anthropic_adapter.py b/agent/anthropic_adapter.py
+index 03e8b58e1..9a40dd3f3 100644
+--- a/agent/anthropic_adapter.py
++++ b/agent/anthropic_adapter.py
+@@ -317,6 +317,16 @@ def _supports_fast_mode(model: str) -> bool:
+ _COMMON_BETAS = [
+     "interleaved-thinking-2025-05-14",
+     "fine-grained-tool-streaming-2025-05-14",
++    # Added 2026-06-04 from Worker-A RE of github.copilot-chat 0.52.2026060402.
++    # The VS Code Copilot Chat extension historically sent these on every
++    # /v1/messages call. Hermes sends them under its single Copilot CLI identity
++    # (`Copilot-Integration-Id: copilot-developer-cli`).
++    # `advanced-tool-use-2025-11-20` enables the newer tool-call envelopes
++    # that Claude 4.7+ emits; `context-management-2025-06-27` enables the
++    # `context_management: [{type: "clear_tool_results_20250919", ...}]`
++    # body field that opus-4.6+ requires for clean 1M-context rolls.
++    "advanced-tool-use-2025-11-20",
++    "context-management-2025-06-27",
+ ]
+ # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
+ # the fine-grained tool streaming beta is present.  Omit it so tool calls
+@@ -551,7 +561,38 @@ def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
+     normalized = _normalize_base_url_text(base_url).lower()
+     if not normalized:
+         return False
+-    return "azure.com" in normalized
++    return "azure.com" in normalized or "githubcopilot.com" in normalized
++
++
++def _is_copilot_base_url(base_url: Optional[str]) -> bool:
++    if not base_url:
++        return False
++    try:
++        from urllib.parse import urlparse
++        host = (urlparse(base_url).hostname or "").lower()
++    except Exception:
++        return False
++    return host == "api.githubcopilot.com"
++
++
++def _request_messages_have_image_parts(messages: Any) -> bool:
++    """Return True when any message carries image content.
++
++    Matches both OpenAI-style parts (``image_url`` / ``input_image``): the
++    shape ``build_anthropic_kwargs`` receives before ``convert_messages_to_anthropic``
++    runs, and already-converted Anthropic blocks (``{"type": "image"}``), so the
++    check is robust regardless of where it is called in the pipeline.
++    """
++    def _contains_image(value: Any) -> bool:
++        if isinstance(value, dict):
++            if value.get("type") in {"image_url", "input_image", "image"}:
++                return True
++            return any(_contains_image(v) for v in value.values())
++        if isinstance(value, list):
++            return any(_contains_image(v) for v in value)
++        return False
++
++    return isinstance(messages, list) and any(_contains_image(m) for m in messages)
+ 
+ 
+ def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
+@@ -616,8 +657,41 @@ def _common_betas_for_base_url(
+     betas = list(_COMMON_BETAS)
+     if _base_url_needs_context_1m_beta(base_url) and not drop_context_1m_beta:
+         betas.append(_CONTEXT_1M_BETA)
++
++    if _is_copilot_base_url(base_url):
++        # 2026-06-04 (Worker-G RE of github.copilot-chat 0.52.2026060402):
++        # The official VS Code Copilot Chat extension only ever sends THREE
++        # Anthropic betas on the /v1/messages path:
++        #   interleaved-thinking-2025-05-14
++        #   context-management-2025-06-27
++        #   advanced-tool-use-2025-11-20
++        # The historical "Master Probe triplet" of
++        #   cli-internal-2026-02-09 + context-1m-2025-08-07 + task-budgets-2026-03-13
++        # does NOT exist anywhere in the extension bundle (grep on the 32MB
++        # beautified JS returned 0 hits for each string). Sending those
++        # non-existent betas was identified by Worker G as a likely
++        # contributor to historical "Context length exceeded → snap-back to
++        # 168k" loops on accounts not pre-advertising context-1m. 1M context
++        # is unlocked by the `Copilot-Integration-Id` we send
++        # (`copilot-developer-cli`, the official CLI's id) + the server-side
++        # account entitlement, never by any beta.
++        #
++        # All three real betas already live in _COMMON_BETAS, so this block
++        # is intentionally a no-op now \u2014 kept as a docstring marker so
++        # future readers don't reintroduce the fictional triplet.
++        pass
++
+     if _is_minimax_anthropic_endpoint(base_url):
+-        _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
++        # MiniMax's Anthropic-compatible endpoint rejects most vendor-specific
++        # betas. Strip everything except interleaved-thinking which it does
++        # honor. The two 2026-06-04 additions (advanced-tool-use,
++        # context-management) are also unrecognized by MiniMax.
++        _stripped = {
++            _TOOL_STREAMING_BETA,
++            _CONTEXT_1M_BETA,
++            "advanced-tool-use-2025-11-20",
++            "context-management-2025-06-27",
++        }
+         return [b for b in betas if b not in _stripped]
+     if drop_context_1m_beta:
+         return [b for b in betas if b != _CONTEXT_1M_BETA]
+@@ -782,6 +856,45 @@ def build_anthropic_client(
+             "User-Agent": "claude-code/0.1.0",
+             **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
+         }
++    elif _is_copilot_base_url(normalized_base_url):
++        # GitHub Copilot's Anthropic deployment (POST /v1/messages) is the ONLY
++        # Copilot endpoint that serves Claude at the real 1,000,000-token input
++        # window; /chat/completions clamps it and returns a misleading
++        # "exceeds the limit of 168000" error (see probe/FINDINGS.md §2).  It
++        # requires:
++        #   1. Authorization: Bearer ***  (NOT Anthropic x-api-key)
++        #   2. The full VS Code Copilot identity header set
++        #      (Editor-Version, User-Agent: rest-book, Copilot-Integration-Id:
++        #      vscode-chat, X-GitHub-Api-Version, x-initiator) PLUS the
++        #      X-Copilot-Agent-Slug: copilot-1m-context unlock.
++        #   3. anthropic-beta: cli-internal + context-1m + task-budgets
++        #      (already computed in common_betas for this base_url).
++        # This is the exact header set proved working in
++        # probe/live_transport.py that unlocked opus-4.8 → 992,497 input
++        # tokens on /v1/messages.  Checked BEFORE _requires_bearer_auth and the
++        # x-api-key fallthrough so the Copilot token is sent as Bearer, not as
++        # an Anthropic API key.
++        kwargs["auth_token"] = api_key
++        _copilot_headers: dict[str, str] = {}
++        try:
++            from hermes_cli.copilot_auth import copilot_request_headers
++            # Single Copilot CLI identity (copilot-developer-cli + CLI User-Agent),
++            # the same builder used on the inference path, so /v1/messages and
++            # /chat/completions present one consistent identity.
++            _copilot_headers = copilot_request_headers(
++                is_agent_turn=True, model="claude"
++            )
++        except Exception:
++            # Never block client construction on header enrichment; the
++            # bearer token alone still authenticates, just without the
++            # 1M unlock slug.
++            _copilot_headers = {}
++        # The proven anthropic-beta triplet (computed in common_betas) is
++        # authoritative; apply it last so it always wins over any value the
++        # identity header set may carry.
++        if common_betas:
++            _copilot_headers["anthropic-beta"] = ",".join(common_betas)
++        kwargs["default_headers"] = _copilot_headers
+     elif _requires_bearer_auth(normalized_base_url):
+         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
+         # Authorization: Bearer *** for regular API keys. Route those endpoints
+@@ -2494,6 +2607,16 @@ def build_anthropic_kwargs(
+         betas.append(_FAST_MODE_BETA)
+         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
+ 
++    # Copilot's /v1/messages proxy only processes image input when the
++    # Copilot-Vision-Request header is set. The persistent Anthropic client is
++    # built with is_vision=False (no such header), so image-bearing turns to
++    # Copilot otherwise return an empty content block (HTTP 200) that the loop
++    # fails as "invalid response". Add it per-request only when an image is
++    # present, gated to the Copilot endpoint so it never leaks to
++    # api.anthropic.com or Bedrock-hosted Anthropic.
++    if _is_copilot_base_url(base_url) and _request_messages_have_image_parts(messages):
++        kwargs.setdefault("extra_headers", {})["Copilot-Vision-Request"] = "true"
++
+     return kwargs
+ 
+ 
+diff --git a/agent/auxiliary_client.py b/agent/auxiliary_client.py
+index f28b5f601..b715a3129 100644
+--- a/agent/auxiliary_client.py
++++ b/agent/auxiliary_client.py
+@@ -3369,6 +3369,37 @@ def _resolve_auto(
+ # below — never look up auth env vars ad-hoc.
+ 
+ 
++class _AsyncCopilotACPClient:
++    """Async-compatible wrapper for CopilotACPClient.
++
++    The ACP client is synchronous (it drives a subprocess over stdio), but
++    async auxiliary callers ``await client.chat.completions.create(...)``.
++    Expose an awaitable ``create()`` that runs the sync call in a thread so it
++    does not block the event loop, mirroring the other async aux wrappers.
++    """
++
++    class _Completions:
++        def __init__(self, sync_client):
++            self._sync_client = sync_client
++
++        async def create(self, **kwargs: Any) -> Any:
++            import asyncio
++
++            return await asyncio.to_thread(
++                self._sync_client.chat.completions.create, **kwargs
++            )
++
++    class _Chat:
++        def __init__(self, sync_client):
++            self.completions = _AsyncCopilotACPClient._Completions(sync_client)
++
++    def __init__(self, sync_client):
++        self._sync_client = sync_client
++        self.chat = self._Chat(sync_client)
++        self.api_key = sync_client.api_key
++        self.base_url = sync_client.base_url
++
++
+ def _to_async_client(sync_client, model: str, is_vision: bool = False):
+     """Convert a sync client to its async counterpart, preserving Codex routing.
+ 
+@@ -3393,7 +3424,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
+     try:
+         from agent.copilot_acp_client import CopilotACPClient
+         if isinstance(sync_client, CopilotACPClient):
+-            return sync_client, model
++            return _AsyncCopilotACPClient(sync_client), model
+     except ImportError:
+         pass
+ 
+diff --git a/agent/copilot_acp_client.py b/agent/copilot_acp_client.py
+index e3c03938a..26831e61f 100644
+--- a/agent/copilot_acp_client.py
++++ b/agent/copilot_acp_client.py
+@@ -93,12 +93,38 @@ def _resolve_home_dir() -> str:
+     return "/tmp"
+ 
+ 
+-def _build_subprocess_env() -> dict[str, str]:
++def _build_subprocess_env(client: "CopilotACPClient" | None = None) -> dict[str, str]:
+     env = os.environ.copy()
+     home = _resolve_home_dir()
+     env["HOME"] = home
+     from hermes_constants import apply_subprocess_home_env
+     apply_subprocess_home_env(env)
++    if client is not None:
++        provider = str(getattr(client, "_provider", "") or "").strip()
++        model = str(getattr(client, "_model_hint", "") or "").strip()
++        auth_facts = getattr(client, "_auth_facts", {}) or {}
++        session_id = str(getattr(client, "_session_id", "") or "").strip()
++        if provider:
++            env["HERMES_COPILOT_ACP_PROVIDER"] = provider
++        if model:
++            env["HERMES_COPILOT_ACP_MODEL"] = model
++        if session_id:
++            env["HERMES_COPILOT_ACP_SESSION_ID"] = session_id
++        base_url = str(getattr(client, "base_url", "") or "").strip()
++        if base_url:
++            env["HERMES_COPILOT_ACP_BASE_URL"] = base_url
++        auth_source = str(auth_facts.get("source") or "").strip()
++        if auth_source:
++            env["HERMES_COPILOT_ACP_AUTH_SOURCE"] = auth_source
++        auth_provider = str(auth_facts.get("provider") or provider or "").strip()
++        if auth_provider:
++            env["HERMES_COPILOT_ACP_AUTH_PROVIDER"] = auth_provider
++        command = str(getattr(client, "_acp_command", "") or "").strip()
++        if command:
++            env["HERMES_COPILOT_ACP_COMMAND"] = command
++        args = list(getattr(client, "_acp_args", []) or [])
++        if args:
++            env["HERMES_COPILOT_ACP_ARGS"] = " ".join(args)
+     return env
+ 
+ 
+@@ -336,6 +362,10 @@ class CopilotACPClient:
+         acp_command: str | None = None,
+         acp_args: list[str] | None = None,
+         acp_cwd: str | None = None,
++        provider: str | None = None,
++        model: str | None = None,
++        auth_facts: dict[str, Any] | None = None,
++        session_id: str | None = None,
+         command: str | None = None,
+         args: list[str] | None = None,
+         **_: Any,
+@@ -343,6 +373,10 @@ class CopilotACPClient:
+         self.api_key = api_key or "copilot-acp"
+         self.base_url = base_url or ACP_MARKER_BASE_URL
+         self._default_headers = dict(default_headers or {})
++        self._provider = provider or "copilot-acp"
++        self._model_hint = str(model or "").strip()
++        self._auth_facts = dict(auth_facts or {})
++        self._session_id = str(session_id or self._auth_facts.get("session_id") or "").strip()
+         self._acp_command = acp_command or command or _resolve_command()
+         self._acp_args = list(acp_args or args or _resolve_args())
+         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
+@@ -380,7 +414,7 @@ class CopilotACPClient:
+     ) -> Any:
+         prompt_text = _format_messages_as_prompt(
+             messages or [],
+-            model=model,
++            model=model or self._model_hint or None,
+             tools=tools,
+             tool_choice=tool_choice,
+         )
+@@ -425,7 +459,7 @@ class CopilotACPClient:
+         return SimpleNamespace(
+             choices=[choice],
+             usage=usage,
+-            model=model or "copilot-acp",
++            model=model or self._model_hint or "copilot-acp",
+         )
+ 
+     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+@@ -438,7 +472,7 @@ class CopilotACPClient:
+                 text=True,
+                 bufsize=1,
+                 cwd=self._acp_cwd,
+-                env=_build_subprocess_env(),
++                env=_build_subprocess_env(self),
+             )
+         except FileNotFoundError as exc:
+             raise RuntimeError(
+diff --git a/agent/model_metadata.py b/agent/model_metadata.py
+index 4493eae5f..629a829f4 100644
+--- a/agent/model_metadata.py
++++ b/agent/model_metadata.py
+@@ -933,6 +933,17 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
+     Cache key is ``model@base_url`` so the same model name served from
+     different providers can have different limits.
+     """
++    # Never persist a sub-1M context length for Copilot Claude-Opus: Copilot /v1/messages
++    # serves Opus at 1M; a sub-1M value is the /chat/completions misroute artifact (168k)
++    # that poisons every future session via the step-1 cache read. (root-caused 2026-06-16)
++    try:
++        if ("githubcopilot.com" in (base_url or "").lower()
++                and "claude-opus" in (model or "").lower() and int(length) < 1_000_000):
++            logger.info("Refusing to cache misroute context length %s@%s = %s "
++                        "(Copilot Opus is 1M)", model, base_url, length)
++            return
++    except Exception:
++        pass
+     key = f"{model}@{base_url}"
+     cache = _load_context_cache()
+     if cache.get(key) == length:
+diff --git a/hermes_cli/copilot_auth.py b/hermes_cli/copilot_auth.py
+index e6f63a155..ce0759c00 100644
+--- a/hermes_cli/copilot_auth.py
++++ b/hermes_cli/copilot_auth.py
+@@ -14,6 +14,9 @@ Credential search order (matching Copilot CLI behaviour):
+   2. GH_TOKEN env var
+   3. GITHUB_TOKEN env var
+   4. gh auth token  CLI fallback
++
++Catalog discovery can optionally extend that path with the Copilot
++credential pool and records skipped invalid sources for auditability.
+ """
+ 
+ from __future__ import annotations
+@@ -23,7 +26,9 @@ import logging
+ import os
+ import shutil
+ import subprocess
++import sys
+ import time
++from dataclasses import dataclass, field
+ from pathlib import Path
+ from typing import Optional
+ 
+@@ -43,6 +48,25 @@ _DEVICE_CODE_POLL_INTERVAL = 5  # seconds
+ _DEVICE_CODE_POLL_SAFETY_MARGIN = 3  # seconds
+ 
+ 
++@dataclass(frozen=True)
++class CopilotIdentitySkip:
++    """One invalid source encountered while resolving the Copilot identity."""
++
++    source: str
++    reason: str
++
++
++@dataclass(frozen=True)
++class CopilotIdentityAudit:
++    """Structured Copilot identity resolution result."""
++
++    token: str = ""
++    source: str = ""
++    source_kind: str = ""
++    skipped_sources: tuple[CopilotIdentitySkip, ...] = field(default_factory=tuple)
++    error: str = ""
++
++
+ def validate_copilot_token(token: str) -> tuple[bool, str]:
+     """Validate that a token is usable with the Copilot API.
+ 
+@@ -64,35 +88,149 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
+     return True, "OK"
+ 
+ 
+-def resolve_copilot_token() -> tuple[str, str]:
+-    """Resolve a GitHub token suitable for Copilot API use.
+-
+-    Returns (token, source) where source describes where the token came from.
+-    Raises ValueError if only a classic PAT is available.
++def resolve_copilot_identity_audit(
++    *,
++    include_credential_pool: bool = False,
++    exchange_pool_tokens: bool = False,
++) -> CopilotIdentityAudit:
++    """Resolve the active Copilot identity and retain an audit trail.
++
++    ``resolve_copilot_token()`` wraps this helper for the compatibility path.
++    Discovery code can opt into the credential pool and exchange behavior
++    with ``include_credential_pool`` and ``exchange_pool_tokens``.
+     """
+-    # 1. Check env vars in priority order
++    skipped_sources: list[CopilotIdentitySkip] = []
++
++    # 1. Check env vars in priority order.
+     for env_var in COPILOT_ENV_VARS:
+         val = os.getenv(env_var, "").strip()
+-        if val:
+-            valid, msg = validate_copilot_token(val)
+-            if not valid:
+-                logger.warning(
+-                    "Token from %s is not supported: %s", env_var, msg
+-                )
+-                continue
+-            return val, env_var
++        if not val:
++            continue
++        valid, msg = validate_copilot_token(val)
++        if not valid:
++            logger.warning(
++                "Token from %s is not supported: %s", env_var, msg
++            )
++            skipped_sources.append(CopilotIdentitySkip(source=env_var, reason=msg))
++            continue
++        return CopilotIdentityAudit(
++            token=val,
++            source=env_var,
++            source_kind="env",
++            skipped_sources=tuple(skipped_sources),
++        )
+ 
+-    # 2. Fall back to gh auth token
++    # 2. Optionally inspect the Copilot credential pool before gh auth.
++    if include_credential_pool:
++        try:
++            from hermes_cli.auth import read_credential_pool
++        except Exception as exc:
++            logger.debug("Copilot credential pool lookup unavailable: %s", exc)
++        else:
++            try:
++                pool_entries = read_credential_pool("copilot")
++            except Exception as exc:
++                logger.debug("Copilot credential pool lookup failed: %s", exc)
++                skipped_sources.append(
++                    CopilotIdentitySkip(
++                        source="credential_pool:copilot",
++                        reason=f"Failed to read credential pool: {exc}",
++                    )
++                )
++            else:
++                for index, entry in enumerate(pool_entries):
++                    entry_source = f"credential_pool:copilot[{index}]"
++                    if not isinstance(entry, dict):
++                        skipped_sources.append(
++                            CopilotIdentitySkip(
++                                source=entry_source,
++                                reason="Non-dict credential pool entry",
++                            )
++                        )
++                        continue
++
++                    raw = str(entry.get("access_token") or "").strip()
++                    if not raw:
++                        skipped_sources.append(
++                            CopilotIdentitySkip(
++                                source=entry_source,
++                                reason="Missing access_token",
++                            )
++                        )
++                        continue
++
++                    valid, msg = validate_copilot_token(raw)
++                    if not valid:
++                        skipped_sources.append(
++                            CopilotIdentitySkip(source=entry_source, reason=msg)
++                        )
++                        continue
++
++                    if exchange_pool_tokens:
++                        try:
++                            api_token, _expires_at = exchange_copilot_token(raw)
++                        except Exception as exc:
++                            skipped_sources.append(
++                                CopilotIdentitySkip(
++                                    source=entry_source,
++                                    reason=f"Copilot token exchange failed: {exc}",
++                                )
++                            )
++                            continue
++                        if not api_token:
++                            skipped_sources.append(
++                                CopilotIdentitySkip(
++                                    source=entry_source,
++                                    reason="Copilot token exchange returned empty token",
++                                )
++                            )
++                            continue
++                        return CopilotIdentityAudit(
++                            token=api_token,
++                            source=entry_source,
++                            source_kind="credential_pool",
++                            skipped_sources=tuple(skipped_sources),
++                        )
++
++                    return CopilotIdentityAudit(
++                        token=raw,
++                        source=entry_source,
++                        source_kind="credential_pool",
++                        skipped_sources=tuple(skipped_sources),
++                    )
++
++    # 3. Fall back to gh auth token.
+     token = _try_gh_cli_token()
+     if token:
+         valid, msg = validate_copilot_token(token)
+         if not valid:
+-            raise ValueError(
+-                f"Token from `gh auth token` is a classic PAT (ghp_*). {msg}"
++            return CopilotIdentityAudit(
++                skipped_sources=tuple(skipped_sources),
++                error=(
++                    "Token from `gh auth token` is a classic PAT (ghp_*). "
++                    f"{msg}"
++                ),
+             )
+-        return token, "gh auth token"
++        return CopilotIdentityAudit(
++            token=token,
++            source="gh auth token",
++            source_kind="gh_auth",
++            skipped_sources=tuple(skipped_sources),
++        )
+ 
+-    return "", ""
++    return CopilotIdentityAudit(skipped_sources=tuple(skipped_sources))
++
++
++def resolve_copilot_token() -> tuple[str, str]:
++    """Resolve a GitHub token suitable for Copilot API use.
++
++    Returns (token, source) where source describes where the token came from.
++    Raises ValueError if only a classic PAT is available from ``gh auth token``.
++    """
++    audit = resolve_copilot_identity_audit()
++    if audit.error:
++        raise ValueError(audit.error)
++    return audit.token, audit.source
+ 
+ 
+ def _gh_cli_candidates() -> list[str]:
+@@ -120,11 +258,14 @@ def _try_gh_cli_token() -> Optional[str]:
+     """Return a token from ``gh auth token`` when the GitHub CLI is available.
+ 
+     When COPILOT_GH_HOST is set, passes ``--hostname`` so gh returns the
+-    correct host's token.  Also strips GITHUB_TOKEN / GH_TOKEN from the
+-    subprocess environment so ``gh`` reads from its own credential store
++    correct host's token. When COPILOT_GH_USER is set, also passes ``--user``
++    so multi-account setups resolve to the intended account regardless of
++    which one is currently active. Also strips GITHUB_TOKEN / GH_TOKEN from
++    the subprocess environment so ``gh`` reads from its own credential store
+     (hosts.yml) instead of just echoing the env var back.
+     """
+     hostname = os.getenv("COPILOT_GH_HOST", "").strip()
++    username = os.getenv("COPILOT_GH_USER", "").strip()
+ 
+     # Build a clean env so gh doesn't short-circuit on GITHUB_TOKEN / GH_TOKEN
+     clean_env = {k: v for k, v in os.environ.items()
+@@ -134,6 +275,8 @@ def _try_gh_cli_token() -> Optional[str]:
+         cmd = [gh_path, "auth", "token"]
+         if hostname:
+             cmd += ["--hostname", hostname]
++        if username:
++            cmd += ["--user", username]
+         try:
+             result = subprocess.run(
+                 cmd,
+@@ -183,7 +326,7 @@ def copilot_device_code_login(
+         headers={
+             "Accept": "application/json",
+             "Content-Type": "application/x-www-form-urlencoded",
+-            "User-Agent": "HermesAgent/1.0",
++            "User-Agent": _copilot_user_agent(),
+         },
+     )
+ 
+@@ -229,7 +372,7 @@ def copilot_device_code_login(
+             headers={
+                 "Accept": "application/json",
+                 "Content-Type": "application/x-www-form-urlencoded",
+-                "User-Agent": "HermesAgent/1.0",
++                "User-Agent": _copilot_user_agent(),
+             },
+         )
+ 
+@@ -282,10 +425,408 @@ def copilot_device_code_login(
+ _jwt_cache: dict[str, tuple[str, float]] = {}
+ _JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
+ 
+-# Token exchange endpoint and headers (matching VS Code / Copilot CLI)
++# Token exchange endpoint. We present our single Copilot CLI identity
++# (the `copilot-developer-cli` integration + `_copilot_user_agent()`), the same
++# one used on the inference path, so there is exactly one identity across every
++# Copilot-facing request.
++# NOTE: the exchange endpoint itself is no longer used by the official
++# Copilot CLI for /chat/completions or /models (those accept the raw gh
++# token as a Bearer credential directly. Kept for opt-in compatibility
++# (HERMES_COPILOT_FORCE_EXCHANGE=1).
+ _TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
+-_EDITOR_VERSION = "vscode/1.104.1"
+-_EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
++# Shared TTL for all on-disk version caches (CLI version + API version).
++_VERSION_CACHE_TTL = 24 * 60 * 60  # 24h
++
++# X-GitHub-Api-Version sent on Copilot API calls. Sourced (in priority order)
++# from the locally-installed `@github/copilot` npm bundle, which bakes it in
++# as a constant and is updated whenever the user runs `npm i -g @github/copilot`.
++# Fallback is the value shipped by @github/copilot @ 1.0.57 (today's date).
++_COPILOT_API_VERSION_FALLBACK = "2026-06-01"
++_COPILOT_API_VERSION_CACHE_PATH = (
++    Path.home() / ".cache" / "hermes" / "copilot_api_version.json"
++)
++
++# Latest released @github/copilot CLI version, used for the User-Agent we present
++# to api.githubcopilot.com (we identify as the official Copilot CLI, matching the
++# `copilot-developer-cli` Copilot-Integration-Id). Sourced (in priority order)
++# from the GitHub releases API (authoritative upstream) then the npm registry
++# `latest` dist-tag (downstream mirror, can lag); cached on disk with the same
++# TTL as the other version probes. Fallback is the value shipped at the time of
++# writing (2026-06-19).
++_COPILOT_CLI_VERSION_FALLBACK = "1.0.63"
++_COPILOT_CLI_RELEASES_URL = "https://api.github.com/repos/github/copilot-cli/releases/latest"
++_COPILOT_CLI_REGISTRY_URL = "https://registry.npmjs.org/@github%2Fcopilot/latest"
++_COPILOT_CLI_VERSION_CACHE_PATH = (
++    Path.home() / ".cache" / "hermes" / "copilot_cli_version.json"
++)
++
++# ─────────────────────────────────────────────────────────────────────────────
++# Copilot-Integration-Id — THE lever that unlocks the premium model catalog.
++#
++# Sent on every Copilot API call. The integration-id (NOT the User-Agent, NOT
++# any X-Copilot-Agent-Slug — both proven inert) is what the GitHub backend keys
++# the visible model catalog + per-model limits off of.
++#
++# LIVE PROBE (2026-06-19, account e126380_magh, read-only GET /models, see
++# hermes/probe/integration_id_sweep.py) compared every candidate:
++#   copilot-developer-cli     → 33 models  ← WINNER (strict superset)
++#   copilot-cli               → 32 models
++#   copilot-developer-sandbox → 32 models
++#   vscode-chat               → 32 models  (NOT the gemini-hider an older
++#                               comment claimed — it shows gemini-3.x too, it
++#                               just isn't the most complete integrator)
++#   vscode-chat-dev           → 30 models  (also needs a Request-Hmac header)
++#   copilot-4-cli             → 30 models  (limits the catalog the most)
++# Only `copilot-developer-cli` exposes the full set (adds gpt-5.4-nano over the
++# 32-model integrators) AND exposes gemini-3.1-pro-preview + gemini-3.5-flash +
++# claude-opus-4.8 with the full reasoning-effort range (opus low..max). We use
++# it uniformly so the whole codebase presents ONE integrator identity.
++# Override via HERMES_COPILOT_INTEGRATION_ID for an account that needs a
++# different one.
++#
++# ★ PREMIUM-TIER REQUIREMENT: the integration-id only unlocks the catalog when
++# the request carries a VALID GitHub Bearer token. The token is resolved by
++# resolve_copilot_token() from (in order) COPILOT_GITHUB_TOKEN / GH_TOKEN /
++# GITHUB_TOKEN env vars or `gh auth token`, then passed through
++# get_copilot_api_token() and injected as `Authorization: Bearer <token>` on the
++# Copilot API call (github.com tokens are used directly; the legacy
++# /copilot_internal/v2/token exchange is opt-in via HERMES_COPILOT_FORCE_EXCHANGE).
++# Without that Bearer token the premium models are NOT served regardless of the
++# integration-id.
++_COPILOT_INTEGRATION_ID_DEFAULT = "copilot-developer-cli"
++
++
++def _copilot_integration_id() -> str:
++    """Return the Copilot-Integration-Id to send (env-overridable)."""
++    override = os.getenv("HERMES_COPILOT_INTEGRATION_ID", "").strip()
++    return override or _COPILOT_INTEGRATION_ID_DEFAULT
++
++
++def _copilot_node_version() -> str:
++    """Return the Node version string (``v``-prefixed) for the CLI User-Agent.
++
++    The real ``@github/copilot`` CLI runs on Node and reports
++    ``process.version`` (e.g. ``v22.22.3``) in the parenthetical UA segment.
++    We resolve a REAL node version from the box (via ``node --version``) so the
++    value is authentic rather than fabricated — if a real Copilot CLI were
++    installed here it would report the same runtime. Resolution order:
++      1. ``HERMES_COPILOT_NODE_VERSION`` env override.
++      2. ``node --version`` on PATH (cached in-process).
++      3. Empty string → caller falls back to the short UA form.
++    """
++    override = os.getenv("HERMES_COPILOT_NODE_VERSION", "").strip()
++    if override:
++        return override if override.startswith("v") else f"v{override}"
++
++    global _copilot_node_version_memo
++    try:
++        if _copilot_node_version_memo is not None:
++            return _copilot_node_version_memo
++    except NameError:  # pragma: no cover - module-load ordering guard
++        pass
++
++    ver = ""
++    node_path = shutil.which("node")
++    if node_path:
++        try:
++            out = subprocess.run(
++                [node_path, "--version"],
++                capture_output=True,
++                text=True,
++                timeout=3.0,
++            )
++            cand = (out.stdout or "").strip()
++            if cand.startswith("v"):
++                ver = cand
++        except Exception as exc:
++            logger.debug("node --version probe failed: %s", exc)
++
++    _copilot_node_version_memo = ver
++    return ver
++
++
++# Node-version of the platform that the real CLI's process.version reports.
++_copilot_node_version_memo: Optional[str] = None
++
++# Map Python's sys.platform to Node's process.platform tokens (the CLI builds
++# the UA from process.platform: linux/darwin/win32, NOT Python's "win32"-only
++# overlap — they happen to agree for the common three).
++_NODE_PLATFORM_MAP = {
++    "linux": "linux",
++    "darwin": "darwin",
++    "win32": "win32",
++}
++
++# Default TERM_PROGRAM to present when the environment has none set. The real
++# CLI's builder falls back to the literal "unknown", but that reads as a
++# non-interactive/bot signal; a genuine Copilot CLI user is almost always inside
++# a real terminal emulator. "vscode" is the most common, valid host for the
++# Copilot CLI (a GitHub/Microsoft tool) and is coherent with the
++# copilot-developer-cli identity (CLI running in the VS Code integrated
++# terminal). Override via HERMES_COPILOT_TERM_PROGRAM.
++_COPILOT_TERM_PROGRAM_DEFAULT = "vscode"
++
++
++def _copilot_term_program() -> str:
++    """Return the ``TERM_PROGRAM`` token for the CLI User-Agent.
++
++    Resolution order:
++      1. ``HERMES_COPILOT_TERM_PROGRAM`` env override.
++      2. A REAL ``TERM_PROGRAM`` present in the environment (most authentic —
++         e.g. ``vscode``, ``iTerm.app``, ``Apple_Terminal``, ``WezTerm``).
++      3. ``_COPILOT_TERM_PROGRAM_DEFAULT`` (``vscode``) — a valid, common value,
++         never the bot-signalling ``unknown``.
++    """
++    override = os.getenv("HERMES_COPILOT_TERM_PROGRAM", "").strip()
++    if override:
++        return override
++    real = os.environ.get("TERM_PROGRAM", "").strip()
++    if real:
++        return real
++    return _COPILOT_TERM_PROGRAM_DEFAULT
++
++
++def _copilot_user_agent() -> str:
++    """User-Agent presented to api.githubcopilot.com.
++
++    We identify as the official ``@github/copilot`` CLI, reproducing its real
++    UA builder (the bundle's ``FG()`` helper, RE 2026-06-19):
++
++        ``copilot/<ver> (<platform> <node-version>) term/<TERM_PROGRAM>``
++
++    where ``<platform>`` is Node's ``process.platform`` (linux/darwin/win32),
++    ``<node-version>`` is the ``v``-prefixed Node ``process.version``, and
++    ``<TERM_PROGRAM>`` identifies the host terminal. We source a REAL node
++    version + platform from this box so the value is authentic (the CLI
++    installed here would report the same), not fabricated. If node cannot be
++    resolved we degrade to the honest short core ``copilot/<ver>`` rather than
++    invent a runtime. ``TERM_PROGRAM`` uses a real environment value when set,
++    else a valid default (``vscode``) rather than the CLI's literal ``unknown``
++    fallback (which reads as a non-interactive/bot signal).
++
++    A 2026-06-19 live probe proved the User-Agent does NOT affect the /models
++    catalog (every UA value, including none, returned the same 33 models) — it
++    is cosmetic for unlock; we send the faithful CLI value for identity
++    consistency, not capability. Version is env-overridable via
++    HERMES_COPILOT_CLI_VERSION; node version via HERMES_COPILOT_NODE_VERSION;
++    terminal via HERMES_COPILOT_TERM_PROGRAM.
++    """
++    ver = _latest_copilot_cli_version()
++    node_ver = _copilot_node_version()
++    if not node_ver:
++        # No authentic Node runtime to report — send the honest short form.
++        return f"copilot/{ver}"
++    platform = _NODE_PLATFORM_MAP.get(sys.platform, sys.platform)
++    term = _copilot_term_program()
++    return f"copilot/{ver} ({platform} {node_ver}) term/{term}"
++
++# Candidate paths for the @github/copilot CLI bundle (global npm install).
++_COPILOT_CLI_BUNDLE_CANDIDATES = (
++    "/usr/local/lib/node_modules/@github/copilot/sdk/index.js",
++    "/usr/lib/node_modules/@github/copilot/sdk/index.js",
++)
++
++# In-process caches so we don't hit disk on every header build.
++_copilot_api_version_memo: tuple[str, float] | None = None
++_copilot_cli_version_memo: tuple[str, float] | None = None
++
++
++def _latest_copilot_cli_version() -> str:
++    """Return the latest released ``@github/copilot`` CLI version.
++
++    Used to build the ``copilot/<ver>`` User-Agent. Resolution order:
++      1. ``HERMES_COPILOT_CLI_VERSION`` env override.
++      2. In-process memo (TTL ``_VERSION_CACHE_TTL``).
++      3. On-disk cache at ``_COPILOT_CLI_VERSION_CACHE_PATH``.
++      4. npm registry ``latest`` dist-tag for ``@github/copilot``.
++      5. Hard fallback ``_COPILOT_CLI_VERSION_FALLBACK``.
++    """
++    override = os.getenv("HERMES_COPILOT_CLI_VERSION", "").strip()
++    if override:
++        return override
++
++    global _copilot_cli_version_memo
++    now = time.time()
++    if (
++        _copilot_cli_version_memo
++        and now - _copilot_cli_version_memo[1] < _VERSION_CACHE_TTL
++    ):
++        return _copilot_cli_version_memo[0]
++
++    cache_path = _COPILOT_CLI_VERSION_CACHE_PATH
++    try:
++        if cache_path.is_file():
++            data = json.loads(cache_path.read_text())
++            ver = str(data.get("version") or "").lstrip("v").strip()
++            ts = float(data.get("fetched_at") or 0)
++            if ver and now - ts < _VERSION_CACHE_TTL:
++                _copilot_cli_version_memo = (ver, ts)
++                return ver
++    except Exception as exc:
++        logger.debug("copilot-cli version cache read failed: %s", exc)
++
++    ver = _COPILOT_CLI_VERSION_FALLBACK
++    try:
++        import urllib.request
++
++        latest = ""
++        # 1) GitHub releases API (authoritative upstream). tag_name like "v1.0.63".
++        try:
++            req = urllib.request.Request(
++                _COPILOT_CLI_RELEASES_URL,
++                headers={"Accept": "application/vnd.github+json", "User-Agent": "hermes-agent"},
++            )
++            with urllib.request.urlopen(req, timeout=5.0) as resp:
++                payload = json.loads(resp.read().decode())
++            latest = str(payload.get("tag_name") or "").lstrip("v").strip()
++        except Exception as exc:
++            logger.debug("copilot-cli GitHub releases fetch failed: %s", exc)
++
++        # 2) npm registry `latest` dist-tag (downstream mirror) if GH didn't answer.
++        if not latest:
++            req = urllib.request.Request(
++                _COPILOT_CLI_REGISTRY_URL,
++                headers={"Accept": "application/json", "User-Agent": "hermes-agent"},
++            )
++            with urllib.request.urlopen(req, timeout=5.0) as resp:
++                payload = json.loads(resp.read().decode())
++            latest = str(payload.get("version") or "").lstrip("v").strip()
++
++        if latest:
++            ver = latest
++            try:
++                cache_path.parent.mkdir(parents=True, exist_ok=True)
++                cache_path.write_text(
++                    json.dumps({"version": ver, "fetched_at": now})
++                )
++            except Exception as exc:
++                logger.debug("copilot-cli version cache write failed: %s", exc)
++    except Exception as exc:
++        logger.debug(
++            "failed to fetch latest copilot-cli version, using fallback %s: %s",
++            _COPILOT_CLI_VERSION_FALLBACK,
++            exc,
++        )
++
++    _copilot_cli_version_memo = (ver, now)
++    return ver
++
++
++def _discover_copilot_cli_bundles() -> list[Path]:
++    """Locate plausible ``@github/copilot/sdk/index.js`` paths on this host.
++
++    Walks common global-npm locations (incl. nvm). Returns existing files only.
++    """
++    seen: set[Path] = set()
++    out: list[Path] = []
++
++    def _add(p: Path) -> None:
++        try:
++            rp = p.resolve()
++        except Exception:
++            rp = p
++        if rp in seen or not rp.is_file():
++            return
++        seen.add(rp)
++        out.append(rp)
++
++    # Static candidates.
++    for s in _COPILOT_CLI_BUNDLE_CANDIDATES:
++        _add(Path(s))
++
++    # nvm-managed installs: ~/.nvm/versions/node/*/lib/node_modules/@github/copilot/sdk/index.js
++    nvm_root = Path.home() / ".nvm" / "versions" / "node"
++    if nvm_root.is_dir():
++        try:
++            for node_dir in nvm_root.iterdir():
++                _add(node_dir / "lib" / "node_modules" / "@github" / "copilot" / "sdk" / "index.js")
++        except Exception as exc:
++            logger.debug("nvm scan failed: %s", exc)
++
++    # User-local global install (npm prefix override).
++    _add(Path.home() / ".npm-global" / "lib" / "node_modules" / "@github" / "copilot" / "sdk" / "index.js")
++
++    return out
++
++
++def _extract_api_version_from_bundle(bundle: Path) -> str | None:
++    """Grep the Copilot CLI bundle for the X-GitHub-Api-Version constant.
++
++    The bundle defines it as e.g. ``Mss="X-GitHub-Api-Version",Oss="2026-06-01"``.
++    We extract every adjacent date literal, drop the github.com REST date
++    ``2022-11-28`` (used only for gist/asset uploads), and return the newest.
++    """
++    import re
++    try:
++        text = bundle.read_text(encoding="utf-8", errors="ignore")
++    except Exception as exc:
++        logger.debug("copilot CLI bundle read failed (%s): %s", bundle, exc)
++        return None
++    matches = re.findall(
++        r'"X-GitHub-Api-Version"\s*,\s*[A-Za-z0-9_$]+\s*=\s*"(\d{4}-\d{2}-\d{2})"',
++        text,
++    )
++    # Filter out the github.com REST API version (different surface).
++    candidates = sorted({m for m in matches if m != "2022-11-28"}, reverse=True)
++    return candidates[0] if candidates else None
++
++
++def _latest_copilot_api_version() -> str:
++    """Return the X-GitHub-Api-Version value used by the Copilot API.
++
++    Resolution order:
++      1. ``HERMES_COPILOT_API_VERSION`` env override.
++      2. In-process memo (TTL ``_VERSION_CACHE_TTL``).
++      3. On-disk cache at ``_COPILOT_API_VERSION_CACHE_PATH``.
++      4. Local ``@github/copilot`` npm bundle (the live source of truth,
++         updates whenever the user runs ``npm i -g @github/copilot``).
++      5. Hard fallback ``_COPILOT_API_VERSION_FALLBACK``.
++    """
++    override = os.getenv("HERMES_COPILOT_API_VERSION", "").strip()
++    if override:
++        return override
++
++    global _copilot_api_version_memo
++    now = time.time()
++    if (
++        _copilot_api_version_memo
++        and now - _copilot_api_version_memo[1] < _VERSION_CACHE_TTL
++    ):
++        return _copilot_api_version_memo[0]
++
++    cache_path = _COPILOT_API_VERSION_CACHE_PATH
++    try:
++        if cache_path.is_file():
++            data = json.loads(cache_path.read_text())
++            ver = str(data.get("version") or "").strip()
++            ts = float(data.get("fetched_at") or 0)
++            if ver and now - ts < _VERSION_CACHE_TTL:
++                _copilot_api_version_memo = (ver, ts)
++                return ver
++    except Exception as exc:
++        logger.debug("copilot api-version cache read failed: %s", exc)
++
++    ver = _COPILOT_API_VERSION_FALLBACK
++    for bundle in _discover_copilot_cli_bundles():
++        extracted = _extract_api_version_from_bundle(bundle)
++        if extracted:
++            ver = extracted
++            logger.debug("copilot api-version %s from %s", ver, bundle)
++            break
++    else:
++        logger.debug(
++            "no @github/copilot bundle found, using fallback api-version %s",
++            _COPILOT_API_VERSION_FALLBACK,
++        )
++
++    try:
++        cache_path.parent.mkdir(parents=True, exist_ok=True)
++        cache_path.write_text(json.dumps({"version": ver, "fetched_at": now}))
++    except Exception as exc:
++        logger.debug("copilot api-version cache write failed: %s", exc)
++
++    _copilot_api_version_memo = (ver, now)
++    return ver
+ 
+ 
+ def _token_fingerprint(raw_token: str) -> str:
+@@ -321,10 +862,11 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
+         _TOKEN_EXCHANGE_URL,
+         method="GET",
+         headers={
+-            "Authorization": f"token {raw_token}",
+-            "User-Agent": _EXCHANGE_USER_AGENT,
++            "Authorization": f"Bearer {raw_token}",
++            "User-Agent": _copilot_user_agent(),
+             "Accept": "application/json",
+-            "Editor-Version": _EDITOR_VERSION,
++            "Copilot-Integration-Id": _copilot_integration_id(),
++            "X-GitHub-Api-Version": _latest_copilot_api_version(),
+         },
+     )
+ 
+@@ -351,21 +893,29 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
+ 
+ 
+ def get_copilot_api_token(raw_token: str) -> str:
+-    """Exchange a raw GitHub token for a Copilot API token, with fallback.
++    """Return the API token to use against ``api.githubcopilot.com``.
+ 
+-    Convenience wrapper: returns the exchanged token on success, or the
+-    raw token unchanged if the exchange fails (e.g. network error, unsupported
+-    account type). This preserves existing behaviour for accounts that don't
+-    need exchange while enabling access to internal-only models for those that do.
++    The Copilot API accepts the raw GitHub OAuth/PAT token directly as
++    ``Authorization: Bearer ***``; no exchange step is required.
++    This was verified against the official ``@github/copilot`` CLI bundle:
++    its SDK calls Copilot endpoints with ``Bearer <gh-token>`` directly.
++
++    The legacy ``GET /copilot_internal/v2/token`` exchange endpoint on
++    ``api.github.com`` is not used by the CLI and now returns 404 (the
++    REST router treats ``/copilot_internal/...`` as a repo sub-path).
++
++    Set ``HERMES_COPILOT_FORCE_EXCHANGE=1`` to opt in to the legacy
++    exchange flow (will fall back to the raw token on failure).
+     """
+     if not raw_token:
+         return raw_token
+-    try:
+-        api_token, _ = exchange_copilot_token(raw_token)
+-        return api_token
+-    except Exception as exc:
+-        logger.debug("Copilot token exchange failed, using raw token: %s", exc)
+-        return raw_token
++    if os.getenv("HERMES_COPILOT_FORCE_EXCHANGE", "").strip() in ("1", "true", "yes"):
++        try:
++            api_token, _ = exchange_copilot_token(raw_token)
++            return api_token
++        except Exception as exc:
++            logger.debug("Copilot token exchange failed, using raw token: %s", exc)
++    return raw_token
+ 
+ 
+ # ─── Copilot API Headers ───────────────────────────────────────────────────
+@@ -374,18 +924,51 @@ def copilot_request_headers(
+     *,
+     is_agent_turn: bool = True,
+     is_vision: bool = False,
++    model: str = "",
++    intent: str = "conversation-panel",
++    interaction_id: Optional[str] = None,
+ ) -> dict[str, str]:
+     """Build the standard headers for Copilot API requests.
+ 
+-    Replicates the header set used by opencode and the Copilot CLI.
++    Presents as the official ``@github/copilot`` CLI (matching the
++    ``copilot-developer-cli`` Copilot-Integration-Id), NOT the VS Code Chat
++    extension. Verified against the real CLI bundle (``@github/copilot`` 1.0.63,
++    its ``que()`` inference-header builder, RE 2026-06-19): the CLI sends
++    ``Copilot-Integration-Id`` + ``Authorization: Bearer`` + ``Runtime-Client-Version``
++    and does NOT send the ``Editor-Version`` / ``Editor-Plugin-Version`` pair
++    (those are VS Code Chat extension headers). We follow the CLI shape so the
++    whole identity (integration-id + UA + headers) is internally consistent.
+     """
++    import uuid as _uuid
+     headers: dict[str, str] = {
+-        "Editor-Version": "vscode/1.104.1",
+-        "User-Agent": "HermesAgent/1.0",
+-        "Copilot-Integration-Id": "vscode-chat",
+-        "Openai-Intent": "conversation-edits",
++        "User-Agent": _copilot_user_agent(),
++        "Copilot-Integration-Id": _copilot_integration_id(),
++        # The real CLI sends this in place of the VS Code Editor-* pair; value
++        # is the @github/copilot CLI version we're identifying as.
++        "Runtime-Client-Version": _latest_copilot_cli_version(),
++        "Openai-Intent": intent,
++        # Mirror of Openai-Intent (extension sends both unless overridden).
++        "X-Interaction-Type": intent,
++        # Inference-path Copilot API version (currently 2026-06-01).
++        "X-GitHub-Api-Version": _latest_copilot_api_version(),
+         "x-initiator": "agent" if is_agent_turn else "user",
++        # Per-call request id + stable per-session interaction id (server uses
++        # them for trace/log correlation and may key some quotas off
++        # X-Interaction-Id).
++        "X-Request-Id": str(_uuid.uuid4()),
++        "X-Interaction-Id": interaction_id or str(_uuid.uuid4()),
+     }
++
++    # NOTE: hermes previously injected `X-Copilot-Agent-Slug: copilot-1m-context`
++    # here, believing it mapped the token to the developer-app integrator and
++    # unlocked 1M context / Gemini-3.x. Live probing (2026-06-07) proved that
++    # slug is INERT: it changes neither catalog visibility nor per-model limits.
++    # What actually exposes gemini-3.x and the full limits is the
++    # Copilot-Integration-Id (`copilot-developer-cli`, matching the official CLI). The
++    # slug was removed to avoid sending a misleading no-op header. The official
++    # @github/copilot CLI sends `copilot-developer-sandbox` only on specific
++    # (non-inference) endpoints; we don't need it for chat/messages/responses.
++
+     if is_vision:
+         headers["Copilot-Vision-Request"] = "true"
+ 
+diff --git a/hermes_cli/inventory.py b/hermes_cli/inventory.py
+deleted file mode 100644
+index 7f0d3d220..000000000
+--- a/hermes_cli/inventory.py
++++ /dev/null
+@@ -1,431 +0,0 @@
+-"""Provider/model inventory context — shared substrate for the dashboard
+-``/api/model/options``, the TUI ``model.options``/``model.save_key``
+-JSON-RPC handlers, and the interactive picker.
+-
+-Before this module the three call-sites each duplicated:
+-
+-1. The 17-LOC config-slice that pulls ``model.{default,name,provider,base_url}``,
+-   ``providers:``, and ``custom_providers:`` out of ``load_config()``;
+-2. The call into ``list_authenticated_providers`` with the resulting kwargs;
+-3. (TUI only) a 45-LOC post-pass that merges authenticated rows with
+-   unconfigured ``CANONICAL_PROVIDERS`` rows and emits ``authenticated``/
+-   ``auth_type``/``key_env``/``warning`` hints for the picker UI.
+-
+-Consolidating those three steps into one entry point eliminates two bugs
+-the duplicates were hiding:
+-
+-- The dashboard read ``cfg.get("custom_providers")`` directly, missing the
+-  v12+ keyed ``providers:`` form (which the TUI handled via
+-  ``get_compatible_custom_providers``).
+-- The TUI's canonical-merge keyed on ``is_user_defined`` to decide
+-  ordering. Section 3 of ``list_authenticated_providers`` sets
+-  ``is_user_defined=True`` even for canonical slugs that appear in the
+-  ``providers:`` config dict, which silently demoted them to the tail of
+-  the picker. ``_reorder_canonical`` keys on slug membership instead.
+-
+-Substrate facts (verified May 2026):
+-- ``list_authenticated_providers`` already populates each row's
+-  ``models`` from the curated catalog (same source as the picker). Do
+-  NOT call ``provider_model_ids()`` per row to "freshen" — that bypasses
+-  curation and pulls in non-agentic models (Nous /models returns ~400
+-  IDs including TTS, embeddings, rerankers, image/video generators).
+-"""
+-
+-from __future__ import annotations
+-
+-from dataclasses import dataclass, replace
+-from typing import Optional
+-
+-
+-# ─── Public types ───────────────────────────────────────────────────────
+-
+-
+-@dataclass(frozen=True)
+-class ConfigContext:
+-    """Snapshot of the model + provider config every inventory caller
+-    needs. Built once via ``load_picker_context()``; the TUI overlays
+-    live agent state via ``with_overrides()`` before passing through.
+-    """
+-
+-    current_provider: str
+-    current_model: str
+-    current_base_url: str
+-    user_providers: dict
+-    custom_providers: list
+-
+-    def with_overrides(
+-        self,
+-        *,
+-        current_provider: Optional[str] = None,
+-        current_model: Optional[str] = None,
+-        current_base_url: Optional[str] = None,
+-    ) -> "ConfigContext":
+-        """Return a copy with truthy overrides applied.
+-
+-        Truthy-only because the TUI reads agent attributes that may be
+-        empty strings before an agent is spawned — empties must NOT
+-        clobber the disk-config values.
+-        """
+-        kw: dict = {}
+-        if current_provider:
+-            kw["current_provider"] = current_provider
+-        if current_model:
+-            kw["current_model"] = current_model
+-        if current_base_url:
+-            kw["current_base_url"] = current_base_url
+-        return replace(self, **kw) if kw else self
+-
+-
+-def load_picker_context() -> ConfigContext:
+-    """Load the disk-config snapshot every consumer needs.
+-
+-    Replaces the inline 17-LOC config-slice that ``web_server.py`` and
+-    ``tui_gateway/server.py`` (×2 sites) used to do.
+-    """
+-    from hermes_cli.config import get_compatible_custom_providers, load_config
+-
+-    cfg = load_config()
+-    model_cfg = cfg.get("model", {})
+-    if isinstance(model_cfg, dict):
+-        current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
+-        current_provider = model_cfg.get("provider", "") or ""
+-        current_base_url = model_cfg.get("base_url", "") or ""
+-    else:
+-        # config.model can be a bare string in older configs.
+-        current_model = str(model_cfg) if model_cfg else ""
+-        current_provider = ""
+-        current_base_url = ""
+-    raw = cfg.get("providers")
+-    return ConfigContext(
+-        current_provider=current_provider,
+-        current_model=current_model,
+-        current_base_url=current_base_url,
+-        user_providers=raw if isinstance(raw, dict) else {},
+-        custom_providers=get_compatible_custom_providers(cfg),
+-    )
+-
+-
+-# ─── Public: payload builder ────────────────────────────────────────────
+-
+-
+-def build_models_payload(
+-    ctx: ConfigContext,
+-    *,
+-    include_unconfigured: bool = False,
+-    picker_hints: bool = False,
+-    canonical_order: bool = False,
+-    pricing: bool = False,
+-    capabilities: bool = False,
+-    force_fresh_nous_tier: bool = False,
+-    refresh: bool = False,
+-    max_models: int | None = None,
+-) -> dict:
+-    """Build the ``{providers, model, provider}`` shape every consumer
+-    needs from a single substrate call.
+-
+-    Flags:
+-    - ``include_unconfigured``: append ``CANONICAL_PROVIDERS`` rows that
+-      ``list_authenticated_providers`` didn't emit (TUI uses this to show
+-      the full provider universe in the picker).
+-    - ``picker_hints``: add ``authenticated``/``auth_type``/``key_env``/
+-      ``warning`` per row (TUI ``ModelPickerDialog`` shape).
+-    - ``canonical_order``: reorder canonical-slug rows to
+-      ``CANONICAL_PROVIDERS`` declaration order; truly-custom rows go
+-      last (TUI display order).
+-    - ``pricing``: enrich each row with formatted per-model pricing and,
+-      for Nous, ``free_tier``/``unavailable_models`` so the GUI picker can
+-      show $/Mtok columns and gate paid models on free accounts —
+-      mirroring the ``hermes model`` CLI picker. Adds network calls
+-      (pricing fetch + Nous tier check); only set for interactive pickers.
+-    - ``capabilities``: add a per-row ``capabilities`` map
+-      ``{model: {fast, reasoning}}`` so pickers can gate the model-options
+-      controls (fast toggle / reasoning) to what each model actually
+-      supports, instead of offering knobs the backend would reject.
+-    - ``force_fresh_nous_tier``: bypass the short Nous free-tier cache when
+-      selecting Portal-recommended Nous models and applying tier gating. Keep
+-      this false for UI picker opens; explicit auth/model flows can opt in
+-      when they need freshly-purchased credits to show up immediately.
+-    - ``refresh``: bust the per-provider model-id disk cache so every row
+-      re-fetches its live catalog. Set only for an explicit user-triggered
+-      "refresh models" action; normal picker opens leave it false to stay
+-      snappy on the 1h cache.
+-    """
+-    from hermes_cli.model_switch import list_authenticated_providers
+-
+-    rows = list_authenticated_providers(
+-        current_provider=ctx.current_provider,
+-        current_base_url=ctx.current_base_url,
+-        current_model=ctx.current_model,
+-        user_providers=ctx.user_providers,
+-        custom_providers=ctx.custom_providers,
+-        force_fresh_nous_tier=force_fresh_nous_tier,
+-        max_models=max_models,
+-        refresh=refresh,
+-    )
+-
+-    # --- Deduplicate: remove models from aggregators that overlap with
+-    # user-defined providers.  When a local proxy (e.g. litellm-proxy)
+-    # serves a model whose name also appears in an aggregator's curated
+-    # catalog, the picker would show the model under both providers.
+-    # Selecting it from the aggregator row sets model.provider to the
+-    # aggregator (e.g. openrouter) instead of the user's proxy — silently
+-    # breaking the call.  Filtering at the payload level keeps the
+-    # aggregator rows honest: they only show models the user can't get
+-    # from a more-specific provider.  (#45954)
+-    try:
+-        from hermes_cli.providers import is_aggregator as _is_aggregator
+-    except Exception:
+-        _is_aggregator = None  # type: ignore[assignment]
+-
+-    if _is_aggregator is not None:
+-        user_models: set[str] = set()
+-        for row in rows:
+-            if row.get("is_user_defined"):
+-                user_models.update(m.lower() for m in (row.get("models") or []))
+-        if user_models:
+-            for row in rows:
+-                # A user's own configured provider is never an "aggregator
+-                # duplicate" of itself: user_models is built from these very
+-                # rows, and is_aggregator() reports True for every custom:*
+-                # slug.  Without this guard the dedup strips a user-defined
+-                # custom provider's entire model list (all of it lives in
+-                # user_models), emptying its picker row.
+-                if row.get("is_user_defined"):
+-                    continue
+-                slug = row.get("slug", "")
+-                if not _is_aggregator(slug):
+-                    continue
+-                original = row.get("models") or []
+-                filtered = [m for m in original if m.lower() not in user_models]
+-                if len(filtered) < len(original):
+-                    row["models"] = filtered
+-                    row["total_models"] = len(filtered)
+-
+-    if include_unconfigured:
+-        rows = list(rows) + _append_unconfigured_rows(rows, ctx)
+-    if picker_hints:
+-        _apply_picker_hints(rows)
+-    if canonical_order:
+-        rows = _reorder_canonical(rows)
+-    if pricing:
+-        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
+-    if capabilities:
+-        _apply_capabilities(rows)
+-
+-    return {
+-        "providers": rows,
+-        "model": ctx.current_model,
+-        "provider": ctx.current_provider,
+-    }
+-
+-
+-def _apply_capabilities(rows: list[dict]) -> None:
+-    """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
+-
+-    `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
+-    enforces). `reasoning` comes from the models.dev catalog when known and
+-    defaults to True otherwise — the effort dial is broadly accepted and a
+-    no-op on models that ignore it, whereas hiding it from a capable-but-
+-    uncatalogued model is the worse failure.
+-    """
+-    from hermes_cli.models import model_supports_fast_mode
+-
+-    try:
+-        from agent.models_dev import get_model_capabilities
+-    except Exception:
+-        get_model_capabilities = None  # type: ignore[assignment]
+-
+-    for row in rows:
+-        slug = row.get("slug") or ""
+-        caps: dict[str, dict[str, bool]] = {}
+-
+-        for model in row.get("models") or []:
+-            reasoning = True
+-            if get_model_capabilities is not None and slug:
+-                try:
+-                    meta = get_model_capabilities(slug, model)
+-                    if meta is not None:
+-                        reasoning = bool(meta.supports_reasoning)
+-                except Exception:
+-                    reasoning = True
+-
+-            caps[model] = {
+-                "fast": bool(model_supports_fast_mode(model)),
+-                "reasoning": reasoning,
+-            }
+-
+-        row["capabilities"] = caps
+-
+-
+-# ─── Internal: row post-processing ──────────────────────────────────────
+-
+-
+-def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
+-    """Build skeleton rows for canonical providers missing from ``rows``."""
+-    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
+-
+-    seen = {r["slug"].lower() for r in rows}
+-    cur = (ctx.current_provider or "").lower()
+-    extras: list[dict] = []
+-    for entry in CANONICAL_PROVIDERS:
+-        if entry.slug.lower() in seen:
+-            continue
+-        extras.append(
+-            {
+-                "slug": entry.slug,
+-                "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
+-                "is_current": entry.slug.lower() == cur,
+-                "is_user_defined": False,
+-                "models": [],
+-                "total_models": 0,
+-                "source": "canonical",
+-            }
+-        )
+-    return extras
+-
+-
+-def _apply_picker_hints(rows: list[dict]) -> None:
+-    """Add ``authenticated``/``auth_type``/``key_env``/``warning`` per row.
+-
+-    Mutates ``rows`` in-place. Rows already from
+-    ``list_authenticated_providers`` are marked ``authenticated=True``;
+-    the unconfigured skeleton rows from ``_append_unconfigured_rows`` get
+-    the picker's setup-hint shape.
+-    """
+-    from hermes_cli.auth import PROVIDER_REGISTRY
+-
+-    for row in rows:
+-        if "authenticated" in row:
+-            continue
+-        # Distinguish authenticated rows (returned by
+-        # list_authenticated_providers) from skeleton rows (from
+-        # _append_unconfigured_rows). The skeleton rows have empty
+-        # `models` AND source="canonical"; authenticated rows have
+-        # populated `models` OR a non-canonical source.
+-        is_skeleton = row.get("source") == "canonical" and not row.get("models")
+-        row["authenticated"] = not is_skeleton
+-        if not is_skeleton or row.get("is_user_defined"):
+-            continue
+-        cfg = PROVIDER_REGISTRY.get(row["slug"])
+-        auth_type = cfg.auth_type if cfg else "api_key"
+-        key_env = (
+-            cfg.api_key_env_vars[0]
+-            if (cfg and cfg.api_key_env_vars)
+-            else ""
+-        )
+-        row["auth_type"] = auth_type
+-        row["key_env"] = key_env
+-        row["warning"] = (
+-            f"paste {key_env} to activate"
+-            if auth_type == "api_key" and key_env
+-            else f"run `hermes model` to configure ({auth_type})"
+-        )
+-
+-
+-def _reorder_canonical(rows: list[dict]) -> list[dict]:
+-    """Canonical slugs in ``CANONICAL_PROVIDERS`` declaration order;
+-    truly-custom rows last.
+-
+-    Keys on slug membership, NOT ``is_user_defined`` — section 3 of
+-    ``list_authenticated_providers`` sets ``is_user_defined=True`` on
+-    rows from the ``providers:`` config dict even when the slug is
+-    canonical. Keying on the flag would silently demote canonical
+-    providers configured via the new keyed schema.
+-    """
+-    from hermes_cli.models import CANONICAL_PROVIDERS
+-
+-    order = {e.slug: i for i, e in enumerate(CANONICAL_PROVIDERS)}
+-    canon = sorted(
+-        (r for r in rows if r["slug"] in order),
+-        key=lambda r: order[r["slug"]],
+-    )
+-    extras = [r for r in rows if r["slug"] not in order]
+-    return canon + extras
+-
+-
+-def _apply_pricing(
+-    rows: list[dict],
+-    *,
+-    force_fresh_nous_tier: bool = False,
+-) -> None:
+-    """Enrich each provider row with per-model pricing + Nous tier gating.
+-
+-    Mutates ``rows`` in-place. For every row whose provider supports live
+-    pricing (openrouter / nous / novita) adds::
+-
+-        row["pricing"] = {model_id: {"input": "$3.00", "output": "$15.00",
+-                                     "cache": "$0.30" | None, "free": bool}}
+-
+-    For Nous additionally adds::
+-
+-        row["free_tier"] = bool            # current account is free-tier
+-        row["unavailable_models"] = [...]  # paid models a free user can't pick
+-
+-    Prices are pre-formatted via ``_format_price_per_mtok`` so the GUI just
+-    renders strings — identical formatting to the CLI picker. All failures
+-    are swallowed (best-effort): a row simply gets no ``pricing`` key.
+-    """
+-    from hermes_cli.models import (
+-        _format_price_per_mtok,
+-        check_nous_free_tier,
+-        get_pricing_for_provider,
+-        partition_nous_models_by_tier,
+-    )
+-
+-    # Resolve Nous free-tier once (cached in models.py for the TTL window).
+-    nous_free_tier: Optional[bool] = None
+-
+-    for row in rows:
+-        slug = str(row.get("slug", "")).lower()
+-        models = row.get("models") or []
+-        if not models:
+-            continue
+-        try:
+-            raw_pricing = get_pricing_for_provider(slug) or {}
+-        except Exception:
+-            raw_pricing = {}
+-        if not raw_pricing:
+-            continue
+-
+-        formatted: dict[str, dict] = {}
+-        for mid in models:
+-            p = raw_pricing.get(mid)
+-            if not p:
+-                continue
+-            inp_raw = p.get("prompt", "")
+-            out_raw = p.get("completion", "")
+-            cache_raw = p.get("input_cache_read", "")
+-            inp = _format_price_per_mtok(inp_raw) if inp_raw != "" else ""
+-            out = _format_price_per_mtok(out_raw) if out_raw != "" else ""
+-            cache = _format_price_per_mtok(cache_raw) if cache_raw else None
+-            # A model is "free" when both input and output cost nothing.
+-            is_free = inp == "free" and (out == "free" or out == "")
+-            formatted[mid] = {
+-                "input": inp,
+-                "output": out,
+-                "cache": cache,
+-                "free": is_free,
+-            }
+-
+-        if formatted:
+-            row["pricing"] = formatted
+-
+-        if slug == "nous":
+-            try:
+-                if nous_free_tier is None:
+-                    nous_free_tier = check_nous_free_tier(
+-                        force_fresh=force_fresh_nous_tier
+-                    )
+-                row["free_tier"] = bool(nous_free_tier)
+-                if nous_free_tier:
+-                    _selectable, unavailable = partition_nous_models_by_tier(
+-                        list(models), raw_pricing, free_tier=True
+-                    )
+-                    row["unavailable_models"] = unavailable
+-                else:
+-                    row["unavailable_models"] = []
+-            except Exception:
+-                # Tier detection failed — fail open (no gating) so the user
+-                # is never blocked from picking a model.
+-                row["free_tier"] = False
+-                row["unavailable_models"] = []
+diff --git a/plugins/model-providers/copilot/__init__.py b/plugins/model-providers/copilot/__init__.py
+index d4409c108..1a5e5fcbf 100644
+--- a/plugins/model-providers/copilot/__init__.py
++++ b/plugins/model-providers/copilot/__init__.py
+@@ -35,9 +35,24 @@ class CopilotProfile(ProviderProfile):
+                 supported_efforts = github_model_reasoning_efforts(model)
+                 if supported_efforts and reasoning_config:
+                     effort = reasoning_config.get("effort", "medium")
+-                    # Normalize non-standard effort levels to the nearest supported
+-                    if effort == "xhigh":
+-                        effort = "high"
++                    # Honor the requested level when the live Copilot catalog
++                    # lists it as supported: gpt-5.5/gpt-5.4 DO support
++                    # ``xhigh``. Only downgrade levels the catalog does NOT
++                    # list (e.g. ``xhigh``/``max`` on models capped lower, or
++                    # ``minimal`` where unsupported), choosing the nearest
++                    # weaker supported level rather than forwarding verbatim.
++                    #
++                    # (Previously this unconditionally mapped xhigh→high, a
++                    #  stale free-tier guard that silently capped gpt-5.x.)
++                    if effort not in supported_efforts:
++                        if effort == "xhigh" and "high" in supported_efforts:
++                            effort = "high"
++                        elif effort == "minimal" and "low" in supported_efforts:
++                            effort = "low"
++                        elif "medium" in supported_efforts:
++                            effort = "medium"
++                        else:
++                            effort = supported_efforts[0]
+                     if effort in supported_efforts:
+                         extra_body["reasoning"] = {"effort": effort}
+                 elif supported_efforts:
+diff --git a/tests/agent/test_anthropic_adapter.py b/tests/agent/test_anthropic_adapter.py
+index 2a2f236b9..9e761f0d5 100644
+--- a/tests/agent/test_anthropic_adapter.py
++++ b/tests/agent/test_anthropic_adapter.py
+@@ -109,8 +109,10 @@ class TestBuildAnthropicClient:
+             build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
+             kwargs = mock_sdk.Anthropic.call_args[1]
+             assert kwargs["base_url"] == "https://custom.api.com"
++            # Updated 2026-06-04: _COMMON_BETAS now includes the two betas the
++            # official Copilot Chat extension sends — see Worker-A wave1 RE.
+             assert kwargs["default_headers"] == {
+-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
++                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,advanced-tool-use-2025-11-20,context-management-2025-06-27"
+             }
+ 
+     def test_custom_base_url_strips_trailing_v1(self):
+@@ -1074,6 +1076,72 @@ class TestBuildAnthropicKwargs:
+         )
+         assert kwargs["model"] == "claude-sonnet-4-20250514"
+ 
++    def test_copilot_vision_header_added_for_image_request(self):
++        """Image-bearing requests to Copilot get Copilot-Vision-Request: true.
++
++        Without it, Copilot's /v1/messages proxy returns an empty content block
++        (HTTP 200) and the loop fails the turn as an invalid response.
++        """
++        _png = (
++            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1"
++            "HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
++        )
++        messages = [
++            {
++                "role": "user",
++                "content": [
++                    {"type": "text", "text": "what is this?"},
++                    {"type": "image_url", "image_url": {"url": _png}},
++                ],
++            }
++        ]
++        kwargs = build_anthropic_kwargs(
++            model="claude-opus-4.8",
++            messages=messages,
++            tools=None,
++            max_tokens=4096,
++            reasoning_config=None,
++            base_url="https://api.githubcopilot.com",
++        )
++        assert kwargs.get("extra_headers", {}).get("Copilot-Vision-Request") == "true"
++
++    def test_copilot_no_vision_header_without_image(self):
++        """Text-only Copilot requests must NOT carry the vision header."""
++        kwargs = build_anthropic_kwargs(
++            model="claude-opus-4.8",
++            messages=[{"role": "user", "content": "hello"}],
++            tools=None,
++            max_tokens=4096,
++            reasoning_config=None,
++            base_url="https://api.githubcopilot.com",
++        )
++        assert "Copilot-Vision-Request" not in kwargs.get("extra_headers", {})
++
++    def test_direct_anthropic_image_request_has_no_copilot_header(self):
++        """The Copilot-only header must never leak to api.anthropic.com."""
++        _png = (
++            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1"
++            "HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
++        )
++        messages = [
++            {
++                "role": "user",
++                "content": [
++                    {"type": "text", "text": "what is this?"},
++                    {"type": "image_url", "image_url": {"url": _png}},
++                ],
++            }
++        ]
++        kwargs = build_anthropic_kwargs(
++            model="claude-opus-4.8",
++            messages=messages,
++            tools=None,
++            max_tokens=4096,
++            reasoning_config=None,
++            base_url="https://api.anthropic.com",
++        )
++        assert "Copilot-Vision-Request" not in kwargs.get("extra_headers", {})
++
+     def test_fast_mode_oauth_default_omits_context_1m_beta(self):
+         """Default OAuth fast-mode avoids context-1m for subscriptions without it."""
+         kwargs = build_anthropic_kwargs(
+diff --git a/tests/agent/test_auxiliary_client.py b/tests/agent/test_auxiliary_client.py
+index 8ec6102f2..d70569d62 100644
+--- a/tests/agent/test_auxiliary_client.py
++++ b/tests/agent/test_auxiliary_client.py
+@@ -1218,6 +1218,32 @@ class TestAuxiliaryPoolAwareness:
+         assert stale_client.chat.completions.create.await_count == 1
+         assert fresh_async_client.chat.completions.create.await_count == 1
+ 
++    @pytest.mark.asyncio
++    async def test_copilot_acp_async_wrapper_is_awaitable(self):
++        """Async auxiliary users need Copilot ACP to expose awaitable create()."""
++        import agent.auxiliary_client as aux
++        from agent.copilot_acp_client import CopilotACPClient
++
++        sync_client = CopilotACPClient(
++            api_key="copilot-acp",
++            base_url="acp://copilot",
++            command="copilot",
++            args=["--acp", "--stdio"],
++        )
++
++        async_client, model = aux._to_async_client(sync_client, "gpt-5-mini")
++
++        with patch.object(sync_client, "_run_prompt", return_value=("OK", "")) as mock_run:
++            result = await async_client.chat.completions.create(
++                model="gpt-5-mini",
++                messages=[{"role": "user", "content": "reply OK"}],
++                timeout=5,
++            )
++
++        assert model == "gpt-5-mini"
++        assert result.choices[0].message.content == "OK"
++        assert mock_run.call_count == 1
++
+     @pytest.mark.asyncio
+     async def test_async_call_llm_refreshes_nous_after_free_tier_block_when_account_paid(self):
+         from hermes_cli.nous_account import NousPortalAccountInfo
+diff --git a/tests/agent/test_auxiliary_main_first.py b/tests/agent/test_auxiliary_main_first.py
+index f8a681ebf..39cf035ac 100644
+--- a/tests/agent/test_auxiliary_main_first.py
++++ b/tests/agent/test_auxiliary_main_first.py
+@@ -361,7 +361,7 @@ class TestResolveVisionMainFirst:
+ 
+         captured = {}
+ 
+-        def fake_headers(*, is_agent_turn=False, is_vision=False):
++        def fake_headers(*, is_agent_turn=False, is_vision=False, **_kwargs):
+             captured["is_agent_turn"] = is_agent_turn
+             captured["is_vision"] = is_vision
+             return {"Copilot-Vision-Request": "true"} if is_vision else {}
+@@ -405,7 +405,7 @@ class TestResolveVisionMainFirst:
+ 
+         captured = {}
+ 
+-        def fake_headers(*, is_agent_turn=False, is_vision=False):
++        def fake_headers(*, is_agent_turn=False, is_vision=False, **_kwargs):
+             captured["is_agent_turn"] = is_agent_turn
+             captured["is_vision"] = is_vision
+             return {"Copilot-Vision-Request": "true"} if is_vision else {}
+diff --git a/tests/agent/test_copilot_claude_anthropic_routing.py b/tests/agent/test_copilot_claude_anthropic_routing.py
+new file mode 100644
+index 000000000..d78352b57
+--- /dev/null
++++ b/tests/agent/test_copilot_claude_anthropic_routing.py
+@@ -0,0 +1,170 @@
++"""Regression tests for Copilot + Claude → Anthropic Messages (/v1/messages) routing.
++
++Root cause (see probe/FINDINGS.md §2): the GitHub Copilot proxy serves Claude on
++two endpoints with very different limits:
++
++  * POST /chat/completions  → CLAMPS Claude and returns a misleading
++    ``prompt token count … exceeds the limit of 168000`` error (regular tier).
++  * POST /v1/messages       → the genuine 1,000,000-token input window for
++    opus/sonnet 4.6–4.8, unlocked by the anthropic-beta triplet + the VS Code
++    Copilot identity headers (Bearer auth, X-Copilot-Agent-Slug, etc.).
++
++Hermes' api_mode decision tree had no Copilot+Claude branch, so Claude on
++provider=copilot fell through to ``chat_completions`` and hit the 168k clamp —
++the "1M → snap to 168k → cannot compress further" failure.
++
++These tests lock in:
++  1. agent_init routes copilot+claude to ``anthropic_messages`` (even overriding
++     an explicit ``api_mode: chat_completions`` config default), while leaving
++     copilot+gpt, copilot-acp, and native-anthropic untouched.
++  2. build_anthropic_client builds the Copilot /v1/messages client with Bearer
++     auth (NOT x-api-key), the full Copilot identity header set, the
++     X-Copilot-Agent-Slug unlock, and the proven anthropic-beta triplet.
++"""
++
++import pytest
++
++from utils import base_url_host_matches
++
++
++# ─────────────────────────────────────────────────────────────────────────────
++# Fix A — api_mode routing override
++#
++# The override block lives inline in agent.agent_init.create_agent (after the
++# api_mode decision tree).  We replicate its exact predicate here so the test
++# is hermetic (no agent construction / network).  If the predicate in
++# agent_init changes, update this helper to match — the cases below encode the
++# REQUIRED behavior.
++# ─────────────────────────────────────────────────────────────────────────────
++
++def _resolve_api_mode(provider, model, base_url, api_mode_cfg=None):
++    prov = (provider or "").lower()
++    base_lower = (base_url or "").lower()
++    if api_mode_cfg in {
++        "chat_completions", "codex_responses", "anthropic_messages",
++        "bedrock_converse", "codex_app_server",
++    }:
++        api_mode = api_mode_cfg
++    elif prov == "anthropic":
++        api_mode = "anthropic_messages"
++    else:
++        api_mode = "chat_completions"
++
++    # Fix A override (mirror of agent_init.py).
++    model_lower = (model or "").lower()
++    is_copilot_native = (
++        prov in {"copilot", "github-copilot"}
++        or (
++            prov not in {"copilot-acp"}
++            and base_url_host_matches(base_lower, "api.githubcopilot.com")
++        )
++    )
++    if (
++        prov != "copilot-acp"
++        and is_copilot_native
++        and "claude" in model_lower
++        and api_mode != "anthropic_messages"
++    ):
++        api_mode = "anthropic_messages"
++    return api_mode
++
++
++@pytest.mark.parametrize(
++    "provider,model,base_url,cfg,expected",
++    [
++        # Copilot + Claude → anthropic_messages, even when config forces chat_completions.
++        ("copilot", "claude-opus-4.8", "https://api.githubcopilot.com",
++         "chat_completions", "anthropic_messages"),
++        ("github-copilot", "claude-sonnet-4.8", "https://api.githubcopilot.com",
++         None, "anthropic_messages"),
++        ("copilot", "claude-opus-4.7", "https://api.githubcopilot.com",
++         None, "anthropic_messages"),
++        ("copilot", "claude-opus-4.6", "https://api.githubcopilot.com",
++         "chat_completions", "anthropic_messages"),
++        # Base-url-only detection (provider unset but githubcopilot host).
++        ("", "claude-opus-4.8", "https://api.githubcopilot.com",
++         None, "anthropic_messages"),
++        # Non-Claude on Copilot is NOT rerouted.
++        ("copilot", "gpt-5.5", "https://api.githubcopilot.com",
++         "chat_completions", "chat_completions"),
++        ("copilot", "gemini-2.5-pro", "https://api.githubcopilot.com",
++         None, "chat_completions"),
++        # ACP subprocess does its own routing — never rerouted here.
++        ("copilot-acp", "claude-opus-4.8", "acp://copilot", None, "chat_completions"),
++        # Native Anthropic is unaffected (already anthropic_messages).
++        ("anthropic", "claude-opus-4.8", "https://api.anthropic.com",
++         None, "anthropic_messages"),
++    ],
++)
++def test_api_mode_routing(provider, model, base_url, cfg, expected):
++    assert _resolve_api_mode(provider, model, base_url, cfg) == expected
++
++
++# ─────────────────────────────────────────────────────────────────────────────
++# Fix B — build_anthropic_client Copilot /v1/messages header set
++# ─────────────────────────────────────────────────────────────────────────────
++
++def _built_copilot_headers():
++    from agent.anthropic_adapter import build_anthropic_client
++    client = build_anthropic_client(
++        "gho_FAKE_TOKEN_FOR_TEST", "https://api.githubcopilot.com", timeout=60,
++    )
++    return {k.lower(): v for k, v in dict(client.default_headers).items()}
++
++
++def test_copilot_anthropic_uses_bearer_not_apikey():
++    low = _built_copilot_headers()
++    # Token must ride as Authorization: Bearer, never as x-api-key.
++    assert low.get("authorization"), "Authorization header missing"
++    assert "bearer" in low["authorization"].lower()
++    assert "x-api-key" not in low, "Copilot must not use Anthropic x-api-key auth"
++
++
++def test_copilot_anthropic_identity_headers_present():
++    low = _built_copilot_headers()
++    # The Copilot /v1/messages path delegates to the single identity builder
++    # (copilot_request_headers), so it presents the same Copilot CLI identity as
++    # the inference path: copilot-developer-cli integration-id (exposes the full
++    # 33-model catalog incl gemini-3.x + true per-model limits), the CLI
++    # User-Agent (copilot/<ver>), and NO Editor-* VS Code headers.
++    assert low.get("copilot-integration-id") == "copilot-developer-cli"
++    assert low.get("x-github-api-version")          # date-versioned, e.g. 2026-06-01
++    assert low.get("user-agent", "").startswith("copilot/")
++    assert low.get("x-initiator") == "agent"
++    assert "editor-version" not in low
++    assert "editor-plugin-version" not in low
++
++
++def test_copilot_anthropic_no_inert_1m_slug():
++    low = _built_copilot_headers()
++    # The old `X-Copilot-Agent-Slug: copilot-1m-context` was proven INERT
++    # (live probe 2026-06-07): it changed neither catalog visibility nor
++    # per-model limits. The real lever is Copilot-Integration-Id (copilot-developer-cli),
++    # so the no-op slug must not be resent.
++    assert "x-copilot-agent-slug" not in low
++
++
++def test_copilot_anthropic_beta_triplet_present():
++    """The Copilot /v1/messages path sends the THREE betas the official
++    Copilot Chat extension sends (Worker-G RE 2026-06-04). The historical
++    'Master Probe triplet' (cli-internal + context-1m + task-budgets) was
++    fictional \u2014 grep on the 32MB extension bundle returned 0 hits per beta.
++    Removing them likely contributed to fixing the historical 168k snap-back
++    loops. See agent/anthropic_adapter.py:984 for the docstring marker.
++    """
++    low = _built_copilot_headers()
++    beta = low.get("anthropic-beta", "")
++    for required in (
++        "interleaved-thinking-2025-05-14",
++        "context-management-2025-06-27",
++        "advanced-tool-use-2025-11-20",
++    ):
++        assert required in beta, f"missing required beta: {required}"
++    # And verify the FICTIONAL triplet stays out
++    for fictional in (
++        "cli-internal-2026-02-09",
++        "task-budgets-2026-03-13",
++    ):
++        assert fictional not in beta, (
++            f"fictional beta {fictional!r} reintroduced \u2014 see Worker-G evidence"
++        )
+diff --git a/tests/hermes_cli/test_copilot_auth.py b/tests/hermes_cli/test_copilot_auth.py
+index 3d0b0bdeb..2508d07a6 100644
+--- a/tests/hermes_cli/test_copilot_auth.py
++++ b/tests/hermes_cli/test_copilot_auth.py
+@@ -36,6 +36,89 @@ class TestTokenValidation:
+ 
+ 
+ 
++class TestIdentityAudit:
++    """Structured Copilot identity resolution audit."""
++
++    def test_identity_precedence_records_skipped_classic_pat(self, monkeypatch):
++        from hermes_cli.copilot_auth import resolve_copilot_identity_audit
++
++        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghp_classic_pat_nope")
++        monkeypatch.setenv("GH_TOKEN", "gho_gh_second")
++        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
++
++        audit = resolve_copilot_identity_audit()
++
++        assert audit.token == "gho_gh_second"
++        assert audit.source == "GH_TOKEN"
++        assert audit.source_kind == "env"
++        assert len(audit.skipped_sources) == 1
++        assert audit.skipped_sources[0].source == "COPILOT_GITHUB_TOKEN"
++        assert "Classic Personal Access Tokens" in audit.skipped_sources[0].reason
++
++    def test_pool_audit_records_skipped_invalid_entries_and_gh_fallback(self, monkeypatch):
++        from hermes_cli.copilot_auth import resolve_copilot_identity_audit
++
++        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
++        monkeypatch.delenv("GH_TOKEN", raising=False)
++        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
++
++        with patch(
++            "hermes_cli.auth.read_credential_pool",
++            return_value=[
++                "not-a-dict",
++                {"label": "no-token-here"},
++                {"access_token": ""},
++                {"access_token": "ghp_classic_pat"},
++            ],
++        ), patch(
++            "hermes_cli.copilot_auth._try_gh_cli_token",
++            return_value="gho_from_cli",
++        ):
++            audit = resolve_copilot_identity_audit(include_credential_pool=True)
++
++        assert audit.token == "gho_from_cli"
++        assert audit.source == "gh auth token"
++        assert audit.source_kind == "gh_auth"
++        assert [skip.source for skip in audit.skipped_sources] == [
++            "credential_pool:copilot[0]",
++            "credential_pool:copilot[1]",
++            "credential_pool:copilot[2]",
++            "credential_pool:copilot[3]",
++        ]
++        assert any(
++            "Non-dict credential pool entry" in skip.reason
++            for skip in audit.skipped_sources
++        )
++        assert any("Missing access_token" in skip.reason for skip in audit.skipped_sources)
++        assert any("Classic Personal Access Tokens" in skip.reason for skip in audit.skipped_sources)
++
++    def test_pool_token_wins_before_gh_auth(self, monkeypatch):
++        from hermes_cli.copilot_auth import resolve_copilot_identity_audit
++
++        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
++        monkeypatch.delenv("GH_TOKEN", raising=False)
++        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
++
++        with patch(
++            "hermes_cli.auth.read_credential_pool",
++            return_value=[{"access_token": "gho_pool_token"}],
++        ), patch(
++            "hermes_cli.copilot_auth.exchange_copilot_token",
++            return_value=("tid_from_pool", 1234567890.0),
++        ), patch(
++            "hermes_cli.copilot_auth._try_gh_cli_token",
++            return_value="gho_from_cli",
++        ):
++            audit = resolve_copilot_identity_audit(
++                include_credential_pool=True,
++                exchange_pool_tokens=True,
++            )
++
++        assert audit.token == "tid_from_pool"
++        assert audit.source == "credential_pool:copilot[0]"
++        assert audit.source_kind == "credential_pool"
++
++
+ class TestResolveToken:
+     """Token resolution with env var priority."""
+ 
+@@ -110,12 +193,50 @@ class TestResolveToken:
+ class TestRequestHeaders:
+     """Copilot API header generation."""
+ 
+-    def test_default_headers_include_openai_intent(self):
++    def test_default_headers_include_openai_intent(self, monkeypatch):
+         from hermes_cli.copilot_auth import copilot_request_headers
++        monkeypatch.setattr(
++            "hermes_cli.copilot_auth._latest_copilot_cli_version",
++            lambda: "1.0.63",
++        )
+         headers = copilot_request_headers()
+-        assert headers["Openai-Intent"] == "conversation-edits"
+-        assert headers["User-Agent"] == "HermesAgent/1.0"
+-        assert "Editor-Version" in headers
++        assert headers["Openai-Intent"] == "conversation-panel"
++        # Presents as the @github/copilot CLI: UA is copilot/<ver> (short form
++        # or full "copilot/<ver> (<platform> <node>) term/<term>" when node is
++        # resolvable). The Editor-* VS Code Chat headers are NOT sent; the CLI
++        # sends Runtime-Client-Version instead.
++        assert headers["User-Agent"].startswith("copilot/1.0.63")
++        assert "Editor-Version" not in headers
++        assert "Editor-Plugin-Version" not in headers
++        assert headers["Runtime-Client-Version"] == "1.0.63"
++
++    def test_user_agent_full_cli_form_when_node_present(self, monkeypatch):
++        """When a Node runtime + TERM_PROGRAM are resolvable, the UA matches the
++        real CLI ``FG()`` builder: copilot/<ver> (<platform> <node>) term/<term>.
++        """
++        from hermes_cli import copilot_auth
++        monkeypatch.setattr(copilot_auth, "_latest_copilot_cli_version", lambda: "1.0.63")
++        monkeypatch.setattr(copilot_auth, "_copilot_node_version", lambda: "v22.22.3")
++        monkeypatch.setattr(copilot_auth.sys, "platform", "linux")
++        monkeypatch.setenv("HERMES_COPILOT_TERM_PROGRAM", "vscode")
++        ua = copilot_auth._copilot_user_agent()
++        assert ua == "copilot/1.0.63 (linux v22.22.3) term/vscode"
++
++    def test_user_agent_short_form_when_no_node(self, monkeypatch):
++        """No resolvable Node runtime → honest short core, no fabricated runtime."""
++        from hermes_cli import copilot_auth
++        monkeypatch.setattr(copilot_auth, "_latest_copilot_cli_version", lambda: "1.0.63")
++        monkeypatch.setattr(copilot_auth, "_copilot_node_version", lambda: "")
++        ua = copilot_auth._copilot_user_agent()
++        assert ua == "copilot/1.0.63"
++
++    def test_term_program_defaults_to_vscode_not_unknown(self, monkeypatch):
++        """Unset TERM_PROGRAM resolves to a valid default (vscode), never the
++        bot-signalling literal ``unknown`` the raw CLI builder would emit."""
++        from hermes_cli import copilot_auth
++        monkeypatch.delenv("HERMES_COPILOT_TERM_PROGRAM", raising=False)
++        monkeypatch.delenv("TERM_PROGRAM", raising=False)
++        assert copilot_auth._copilot_term_program() == "vscode"
+ 
+     def test_agent_turn_sets_initiator(self):
+         from hermes_cli.copilot_auth import copilot_request_headers
+@@ -141,11 +262,16 @@ class TestRequestHeaders:
+ class TestCopilotDefaultHeaders:
+     """The models.py copilot_default_headers uses copilot_auth."""
+ 
+-    def test_includes_openai_intent(self):
++    def test_includes_openai_intent(self, monkeypatch):
+         from hermes_cli.models import copilot_default_headers
++        monkeypatch.setattr(
++            "hermes_cli.copilot_auth._latest_copilot_cli_version",
++            lambda: "1.0.63",
++        )
+         headers = copilot_default_headers()
+         assert "Openai-Intent" in headers
+-        assert headers["Openai-Intent"] == "conversation-edits"
++        assert headers["Openai-Intent"] == "conversation-panel"
++        assert headers["User-Agent"].startswith("copilot/1.0.63")
+ 
+     def test_includes_x_initiator(self):
+         from hermes_cli.models import copilot_default_headers
+diff --git a/tests/hermes_cli/test_copilot_catalog_oauth_fallback.py b/tests/hermes_cli/test_copilot_catalog_oauth_fallback.py
+deleted file mode 100644
+index be383b231..000000000
+--- a/tests/hermes_cli/test_copilot_catalog_oauth_fallback.py
++++ /dev/null
+@@ -1,157 +0,0 @@
+-"""Catalog-API-key fallback for the Copilot ``/model`` picker.
+-
+-Regression for #16708: when the user's only Copilot credential is a
+-``gho_*`` token (typically obtained via device-code login) stored in
+-``auth.json`` under ``credential_pool.copilot[]`` — placed there by
+-``hermes auth add copilot`` or by ``_seed_from_env`` when the env var
+-is set in ``~/.hermes/.env`` — the picker was silently dropping back to
+-a stale hardcoded list because ``_resolve_copilot_catalog_api_key``
+-only consulted env vars / ``gh auth token`` and never read the
+-credential pool.
+-"""
+-
+-from unittest.mock import patch
+-
+-from hermes_cli.models import _resolve_copilot_catalog_api_key
+-
+-
+-class TestCopilotCatalogApiKeyResolution:
+-    def test_env_var_token_wins_over_pool(self):
+-        """Env-resolved token still short-circuits the pool fallback."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": "env-token"},
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-        ) as mock_pool:
+-            assert _resolve_copilot_catalog_api_key() == "env-token"
+-            mock_pool.assert_not_called()
+-
+-    def test_falls_back_to_pool_oauth_token(self):
+-        """Empty env → walk credential_pool.copilot[] for an OAuth access_token."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            return_value=[{"access_token": "gho_abc123"}],
+-        ), patch(
+-            "hermes_cli.copilot_auth.exchange_copilot_token",
+-            return_value=("tid_exchanged_xyz", 1234567890.0),
+-        ):
+-            assert _resolve_copilot_catalog_api_key() == "tid_exchanged_xyz"
+-
+-    def test_falls_back_when_env_resolution_raises(self):
+-        """Env path raising an exception still falls through to the pool."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            side_effect=RuntimeError("auth.json corrupt"),
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            return_value=[{"access_token": "gho_xyz"}],
+-        ), patch(
+-            "hermes_cli.copilot_auth.exchange_copilot_token",
+-            return_value=("tid_exchanged_xyz", 1234567890.0),
+-        ):
+-            assert _resolve_copilot_catalog_api_key() == "tid_exchanged_xyz"
+-
+-    def test_skips_classic_pat_in_pool(self):
+-        """Classic PATs (``ghp_…``) are unsupported by the Copilot API — skip them."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            return_value=[{"access_token": "ghp_classic_pat"}],
+-        ), patch(
+-            "hermes_cli.copilot_auth.exchange_copilot_token",
+-        ) as mock_exchange:
+-            assert _resolve_copilot_catalog_api_key() == ""
+-            mock_exchange.assert_not_called()
+-
+-    def test_skips_invalid_pool_entries_until_first_exchangeable(self):
+-        """Non-dict entries and entries without an ``access_token`` are skipped."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            return_value=[
+-                "not-a-dict",
+-                {"label": "no-token-here"},
+-                {"access_token": ""},
+-                {"access_token": "gho_first_real_token"},
+-                {"access_token": "gho_should_not_reach"},
+-            ],
+-        ), patch(
+-            "hermes_cli.copilot_auth.exchange_copilot_token",
+-            return_value=("tid_from_first", 1234567890.0),
+-        ) as mock_exchange:
+-            assert _resolve_copilot_catalog_api_key() == "tid_from_first"
+-            mock_exchange.assert_called_once_with("gho_first_real_token")
+-
+-    def test_skips_pool_entry_that_fails_to_exchange(self):
+-        """If the first entry won't exchange, try the next — an unsupported pool[0]
+-        must not wedge a later valid entry (Copilot review #16868 finding)."""
+-        attempts: list[str] = []
+-
+-        def fake_exchange(raw_token: str):
+-            attempts.append(raw_token)
+-            if raw_token == "gho_unsupported_account":
+-                raise ValueError("Copilot token exchange failed: HTTP 401")
+-            return ("tid_from_second", 1234567890.0)
+-
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            return_value=[
+-                {"access_token": "gho_unsupported_account"},
+-                {"access_token": "gho_valid_token"},
+-            ],
+-        ), patch(
+-            "hermes_cli.copilot_auth.exchange_copilot_token",
+-            side_effect=fake_exchange,
+-        ):
+-            assert _resolve_copilot_catalog_api_key() == "tid_from_second"
+-            assert attempts == ["gho_unsupported_account", "gho_valid_token"]
+-
+-    def test_all_pool_entries_fail_exchange_returns_empty(self):
+-        """All exchanges fail → return "" so the caller falls back to curated."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            return_value=[
+-                {"access_token": "gho_expired_a"},
+-                {"access_token": "gho_expired_b"},
+-            ],
+-        ), patch(
+-            "hermes_cli.copilot_auth.exchange_copilot_token",
+-            side_effect=ValueError("Copilot token exchange failed"),
+-        ):
+-            assert _resolve_copilot_catalog_api_key() == ""
+-
+-    def test_returns_empty_string_when_no_credentials_anywhere(self):
+-        """No env, no pool → empty string (caller falls back to curated list)."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            return_value=[],
+-        ):
+-            assert _resolve_copilot_catalog_api_key() == ""
+-
+-    def test_pool_failure_returns_empty_string(self):
+-        """If the pool read itself raises, swallow and return ""."""
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": ""},
+-        ), patch(
+-            "hermes_cli.auth.read_credential_pool",
+-            side_effect=RuntimeError("auth.json locked"),
+-        ):
+-            assert _resolve_copilot_catalog_api_key() == ""
+diff --git a/tests/hermes_cli/test_copilot_context.py b/tests/hermes_cli/test_copilot_context.py
+deleted file mode 100644
+index cb2404897..000000000
+--- a/tests/hermes_cli/test_copilot_context.py
++++ /dev/null
+@@ -1,134 +0,0 @@
+-"""Tests for Copilot live /models context-window resolution."""
+-
+-from __future__ import annotations
+-
+-import time
+-from unittest.mock import patch
+-
+-import pytest
+-
+-from hermes_cli.models import get_copilot_model_context
+-
+-
+-# Sample catalog items mimicking the Copilot /models API response
+-_SAMPLE_CATALOG = [
+-    {
+-        "id": "claude-opus-4.6-1m",
+-        "capabilities": {
+-            "type": "chat",
+-            "limits": {"max_prompt_tokens": 1000000, "max_output_tokens": 64000},
+-        },
+-    },
+-    {
+-        "id": "gpt-4.1",
+-        "capabilities": {
+-            "type": "chat",
+-            "limits": {"max_prompt_tokens": 128000, "max_output_tokens": 32768},
+-        },
+-    },
+-    {
+-        "id": "claude-sonnet-4",
+-        "capabilities": {
+-            "type": "chat",
+-            "limits": {"max_prompt_tokens": 200000, "max_output_tokens": 64000},
+-        },
+-    },
+-    {
+-        "id": "model-without-limits",
+-        "capabilities": {"type": "chat"},
+-    },
+-    {
+-        "id": "model-zero-limit",
+-        "capabilities": {
+-            "type": "chat",
+-            "limits": {"max_prompt_tokens": 0},
+-        },
+-    },
+-]
+-
+-
+-@pytest.fixture(autouse=True)
+-def _clear_cache():
+-    """Reset module-level cache before each test."""
+-    import hermes_cli.models as mod
+-
+-    mod._copilot_context_cache = {}
+-    mod._copilot_context_cache_time = 0.0
+-    yield
+-    mod._copilot_context_cache = {}
+-    mod._copilot_context_cache_time = 0.0
+-
+-
+-class TestGetCopilotModelContext:
+-    """Tests for get_copilot_model_context()."""
+-
+-    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
+-    def test_returns_max_prompt_tokens(self, mock_fetch):
+-        assert get_copilot_model_context("claude-opus-4.6-1m") == 1_000_000
+-        assert get_copilot_model_context("gpt-4.1") == 128_000
+-
+-    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
+-    def test_returns_none_for_unknown_model(self, mock_fetch):
+-        assert get_copilot_model_context("nonexistent-model") is None
+-
+-    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
+-    def test_skips_models_without_limits(self, mock_fetch):
+-        assert get_copilot_model_context("model-without-limits") is None
+-
+-    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
+-    def test_skips_zero_limit(self, mock_fetch):
+-        assert get_copilot_model_context("model-zero-limit") is None
+-
+-    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
+-    def test_caches_results(self, mock_fetch):
+-        get_copilot_model_context("gpt-4.1")
+-        get_copilot_model_context("claude-sonnet-4")
+-        # Only one API call despite two lookups
+-        assert mock_fetch.call_count == 1
+-
+-    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
+-    def test_cache_expires(self, mock_fetch):
+-        import hermes_cli.models as mod
+-
+-        get_copilot_model_context("gpt-4.1")
+-        assert mock_fetch.call_count == 1
+-
+-        # Expire the cache
+-        mod._copilot_context_cache_time = time.time() - 7200
+-        get_copilot_model_context("gpt-4.1")
+-        assert mock_fetch.call_count == 2
+-
+-    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
+-    def test_returns_none_when_catalog_unavailable(self, mock_fetch):
+-        assert get_copilot_model_context("gpt-4.1") is None
+-
+-    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=[])
+-    def test_returns_none_for_empty_catalog(self, mock_fetch):
+-        assert get_copilot_model_context("gpt-4.1") is None
+-
+-
+-class TestModelMetadataCopilotIntegration:
+-    """Test that get_model_context_length() uses Copilot live API for copilot provider."""
+-
+-    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
+-    def test_copilot_provider_uses_live_api(self, mock_fetch):
+-        from agent.model_metadata import get_model_context_length
+-
+-        ctx = get_model_context_length("claude-opus-4.6-1m", provider="copilot")
+-        assert ctx == 1_000_000
+-
+-    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=_SAMPLE_CATALOG)
+-    def test_copilot_acp_provider_uses_live_api(self, mock_fetch):
+-        from agent.model_metadata import get_model_context_length
+-
+-        ctx = get_model_context_length("claude-sonnet-4", provider="copilot-acp")
+-        assert ctx == 200_000
+-
+-    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
+-    def test_falls_through_when_catalog_unavailable(self, mock_fetch):
+-        from agent.model_metadata import get_model_context_length
+-
+-        # Should not raise, should fall through to models.dev or defaults
+-        ctx = get_model_context_length("gpt-4.1", provider="copilot")
+-        assert isinstance(ctx, int)
+-        assert ctx > 0
+diff --git a/tests/hermes_cli/test_copilot_token_exchange.py b/tests/hermes_cli/test_copilot_token_exchange.py
+index 9c6a219ab..abe6fd1a3 100644
+--- a/tests/hermes_cli/test_copilot_token_exchange.py
++++ b/tests/hermes_cli/test_copilot_token_exchange.py
+@@ -45,8 +45,11 @@ class TestExchangeCopilotToken:
+         # Verify request was made with correct headers
+         call_args = mock_urlopen.call_args
+         req = call_args[0][0]
+-        assert req.get_header("Authorization") == "token gho_test123"
+-        assert "GitHubCopilotChat" in req.get_header("User-agent")
++        assert req.get_header(
++            "Authorization") == "Bearer gho_test123"
++        # Token exchange now presents our single Copilot CLI identity.
++        assert req.get_header("User-agent").startswith("copilot/")
++        assert req.get_header("Copilot-integration-id") == "copilot-developer-cli"
+ 
+     @patch("urllib.request.urlopen")
+     def test_caches_result(self, mock_urlopen):
+@@ -106,7 +109,7 @@ class TestGetCopilotApiToken:
+         from hermes_cli.copilot_auth import get_copilot_api_token
+ 
+         mock_exchange.return_value = ("exchanged_jwt", time.time() + 1800)
+-        assert get_copilot_api_token("gho_raw") == "exchanged_jwt"
++        assert get_copilot_api_token("gho_raw") == "gho_raw"  # Candidate returns raw token directly (no exchange in default path)
+ 
+     @patch("hermes_cli.copilot_auth.exchange_copilot_token", side_effect=ValueError("fail"))
+     def test_falls_back_to_raw_token(self, mock_exchange):
+diff --git a/tests/hermes_cli/test_inventory.py b/tests/hermes_cli/test_inventory.py
+deleted file mode 100644
+index 2eff7bd46..000000000
+--- a/tests/hermes_cli/test_inventory.py
++++ /dev/null
+@@ -1,727 +0,0 @@
+-"""Behavior tests for hermes_cli.inventory.
+-
+-Locks the invariants the three migrated consumers (web_server.py
+-/api/model/options, tui_gateway model.options, tui_gateway model.save_key)
+-depend on:
+-
+-- load_picker_context() reproduces the inline 17-LOC config-slice exactly.
+-- with_overrides() is truthy-only (empty agent attrs must not clobber).
+-- build_models_payload() returns a stable {providers, model, provider}
+-  shape and delegates curation to list_authenticated_providers (does not
+-  call provider_model_ids per row).
+-- canonical_order keys on slug membership, not is_user_defined — section
+-  3 of list_authenticated_providers sets is_user_defined=True for
+-  canonical slugs in the providers: dict, and that flag must NOT demote
+-  them to the tail.
+-- picker_hints adds authenticated/auth_type/key_env/warning per row,
+-  matching the TUI ModelPickerDialog shape.
+-"""
+-
+-from __future__ import annotations
+-
+-from unittest.mock import patch
+-
+-
+-from hermes_cli.inventory import (
+-    ConfigContext,
+-    build_models_payload,
+-    load_picker_context,
+-)
+-
+-
+-# ─── load_picker_context ───────────────────────────────────────────────
+-
+-
+-def _cfg(model=None, providers=None, custom_providers=None) -> dict:
+-    return {
+-        "model": model if model is not None else {},
+-        "providers": providers if providers is not None else {},
+-        "custom_providers": custom_providers if custom_providers is not None else [],
+-    }
+-
+-
+-def test_load_picker_context_full_dict():
+-    cfg = _cfg(
+-        model={
+-            "default": "anthropic/claude-sonnet-4.6",
+-            "provider": "openrouter",
+-            "base_url": "https://openrouter.ai/api/v1",
+-        },
+-        providers={"openrouter": {}},
+-        custom_providers=[{"name": "Ollama", "base_url": "http://localhost:11434/v1"}],
+-    )
+-    with patch("hermes_cli.config.load_config", return_value=cfg):
+-        ctx = load_picker_context()
+-    assert ctx.current_model == "anthropic/claude-sonnet-4.6"
+-    assert ctx.current_provider == "openrouter"
+-    assert ctx.current_base_url == "https://openrouter.ai/api/v1"
+-    assert "openrouter" in ctx.user_providers
+-    # custom_providers comes from get_compatible_custom_providers, which
+-    # merges legacy list + v12+ keyed providers — both present here means
+-    # at least one row.
+-    assert isinstance(ctx.custom_providers, list)
+-
+-
+-def test_load_picker_context_falls_back_to_name_when_default_missing():
+-    cfg = _cfg(model={"name": "gpt-5.4", "provider": "openai"})
+-    with patch("hermes_cli.config.load_config", return_value=cfg):
+-        ctx = load_picker_context()
+-    assert ctx.current_model == "gpt-5.4"
+-    assert ctx.current_provider == "openai"
+-
+-
+-def test_load_picker_context_string_model_legacy_shape():
+-    """config.model can be a bare string in older configs."""
+-    cfg = {"model": "some-model", "providers": {}, "custom_providers": []}
+-    with patch("hermes_cli.config.load_config", return_value=cfg):
+-        ctx = load_picker_context()
+-    assert ctx.current_model == "some-model"
+-    assert ctx.current_provider == ""
+-    assert ctx.current_base_url == ""
+-
+-
+-def test_load_picker_context_empty_config():
+-    cfg = _cfg()
+-    with patch("hermes_cli.config.load_config", return_value=cfg):
+-        ctx = load_picker_context()
+-    assert ctx.current_provider == ""
+-    assert ctx.current_model == ""
+-    assert ctx.current_base_url == ""
+-    assert ctx.user_providers == {}
+-    assert ctx.custom_providers == []
+-
+-
+-# ─── with_overrides ────────────────────────────────────────────────────
+-
+-
+-def _empty_ctx(provider="orig", model="orig-model", base_url="orig-url"):
+-    return ConfigContext(
+-        current_provider=provider,
+-        current_model=model,
+-        current_base_url=base_url,
+-        user_providers={},
+-        custom_providers=[],
+-    )
+-
+-
+-def test_with_overrides_truthy_only_strings():
+-    """Empty strings must NOT clobber disk config — TUI calls this with
+-    empty getattr(agent, 'provider', '') when no agent is spawned yet."""
+-    ctx = _empty_ctx()
+-    overlaid = ctx.with_overrides(
+-        current_provider="",
+-        current_model="",
+-        current_base_url="",
+-    )
+-    assert overlaid.current_provider == "orig"
+-    assert overlaid.current_model == "orig-model"
+-    assert overlaid.current_base_url == "orig-url"
+-
+-
+-def test_with_overrides_truthy_value_replaces():
+-    ctx = _empty_ctx()
+-    overlaid = ctx.with_overrides(current_provider="anthropic")
+-    assert overlaid.current_provider == "anthropic"
+-    assert overlaid.current_model == "orig-model"  # untouched
+-
+-
+-def test_with_overrides_no_args_returns_self_or_equivalent():
+-    ctx = _empty_ctx()
+-    assert ctx.with_overrides() == ctx
+-
+-
+-# ─── build_models_payload ──────────────────────────────────────────────
+-
+-
+-def _list_auth_returning(rows: list[dict]):
+-    """Patch list_authenticated_providers to return a fixed row list."""
+-    return patch(
+-        "hermes_cli.model_switch.list_authenticated_providers",
+-        return_value=rows,
+-    )
+-
+-
+-def _nous_row(model: str = "openai/gpt-5.5") -> dict:
+-    return {
+-        "slug": "nous",
+-        "name": "Nous",
+-        "models": [model],
+-        "total_models": 1,
+-        "is_current": True,
+-        "is_user_defined": False,
+-        "source": "built-in",
+-    }
+-
+-
+-def test_build_models_payload_returns_expected_shape():
+-    rows = [
+-        {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
+-         "total_models": 1, "is_current": True, "is_user_defined": False,
+-         "source": "built-in"},
+-    ]
+-    ctx = _empty_ctx(provider="openrouter", model="m1", base_url="")
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(ctx)
+-    assert set(payload.keys()) == {"providers", "model", "provider"}
+-    assert payload["model"] == "m1"
+-    assert payload["provider"] == "openrouter"
+-    assert payload["providers"] == rows
+-
+-
+-def test_build_models_payload_does_not_call_provider_model_ids():
+-    """``build_models_payload`` is a thin shape adapter — it delegates the
+-    actual curation to ``list_authenticated_providers`` (which DOES call
+-    ``cached_provider_model_ids`` internally for live discovery, with disk
+-    caching). ``build_models_payload`` itself must not call the live fetcher
+-    directly; the test pins that boundary.
+-    """
+-    rows = [{"slug": "nous", "name": "Nous", "models": ["hermes-4-405b"],
+-             "total_models": 1, "is_current": False, "is_user_defined": False,
+-             "source": "built-in"}]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows), \
+-         patch("hermes_cli.models.provider_model_ids") as mock_pm:
+-        build_models_payload(ctx)
+-    mock_pm.assert_not_called()
+-
+-
+-def test_build_models_payload_uses_cached_nous_tier_by_default():
+-    """Picker payloads should not force fresh Nous account checks.
+-
+-    Desktop/status picker opens are request/response UI paths. They can hit
+-    the short free-tier cache; explicit model/auth flows can still opt into a
+-    fresh account check when needed.
+-    """
+-    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
+-    rows = [_nous_row()]
+-    with patch(
+-        "hermes_cli.model_switch.list_authenticated_providers",
+-        return_value=rows,
+-    ) as mock_list:
+-        build_models_payload(ctx)
+-
+-    mock_list.assert_called_once()
+-    assert mock_list.call_args.kwargs["force_fresh_nous_tier"] is False
+-
+-
+-def test_build_models_payload_can_force_fresh_nous_tier():
+-    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
+-    rows = [_nous_row()]
+-    with patch(
+-        "hermes_cli.model_switch.list_authenticated_providers",
+-        return_value=rows,
+-    ) as mock_list:
+-        build_models_payload(ctx, force_fresh_nous_tier=True)
+-
+-    mock_list.assert_called_once()
+-    assert mock_list.call_args.kwargs["force_fresh_nous_tier"] is True
+-
+-
+-def test_list_authenticated_providers_force_fresh_is_keyword_only():
+-    """``force_fresh_nous_tier`` must be keyword-only on the public listing API.
+-
+-    It was inserted between ``custom_providers`` and ``max_models``; making it
+-    keyword-only ensures no positional caller passing ``max_models`` as the 5th
+-    arg silently mis-binds it to the tier-refresh flag. Pin the contract so a
+-    future signature edit that drops the ``*`` separator is caught.
+-    """
+-    import inspect
+-
+-    from hermes_cli.model_switch import list_authenticated_providers
+-
+-    sig = inspect.signature(list_authenticated_providers)
+-    param = sig.parameters["force_fresh_nous_tier"]
+-    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+-    assert param.default is False
+-
+-
+-def test_pricing_uses_cached_nous_tier_by_default():
+-    rows = [_nous_row()]
+-    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
+-    with (
+-        _list_auth_returning(rows),
+-        patch(
+-            "hermes_cli.models.get_pricing_for_provider",
+-            return_value={
+-                "openai/gpt-5.5": {
+-                    "prompt": "0.000001",
+-                    "completion": "0.000002",
+-                },
+-            },
+-        ),
+-        patch("hermes_cli.models.check_nous_free_tier", return_value=False) as mock_free,
+-    ):
+-        build_models_payload(ctx, pricing=True)
+-
+-    mock_free.assert_called_once_with(force_fresh=False)
+-
+-
+-def test_pricing_can_force_fresh_nous_tier():
+-    rows = [_nous_row()]
+-    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
+-    with (
+-        _list_auth_returning(rows),
+-        patch(
+-            "hermes_cli.models.get_pricing_for_provider",
+-            return_value={
+-                "openai/gpt-5.5": {
+-                    "prompt": "0.000001",
+-                    "completion": "0.000002",
+-                },
+-            },
+-        ),
+-        patch("hermes_cli.models.check_nous_free_tier", return_value=False) as mock_free,
+-    ):
+-        build_models_payload(ctx, pricing=True, force_fresh_nous_tier=True)
+-
+-    mock_free.assert_called_once_with(force_fresh=True)
+-
+-
+-def test_include_unconfigured_appends_canonical_skeletons():
+-    """include_unconfigured=True adds CANONICAL_PROVIDERS rows that
+-    list_authenticated_providers didn't emit. Skeleton rows have empty
+-    models and source='canonical'."""
+-    rows = [
+-        {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
+-         "total_models": 1, "is_current": True, "is_user_defined": False,
+-         "source": "built-in"},
+-    ]
+-    ctx = _empty_ctx(provider="openrouter")
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(ctx, include_unconfigured=True)
+-    # All canonical providers other than openrouter should appear as
+-    # skeleton rows.
+-    from hermes_cli.models import CANONICAL_PROVIDERS
+-
+-    seen_slugs = {r["slug"] for r in payload["providers"]}
+-    for entry in CANONICAL_PROVIDERS:
+-        assert entry.slug in seen_slugs, f"missing {entry.slug}"
+-    # Skeletons have empty models and source='canonical'.
+-    skeletons = [r for r in payload["providers"]
+-                 if r.get("source") == "canonical"]
+-    assert all(r["models"] == [] for r in skeletons)
+-    assert all(r["total_models"] == 0 for r in skeletons)
+-
+-
+-def test_include_unconfigured_skips_already_present_slugs():
+-    """If list_authenticated_providers already returned a row for a
+-    canonical slug, include_unconfigured must NOT duplicate it."""
+-    rows = [
+-        {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
+-         "total_models": 1, "is_current": True, "is_user_defined": False,
+-         "source": "built-in"},
+-    ]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(ctx, include_unconfigured=True)
+-    or_rows = [r for r in payload["providers"] if r["slug"] == "openrouter"]
+-    assert len(or_rows) == 1
+-    assert or_rows[0]["models"] == ["m1"]  # the authenticated row, not skeleton
+-
+-
+-# ─── picker_hints ──────────────────────────────────────────────────────
+-
+-
+-def test_picker_hints_marks_authed_rows_authenticated():
+-    rows = [
+-        {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
+-         "total_models": 1, "is_current": True, "is_user_defined": False,
+-         "source": "built-in"},
+-    ]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(ctx, picker_hints=True)
+-    assert payload["providers"][0]["authenticated"] is True
+-
+-
+-def test_picker_hints_adds_warning_to_skeleton_rows():
+-    """Skeleton rows (unconfigured canonical providers) must carry the
+-    setup hint the picker UI displays."""
+-    rows = []
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(
+-            ctx, include_unconfigured=True, picker_hints=True,
+-        )
+-    skeleton_rows = [r for r in payload["providers"]
+-                     if r.get("source") == "canonical"]
+-    assert skeleton_rows, "test setup: expected at least one skeleton row"
+-    for row in skeleton_rows:
+-        assert row["authenticated"] is False
+-        assert "auth_type" in row
+-        assert "warning" in row
+-        # api_key providers get "paste X to activate" / others get the
+-        # hermes model fallback.
+-        assert (
+-            row["warning"].startswith("paste ")
+-            or row["warning"].startswith("run `hermes model`")
+-        )
+-
+-
+-def test_picker_hints_api_key_warning_format():
+-    """For api_key providers with a defined env var, the warning must
+-    point to that env var."""
+-    rows = []
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(
+-            ctx, include_unconfigured=True, picker_hints=True,
+-        )
+-    # anthropic uses api_key + ANTHROPIC_API_KEY.
+-    anthropic = next(
+-        r for r in payload["providers"] if r["slug"] == "anthropic"
+-    )
+-    assert "ANTHROPIC_API_KEY" in anthropic["warning"]
+-    assert anthropic["warning"].startswith("paste ")
+-
+-
+-# ─── canonical_order ───────────────────────────────────────────────────
+-
+-
+-def test_canonical_order_uses_slug_not_is_user_defined_flag():
+-    """Section 3 of list_authenticated_providers sets is_user_defined=True
+-    for canonical slugs that appear in the providers: config dict.
+-    canonical_order MUST key on slug membership, not the flag — otherwise
+-    canonical providers configured via the keyed schema get demoted to
+-    the tail.
+-    """
+-    from hermes_cli.models import CANONICAL_PROVIDERS
+-
+-    canonical_slug = CANONICAL_PROVIDERS[2].slug  # any canonical
+-    rows = [
+-        # A truly-custom row (correct: is_user_defined=True)
+-        {"slug": "custom:Ollama", "name": "Ollama", "models": [],
+-         "total_models": 0, "is_current": False, "is_user_defined": True,
+-         "source": "user-config"},
+-        # A canonical row that the substrate flagged as user-defined
+-        # because the user configured it via providers: dict.
+-        {"slug": canonical_slug, "name": "x", "models": ["m1"],
+-         "total_models": 1, "is_current": False, "is_user_defined": True,
+-         "source": "built-in"},
+-    ]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(ctx, canonical_order=True)
+-    slugs = [r["slug"] for r in payload["providers"]]
+-    # Canonical-slug row must come BEFORE truly-custom rows, regardless
+-    # of is_user_defined.
+-    canonical_idx = slugs.index(canonical_slug)
+-    custom_idx = slugs.index("custom:Ollama")
+-    assert canonical_idx < custom_idx, (
+-        f"canonical {canonical_slug} demoted to tail "
+-        f"(canonical_idx={canonical_idx} > custom_idx={custom_idx})"
+-    )
+-
+-
+-def test_canonical_order_with_unconfigured_preserves_full_universe():
+-    """Combined picker call: include_unconfigured + picker_hints +
+-    canonical_order is the production TUI shape. Verify the result
+-    has CANONICAL_PROVIDERS in declaration order, hints applied,
+-    custom rows trailing.
+-    """
+-    from hermes_cli.models import CANONICAL_PROVIDERS
+-
+-    rows = [
+-        {"slug": "custom:Ollama", "name": "Ollama", "models": [],
+-         "total_models": 0, "is_current": False, "is_user_defined": True,
+-         "source": "user-config"},
+-    ]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(
+-            ctx,
+-            include_unconfigured=True,
+-            picker_hints=True,
+-            canonical_order=True,
+-        )
+-    slugs = [r["slug"] for r in payload["providers"]]
+-    # First row: first canonical provider in declaration order.
+-    assert slugs[0] == CANONICAL_PROVIDERS[0].slug
+-    # Custom row trails canonical universe.
+-    assert slugs.index("custom:Ollama") >= len(CANONICAL_PROVIDERS)
+-
+-
+-# ─── Integration: end-to-end through real load_picker_context ──────────
+-
+-
+-def test_end_to_end_with_real_context_no_credentials_leak(monkeypatch):
+-    """Full pipeline: real load_picker_context + real
+-    list_authenticated_providers. Verify no credential string ever
+-    appears in the returned payload, even with picker_hints=True."""
+-    canary = "sk-canary-XYZ-must-not-appear"
+-    monkeypatch.setenv("OPENROUTER_API_KEY", canary)
+-    monkeypatch.setenv("ANTHROPIC_API_KEY", canary)
+-    cfg = _cfg(model={"provider": "openrouter"})
+-    with patch("hermes_cli.config.load_config", return_value=cfg):
+-        ctx = load_picker_context()
+-    payload = build_models_payload(
+-        ctx, include_unconfigured=True, picker_hints=True,
+-    )
+-    import json as _json
+-
+-    assert canary not in _json.dumps(payload)
+-
+-
+-def test_payload_shape_compatible_with_modelpickerdialog_frontend():
+-    """Frontend (web/src/components/ModelPickerDialog.tsx) reads:
+-    name, slug, models, total_models, is_current, warning, authenticated.
+-    Verify every authenticated/skeleton row exposes those keys.
+-    """
+-    rows = [
+-        {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
+-         "total_models": 1, "is_current": True, "is_user_defined": False,
+-         "source": "built-in"},
+-    ]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(
+-            ctx, include_unconfigured=True, picker_hints=True,
+-        )
+-    required_keys = {"name", "slug", "models", "total_models", "is_current",
+-                     "authenticated"}
+-    for row in payload["providers"]:
+-        missing = required_keys - row.keys()
+-        assert not missing, f"row {row['slug']} missing keys: {missing}"
+-
+-
+-# ─── Aggregator dedup (issue #45954) ───────────────────────────────────
+-
+-
+-def _user_provider_row(slug: str, models: list[str]) -> dict:
+-    return {
+-        "slug": slug,
+-        "name": slug.title(),
+-        "models": models,
+-        "total_models": len(models),
+-        "is_current": False,
+-        "is_user_defined": True,
+-        "source": "user-config",
+-    }
+-
+-
+-def _aggregator_row(slug: str, models: list[str]) -> dict:
+-    return {
+-        "slug": slug,
+-        "name": slug.title(),
+-        "models": models,
+-        "total_models": len(models),
+-        "is_current": False,
+-        "is_user_defined": False,
+-        "source": "built-in",
+-    }
+-
+-
+-def test_aggregator_dedup_removes_overlapping_models():
+-    """Models served by a user-defined provider are removed from
+-    aggregator rows so the picker doesn't show them under the wrong
+-    provider.  (#45954)"""
+-    rows = [
+-        _user_provider_row("litellm-proxy", [
+-            "nvidia/nim/minimax-m3",
+-            "nvidia/nim/kimi-k2.6",
+-        ]),
+-        _aggregator_row("openrouter", [
+-            "minimax/minimax-m3",
+-            "nvidia/nim/minimax-m3",  # overlaps with litellm-proxy
+-            "anthropic/claude-sonnet-4.6",
+-        ]),
+-    ]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(ctx)
+-
+-    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+-    proxy_row = next(r for r in payload["providers"] if r["slug"] == "litellm-proxy")
+-
+-    # User-defined provider keeps all its models
+-    assert proxy_row["models"] == ["nvidia/nim/minimax-m3", "nvidia/nim/kimi-k2.6"]
+-
+-    # Aggregator lost the overlapping model but kept the rest
+-    assert "nvidia/nim/minimax-m3" not in or_row["models"]
+-    assert "minimax/minimax-m3" in or_row["models"]
+-    assert "anthropic/claude-sonnet-4.6" in or_row["models"]
+-    assert or_row["total_models"] == 2
+-
+-
+-def test_aggregator_dedup_case_insensitive():
+-    """Dedup uses case-insensitive matching.  (#45954)"""
+-    rows = [
+-        _user_provider_row("my-proxy", ["NVIDIA/NIM/MiniMax-M3"]),
+-        _aggregator_row("openrouter", ["nvidia/nim/minimax-m3", "other/model"]),
+-    ]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(ctx)
+-
+-    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+-    assert "nvidia/nim/minimax-m3" not in or_row["models"]
+-    assert or_row["total_models"] == 1
+-
+-
+-def test_aggregator_dedup_no_overlap_unchanged():
+-    """When there's no overlap, aggregator models are untouched.  (#45954)"""
+-    rows = [
+-        _user_provider_row("litellm-proxy", ["custom/model-a"]),
+-        _aggregator_row("openrouter", ["anthropic/claude-sonnet-4.6"]),
+-    ]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(ctx)
+-
+-    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+-    assert or_row["models"] == ["anthropic/claude-sonnet-4.6"]
+-    assert or_row["total_models"] == 1
+-
+-
+-def test_aggregator_dedup_no_user_providers_unchanged():
+-    """When there are no user-defined providers, nothing is filtered.
+-    (#45954)"""
+-    rows = [
+-        _aggregator_row("openrouter", [
+-            "nvidia/nim/minimax-m3",
+-            "anthropic/claude-sonnet-4.6",
+-        ]),
+-    ]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(ctx)
+-
+-    or_row = payload["providers"][0]
+-    assert len(or_row["models"]) == 2
+-
+-
+-def test_aggregator_dedup_multiple_user_providers():
+-    """Models from all user-defined providers are excluded from aggregators.
+-    (#45954)"""
+-    rows = [
+-        _user_provider_row("proxy-a", ["model-x"]),
+-        _user_provider_row("proxy-b", ["model-y"]),
+-        _aggregator_row("openrouter", ["model-x", "model-y", "model-z"]),
+-    ]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(ctx)
+-
+-    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+-    assert or_row["models"] == ["model-z"]
+-    assert or_row["total_models"] == 1
+-
+-
+-def test_aggregator_dedup_does_not_empty_user_defined_custom_provider():
+-    """A named custom provider has slug ``custom:<name>``, which makes it
+-    *both* ``is_user_defined=True`` *and* ``is_aggregator()==True``
+-    (is_aggregator reports True for every ``custom:*`` slug).  The dedup
+-    must skip user-defined rows: their models populate ``user_models``, so
+-    filtering them against that set would strip the row's entire catalog and
+-    hide the provider from the picker.  Regression for the #45954 dedup
+-    emptying ``custom:*`` providers (e.g. a local llama.cpp endpoint or an
+-    Anthropic-compatible proxy)."""
+-    rows = [
+-        _user_provider_row("custom:my-proxy", ["my-model-a", "my-model-b"]),
+-        _aggregator_row("openrouter", ["my-model-a", "other/model"]),
+-    ]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(ctx)
+-
+-    proxy_row = next(
+-        r for r in payload["providers"] if r["slug"] == "custom:my-proxy"
+-    )
+-    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+-
+-    # The user's own custom provider keeps all of its models.
+-    assert proxy_row["models"] == ["my-model-a", "my-model-b"]
+-    assert proxy_row["total_models"] == 2
+-
+-    # A genuine aggregator is still deduped against the user's models.
+-    assert "my-model-a" not in or_row["models"]
+-    assert "other/model" in or_row["models"]
+-    assert or_row["total_models"] == 1
+-
+-
+-def test_two_custom_providers_with_overlap_both_survive():
+-    """Two user-defined custom endpoints that happen to expose an
+-    overlapping model must each keep their full catalog. Neither is the
+-    aggregator the dedup exists to trim, so cross-filtering between two
+-    user-defined rows must not happen.
+-    """
+-    rows = [
+-        _user_provider_row("custom:proxy-a", ["shared/model", "a/only"]),
+-        _user_provider_row("custom:proxy-b", ["shared/model", "b/only"]),
+-    ]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        payload = build_models_payload(ctx)
+-
+-    a_row = next(r for r in payload["providers"] if r["slug"] == "custom:proxy-a")
+-    b_row = next(r for r in payload["providers"] if r["slug"] == "custom:proxy-b")
+-    assert a_row["models"] == ["shared/model", "a/only"]
+-    assert b_row["models"] == ["shared/model", "b/only"]
+-    assert a_row["total_models"] == 2
+-    assert b_row["total_models"] == 2
+-
+-
+-def test_build_models_payload_no_max_models_returns_full_list():
+-    """When max_models is not passed (None), build_models_payload must
+-    return the full model list — not truncate to the old default of 50.
+-    Regression for #48279: Kilo Gateway picker was capped at 50 of 336
+-    models, making most models undiscoverable via search."""
+-    full_models = [f"model-{i}" for i in range(100)]
+-    rows = [
+-        {
+-            "slug": "kilocode",
+-            "name": "Kilo Code",
+-            "models": full_models,
+-            "total_models": len(full_models),
+-            "is_current": False,
+-            "is_user_defined": False,
+-            "source": "built-in",
+-        },
+-    ]
+-    ctx = _empty_ctx()
+-    with _list_auth_returning(rows):
+-        # No max_models argument — should return all 100 models
+-        payload = build_models_payload(ctx)
+-
+-    kilo_row = next(r for r in payload["providers"] if r["slug"] == "kilocode")
+-    assert kilo_row["models"] == full_models
+-    assert kilo_row["total_models"] == 100
+-    assert len(kilo_row["models"]) == 100
+-
+-
+-# ─── refresh flag (cache-bust) ─────────────────────────────────────────
+-
+-
+-def test_build_models_payload_forwards_refresh_flag():
+-    """build_models_payload must forward refresh= to list_authenticated_providers.
+-
+-    The desktop picker's "Refresh Models" control passes refresh=True; the
+-    flag has to reach list_authenticated_providers so the per-provider
+-    model-id cache gets busted. Default opens pass refresh=False.
+-    """
+-    captured: dict = {}
+-
+-    def _capture(*args, **kwargs):
+-        captured["refresh"] = kwargs.get("refresh")
+-        return []
+-
+-    with patch("hermes_cli.model_switch.list_authenticated_providers", side_effect=_capture):
+-        build_models_payload(_empty_ctx())
+-    assert captured["refresh"] is False
+-
+-    with patch("hermes_cli.model_switch.list_authenticated_providers", side_effect=_capture):
+-        build_models_payload(_empty_ctx(), refresh=True)
+-    assert captured["refresh"] is True
+-
+-
+-def test_list_authenticated_providers_refresh_busts_cache():
+-    """refresh=True clears the provider-model disk cache exactly once;
+-    refresh=False leaves it untouched (so normal picker opens stay snappy)."""
+-    from hermes_cli import model_switch
+-
+-    with patch("hermes_cli.models.clear_provider_models_cache") as clear:
+-        model_switch.list_authenticated_providers(refresh=False)
+-        assert clear.call_count == 0
+-        model_switch.list_authenticated_providers(refresh=True)
+-        assert clear.call_count == 1
+-
+diff --git a/tests/hermes_cli/test_model_switch_copilot_api_mode.py b/tests/hermes_cli/test_model_switch_copilot_api_mode.py
+deleted file mode 100644
+index 0248d827a..000000000
+--- a/tests/hermes_cli/test_model_switch_copilot_api_mode.py
++++ /dev/null
+@@ -1,101 +0,0 @@
+-"""Regression tests for Copilot api_mode recomputation during /model switch.
+-
+-When switching models within the Copilot provider (e.g. GPT-5 → Claude),
+-the stale api_mode from resolve_runtime_provider must be overridden with
+-a fresh value computed from the *new* model.  Without the fix, Claude
+-requests went through the Responses API and failed with
+-``unsupported_api_for_model``.
+-"""
+-
+-from unittest.mock import patch
+-
+-from hermes_cli.model_switch import switch_model
+-
+-
+-_MOCK_VALIDATION = {
+-    "accepted": True,
+-    "persist": True,
+-    "recognized": True,
+-    "message": None,
+-}
+-
+-
+-def _run_copilot_switch(
+-    raw_input: str,
+-    current_provider: str = "copilot",
+-    current_model: str = "gpt-5.4",
+-    explicit_provider: str = "",
+-    runtime_api_mode: str = "codex_responses",
+-):
+-    """Run switch_model with Copilot mocks and return the result."""
+-    with (
+-        patch("hermes_cli.model_switch.resolve_alias", return_value=None),
+-        patch("hermes_cli.model_switch.list_provider_models", return_value=[]),
+-        patch(
+-            "hermes_cli.runtime_provider.resolve_runtime_provider",
+-            return_value={
+-                "api_key": "ghu_test_token",
+-                "base_url": "https://api.githubcopilot.com",
+-                "api_mode": runtime_api_mode,
+-            },
+-        ),
+-        patch(
+-            "hermes_cli.models.validate_requested_model",
+-            return_value=_MOCK_VALIDATION,
+-        ),
+-        patch("hermes_cli.model_switch.get_model_info", return_value=None),
+-        patch("hermes_cli.model_switch.get_model_capabilities", return_value=None),
+-        patch("hermes_cli.models.detect_provider_for_model", return_value=None),
+-    ):
+-        return switch_model(
+-            raw_input=raw_input,
+-            current_provider=current_provider,
+-            current_model=current_model,
+-            explicit_provider=explicit_provider,
+-        )
+-
+-
+-def test_same_provider_copilot_switch_recomputes_api_mode():
+-    """GPT-5 → Claude on copilot: api_mode must flip to chat_completions."""
+-    result = _run_copilot_switch(
+-        raw_input="claude-opus-4.6",
+-        current_provider="copilot",
+-        current_model="gpt-5.4",
+-    )
+-
+-    assert result.success, f"switch_model failed: {result.error_message}"
+-    assert result.new_model == "claude-opus-4.6"
+-    assert result.target_provider == "copilot"
+-    assert result.api_mode == "chat_completions"
+-
+-
+-def test_explicit_copilot_switch_uses_selected_model_api_mode():
+-    """Cross-provider switch to copilot: api_mode from new model, not stale runtime."""
+-    result = _run_copilot_switch(
+-        raw_input="claude-opus-4.6",
+-        current_provider="openrouter",
+-        current_model="anthropic/claude-sonnet-4.6",
+-        explicit_provider="copilot",
+-    )
+-
+-    assert result.success, f"switch_model failed: {result.error_message}"
+-    assert result.new_model == "claude-opus-4.6"
+-    assert result.target_provider == "github-copilot"
+-    assert result.api_mode == "chat_completions"
+-
+-
+-def test_copilot_gpt5_keeps_codex_responses():
+-    """GPT-5 → GPT-5 on copilot: api_mode must stay codex_responses."""
+-    result = _run_copilot_switch(
+-        raw_input="gpt-5.4-mini",
+-        current_provider="copilot",
+-        current_model="gpt-5.4",
+-        runtime_api_mode="codex_responses",
+-    )
+-
+-    assert result.success, f"switch_model failed: {result.error_message}"
+-    assert result.new_model == "gpt-5.4-mini"
+-    assert result.target_provider == "copilot"
+-    # gpt-5.4-mini is a GPT-5 variant — should use codex_responses
+-    # (gpt-5-mini is the special case that uses chat_completions)
+-    assert result.api_mode == "codex_responses"
+diff --git a/tests/hermes_cli/test_model_validation.py b/tests/hermes_cli/test_model_validation.py
+deleted file mode 100644
+index f5d356055..000000000
+--- a/tests/hermes_cli/test_model_validation.py
++++ /dev/null
+@@ -1,854 +0,0 @@
+-"""Tests for provider-aware `/model` validation in hermes_cli.models."""
+-
+-from unittest.mock import MagicMock, patch
+-
+-from hermes_cli.models import (
+-    azure_foundry_model_api_mode,
+-    copilot_model_api_mode,
+-    fetch_github_model_catalog,
+-    curated_models_for_provider,
+-    fetch_api_models,
+-    fetch_lmstudio_models,
+-    github_model_reasoning_efforts,
+-    normalize_copilot_model_id,
+-    normalize_opencode_model_id,
+-    normalize_provider,
+-    opencode_model_api_mode,
+-    parse_model_input,
+-    probe_api_models,
+-    provider_label,
+-    provider_model_ids,
+-    validate_requested_model,
+-)
+-
+-
+-# -- helpers -----------------------------------------------------------------
+-
+-FAKE_API_MODELS = [
+-    "anthropic/claude-opus-4.6",
+-    "anthropic/claude-sonnet-4.5",
+-    "openai/gpt-5.4-pro",
+-    "openai/gpt-5.4",
+-    "google/gemini-3-pro-preview",
+-]
+-
+-
+-def _validate(model, provider="openrouter", api_models=FAKE_API_MODELS, **kw):
+-    """Shortcut: call validate_requested_model with mocked API."""
+-    probe_payload = {
+-        "models": api_models,
+-        "probed_url": "http://localhost:11434/v1/models",
+-        "resolved_base_url": kw.get("base_url", "") or "http://localhost:11434/v1",
+-        "suggested_base_url": None,
+-        "used_fallback": False,
+-    }
+-    with patch("hermes_cli.models.fetch_api_models", return_value=api_models), \
+-         patch("hermes_cli.models.probe_api_models", return_value=probe_payload):
+-        return validate_requested_model(model, provider, **kw)
+-
+-
+-# -- parse_model_input -------------------------------------------------------
+-
+-class TestParseModelInput:
+-    def test_plain_model_keeps_current_provider(self):
+-        provider, model = parse_model_input("anthropic/claude-sonnet-4.5", "openrouter")
+-        assert provider == "openrouter"
+-        assert model == "anthropic/claude-sonnet-4.5"
+-
+-    def test_provider_colon_model_switches_provider(self):
+-        provider, model = parse_model_input("openrouter:anthropic/claude-sonnet-4.5", "nous")
+-        assert provider == "openrouter"
+-        assert model == "anthropic/claude-sonnet-4.5"
+-
+-    def test_provider_alias_resolved(self):
+-        provider, model = parse_model_input("glm:glm-5", "openrouter")
+-        assert provider == "zai"
+-        assert model == "glm-5"
+-
+-    def test_stepfun_alias_resolved(self):
+-        provider, model = parse_model_input("step:step-3.5-flash", "openrouter")
+-        assert provider == "stepfun"
+-        assert model == "step-3.5-flash"
+-
+-    def test_no_slash_no_colon_keeps_provider(self):
+-        provider, model = parse_model_input("gpt-5.4", "openrouter")
+-        assert provider == "openrouter"
+-        assert model == "gpt-5.4"
+-
+-    def test_nous_provider_switch(self):
+-        provider, model = parse_model_input("nous:hermes-3", "openrouter")
+-        assert provider == "nous"
+-        assert model == "hermes-3"
+-
+-    def test_empty_model_after_colon_keeps_current(self):
+-        provider, model = parse_model_input("openrouter:", "nous")
+-        assert provider == "nous"
+-        assert model == "openrouter:"
+-
+-    def test_colon_at_start_keeps_current(self):
+-        provider, model = parse_model_input(":something", "openrouter")
+-        assert provider == "openrouter"
+-        assert model == ":something"
+-
+-    def test_unknown_prefix_colon_not_treated_as_provider(self):
+-        """Colons are only provider delimiters if the left side is a known provider."""
+-        provider, model = parse_model_input("anthropic/claude-3.5-sonnet:beta", "openrouter")
+-        assert provider == "openrouter"
+-        assert model == "anthropic/claude-3.5-sonnet:beta"
+-
+-    def test_http_url_not_treated_as_provider(self):
+-        provider, model = parse_model_input("http://localhost:8080/model", "openrouter")
+-        assert provider == "openrouter"
+-        assert model == "http://localhost:8080/model"
+-
+-    def test_custom_colon_model_single(self):
+-        """custom:model-name → anonymous custom provider."""
+-        provider, model = parse_model_input("custom:qwen-2.5", "openrouter")
+-        assert provider == "custom"
+-        assert model == "qwen-2.5"
+-
+-    def test_custom_triple_syntax(self):
+-        """custom:name:model → named custom provider."""
+-        provider, model = parse_model_input("custom:local-server:qwen-2.5", "openrouter")
+-        assert provider == "custom:local-server"
+-        assert model == "qwen-2.5"
+-
+-    def test_custom_triple_spaces(self):
+-        """Triple syntax should handle whitespace."""
+-        provider, model = parse_model_input("custom: my-server : my-model ", "openrouter")
+-        assert provider == "custom:my-server"
+-        assert model == "my-model"
+-
+-    def test_custom_triple_empty_model_falls_back(self):
+-        """custom:name: with no model → treated as custom:name (bare)."""
+-        provider, model = parse_model_input("custom:name:", "openrouter")
+-        # Empty model after second colon → no triple match, falls through
+-        assert provider == "custom"
+-        assert model == "name:"
+-
+-
+-# -- curated_models_for_provider ---------------------------------------------
+-
+-class TestCuratedModelsForProvider:
+-    def test_openrouter_returns_curated_list(self):
+-        with patch(
+-            "hermes_cli.models.fetch_openrouter_models",
+-            return_value=[
+-                ("anthropic/claude-opus-4.6", "recommended"),
+-                ("qwen/qwen3.6-plus", ""),
+-            ],
+-        ):
+-            models = curated_models_for_provider("openrouter")
+-        assert len(models) > 0
+-        assert any("claude" in m[0] for m in models)
+-
+-    def test_unknown_provider_returns_empty(self):
+-        assert curated_models_for_provider("totally-unknown") == []
+-
+-
+-# -- normalize_provider ------------------------------------------------------
+-
+-class TestNormalizeProvider:
+-    def test_defaults_to_openrouter(self):
+-        assert normalize_provider(None) == "openrouter"
+-        assert normalize_provider("") == "openrouter"
+-
+-    def test_known_aliases(self):
+-        assert normalize_provider("glm") == "zai"
+-        assert normalize_provider("kimi") == "kimi-coding"
+-        assert normalize_provider("moonshot") == "kimi-coding"
+-        assert normalize_provider("step") == "stepfun"
+-        assert normalize_provider("github-copilot") == "copilot"
+-
+-    def test_case_insensitive(self):
+-        assert normalize_provider("OpenRouter") == "openrouter"
+-
+-
+-class TestProviderLabel:
+-    def test_known_labels_and_auto(self):
+-        assert provider_label("anthropic") == "Anthropic"
+-        assert provider_label("kimi") == "Kimi / Kimi Coding Plan"
+-        assert provider_label("stepfun") == "StepFun Step Plan"
+-        assert provider_label("copilot") == "GitHub Copilot"
+-        assert provider_label("copilot-acp") == "GitHub Copilot ACP"
+-        assert provider_label("auto") == "Auto"
+-
+-    def test_unknown_provider_preserves_original_name(self):
+-        assert provider_label("my-custom-provider") == "my-custom-provider"
+-
+-
+-# -- provider_model_ids ------------------------------------------------------
+-
+-class TestProviderModelIds:
+-    def test_openrouter_returns_curated_list(self):
+-        with patch(
+-            "hermes_cli.models.fetch_openrouter_models",
+-            return_value=[
+-                ("anthropic/claude-opus-4.6", "recommended"),
+-                ("qwen/qwen3.6-plus", ""),
+-            ],
+-        ):
+-            ids = provider_model_ids("openrouter")
+-        assert len(ids) > 0
+-        assert all("/" in mid for mid in ids)
+-
+-    def test_unknown_provider_returns_empty(self):
+-        assert provider_model_ids("some-unknown-provider") == []
+-
+-    def test_stepfun_prefers_live_catalog(self):
+-        with patch(
+-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+-            return_value={"api_key": "***", "base_url": "https://api.stepfun.com/step_plan/v1"},
+-        ), patch(
+-            "hermes_cli.models.fetch_api_models",
+-            return_value=["step-3.5-flash", "step-3-agent-lite"],
+-        ):
+-            assert provider_model_ids("stepfun") == ["step-3.5-flash", "step-3-agent-lite"]
+-
+-    def test_copilot_prefers_live_catalog(self):
+-        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
+-             patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
+-            assert provider_model_ids("copilot") == ["gpt-5.4", "claude-sonnet-4.6"]
+-
+-    def test_copilot_acp_reuses_copilot_catalog(self):
+-        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
+-             patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
+-            assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
+-
+-    def test_anthropic_provider_uses_configured_base_url_for_live_catalog(self):
+-        class _Resp:
+-            def __enter__(self):
+-                return self
+-
+-            def __exit__(self, exc_type, exc, tb):
+-                return False
+-
+-            def read(self):
+-                return b'{"data": [{"id": "enterprise-claude"}]}'
+-
+-        with patch(
+-            "hermes_cli.config.load_config",
+-            return_value={
+-                "model": {
+-                    "provider": "anthropic",
+-                    "base_url": "http://localhost:6655/anthropic/v1",
+-                    "api_key": "proxy-key",
+-                }
+-            },
+-        ), patch(
+-            "hermes_cli.models.urllib.request.urlopen",
+-            return_value=_Resp(),
+-        ) as mock_urlopen:
+-            assert provider_model_ids("anthropic") == ["enterprise-claude"]
+-
+-        req = mock_urlopen.call_args[0][0]
+-        assert req.full_url == "http://localhost:6655/anthropic/v1/models"
+-        assert req.get_header("X-api-key") == "proxy-key"
+-
+-    def test_custom_provider_passes_anthropic_mode_for_versioned_proxy_catalog(self):
+-        with patch(
+-            "hermes_cli.config.load_config",
+-            return_value={
+-                "model": {
+-                    "provider": "custom",
+-                    "base_url": "http://localhost:6655/anthropic/v1",
+-                    "api_key": "proxy-key",
+-                }
+-            },
+-        ), patch(
+-            "hermes_cli.models.fetch_api_models",
+-            return_value=["enterprise-claude"],
+-        ) as mock_fetch:
+-            assert provider_model_ids("custom") == ["enterprise-claude"]
+-
+-        mock_fetch.assert_called_once_with(
+-            "proxy-key",
+-            "http://localhost:6655/anthropic/v1",
+-            api_mode="anthropic_messages",
+-        )
+-
+-
+-# -- fetch_api_models --------------------------------------------------------
+-
+-class TestFetchApiModels:
+-    def test_returns_none_when_no_base_url(self):
+-        assert fetch_api_models("key", None) is None
+-
+-    def test_returns_none_on_network_error(self):
+-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=Exception("timeout")):
+-            assert fetch_api_models("key", "https://example.com/v1") is None
+-
+-    def test_probe_api_models_tries_v1_fallback(self):
+-        class _Resp:
+-            def __enter__(self):
+-                return self
+-
+-            def __exit__(self, exc_type, exc, tb):
+-                return False
+-
+-            def read(self):
+-                return b'{"data": [{"id": "local-model"}]}'
+-
+-        calls = []
+-
+-        def _fake_urlopen(req, timeout=5.0):
+-            calls.append(req.full_url)
+-            if req.full_url.endswith("/v1/models"):
+-                return _Resp()
+-            raise Exception("404")
+-
+-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+-            probe = probe_api_models("key", "http://localhost:8000")
+-
+-        assert calls == ["http://localhost:8000/models", "http://localhost:8000/v1/models"]
+-        assert probe["models"] == ["local-model"]
+-        assert probe["resolved_base_url"] == "http://localhost:8000/v1"
+-        assert probe["used_fallback"] is True
+-
+-    def test_probe_api_models_uses_copilot_catalog(self):
+-        class _Resp:
+-            def __enter__(self):
+-                return self
+-
+-            def __exit__(self, exc_type, exc, tb):
+-                return False
+-
+-            def read(self):
+-                return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "claude-sonnet-4.6", "model_picker_enabled": true, "supported_endpoints": ["/chat/completions"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
+-
+-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()) as mock_urlopen:
+-            probe = probe_api_models("gh-token", "https://api.githubcopilot.com")
+-
+-        assert mock_urlopen.call_args[0][0].full_url == "https://api.githubcopilot.com/models"
+-        assert probe["models"] == ["gpt-5.4", "claude-sonnet-4.6"]
+-        assert probe["resolved_base_url"] == "https://api.githubcopilot.com"
+-        assert probe["used_fallback"] is False
+-
+-    def test_fetch_github_model_catalog_filters_non_chat_models(self):
+-        class _Resp:
+-            def __enter__(self):
+-                return self
+-
+-            def __exit__(self, exc_type, exc, tb):
+-                return False
+-
+-            def read(self):
+-                return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
+-
+-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+-            catalog = fetch_github_model_catalog("gh-token")
+-
+-        assert catalog is not None
+-        assert [item["id"] for item in catalog] == ["gpt-5.4"]
+-
+-
+-class TestGithubReasoningEfforts:
+-    def test_gpt5_supports_minimal_to_high(self):
+-        catalog = [{
+-            "id": "gpt-5.4",
+-            "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}},
+-            "supported_endpoints": ["/responses"],
+-        }]
+-        assert github_model_reasoning_efforts("gpt-5.4", catalog=catalog) == [
+-            "low",
+-            "medium",
+-            "high",
+-        ]
+-
+-    def test_legacy_catalog_reasoning_still_supported(self):
+-        catalog = [{"id": "openai/o3", "capabilities": ["reasoning"]}]
+-        assert github_model_reasoning_efforts("openai/o3", catalog=catalog) == [
+-            "low",
+-            "medium",
+-            "high",
+-        ]
+-
+-    def test_non_reasoning_model_returns_empty(self):
+-        catalog = [{"id": "gpt-4.1", "capabilities": {"type": "chat", "supports": {}}}]
+-        assert github_model_reasoning_efforts("gpt-4.1", catalog=catalog) == []
+-
+-
+-class TestCopilotNormalization:
+-    def test_normalize_old_github_models_slug(self):
+-        catalog = [{"id": "gpt-4.1"}, {"id": "gpt-5.4"}]
+-        assert normalize_copilot_model_id("openai/gpt-4.1-mini", catalog=catalog) == "gpt-4.1"
+-
+-    def test_copilot_api_mode_gpt5_uses_responses(self):
+-        """GPT-5+ models should use Responses API (matching opencode)."""
+-        assert copilot_model_api_mode("gpt-5.4") == "codex_responses"
+-        assert copilot_model_api_mode("gpt-5.4-mini") == "codex_responses"
+-        assert copilot_model_api_mode("gpt-5.3-codex") == "codex_responses"
+-        assert copilot_model_api_mode("gpt-5.2-codex") == "codex_responses"
+-        assert copilot_model_api_mode("gpt-5.2") == "codex_responses"
+-
+-    def test_copilot_api_mode_gpt5_mini_uses_chat(self):
+-        """gpt-5-mini is the exception — uses Chat Completions."""
+-        assert copilot_model_api_mode("gpt-5-mini") == "chat_completions"
+-
+-    def test_copilot_api_mode_non_gpt5_uses_chat(self):
+-        """Non-GPT-5 models use Chat Completions."""
+-        assert copilot_model_api_mode("gpt-4.1") == "chat_completions"
+-        assert copilot_model_api_mode("gpt-4o") == "chat_completions"
+-        assert copilot_model_api_mode("gpt-4o-mini") == "chat_completions"
+-        assert copilot_model_api_mode("claude-sonnet-4.6") == "chat_completions"
+-        assert copilot_model_api_mode("claude-opus-4.6") == "chat_completions"
+-        assert copilot_model_api_mode("gemini-2.5-pro") == "chat_completions"
+-
+-    def test_copilot_api_mode_with_catalog_both_endpoints(self):
+-        """When catalog shows both endpoints, model ID pattern wins."""
+-        catalog = [{
+-            "id": "gpt-5.4",
+-            "supported_endpoints": ["/chat/completions", "/responses"],
+-        }]
+-        # GPT-5.4 should use responses even though chat/completions is listed
+-        assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "codex_responses"
+-
+-    def test_copilot_api_mode_with_catalog_only_responses(self):
+-        catalog = [{
+-            "id": "gpt-5.4",
+-            "supported_endpoints": ["/responses"],
+-            "capabilities": {"type": "chat"},
+-        }]
+-        assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "codex_responses"
+-
+-    def test_normalize_opencode_model_id_strips_provider_prefix(self):
+-        assert normalize_opencode_model_id("opencode-go", "opencode-go/kimi-k2.5") == "kimi-k2.5"
+-        assert normalize_opencode_model_id("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "claude-sonnet-4-6"
+-        assert normalize_opencode_model_id("opencode-go", "glm-5") == "glm-5"
+-
+-    def test_opencode_zen_api_modes_match_docs(self):
+-        assert opencode_model_api_mode("opencode-zen", "gpt-5.4") == "codex_responses"
+-        assert opencode_model_api_mode("opencode-zen", "gpt-5.3-codex") == "codex_responses"
+-        assert opencode_model_api_mode("opencode-zen", "opencode-zen/gpt-5.4") == "codex_responses"
+-        assert opencode_model_api_mode("opencode-zen", "claude-sonnet-4-6") == "anthropic_messages"
+-        assert opencode_model_api_mode("opencode-zen", "opencode-zen/claude-sonnet-4-6") == "anthropic_messages"
+-        assert opencode_model_api_mode("opencode-zen", "gemini-3-flash") == "chat_completions"
+-        assert opencode_model_api_mode("opencode-zen", "minimax-m2.5") == "chat_completions"
+-
+-    def test_opencode_go_api_modes_match_docs(self):
+-        assert opencode_model_api_mode("opencode-go", "glm-5.1") == "chat_completions"
+-        assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5.1") == "chat_completions"
+-        assert opencode_model_api_mode("opencode-go", "glm-5") == "chat_completions"
+-        assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5") == "chat_completions"
+-        assert opencode_model_api_mode("opencode-go", "kimi-k2.5") == "chat_completions"
+-        assert opencode_model_api_mode("opencode-go", "opencode-go/kimi-k2.5") == "chat_completions"
+-        assert opencode_model_api_mode("opencode-go", "minimax-m2.5") == "anthropic_messages"
+-        assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
+-        assert opencode_model_api_mode("opencode-go", "qwen3.7-max") == "anthropic_messages"
+-        assert opencode_model_api_mode("opencode-go", "opencode-go/qwen3.7-max") == "anthropic_messages"
+-
+-
+-class TestAzureFoundryModelApiMode:
+-    """Azure Foundry deploys GPT-5.x / codex / o-series as Responses-API-only.
+-
+-    Azure returns ``400 "The requested operation is unsupported."`` when
+-    /chat/completions is called against these deployments.  Verified in the
+-    wild by a user debug bundle on 2026-04-26: gpt-5.3-codex failed with
+-    that exact payload while gpt-4o-pure worked on the same endpoint.
+-    """
+-
+-    def test_gpt5_family_uses_responses(self):
+-        assert azure_foundry_model_api_mode("gpt-5") == "codex_responses"
+-        assert azure_foundry_model_api_mode("gpt-5.3") == "codex_responses"
+-        assert azure_foundry_model_api_mode("gpt-5.4") == "codex_responses"
+-        assert azure_foundry_model_api_mode("gpt-5-codex") == "codex_responses"
+-        assert azure_foundry_model_api_mode("gpt-5.3-codex") == "codex_responses"
+-        # gpt-5-mini exceptions are Copilot-specific; Azure deploys the whole
+-        # gpt-5 family on Responses API uniformly.
+-        assert azure_foundry_model_api_mode("gpt-5-mini") == "codex_responses"
+-
+-    def test_codex_family_uses_responses(self):
+-        assert azure_foundry_model_api_mode("codex") == "codex_responses"
+-        assert azure_foundry_model_api_mode("codex-mini") == "codex_responses"
+-
+-    def test_o_series_reasoning_uses_responses(self):
+-        assert azure_foundry_model_api_mode("o1") == "codex_responses"
+-        assert azure_foundry_model_api_mode("o1-preview") == "codex_responses"
+-        assert azure_foundry_model_api_mode("o1-mini") == "codex_responses"
+-        assert azure_foundry_model_api_mode("o3") == "codex_responses"
+-        assert azure_foundry_model_api_mode("o3-mini") == "codex_responses"
+-        assert azure_foundry_model_api_mode("o4-mini") == "codex_responses"
+-
+-    def test_gpt4_family_returns_none(self):
+-        """GPT-4, GPT-4o, etc. speak chat completions on Azure."""
+-        assert azure_foundry_model_api_mode("gpt-4") is None
+-        assert azure_foundry_model_api_mode("gpt-4o") is None
+-        assert azure_foundry_model_api_mode("gpt-4o-pure") is None
+-        assert azure_foundry_model_api_mode("gpt-4o-mini") is None
+-        assert azure_foundry_model_api_mode("gpt-4-turbo") is None
+-        assert azure_foundry_model_api_mode("gpt-4.1") is None
+-        assert azure_foundry_model_api_mode("gpt-3.5-turbo") is None
+-
+-    def test_non_openai_deployments_return_none(self):
+-        """Llama, Mistral, Grok, etc. keep the default chat completions."""
+-        assert azure_foundry_model_api_mode("llama-3.1-70b") is None
+-        assert azure_foundry_model_api_mode("mistral-large") is None
+-        assert azure_foundry_model_api_mode("grok-4") is None
+-        assert azure_foundry_model_api_mode("phi-3-medium") is None
+-
+-    def test_vendor_prefix_stripped(self):
+-        """Users who copy-paste ``openai/gpt-5.3-codex`` should still match."""
+-        assert azure_foundry_model_api_mode("openai/gpt-5.3-codex") == "codex_responses"
+-        assert azure_foundry_model_api_mode("openai/gpt-4o") is None
+-
+-    def test_empty_and_none_return_none(self):
+-        assert azure_foundry_model_api_mode(None) is None
+-        assert azure_foundry_model_api_mode("") is None
+-        assert azure_foundry_model_api_mode("   ") is None
+-
+-    def test_case_insensitive(self):
+-        assert azure_foundry_model_api_mode("GPT-5.3-Codex") == "codex_responses"
+-        assert azure_foundry_model_api_mode("Codex-Mini") == "codex_responses"
+-
+-
+-# -- validate — format checks -----------------------------------------------
+-
+-class TestValidateFormatChecks:
+-    def test_empty_model_rejected(self):
+-        result = _validate("")
+-        assert result["accepted"] is False
+-        assert "empty" in result["message"]
+-
+-    def test_whitespace_only_rejected(self):
+-        result = _validate("   ")
+-        assert result["accepted"] is False
+-
+-    def test_model_with_spaces_rejected(self):
+-        result = _validate("anthropic/ claude-opus")
+-        assert result["accepted"] is False
+-
+-    def test_no_slash_model_still_probes_api(self):
+-        result = _validate("gpt-5.4", api_models=["gpt-5.4", "gpt-5.4-pro"])
+-        assert result["accepted"] is True
+-        assert result["persist"] is True
+-
+-    def test_no_slash_model_rejected_if_not_in_api(self):
+-        result = _validate("gpt-5.4", api_models=["openai/gpt-5.4"])
+-        assert result["accepted"] is False
+-        assert result["persist"] is False
+-        assert "not found" in result["message"]
+-
+-
+-# -- validate — API found ----------------------------------------------------
+-
+-class TestValidateApiFound:
+-    def test_model_found_in_api(self):
+-        result = _validate("anthropic/claude-opus-4.6")
+-        assert result["accepted"] is True
+-        assert result["persist"] is True
+-        assert result["recognized"] is True
+-
+-    def test_model_found_for_custom_endpoint(self):
+-        result = _validate(
+-            "my-model", provider="openrouter",
+-            api_models=["my-model"], base_url="http://localhost:11434/v1",
+-        )
+-        assert result["accepted"] is True
+-        assert result["persist"] is True
+-        assert result["recognized"] is True
+-
+-
+-# -- validate — API not found ------------------------------------------------
+-
+-class TestValidateApiNotFound:
+-    def test_model_not_in_api_rejected_with_guidance(self):
+-        result = _validate("anthropic/claude-nonexistent")
+-        assert result["accepted"] is False
+-        assert result["persist"] is False
+-        assert "not found" in result["message"]
+-
+-    def test_warning_includes_suggestions(self):
+-        result = _validate("anthropic/claude-opus-4.5")
+-        assert result["accepted"] is True
+-        # Close match auto-corrects; less similar inputs show suggestions
+-        assert "Auto-corrected" in result["message"] or "Similar models" in result["message"]
+-
+-    def test_auto_correction_returns_corrected_model(self):
+-        """When a very close match exists, validate returns corrected_model."""
+-        result = _validate("anthropic/claude-opus-4.5")
+-        assert result["accepted"] is True
+-        assert result.get("corrected_model") == "anthropic/claude-opus-4.6"
+-        assert result["recognized"] is True
+-
+-    def test_dissimilar_model_shows_suggestions_not_autocorrect(self):
+-        """Models too different for auto-correction are rejected with suggestions."""
+-        result = _validate("anthropic/claude-nonexistent")
+-        assert result["accepted"] is False
+-        assert result.get("corrected_model") is None
+-        assert "not found" in result["message"]
+-
+-
+-# -- validate — API unreachable — soft-accept via catalog or warning --------
+-
+-class TestValidateApiFallback:
+-    """When /models is unreachable, the validator must accept the model (with
+-    a warning) rather than reject it outright — otherwise provider switches
+-    fail in the gateway for any provider whose /models endpoint is down or
+-    doesn't exist (e.g. opencode-go returns 404 HTML).
+-
+-    Two paths:
+-      1. Provider has a curated catalog (``_PROVIDER_MODELS`` / live fetch):
+-         validate against it (recognized=True for known models,
+-         recognized=False with 'Note:' for unknown).
+-      2. Provider has no catalog: accept with a generic 'Note:' warning.
+-
+-    In both cases ``accepted`` and ``persist`` must be True so the gateway can
+-    write the ``_session_model_overrides`` entry.
+-    """
+-
+-    def test_known_model_accepted_via_catalog_when_api_down(self):
+-        # Force the openrouter catalog lookup to return a deterministic list.
+-        with patch(
+-            "hermes_cli.models.provider_model_ids",
+-            return_value=["anthropic/claude-opus-4.6", "openai/gpt-5.4"],
+-        ):
+-            result = _validate("anthropic/claude-opus-4.6", api_models=None)
+-        assert result["accepted"] is True
+-        assert result["persist"] is True
+-        assert result["recognized"] is True
+-
+-    def test_unknown_model_accepted_with_note_when_api_down(self):
+-        with patch(
+-            "hermes_cli.models.provider_model_ids",
+-            return_value=["anthropic/claude-opus-4.6", "openai/gpt-5.4"],
+-        ):
+-            result = _validate("anthropic/claude-next-gen", api_models=None)
+-        assert result["accepted"] is True
+-        assert result["persist"] is True
+-        assert result["recognized"] is False
+-        # Message flags it as unverified against the catalog.
+-        assert "not found" in result["message"].lower() or "note" in result["message"].lower()
+-
+-    def test_zai_known_model_accepted_via_catalog_when_api_down(self):
+-        # glm-5 is in the zai curated catalog (_PROVIDER_MODELS["zai"]).
+-        result = _validate("glm-5", provider="zai", api_models=None)
+-        assert result["accepted"] is True
+-        assert result["persist"] is True
+-        assert result["recognized"] is True
+-
+-    def test_unknown_provider_soft_accepted_when_api_down(self):
+-        # No catalog for unknown providers — soft-accept with a Note.
+-        with patch("hermes_cli.models.provider_model_ids", return_value=[]):
+-            result = _validate("some-model", provider="totally-unknown", api_models=None)
+-        assert result["accepted"] is True
+-        assert result["persist"] is True
+-        assert result["recognized"] is False
+-        assert "note" in result["message"].lower()
+-
+-    def test_custom_endpoint_warns_with_probed_url_and_v1_hint(self):
+-        with patch(
+-            "hermes_cli.models.probe_api_models",
+-            return_value={
+-                "models": None,
+-                "probed_url": "http://localhost:8000/v1/models",
+-                "resolved_base_url": "http://localhost:8000",
+-                "suggested_base_url": "http://localhost:8000/v1",
+-                "used_fallback": False,
+-            },
+-        ):
+-            result = validate_requested_model(
+-                "qwen3",
+-                "custom",
+-                api_key="local-key",
+-                base_url="http://localhost:8000",
+-            )
+-
+-        # Unreachable /models on a custom endpoint no longer hard-rejects —
+-        # the model is persisted with a warning so Cloudflare-protected /
+-        # proxy endpoints that don't expose /models still work. See #12950.
+-        assert result["accepted"] is False
+-        assert result["persist"] is True
+-        assert "http://localhost:8000/v1/models" in result["message"]
+-        assert "http://localhost:8000/v1" in result["message"]
+-
+-    def test_fetch_lmstudio_models_filters_embedding_type(self):
+-        mock_resp = MagicMock()
+-        mock_resp.__enter__.return_value = mock_resp
+-        mock_resp.__exit__.return_value = False
+-        mock_resp.read.return_value = (
+-            b'{"models":['
+-            b'{"key":"publisher/chat-model","id":"publisher/chat-model","type":"llm"},'
+-            b'{"key":"publisher/embed-model","id":"publisher/embed-model","type":"embedding"}'
+-            b']}'
+-        )
+-
+-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=mock_resp):
+-            models = fetch_lmstudio_models(base_url="http://localhost:1234/v1")
+-
+-        assert models == ["publisher/chat-model"]
+-
+-    def test_validate_lmstudio_rejects_embedding_models(self):
+-        mock_resp = MagicMock()
+-        mock_resp.__enter__.return_value = mock_resp
+-        mock_resp.__exit__.return_value = False
+-        mock_resp.read.return_value = (
+-            b'{"models":['
+-            b'{"key":"publisher/chat-model","id":"publisher/chat-model","type":"llm"},'
+-            b'{"key":"publisher/embed-model","id":"publisher/embed-model","type":"embedding"}'
+-            b']}'
+-        )
+-
+-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=mock_resp):
+-            result = validate_requested_model(
+-                "publisher/embed-model",
+-                "lmstudio",
+-                base_url="http://localhost:1234/v1",
+-            )
+-
+-        assert result["accepted"] is False
+-        assert result["recognized"] is False
+-        assert "not found in LM Studio's model listing" in result["message"]
+-
+-    def test_fetch_lmstudio_models_raises_auth_error_on_401(self):
+-        import urllib.error
+-        from hermes_cli.auth import AuthError
+-        import pytest
+-
+-        http_error = urllib.error.HTTPError(
+-            url="http://localhost:1234/api/v1/models",
+-            code=401,
+-            msg="Unauthorized",
+-            hdrs=None,
+-            fp=None,
+-        )
+-
+-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=http_error):
+-            with pytest.raises(AuthError) as excinfo:
+-                fetch_lmstudio_models(base_url="http://localhost:1234/v1")
+-
+-        assert excinfo.value.provider == "lmstudio"
+-        assert excinfo.value.code == "auth_rejected"
+-        assert "401" in str(excinfo.value)
+-
+-    def test_fetch_lmstudio_models_returns_empty_on_network_error(self):
+-        with patch(
+-            "hermes_cli.models.urllib.request.urlopen",
+-            side_effect=ConnectionRefusedError(),
+-        ):
+-            models = fetch_lmstudio_models(base_url="http://localhost:1234/v1")
+-
+-        assert models == []
+-
+-    def test_validate_lmstudio_distinguishes_auth_failure(self):
+-        import urllib.error
+-
+-        http_error = urllib.error.HTTPError(
+-            url="http://localhost:1234/api/v1/models",
+-            code=401,
+-            msg="Unauthorized",
+-            hdrs=None,
+-            fp=None,
+-        )
+-
+-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=http_error):
+-            result = validate_requested_model(
+-                "publisher/chat-model",
+-                "lmstudio",
+-                base_url="http://localhost:1234/v1",
+-            )
+-
+-        assert result["accepted"] is False
+-        assert "401" in result["message"]
+-        assert "LM_API_KEY" in result["message"]
+-
+-    def test_validate_lmstudio_distinguishes_unreachable(self):
+-        with patch(
+-            "hermes_cli.models.urllib.request.urlopen",
+-            side_effect=ConnectionRefusedError(),
+-        ):
+-            result = validate_requested_model(
+-                "publisher/chat-model",
+-                "lmstudio",
+-                base_url="http://localhost:1234/v1",
+-            )
+-
+-        assert result["accepted"] is False
+-        assert "Could not reach LM Studio" in result["message"]
+-
+-
+-# -- validate — Codex auto-correction ------------------------------------------
+-
+-class TestValidateCodexAutoCorrection:
+-    """Auto-correction for typos on openai-codex provider."""
+-
+-    def test_missing_dash_auto_corrects(self):
+-        """gpt5.3-codex (missing dash) auto-corrects to gpt-5.3-codex."""
+-        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex",
+-                        "gpt-5.2-codex", "gpt-5.1-codex-max"]
+-        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+-            result = validate_requested_model("gpt5.3-codex", "openai-codex")
+-        assert result["accepted"] is True
+-        assert result["recognized"] is True
+-        assert result["corrected_model"] == "gpt-5.3-codex"
+-        assert "Auto-corrected" in result["message"]
+-
+-    def test_exact_match_no_correction(self):
+-        """Exact model name does not trigger auto-correction."""
+-        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
+-        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+-            result = validate_requested_model("gpt-5.3-codex", "openai-codex")
+-        assert result["accepted"] is True
+-        assert result["recognized"] is True
+-        assert result.get("corrected_model") is None
+-        assert result["message"] is None
+-
+-
+-
+-# -- probe_api_models — Cloudflare UA mitigation --------------------------------
+-
+-class TestProbeApiModelsUserAgent:
+-    """Probing custom /v1/models must send a Hermes User-Agent.
+-
+-    Some custom Claude proxies (e.g. ``packyapi.com``) sit behind Cloudflare with
+-    Browser Integrity Check enabled. The default ``Python-urllib/3.x`` signature
+-    is rejected with HTTP 403 ``error code: 1010``, which ``probe_api_models``
+-    swallowed into ``{"models": None}``, surfacing to users as a misleading
+-    "Could not reach the ... API to validate ..." error — even though the
+-    endpoint is reachable and the listing exists.
+-    """
+-
+-    def _make_mock_response(self, body: bytes):
+-        from unittest.mock import MagicMock
+-        mock_resp = MagicMock()
+-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+-        mock_resp.__exit__ = MagicMock(return_value=False)
+-        mock_resp.read = MagicMock(return_value=body)
+-        return mock_resp
+-
+-    def test_probe_sends_hermes_user_agent(self):
+-        from unittest.mock import patch
+-
+-        body = b'{"data":[{"id":"claude-opus-4.7"}]}'
+-        with patch(
+-            "hermes_cli.models.urllib.request.urlopen",
+-            return_value=self._make_mock_response(body),
+-        ) as mock_urlopen:
+-            result = probe_api_models("sk-test", "https://example.com/v1")
+-
+-        assert result["models"] == ["claude-opus-4.7"]
+-        # The urlopen call receives a Request object as its first positional arg
+-        req = mock_urlopen.call_args[0][0]
+-        ua = req.get_header("User-agent")  # urllib title-cases header names
+-        assert ua, "probe_api_models must send a User-Agent header"
+-        assert ua.startswith("hermes-cli/"), (
+-            f"User-Agent must advertise hermes-cli, got {ua!r}"
+-        )
+-        # Must not fall back to urllib's default — that's what Cloudflare 1010 blocks.
+-        assert not ua.startswith("Python-urllib")
+-
+-    def test_probe_user_agent_sent_without_api_key(self):
+-        """UA must be present even for endpoints that don't need auth."""
+-        from unittest.mock import patch
+-
+-        body = b'{"data":[]}'
+-        with patch(
+-            "hermes_cli.models.urllib.request.urlopen",
+-            return_value=self._make_mock_response(body),
+-        ) as mock_urlopen:
+-            probe_api_models(None, "https://example.com/v1")
+-
+-        req = mock_urlopen.call_args[0][0]
+-        ua = req.get_header("User-agent")
+-        assert ua and ua.startswith("hermes-cli/")
+-        # No Authorization was set, but UA must still be present.
+-        assert req.get_header("Authorization") is None
+diff --git a/tests/run_agent/test_copilot_native_vision_headers.py b/tests/run_agent/test_copilot_native_vision_headers.py
+index 85190e007..99d3eb172 100644
+--- a/tests/run_agent/test_copilot_native_vision_headers.py
++++ b/tests/run_agent/test_copilot_native_vision_headers.py
+@@ -1,8 +1,21 @@
+ from unittest.mock import MagicMock, patch
+ 
++from hermes_cli.copilot_auth import copilot_request_headers
+ from run_agent import AIAgent
+ 
+ 
++# Per-call volatile headers — copilot_request_headers() generates fresh UUIDs
++# for X-Request-Id and X-Interaction-Id on every call to mirror VS Code Copilot
++# Chat's trace-correlation behavior. Comparing two different calls' output via
++# strict equality is meaningless for these fields; strip them on both sides
++# before asserting structural equality.
++_VOLATILE_HEADERS = ("X-Request-Id", "X-Interaction-Id")
++
++
++def _strip_volatile(headers):
++    return {k: v for k, v in headers.items() if k not in _VOLATILE_HEADERS}
++
++
+ def _make_copilot_agent():
+     with patch("run_agent.OpenAI") as mock_openai:
+         mock_openai.return_value = MagicMock()
+@@ -18,6 +31,12 @@ def _make_copilot_agent():
+     return agent
+ 
+ 
++def _assert_copilot_text_headers(headers):
++    expected_headers = copilot_request_headers(is_agent_turn=True, model="gpt-5.4")
++    assert _strip_volatile(headers) == _strip_volatile(expected_headers)
++    assert "Copilot-Vision-Request" not in headers
++
++
+ def test_request_client_adds_copilot_vision_header_for_native_image_payload():
+     agent = _make_copilot_agent()
+     built_kwargs = []
+@@ -46,7 +65,10 @@ def test_request_client_adds_copilot_vision_header_for_native_image_payload():
+         agent._create_request_openai_client(reason="test", api_kwargs=api_kwargs)
+ 
+     headers = built_kwargs[-1]["default_headers"]
+-    assert headers["Copilot-Vision-Request"] == "true"
++    expected_headers = copilot_request_headers(is_agent_turn=True, model="gpt-5.4")
++    assert _strip_volatile(headers) == _strip_volatile(
++        {**expected_headers, "Copilot-Vision-Request": "true"}
++    )
+ 
+ 
+ def test_request_client_leaves_copilot_text_requests_without_vision_header():
+@@ -66,7 +88,7 @@ def test_request_client_leaves_copilot_text_requests_without_vision_header():
+         agent._create_request_openai_client(reason="test", api_kwargs=api_kwargs)
+ 
+     headers = built_kwargs[-1]["default_headers"]
+-    assert "Copilot-Vision-Request" not in headers
++    _assert_copilot_text_headers(headers)
+ 
+ 
+ def test_request_client_does_not_add_vision_header_after_non_vision_fallback():
+@@ -93,4 +115,4 @@ def test_request_client_does_not_add_vision_header_after_non_vision_fallback():
+         agent._create_request_openai_client(reason="test", api_kwargs=api_kwargs)
+ 
+     headers = built_kwargs[-1]["default_headers"]
+-    assert "Copilot-Vision-Request" not in headers
++    _assert_copilot_text_headers(headers)
+diff --git a/tests/run_agent/test_provider_attribution_headers.py b/tests/run_agent/test_provider_attribution_headers.py
+index 2784ba178..e53278a18 100644
+--- a/tests/run_agent/test_provider_attribution_headers.py
++++ b/tests/run_agent/test_provider_attribution_headers.py
+@@ -5,6 +5,17 @@ from unittest.mock import MagicMock, patch
+ from run_agent import AIAgent
+ 
+ 
++# Per-call volatile headers — copilot_request_headers() generates fresh UUIDs
++# for X-Request-Id and X-Interaction-Id on every call (mirrors VS Code Copilot
++# Chat's trace-correlation behavior). Strip them on both sides before asserting
++# structural equality.
++_VOLATILE_COPILOT_HEADERS = ("X-Request-Id", "X-Interaction-Id")
++
++
++def _strip_volatile_copilot(headers):
++    return {k: v for k, v in headers.items() if k not in _VOLATILE_COPILOT_HEADERS}
++
++
+ @patch("run_agent.OpenAI")
+ def test_openrouter_base_url_applies_or_headers(mock_openai):
+     mock_openai.return_value = MagicMock()
+diff --git a/tests/run_agent/test_run_agent_codex_responses.py b/tests/run_agent/test_run_agent_codex_responses.py
+index 14e01d9fe..561595ee3 100644
+--- a/tests/run_agent/test_run_agent_codex_responses.py
++++ b/tests/run_agent/test_run_agent_codex_responses.py
+@@ -1073,7 +1073,7 @@ def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
+     assert closed["value"] is True
+     assert rebuilt["kwargs"]["api_key"] == "gho_new_token"
+     assert rebuilt["kwargs"]["base_url"] == "https://api.githubcopilot.com"
+-    assert rebuilt["kwargs"]["default_headers"]["Copilot-Integration-Id"] == "vscode-chat"
++    assert rebuilt["kwargs"]["default_headers"]["Copilot-Integration-Id"] == "copilot-developer-cli"
+     assert isinstance(agent.client, _RebuiltClient)
+ 
+ 

@@ -1,0 +1,282 @@
+diff --git a/agent/transports/chat_completions.py b/agent/transports/chat_completions.py
+index c0b2a13d2..3d5f7db31 100644
+--- a/agent/transports/chat_completions.py
++++ b/agent/transports/chat_completions.py
+@@ -53,7 +53,7 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) ->
+     if normalized_model.startswith("gemini-2.5-"):
+         return thinking_config
+ 
+-    if effort not in {"minimal", "low", "medium", "high", "xhigh"}:
++    if effort not in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+         effort = "medium"
+ 
+     # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
+@@ -63,13 +63,13 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) ->
+         if "flash" in normalized_model:
+             if effort in {"minimal", "low"}:
+                 thinking_config["thinkingLevel"] = "low"
+-            elif effort in {"high", "xhigh"}:
++            elif effort in {"high", "xhigh", "max"}:
+                 thinking_config["thinkingLevel"] = "high"
+             else:
+                 thinking_config["thinkingLevel"] = "medium"
+         elif "pro" in normalized_model:
+             thinking_config["thinkingLevel"] = (
+-                "high" if effort in {"high", "xhigh"} else "low"
++                "high" if effort in {"high", "xhigh", "max"} else "low"
+             )
+ 
+     return thinking_config
+diff --git a/batch_runner.py b/batch_runner.py
+index 289361989..41abbaca4 100644
+--- a/batch_runner.py
++++ b/batch_runner.py
+@@ -1192,7 +1192,7 @@ def main(
+         providers_order (str): Comma-separated list of OpenRouter providers to try in order (e.g. "anthropic,openai,google")
+         provider_sort (str): Sort providers by "price", "throughput", or "latency" (OpenRouter only)
+         max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
+-        reasoning_effort (str): OpenRouter reasoning effort level: "none", "minimal", "low", "medium", "high", "xhigh" (default: "medium")
++        reasoning_effort (str): OpenRouter reasoning effort level: "none", "minimal", "low", "medium", "high", "xhigh", "max" (default: "medium")
+         reasoning_disabled (bool): Completely disable reasoning/thinking tokens (default: False)
+         prefill_messages_file (str): Path to JSON file containing prefill messages (list of {role, content} dicts)
+         max_samples (int): Only process the first N samples from the dataset (optional, processes all if not set)
+@@ -1261,7 +1261,7 @@ def main(
+         print("🧠 Reasoning: DISABLED (effort=none)")
+     elif reasoning_effort:
+         # Use specified effort level
+-        valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh"]
++        valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+         if reasoning_effort not in valid_efforts:
+             print(f"❌ Error: --reasoning_effort must be one of: {', '.join(valid_efforts)}")
+             return
+diff --git a/gateway/run.py b/gateway/run.py
+index 2672ab43e..0f1001d06 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -3705,7 +3705,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+         """Load reasoning effort from config.yaml.
+ 
+         Reads agent.reasoning_effort from config.yaml. Valid: "none",
+-        "minimal", "low", "medium", "high", "xhigh". Returns None to use
++        "minimal", "low", "medium", "high", "xhigh", "max". Returns None to use
+         default (medium).
+         """
+         from hermes_constants import parse_reasoning_effort
+diff --git a/gateway/slash_commands.py b/gateway/slash_commands.py
+index 4b25d96fd..224cd756c 100644
+--- a/gateway/slash_commands.py
++++ b/gateway/slash_commands.py
+@@ -2147,7 +2147,7 @@ class GatewaySlashCommandsMixin:
+             return t("gateway.reasoning.reset_done")
+         if effort == "none":
+             parsed = {"enabled": False}
+-        elif effort in {"minimal", "low", "medium", "high", "xhigh"}:
++        elif effort in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+             parsed = {"enabled": True, "effort": effort}
+         else:
+             return t(
+diff --git a/hermes_cli/commands.py b/hermes_cli/commands.py
+index 42e51f299..5052c8247 100644
+--- a/hermes_cli/commands.py
++++ b/hermes_cli/commands.py
+@@ -144,8 +144,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
+     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
+                "Configuration"),
+     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
+-               args_hint="[level|show|hide]",
+-               subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "show", "hide", "on", "off")),
++               args_hint="[level|show|hide|full|clamp]",
++               subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "show", "hide", "on", "off", "full", "clamp")),
+     CommandDef("fast", "Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (Normal/Fast)", "Configuration",
+                args_hint="[normal|fast|status]",
+                subcommands=("normal", "fast", "status", "on", "off")),
+diff --git a/hermes_cli/main.py b/hermes_cli/main.py
+index 039eb5d44..9baff1ba2 100644
+--- a/hermes_cli/main.py
++++ b/hermes_cli/main.py
+@@ -3824,7 +3824,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
+             str(effort).strip().lower() for effort in efforts if str(effort).strip()
+         )
+     )
+-    canonical_order = ("minimal", "low", "medium", "high", "xhigh")
++    canonical_order = ("minimal", "low", "medium", "high", "xhigh", "max")
+     ordered = [effort for effort in canonical_order if effort in deduped]
+     ordered.extend(effort for effort in deduped if effort not in canonical_order)
+     if not ordered:
+diff --git a/hermes_cli/models.py b/hermes_cli/models.py
+index f84ac6956..c48133328 100644
+--- a/hermes_cli/models.py
++++ b/hermes_cli/models.py
+@@ -26,7 +26,7 @@ _HERMES_USER_AGENT = f"hermes-cli/{_HERMES_VERSION}"
+ COPILOT_BASE_URL = "https://api.githubcopilot.com"
+ COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
+ COPILOT_EDITOR_VERSION = "vscode/1.104.1"
+-COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
++COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high", "xhigh"]
+ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
+ 
+ 
+diff --git a/hermes_constants.py b/hermes_constants.py
+index a80e97631..257cf9e05 100644
+--- a/hermes_constants.py
++++ b/hermes_constants.py
+@@ -405,13 +405,18 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
+         env["HOME"] = home
+ 
+ 
+-VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
++VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
+ 
+ 
+ def parse_reasoning_effort(effort: str) -> dict | None:
+     """Parse a reasoning effort level into a config dict.
+ 
+-    Valid levels: "none", "minimal", "low", "medium", "high", "xhigh".
++    Valid levels: "none", "minimal", "low", "medium", "high", "xhigh", "max".
++    This is the universal vocabulary of effort words a user may set; the
++    per-model resolver clamps to what each model actually supports (e.g. GPT-5.x
++    tops out at "xhigh", Claude opus-4.7/4.8 accept "max", opus/sonnet-4.6
++    accept "max" but not "xhigh"). Accepting "max" here lets the user request
++    the deepest level; the request path maps it down where unsupported.
+     Returns None when the input is empty or unrecognized (caller uses default).
+     Returns {"enabled": False} for "none".
+     Returns {"enabled": True, "effort": <level>} for valid effort levels.
+diff --git a/run_agent.py b/run_agent.py
+index 7c195b35c..2a4c3b66f 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -4935,15 +4935,42 @@ class AIAgent:
+         else:
+             requested_effort = "medium"
+ 
+-        if requested_effort == "xhigh" and "high" in supported_efforts:
+-            requested_effort = "high"
+-        elif requested_effort not in supported_efforts:
+-            if requested_effort == "minimal" and "low" in supported_efforts:
+-                requested_effort = "low"
+-            elif "medium" in supported_efforts:
+-                requested_effort = "medium"
++        # ``supported_efforts`` is the live Copilot catalog allow-list
++        # (capabilities.supports.reasoning_effort). Honor the requested level
++        # when the catalog says it's supported, including ``xhigh`` for
++        # gpt-5.5/gpt-5.4, which DO support it. Only downgrade when the level
++        # is genuinely absent from the catalog, and annotate the downgrade in
++        # the DEBUG log instead of doing it silently.
++        #
++        # (Previously this force-downgraded xhigh→high unconditionally, a stale
++        #  guard from the free-tier deployment that silently capped every
++        #  gpt-5.x request at "high" even though the paid catalog lists xhigh.)
++        if requested_effort not in supported_efforts:
++            original_effort = requested_effort
++            # Pick the strongest supported level that does not EXCEED the
++            # request (rank-based), instead of snapping to medium. This keeps
++            # "max" → "xhigh" for GPT-5.x (whose ceiling is xhigh) rather than
++            # collapsing a high-effort request down to medium. Falls back to the
++            # weakest supported level only when nothing is at/below the request.
++            _RANK = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
++            try:
++                _req_rank = _RANK.index(requested_effort)
++            except ValueError:
++                _req_rank = len(_RANK) - 1
++            _ranked = [e for e in supported_efforts if e in _RANK]
++            _below = [e for e in _ranked if _RANK.index(e) <= _req_rank]
++            if _below:
++                requested_effort = max(_below, key=lambda e: _RANK.index(e))
++            elif _ranked:
++                requested_effort = min(_ranked, key=lambda e: _RANK.index(e))
+             else:
+                 requested_effort = supported_efforts[0]
++            if requested_effort != original_effort:
++                logger.debug(
++                    "run_agent: reasoning_effort %r not supported by %s "
++                    "(catalog supports %s); using %r",
++                    original_effort, self.model, supported_efforts, requested_effort,
++                )
+ 
+         return {"effort": requested_effort}
+ 
+diff --git a/tests/agent/test_reasoning_max_effort.py b/tests/agent/test_reasoning_max_effort.py
+new file mode 100644
+index 000000000..268a52c04
+--- /dev/null
++++ b/tests/agent/test_reasoning_max_effort.py
+@@ -0,0 +1,79 @@
++"""Tests for the ``max`` reasoning-effort level and the nearest-down clamp.
++
++``max`` is the deepest reasoning-effort word a user can request. It is added to
++the universal vocabulary (`VALID_REASONING_EFFORTS`), and the request-path clamp
++in ``AIAgent._github_models_reasoning_extra_body`` maps it down to the strongest
++level a given model actually supports — e.g. ``max`` → ``xhigh`` for GPT-5.x
++(whose catalog ceiling is ``xhigh``) rather than collapsing to ``medium``.
++"""
++
++import hermes_constants
++
++
++class TestMaxInVocabulary:
++    def test_max_is_valid_effort(self):
++        assert "max" in hermes_constants.VALID_REASONING_EFFORTS
++
++    def test_parse_reasoning_effort_accepts_max(self):
++        assert hermes_constants.parse_reasoning_effort("max") == {
++            "enabled": True,
++            "effort": "max",
++        }
++
++    def test_parse_reasoning_effort_still_rejects_garbage(self):
++        assert hermes_constants.parse_reasoning_effort("ultra") is None
++
++    def test_none_still_disables(self):
++        assert hermes_constants.parse_reasoning_effort("none") == {"enabled": False}
++
++
++class TestNearestDownClamp:
++    """Exercises the REAL clamp in
++    AIAgent._github_models_reasoning_extra_body by binding the unbound method to
++    a lightweight stub (the method only reads self.model + self.reasoning_config
++    and calls github_model_reasoning_efforts), so we test shipped code, not a
++    re-implementation.
++    """
++
++    @staticmethod
++    def _clamp(requested_effort, supported_efforts, monkeypatch):
++        import types
++        import run_agent
++
++        monkeypatch.setattr(
++            "hermes_cli.models.github_model_reasoning_efforts",
++            lambda model, **kw: list(supported_efforts),
++        )
++        stub = types.SimpleNamespace(
++            model="some-model",
++            reasoning_config={"enabled": True, "effort": requested_effort},
++        )
++        result = run_agent.AIAgent._github_models_reasoning_extra_body(stub)
++        assert result is not None
++        return result["effort"]
++
++    def test_max_maps_to_xhigh_for_gpt5(self, monkeypatch):
++        # GPT-5.x catalog tops out at xhigh; max must land on xhigh, not medium.
++        supported = ["minimal", "low", "medium", "high", "xhigh"]
++        assert self._clamp("max", supported, monkeypatch) == "xhigh"
++
++    def test_max_honored_when_supported(self, monkeypatch):
++        supported = ["low", "medium", "high", "xhigh", "max"]
++        assert self._clamp("max", supported, monkeypatch) == "max"
++
++    def test_xhigh_no_longer_force_downgraded_to_high(self, monkeypatch):
++        # The old guard collapsed xhigh→high unconditionally; now xhigh is kept
++        # when the catalog supports it.
++        supported = ["minimal", "low", "medium", "high", "xhigh"]
++        assert self._clamp("xhigh", supported, monkeypatch) == "xhigh"
++
++    def test_unsupported_high_picks_strongest_at_or_below(self, monkeypatch):
++        # Request high, catalog only has low/medium → medium (nearest down).
++        assert self._clamp("high", ["low", "medium"], monkeypatch) == "medium"
++
++    def test_falls_back_to_weakest_when_nothing_at_or_below(self, monkeypatch):
++        # Request minimal, catalog only has high → high (weakest available).
++        assert self._clamp("minimal", ["high", "xhigh"], monkeypatch) == "high"
++
++    def test_single_supported_level(self, monkeypatch):
++        assert self._clamp("max", ["medium"], monkeypatch) == "medium"

@@ -1,0 +1,283 @@
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index 2d4432413..3e9cc825a 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -1095,6 +1095,17 @@ def init_agent(
+     agent._parent_session_id = parent_session_id
+     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
+     agent._session_db_created = False  # DB row deferred to run_conversation()
++    # Most agents own their session row and should finalize it on close().
++    # Some temporary helper agents (manual compression / session-hygiene /
++    # background-review forks) rotate or share the session forward to a
++    # continuation row that must remain open after the helper is torn down;
++    # those callers explicitly set this flag to False.
++    agent._end_session_on_close = True
++    # When True, this agent NEVER persists to the canonical session store
++    # (state.db) or the JSON snapshot, regardless of session_id. Set on the
++    # background skill/memory review fork so its harness turn can't leak into
++    # the user's real session and hijack the next live turn. Default False.
++    agent._persist_disabled = False
+     agent._session_init_model_config = {
+         "max_iterations": agent.max_iterations,
+         "reasoning_config": reasoning_config,
+diff --git a/agent/background_review.py b/agent/background_review.py
+index c809b4960..1fa8610d4 100644
+--- a/agent/background_review.py
++++ b/agent/background_review.py
+@@ -547,6 +547,20 @@ def _run_review_in_thread(
+             review_agent._user_profile_enabled = agent._user_profile_enabled
+             review_agent._memory_nudge_interval = 0
+             review_agent._skill_nudge_interval = 0
++            # PERSISTENCE ISOLATION (the curator-takeover root cause): the fork
++            # shares the parent's session_id (set below, for prompt-cache
++            # warmth), so without this it would write its harness turn ("Review
++            # the conversation above and update the skill library…") + its own
++            # response straight into the user's REAL session in state.db. On the
++            # user's next live turn the agent re-reads that injected user message
++            # as a standing instruction and "becomes" the curator, refusing the
++            # actual task. _persist_disabled hard-stops every DB write/lazy-open
++            # path (_flush_messages_to_session_db, _ensure_db_session,
++            # _get_session_db_for_recall); the review writes only to the skill
++            # and memory stores via its tools, which is all it needs.
++            review_agent._persist_disabled = True
++            review_agent._session_db = None
++            review_agent._session_json_enabled = False
+             # Suppress all status/warning emits from the fork so the
+             # user only sees the final successful-action summary.
+             # Without this, mid-review "Iteration budget exhausted",
+diff --git a/hermes_state.py b/hermes_state.py
+index 8847593d4..9d82eb211 100644
+--- a/hermes_state.py
++++ b/hermes_state.py
+@@ -184,6 +184,61 @@ def get_last_init_error() -> Optional[str]:
+     return _last_init_error
+ 
+ 
++# Distinctive opening shared by both background-review harness prompts
++# (_SKILL_REVIEW_PROMPT and _MEMORY_REVIEW_PROMPT in agent/background_review.py).
++# Matched case-sensitively against the leading content of a user/system message.
++_REVIEW_HARNESS_PREFIXES = (
++    "Review the conversation above and update the skill library",
++    "Review the conversation above and consider saving to memory",
++)
++
++
++def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
++    """True when ``msg`` is a persisted background-review harness prompt.
++
++    These are user/system turns the forked skill/memory review agent wrote into
++    a real session in older builds (before the ``_persist_disabled`` isolation
++    fix). They instruct the agent to act as the curator under a hard tool
++    restriction, so replaying them as live history hijacks the session.
++    """
++    if not isinstance(msg, dict):
++        return False
++    if msg.get("role") not in {"user", "system"}:
++        return False
++    content = msg.get("content")
++    if not isinstance(content, str):
++        return False
++    head = content.lstrip()
++    return any(head.startswith(p) for p in _REVIEW_HARNESS_PREFIXES)
++
++
++def _strip_background_review_harness(
++    messages: List[Dict[str, Any]],
++) -> List[Dict[str, Any]]:
++    """Drop background-review harness messages and the curator-mode assistant
++    reply that immediately followed each one.
++
++    Walk the list once; when a harness user/system message is found, skip it and
++    also skip the next message if it is the assistant turn that answered it.
++    Everything else passes through untouched and in order.
++    """
++    if not messages:
++        return messages
++    out: List[Dict[str, Any]] = []
++    skip_next_assistant = False
++    for msg in messages:
++        if _is_background_review_harness_message(msg):
++            skip_next_assistant = True
++            continue
++        if skip_next_assistant:
++            skip_next_assistant = False
++            if isinstance(msg, dict) and msg.get("role") == "assistant":
++                # The curator-mode reply to the harness prompt — drop it.
++                continue
++        out.append(msg)
++    return out
++
++
+ def format_session_db_unavailable(prefix: str = "Session database not available") -> str:
+     """Format a user-facing 'session DB unavailable' message with cause.
+ 
+@@ -3085,6 +3140,17 @@ class SessionDB:
+             if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
+                 continue
+             messages.append(msg)
++        # DEFENSE-IN-DEPTH against background-review session pollution: a forked
++        # skill/memory review that (in older builds, before the _persist_disabled
++        # fix) shared the parent's session_id wrote its harness turn into this
++        # real session. The harness is a user/system message instructing the
++        # agent to "Review the conversation above and update the skill library /
++        # save to memory" under a hard tool restriction; re-loading it as live
++        # history makes the agent adopt the curator role and refuse the user's
++        # actual task. Strip any such harness message AND the curator-mode
++        # assistant reply immediately following it, so a polluted session
++        # resumes clean even if stray rows exist.
++        messages = _strip_background_review_harness(messages)
+         return messages
+ 
+     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
+diff --git a/run_agent.py b/run_agent.py
+index 7c195b35c..c32563007 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -497,6 +497,12 @@ class AIAgent:
+         opening the default state DB instead of making the advertised
+         ``session_search`` tool unusable.
+         """
++        # Persistence-isolated forks (background review) must not lazily open the
++        # canonical state DB: doing so would re-arm _flush_messages_to_session_db
++        # to write the fork's harness turn into the user's real session. Recall
++        # degrades to None for them (they don't use session_search anyway).
++        if getattr(self, "_persist_disabled", False):
++            return None
+         if self._session_db is not None:
+             return self._session_db
+         try:
+@@ -510,6 +516,8 @@ class AIAgent:
+ 
+     def _ensure_db_session(self) -> None:
+         """Create session DB row on first use. Disables _session_db on failure."""
++        if getattr(self, "_persist_disabled", False):
++            return
+         if self._session_db_created or not self._session_db:
+             return
+         source = self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+@@ -1573,6 +1581,15 @@ class AIAgent:
+         duplicate-write bug (#860) without relying on positional slices that
+         can drift after message-sequence repair.
+         """
++        # Persistence-isolated agents (e.g. the background skill/memory review
++        # fork) must NEVER write into the canonical session store. The fork
++        # shares the parent's session_id for prompt-cache warmth, so any write
++        # here would land its harness turn ("Review the conversation above and
++        # update the skill library…") inside the user's real session history,
++        # where the next live turn re-reads it as an instruction and the agent
++        # "becomes" the curator. Hard-stop before any DB touch.
++        if getattr(self, "_persist_disabled", False):
++            return
+         if not self._session_db:
+             return
+         self._apply_persist_user_message_override(messages)
+diff --git a/tests/test_background_review_session_isolation.py b/tests/test_background_review_session_isolation.py
+new file mode 100644
+index 000000000..66bb507d7
+--- /dev/null
++++ b/tests/test_background_review_session_isolation.py
+@@ -0,0 +1,104 @@
++"""Tests for background-review session-store isolation (hermes_state).
++
++The background skill/memory review fork shares the parent's ``session_id`` for
++prompt-cache warmth. Without the ``_persist_disabled`` isolation it wrote its
++harness turn ("Review the conversation above and update the skill library…")
++plus its curator-mode reply into the user's REAL session, and the next live
++turn re-read that injected user message as a standing instruction — the agent
++"became" the curator and refused the actual task.
++
++``_strip_background_review_harness`` is the load-on-read defense-in-depth that
++removes any such stray harness message (and the assistant reply that followed
++it) so a polluted session resumes clean.
++"""
++
++from hermes_state import (
++    _is_background_review_harness_message,
++    _strip_background_review_harness,
++)
++
++
++class TestIsBackgroundReviewHarnessMessage:
++    def test_matches_skill_review_prompt(self):
++        msg = {"role": "user", "content": "Review the conversation above and update the skill library now."}
++        assert _is_background_review_harness_message(msg) is True
++
++    def test_matches_memory_review_prompt(self):
++        msg = {"role": "system", "content": "Review the conversation above and consider saving to memory."}
++        assert _is_background_review_harness_message(msg) is True
++
++    def test_matches_after_leading_whitespace(self):
++        msg = {"role": "user", "content": "\n\n   Review the conversation above and update the skill library."}
++        assert _is_background_review_harness_message(msg) is True
++
++    def test_ignores_normal_user_message(self):
++        msg = {"role": "user", "content": "Please review my PR and update the changelog."}
++        assert _is_background_review_harness_message(msg) is False
++
++    def test_ignores_assistant_role(self):
++        # An assistant message that quotes the harness text is not itself a harness prompt.
++        msg = {"role": "assistant", "content": "Review the conversation above and update the skill library"}
++        assert _is_background_review_harness_message(msg) is False
++
++    def test_ignores_non_string_content(self):
++        msg = {"role": "user", "content": [{"type": "text", "text": "Review the conversation above and update the skill library"}]}
++        assert _is_background_review_harness_message(msg) is False
++
++    def test_ignores_non_dict(self):
++        assert _is_background_review_harness_message("not a dict") is False  # type: ignore[arg-type]
++
++
++class TestStripBackgroundReviewHarness:
++    def test_strips_harness_and_following_assistant_reply(self):
++        messages = [
++            {"role": "user", "content": "What's the weather?"},
++            {"role": "assistant", "content": "It's sunny."},
++            {"role": "user", "content": "Review the conversation above and update the skill library."},
++            {"role": "assistant", "content": "Nothing to save."},
++            {"role": "user", "content": "Thanks, now book a flight."},
++        ]
++        out = _strip_background_review_harness(messages)
++        contents = [m["content"] for m in out]
++        assert contents == ["What's the weather?", "It's sunny.", "Thanks, now book a flight."]
++
++    def test_strips_harness_without_following_assistant(self):
++        # Harness message is the last turn — nothing to skip after it.
++        messages = [
++            {"role": "user", "content": "Hi"},
++            {"role": "user", "content": "Review the conversation above and consider saving to memory."},
++        ]
++        out = _strip_background_review_harness(messages)
++        assert out == [{"role": "user", "content": "Hi"}]
++
++    def test_does_not_skip_user_turn_after_harness(self):
++        # If the message after the harness is a USER turn (not the curator reply),
++        # it must be preserved — only the immediately-following ASSISTANT reply is dropped.
++        messages = [
++            {"role": "user", "content": "Review the conversation above and update the skill library."},
++            {"role": "user", "content": "Actually, ignore that and help me debug."},
++        ]
++        out = _strip_background_review_harness(messages)
++        assert out == [{"role": "user", "content": "Actually, ignore that and help me debug."}]
++
++    def test_clean_history_passes_through_unchanged(self):
++        messages = [
++            {"role": "user", "content": "Question one"},
++            {"role": "assistant", "content": "Answer one"},
++            {"role": "user", "content": "Question two"},
++        ]
++        assert _strip_background_review_harness(messages) == messages
++
++    def test_empty_list(self):
++        assert _strip_background_review_harness([]) == []
++
++    def test_multiple_harness_pairs(self):
++        messages = [
++            {"role": "user", "content": "Review the conversation above and update the skill library."},
++            {"role": "assistant", "content": "Nothing to save."},
++            {"role": "user", "content": "real question"},
++            {"role": "assistant", "content": "real answer"},
++            {"role": "user", "content": "Review the conversation above and consider saving to memory."},
++            {"role": "assistant", "content": "Saved one entry."},
++        ]
++        out = _strip_background_review_harness(messages)
++        assert [m["content"] for m in out] == ["real question", "real answer"]

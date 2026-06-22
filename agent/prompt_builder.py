@@ -231,7 +231,7 @@ SKILL_GRAPH_IDENTITY = (
     "6. Follow its instructions to complete the task.\n"
     "7. Call skill_load(\"quality-gate\") for final validation.\n"
     "\n"
-    "Never use skills_list(), find, ls, or cat before step 4.\n"
+    "Never use skills_list(), search_files, ls, or cat before step 4.\n"
     "Never plan from scratch — the graph has the skills you need."
 )
 

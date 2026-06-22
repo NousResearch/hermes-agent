@@ -36,7 +36,7 @@ tells you which skill to search for via the knowledge graph.
 5. skill_load("result-name") → execute
 6. skill_load("quality-gate") → final validation
 
-Never use find/ls/cat before step 4.
+Never use search_files / shell ls/cat before step 4.
 Never plan from scratch — the graph has the skills you need.
 ```
 

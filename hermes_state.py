@@ -4615,8 +4615,19 @@ class SessionDB:
         topic, causing tool progress, approvals, and replies to land
         in the wrong place.  Issue #31501.
 
-        Returns the number of rows deleted (0 when the binding was
-        already absent or the topic-mode tables haven't been
+        When this prune removes the chat's *last* remaining binding,
+        the chat's row in ``telegram_dm_topic_mode`` is also flipped to
+        ``enabled = 0`` in the same transaction.  Otherwise the chat
+        would be left in topic mode with zero lanes — and
+        ``gateway.run._recover_telegram_topic_thread_id`` keeps treating
+        the chat as topic-enabled, lobby messages keep hunting for a
+        binding that no longer exists, and a user who disabled topics in
+        the Telegram client (rather than via ``/topic off``) stays stuck
+        until the next send happens to fail. Clearing the flag makes
+        recovery fully stand down once the dead topics are gone.
+
+        Returns the number of binding rows deleted (0 when the binding
+        was already absent or the topic-mode tables haven't been
         migrated yet — both are silent no-ops; we never raise from
         a cleanup hot path).
         """
@@ -4637,6 +4648,29 @@ class SessionDB:
             except sqlite3.OperationalError:
                 # Tables don't exist yet — nothing to prune.
                 deleted["count"] = 0
+                return
+            if not deleted["count"]:
+                return
+            # If that was the chat's last binding, disable topic mode for
+            # the chat so recovery stops steering lobby messages at a now
+            # empty lane set. Same transaction → no read-after-prune race.
+            try:
+                remaining = conn.execute(
+                    """
+                    SELECT 1 FROM telegram_dm_topic_bindings
+                    WHERE chat_id = ? LIMIT 1
+                    """,
+                    (chat_id,),
+                ).fetchone()
+                if remaining is None:
+                    conn.execute(
+                        "UPDATE telegram_dm_topic_mode "
+                        "SET enabled = 0, updated_at = ? WHERE chat_id = ?",
+                        (time.time(), chat_id),
+                    )
+            except sqlite3.OperationalError:
+                # telegram_dm_topic_mode absent — binding prune still stands.
+                pass
 
         self._execute_write(_do)
         return deleted["count"]

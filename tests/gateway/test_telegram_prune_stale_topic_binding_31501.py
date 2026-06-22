@@ -155,6 +155,71 @@ class TestDeleteTelegramTopicBinding:
         db.close()
 
 
+class TestPruneClearsTopicModeWhenLastBindingGone:
+    """Proactive cleanup (#31501 follow-up): pruning the chat's final
+    binding must also flip ``telegram_dm_topic_mode.enabled`` to 0 so
+    recovery fully stands down — covers the user who disabled topics in
+    the Telegram client without ever running ``/topic off``."""
+
+    def test_clears_enabled_when_last_binding_pruned(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.enable_telegram_topic_mode(
+            chat_id="5595856929", user_id="5595856929",
+        )
+        _seed_binding(db, thread_id="15287")
+        assert db.is_telegram_topic_mode_enabled(
+            chat_id="5595856929", user_id="5595856929",
+        ) is True
+
+        removed = db.delete_telegram_topic_binding(
+            chat_id="5595856929", thread_id="15287",
+        )
+
+        assert removed == 1
+        assert db.is_telegram_topic_mode_enabled(
+            chat_id="5595856929", user_id="5595856929",
+        ) is False
+        db.close()
+
+    def test_keeps_enabled_while_other_bindings_remain(self, tmp_path):
+        # Deleting one of several topics must NOT disable topic mode —
+        # the chat still has healthy lanes that recovery should serve.
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.enable_telegram_topic_mode(
+            chat_id="5595856929", user_id="5595856929",
+        )
+        _seed_binding(db, thread_id="15287", session_id="sess-stale")
+        _seed_binding(db, thread_id="15418", session_id="sess-fresh")
+
+        db.delete_telegram_topic_binding(
+            chat_id="5595856929", thread_id="15287",
+        )
+
+        assert db.is_telegram_topic_mode_enabled(
+            chat_id="5595856929", user_id="5595856929",
+        ) is True
+        db.close()
+
+    def test_noop_prune_leaves_enabled_untouched(self, tmp_path):
+        # A prune that matches no row must not flip the flag — there's
+        # still a live binding the (wrong) thread_id didn't match.
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.enable_telegram_topic_mode(
+            chat_id="5595856929", user_id="5595856929",
+        )
+        _seed_binding(db, thread_id="15287")
+
+        removed = db.delete_telegram_topic_binding(
+            chat_id="5595856929", thread_id="99999",
+        )
+
+        assert removed == 0
+        assert db.is_telegram_topic_mode_enabled(
+            chat_id="5595856929", user_id="5595856929",
+        ) is True
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Adapter glue — _prune_stale_dm_topic_binding
 # ---------------------------------------------------------------------------

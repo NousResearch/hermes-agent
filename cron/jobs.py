@@ -1187,6 +1187,13 @@ def advance_next_run(job_id: str) -> bool:
 
     One-shot jobs are left unchanged so they can still retry on restart.
 
+    CRASH WINDOW: if the gateway crashes AFTER this call but BEFORE
+    mark_job_run() records completion, next_run_at points to the next period
+    while last_run_at remains null.  On restart, the job looks "not yet due"
+    and is permanently skipped for that occurrence.
+    Mitigation: recover_crash_window_jobs() detects and resets these victims
+    at startup, before the first tick.
+
     Returns True if next_run_at was advanced, False otherwise.
     """
     with _jobs_lock():

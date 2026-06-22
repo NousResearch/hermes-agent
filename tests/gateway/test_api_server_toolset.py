@@ -1,5 +1,5 @@
 """Tests for hermes-api-server toolset and API server tool availability."""
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 from toolsets import resolve_toolset, get_toolset, validate_toolset
@@ -126,26 +126,91 @@ class TestApiServerAdapterToolset:
             assert sorted(toolsets) == ["terminal", "web"]
 
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
-    def test_connect_triggers_mcp_discovery(self):
-        """connect() kicks off MCP discovery so REST/API sessions get MCP tools.
+    def test_create_agent_waits_for_mcp_discovery_before_tool_snapshot(self):
+        """Agent construction waits briefly for MCP discovery before tools snapshot.
 
-        Regression for #50248: API sessions had no MCP tools because the
-        api_server adapter never loaded configured MCP servers, unlike the
-        TUI/gateway/ACP/CLI entrypoints which all run MCP discovery at startup.
-        The adapter must call start_background_mcp_discovery() from connect()
-        (idempotent + non-blocking)."""
+        Regression: connect() starts MCP discovery in the background, but the
+        first REST request can call _create_agent() immediately. AIAgent
+        snapshots tools during construction, so the API path must perform the
+        same bounded wait as the CLI before constructing the agent.
+        """
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+        calls = []
+
+        def _wait():
+            calls.append("wait")
+
+        def _make_agent(*args, **kwargs):
+            calls.append("agent")
+            return MagicMock()
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_gateway_model") as mock_model, \
+             patch("gateway.run._load_gateway_config") as mock_config, \
+             patch("hermes_cli.mcp_startup.wait_for_mcp_discovery", side_effect=_wait) as mock_wait, \
+             patch("run_agent.AIAgent", side_effect=_make_agent) as mock_agent_cls:
+
+            mock_kwargs.return_value = {"api_key": "test-key", "base_url": None,
+                                        "provider": None, "api_mode": None,
+                                        "command": None, "args": []}
+            mock_model.return_value = "test/model"
+            mock_config.return_value = {}
+
+            adapter._create_agent()
+
+        mock_wait.assert_called_once()
+        mock_agent_cls.assert_called_once()
+        assert calls == ["wait", "agent"]
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_connect_missing_api_key_does_not_trigger_mcp_discovery(self):
+        """Rejected API-server startup must not spawn MCP subprocesses/connections."""
         import asyncio
         from gateway.platforms.api_server import APIServerAdapter
         from gateway.config import PlatformConfig
 
         adapter = APIServerAdapter(PlatformConfig())
-        # Empty API key makes connect() return early AFTER the MCP discovery
-        # kickoff, so no real web server binds during the test.
         adapter._api_key = ""
         with patch("hermes_cli.mcp_startup.start_background_mcp_discovery") as mock_disc:
             result = asyncio.run(adapter.connect())
 
         assert result is False
+        mock_disc.assert_not_called()
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_connect_valid_api_key_triggers_mcp_discovery(self):
+        """connect() kicks off MCP discovery only after API key startup gates pass.
+
+        Regression for #50248: API sessions had no MCP tools because the
+        api_server adapter never loaded configured MCP servers, unlike the
+        TUI/gateway/ACP/CLI entrypoints which all run MCP discovery at startup.
+        The adapter must call start_background_mcp_discovery() from connect()
+        for a valid keyed server, while refused startups must not create MCP
+        subprocess/remote side effects.
+        """
+        import asyncio
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+        adapter._api_key = "valid-test-key"
+        adapter._host = "127.0.0.1"
+        with patch("socket.socket") as mock_socket_cls, \
+             patch("hermes_cli.mcp_startup.start_background_mcp_discovery") as mock_disc, \
+             patch("gateway.platforms.api_server.web.AppRunner") as mock_runner_cls, \
+             patch("gateway.platforms.api_server.web.TCPSite") as mock_site_cls:
+            mock_socket_cls.return_value.__enter__.return_value.connect.side_effect = ConnectionRefusedError
+            mock_runner_cls.return_value.setup = AsyncMock()
+            mock_runner_cls.return_value.cleanup = AsyncMock()
+            mock_site_cls.return_value.start = AsyncMock()
+            mock_site_cls.return_value.stop = AsyncMock()
+
+            result = asyncio.run(adapter.connect())
+
+        assert result is True
         mock_disc.assert_called_once()
         assert mock_disc.call_args.kwargs.get("logger") is not None
         assert "mcp" in mock_disc.call_args.kwargs.get("thread_name", "")

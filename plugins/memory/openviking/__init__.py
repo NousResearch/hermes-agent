@@ -91,12 +91,11 @@ _MEMORY_WRITE_TARGET_SUBDIR_MAP = {
     "user": "preferences",
     "memory": "patterns",
 }
-_DERIVED_MEMORY_FILENAMES = {
+# OpenViking-generated markdown summaries. Non-.md sidecars such as
+# .relations.json are rejected earlier by the exact memory-file check.
+_GENERATED_MEMORY_SUMMARY_FILENAMES = {
     ".abstract.md",
     ".overview.md",
-    ".read.md",
-    ".full.md",
-    ".relations.json",
 }
 _LOCAL_OPENVIKING_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _LOCAL_OPENVIKING_AUTOSTART_TIMEOUT = 60.0
@@ -620,7 +619,7 @@ def _validate_forget_memory_uri(raw_uri: Any) -> tuple[Optional[str], Optional[s
         return None, "viking_forget only deletes user memory file URIs"
 
     filename = uri.rsplit("/", 1)[-1]
-    if filename in _DERIVED_MEMORY_FILENAMES:
+    if filename in _GENERATED_MEMORY_SUMMARY_FILENAMES:
         return None, "viking_forget cannot delete generated memory summary files"
 
     return uri, None

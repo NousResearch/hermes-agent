@@ -15,15 +15,10 @@ def _memory_tool_result_succeeded(result: Any) -> bool:
         except Exception:
             return False
 
-    if isinstance(result, dict):
-        if result.get("success") is False:
-            return False
-        if result.get("staged") is True:
-            return False
-        if "error" in result and result.get("success") is not True:
-            return False
+    if not isinstance(result, dict):
+        return False
 
-    return True
+    return result.get("success") is True and result.get("staged") is not True
 
 
 def collect_memory_write_notifications(

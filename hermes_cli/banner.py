@@ -575,6 +575,18 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     enabled_toolsets = enabled_toolsets or []
 
     _, unavailable_toolsets = check_tool_availability(quiet=True)
+    # The availability check walks the GLOBAL toolset registry, so it includes
+    # toolsets that aren't part of this agent's platform set at all (e.g.
+    # `discord`, `feishu_doc` on a CLI session). Those must never surface in the
+    # banner's "Available Tools" — they aren't exposed to the agent. Restrict to
+    # toolsets actually enabled for this agent; a toolset that's enabled but
+    # currently has unmet deps legitimately shows as disabled/lazy below.
+    _enabled_ts = {str(t) for t in enabled_toolsets}
+    if _enabled_ts:
+        unavailable_toolsets = [
+            item for item in unavailable_toolsets
+            if str(item.get("id", item.get("name", ""))) in _enabled_ts
+        ]
     disabled_tools = set()
     # Tools whose toolset has a check_fn are lazy-initialized (e.g. honcho,
     # homeassistant) — they show as unavailable at banner time because the
@@ -722,10 +734,21 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     right_lines.append("")
     right_lines.append(f"[bold {accent}]Available Skills[/]")
-    skills_by_category = get_available_skills()
-    total_skills = sum(len(s) for s in skills_by_category.values())
+    # The skills catalog is only reachable when the `skills` toolset is enabled
+    # (it exposes skill_view / skill_manage). When it's disabled — e.g. a Blank
+    # Slate install — the agent literally cannot load any skill, so advertising
+    # the on-disk catalog here is misleading. Reflect the real state instead.
+    _skills_enabled = (not _enabled_ts) or ("skills" in _enabled_ts)
+    if _skills_enabled:
+        skills_by_category = get_available_skills()
+        total_skills = sum(len(s) for s in skills_by_category.values())
+    else:
+        skills_by_category = {}
+        total_skills = 0
 
-    if skills_by_category:
+    if not _skills_enabled:
+        right_lines.append(f"[dim {dim}]Skills toolset disabled[/]")
+    elif skills_by_category:
         for category in sorted(skills_by_category.keys()):
             skill_names = sorted(skills_by_category[category])
             if len(skill_names) > 8:

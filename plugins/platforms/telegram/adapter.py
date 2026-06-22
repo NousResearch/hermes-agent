@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import (
+        InlineQueryResultCachedAudio,
+        InlineQueryResultArticle,
+        InputTextMessageContent,
+    )
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -31,6 +36,7 @@ try:
         Application,
         CommandHandler,
         CallbackQueryHandler,
+        InlineQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         filters,
@@ -45,10 +51,14 @@ except ImportError:
     Message = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
+    InlineQueryResultCachedAudio = Any
+    InlineQueryResultArticle = Any
+    InputTextMessageContent = Any
     LinkPreviewOptions = None
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
+    InlineQueryHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
     filters = None
@@ -120,7 +130,8 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler
+    global InlineQueryResultCachedAudio, InlineQueryResultArticle, InputTextMessageContent
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -132,6 +143,11 @@ def check_telegram_requirements() -> bool:
     try:
         from telegram import Update as _Update, Bot as _Bot, Message as _Message
         from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
+        from telegram import (
+            InlineQueryResultCachedAudio as _IQRCA,
+            InlineQueryResultArticle as _IQRArt,
+            InputTextMessageContent as _ITMC,
+        )
         try:
             from telegram import LinkPreviewOptions as _LPO
         except ImportError:
@@ -139,6 +155,7 @@ def check_telegram_requirements() -> bool:
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
+            InlineQueryHandler as _IQH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
@@ -151,10 +168,14 @@ def check_telegram_requirements() -> bool:
     Message = _Message
     InlineKeyboardButton = _IKB
     InlineKeyboardMarkup = _IKM
+    InlineQueryResultCachedAudio = _IQRCA
+    InlineQueryResultArticle = _IQRArt
+    InputTextMessageContent = _ITMC
     LinkPreviewOptions = _LPO
     Application = _App
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
+    InlineQueryHandler = _IQH
     TelegramMessageHandler = _MH
     ContextTypes = _CT
     filters = _filters
@@ -615,6 +636,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._guest_only_chats: set = set()
         # accumulated send() content for guest chats; flushed via answerGuestQuery in on_processing_complete
         self._guest_reply_buffer: Dict[str, str] = {}
+        # inline query router (initialised in connect() once self._bot is available)
+        self._inline_router: Optional[Any] = None
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -2215,35 +2238,47 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
-            
-            # Register handlers
-            self._app.add_handler(TelegramMessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                self._handle_text_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.COMMAND,
-                self._handle_command
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                self._handle_location_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                self._handle_media_message
-            ))
-            # Handle inline keyboard button callbacks (update prompts)
-            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            # Handle guest_message updates (Bot API 10.0 — not yet in PTB typed layer;
-            # the raw payload arrives in update.api_kwargs["guest_message"]).
+
+            # Inline router — reads inline_tools.yaml from the Hermes config directory
             try:
-                from telegram.ext import TypeHandler as _TypeHandler
-                self._app.add_handler(
-                    _TypeHandler(Update, self._handle_guest_message_update), group=1
-                )
-            except Exception as _th_err:
-                logger.warning("[%s] Could not register guest_message TypeHandler: %s", self.name, _th_err)
+                from gateway.platforms.telegram_inline_router import TelegramInlineRouter
+                self._inline_router = TelegramInlineRouter(self._bot)
+            except Exception as _irt_err:
+                logger.warning("[%s] inline router init failed: %s", self.name, _irt_err)
+
+            # Register handlers
+            _inline_only = self.config.extra.get("inline_only_mode", False) if getattr(self.config, "extra", None) else False
+            if not _inline_only:
+                self._app.add_handler(TelegramMessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    self._handle_text_message
+                ))
+                self._app.add_handler(TelegramMessageHandler(
+                    filters.COMMAND,
+                    self._handle_command
+                ))
+                self._app.add_handler(TelegramMessageHandler(
+                    filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+                    self._handle_location_message
+                ))
+                self._app.add_handler(TelegramMessageHandler(
+                    filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+                    self._handle_media_message
+                ))
+                # Handle inline keyboard button callbacks (update prompts)
+                self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Handle inline queries (e.g. @botname <song name or spotify link>)
+            self._app.add_handler(InlineQueryHandler(self._handle_inline_query))
+            if not _inline_only:
+                # Handle guest_message updates (Bot API 10.0 — not yet in PTB typed layer;
+                # the raw payload arrives in update.api_kwargs["guest_message"]).
+                try:
+                    from telegram.ext import TypeHandler as _TypeHandler
+                    self._app.add_handler(
+                        _TypeHandler(Update, self._handle_guest_message_update), group=1
+                    )
+                except Exception as _th_err:
+                    logger.warning("[%s] Could not register guest_message TypeHandler: %s", self.name, _th_err)
 
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -6181,6 +6216,83 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    async def _handle_inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Dispatch inline queries via TelegramInlineRouter."""
+        iq = getattr(update, "inline_query", None)
+        if not iq:
+            return
+
+        # Guard: drop if inline disabled in config (platforms.telegram.inline.enabled: false)
+        _inline_cfg = self.config.extra.get("inline", {}) if getattr(self.config, "extra", None) else {}
+        if isinstance(_inline_cfg, dict) and not _inline_cfg.get("enabled", True):
+            logger.debug("[%s] inline queries disabled in config — dropping", self.name)
+            return
+
+        query = (iq.query or "").strip()
+        if not query:
+            try:
+                from telegram import InlineQueryResultsButton as _IQBtn
+                _btn = _IQBtn(text="Type a query to get started", start_parameter="inline_help")
+                await iq.answer([], cache_time=0, button=_btn)
+            except Exception:
+                await iq.answer([], cache_time=0)
+            return
+
+        if not self._inline_router:
+            await iq.answer([], cache_time=0)
+            return
+
+        user_id = iq.from_user.id
+        cache_key = query.lower()
+        cache = self._inline_router.cache
+
+        entry = cache.get(cache_key)
+        if entry:
+            status = entry.get("status")
+            if status == "ready":
+                result = InlineQueryResultCachedAudio(
+                    id=cache_key[:64],
+                    audio_file_id=entry["file_id"],
+                    caption="",
+                )
+                await iq.answer([result], cache_time=300)
+                return
+            if status == "downloading":
+                await iq.answer([InlineQueryResultArticle(
+                    id="preparing",
+                    title="Downloading... try again in a few seconds",
+                    description=query[:80],
+                    input_message_content=InputTextMessageContent(
+                        message_text=f"Downloading: {query[:80]}"
+                    ),
+                )], cache_time=0)
+                return
+            if status == "failed":
+                err_msg = entry.get("error", "unknown error")[:60]
+                cache.pop(cache_key, None)  # evict so retry kicks a fresh download
+                await iq.answer([InlineQueryResultArticle(
+                    id="failed",
+                    title="Download failed — try again",
+                    description=err_msg,
+                    input_message_content=InputTextMessageContent(
+                        message_text=f"Download failed: {err_msg}"
+                    ),
+                )], cache_time=0)
+                return
+
+        # Not cached — record intent and let router dispatch
+        cache[cache_key] = {"status": "downloading", "user_id": user_id}
+        self._inline_router.dispatch(user_id, query, cache_key)
+
+        await iq.answer([InlineQueryResultArticle(
+            id="preparing",
+            title="Downloading...",
+            description=f"Wait ~15 s then type again: {query[:60]}",
+            input_message_content=InputTextMessageContent(
+                message_text=f"Downloading: {query[:80]}"
+            ),
+        )], cache_time=0)
+
     async def _handle_guest_message_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle guest_message updates (Bot API 10.0 guest bot feature).
 
@@ -7325,6 +7437,21 @@ def _build_adapter(config):
     return adapter
 
 
+def _build_inline_adapter(config):
+    """Factory for the inline-only Telegram adapter (TELEGRAM_BOT_TOKEN_INLINE).
+
+    Creates a TelegramAdapter with inline_only_mode=True so connect() only
+    registers InlineQueryHandler — no chat, command, or callback handlers.
+    """
+    config.extra["inline_only_mode"] = True
+    adapter = TelegramAdapter(config)
+    try:
+        adapter._notifications_mode = _resolve_notifications_mode()
+    except Exception:
+        adapter._notifications_mode = "important"
+    return adapter
+
+
 def _is_connected(config) -> bool:
     """Telegram is connected when a bot token is configured.
 
@@ -7499,4 +7626,15 @@ def register(ctx) -> None:
         max_message_length=4096,
         emoji="✈️",
         allow_update_command=True,
+    )
+    ctx.register_platform(
+        name="telegram_inline",
+        label="Telegram Inline Bot",
+        adapter_factory=_build_inline_adapter,
+        check_fn=check_telegram_requirements,
+        is_connected=_is_connected,
+        required_env=["TELEGRAM_BOT_TOKEN_INLINE"],
+        install_hint="Set TELEGRAM_BOT_TOKEN_INLINE in your Hermes .env file",
+        max_message_length=4096,
+        emoji="🎵",
     )

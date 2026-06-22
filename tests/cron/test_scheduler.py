@@ -3751,3 +3751,100 @@ class TestCronDeliveryMirror:
 
         mirror_mock.assert_called_once()
         assert mirror_mock.call_args.kwargs.get("user_id") == "U42"
+
+    # --- continuable cron: thread-preferred (Teknium's interface) ---
+
+    def test_open_thread_returns_id_on_thread_platform(self):
+        """On a thread-capable adapter, _open_continuable_cron_thread returns
+        the new thread id from create_handoff_thread."""
+        from cron.scheduler import _open_continuable_cron_thread
+
+        adapter = MagicMock()
+        adapter.create_handoff_thread = AsyncMock(return_value="9001")
+
+        # safe_schedule_threadsafe hands the coro to the gateway loop and
+        # returns a future. Patch it to close the coro and return a ready
+        # future carrying the adapter's thread id.
+        def _run_now(coro, _loop):
+            coro.close()
+            fut = MagicMock()
+            fut.result.return_value = "9001"
+            return fut
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_run_now):
+            tid = _open_continuable_cron_thread(
+                {"id": "j1", "name": "Brief"}, adapter, "123", loop=MagicMock(),
+            )
+        assert tid == "9001"
+
+    def test_open_thread_returns_none_on_dm_platform(self):
+        """A DM-only adapter (WhatsApp) inherits the base create_handoff_thread
+        that returns None → _open_continuable_cron_thread returns None so the
+        caller falls back to DM-session mirroring."""
+        from cron.scheduler import _open_continuable_cron_thread
+
+        adapter = MagicMock()
+        adapter.create_handoff_thread = AsyncMock(return_value=None)
+
+        def _run_now(coro, _loop):
+            fut = MagicMock()
+            fut.result.return_value = None
+            coro.close()
+            return fut
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_run_now):
+            tid = _open_continuable_cron_thread(
+                {"id": "j1", "name": "Brief"}, adapter, "123", loop=MagicMock(),
+            )
+        assert tid is None
+
+    def test_open_thread_none_without_capability_or_loop(self):
+        """No create_handoff_thread attr, or no loop → None (no crash)."""
+        from cron.scheduler import _open_continuable_cron_thread
+
+        adapter_no_cap = MagicMock(spec=[])  # no create_handoff_thread
+        assert _open_continuable_cron_thread(
+            {"id": "j1"}, adapter_no_cap, "123", loop=MagicMock(),
+        ) is None
+
+        adapter = MagicMock()
+        adapter.create_handoff_thread = AsyncMock(return_value="9001")
+        assert _open_continuable_cron_thread(
+            {"id": "j1"}, adapter, "123", loop=None,
+        ) is None
+
+    def test_seed_thread_session_creates_session_and_mirrors(self):
+        """Seeding a freshly-opened thread creates the thread-keyed session via
+        the adapter's live store and appends the brief via mirror_to_session."""
+        from cron.scheduler import _seed_cron_thread_session
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            _seed_cron_thread_session(
+                {"id": "j1"}, adapter, "telegram", "123", "9001",
+                "Daily brief Task #2", chat_name="Ops",
+            )
+
+        # Session row created for the thread, then brief mirrored into it.
+        store.get_or_create_session.assert_called_once()
+        seeded_source = store.get_or_create_session.call_args[0][0]
+        assert seeded_source.chat_type == "thread"
+        assert seeded_source.thread_id == "9001"
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") == "9001"
+
+    def test_seed_thread_session_noop_on_empty_text(self):
+        from cron.scheduler import _seed_cron_thread_session
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+        with patch("gateway.mirror.mirror_to_session") as mirror_mock:
+            _seed_cron_thread_session(
+                {"id": "j1"}, adapter, "telegram", "123", "9001", "   ",
+            )
+        store.get_or_create_session.assert_not_called()
+        mirror_mock.assert_not_called()

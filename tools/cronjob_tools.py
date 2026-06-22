@@ -964,7 +964,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "attach_to_session": {
                 "type": "boolean",
-                "description": "When True, this job's delivered output is also mirrored into the TARGET chat's conversation history (as an assistant turn), so when the user replies to the delivery the agent sees it in context instead of asking 'what is that?'. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work, anything where the cron output should be part of the ongoing chat. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. No effect when deliver='local'. If the target chat has no conversation yet, the mirror is a silent no-op."
+                "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
         },
         "required": ["action"]

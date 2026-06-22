@@ -967,6 +967,35 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(config_file)) is None
 
+    def test_denylist_blocks_session_and_kanban_dbs(self, tmp_path, monkeypatch):
+        """The SQLite session/kanban stores under the Hermes root hold the full
+        conversation history and any secrets that ever appeared in a chat, so a
+        ``MEDIA:~/.hermes/state.db`` prompt injection must never exfiltrate
+        them. They sit directly under the root (not in a *_cache allowlist),
+        so without an explicit denylist entry the default-mode "anything not
+        denied" branch would deliver them. Covers the WAL/SHM siblings too.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        hermes_dir.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        for name in (
+            "state.db",
+            "state.db-wal",
+            "state.db-shm",
+            "kanban.db",
+            "kanban.db-wal",
+            "kanban.db-shm",
+        ):
+            db_file = hermes_dir / name
+            db_file.write_bytes(b"SQLite format 3\x00")
+            assert BasePlatformAdapter.validate_media_delivery_path(str(db_file)) is None
+
     def test_strict_mode_envvar_restores_legacy_behavior(self, tmp_path, monkeypatch):
         """Setting HERMES_MEDIA_DELIVERY_STRICT=1 reactivates the older
         allowlist+recency logic. A stale file outside the allowlist is

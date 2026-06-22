@@ -1072,6 +1072,19 @@ def _media_delivery_denied_paths() -> List[Path]:
         denied.append(hermes_root / "auth.json")
         denied.append(hermes_root / "credentials")
         denied.append(hermes_root / "config.yaml")
+        # The SQLite session/kanban stores live directly under the Hermes
+        # root (hermes_state.DEFAULT_DB_PATH = <home>/state.db;
+        # kanban_db.kanban_db_path() default = <root>/kanban.db). They hold
+        # the full cross-session conversation history plus any secrets that
+        # ever appeared in a chat, so a MEDIA:<path> prompt injection must
+        # never be able to exfiltrate them. Deny the DBs and their WAL/SHM
+        # siblings — in WAL mode every write touches state.db-wal, keeping
+        # the mtime fresh, so without these entries the strict-mode recency
+        # fallback would also leak them despite its docstring promise.
+        for db_name in ("state.db", "kanban.db"):
+            denied.append(hermes_root / db_name)
+            denied.append(hermes_root / f"{db_name}-wal")
+            denied.append(hermes_root / f"{db_name}-shm")
     return denied
 
 

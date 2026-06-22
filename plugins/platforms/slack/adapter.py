@@ -3837,9 +3837,7 @@ class SlackAdapter(BasePlatformAdapter):
                     import json as _json
                     patterns = _json.loads(raw)
                 except Exception:
-                    patterns = [p.strip() for p in raw.splitlines() if p.strip()] or [
-                        p.strip() for p in raw.split(",") if p.strip()
-                    ]
+                    patterns = [p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()]
 
         if isinstance(patterns, str):
             patterns = [patterns]

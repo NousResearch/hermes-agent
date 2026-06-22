@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
+  launchApp: target => ipcRenderer.invoke('hermes:launchApp', target),
+  openKnownFolder: target => ipcRenderer.invoke('hermes:openKnownFolder', target),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
   sanitizeWorkspaceCwd: cwd => ipcRenderer.invoke('hermes:workspace:sanitize', cwd),

@@ -33,6 +33,7 @@ import {
   RefreshCw,
   Settings,
   Settings2,
+  Sparkles,
   Sun,
   Terminal,
   Users,
@@ -50,6 +51,7 @@ import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
+  COMPANION_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
@@ -312,6 +314,13 @@ export function CommandPalette() {
             keywords: ['tools', 'toolsets'],
             label: cc.nav.skills.title,
             run: go(SKILLS_ROUTE)
+          },
+          {
+            icon: Sparkles,
+            id: 'nav-companion',
+            keywords: ['nova', 'companion', 'assistant', 'voice', 'avatar'],
+            label: 'NOVA Companion',
+            run: go(COMPANION_ROUTE)
           },
           {
             action: 'nav.messaging',

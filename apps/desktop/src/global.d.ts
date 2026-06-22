@@ -59,6 +59,8 @@ declare global {
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       setTranslucency?: (payload: { intensity: number }) => void
       setPreviewShortcutActive?: (active: boolean) => void
+      launchApp: (target: string) => Promise<DesktopLaunchAppResult>
+      openKnownFolder: (target: string) => Promise<DesktopOpenKnownFolderResult>
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
@@ -146,6 +148,23 @@ export interface DesktopMarketplaceThemeResult {
   extensionId: string
   displayName: string
   themes: DesktopMarketplaceThemeFile[]
+}
+
+export interface DesktopLaunchAppResult {
+  ok: boolean
+  appId?: string
+  label?: string
+  error?: string
+  message?: string
+}
+
+export interface DesktopOpenKnownFolderResult {
+  ok: boolean
+  folderId?: string
+  label?: string
+  path?: string
+  error?: string
+  message?: string
 }
 
 export interface HermesTerminalSession {

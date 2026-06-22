@@ -55,6 +55,8 @@ const {
 } = require('./update-relaunch.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
+const { normalizeDesktopAppTarget } = require('./desktop-app-launch.cjs')
+const { normalizeDesktopFolderTarget } = require('./desktop-known-folder.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
 const {
@@ -932,6 +934,102 @@ function openExternalUrl(rawUrl) {
   shell.openExternal(url).catch(error => rememberLog(`[link] openExternal failed: ${error.message}`))
 
   return true
+}
+
+function launchDesktopApp(rawTarget) {
+  const spec = normalizeDesktopAppTarget(rawTarget)
+
+  if (!spec) {
+    return {
+      ok: false,
+      error: 'unsupported-app',
+      message: 'Supported apps: Notepad, Explorer, Calculator, Chrome, Edge.'
+    }
+  }
+
+  if (!IS_WINDOWS) {
+    return {
+      ok: false,
+      error: 'unsupported-platform',
+      message: 'Desktop app launch is currently supported on Windows only.',
+      appId: spec.id,
+      label: spec.label
+    }
+  }
+
+  try {
+    const child = spawn(
+      'cmd.exe',
+      ['/c', 'start', '""', spec.target],
+      hiddenWindowsChildOptions({
+        detached: true,
+        stdio: 'ignore'
+      })
+    )
+
+    child.on('error', error => rememberLog(`[app] launch failed for ${spec.id}: ${error.message}`))
+    child.unref()
+    rememberLog(`[app] launching ${spec.id}: ${spec.target}`)
+
+    return {
+      ok: true,
+      appId: spec.id,
+      label: spec.label
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      error: 'launch-failed',
+      message: error?.message || 'Failed to launch app.',
+      appId: spec.id,
+      label: spec.label
+    }
+  }
+}
+
+async function openKnownFolder(rawTarget) {
+  const spec = normalizeDesktopFolderTarget(rawTarget)
+
+  if (!spec) {
+    return {
+      ok: false,
+      error: 'unsupported-folder',
+      message: 'Supported folders: Desktop, Downloads, Documents, Home, Music, Pictures, Videos.'
+    }
+  }
+
+  try {
+    const folderPath = app.getPath(spec.pathKey)
+    const error = await shell.openPath(folderPath)
+
+    if (error) {
+      return {
+        ok: false,
+        error: 'open-failed',
+        message: error,
+        folderId: spec.id,
+        label: spec.label,
+        path: folderPath
+      }
+    }
+
+    rememberLog(`[folder] opening ${spec.id}: ${folderPath}`)
+
+    return {
+      ok: true,
+      folderId: spec.id,
+      label: spec.label,
+      path: folderPath
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      error: 'open-failed',
+      message: error?.message || 'Failed to open folder.',
+      folderId: spec.id,
+      label: spec.label
+    }
+  }
 }
 
 function ensureWslWindowsFonts() {
@@ -5987,6 +6085,9 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
     throw new Error('Invalid external URL')
   }
 })
+
+ipcMain.handle('hermes:launchApp', (_event, target) => launchDesktopApp(target))
+ipcMain.handle('hermes:openKnownFolder', (_event, target) => openKnownFolder(target))
 
 // User-configurable default project directory. The renderer reads this on
 // settings mount and seeds the value into the picker; writing back persists

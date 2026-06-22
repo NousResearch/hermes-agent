@@ -2964,12 +2964,25 @@ def _get_usage(agent) -> dict:
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:
-        ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0
+        # context_used is the *current-window* occupancy. Do NOT fall back to
+        # usage["total"] (cumulative lifetime session_total_tokens): for an
+        # external context engine that doesn't report last_prompt_tokens that
+        # substitution showed lifetime totals as the live context fill, yielding
+        # impossible readings such as 1.9m/120k clamped to 100% (#50421).
+        #
+        # Per the issue, populate context_used/percent only from a *real*
+        # current-occupancy value and "leave it unknown otherwise" — so a falsy
+        # last_prompt_tokens (0 or missing, i.e. an engine that doesn't track
+        # per-window occupancy) intentionally emits no gauge rather than a
+        # fabricated 0% or the old cumulative reading. The built-in compressor
+        # always reports a real last_prompt_tokens once a turn runs, so it is
+        # unaffected.
+        last_prompt = getattr(comp, "last_prompt_tokens", 0) or 0
         ctx_max = getattr(comp, "context_length", 0) or 0
-        if ctx_max:
-            usage["context_used"] = ctx_used
+        if ctx_max and last_prompt:
+            usage["context_used"] = last_prompt
             usage["context_max"] = ctx_max
-            usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
+            usage["context_percent"] = max(0, min(100, round(last_prompt / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
     # Live count of background/async subagents still running (delegate_task
     # batches + background single delegations). Mirrors the classic CLI status

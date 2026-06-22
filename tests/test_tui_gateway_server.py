@@ -8474,3 +8474,42 @@ class TestResolveRuntimeWithFallback:
 
         assert agent.model == "gpt-5.5"
         assert captured["provider"] == "deepseek"
+
+
+def test_get_usage_does_not_substitute_cumulative_total_for_context_used():
+    """An external context engine that does not report last_prompt_tokens must
+    not have the cumulative lifetime session_total_tokens shown as its current
+    context occupancy — that substitution produced impossible 1.9m/120k (100%)
+    status-bar readings (#50421). With no real current occupancy known,
+    context_used/percent stay unset rather than wrong."""
+    agent = types.SimpleNamespace(
+        model="test-model",
+        session_total_tokens=1_900_000,
+        context_compressor=types.SimpleNamespace(
+            last_prompt_tokens=0,
+            context_length=120_000,
+            compression_count=0,
+        ),
+    )
+    usage = server._get_usage(agent)
+    assert usage.get("context_used") != 1_900_000
+    assert "context_used" not in usage
+    assert "context_percent" not in usage
+
+
+def test_get_usage_reports_real_current_occupancy():
+    """When the compressor reports a real current prompt size, context_used is
+    that value (not the cumulative total) and the percent is sane."""
+    agent = types.SimpleNamespace(
+        model="test-model",
+        session_total_tokens=1_900_000,
+        context_compressor=types.SimpleNamespace(
+            last_prompt_tokens=60_000,
+            context_length=120_000,
+            compression_count=2,
+        ),
+    )
+    usage = server._get_usage(agent)
+    assert usage["context_used"] == 60_000
+    assert usage["context_max"] == 120_000
+    assert usage["context_percent"] == 50

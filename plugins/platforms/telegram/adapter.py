@@ -1090,6 +1090,23 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return bool(content and self._RICH_CJK_RE.search(content))
 
+    @staticmethod
+    def _has_rich_table(content: str) -> bool:
+        """Return True if *content* contains a GFM pipe-table separator row."""
+        return any(_TABLE_SEPARATOR_RE.match(line) for line in content.splitlines())
+
+    @staticmethod
+    def _has_rich_task_list(content: str) -> bool:
+        """Return True if *content* contains a GFM task-list item."""
+        return bool(re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content))
+
+    @staticmethod
+    def _has_rich_details_math(content: str) -> bool:
+        """Return True if *content* contains ``<details>``/``<summary>`` or ``$$`` math."""
+        if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
+            return True
+        return "$$" in content
+
     def _needs_rich_rendering(self, content: str) -> bool:
         """Return True for markdown constructs that the legacy path degrades.
 
@@ -1111,6 +1128,15 @@ class TelegramAdapter(BasePlatformAdapter):
         ``expect_edits=True`` to stay on the editable path mid-stream, but the
         FINAL edit should still upgrade to rich when the content warrants it.
         """
+        # When content has structures that ONLY render correctly via rich
+        # (tables, task-lists, details/math), bypass the CJK garble check.
+        # CJK garble is a TDesktop cosmetic artifact; tables cannot render at
+        # all in MarkdownV2 — rich is the only viable path.
+        has_rich_only_structures = self._needs_rich_rendering(content) and (
+            self._has_rich_table(content)
+            or self._has_rich_task_list(content)
+            or self._has_rich_details_math(content)
+        )
         return bool(
             getattr(self, "_rich_messages_enabled", True)
             and not getattr(self, "_rich_send_disabled", False)
@@ -1118,7 +1144,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and content.strip()
             and self._needs_rich_rendering(content)
             and not self._has_telegram_desktop_details_math_crash_shape(content)
-            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            and (has_rich_only_structures or not self._has_telegram_desktop_cjk_rich_garble_shape(content))
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )

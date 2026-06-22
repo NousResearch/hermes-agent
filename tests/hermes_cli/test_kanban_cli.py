@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -12,6 +13,33 @@ import pytest
 
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
+
+
+def _resolve_hermes_command() -> list[str]:
+    """Locate the command used to drive the real ``hermes kanban create`` CLI.
+
+    Preference order:
+      1. ``HERMES_BIN`` env var — full path to a ``hermes`` executable. Lets
+         CI/operators pin a specific binary.
+      2. ``sys.executable -m hermes_cli.main`` — works in any environment where
+         this test's Python interpreter can import ``hermes_cli`` (the typical
+         editable-install / PYTHONPATH case). This guarantees the subprocess
+         exercises whatever source the test session is bound to, not a sibling
+         checkout's venv.
+
+    Always returns a non-empty command list — letting the subprocess raise
+    ImportError on a missing ``hermes_cli`` is more diagnostic than silently
+    skipping these tests.
+    """
+    override = os.environ.get("HERMES_BIN")
+    if override:
+        p = Path(override)
+        if p.exists():
+            return [str(p)]
+    return [sys.executable, "-m", "hermes_cli.main"]
+
+
+HERMES_CMD = _resolve_hermes_command()
 
 
 @pytest.fixture
@@ -611,9 +639,11 @@ class _AssigneeLintSubprocess:
     post-call DB state.
     """
 
-    HERMES_BIN = Path(
-        "/Users/charlessectish/.hermes/hermes-agent/venv/bin/hermes"
-    )
+    # Resolved at import time by ``_resolve_hermes_command``: either an
+    # explicit ``hermes`` binary from $HERMES_BIN, or the test session's
+    # Python interpreter running ``-m hermes_cli.main``. Never a hardcoded
+    # absolute path — see card t_1fddf915 for the bug this replaced.
+    HERMES_CMD = HERMES_CMD
 
     def __init__(self, kanban_home_dir: Path):
         # kanban_home is already pointing at our temp HERMES_HOME (with the
@@ -625,7 +655,6 @@ class _AssigneeLintSubprocess:
 
     def run_create(self, *args: str) -> tuple[int, str, str]:
         import subprocess
-        import sys
 
         env = os.environ.copy()
         # Strip dispatcher-set overrides so the lint is exercised in
@@ -641,9 +670,21 @@ class _AssigneeLintSubprocess:
             env.pop(var, None)
         env["HERMES_HOME"] = str(self.home)
         env["HERMES_KANBAN_DB"] = str(self.db_path)
-        env["PATH"] = str(self.HERMES_BIN.parent) + ":" + env.get("PATH", "")
+        # When invoking ``python -m hermes_cli.main`` we want the subprocess
+        # to import the same source the test is bound to. The parent pytest
+        # process inherits a PYTHONPATH from its own launch, but the
+        # dispatcher / kanban-worker harness may have set it to point at a
+        # different checkout. Strip and re-pin to this test's module path so
+        # the subprocess always exercises the branch under test.
+        import hermes_cli as _hc  # noqa: WPS433 — local import by design
+
+        env["PYTHONPATH"] = (
+            str(Path(_hc.__file__).resolve().parent.parent)
+            + os.pathsep
+            + env.get("PYTHONPATH", "")
+        )
         r = subprocess.run(
-            [str(self.HERMES_BIN), "kanban", "create", *args],
+            [*self.HERMES_CMD, "kanban", "create", *args],
             capture_output=True,
             text=True,
             env=env,
@@ -681,10 +722,16 @@ class _AssigneeLintSubprocess:
 
 @pytest.fixture
 def assignee_lint(kanban_home):
-    if not _AssigneeLintSubprocess.HERMES_BIN.exists():
-        import pytest
+    # ``_resolve_hermes_command`` always returns a command (falls back to
+    # ``python -m hermes_cli.main``). Only skip when the operator pinned a
+    # non-existent $HERMES_BIN — in that case the literal override takes
+    # priority and we shouldn't silently fall back to a different binary.
+    if (
+        os.environ.get("HERMES_BIN")
+        and not Path(os.environ["HERMES_BIN"]).exists()
+    ):
         pytest.skip(
-            f"hermes binary missing at {_AssigneeLintSubprocess.HERMES_BIN}"
+            f"HERMES_BIN={os.environ['HERMES_BIN']!r} does not exist"
         )
     return _AssigneeLintSubprocess(kanban_home)
 

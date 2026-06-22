@@ -792,6 +792,7 @@ class TestMediaDeliveryPathValidation:
         secret = ssh_dir / "id_rsa.txt"
         secret.write_bytes(b"-----BEGIN ...")  # mtime = now
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
@@ -886,6 +887,7 @@ class TestMediaDeliveryDefaultMode:
         secret = ssh_dir / "id_rsa"
         secret.write_bytes(b"-----BEGIN ...")
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
@@ -921,6 +923,7 @@ class TestMediaDeliveryDefaultMode:
         env_file = hermes_dir / ".env"
         env_file.write_text("OPENAI_API_KEY=sk-...")
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
         monkeypatch.setattr(
             "gateway.platforms.base._HERMES_HOME",
             hermes_dir,
@@ -938,6 +941,7 @@ class TestMediaDeliveryDefaultMode:
         config_file = hermes_dir / "config.yaml"
         config_file.write_text("model:\n  provider: openai\n")
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
         monkeypatch.setattr(
             "gateway.platforms.base._HERMES_HOME",
             hermes_dir,
@@ -956,6 +960,7 @@ class TestMediaDeliveryDefaultMode:
         config_file = hermes_root / "config.yaml"
         config_file.write_text("profiles:\n  active: work\n")
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
         monkeypatch.setattr(
             "gateway.platforms.base._HERMES_HOME",
             profile_home,
@@ -966,6 +971,54 @@ class TestMediaDeliveryDefaultMode:
         )
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(config_file)) is None
+
+    def test_denylist_blocks_non_cache_hermes_home_files(self, tmp_path, monkeypatch):
+        """Non-cache files under the active Hermes home are never attachments."""
+        self._patch_roots(monkeypatch)
+
+        hermes_dir = tmp_path / ".hermes"
+        for relative in (
+            ".anthropic_oauth.json",
+            "auth/google_oauth.json",
+            "mcp-tokens/server.json",
+            "sessions.json",
+        ):
+            secret = hermes_dir / relative
+            secret.parent.mkdir(parents=True, exist_ok=True)
+            secret.write_text("secret")
+            monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+            monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+            assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
+
+    def test_cache_allowlist_beats_hermes_home_denylist(self, tmp_path, monkeypatch):
+        """Generated cache artifacts still deliver from under HERMES_HOME."""
+        hermes_dir = tmp_path / ".hermes"
+        cache_root = hermes_dir / "cache" / "documents"
+        self._patch_roots(monkeypatch, cache_root)
+
+        report = cache_root / "report.pdf"
+        report.parent.mkdir(parents=True)
+        report.write_bytes(b"%PDF-1.4")
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(report)) == str(report.resolve())
+
+    def test_operator_allowlist_beats_hermes_home_denylist(self, tmp_path, monkeypatch):
+        """Explicit operator media roots under HERMES_HOME remain deliverable."""
+        self._patch_roots(monkeypatch)
+
+        hermes_dir = tmp_path / ".hermes"
+        export_root = hermes_dir / "exports"
+        report = export_root / "report.pdf"
+        report.parent.mkdir(parents=True)
+        report.write_bytes(b"%PDF-1.4")
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+        monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(export_root))
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(report)) == str(report.resolve())
 
     def test_strict_mode_envvar_restores_legacy_behavior(self, tmp_path, monkeypatch):
         """Setting HERMES_MEDIA_DELIVERY_STRICT=1 reactivates the older

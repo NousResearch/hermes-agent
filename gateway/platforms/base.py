@@ -1065,13 +1065,11 @@ def _media_delivery_denied_paths() -> List[Path]:
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
     # The active Hermes profile and shared Hermes root both contain control
-    # files and credentials. Only cache subdirectories under them are
-    # explicitly allowlisted above.
+    # files, OAuth refresh tokens, MCP tokens, session databases, and
+    # credentials. Only cache/operator-allowlisted subdirectories under them
+    # may be delivered.
     for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
-        denied.append(hermes_root / ".env")
-        denied.append(hermes_root / "auth.json")
-        denied.append(hermes_root / "credentials")
-        denied.append(hermes_root / "config.yaml")
+        denied.append(hermes_root)
     return denied
 
 

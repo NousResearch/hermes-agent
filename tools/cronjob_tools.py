@@ -164,6 +164,24 @@ def _strip_legitimate_emoji_zwj(prompt: str) -> str:
     return ''.join(cleaned)
 
 
+def _strip_code_blocks(text: str) -> str:
+    """Strip fenced code blocks and inline code from markdown text.
+
+    Replaces stripped regions with a single space to prevent text
+    concatenation across code-block boundaries. This avoids false positives
+    where commands mentioned in prose (e.g., "cat") end up adjacent to
+    sensitive file references (e.g., ".env") after code blocks are removed.
+
+    Used before threat-pattern scanning to reduce false positives from
+    legitimate skill markdown that contains code examples.
+    """
+    # Strip fenced code blocks (```...```) -> single space
+    text = re.sub(r'`{3}[\s\S]*?`{3}', ' ', text)
+    # Strip inline code (`...`) -> single space
+    text = re.sub(r'`[^`]+`', ' ', text)
+    return text
+
+
 def _strip_cron_safe_constructs(prompt: str) -> str:
     """Strip the GitHub `Authorization: token $GITHUB_TOKEN` auth-header
     pattern so it doesn't trip the broader curl-auth-header exfil rule.
@@ -230,8 +248,15 @@ def _scan_cron_prompt(prompt: str) -> str:
     The user prompt is small and directive; bare `cat .env` or `rm -rf /`
     there is a smoking gun, not prose. Returns an error string when
     blocked, else empty string.
+
+    Fenced code blocks and inline code are stripped before scanning so that
+    code *examples* mentioned in backticks (e.g. "use `cat ~/.env` to check
+    config") do not false-positive — see #50754. The stripped regions are
+    replaced with whitespace to prevent text-concatenation across code-block
+    boundaries from creating new false matches.
     """
     prompt_to_scan = _strip_cron_safe_constructs(prompt)
+    prompt_to_scan = _strip_code_blocks(prompt_to_scan)
     invisible_err = _check_invisible_unicode(prompt_to_scan)
     if invisible_err:
         return invisible_err

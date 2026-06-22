@@ -3731,6 +3731,19 @@ def _make_agent(
     except Exception:
         pass
 
+    # Discover Python plugins so hook-based plugins (Langfuse, nemo_relay,
+    # etc.) are registered before the agent checks has_hook().  The gateway
+    # startup path (gateway/run.py) calls discover_plugins() at boot; the
+    # TUI slash_worker only called it conditionally for toolset resolution,
+    # leaving hooks silently inactive for web-UI / dashboard conversations.
+    # discover_plugins() is idempotent (guarded by _discovered flag).
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+    except Exception:
+        pass
+
     cfg = _load_cfg()
     agent_cfg = cfg.get("agent") or {}
     system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))

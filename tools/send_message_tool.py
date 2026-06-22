@@ -1195,20 +1195,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.FEISHU:
             result = await _registry_standalone_send("feishu", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.WECOM:
-            # WeCom uses a long-lived WebSocket connection — only one connection
-            # per bot is allowed. _registry_standalone_send() would create a NEW
-            # adapter + connect(), which opens a second WS and gets the main
-            # connection kicked by the server. Always reuse the live gateway
-            # adapter via _send_via_adapter.
-            result = await _send_via_adapter(
-                platform,
-                pconfig,
-                chat_id,
-                chunk,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document,
-            )
+            result = await _registry_standalone_send("wecom", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:

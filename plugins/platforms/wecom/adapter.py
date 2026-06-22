@@ -2834,13 +2834,43 @@ async def _standalone_send(
     media_files=None,
     force_document=False,
 ):
-    """Out-of-process WeCom delivery via the adapter's WebSocket send pipeline.
+    """WeCom delivery via live gateway adapter or ephemeral connection.
 
-    Implements the standalone_sender_fn contract so deliver=wecom cron jobs
-    succeed when cron runs separately from the gateway. Opens an ephemeral
-    WeComAdapter, connects, sends, and disconnects. Replaces the legacy
-    _send_wecom helper.
+    Implements the standalone_sender_fn contract. WeCom only allows ONE
+    WebSocket connection per bot — opening a second kicks the first. So
+    when the gateway is running in-process, we reuse the live adapter.
+    Only when running out-of-process (cron separate from gateway) do we
+    open an ephemeral connection.
     """
+    # Prefer the live gateway adapter to avoid kicking the main connection.
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+
+    if runner is not None:
+        from gateway.platforms.base import Platform
+        adapter = None
+        try:
+            adapter = runner.adapters.get(Platform.WECOM)
+        except Exception:
+            pass
+        if adapter is not None:
+            try:
+                result = await adapter.send(chat_id, message)
+                if not result.success:
+                    return {"error": f"WeCom send failed: {result.error}"}
+                return {
+                    "success": True,
+                    "platform": "wecom",
+                    "chat_id": chat_id,
+                    "message_id": result.message_id,
+                }
+            except Exception as e:
+                return {"error": f"WeCom live adapter send failed: {e}"}
+
+    # Fallback: out-of-process — open ephemeral connection.
     if not check_wecom_requirements():
         return {"error": "WeCom requirements not met. Need aiohttp + WECOM_BOT_ID/SECRET."}
     try:

@@ -1,0 +1,14 @@
+agent/anthropic_adapter.py
+agent/auxiliary_client.py
+agent/conversation_loop.py
+agent/system_prompt.py
+cli.py
+gateway/platforms/api_server.py
+gateway/run.py
+hermes_cli/main.py
+hermes_state.py
+tests/agent/test_auxiliary_client.py
+tests/hermes_cli/test_inventory.py
+tools/mcp_tool.py
+tools/skills_tool.py
+tui_gateway/server.py

@@ -14,8 +14,8 @@ const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 // The composer's model/effort/fast is sticky UI state, NOT the profile default
 // (that lives in Settings → Model). Persisting it in localStorage makes a pick
 // follow across Cmd+N and app restarts instead of snapping back to the default.
-// It's deliberately global (not per-profile): a profile switch force-reseeds to
-// that profile's default, while within a profile new chats keep your last pick.
+// Keep the sticky slot scoped to the active profile so an OpenAI pick in one
+// profile can't become an impossible xAI pick in another.
 const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
@@ -31,6 +31,38 @@ function workspaceCwdKey(connection: HermesConnection | null = $connection.get()
   const base = encodeURIComponent(connection.baseUrl || 'remote')
   const profile = encodeURIComponent(connection.profile || 'default')
   return `${WORKSPACE_CWD_KEY}.remote.${base}.${profile}`
+}
+
+function composerStorageScope(connection: HermesConnection | null = $connection.get()): string {
+  const profile = encodeURIComponent(connection?.profile?.trim() || 'default')
+
+  if (connection?.mode === 'remote') {
+    const base = encodeURIComponent(connection.baseUrl || 'remote')
+
+    return `remote.${base}.${profile}`
+  }
+
+  return `local.${profile}`
+}
+
+function composerStorageKey(baseKey: string, connection: HermesConnection | null = $connection.get()): string {
+  return `${baseKey}.${composerStorageScope(connection)}`
+}
+
+function getRememberedComposerModel(connection: HermesConnection | null = $connection.get()): string {
+  return storedString(composerStorageKey(COMPOSER_MODEL_KEY, connection))?.trim() || ''
+}
+
+function getRememberedComposerProvider(connection: HermesConnection | null = $connection.get()): string {
+  return storedString(composerStorageKey(COMPOSER_PROVIDER_KEY, connection))?.trim() || ''
+}
+
+function getRememberedComposerReasoningEffort(connection: HermesConnection | null = $connection.get()): string {
+  return storedString(composerStorageKey(COMPOSER_EFFORT_KEY, connection))?.trim() || ''
+}
+
+function getRememberedComposerFastMode(connection: HermesConnection | null = $connection.get()): boolean {
+  return storedBoolean(composerStorageKey(COMPOSER_FAST_KEY, connection), false)
 }
 
 export const getRememberedWorkspaceCwd = (): string => storedString(workspaceCwdKey())?.trim() || ''
@@ -235,11 +267,11 @@ export const $resumeFailedSessionId = atom<string | null>(null)
 // clears it and resets the retry counter. Null whenever the active route has a
 // healthy, in-flight, or still-auto-retrying resume.
 export const $resumeExhaustedSessionId = atom<string | null>(null)
-export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
-export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
-export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
+export const $currentModel = atom(getRememberedComposerModel())
+export const $currentProvider = atom(getRememberedComposerProvider())
+export const $currentReasoningEffort = atom(getRememberedComposerReasoningEffort())
 export const $currentServiceTier = atom('')
-export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
+export const $currentFastMode = atom(getRememberedComposerFastMode())
 // Effective approval-bypass state mirrored from the gateway (session.info).
 // Persistence lives in the backend config (approvals.mode), so this is a plain
 // reflection of the truth the gateway reports rather than its own store.
@@ -262,7 +294,18 @@ export const $contextSuggestions = atom<ContextSuggestion[]>([])
 export const $modelPickerOpen = atom(false)
 export const $sessionPickerOpen = atom(false)
 
-export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
+export const setConnection = (next: Updater<HermesConnection | null>) => {
+  const previousComposerScope = composerStorageScope($connection.get())
+  updateAtom($connection, next)
+  const nextComposerScope = composerStorageScope($connection.get())
+
+  if (previousComposerScope !== nextComposerScope && !$activeSessionId.get()) {
+    $currentModel.set(getRememberedComposerModel($connection.get()))
+    $currentProvider.set(getRememberedComposerProvider($connection.get()))
+    $currentReasoningEffort.set(getRememberedComposerReasoningEffort($connection.get()))
+    $currentFastMode.set(getRememberedComposerFastMode($connection.get()))
+  }
+}
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
 export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
@@ -286,24 +329,24 @@ export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($await
 
 export const setCurrentModel = (next: Updater<string>) => {
   updateAtom($currentModel, next)
-  persistString(COMPOSER_MODEL_KEY, $currentModel.get() || null)
+  persistString(composerStorageKey(COMPOSER_MODEL_KEY), $currentModel.get() || null)
 }
 
 export const setCurrentProvider = (next: Updater<string>) => {
   updateAtom($currentProvider, next)
-  persistString(COMPOSER_PROVIDER_KEY, $currentProvider.get() || null)
+  persistString(composerStorageKey(COMPOSER_PROVIDER_KEY), $currentProvider.get() || null)
 }
 
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
-  persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
+  persistString(composerStorageKey(COMPOSER_EFFORT_KEY), $currentReasoningEffort.get() || null)
 }
 
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 
 export const setCurrentFastMode = (next: Updater<boolean>) => {
   updateAtom($currentFastMode, next)
-  persistBoolean(COMPOSER_FAST_KEY, $currentFastMode.get())
+  persistBoolean(composerStorageKey(COMPOSER_FAST_KEY), $currentFastMode.get())
 }
 
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)

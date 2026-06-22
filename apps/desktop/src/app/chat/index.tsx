@@ -7,7 +7,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { Suspense, useCallback, useMemo, useRef } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import { Thread } from '@/components/assistant-ui/thread'
@@ -19,7 +19,7 @@ import { ErrorState } from '@/components/ui/error-state'
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { quickModelOptions, sessionTitle, toRuntimeMessage } from '@/lib/chat-runtime'
+import { quickModelOptions, resolveModelSelection, sessionTitle, toRuntimeMessage } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
@@ -43,7 +43,9 @@ import {
   $resumeExhaustedSessionId,
   $selectedStoredSessionId,
   $sessions,
-  sessionPinId
+  sessionPinId,
+  setCurrentModel,
+  setCurrentProvider
 } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -361,6 +363,24 @@ export function ChatView({
     () => quickModelOptions(modelOptionsQuery.data, currentProvider, currentModel),
     [currentModel, currentProvider, modelOptionsQuery.data]
   )
+
+  useEffect(() => {
+    if (activeSessionId || !currentModel || !currentProvider || !modelOptionsQuery.data) {
+      return
+    }
+
+    const resolved = resolveModelSelection(modelOptionsQuery.data, {
+      model: currentModel,
+      provider: currentProvider
+    })
+
+    if (!resolved.repaired) {
+      return
+    }
+
+    setCurrentModel(resolved.model)
+    setCurrentProvider(resolved.provider)
+  }, [activeSessionId, currentModel, currentProvider, modelOptionsQuery.data])
 
   const chatBarState = useMemo<ChatBarState>(
     () => ({

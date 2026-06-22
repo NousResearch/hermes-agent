@@ -250,6 +250,82 @@ export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | nu
   }
 }
 
+interface ModelSelection {
+  model: string
+  provider: string
+}
+
+export interface ResolvedModelSelection extends ModelSelection {
+  repaired: boolean
+}
+
+function modelSelectionAvailable(data: ModelOptionsResponse | undefined, selection: ModelSelection): boolean {
+  if (!selection.provider || !selection.model) {
+    return false
+  }
+
+  const provider = data?.providers?.find(row => row.slug === selection.provider)
+
+  return Boolean(
+    provider &&
+      provider.models?.includes(selection.model) &&
+      !provider.unavailable_models?.includes(selection.model)
+  )
+}
+
+function firstAvailableModel(data: ModelOptionsResponse | undefined, providerSlug?: string): ModelSelection | null {
+  const providers = data?.providers ?? []
+  const orderedProviders = providerSlug
+    ? [...providers].sort((a, b) => {
+        if (a.slug === providerSlug) {
+          return -1
+        }
+
+        if (b.slug === providerSlug) {
+          return 1
+        }
+
+        return 0
+      })
+    : providers
+
+  for (const provider of orderedProviders) {
+    const model = provider.models?.find(candidate => !provider.unavailable_models?.includes(candidate))
+
+    if (model) {
+      return { model, provider: provider.slug }
+    }
+  }
+
+  return null
+}
+
+export function resolveModelSelection(
+  data: ModelOptionsResponse | undefined,
+  selection: ModelSelection
+): ResolvedModelSelection {
+  if (!data?.providers?.length || modelSelectionAvailable(data, selection)) {
+    return { ...selection, repaired: false }
+  }
+
+  const configuredDefault = {
+    model: data.model?.trim() || '',
+    provider: data.provider?.trim() || ''
+  }
+
+  if (modelSelectionAvailable(data, configuredDefault)) {
+    return { ...configuredDefault, repaired: true }
+  }
+
+  const fallback = firstAvailableModel(data, selection.provider)
+
+  if (fallback) {
+    return { ...fallback, repaired: true }
+  }
+
+  return { ...selection, repaired: false }
+}
+
 export function quickModelOptions(
   data: ModelOptionsResponse | undefined,
   currentProvider: string,
@@ -289,7 +365,11 @@ export function quickModelOptions(
     options.push({ provider, providerName, model })
   }
 
-  if (currentProvider && currentModel) {
+  if (
+    currentProvider &&
+    currentModel &&
+    (!data?.providers?.length || modelSelectionAvailable(data, { model: currentModel, provider: currentProvider }))
+  ) {
     add(currentProvider, currentProvider, currentModel)
   }
 

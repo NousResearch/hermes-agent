@@ -7,12 +7,17 @@ import {
   $attentionSessionIds,
   $connection,
   $currentCwd,
+  $currentModel,
+  $currentProvider,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
+  setConnection,
   setCurrentCwd,
+  setCurrentModel,
+  setCurrentProvider,
   setSessionAttention,
   setSessionWorking,
   workspaceCwdForNewSession
@@ -186,7 +191,7 @@ describe('mergeSessionPage', () => {
 describe('workspaceCwdForNewSession', () => {
   afterEach(() => {
     applyConfiguredDefaultProjectDir(null)
-    $connection.set(null)
+    setConnection(null)
     $currentCwd.set('')
     $activeSessionId.set(null)
     window.localStorage.removeItem('hermes.desktop.workspace-cwd')
@@ -240,6 +245,40 @@ describe('workspaceCwdForNewSession', () => {
 
     $connection.set(null)
     expect(workspaceCwdForNewSession()).toBe('/local/project')
+  })
+})
+
+describe('composer model storage', () => {
+  afterEach(() => {
+    $activeSessionId.set(null)
+    $connection.set(null)
+    setCurrentModel('')
+    setCurrentProvider('')
+    window.localStorage.removeItem('hermes.desktop.composer.model.local.default')
+    window.localStorage.removeItem('hermes.desktop.composer.provider.local.default')
+    window.localStorage.removeItem('hermes.desktop.composer.model.local.job-hunting')
+    window.localStorage.removeItem('hermes.desktop.composer.provider.local.job-hunting')
+  })
+
+  it('keeps sticky model/provider selections scoped to the active profile', () => {
+    setConnection({ baseUrl: 'http://local', mode: 'local', profile: 'default' } as never)
+    setCurrentModel('gpt-5.5')
+    setCurrentProvider('openai-codex')
+
+    setConnection({ baseUrl: 'http://local', mode: 'local', profile: 'job-hunting' } as never)
+    expect($currentModel.get()).toBe('')
+    expect($currentProvider.get()).toBe('')
+
+    setCurrentModel('grok-composer-2.5-fast')
+    setCurrentProvider('xai-oauth')
+
+    setConnection({ baseUrl: 'http://local', mode: 'local', profile: 'default' } as never)
+    expect($currentModel.get()).toBe('gpt-5.5')
+    expect($currentProvider.get()).toBe('openai-codex')
+
+    setConnection({ baseUrl: 'http://local', mode: 'local', profile: 'job-hunting' } as never)
+    expect($currentModel.get()).toBe('grok-composer-2.5-fast')
+    expect($currentProvider.get()).toBe('xai-oauth')
   })
 })
 

@@ -5095,6 +5095,7 @@ async function startHermes() {
         source: remote.source,
         authMode: remote.authMode || 'token',
         token: remote.token,
+        profile: primaryProfileKey(),
         wsUrl: remote.wsUrl,
         logs: hermesLog.slice(-80),
         ...getWindowState()
@@ -5232,6 +5233,7 @@ async function startHermes() {
       source: 'local',
       authMode: 'token',
       token: authToken,
+      profile: primaryProfileKey(),
       wsUrl: `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`,
       logs: hermesLog.slice(-80),
       ...getWindowState()

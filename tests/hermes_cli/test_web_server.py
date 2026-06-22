@@ -1049,6 +1049,41 @@ class TestWebServerEndpoints:
         messages = self.client.get("/api/sessions/worker-only/messages?profile=worker").json()
         assert [m["content"] for m in messages["messages"]] == ["worker"]
 
+    def test_latest_descendant_reads_requested_profile(self):
+        """Chat resume must resolve compression tips in the chat profile DB."""
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        default_db = SessionDB()
+        try:
+            default_db.create_session(session_id="shared-root", source="cli")
+        finally:
+            default_db.close()
+
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            worker_db.create_session(session_id="shared-root", source="cli")
+            worker_db.create_session(
+                session_id="worker-tip",
+                source="cli",
+                parent_session_id="shared-root",
+            )
+        finally:
+            worker_db.close()
+
+        default_resp = self.client.get("/api/sessions/shared-root/latest-descendant")
+        assert default_resp.status_code == 200
+        assert default_resp.json()["session_id"] == "shared-root"
+
+        worker_resp = self.client.get(
+            "/api/sessions/shared-root/latest-descendant?profile=worker"
+        )
+        assert worker_resp.status_code == 200
+        assert worker_resp.json()["session_id"] == "worker-tip"
+
     def test_analytics_endpoints_read_requested_profile(self):
         from hermes_state import SessionDB
         from hermes_cli import profiles as profiles_mod

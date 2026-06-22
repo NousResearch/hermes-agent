@@ -797,9 +797,12 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 **Commit / push**
 
-- Pending: commit this upstream merge plus scoped Live USB status-readiness/ledger lane, push to `origin/agentcyber/upstream-sync-20260621-194355` without force, verify local `HEAD` equals the remote branch tip, then make one bounded ledger-only follow-up with the post-push facts.
+- Committed upstream merge plus scoped Live USB status-readiness/ledger lane as `b06fcbe00d2174e740c515670aef298bc8ac2055` (`fix: clarify AgentCyber live USB status gates`).
+- Pushed to `origin/agentcyber/upstream-sync-20260621-194355` without force.
+- Verified immediately after push: local `HEAD` and `origin/agentcyber/upstream-sync-20260621-194355` both returned `b06fcbe00d2174e740c515670aef298bc8ac2055`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `95`.
+- This is the bounded ledger-only follow-up recording the post-push facts at `2026-06-22T01:38:56Z`. After pushing this ledger commit, final verification should check local `HEAD` equals the remote sync branch tip and stop rather than amending the ledger again solely to mention the ledger-only commit SHA.
 
 **Next lane**
 
-- Push and verify this scoped status-readiness lane plus one bounded ledger-only follow-up.
 - Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
+- Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If no upstream drift or new Live USB gap is found, continue treating the lane as verification/no-op.

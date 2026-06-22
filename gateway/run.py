@@ -9719,8 +9719,65 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
-            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
-                response = f"{response}\n\n{_footer_line}"
+
+            _preview_delivery_confirmed = bool(
+                agent_result.get("preview_delivery_confirmed")
+            )
+            _previewed_content = agent_result.get("previewed_content")
+            _previewed_message_id = agent_result.get("previewed_message_id")
+            _preview_adapter = self.adapters.get(source.platform)
+            _previewed_final_text = (
+                f"{response}\n\n{_footer_line}"
+                if _footer_line and response and not _intentional_silence
+                else response
+            )
+            if (
+                not agent_result.get("already_sent")
+                and not _intentional_silence
+                and response
+                and _preview_delivery_confirmed
+                and isinstance(_previewed_content, str)
+            ):
+                _preview_matches_final = _previewed_content == _previewed_final_text
+                _preview_editable = bool(
+                    _previewed_message_id
+                    and _preview_adapter is not None
+                    and getattr(_preview_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                )
+                if _preview_matches_final:
+                    agent_result["already_sent"] = True
+                    response = _previewed_final_text
+                    _footer_line = ""
+                    logger.info(
+                        "Suppressing normal final send for session %s: preview already matches final response.",
+                        session_key or "?",
+                    )
+                elif _preview_editable:
+                    try:
+                        await _preview_adapter.edit_message(
+                            source.chat_id,
+                            _previewed_message_id,
+                            _previewed_final_text,
+                        )
+                        agent_result["already_sent"] = True
+                        response = _previewed_final_text
+                        _footer_line = ""
+                        logger.info(
+                            "Edited previewed message %s for session %s to reflect final response.",
+                            _previewed_message_id,
+                            session_key or "?",
+                        )
+                    except Exception as _preview_edit_err:
+                        logger.warning(
+                            "Failed to edit previewed message for session %s: %s",
+                            session_key or "?",
+                            _preview_edit_err,
+                        )
+                        response = _previewed_final_text
+                else:
+                    response = _previewed_final_text
+            elif _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+                response = _previewed_final_text
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -15125,6 +15182,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         stream_consumer_holder = [None]  # Mutable container for stream consumer
+        preview_delivery = {
+            "message_id": None,
+            "content": None,
+            "future": None,
+            "confirmed": False,
+        }
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
@@ -15360,6 +15423,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
+            async def _send_tracked_interim_assistant(text: str) -> None:
+                send_result = await _status_adapter.send(
+                    _status_chat_id,
+                    text,
+                    metadata=_status_thread_metadata,
+                )
+                if getattr(send_result, "success", False):
+                    preview_delivery["message_id"] = getattr(send_result, "message_id", None)
+                    preview_delivery["content"] = text
+                    preview_delivery["confirmed"] = True
+
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
                     return
@@ -15371,12 +15445,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 if already_streamed or not _status_adapter or not str(text or "").strip():
                     return
-                safe_schedule_threadsafe(
-                    _status_adapter.send(
-                        _status_chat_id,
-                        text,
-                        metadata=_status_thread_metadata,
-                    ),
+                preview_delivery["content"] = text
+                preview_delivery["future"] = safe_schedule_threadsafe(
+                    _send_tracked_interim_assistant(text),
                     _loop_for_step,
                     logger=logger,
                     log_message="interim_assistant_callback scheduling error",
@@ -16190,6 +16261,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
+                "preview_delivery_confirmed": bool(preview_delivery.get("confirmed")),
+                "previewed_content": preview_delivery.get("content"),
+                "previewed_message_id": preview_delivery.get("message_id"),
             }
         
         # Start progress message sender if enabled
@@ -16967,9 +17041,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _streamed = bool(
                 _sc and getattr(_sc, "final_response_sent", False)
             )
-            # response_previewed means the interim_assistant_callback already
-            # sent the final text via the adapter (non-streaming path).
-            _previewed = bool(response.get("response_previewed"))
+            _preview_future = preview_delivery.get("future")
+            if _preview_future is not None and not _preview_future.done():
+                try:
+                    await asyncio.wait_for(asyncio.wrap_future(_preview_future), timeout=1.0)
+                except Exception:
+                    pass
             _content_delivered = bool(
                 _sc and getattr(_sc, "final_content_delivered", False)
             )
@@ -16977,12 +17054,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # after streaming finished — when the response was transformed, always
             # send the final version so the appended content reaches the client.
             _transformed = bool(response.get("response_transformed"))
-            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _content_delivered):
+            if not _is_empty_sentinel and not _transformed and (
+                _streamed
+                or _content_delivered
+            ):
                 logger.info(
-                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
+                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s content_delivered=%s).",
                     session_key or "?",
                     _streamed,
-                    _previewed,
                     _content_delivered,
                 )
                 response["already_sent"] = True

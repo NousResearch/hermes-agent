@@ -13,17 +13,20 @@ Covers four fix paths:
 """
 
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+import gateway.run as gateway_run
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     SendResult,
 )
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +67,115 @@ def _make_event(text="hello", chat_id="c1", user_id="u1"):
             user_id=user_id,
         ),
         message_id="m1",
+    )
+
+
+class PreviewAdapter(BasePlatformAdapter):
+    """Telegram-like adapter that records sends and edits."""
+
+    def __init__(self, *, supports_editing=True):
+        super().__init__(PlatformConfig(enabled=True, token="fake"), Platform.TELEGRAM)
+        self.SUPPORTS_MESSAGE_EDITING = supports_editing
+        self.sent = []
+        self.edits = []
+
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="preview-msg")
+
+    async def edit_message(self, chat_id, message_id, content):
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(success=True, message_id=message_id)
+
+    async def send_typing(self, chat_id, metadata=None):
+        pass
+
+    async def stop_typing(self, chat_id):
+        pass
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
+
+
+def _preview_runner(monkeypatch, tmp_path, adapter):
+    runner = gateway_run.GatewayRunner(GatewayConfig())
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._handle_active_session_busy_message = AsyncMock(return_value=False)
+    runner._session_db = MagicMock()
+    runner._recover_telegram_topic_thread_id = lambda _source: None
+    runner._cache_session_source = lambda _key, _source: None
+    runner._is_session_run_current = lambda _key, _gen: True
+    runner._begin_session_run_generation = lambda _key: 1
+    runner._reply_anchor_for_event = lambda _event: None
+    runner._get_guild_id = lambda _event: None
+    runner._should_send_voice_reply = lambda *_a, **_kw: False
+    runner._show_reasoning = False
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:group:-1001:12345",
+        session_id="sess-preview",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    runner.session_store.load_transcript.return_value = []
+    runner.session_store.append_to_transcript = MagicMock()
+    runner.session_store.update_session = MagicMock()
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100_000,
+    )
+    return runner
+
+
+def _preview_source():
+    return SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        user_id="12345",
+    )
+
+
+def _preview_event():
+    return MessageEvent(
+        text="hello world",
+        source=_preview_source(),
+        message_id="msg-42",
     )
 
 
@@ -375,6 +487,123 @@ class TestQueuedMessageAlreadyStreamed:
         )
 
         assert _already_streamed is False
+
+
+# ===================================================================
+# Test 3b: previewed final response reconciliation
+# ===================================================================
+
+@pytest.mark.asyncio
+async def test_previewed_final_is_suppressed_when_it_already_matches(monkeypatch, tmp_path):
+    adapter = PreviewAdapter()
+    runner = _preview_runner(monkeypatch, tmp_path, adapter)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "You're welcome.",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+            "api_calls": 1,
+            "failed": False,
+            "response_previewed": True,
+            "preview_delivery_confirmed": True,
+            "previewed_content": "You're welcome.",
+            "previewed_message_id": "preview-msg",
+        }
+    )
+
+    response = await runner._handle_message_with_agent(
+        _preview_event(),
+        _preview_source(),
+        "agent:main:telegram:group:-1001:12345",
+        1,
+    )
+
+    assert response is None
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_previewed_final_edits_in_reasoning_prefix_before_suppressing(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  show_reasoning: true\n",
+        encoding="utf-8",
+    )
+    adapter = PreviewAdapter()
+    runner = _preview_runner(monkeypatch, tmp_path, adapter)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "You're welcome.",
+            "last_reasoning": "Check the stored reasoning from this turn.",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+            "api_calls": 1,
+            "failed": False,
+            "response_previewed": True,
+            "preview_delivery_confirmed": True,
+            "previewed_content": "You're welcome.",
+            "previewed_message_id": "preview-msg",
+        }
+    )
+
+    response = await runner._handle_message_with_agent(
+        _preview_event(),
+        _preview_source(),
+        "agent:main:telegram:group:-1001:12345",
+        1,
+    )
+
+    assert response is None
+    assert len(adapter.edits) == 1
+    assert adapter.edits[0]["message_id"] == "preview-msg"
+    assert adapter.edits[0]["content"].startswith("💭 **Reasoning:**\n```")
+    assert "Check the stored reasoning from this turn." in adapter.edits[0]["content"]
+    assert adapter.edits[0]["content"].endswith("\n\nYou're welcome.")
+
+
+@pytest.mark.asyncio
+async def test_previewed_final_falls_back_to_normal_send_when_not_editable(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  show_reasoning: true\n",
+        encoding="utf-8",
+    )
+    adapter = PreviewAdapter(supports_editing=False)
+    runner = _preview_runner(monkeypatch, tmp_path, adapter)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "You're welcome.",
+            "last_reasoning": "Check the stored reasoning from this turn.",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+            "api_calls": 1,
+            "failed": False,
+            "response_previewed": True,
+            "preview_delivery_confirmed": True,
+            "previewed_content": "You're welcome.",
+            "previewed_message_id": "preview-msg",
+        }
+    )
+
+    response = await runner._handle_message_with_agent(
+        _preview_event(),
+        _preview_source(),
+        "agent:main:telegram:group:-1001:12345",
+        1,
+    )
+
+    assert response.startswith("💭 **Reasoning:**\n```")
+    assert "Check the stored reasoning from this turn." in response
+    assert response.endswith("\n\nYou're welcome.")
+    assert adapter.edits == []
 
 
 # ===================================================================

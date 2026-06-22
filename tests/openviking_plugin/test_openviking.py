@@ -1401,3 +1401,151 @@ class TestOpenVikingMemoryUriBuilder:
             assert f"/memories/{subdir}/mem_" in uri, (
                 f"subdir '{subdir}' not placed correctly in URI: {uri}"
             )
+
+
+# ===================================================================
+# Issue #21130 — OPENVIKING_* not reloaded after /reload
+# ===================================================================
+
+
+class TestEnsureClientReloadsEnv:
+    """Verify /reload picks up new OPENVIKING_* values without a restart (#21130)."""
+
+    def test_ensure_client_rebuilds_when_api_key_changes(self, monkeypatch):
+        constructions = []
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key, account="", user="", agent="hermes"):
+                constructions.append({"endpoint": endpoint, "api_key": api_key,
+                                      "account": account, "user": user, "agent": agent})
+                self.endpoint, self.api_key = endpoint, api_key
+                self.account, self.user, self.agent = account, user, agent
+
+            def health(self):
+                return True
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://srv:31933")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        first = provider._ensure_client()
+        assert first is not None
+        assert first.api_key == ""
+        assert len(constructions) == 1
+
+        # Same env on second call — must reuse cached client (no rebuild).
+        assert provider._ensure_client() is first
+        assert len(constructions) == 1
+
+        # Simulate /reload: env now carries the new API key.
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-fresh")
+        rebuilt = provider._ensure_client()
+        assert rebuilt is not None
+        assert rebuilt is not first
+        assert rebuilt.api_key == "sk-fresh"
+        assert len(constructions) == 2
+
+    def test_ensure_client_rebuilds_when_endpoint_changes(self, monkeypatch):
+        builds = []
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key, **kw):
+                builds.append(endpoint)
+                self.endpoint = endpoint
+
+            def health(self):
+                return True
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://a")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "key")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        provider._ensure_client()
+        provider._ensure_client()  # cached
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://b")
+        provider._ensure_client()  # rebuilds
+        assert builds == ["http://a", "http://b"]
+
+    def test_prefetch_rebuilds_client_when_api_key_changes(self, monkeypatch):
+        posts = []
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key, **kw):
+                self.endpoint = endpoint
+                self.api_key = api_key
+
+            def health(self):
+                return True
+
+            def post(self, path, payload=None, **kwargs):
+                posts.append((self.api_key, path, payload or {}))
+                return {
+                    "result": {
+                        "memories": [
+                            {
+                                "uri": "viking://user/default/memories/pref.md",
+                                "abstract": f"memory from {self.api_key or 'anonymous'}",
+                                "score": 0.9,
+                                "level": 2,
+                            }
+                        ],
+                        "resources": [],
+                    }
+                }
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://srv:31933")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-old")
+        monkeypatch.setenv("OPENVIKING_RECALL_PREFER_ABSTRACT", "true")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        provider._session_id = "session-1"
+
+        first = provider.prefetch("What should OpenViking recall?", session_id="session-1")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-fresh")
+        second = provider.prefetch("What should OpenViking recall?", session_id="session-1")
+
+        assert "memory from sk-old" in first
+        assert "memory from sk-fresh" in second
+        assert [call[0] for call in posts] == ["sk-old", "sk-fresh"]
+        assert [call[1] for call in posts] == ["/api/v1/search/search", "/api/v1/search/search"]
+        assert posts[0][2]["limit"] == posts[1][2]["limit"]
+        assert "top_k" not in posts[0][2]
+
+    def test_ensure_client_returns_none_when_health_fails(self, monkeypatch):
+        class _StubClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            def health(self):
+                return False
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://dead")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        assert provider._ensure_client() is None
+        assert provider._client is None
+
+    def test_handle_tool_call_uses_ensure_client(self, monkeypatch):
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+
+        class _StubClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            def health(self):
+                return False
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+
+        out = provider.handle_tool_call("viking_search", {"query": "x"})
+        assert "not connected" in out.lower()

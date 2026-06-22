@@ -57,6 +57,19 @@ _nb_get_link_dir() {
     fi
 }
 
+# Redirect a Hermes-managed Node's `npm install -g` to the command link dir
+# (already on PATH) instead of the default $HERMES_HOME/node/bin, which is off
+# PATH and wiped on every Node upgrade. Scoped to the managed Node via its
+# prefix-local global npmrc; the user's other Node installs / ~/.npmrc are
+# untouched. Idempotent no-op when there's no managed npm.
+_nb_configure_npm_prefix() {
+    [ -x "$HERMES_HOME/node/bin/npm" ] || return 0
+    local _link_dir
+    _link_dir="$(_nb_get_link_dir)"
+    mkdir -p "$HERMES_HOME/node/etc"
+    printf 'prefix=%s\n' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+}
+
 _nb_node_major() {
     local v
     v=$(node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)
@@ -206,6 +219,9 @@ _nb_install_bundled_node() {
     ln -sf "$HERMES_HOME/node/bin/node" "$_link_dir/node"
     ln -sf "$HERMES_HOME/node/bin/npm"  "$_link_dir/npm"
     ln -sf "$HERMES_HOME/node/bin/npx"  "$_link_dir/npx"
+
+    _nb_configure_npm_prefix
+
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
     _nb_have_modern_node || return 1
@@ -219,6 +235,10 @@ _nb_install_bundled_node() {
 
 ensure_node() {
     HERMES_NODE_AVAILABLE=false
+
+    # Repair pre-existing managed installs where `npm install -g` lands off
+    # PATH. No-op when there's no managed Node, so it's safe to run first.
+    _nb_configure_npm_prefix
 
     if _nb_have_modern_node; then
         _nb_ok "Node $(node --version) found"

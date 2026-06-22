@@ -941,6 +941,15 @@ class QQAdapter(BasePlatformAdapter):
         content = str(d.get("content", "")).strip()
         author = d.get("author") if isinstance(d.get("author"), dict) else {}
 
+
+        # If group_openid is present, this is a group message regardless of event type.
+        # QQ platform may push group messages with C2C_MESSAGE_CREATE type but
+        # a group_openid chat_id — route these to group handler for requireMention filtering.
+        group_openid = d.get("group_openid")
+        if group_openid:
+            await self._handle_group_message(d, msg_id, content, author, timestamp, event_type=event_type)
+            return
+
         # Route by event type
         if event_type == "C2C_MESSAGE_CREATE":
             await self._handle_c2c_message(d, msg_id, content, author, timestamp)
@@ -1326,7 +1335,8 @@ class QQAdapter(BasePlatformAdapter):
         # requireMention filtering for GROUP_MESSAGE_CREATE events:
         # GROUP_AT_MESSAGE_CREATE is always @-mention → always process.
         # GROUP_MESSAGE_CREATE may or may not @ the bot → check mentions.
-        if event_type == "GROUP_MESSAGE_CREATE":
+        # Also handle messages routed via group_openid (event_type may be C2C_MESSAGE_CREATE)
+        if event_type == "GROUP_MESSAGE_CREATE" or (group_openid and event_type == "C2C_MESSAGE_CREATE"):
             require_mention = False
             # Check groups config for requireMention setting
             group_cfg = self._group_config.get(group_openid, {})
@@ -1336,17 +1346,19 @@ class QQAdapter(BasePlatformAdapter):
                 mentions = d.get("mentions") or []
                 bot_id = getattr(self, "_bot_openid", None)
                 mentioned = False
-                if bot_id and mentions:
-                    for m in mentions:
-                        mid = (
-                            m.get("member_openid")
-                            or m.get("id")
-                            or m.get("user_openid")
-                            or ""
-                        )
-                        if str(mid) == str(bot_id):
-                            mentioned = True
-                            break
+                for m in mentions:
+                    if m.get("is_you") is True:
+                        mentioned = True
+                        break
+                    mid = (
+                        m.get("member_openid")
+                        or m.get("id")
+                        or m.get("user_openid")
+                        or ""
+                    )
+                    if bot_id and str(mid) == str(bot_id):
+                        mentioned = True
+                        break
                 if not mentioned:
                     return
 
@@ -3172,10 +3184,11 @@ class QQAdapter(BasePlatformAdapter):
     @staticmethod
     def _strip_at_mention(content: str) -> str:
         """Strip the @bot mention prefix from group message content."""
-        # QQ group @-messages may have the bot's QQ/ID as prefix
         import re
-
-        stripped = re.sub(r"^@\S+\s*", "", content.strip())
+        # Remove XML-like mention tags: <@!ID> or <@ID>
+        stripped = re.sub(r"<@!?[A-Za-z0-9_-]+>\s*", "", content.strip())
+        # Also fall back to the generic @S+ match
+        stripped = re.sub(r"^@\S+\s*", "", stripped)
         return stripped
 
     def _is_dm_allowed(self, user_id: str) -> bool:

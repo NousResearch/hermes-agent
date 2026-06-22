@@ -836,8 +836,12 @@ def load_gateway_config() -> GatewayConfig:
                 if plat == Platform.LOCAL:
                     continue
                 platform_cfg = yaml_cfg.get(plat.value)
+                # For QQBOT, also check platforms_data if top-level key is missing
                 if not isinstance(platform_cfg, dict):
-                    continue
+                    if plat == Platform.QQBOT and plat.value in platforms_data:
+                        platform_cfg = platforms_data[plat.value]
+                    else:
+                        continue
                 # Collect bridgeable keys from this platform section
                 bridged = {}
                 if "unauthorized_dm_behavior" in platform_cfg:
@@ -886,10 +890,18 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
                 if "group_user_allowed_commands" in platform_cfg:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
-                if plat == Platform.QQBOT and "groups" in platform_cfg:
-                    bridged["groups"] = platform_cfg["groups"]
-                if plat == Platform.QQBOT and "groupConfig" in platform_cfg:
-                    bridged["groupConfig"] = platform_cfg["groupConfig"]
+                if plat == Platform.QQBOT:
+                    # Check both top-level qqbot and platforms.qqbot for groups config
+                    groups_src = platform_cfg.get("groups")
+                    if groups_src is None and plat.value in platforms_data:
+                        groups_src = platforms_data[plat.value].get("groups")
+                    if groups_src is not None:
+                        bridged["groups"] = groups_src
+                    group_config_src = platform_cfg.get("groupConfig")
+                    if group_config_src is None and plat.value in platforms_data:
+                        group_config_src = platforms_data[plat.value].get("groupConfig")
+                    if group_config_src is not None:
+                        bridged["groupConfig"] = group_config_src
                 if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:

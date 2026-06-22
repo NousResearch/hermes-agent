@@ -13,6 +13,8 @@ Exposes an HTTP server with endpoints:
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
 - GET  /api/sessions/{session_id}/messages — read session message history
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
+- POST /api/sessions/{session_id}/move/last  — move the last N turns to another session
+- POST /api/sessions/{session_id}/move/range — move messages.id A..B to another session
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
@@ -1246,6 +1248,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
+                "session_move": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
@@ -1276,6 +1279,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
                 "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
+                "session_move_last": {"method": "POST", "path": "/api/sessions/{session_id}/move/last"},
+                "session_move_range": {"method": "POST", "path": "/api/sessions/{session_id}/move/range"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
             },
@@ -1618,6 +1623,280 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
         fork = db.get_session(fork_id) or {"id": fork_id, "parent_session_id": source_id}
         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
+
+    # ------------------------------------------------------------------
+    # Session move endpoints (HRM-T0a step 6)
+    # ------------------------------------------------------------------
+    #
+    # Thin wrappers over ``SessionDB.move_turns`` — the API layer never
+    # reimplements the transaction. The primitive owns: BEGIN IMMEDIATE,
+    # idempotency replay, dry-run rollback, soft-delete of src rows, and
+    # move_log append. The handlers translate HTTP shape ↔ primitive
+    # contract and map raised exceptions to OpenAI-style error responses.
+
+    def _extract_move_idempotency_key(
+        self, request: "web.Request", body: Dict[str, Any]
+    ) -> Optional[str]:
+        """Resolve the idempotency key from body or ``Idempotency-Key`` header.
+
+        Body field takes precedence so a client that retries with a fresh
+        header value but the original body still hits the same move_log row.
+        Returns ``None`` if absent — the primitive enforces ``required for
+        commit`` semantics itself, and we let it raise so 400 messaging
+        matches the dry-run-allowed contract.
+        """
+        raw_body = body.get("idempotency_key")
+        if isinstance(raw_body, str) and raw_body.strip():
+            return raw_body.strip()
+        raw_header = request.headers.get("Idempotency-Key", "").strip()
+        return raw_header or None
+
+    @staticmethod
+    def _validate_move_idempotency_key(value: Optional[str]) -> Optional[str]:
+        """Return an error message for an invalid idempotency key, or None."""
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            return "idempotency_key must be a non-empty string"
+        if len(value) > 256:
+            return "idempotency_key must be <= 256 characters"
+        if re.search(r'[\r\n\x00]', value):
+            return "idempotency_key must not contain control characters"
+        return None
+
+    def _resolve_move_dst_session_id(
+        self, body: Dict[str, Any]
+    ) -> tuple[Optional[str], Optional["web.Response"]]:
+        """Extract and validate the destination session id from the body."""
+        raw = body.get("dst_session_id") or body.get("destination_session_id")
+        if not raw or not isinstance(raw, str) or not raw.strip():
+            return None, web.json_response(
+                _openai_error(
+                    "Missing 'dst_session_id'",
+                    code="missing_dst_session_id",
+                    param="dst_session_id",
+                ),
+                status=400,
+            )
+        dst = raw.strip()
+        if len(dst) > self._MAX_SESSION_HEADER_LEN or re.search(r'[\r\n\x00]', dst):
+            return None, web.json_response(
+                _openai_error(
+                    "Invalid 'dst_session_id'",
+                    code="invalid_dst_session_id",
+                    param="dst_session_id",
+                ),
+                status=400,
+            )
+        return dst, None
+
+    async def _handle_session_move_last(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/move/last — move the last N turns.
+
+        Body: ``{ "dst_session_id": str, "count": int >= 1,
+                  "idempotency_key": str?, "dry_run": bool? }``.
+
+        Header ``Idempotency-Key`` is accepted as a fallback so generic
+        OpenAI-style retry middleware composes with this endpoint without
+        the client rewriting the body. The body field wins on conflict.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        src_session_id = request.match_info["session_id"]
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        raw_count = body.get("count")
+        if raw_count is None or isinstance(raw_count, bool):
+            # bool is a subclass of int — refuse {"count": true} explicitly.
+            return web.json_response(
+                _openai_error(
+                    "Missing 'count'",
+                    code="missing_count",
+                    param="count",
+                ),
+                status=400,
+            )
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            return web.json_response(
+                _openai_error("'count' must be an integer", code="invalid_count", param="count"),
+                status=400,
+            )
+        if count < 1:
+            return web.json_response(
+                _openai_error("'count' must be >= 1", code="invalid_count", param="count"),
+                status=400,
+            )
+
+        return await self._dispatch_session_move(
+            request,
+            src_session_id=src_session_id,
+            range_spec=f"last:{count}",
+            body=body,
+        )
+
+    async def _handle_session_move_range(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/move/range — move messages id A..B.
+
+        Body: ``{ "dst_session_id": str, "from_id": int, "to_id": int,
+                  "idempotency_key": str?, "dry_run": bool? }``.
+
+        The id space matches ``messages.id`` (active rows only). Out-of-order
+        or non-integer bounds produce 400 with ``invalid_range``; the
+        underlying primitive owns the inclusive-bounds semantics.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        src_session_id = request.match_info["session_id"]
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        raw_from = body.get("from_id")
+        raw_to = body.get("to_id")
+        if raw_from is None or raw_to is None or isinstance(raw_from, bool) or isinstance(raw_to, bool):
+            return web.json_response(
+                _openai_error(
+                    "'from_id' and 'to_id' are required integers",
+                    code="missing_range",
+                    param="from_id",
+                ),
+                status=400,
+            )
+        try:
+            from_id = int(raw_from)
+            to_id = int(raw_to)
+        except (TypeError, ValueError):
+            return web.json_response(
+                _openai_error(
+                    "'from_id' and 'to_id' must be integers",
+                    code="invalid_range",
+                    param="from_id",
+                ),
+                status=400,
+            )
+        if from_id < 1 or to_id < 1:
+            return web.json_response(
+                _openai_error(
+                    "'from_id' and 'to_id' must be positive",
+                    code="invalid_range",
+                    param="from_id",
+                ),
+                status=400,
+            )
+        if from_id > to_id:
+            return web.json_response(
+                _openai_error(
+                    "'from_id' must be <= 'to_id'",
+                    code="invalid_range",
+                    param="from_id",
+                ),
+                status=400,
+            )
+
+        return await self._dispatch_session_move(
+            request,
+            src_session_id=src_session_id,
+            range_spec=f"range:{from_id}..{to_id}",
+            body=body,
+        )
+
+    async def _dispatch_session_move(
+        self,
+        request: "web.Request",
+        *,
+        src_session_id: str,
+        range_spec: str,
+        body: Dict[str, Any],
+    ) -> "web.Response":
+        """Shared validation + primitive call once the range_spec is built.
+
+        Splits out from ``_execute_session_move`` so the move-last and
+        move-range handlers can consume the body once and share the rest.
+        """
+        _, src_err = self._get_existing_session_or_404(src_session_id)
+        if src_err:
+            return src_err
+
+        dst_session_id, dst_err = self._resolve_move_dst_session_id(body)
+        if dst_err:
+            return dst_err
+        assert dst_session_id is not None
+        if dst_session_id == src_session_id:
+            return web.json_response(
+                _openai_error(
+                    "dst_session_id must differ from src session_id",
+                    code="same_src_and_dst",
+                    param="dst_session_id",
+                ),
+                status=400,
+            )
+
+        dry_run = _coerce_request_bool(body.get("dry_run"), default=False)
+        idempotency_key = self._extract_move_idempotency_key(request, body)
+        key_err = self._validate_move_idempotency_key(idempotency_key)
+        if key_err:
+            return web.json_response(
+                _openai_error(key_err, code="invalid_idempotency_key", param="idempotency_key"),
+                status=400,
+            )
+        if not dry_run and not idempotency_key:
+            return web.json_response(
+                _openai_error(
+                    "idempotency_key is required for commit (set dry_run=true to plan)",
+                    code="missing_idempotency_key",
+                    param="idempotency_key",
+                ),
+                status=400,
+            )
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(
+                _openai_error("Session database unavailable", code="session_db_unavailable"),
+                status=503,
+            )
+
+        try:
+            result = db.move_turns(
+                src_session_id=src_session_id,
+                dst_session_id=dst_session_id,
+                range_spec=range_spec,
+                idempotency_key=idempotency_key,
+                dry_run=dry_run,
+            )
+        except KeyError as exc:
+            msg = str(exc).strip("'\"")
+            code = "dst_session_not_found" if "dst" in msg else "src_session_not_found"
+            return web.json_response(
+                _openai_error(msg, code=code, err_type="invalid_request_error"),
+                status=404,
+            )
+        except ValueError as exc:
+            return web.json_response(
+                _openai_error(str(exc), code="invalid_move_request"),
+                status=400,
+            )
+        except Exception:
+            logger.exception(
+                "session move failed: src=%s dst=%s range=%s",
+                src_session_id, dst_session_id, range_spec,
+            )
+            return web.json_response(
+                _openai_error("Move failed", err_type="server_error", code="move_failed"),
+                status=500,
+            )
+
+        payload = dict(result)
+        payload["object"] = "hermes.session.move"
+        return web.json_response(payload, status=200)
 
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
@@ -4389,6 +4668,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
             self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
+            self._app.router.add_post("/api/sessions/{session_id}/move/last", self._handle_session_move_last)
+            self._app.router.add_post("/api/sessions/{session_id}/move/range", self._handle_session_move_range)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)

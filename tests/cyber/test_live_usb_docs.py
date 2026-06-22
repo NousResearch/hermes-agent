@@ -70,5 +70,12 @@ def test_direct_live_usb_scripts_fail_closed_on_unverified_media() -> None:
         assert '"$removable" != "1"' in script
         assert "refusing to" in lowered
 
+    root_guidance = (
+        "Root/sudo alone is not sufficient; the target must canonicalize "
+        "to a whole removable /dev disk with removable=1."
+    )
+    assert root_guidance in write_script
+    assert root_guidance in provision_script
+
     assert "WARNING: /sys/block" not in write_script
     assert 'PROVISION_PART="$(_partition_path "$DEVICE" 3)"' in provision_script

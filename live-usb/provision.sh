@@ -96,7 +96,11 @@ _partition_path() {
 }
 
 [[ -z "$DEVICE" ]]    && { echo "❌  --usb required";   exit 1; }
-[[ $EUID -ne 0 ]]     && { echo "❌  Run as root";      exit 1; }
+if [[ $EUID -ne 0 ]]; then
+  echo "❌  Run as root."
+  echo "    Root/sudo alone is not sufficient; the target must canonicalize to a whole removable /dev disk with removable=1."
+  exit 1
+fi
 DEVICE="$(_canonical_removable_device "$DEVICE")" || exit 1
 
 PROVISION_PART="$(_partition_path "$DEVICE" 3)"

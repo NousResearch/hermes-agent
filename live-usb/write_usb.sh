@@ -72,6 +72,7 @@ done
 # ---- Privilege check --------------------------------------------------------
 if [[ $EUID -ne 0 && "$LIST_ONLY" == "false" ]]; then
   echo "❌  Writing to a block device requires root."
+  echo "    Root/sudo alone is not sufficient; the target must canonicalize to a whole removable /dev disk with removable=1."
   echo "    Use: sudo $0 $*"
   exit 1
 fi

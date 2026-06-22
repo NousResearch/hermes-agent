@@ -1368,9 +1368,10 @@ class CLICommandsMixin:
             # (gateway/slash_commands.py): it persists to the same MEMORY/USER.md
             # and creates MEMORY.md on the first approved write. Without this the
             # shared handler returns "memory store unavailable". See #46783.
-            from tools.memory_tool import MemoryStore
-            store = MemoryStore()
-            store.load_from_disk()
+            # load_on_disk_store() honors the user's configured char limits, so
+            # an approval here enforces the same caps as the live agent would.
+            from tools.memory_tool import load_on_disk_store
+            store = load_on_disk_store()
         out = handle_pending_subcommand(
             wa.MEMORY, args,
             memory_store=store,

@@ -2210,6 +2210,36 @@ class TestMatrixRenderingPayloads:
 
 
     @pytest.mark.asyncio
+    async def test_thread_payload_preserves_explicit_reply_target(self):
+        result = await self.adapter.send(
+            "!room:example.org", "threaded reply", reply_to="$other-thread",
+            metadata={"thread_id": "$root"},
+        )
+
+        assert result.success is True
+        assert self._sent_contents()[0]["m.relates_to"] == {
+            "rel_type": "m.thread", "event_id": "$root",
+            "m.in_reply_to": {"event_id": "$other-thread"},
+            "is_falling_back": False,
+        }
+
+
+    @pytest.mark.asyncio
+    async def test_thread_payload_accepts_explicit_fallback_anchor(self):
+        result = await self.adapter.send(
+            "!room:example.org", "threaded fallback",
+            metadata={"thread_id": "$root", "matrix_thread_fallback_event_id": "$latest"},
+        )
+
+        assert result.success is True
+        assert self._sent_contents()[0]["m.relates_to"] == {
+            "rel_type": "m.thread", "event_id": "$root",
+            "m.in_reply_to": {"event_id": "$latest"},
+            "is_falling_back": True,
+        }
+
+
+    @pytest.mark.asyncio
     async def test_thread_replies_chain_from_inbound_event_and_preserve_explicit_target(self):
         self.adapter._is_dm_room = AsyncMock(return_value=True)
         self.adapter._resolve_room_identity = AsyncMock(return_value=types.SimpleNamespace(

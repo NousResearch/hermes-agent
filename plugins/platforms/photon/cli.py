@@ -31,6 +31,9 @@ from hermes_cli.colors import Colors, color
 from . import auth as photon_auth
 
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
+# Written on npm failure so check_requirements() can surface the root cause
+# when called later (gateway start, hermes status). Cleared on success.
+_NPM_ERROR_LOG = _SIDECAR_DIR / ".photon-npm-error.log"
 
 
 # ---------------------------------------------------------------------------
@@ -382,20 +385,42 @@ def _install_sidecar() -> int:
     # lockfile verbatim; fall back to `npm install` when the lockfile is
     # missing or drifted (e.g. a dev checkout mid-upgrade).
     print(f"  $ cd {_SIDECAR_DIR} && {npm} ci")
+    # stdout is not captured so npm progress prints to the terminal in real
+    # time. stderr is captured so we can persist the failure reason for
+    # check_requirements() to surface after the process exits.
     proc = subprocess.run(  # noqa: S603
         [npm, "ci"],
         cwd=str(_SIDECAR_DIR),
         check=False,
+        stderr=subprocess.PIPE,
+        text=True,
     )
+    if proc.stderr:
+        print(proc.stderr, end="", file=sys.stderr)
     if proc.returncode != 0:
         print(f"  npm ci failed — falling back to:  {npm} install")
         proc = subprocess.run(  # noqa: S603
             [npm, "install"],
             cwd=str(_SIDECAR_DIR),
             check=False,
+            stderr=subprocess.PIPE,
+            text=True,
         )
+        if proc.stderr:
+            print(proc.stderr, end="", file=sys.stderr)
     if proc.returncode != 0:
         print("npm install failed", file=sys.stderr)
+        error = (proc.stderr or "").strip()
+        if error:
+            try:
+                _NPM_ERROR_LOG.write_text(error, encoding="utf-8")
+            except OSError:
+                pass
+    else:
+        try:
+            _NPM_ERROR_LOG.unlink()
+        except FileNotFoundError:
+            pass
     return proc.returncode
 
 

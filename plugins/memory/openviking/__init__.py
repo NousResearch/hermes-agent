@@ -501,6 +501,121 @@ ADD_RESOURCE_SCHEMA = {
     },
 }
 
+WRITE_SCHEMA = {
+    "name": "viking_write",
+    "description": (
+        "Write structured content directly to a viking:// URI. "
+        "Use this when you already know where the entry should live "
+        "and want to store exact text without waiting for session extraction."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "uri": {
+                "type": "string",
+                "description": "Target viking:// URI to write the content to.",
+            },
+            "content": {
+                "type": "string",
+                "description": "The text to persist under the URI.",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["replace", "append"],
+                "description": "Write mode: 'replace' (default) or 'append'.",
+            },
+        },
+        "required": ["uri", "content"],
+    },
+}
+
+LINK_SCHEMA = {
+    "name": "viking_link",
+    "description": (
+        "Create a semantic relation between two OpenViking entries. "
+        "This lets the knowledge graph understand how entities, events, and resources connect."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "source": {
+                "type": "string",
+                "description": "URI of the source entry (from_uri).",
+            },
+            "target": {
+                "type": "string",
+                "description": "URI of the related entry (to_uri).",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why these entries are related (improves graph quality).",
+            },
+        },
+        "required": ["source", "target"],
+    },
+}
+
+GREP_SCHEMA = {
+    "name": "viking_grep",
+    "description": (
+        "Run OpenViking's exact-match grep search. Use for filenames, error codes, "
+        "or phrases the semantic search might miss."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Term or regex pattern to match."},
+            "uri": {
+                "type": "string",
+                "description": "URI prefix to limit the search (default: viking://).",
+            },
+            "case_insensitive": {
+                "type": "boolean",
+                "description": "Case-insensitive match (default: false).",
+            },
+            "limit": {"type": "integer", "description": "Max entries to return (node_limit)."},
+        },
+        "required": ["pattern"],
+    },
+}
+
+GLOB_SCHEMA = {
+    "name": "viking_glob",
+    "description": (
+        "Find OpenViking entries by path/glob patterns. Useful when you know part of "
+        "a filename or directory structure."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Glob pattern like viking://docs/*.md."},
+            "uri": {
+                "type": "string",
+                "description": "Root URI to search under (default: viking://).",
+            },
+            "limit": {"type": "integer", "description": "Max results (node_limit)."},
+        },
+        "required": ["pattern"],
+    },
+}
+
+EXTRACT_SCHEMA = {
+    "name": "viking_extract",
+    "description": (
+        "Force memory extraction on an ongoing OpenViking session so memories become "
+        "searchable before the session commits."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "session_id": {
+                "type": "string",
+                "description": "Session ID to extract (defaults to current session).",
+            },
+        },
+    },
+}
+
 
 # Recall tools (read-only) whose results we never re-ingest into OpenViking —
 # echoing recalled memory back into the session transcript would re-store it.
@@ -2831,7 +2946,18 @@ class OpenVikingMemoryProvider(MemoryProvider):
         t.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [SEARCH_SCHEMA, READ_SCHEMA, BROWSE_SCHEMA, REMEMBER_SCHEMA, ADD_RESOURCE_SCHEMA]
+        return [
+            SEARCH_SCHEMA,
+            READ_SCHEMA,
+            BROWSE_SCHEMA,
+            REMEMBER_SCHEMA,
+            ADD_RESOURCE_SCHEMA,
+            WRITE_SCHEMA,
+            LINK_SCHEMA,
+            GREP_SCHEMA,
+            GLOB_SCHEMA,
+            EXTRACT_SCHEMA,
+        ]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if not self._client:
@@ -2848,6 +2974,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 return self._tool_remember(args)
             elif tool_name == "viking_add_resource":
                 return self._tool_add_resource(args)
+            elif tool_name == "viking_write":
+                return self._tool_write(args)
+            elif tool_name == "viking_link":
+                return self._tool_link(args)
+            elif tool_name == "viking_grep":
+                return self._tool_grep(args)
+            elif tool_name == "viking_glob":
+                return self._tool_glob(args)
+            elif tool_name == "viking_extract":
+                return self._tool_extract(args)
             return tool_error(f"Unknown tool: {tool_name}")
         except Exception as e:
             return tool_error(str(e))
@@ -3153,6 +3289,113 @@ class OpenVikingMemoryProvider(MemoryProvider):
             "status": "added",
             "root_uri": result.get("root_uri", ""),
             "message": "Resource queued for processing. Use viking_search after a moment to find it.",
+        }, ensure_ascii=False)
+
+    def _tool_write(self, args: dict) -> str:
+        # POST /api/v1/content/write — WriteContentRequest (extra="forbid")
+        # Accepted fields: uri, content, mode, wait, timeout, telemetry
+        uri = args.get("uri", "")
+        content = args.get("content", "")
+        if not uri or not content:
+            return tool_error("uri and content are required")
+
+        payload: Dict[str, Any] = {"uri": uri, "content": content}
+        if args.get("mode"):
+            payload["mode"] = args["mode"]
+
+        resp = self._client.post("/api/v1/content/write", payload)
+        result = resp.get("result", {})
+
+        return json.dumps({
+            "status": "written",
+            "uri": uri,
+            "result": result,
+        }, ensure_ascii=False)
+
+    def _tool_link(self, args: dict) -> str:
+        # POST /api/v1/relations/link — LinkRequest: from_uri, to_uris, reason
+        source = args.get("source", "")
+        target = args.get("target", "")
+        if not source or not target:
+            return tool_error("source and target are required")
+
+        payload: Dict[str, Any] = {
+            "from_uri": source,
+            "to_uris": target,
+        }
+        if args.get("reason"):
+            payload["reason"] = args["reason"]
+
+        resp = self._client.post("/api/v1/relations/link", payload)
+        data = resp.get("result", {})
+
+        return json.dumps({
+            "status": "linked",
+            "source": source,
+            "target": target,
+            "details": data,
+        }, ensure_ascii=False)
+
+    def _tool_grep(self, args: dict) -> str:
+        # POST /api/v1/search/grep — GrepRequest: uri (required), pattern (required),
+        # case_insensitive, node_limit, level_limit
+        pattern = args.get("pattern", "")
+        if not pattern:
+            return tool_error("pattern is required")
+
+        payload: Dict[str, Any] = {
+            "uri": args.get("uri", "viking://"),
+            "pattern": pattern,
+        }
+        if args.get("case_insensitive"):
+            payload["case_insensitive"] = args["case_insensitive"]
+        if args.get("limit"):
+            payload["node_limit"] = args["limit"]
+
+        resp = self._client.post("/api/v1/search/grep", payload)
+        result = resp.get("result", [])
+
+        formatted = []
+        for item in result:
+            formatted.append({
+                "uri": item.get("uri"),
+                "snippet": item.get("snippet"),
+                "line": item.get("line"),
+            })
+
+        return json.dumps({"results": formatted}, ensure_ascii=False)
+
+    def _tool_glob(self, args: dict) -> str:
+        # POST /api/v1/search/glob — GlobRequest: pattern (required), uri, node_limit
+        pattern = args.get("pattern", "")
+        if not pattern:
+            return tool_error("pattern is required")
+
+        payload: Dict[str, Any] = {"pattern": pattern}
+        if args.get("uri"):
+            payload["uri"] = args["uri"]
+        if args.get("limit"):
+            payload["node_limit"] = args["limit"]
+
+        resp = self._client.post("/api/v1/search/glob", payload)
+        result = resp.get("result", [])
+
+        entries = [{"uri": e.get("uri"), "name": e.get("name")} for e in result]
+        return json.dumps({"entries": entries}, ensure_ascii=False)
+
+    def _tool_extract(self, args: dict) -> str:
+        # POST /api/v1/sessions/{session_id}/extract — no request body
+        session_id = args.get("session_id", self._session_id)
+        if not session_id:
+            return tool_error("session_id is required")
+
+        resp = self._client.post(f"/api/v1/sessions/{session_id}/extract")
+        result = resp.get("result", {})
+
+        return json.dumps({
+            "status": "extracted",
+            "session_id": session_id,
+            "details": result,
         }, ensure_ascii=False)
 
 

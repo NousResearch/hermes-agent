@@ -29,6 +29,19 @@ ACCEL_ROOT = _resolve_accel_root()
 if str(ACCEL_ROOT) not in sys.path:
     sys.path.insert(0, str(ACCEL_ROOT))
 
+# The source_accelerator package is a workspace-level script (workspace/scripts/
+# source_accelerator/), not part of the contributable src tree. When these tests
+# run from a clean src checkout with no sibling workspace (e.g. CI on this PR
+# head), the module is absent — skip rather than error so the PR is
+# self-consistent. Set HERMES_SOURCE_ACCELERATOR_PATH to point at the package to
+# exercise these tests.
+import pytest  # noqa: E402
+
+pytest.importorskip(
+    "source_accelerator.config",
+    reason="source_accelerator is a workspace script, absent from a clean src checkout",
+)
+
 
 def _fixture(tmp_path: Path, monkeypatch):
     source = tmp_path / "src"
@@ -118,4 +131,8 @@ def test_workspace_default_ignores_hermes_home(monkeypatch):
 
     cfgmod = importlib.reload(cfgmod)
     cfg = cfgmod.get_config()
-    assert str(cfg.workspace_root) == "/path/to/workspace"
+    # The accelerator config must IGNORE HERMES_HOME and resolve workspace_root to
+    # the canonical workspace, not the bogus HERMES_HOME we set above. Assert the
+    # behavioral intent (host-agnostic) rather than a hardcoded absolute path.
+    assert "/tmp/this-should-not-be-used" not in str(cfg.workspace_root)
+    assert str(cfg.workspace_root).rstrip("/").endswith("workspace")

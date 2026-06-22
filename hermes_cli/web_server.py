@@ -164,6 +164,9 @@ def _resolve_restart_drain_timeout() -> float:
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
+    app.state.runtime_global_subscribers = set()
+    app.state.runtime_global_lock = asyncio.Lock()
+    app.state.runtime_channel_registry = {}
     # Serializes chat-argv resolution so concurrent /api/pty connections
     # don't trigger overlapping ``npm install`` / ``npm run build`` work.
     # On app.state (not a module global) so the Lock binds to the running
@@ -229,6 +232,114 @@ def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
     except AttributeError:
         app.state.chat_argv_lock = asyncio.Lock()
         return app.state.chat_argv_lock
+
+
+def _get_runtime_global_state(app: "FastAPI"):
+    """Return (global_subscribers, global_lock) for observe-only runtime events."""
+    try:
+        return app.state.runtime_global_subscribers, app.state.runtime_global_lock
+    except AttributeError:
+        app.state.runtime_global_subscribers = set()
+        app.state.runtime_global_lock = asyncio.Lock()
+        return app.state.runtime_global_subscribers, app.state.runtime_global_lock
+
+
+def _get_runtime_channel_registry(app: "FastAPI") -> Dict[str, Dict[str, Any]]:
+    try:
+        return app.state.runtime_channel_registry
+    except AttributeError:
+        app.state.runtime_channel_registry = {}
+        return app.state.runtime_channel_registry
+
+
+def _runtime_channel_entry(app: "FastAPI", channel: str) -> Dict[str, Any]:
+    registry = _get_runtime_channel_registry(app)
+    return registry.setdefault(
+        channel,
+        {
+            "publisher_count": 0,
+            "subscriber_count": 0,
+            "profiles": {},
+            "last_seen_at": "",
+        },
+    )
+
+
+def _runtime_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _runtime_channel_connected(
+    app: "FastAPI",
+    channel: str,
+    *,
+    role: str,
+    profile: Optional[str] = None,
+) -> None:
+    entry = _runtime_channel_entry(app, channel)
+    if role == "publisher":
+        entry["publisher_count"] = int(entry.get("publisher_count") or 0) + 1
+        if profile:
+            profiles = entry.setdefault("profiles", {})
+            profiles[profile] = int(profiles.get(profile) or 0) + 1
+    elif role == "subscriber":
+        entry["subscriber_count"] = int(entry.get("subscriber_count") or 0) + 1
+    entry["last_seen_at"] = _runtime_now_iso()
+
+
+def _runtime_channel_disconnected(
+    app: "FastAPI",
+    channel: str,
+    *,
+    role: str,
+    profile: Optional[str] = None,
+) -> None:
+    registry = _get_runtime_channel_registry(app)
+    entry = registry.get(channel)
+    if not entry:
+        return
+    if role == "publisher":
+        entry["publisher_count"] = max(0, int(entry.get("publisher_count") or 0) - 1)
+        if profile:
+            profiles = entry.setdefault("profiles", {})
+            remaining = int(profiles.get(profile) or 0) - 1
+            if remaining > 0:
+                profiles[profile] = remaining
+            else:
+                profiles.pop(profile, None)
+    elif role == "subscriber":
+        entry["subscriber_count"] = max(0, int(entry.get("subscriber_count") or 0) - 1)
+    entry["last_seen_at"] = _runtime_now_iso()
+    if not entry["publisher_count"] and not entry["subscriber_count"]:
+        registry.pop(channel, None)
+
+
+def _runtime_channel_snapshot(app: "FastAPI") -> List[Dict[str, Any]]:
+    out = []
+    for channel, entry in sorted(_get_runtime_channel_registry(app).items()):
+        out.append(
+            {
+                "channel": channel,
+                "publisher_count": int(entry.get("publisher_count") or 0),
+                "subscriber_count": int(entry.get("subscriber_count") or 0),
+                "profiles": sorted((entry.get("profiles") or {}).keys()),
+                "last_seen_at": str(entry.get("last_seen_at") or ""),
+            }
+        )
+    return out
+
+
+def _runtime_frame_for_global(channel: str, payload: str) -> str:
+    try:
+        frame = json.loads(payload)
+    except Exception:
+        return payload
+    if isinstance(frame, dict) and frame.get("method") == "event" and isinstance(frame.get("params"), dict):
+        frame = dict(frame)
+        params = dict(frame["params"])
+        params.setdefault("channel", channel)
+        frame["params"] = params
+    return json.dumps(frame, ensure_ascii=False)
 
 
 app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
@@ -11366,7 +11477,7 @@ async def _resolve_chat_argv_async(
         )
 
 
-def _build_sidecar_url(channel: str) -> Optional[str]:
+def _build_sidecar_url(channel: str, profile: Optional[str] = None) -> Optional[str]:
     """ws:// URL the PTY child should publish events to, or None when unbound.
 
     Loopback / ``--insecure``: uses ``?token=<_SESSION_TOKEN>``.
@@ -11388,25 +11499,35 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
     netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
 
+    query = {"channel": channel}
+    if profile:
+        query["profile"] = profile
+
     if getattr(app.state, "auth_required", False):
         # Gated mode — use the internal credential so the WS upgrade survives
         # _ws_auth_ok and the child can reconnect.
         from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
 
-        qs = urllib.parse.urlencode(
-            {"internal": internal_ws_credential(), "channel": channel}
-        )
+        query["internal"] = internal_ws_credential()
+        qs = urllib.parse.urlencode(query)
     else:
-        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
+        query["token"] = _SESSION_TOKEN
+        qs = urllib.parse.urlencode(query)
 
     return f"ws://{netloc}/api/pub?{qs}"
 
 
 async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
-    """Fan out one publisher frame to every subscriber on `channel`."""
+    """Fan out one publisher frame to channel subscribers and global runtime subscribers."""
     event_channels, event_lock = _get_event_state(app)
     async with event_lock:
         subs = list(event_channels.get(channel, ()))
+
+    global_subscribers, global_lock = _get_runtime_global_state(app)
+    async with global_lock:
+        global_subs = list(global_subscribers)
+    global_payload = _runtime_frame_for_global(channel, payload)
+    _runtime_channel_entry(app, channel)["last_seen_at"] = _runtime_now_iso()
 
     for sub in subs:
         try:
@@ -11415,6 +11536,12 @@ async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
             # Subscriber went away mid-send; the /api/events finally clause
             # will remove it from the registry on its next iteration.
             _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
+
+    for sub in global_subs:
+        try:
+            await sub.send_text(global_payload)
+        except Exception:
+            _log.warning("global runtime broadcast failed for subscriber on %s", channel, exc_info=True)
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
@@ -11493,7 +11620,7 @@ async def pty_ws(ws: WebSocket) -> None:
     resume = ws.query_params.get("resume") or None
     profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
-    sidecar_url = _build_sidecar_url(channel) if channel else None
+    sidecar_url = _build_sidecar_url(channel, profile=profile) if channel else None
 
     try:
         argv, cwd, env = await _resolve_chat_argv_async(
@@ -11638,12 +11765,16 @@ async def pub_ws(ws: WebSocket) -> None:
         return
 
     await ws.accept()
+    profile = ws.query_params.get("profile", "") or None
+    _runtime_channel_connected(ws.app, channel, role="publisher", profile=profile)
 
     try:
         while True:
             await _broadcast_event(ws.app, channel, await ws.receive_text())
     except WebSocketDisconnect:
         pass
+    finally:
+        _runtime_channel_disconnected(ws.app, channel, role="publisher", profile=profile)
 
 
 @app.websocket("/api/events")
@@ -11670,6 +11801,7 @@ async def events_ws(ws: WebSocket) -> None:
     event_channels, event_lock = _get_event_state(ws.app)
     async with event_lock:
         event_channels.setdefault(channel, set()).add(ws)
+    _runtime_channel_connected(ws.app, channel, role="subscriber")
 
     try:
         while True:
@@ -11680,6 +11812,7 @@ async def events_ws(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        _runtime_channel_disconnected(ws.app, channel, role="subscriber")
         async with event_lock:
             subs = event_channels.get(channel)
 
@@ -11688,6 +11821,41 @@ async def events_ws(ws: WebSocket) -> None:
 
                 if not subs:
                     event_channels.pop(channel, None)
+
+
+@app.get("/api/runtime-channels")
+async def runtime_channels(request: Request):
+    token = request.headers.get(_SESSION_HEADER_NAME, "") or request.query_params.get("token", "")
+    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        raise HTTPException(status_code=401, detail="invalid session token")
+    return {"channels": _runtime_channel_snapshot(request.app)}
+
+
+@app.websocket("/api/runtime-events")
+async def runtime_events_ws(ws: WebSocket) -> None:
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        await ws.close(code=4403)
+        return
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
+        return
+    if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+
+    await ws.accept()
+    global_subscribers, global_lock = _get_runtime_global_state(ws.app)
+    async with global_lock:
+        global_subscribers.add(ws)
+
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        async with global_lock:
+            global_subscribers.discard(ws)
 
 
 def _normalise_prefix(raw: Optional[str]) -> str:

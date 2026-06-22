@@ -1797,6 +1797,17 @@ def run_conversation(
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
                     agent.context_compressor.update_from_response(usage_dict)
+                    if (
+                        hasattr(agent.context_compressor, "save_deferral_state")
+                        and getattr(agent, "_session_db", None)
+                        and agent.session_id
+                    ):
+                        try:
+                            agent.context_compressor.save_deferral_state(
+                                agent._session_db, agent.session_id,
+                            )
+                        except Exception:
+                            pass
 
                     # Cache discovered context length after successful call.
                     # Only persist limits confirmed by the provider (parsed

@@ -648,6 +648,18 @@ def compress_context(
         f"✅ Context compressed: {_pre_msg_count} → {len(compressed)} messages, "
         f"~{_compressed_est:,} tokens"
     )
+    _compressor = getattr(agent, "context_compressor", None)
+    if (
+        _compressor
+        and hasattr(_compressor, "save_deferral_state")
+        and getattr(agent, "_session_db", None)
+        and agent.session_id
+    ):
+        try:
+            _compressor.save_deferral_state(agent._session_db, agent.session_id)
+        except Exception:
+            pass
+
     # Release the lock on the OLD session_id only AFTER rotation completed
     # and all post-rotation bookkeeping (memory manager, context engine,
     # file dedup) ran. A concurrent path that wakes up the moment we

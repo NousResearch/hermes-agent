@@ -1518,6 +1518,18 @@ def init_agent(
         )
     agent.compression_enabled = compression_enabled
 
+    if (
+        hasattr(agent.context_compressor, "restore_deferral_state")
+        and getattr(agent, "_session_db", None)
+        and getattr(agent, "session_id", None)
+    ):
+        try:
+            agent.context_compressor.restore_deferral_state(
+                agent._session_db, agent.session_id,
+            )
+        except Exception:
+            pass
+
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
     _ctx = getattr(agent.context_compressor, "context_length", 0)

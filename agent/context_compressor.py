@@ -640,6 +640,38 @@ class ContextCompressor(ContextEngine):
         """
         self._previous_summary = None
 
+    _DEFERRAL_STATE_KEY_PREFIX = "compression_state:"
+
+    def save_deferral_state(self, db: Any, session_id: str) -> None:
+        """Persist critical deferral fields to state_meta so they survive restarts."""
+        try:
+            state = {
+                "last_real_prompt_tokens": self.last_real_prompt_tokens,
+                "last_rough_tokens_when_real_prompt_fit": self.last_rough_tokens_when_real_prompt_fit,
+                "compression_count": self.compression_count,
+            }
+            db.set_meta(
+                f"{self._DEFERRAL_STATE_KEY_PREFIX}{session_id}",
+                json.dumps(state),
+            )
+        except Exception:
+            logger.debug("Failed to save compression deferral state", exc_info=True)
+
+    def restore_deferral_state(self, db: Any, session_id: str) -> None:
+        """Restore deferral fields from state_meta after restart."""
+        try:
+            raw = db.get_meta(f"{self._DEFERRAL_STATE_KEY_PREFIX}{session_id}")
+            if not raw:
+                return
+            state = json.loads(raw)
+            self.last_real_prompt_tokens = state.get("last_real_prompt_tokens", 0)
+            self.last_rough_tokens_when_real_prompt_fit = state.get(
+                "last_rough_tokens_when_real_prompt_fit", 0
+            )
+            self.compression_count = state.get("compression_count", 0)
+        except (json.JSONDecodeError, Exception):
+            logger.debug("Failed to restore compression deferral state", exc_info=True)
+
     def update_model(
         self,
         model: str,

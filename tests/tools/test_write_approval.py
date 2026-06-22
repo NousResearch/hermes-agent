@@ -137,6 +137,33 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, cap
     assert any("remember the launch date" in e for e in reloaded.memory_entries)
 
 
+def test_load_on_disk_store_honors_configured_char_limits(hermes_home, monkeypatch):
+    """load_on_disk_store() must read memory.memory_char_limit /
+    user_char_limit from config so approvals applied without a live agent
+    enforce the SAME caps as the live agent (agent_init.py). Falls back to
+    defaults when config can't be loaded.
+    """
+    from tools.memory_tool import load_on_disk_store
+
+    # Config override path: helper picks up the configured limits.
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"memory_char_limit": 999, "user_char_limit": 444}},
+    )
+    store = load_on_disk_store()
+    assert store.memory_char_limit == 999
+    assert store.user_char_limit == 444
+
+    # Failure path: config raises → defaults, never blows up.
+    def _boom():
+        raise RuntimeError("no config")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", _boom)
+    fallback = load_on_disk_store()
+    assert fallback.memory_char_limit == 2200
+    assert fallback.user_char_limit == 1375
+
+
 # ---------------------------------------------------------------------------
 # Skill gate
 # ---------------------------------------------------------------------------

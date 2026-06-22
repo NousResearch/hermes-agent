@@ -286,6 +286,14 @@ from hermes_cli.dashboard_auth.public_paths import (
     PUBLIC_API_PATHS as _PUBLIC_API_PATHS,
 )
 
+# Public API prefix allowlist — for plugin-hosted static content (wiki, docs,
+# dashboards) served under /api/plugins/* that need to bypass the
+# _SESSION_TOKEN gate in insecure/loopback mode.  Prefix-matched so
+# ``/api/plugins/wiki/index.html`` lights up via ``/api/plugins/wiki/``.
+_PUBLIC_API_PREFIXES: tuple[str, ...] = (
+    "/api/plugins/wiki/",
+)
+
 
 def _has_valid_session_token(request: Request) -> bool:
     """True if the request carries a valid dashboard session token.

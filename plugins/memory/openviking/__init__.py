@@ -257,6 +257,8 @@ class _VikingClient:
             "Trusted mode requests must include X-OpenViking-Account" in message
             or "Trusted mode requests must include X-OpenViking-User" in message
             or "Trusted mode requests must include X-OpenViking-Account or explicit account_id" in message
+            # OpenViking 0.3.x ROOT-key error for tenant-scoped APIs
+            or "ROOT requests to tenant-scoped APIs must include X-OpenViking-Account" in message
         )
 
     def _send_with_trusted_identity_retry(self, send, *, multipart: bool = False) -> dict:
@@ -317,6 +319,13 @@ class _VikingClient:
             lambda headers: self._httpx.post(
                 self._url(path), json=payload or {}, headers=headers,
                 timeout=_TIMEOUT, **kwargs
+            )
+        )
+
+    def delete(self, path: str, **kwargs) -> dict:
+        return self._send_with_trusted_identity_retry(
+            lambda headers: self._httpx.delete(
+                self._url(path), headers=headers, timeout=_TIMEOUT, **kwargs
             )
         )
 
@@ -2799,6 +2808,45 @@ class OpenVikingMemoryProvider(MemoryProvider):
         slug = uuid.uuid4().hex[:12]
         return f"viking://user/peers/{self._agent}/memories/{subdir}/mem_{slug}.md"
 
+    def _memory_base_uri(self, subdir: str) -> str:
+        """Directory URI for a given memory subdir (no trailing file)."""
+        return f"viking://user/peers/{self._agent}/memories/{subdir}"
+
+    def _ensure_memory_dir(self, client: "_VikingClient", subdir: str) -> str:
+        """Ensure the memory directory exists. Returns the dir URI."""
+        dir_uri = self._memory_base_uri(subdir)
+        try:
+            client.post("/api/v1/fs/mkdir", {"uri": dir_uri})
+        except Exception:
+            pass  # already exists is fine
+        return dir_uri
+
+    def _find_memory_uri_by_old_text(
+        self, client: "_VikingClient", subdir: str, old_text: str
+    ) -> Optional[str]:
+        """Grep the memory subdir for old_text, return the first matching file URI."""
+        dir_uri = self._memory_base_uri(subdir)
+        try:
+            resp = client.post("/api/v1/search/grep", {
+                "uri": dir_uri,
+                "pattern": old_text,
+                "case_insensitive": True,
+            })
+            matches = resp.get("result", {}).get("matches", [])
+            # Prefer matches whose URI is within our memory subdir
+            for m in matches:
+                uri = m.get("uri", "")
+                if uri.startswith(dir_uri) and uri.endswith(".md"):
+                    return uri
+            # Fall back to any match
+            for m in matches:
+                uri = m.get("uri", "")
+                if uri.endswith(".md"):
+                    return uri
+        except Exception as e:
+            logger.debug("OpenViking memory grep failed: %s", e)
+        return None
+
     def on_memory_write(
         self,
         action: str,
@@ -2806,12 +2854,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Mirror built-in memory writes to OpenViking via content/write."""
-        if not self._client or action != "add" or not content:
+        """Mirror built-in memory writes (add/replace/remove) to OpenViking."""
+        if not self._client:
+            return
+        if action not in {"add", "replace", "remove"}:
+            return
+        if action == "add" and not content:
+            return
+        if action in {"replace", "remove"} and not (metadata or {}).get("old_text"):
+            logger.debug("OpenViking memory mirror: %s requires old_text in metadata", action)
             return
 
         subdir = _MEMORY_WRITE_TARGET_SUBDIR_MAP.get(target, _DEFAULT_MEMORY_SUBDIR)
-        uri = self._build_memory_uri(subdir)
+        old_text = (metadata or {}).get("old_text", "")
 
         def _write():
             try:
@@ -2819,11 +2874,45 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     self._endpoint, self._api_key,
                     account=self._account, user=self._user, agent=self._agent,
                 )
-                client.post("/api/v1/content/write", {
-                    "uri": uri,
-                    "content": content,
-                    "mode": "create",
-                })
+
+                if action == "add":
+                    dir_uri = self._ensure_memory_dir(client, subdir)
+                    uri = self._build_memory_uri(subdir)
+                    client.post("/api/v1/content/write", {
+                        "uri": uri,
+                        "content": content,
+                        "mode": "create",
+                    })
+                    logger.debug("OpenViking memory mirror: add → %s", uri)
+
+                elif action == "replace":
+                    existing_uri = self._find_memory_uri_by_old_text(client, subdir, old_text)
+                    if existing_uri:
+                        client.post("/api/v1/content/write", {
+                            "uri": existing_uri,
+                            "content": content,
+                            "mode": "replace",
+                        })
+                        logger.debug("OpenViking memory mirror: replace → %s", existing_uri)
+                    else:
+                        # Entry not found in OpenViking — treat as add
+                        self._ensure_memory_dir(client, subdir)
+                        uri = self._build_memory_uri(subdir)
+                        client.post("/api/v1/content/write", {
+                            "uri": uri,
+                            "content": content,
+                            "mode": "create",
+                        })
+                        logger.debug("OpenViking memory mirror: replace (not found, add) → %s", uri)
+
+                elif action == "remove":
+                    existing_uri = self._find_memory_uri_by_old_text(client, subdir, old_text)
+                    if existing_uri:
+                        client.delete("/api/v1/fs", params={"uri": existing_uri})
+                        logger.debug("OpenViking memory mirror: remove → %s", existing_uri)
+                    else:
+                        logger.debug("OpenViking memory mirror: remove (not found, skip) old_text=%s", old_text[:60])
+
             except Exception as e:
                 logger.debug("OpenViking memory mirror failed: %s", e)
 

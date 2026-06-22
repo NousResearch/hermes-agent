@@ -3,7 +3,7 @@ label: Lanxin (蓝信)
 kind: platform
 version: 1.0.0
 description: >
-  Lanxin (蓝信 / Hygon IM) gateway adapter for Hermes Agent.
+  Lanxin (蓝信) gateway adapter for Hermes Agent.
   Receives messages via encrypted HTTP callback (AES-256-CBC + HMAC-SHA256)
   and replies through the Lanxin Open Platform REST API.
   Supports text messages, user allowlists, and group @mention gating.

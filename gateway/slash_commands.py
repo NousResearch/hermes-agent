@@ -2301,6 +2301,68 @@ class GatewaySlashCommandsMixin:
         lines.append(f"Key:   {mask_api_key(result.api_key)}")
         return "\n".join(lines)
 
+    async def _handle_apikey_c_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /apikey-c — hot-swap credentials used by context compression.
+
+        Usage:
+            /apikey-c                   — show current compression provider/model/key
+            /apikey-c <key>             — hotswap compression API key
+            /apikey-c --provider <slug> — change compression provider
+            /apikey-c --model <name>    — change compression model
+            /apikey-c --save <key>      — hotswap and persist to config.yaml
+            /apikey-c --reload          — reload .env and apply provider's key
+        """
+        from hermes_cli.apikey_switch import mask_api_key
+        from hermes_cli.compression_switch import (
+            apply_api_c_switch,
+            format_api_c_status,
+            get_compression_config,
+            parse_api_c_args,
+            reload_compression_key_from_env,
+        )
+
+        raw_args = event.get_command_args().strip() if event else ""
+        args, errors = parse_api_c_args(raw_args)
+        if errors:
+            return "\n".join(f"✗ {err}" for err in errors)
+
+        cfg = get_compression_config()
+        provider = str(cfg.get("provider") or "").strip()
+        model = str(cfg.get("model") or "").strip()
+
+        if args.reload:
+            new_key = reload_compression_key_from_env(provider)
+            if not new_key:
+                from hermes_cli.apikey_switch import resolve_provider_key_env
+
+                key_env = resolve_provider_key_env(provider)
+                return f"✗ No key found in {key_env}"
+        else:
+            new_key = args.key
+
+        if not new_key and not args.provider and not args.model:
+            current_key = str(cfg.get("api_key") or "").strip()
+            return format_api_c_status(provider, model, current_key)
+
+        result = apply_api_c_switch(
+            provider=args.provider,
+            model=args.model,
+            api_key=new_key,
+            save_to_config=args.save,
+        )
+
+        if not result.success:
+            return f"✗ {result.message}"
+
+        lines = [
+            f"✓ Compression key hotswapped for {result.provider}",
+        ]
+        if result.saved_to_config:
+            lines.append("Saved to config.yaml")
+        lines.append(f"Model: {result.model or '(use provider default)'}")
+        lines.append(f"Key:   {mask_api_key(result.api_key)}")
+        return "\n".join(lines)
+
     async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
         """Handle /codex-runtime command in the gateway.
 

@@ -10883,6 +10883,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "apikey-d":
             return await self._handle_apikey_d_command(event)
 
+        if canonical == "apikey-c":
+            return await self._handle_apikey_c_command(event)
+
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
 

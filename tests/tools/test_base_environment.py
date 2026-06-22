@@ -4,6 +4,7 @@ Tests _wrap_command(), _extract_cwd_from_output(), _embed_stdin_heredoc(),
 init_session() failure handling, and the CWD marker contract.
 """
 
+import sys
 from unittest.mock import MagicMock
 
 from tools.environments.base import BaseEnvironment
@@ -194,3 +195,44 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestWindowsToMsysPath:
+    def test_noop_on_non_windows(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        assert (
+            BaseEnvironment._windows_to_msys_path(r"C:\Users\x")
+            == r"C:\Users\x"
+        )
+
+    def test_converts_drive_path_on_windows(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        assert (
+            BaseEnvironment._windows_to_msys_path(r"C:\Users\NVIDIA")
+            == "/c/Users/NVIDIA"
+        )
+
+    def test_converts_forward_slash_variant(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        assert (
+            BaseEnvironment._windows_to_msys_path("D:/Projects/foo")
+            == "/d/Projects/foo"
+        )
+
+    def test_noop_on_already_msys_path(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        assert (
+            BaseEnvironment._windows_to_msys_path("/c/Users/NVIDIA")
+            == "/c/Users/NVIDIA"
+        )
+
+    def test_noop_on_empty_string(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        assert BaseEnvironment._windows_to_msys_path("") == ""
+
+    def test_preserves_trailing_slash(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        assert (
+            BaseEnvironment._windows_to_msys_path("C:\\Users\\NVIDIA\\")
+            == "/c/Users/NVIDIA/"
+        )

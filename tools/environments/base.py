@@ -379,7 +379,7 @@ class BaseEnvironment(ABC):
             f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
             f"echo 'set +e' >> {_quoted_snap}\n"
             f"echo 'set +u' >> {_quoted_snap}\n"
-            f"builtin cd {_quoted_cwd} 2>/dev/null || true\n"
+            f"builtin cd -- {_quoted_cwd} 2>/dev/null || true\n"
             f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )

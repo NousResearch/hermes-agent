@@ -680,16 +680,131 @@ button {
     rgba(0, 0, 0, 0.2);
 }
 
+.plan-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.plan-summary-grid div {
+  min-width: 0;
+  padding: 13px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.plan-summary-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.plan-summary-grid strong {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  font-size: 0.95rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-tabs {
+  display: flex;
+  gap: 8px;
+  margin: -2px 0 2px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.plan-tab {
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+  max-width: 220px;
+  overflow: hidden;
+  padding: 9px 12px;
+  text-overflow: ellipsis;
+  transition:
+    transform 180ms ease,
+    background 180ms ease;
+  white-space: nowrap;
+}
+
+.plan-tab:hover {
+  transform: translateY(-2px);
+}
+
+.plan-tab.active {
+  color: #061007;
+  background: linear-gradient(135deg, var(--green), var(--mango));
+}
+
 .generated-output {
   min-height: 520px;
-  max-height: 720px;
+  max-height: 680px;
   overflow: auto;
-  padding: 18px;
+  padding: 22px;
   border-radius: 24px;
   background: rgba(0, 0, 0, 0.24);
   color: var(--cream);
   line-height: 1.65;
-  white-space: pre-wrap;
+}
+
+.generated-output.empty,
+.generated-output.loading {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+}
+
+.generated-output h3 {
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: clamp(1.6rem, 3vw, 2.5rem);
+  letter-spacing: -0.06em;
+}
+
+.generated-output p {
+  color: rgba(255, 242, 194, 0.86);
+  margin: 0 0 14px;
+}
+
+.generated-output ul,
+.generated-output ol {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+  padding-left: 22px;
+}
+
+.generated-output li {
+  padding-left: 4px;
+}
+
+.generated-output pre {
+  overflow: auto;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.section-focus > span {
+  display: inline-flex;
+  margin-bottom: 10px;
+  border-radius: 999px;
+  background: rgba(156, 255, 143, 0.12);
+  color: var(--green);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  padding: 7px 10px;
+  text-transform: uppercase;
 }
 
 .generated-output.error {
@@ -782,6 +897,7 @@ button {
 
   .engine-strip,
   .experiment-grid,
+  .plan-summary-grid,
   .upload-grid {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -812,6 +928,7 @@ button {
   .engine-strip,
   .experiment-grid,
   .metric-grid,
+  .plan-summary-grid,
   .tracker-form,
   .generator-form,
   .channel-field,

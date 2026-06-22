@@ -194,6 +194,18 @@ const generatorForm = document.querySelector("#generatorForm");
 const generatedOutput = document.querySelector("#generatedOutput");
 const generationStatus = document.querySelector("#generationStatus");
 const copyGenerated = document.querySelector("#copyGenerated");
+const planTabs = document.querySelector("#planTabs");
+const planSummaryGrid = document.querySelector("#planSummaryGrid");
+const heroBrandName = document.querySelector("#heroBrandName");
+const heroProductName = document.querySelector("#heroProductName");
+const heroRevenueTarget = document.querySelector("#heroRevenueTarget");
+const heroOrderTarget = document.querySelector("#heroOrderTarget");
+const heroPrice = document.querySelector("#heroPrice");
+const campaignProductName = document.querySelector("#campaignProductName");
+const campaignSummary = document.querySelector("#campaignSummary");
+let generatedPlanText = "";
+let generatedSections = [];
+let activeGeneratedSection = 0;
 
 function renderTimeline() {
   timeline.innerHTML = weeks
@@ -292,14 +304,182 @@ function getGeneratorInput() {
   };
 }
 
+function escapeHtml(value) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function normalizeCurrency(value) {
+  const match = value.match(/(?:rs\.?|₹)\s*([0-9,]+)/i);
+  if (!match) return value || "₹50K";
+  const number = Number(match[1].replaceAll(",", ""));
+  if (!number) return value;
+  if (number >= 100000) return `₹${Math.round(number / 100000)}L`;
+  if (number >= 1000) return `₹${Math.round(number / 1000)}K`;
+  return `₹${number}`;
+}
+
+function estimateOrderTarget(goal, price) {
+  const goalMatch = goal.match(/(?:rs\.?|₹)\s*([0-9,]+)/i);
+  const priceMatch = price.match(/(?:rs\.?|₹)\s*([0-9,]+)/i);
+  if (!goalMatch || !priceMatch) return "target units";
+  const goalNumber = Number(goalMatch[1].replaceAll(",", ""));
+  const priceNumber = Number(priceMatch[1].replaceAll(",", ""));
+  if (!goalNumber || !priceNumber) return "target units";
+  return `${Math.ceil(goalNumber / priceNumber)} units`;
+}
+
+function updateCampaignContext() {
+  const input = getGeneratorInput();
+  heroBrandName.textContent = input.brandName || "Brand";
+  heroProductName.textContent = input.product || "Product";
+  heroRevenueTarget.textContent = normalizeCurrency(input.revenueGoal || "");
+  heroOrderTarget.textContent = estimateOrderTarget(
+    input.revenueGoal || "",
+    input.price || "",
+  );
+  heroPrice.textContent = input.price?.replace(/^Rs\./i, "₹") || "Price";
+  campaignProductName.textContent = input.product || "Product";
+  campaignSummary.textContent = `A weekly execution map to sell ${input.revenueGoal || "your revenue goal"} through ${input.channels.join(", ") || "your growth channels"}.`;
+  renderPlanSummary(input);
+}
+
+function renderPlanSummary(input) {
+  planSummaryGrid.innerHTML = [
+    ["Brand", input.brandName],
+    ["Product", input.product],
+    ["Goal", input.revenueGoal],
+  ]
+    .map(
+      ([label, value]) => `
+        <div>
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value || "-")}</strong>
+        </div>
+      `,
+    )
+    .join("");
+}
+
+function parsePlanSections(markdown) {
+  const lines = markdown.split("\n");
+  const sections = [];
+  let current = {
+    title: "Executive Summary",
+    body: [],
+  };
+
+  for (const line of lines) {
+    const heading = line.match(/^#{1,4}\s+(.+)/);
+    if (heading) {
+      if (current.body.join("\n").trim()) sections.push(current);
+      current = {
+        title: heading[1].replaceAll("*", "").replace(/^\d+\.\s*/, "").trim(),
+        body: [],
+      };
+    } else {
+      current.body.push(line);
+    }
+  }
+
+  if (current.body.join("\n").trim()) sections.push(current);
+
+  return sections.length
+    ? sections
+    : [
+        {
+          title: "Generated Plan",
+          body: [markdown],
+        },
+      ];
+}
+
+function markdownLiteToHtml(markdown) {
+  const blocks = markdown
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  return blocks
+    .map((block) => {
+      if (block.includes("|") && block.includes("---")) {
+        return `<pre>${escapeHtml(block)}</pre>`;
+      }
+
+      const lines = block.split("\n");
+      if (lines.every((line) => /^[-*]\s+/.test(line.trim()))) {
+        return `<ul>${lines
+          .map((line) => `<li>${formatInline(line.replace(/^[-*]\s+/, ""))}</li>`)
+          .join("")}</ul>`;
+      }
+
+      if (lines.every((line) => /^\d+\.\s+/.test(line.trim()))) {
+        return `<ol>${lines
+          .map((line) => `<li>${formatInline(line.replace(/^\d+\.\s+/, ""))}</li>`)
+          .join("")}</ol>`;
+      }
+
+      return `<p>${formatInline(block).replaceAll("\n", "<br>")}</p>`;
+    })
+    .join("");
+}
+
+function formatInline(value) {
+  return escapeHtml(value)
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.*?)\*/g, "<em>$1</em>");
+}
+
+function renderGeneratedPlan(activeIndex = 0) {
+  activeGeneratedSection = activeIndex;
+
+  if (!generatedSections.length) {
+    planTabs.innerHTML = "";
+    generatedOutput.className = "generated-output empty";
+    generatedOutput.innerHTML = `
+      <h3>Ready to generate</h3>
+      <p>Fill the form and click Generate with AI. The plan will appear as focused sections instead of one long Markdown file.</p>
+    `;
+    return;
+  }
+
+  const section = generatedSections[activeGeneratedSection] ?? generatedSections[0];
+  planTabs.innerHTML = generatedSections
+    .map(
+      (item, index) => `
+        <button class="plan-tab ${index === activeGeneratedSection ? "active" : ""}" data-plan-section="${index}">
+          ${escapeHtml(item.title)}
+        </button>
+      `,
+    )
+    .join("");
+
+  generatedOutput.className = "generated-output";
+  generatedOutput.innerHTML = `
+    <div class="section-focus">
+      <span>Focus area</span>
+      <h3>${escapeHtml(section.title)}</h3>
+      ${markdownLiteToHtml(section.body.join("\n").trim())}
+    </div>
+  `;
+}
+
 async function generatePlan(event) {
   event.preventDefault();
   const input = getGeneratorInput();
 
-  generatedOutput.classList.remove("error");
+  updateCampaignContext();
+  generatedOutput.className = "generated-output loading";
   generationStatus.textContent = "Generating";
-  generatedOutput.textContent =
-    "superattention.ai is building the 30-day growth plan...";
+  planTabs.innerHTML = "";
+  generatedOutput.innerHTML = `
+    <h3>Building your growth plan...</h3>
+    <p>Converting ${escapeHtml(input.product)} into a focused weekly growth system.</p>
+  `;
 
   try {
     const response = await fetch("/api/generate-plan", {
@@ -319,22 +499,23 @@ async function generatePlan(event) {
     generationStatus.textContent = data.saveResult?.saved
       ? "Generated + saved"
       : "Generated";
-    generatedOutput.textContent = data.plan;
+    generatedPlanText = data.plan;
+    generatedSections = parsePlanSections(data.plan);
+    renderGeneratedPlan(0);
   } catch (error) {
     generationStatus.textContent = "Setup needed";
-    generatedOutput.classList.add("error");
-    generatedOutput.textContent = `Could not generate yet.
-
-This usually means you are running the static local server or Vercel environment variables are not configured.
-
-Required production setup:
-- Deploy apps/superattention-console on Vercel
-- Add ANTHROPIC_API_KEY
-- Add SUPABASE_URL
-- Add SUPABASE_SERVICE_ROLE_KEY
-- Run supabase/schema.sql
-
-Error: ${error.message}`;
+    generatedOutput.className = "generated-output error";
+    generatedOutput.innerHTML = `
+      <h3>Could not generate yet</h3>
+      <p>This usually means the deployment or API environment needs attention.</p>
+      <ul>
+        <li>Confirm Vercel has <strong>ANTHROPIC_API_KEY</strong>.</li>
+        <li>Confirm Vercel has <strong>SUPABASE_URL</strong>.</li>
+        <li>Confirm Vercel has <strong>SUPABASE_SERVICE_ROLE_KEY</strong>.</li>
+        <li>Confirm Supabase has the <strong>superattention_campaigns</strong> table.</li>
+      </ul>
+      <p><strong>Error:</strong> ${escapeHtml(error.message)}</p>
+    `;
   }
 }
 
@@ -352,6 +533,11 @@ document.addEventListener("click", async (event) => {
     renderTabs(tab.dataset.asset);
   }
 
+  const planTab = event.target.closest("[data-plan-section]");
+  if (planTab) {
+    renderGeneratedPlan(Number(planTab.dataset.planSection));
+  }
+
   const copyButton = event.target.closest("[data-copy]");
   if (copyButton) {
     const asset = assets.find((item) => item.id === copyButton.dataset.copy);
@@ -367,13 +553,15 @@ document.addEventListener("click", async (event) => {
 trackerForm.addEventListener("input", updateInsights);
 generatorForm.addEventListener("submit", generatePlan);
 copyGenerated.addEventListener("click", async () => {
-  await navigator.clipboard.writeText(generatedOutput.textContent);
+  await navigator.clipboard.writeText(generatedPlanText || generatedOutput.textContent);
   copyGenerated.textContent = "Copied";
   setTimeout(() => {
     copyGenerated.textContent = "Copy generated plan";
   }, 1400);
 });
+generatorForm.addEventListener("input", updateCampaignContext);
 
 renderTimeline();
 renderTabs();
 updateInsights();
+updateCampaignContext();

@@ -57,8 +57,8 @@
 
         <div class="growth-card">
           <div class="card-header">
-            <span>The Pickle Romance</span>
-            <strong>Aam Romantics</strong>
+            <span id="heroBrandName">The Pickle Romance</span>
+            <strong id="heroProductName">Aam Romantics</strong>
           </div>
           <div class="revenue-ring">
             <svg viewBox="0 0 160 160" aria-label="Revenue progress">
@@ -67,8 +67,8 @@
             </svg>
             <div class="ring-copy">
               <span>Target</span>
-              <strong>₹50K</strong>
-              <small>84 combos</small>
+              <strong id="heroRevenueTarget">₹50K</strong>
+              <small id="heroOrderTarget">84 combos</small>
             </div>
           </div>
           <div class="metric-grid">
@@ -79,7 +79,7 @@
             </div>
             <div>
               <span>Price</span>
-              <strong>₹599</strong>
+              <strong id="heroPrice">₹599</strong>
               <small>launch</small>
             </div>
             <div>
@@ -199,9 +199,27 @@
               <span>Live output</span>
               <strong id="generationStatus">Ready</strong>
             </div>
-            <div class="generated-output" id="generatedOutput">
-              Production V1 is ready for your Anthropic API key and Supabase
-              project. Submit the form after deploying to Vercel.
+            <div class="plan-summary-grid" id="planSummaryGrid">
+              <div>
+                <span>Brand</span>
+                <strong>The Pickle Romance</strong>
+              </div>
+              <div>
+                <span>Product</span>
+                <strong>Aam Romantics Combo</strong>
+              </div>
+              <div>
+                <span>Goal</span>
+                <strong>Rs. 50,000 in 30 days</strong>
+              </div>
+            </div>
+            <div class="plan-tabs" id="planTabs"></div>
+            <div class="generated-output empty" id="generatedOutput">
+              <h3>Ready to generate</h3>
+              <p>
+                Fill the form and click Generate with AI. The plan will appear
+                as focused sections instead of one long Markdown file.
+              </p>
             </div>
             <button class="copy-btn" id="copyGenerated" type="button">
               Copy generated plan
@@ -213,8 +231,8 @@
       <section id="campaign" class="section">
         <div class="section-title">
           <span>30-day command plan</span>
-          <h2>Aam Romantics campaign</h2>
-          <p>
+          <h2><span id="campaignProductName">Aam Romantics</span> campaign</h2>
+          <p id="campaignSummary">
             A weekly execution map to sell ₹50,000 through Instagram, website,
             WhatsApp, and local trust.
           </p>

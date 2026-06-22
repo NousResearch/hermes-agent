@@ -77,7 +77,9 @@ Then rescan dashboard plugins:
 curl http://127.0.0.1:9119/api/dashboard/plugins/rescan
 ```
 
-If backend API routes 404, restart `hermes dashboard`; plugin APIs are mounted at dashboard startup.
+When installed as a user plugin, the dashboard UI loads but Python backend API
+routes are not auto-imported. Backend routes are available when this plugin is
+bundled with Hermes.
 
 ## Updating
 
@@ -89,7 +91,11 @@ git pull --ff-only
 curl http://127.0.0.1:9119/api/dashboard/plugins/rescan
 ```
 
-If the update changes backend routes or `plugin_api.py`, restart `hermes dashboard` after pulling.
+For a user-installed plugin at `~/.hermes/plugins/hermes-achievements`, a plugin
+rescan is enough because Python backend routes are not auto-imported. If you
+update the bundled plugin by pulling changes in the hermes-agent repository, and
+that bundled plugin update changes backend routes or `plugin_api.py`, restart
+`hermes dashboard` after pulling.
 
 As of 2026-04-29, updating is strongly recommended because scan performance changed significantly:
 - removed duplicate `/overview` scan path
@@ -117,6 +123,9 @@ dashboard/
 ```
 
 ## API
+
+These backend routes are mounted for the bundled plugin. User-installed copies
+load their dashboard UI but do not auto-import Python backend routes.
 
 Routes are mounted under:
 

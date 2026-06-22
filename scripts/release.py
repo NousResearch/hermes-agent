@@ -45,8 +45,10 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
-    "jeevesassistant00@gmail.com": "jeeves-assistant",  # PR #50771 (computer-use CuaDriver structured element bounds)
+    "jeevesassistant00@gmail.com": "jeeves-assistant",  # PR #50771 (computer-use CuaDriver vision capture routing)
+    "21178861+ScotterMonk@users.noreply.github.com": "ScotterMonk",  # PR #50145 salvage (cron output truncation: adapter-aware chunking, #50126)
     "rrandqua@gmail.com": "TutkuEroglu",  # PR #50481 salvage (AGENTS.md stale token-lock adapter path)
+    "f@trycua.com": "f-trycua",  # PR #50507 salvage (cross-platform computer_use; supersedes #44221/#30660)
     "pedro.m.simoes@gmail.com": "pmos69",  # PR #29474 salvage (native Antigravity OAuth provider; Gemini CLI sunset #29294/#49701)
     "mediratta01.pally@gmail.com": "orbisai0security",  # PR #9560 salvage (session.py path-traversal guard, V-009)
     "panghuer023@users.noreply.github.com": "panghuer023",  # PR #37994 salvage (interrupt unblocks pending gateway approval; #8697)
@@ -630,6 +632,7 @@ AUTHOR_MAP = {
     "79389617+txbxxx@users.noreply.github.com": "txbxxx",
     "liuhao03@bilibili.com": "liuhao1024",
     "130918800+devorun@users.noreply.github.com": "devorun",
+    "27793551+iaji@users.noreply.github.com": "iaji",
     "surat.s@itm.kmutnb.ac.th": "beesrsj2500",
     "beesr@bee.localdomain": "beesrsj2500",
     "mind-dragon@nous.research": "Mind-Dragon",
@@ -1411,6 +1414,8 @@ AUTHOR_MAP = {
     "caojiguang@gmail.com": "caojiguang",  # PR #35117 carries #31853 (weixin _api_post/_api_get wait_for)
     "gooku94123@gmail.com": "goku94123",  # PR #46609 salvage (MiniMax reasoning extra_body)
     # pander: empty email, salvaged via PR #19665 from #16126 by @ms-alan
+    "chaithanya.kumar42a@gmail.com": "chaithanyak42",  # PR #15624
+    "kartik.labhshetwar@mem0.ai": "kartik-mem0",  # PR #15624
     "ayman.a.kamal@hotmail.com": "A-kamal",  # PR #18678 (xAI image resolution fix)
     # Kanban bug-fix batch salvage (May 2026)
     "frowte3k@gmail.com": "Frowtek",  # salvage of #23206 (gateway --board auto-subscribe)

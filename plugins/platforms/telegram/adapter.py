@@ -417,6 +417,7 @@ class TelegramAdapter(BasePlatformAdapter):
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # Telegram MarkdownV2 renders fenced code blocks
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Bot API 10.1 Rich Messages cap the raw markdown/html text at 32,768
     # UTF-8 characters. Content above this is sent via the legacy chunking path.
     RICH_MESSAGE_MAX_CHARS = 32768

@@ -1821,6 +1821,38 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}No active goal.{_RST}")
             return
 
+        # /goal wait <pid> [reason] — park the loop on a background process so
+        # it stops re-poking the agent every turn while it waits on CI / a
+        # build / a long job. The barrier auto-clears when the PID exits.
+        if lower == "wait" or lower.startswith("wait "):
+            wait_arg = arg[len("wait"):].strip()
+            if not wait_arg:
+                _cprint("  Usage: /goal wait <pid> [reason]")
+                return
+            wtokens = wait_arg.split(None, 1)
+            try:
+                pid = int(wtokens[0])
+            except ValueError:
+                _cprint("  /goal wait: <pid> must be an integer process id.")
+                return
+            reason = wtokens[1].strip() if len(wtokens) > 1 else ""
+            try:
+                mgr.wait_on(pid, reason=reason)
+            except (RuntimeError, ValueError) as exc:
+                _cprint(f"  /goal wait: {exc}")
+                return
+            rtxt = f" ({reason})" if reason else ""
+            _cprint(f"  ⏳ Goal parked on pid {pid}{rtxt}. Loop pauses until it exits.")
+            return
+
+        # /goal unwait — drop the wait barrier and resume normal looping.
+        if lower == "unwait":
+            if mgr.stop_waiting():
+                _cprint("  ▶ Wait barrier cleared — goal loop resumes.")
+            else:
+                _cprint(f"  {_DIM}No wait barrier set.{_RST}")
+            return
+
         # Otherwise treat the arg as the goal text.
         try:
             state = mgr.set(arg)

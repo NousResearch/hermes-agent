@@ -775,6 +775,43 @@ class TestSegmentBreakOnToolBoundary:
         assert "Phase 3" in final_text
 
     @pytest.mark.asyncio
+    async def test_guest_mode_drops_prior_segments_delivers_only_last_segment(self):
+        """When the adapter sets GUEST_MODE_DROPS_PRIOR_SEGMENTS=True (Telegram guest
+        mode / answerGuestQuery), _send_fallback_final must deliver ONLY the last
+        segment's text and tag it with 'guest_segment_start' so the adapter can
+        replace its buffer instead of concatenating all inter-tool commentary."""
+        adapter = MagicMock()
+        adapter.GUEST_MODE_DROPS_PRIOR_SEGMENTS = True
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id=None),
+            SimpleNamespace(success=True, message_id=None),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("Inter-tool narration 1")
+        consumer.on_delta(None)
+        consumer.on_delta("Inter-tool narration 2")
+        consumer.on_delta(None)
+        consumer.on_delta("Final answer from OSM")
+        consumer.finish()
+
+        await consumer.run()
+
+        assert adapter.send.call_count == 2
+        final_call = adapter.send.call_args_list[1]
+        final_text = final_call[1]["content"]
+        final_meta = final_call[1].get("metadata") or {}
+        # Only the last segment reaches the guest buffer
+        assert "Final answer" in final_text
+        assert "Inter-tool narration" not in final_text
+        # The 'guest_segment_start' flag signals the adapter to replace its buffer
+        assert final_meta.get("guest_segment_start") is True
+
+    @pytest.mark.asyncio
     async def test_fallback_final_splits_long_continuation_without_dropping_text(self):
         """Long continuation tails should be chunked when fallback final-send runs."""
         adapter = MagicMock()

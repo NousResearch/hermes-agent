@@ -964,8 +964,12 @@ class TestKillProcess:
             # ``ProcessRegistry._is_host_pid_alive`` (→
             # ``gateway.status._pid_exists``), and the actual kill on POSIX
             # routes through ``psutil.Process(pid).terminate()``. Neither
-            # touches ``os.kill`` directly. Mock both seams.
+            # touches ``os.kill`` directly. Mock both seams.  Disable the
+            # SIGKILL-escalation step (grace=0) so it doesn't call
+            # ``psutil.wait_procs`` on the FakeProcess.
             with patch("gateway.status._pid_exists", return_value=True), \
+                 patch.object(ProcessRegistry, "_daemon_term_grace_seconds",
+                              staticmethod(lambda: 0.0)), \
                  patch.object(_psutil, "Process", side_effect=lambda pid: FakeProcess(pid)):
                 result = registry.kill_process(s.id)
 
@@ -1279,6 +1283,11 @@ class TestTerminateHostPidPosix:
 
         monkeypatch.setattr(pr, "_IS_WINDOWS", False)
         monkeypatch.setattr(psutil, "Process", _FakeParent)
+        # This test covers only the SIGTERM tree-walk ordering; disable the
+        # SIGKILL-escalation step (which would call psutil.wait_procs on the
+        # fakes) by setting the grace to 0.
+        monkeypatch.setattr(pr.ProcessRegistry, "_daemon_term_grace_seconds",
+                            staticmethod(lambda: 0.0))
 
         pr.ProcessRegistry._terminate_host_pid(12345)
 
@@ -1436,3 +1445,142 @@ class TestPidReuseGuard:
         refreshed = registry._refresh_detached_session(s)
         assert refreshed.exited is True
         assert s.id in registry._finished
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX SIGTERM→SIGKILL escalation; Windows uses taskkill /F")
+class TestSigkillEscalation:
+    """Bounded SIGTERM→SIGKILL escalation in _terminate_host_pid.
+
+    A daemon that ignores/stalls on SIGTERM must be force-killed after the
+    configured grace window so it can't leak indefinitely — while well-behaved
+    processes still exit cleanly on SIGTERM and the recycled-PID guard is never
+    bypassed.
+    """
+
+    # A process that traps SIGTERM (ignores it): only SIGKILL stops it.
+    # It prints "ready" AFTER installing the handler so the parent never
+    # signals it during the startup window (before SIG_IGN is in place).
+    _TRAP = (
+        "import signal, sys, time;"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+        "sys.stdout.write('ready\\n'); sys.stdout.flush();"
+        "[time.sleep(0.2) for _ in iter(int, 1)]"
+    )
+
+    def _spawn_trap(self):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", self._TRAP],
+            stdout=subprocess.PIPE, text=True,
+        )
+        # Wait until the handler is installed before returning.
+        line = proc.stdout.readline()
+        assert line.strip() == "ready", "trap process failed to start"
+        return proc
+
+    def test_sigterm_ignoring_daemon_is_sigkilled(self, monkeypatch):
+        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
+                            staticmethod(lambda: 1.0))
+        proc = self._spawn_trap()
+        try:
+            ProcessRegistry._terminate_host_pid(proc.pid)
+            assert _wait_until(lambda: proc.poll() is not None, timeout=4.0), \
+                "SIGTERM-ignoring daemon should be SIGKILLed after grace"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+
+    def test_grace_zero_disables_escalation(self, monkeypatch):
+        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
+                            staticmethod(lambda: 0.0))
+        proc = self._spawn_trap()
+        try:
+            ProcessRegistry._terminate_host_pid(proc.pid)
+            # No escalation → the SIGTERM-ignoring process survives.
+            assert not _wait_until(lambda: proc.poll() is not None, timeout=1.0)
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_well_behaved_process_dies_on_sigterm(self, monkeypatch):
+        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
+                            staticmethod(lambda: 2.0))
+        proc = _spawn_python_sleep(60)
+        try:
+            ProcessRegistry._terminate_host_pid(proc.pid)
+            assert _wait_until(lambda: proc.poll() is not None, timeout=3.0)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+
+    def test_escalation_does_not_bypass_recycled_pid_guard(self, monkeypatch):
+        """A start-time mismatch must still spare the PID — no SIGTERM, no SIGKILL."""
+        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
+                            staticmethod(lambda: 1.0))
+        proc = self._spawn_trap()
+        try:
+            real_start = ProcessRegistry._safe_host_start_time(proc.pid)
+            ProcessRegistry._terminate_host_pid(
+                proc.pid, expected_start=(real_start or 0) + 1)
+            assert not _wait_until(lambda: proc.poll() is not None, timeout=1.5)
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_grace_reader_floors_at_zero(self, monkeypatch):
+        """A negative configured grace is clamped to 0 (no escalation)."""
+        import hermes_cli.config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "read_raw_config",
+                            lambda: {"terminal": {"daemon_term_grace_seconds": -5}})
+        assert ProcessRegistry._daemon_term_grace_seconds() == 0.0
+
+    def test_entire_tree_is_sigkilled_not_just_parent(self, monkeypatch):
+        """A SIGTERM-ignoring parent + children are ALL force-killed.
+
+        Regression: an earlier implementation trusted psutil.wait_procs's
+        gone/alive partition, which mis-partitioned across a parent/child tree
+        and left survivors un-killed (flaky — sometimes the parent lived,
+        sometimes a child). The escalation now re-probes every target directly.
+        """
+        import psutil
+        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
+                            staticmethod(lambda: 1.0))
+        # Parent spawns 2 children; all trap SIGTERM. Parent prints child pids
+        # after the handler is installed.
+        parent_src = (
+            "import signal, subprocess, sys, time;"
+            "child='import signal,time\\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\\n"
+            "[time.sleep(0.2) for _ in iter(int,1)]';"
+            "kids=[subprocess.Popen([sys.executable,'-c',child]) for _ in range(2)];"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+            "sys.stdout.write(' '.join(str(k.pid) for k in kids)+'\\n'); sys.stdout.flush();"
+            "[time.sleep(0.2) for _ in iter(int,1)]"
+        )
+        parent = subprocess.Popen([sys.executable, "-c", parent_src],
+                                  stdout=subprocess.PIPE, text=True)
+        child_pids = [int(x) for x in parent.stdout.readline().split()]
+        all_pids = [parent.pid] + child_pids
+        try:
+            ProcessRegistry._terminate_host_pid(parent.pid)
+
+            def _all_dead():
+                return not any(
+                    psutil.pid_exists(p)
+                    and ProcessRegistry._proc_alive(psutil.Process(p))
+                    for p in all_pids
+                )
+
+            assert _wait_until(_all_dead, timeout=4.0), (
+                "entire SIGTERM-ignoring tree (parent + children) must be SIGKILLed"
+            )
+        finally:
+            for p in all_pids:
+                try:
+                    os.kill(p, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            parent.wait()

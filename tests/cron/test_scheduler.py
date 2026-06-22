@@ -3625,3 +3625,88 @@ class TestCronDeliveryMirror:
             _deliver_result(job, "Here is today's summary.")
 
         mirror_mock.assert_not_called()
+
+    # --- origin-scoping (mirror only into the conversation that created the job) ---
+
+    def test_target_matches_origin_exact(self):
+        from cron.scheduler import _target_matches_origin
+
+        origin = {"platform": "telegram", "chat_id": "123"}
+        assert _target_matches_origin(origin, "telegram", "123", None) is True
+        # Case-insensitive platform match.
+        assert _target_matches_origin(origin, "Telegram", "123", None) is True
+
+    def test_target_matches_origin_rejects_other_chat(self):
+        from cron.scheduler import _target_matches_origin
+
+        origin = {"platform": "telegram", "chat_id": "123"}
+        # Different chat (fan-out / explicit other target) -> not the origin.
+        assert _target_matches_origin(origin, "telegram", "999", None) is False
+        # Different platform (deliver=all broadcast) -> not the origin.
+        assert _target_matches_origin(origin, "discord", "123", None) is False
+        # No origin at all (API/script job, home-channel fallback) -> never.
+        assert _target_matches_origin({}, "telegram", "123", None) is False
+
+    def test_target_matches_origin_thread_scoped(self):
+        from cron.scheduler import _target_matches_origin
+
+        origin = {"platform": "telegram", "chat_id": "123", "thread_id": "17"}
+        assert _target_matches_origin(origin, "telegram", "123", "17") is True
+        # Same chat, wrong/lost thread lane -> not the same conversation.
+        assert _target_matches_origin(origin, "telegram", "123", None) is False
+        assert _target_matches_origin(origin, "telegram", "123", "99") is False
+
+    def test_delivery_does_not_mirror_fanout_non_origin_target(self):
+        """Even with the gate ON, a delivery to a chat that is NOT the job's
+        origin (explicit fan-out target) must not be mirrored — the mirror is
+        scoped to the origin conversation, and the fan-out chat may have no
+        session at all."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                # Explicit delivery to a DIFFERENT chat than the origin.
+                "deliver": "telegram:999",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "attach_to_session": True,
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        # Delivered to 999, but origin is 123 -> no mirror.
+        mirror_mock.assert_not_called()
+
+    def test_delivery_mirrors_only_origin_target_in_fanout(self):
+        """deliver to BOTH origin and another chat: only the origin target is
+        mirrored."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                # Fan out to the origin chat (123) AND another chat (999).
+                "deliver": "telegram:123,telegram:999",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "attach_to_session": True,
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        # Exactly one mirror, and it is the origin chat (123) — not 999.
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args[0][1] == "123"

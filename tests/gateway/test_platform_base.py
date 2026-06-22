@@ -967,6 +967,43 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(config_file)) is None
 
+    def test_denylist_blocks_hermes_integration_tokens(self, tmp_path, monkeypatch):
+        """Integration credentials stored at the HERMES_HOME root (e.g.
+        google_token.json) must never be deliverable, even though they are not
+        the historically-enumerated .env/auth.json/config.yaml files. Regression
+        for a refreshed google_token.json being auto-attached to a Slack reply.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        hermes_dir.mkdir(parents=True)
+        token = hermes_dir / "google_token.json"
+        token.write_text('{"access_token": "ya29.secret"}')
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
+
+    def test_hermes_cache_still_delivers_under_denied_home(self, tmp_path, monkeypatch):
+        """Denying the whole ~/.hermes tree must not break legitimate cache
+        deliveries: a generated artifact under the allowlisted cache root is
+        matched before the denylist and still delivers.
+        """
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        cache_dir = hermes_dir / "cache" / "documents"
+        cache_dir.mkdir(parents=True)
+        artifact = cache_dir / "report.pdf"
+        artifact.write_bytes(b"%PDF-1.4")
+        self._patch_roots(monkeypatch, cache_dir)
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(artifact)) == str(artifact.resolve())
+
     def test_strict_mode_envvar_restores_legacy_behavior(self, tmp_path, monkeypatch):
         """Setting HERMES_MEDIA_DELIVERY_STRICT=1 reactivates the older
         allowlist+recency logic. A stale file outside the allowlist is

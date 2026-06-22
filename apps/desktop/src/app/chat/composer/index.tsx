@@ -44,6 +44,7 @@ import {
   $composerPopoutPosition,
   $composerPoppedOut,
   POPOUT_WIDTH_REM,
+  readPopoutBounds,
   setComposerPoppedOut,
   setComposerPopoutPosition
 } from '@/store/composer-popout'
@@ -553,7 +554,7 @@ export function ChatBar({
     const reclamp = (persist: boolean) => {
       const el = composerRef.current
       const size = el ? { height: el.offsetHeight, width: el.offsetWidth } : undefined
-      setComposerPopoutPosition($composerPopoutPosition.get(), { persist, size })
+      setComposerPopoutPosition($composerPopoutPosition.get(), { area: readPopoutBounds(el), persist, size })
     }
 
     reclamp(true)

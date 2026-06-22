@@ -49,18 +49,28 @@ export interface PopoutSize {
   width: number
 }
 
+/** Viewport-space rect the floating composer is confined to. Defaults to the
+ *  whole window; pass the thread area so the box can't slide under a pinned
+ *  sidebar or behind the header. */
+export interface PopoutBounds {
+  bottom: number
+  left: number
+  right: number
+  top: number
+}
+
 interface SetPositionOptions {
+  /** Thread-area rect to confine the box to; falls back to the full window. */
+  area?: PopoutBounds
   persist?: boolean
   /** Measured box size; falls back to the compact width + a min height so the
    *  box stays grabbable even when the caller can't measure it. */
   size?: PopoutSize
 }
 
-// Keep at least this much of every edge between the box and the viewport, so the
+// Keep at least this much between the box and every edge of its bounds, so the
 // floating composer can never be dragged (or restored) out of reach.
 const EDGE_MARGIN = 8
-const TITLEBAR_HEIGHT_FALLBACK = 34
-const TITLEBAR_CLEARANCE_REM = 0.75
 // Height floor used when the real box height is unknown (init / load / peel-off).
 export const POPOUT_ESTIMATED_HEIGHT = 56
 const MIN_VISIBLE_HEIGHT = POPOUT_ESTIMATED_HEIGHT
@@ -69,24 +79,32 @@ const clampRange = (value: number, lo: number, hi: number) => Math.min(Math.max(
 
 const rootFontSize = () => parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
 
-function titlebarTopMargin() {
-  const raw = getComputedStyle(document.documentElement).getPropertyValue('--titlebar-height').trim()
-  const titlebarHeight = Number.parseFloat(raw)
-  const breathingRoom = TITLEBAR_CLEARANCE_REM * rootFontSize()
+/** The thread area's viewport rect (excludes a pinned sidebar + the header), or
+ *  undefined before it mounts — callers then fall back to the full window. */
+export function readPopoutBounds(composer: Element | null): PopoutBounds | undefined {
+  const el = (composer?.parentElement ?? document).querySelector('[data-slot="composer-bounds"]')
 
-  return Math.max(EDGE_MARGIN, (Number.isFinite(titlebarHeight) ? titlebarHeight : TITLEBAR_HEIGHT_FALLBACK) + breathingRoom)
+  if (!el) {
+    return undefined
+  }
+
+  const { bottom, left, right, top } = el.getBoundingClientRect()
+
+  return { bottom, left, right, top }
 }
 
-// Bound the bottom-right inset so the WHOLE box stays on-screen — the corner
-// anchor alone would let the box's width/height push it past the left/top edges.
-function clampPosition({ bottom, right }: PopoutPosition, size?: PopoutSize): PopoutPosition {
+// Bound the bottom/right inset so the WHOLE box stays inside `area` (the thread
+// region, or the window by default) — the corner anchor alone would let the
+// box's width/height push it past the opposite edges.
+function clampPosition({ bottom, right }: PopoutPosition, size?: PopoutSize, area?: PopoutBounds): PopoutPosition {
   const width = size?.width || POPOUT_WIDTH_REM * rootFontSize()
   const height = size?.height || MIN_VISIBLE_HEIGHT
-  const topMargin = titlebarTopMargin()
+  const { innerHeight: vh, innerWidth: vw } = window
+  const a = area ?? { bottom: vh, left: 0, right: vw, top: 0 }
 
   return {
-    bottom: clampRange(bottom, EDGE_MARGIN, window.innerHeight - height - topMargin),
-    right: clampRange(right, EDGE_MARGIN, window.innerWidth - width - EDGE_MARGIN)
+    bottom: clampRange(bottom, vh - a.bottom + EDGE_MARGIN, vh - a.top - height - EDGE_MARGIN),
+    right: clampRange(right, vw - a.right + EDGE_MARGIN, vw - a.left - width - EDGE_MARGIN)
   }
 }
 
@@ -102,8 +120,8 @@ export function setComposerPoppedOut(value: boolean) {
  *  unless `persist`. Returns the clamped position so callers can sync their live
  *  ref. Pass the measured `size` for exact bounds; otherwise a fallback keeps it
  *  on-screen. */
-export function setComposerPopoutPosition(position: PopoutPosition, { persist, size }: SetPositionOptions = {}): PopoutPosition {
-  const next = clampPosition(position, size)
+export function setComposerPopoutPosition(position: PopoutPosition, { area, persist, size }: SetPositionOptions = {}): PopoutPosition {
+  const next = clampPosition(position, size, area)
   $composerPopoutPosition.set(next)
 
   if (persist) {

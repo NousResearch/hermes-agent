@@ -443,6 +443,7 @@ export function ChatView({
       >
         <div
           className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
+          data-slot="composer-bounds"
           {...dropHandlers}
         >
           <Thread

@@ -537,6 +537,14 @@ class GatewayAuthorizationMixin:
                 ),
                 Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
             }
+            if platform not in platform_env_map:
+                try:
+                    from gateway.platform_registry import platform_registry
+                    entry = platform_registry.get(platform.value)
+                    if entry and entry.allowed_users_env:
+                        platform_env_map[platform] = entry.allowed_users_env
+                except Exception:
+                    pass
             if os.getenv(platform_env_map.get(platform, ""), "").strip():
                 return "ignore"
             for env_key in platform_group_env_map.get(platform, ()):

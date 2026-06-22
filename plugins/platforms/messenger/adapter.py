@@ -71,6 +71,8 @@ DEFAULT_WEBHOOK_PATH = "/messenger/webhook"
 MAX_MESSAGE_LENGTH = 2000
 WEBHOOK_BODY_MAX_BYTES = 1_048_576
 DEDUP_MAX_SIZE = 2048
+RESERVED_WEBHOOK_PATHS = frozenset({"/messenger/health"})
+_YAML_BRIDGED_ENV_KEYS: set[str] = set()
 
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
 _MARKDOWN_CODE_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
@@ -148,6 +150,21 @@ def _normalise_webhook_path(path: Any) -> str:
 def _normalise_api_version(value: Any) -> str:
     text = str(value or DEFAULT_API_VERSION).strip() or DEFAULT_API_VERSION
     return text if text.startswith("v") else f"v{text}"
+
+
+def _bridge_yaml_env(key: str, value: Any) -> None:
+    """Bridge YAML-only plugin auth keys to env without stale reload values."""
+    if value in (None, ""):
+        if key in _YAML_BRIDGED_ENV_KEYS:
+            os.environ.pop(key, None)
+            _YAML_BRIDGED_ENV_KEYS.discard(key)
+        return
+
+    existing = _env_value(key)
+    if existing and key not in _YAML_BRIDGED_ENV_KEYS:
+        return
+    os.environ[key] = str(value)
+    _YAML_BRIDGED_ENV_KEYS.add(key)
 
 
 def _read_secret_file(path_value: Any) -> str:
@@ -344,8 +361,27 @@ def parse_accounts(extra: Optional[Dict[str, Any]]) -> Dict[str, MessengerAccoun
     return accounts
 
 
-def _has_complete_account(extra: Optional[Dict[str, Any]]) -> bool:
-    return any(account.complete for account in parse_accounts(extra).values())
+def _webhook_path_error(accounts: Iterable[MessengerAccount]) -> Optional[str]:
+    route_paths: Dict[str, MessengerAccount] = {}
+    for account in accounts:
+        if account.webhook_path in RESERVED_WEBHOOK_PATHS:
+            return (
+                f"Messenger webhook path {account.webhook_path} for account "
+                f"{account.account_id} is reserved"
+            )
+        previous = route_paths.get(account.webhook_path)
+        if previous is not None:
+            return (
+                f"Duplicate Messenger webhook path {account.webhook_path} for "
+                f"accounts {previous.account_id} and {account.account_id}"
+            )
+        route_paths[account.webhook_path] = account
+    return None
+
+
+def _has_valid_complete_accounts(extra: Optional[Dict[str, Any]]) -> bool:
+    accounts = [account for account in parse_accounts(extra).values() if account.complete]
+    return bool(accounts) and _webhook_path_error(accounts) is None
 
 
 def _message_type_for_attachment(kind: str) -> MessageType:
@@ -398,6 +434,7 @@ class _MessageDeduplicator:
 class MessengerAdapter(BasePlatformAdapter):
     """Facebook Messenger webhook adapter."""
 
+    SUPPORTS_MESSAGE_EDITING = False
     splits_long_messages = True
     supports_code_blocks = False
 
@@ -442,18 +479,11 @@ class MessengerAdapter(BasePlatformAdapter):
             return False
 
         app = web.Application(client_max_size=WEBHOOK_BODY_MAX_BYTES)
-        route_paths: Dict[str, MessengerAccount] = {}
+        path_error = _webhook_path_error(self._complete_accounts.values())
+        if path_error:
+            logger.error(path_error)
+            return False
         for account in self._complete_accounts.values():
-            previous = route_paths.get(account.webhook_path)
-            if previous is not None:
-                logger.error(
-                    "Duplicate Messenger webhook path %s for accounts %s and %s",
-                    account.webhook_path,
-                    previous.account_id,
-                    account.account_id,
-                )
-                return False
-            route_paths[account.webhook_path] = account
             app.router.add_get(account.webhook_path, self._build_verify_handler(account))
             app.router.add_post(account.webhook_path, self._build_webhook_handler(account))
 
@@ -503,7 +533,12 @@ class MessengerAdapter(BasePlatformAdapter):
         account, recipient_id = self._resolve_outbound_account(chat_id, metadata)
         if account is None or not recipient_id:
             return SendResult(success=False, error="Missing Messenger account or recipient ID")
-        return await self._send_text_chunks(account, recipient_id, self.format_message(content or ""))
+        return await self._send_text_chunks(
+            account,
+            recipient_id,
+            self.format_message(content or ""),
+            metadata=metadata,
+        )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         account, recipient_id = self._resolve_outbound_account(chat_id, metadata)
@@ -527,7 +562,13 @@ class MessengerAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Missing Messenger account or recipient ID")
         if not str(image_url).startswith(("http://", "https://")):
             return SendResult(success=False, error="Messenger image sending requires a public http(s) URL")
-        image_result = await self._send_attachment_url(account, recipient_id, "image", image_url)
+        image_result = await self._send_attachment_url(
+            account,
+            recipient_id,
+            "image",
+            image_url,
+            metadata=metadata,
+        )
         if not image_result.success or not caption:
             return image_result
         caption_result = await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
@@ -570,21 +611,44 @@ class MessengerAdapter(BasePlatformAdapter):
                 payload = json.loads(body.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return web.Response(status=400, text="Invalid JSON")
-            asyncio.create_task(self._process_webhook_payload(account, payload))
+            self._track_background_task(self._process_webhook_payload(account, payload))
             return web.json_response({"status": "ok"})
 
         return handler
+
+    def _track_background_task(self, coro) -> Optional[asyncio.Task]:
+        task = asyncio.create_task(coro)
+        try:
+            self._background_tasks.add(task)
+        except TypeError:
+            return task
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
+            task.add_done_callback(self._expected_cancelled_tasks.discard)
+        return task
 
     async def _health(self, request):
         return web.json_response({"ok": True, "platform": "messenger"})
 
     async def _process_webhook_payload(self, account: MessengerAccount, payload: Dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            logger.debug("Ignoring malformed Messenger webhook payload: %r", type(payload).__name__)
+            return
         if payload.get("object") != "page":
             logger.debug("Ignoring non-page Messenger webhook object: %r", payload.get("object"))
             return
         for entry in payload.get("entry") or []:
+            if not isinstance(entry, dict):
+                logger.debug("Ignoring malformed Messenger webhook entry: %r", type(entry).__name__)
+                continue
             messaging_events = entry.get("messaging") or []
+            if not isinstance(messaging_events, list):
+                logger.debug("Ignoring malformed Messenger messaging list: %r", type(messaging_events).__name__)
+                continue
             for event in messaging_events:
+                if not isinstance(event, dict):
+                    logger.debug("Ignoring malformed Messenger messaging event: %r", type(event).__name__)
+                    continue
                 try:
                     await self._process_messaging_event(account, event)
                 except Exception:
@@ -608,8 +672,8 @@ class MessengerAdapter(BasePlatformAdapter):
             logger.debug("Messenger DM policy disabled; dropping message from %s", sender_id or "?")
             return
         if sender_id:
-            asyncio.create_task(self._best_effort_sender_action(account, sender_id, "mark_seen"))
-            asyncio.create_task(self._best_effort_sender_action(account, sender_id, "typing_on"))
+            self._track_background_task(self._best_effort_sender_action(account, sender_id, "mark_seen"))
+            self._track_background_task(self._best_effort_sender_action(account, sender_id, "typing_on"))
 
         event_obj = await self._to_message_event(account, event)
         if event_obj is not None:
@@ -679,7 +743,7 @@ class MessengerAdapter(BasePlatformAdapter):
             chat_id=chat_id,
             chat_name=sender_id,
             chat_type="dm",
-            user_id=sender_id,
+            user_id=chat_id,
             user_name=sender_id,
             message_id=message_id,
         )
@@ -697,7 +761,7 @@ class MessengerAdapter(BasePlatformAdapter):
     async def _download_attachment(self, url: str, kind: str):
         if not HTTPX_AVAILABLE or not self._http:
             return None
-        if not is_safe_url(url):
+        if not await asyncio.to_thread(is_safe_url, url):
             logger.warning("Blocked unsafe Messenger attachment URL: %s", safe_url_for_log(url))
             return None
         media_type = "media"
@@ -773,27 +837,69 @@ class MessengerAdapter(BasePlatformAdapter):
             return sender_id
         return f"{account.account_id}:{sender_id}"
 
-    async def _send_text_chunks(self, account: MessengerAccount, recipient_id: str, text: str) -> SendResult:
+    def _messaging_metadata(self, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        metadata = metadata or {}
+        messaging_type = str(
+            metadata.get("messenger_messaging_type")
+            or metadata.get("messaging_type")
+            or "RESPONSE"
+        ).strip().upper()
+        if messaging_type not in {"RESPONSE", "UPDATE", "MESSAGE_TAG", "UTILITY"}:
+            messaging_type = "RESPONSE"
+        result: Dict[str, Any] = {"messaging_type": messaging_type}
+        tag = str(metadata.get("messenger_tag") or metadata.get("tag") or "").strip()
+        if tag:
+            result["tag"] = tag
+        return result
+
+    def _base_send_payload(
+        self,
+        recipient_id: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        send_meta = self._messaging_metadata(metadata)
+        payload = {
+            "recipient": {"id": recipient_id},
+            "messaging_type": send_meta["messaging_type"],
+        }
+        if send_meta.get("tag"):
+            payload["tag"] = send_meta["tag"]
+        return payload
+
+    async def _send_text_chunks(
+        self,
+        account: MessengerAccount,
+        recipient_id: str,
+        text: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
         chunks = split_for_messenger(text) or [""]
         message_ids: List[str] = []
         responses: List[Any] = []
         for chunk in chunks:
-            payload = {
-                "recipient": {"id": recipient_id},
-                "messaging_type": "RESPONSE",
-                "message": {"text": chunk},
-            }
+            payload = self._base_send_payload(recipient_id, metadata)
+            payload["message"] = {"text": chunk}
             try:
                 data = await self._post_graph(account, "/me/messages", payload)
             except MessengerGraphError as exc:
+                delivered = bool(message_ids)
                 return SendResult(
                     success=False,
                     error=str(exc),
-                    raw_response=exc.detail,
-                    retryable=exc.retryable,
+                    raw_response={
+                        "error": exc.detail,
+                        "delivered_message_ids": message_ids,
+                    } if delivered else exc.detail,
+                    retryable=exc.retryable and not delivered,
                 )
             except Exception as exc:
-                return SendResult(success=False, error=str(exc), retryable=True)
+                delivered = bool(message_ids)
+                return SendResult(
+                    success=False,
+                    error=str(exc),
+                    raw_response={"delivered_message_ids": message_ids} if delivered else None,
+                    retryable=not delivered,
+                )
             responses.append(data)
             mid = data.get("message_id") if isinstance(data, dict) else None
             if mid:
@@ -811,15 +917,13 @@ class MessengerAdapter(BasePlatformAdapter):
         recipient_id: str,
         attachment_type: str,
         url: str,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        payload = {
-            "recipient": {"id": recipient_id},
-            "messaging_type": "RESPONSE",
-            "message": {
-                "attachment": {
-                    "type": attachment_type,
-                    "payload": {"url": url, "is_reusable": True},
-                },
+        payload = self._base_send_payload(recipient_id, metadata)
+        payload["message"] = {
+            "attachment": {
+                "type": attachment_type,
+                "payload": {"url": url, "is_reusable": True},
             },
         }
         try:
@@ -883,7 +987,7 @@ def check_requirements() -> bool:
 
 
 def validate_config(config) -> bool:
-    return _has_complete_account(getattr(config, "extra", {}) or {})
+    return _has_valid_complete_accounts(getattr(config, "extra", {}) or {})
 
 
 def is_connected(config) -> bool:
@@ -928,7 +1032,7 @@ def _apply_yaml_config(yaml_cfg: dict, messenger_cfg: dict) -> dict | None:
     """
     seeded: Dict[str, Any] = {}
     extra = messenger_cfg.get("extra") if isinstance(messenger_cfg.get("extra"), dict) else {}
-    for source in (messenger_cfg, extra):
+    for source in (extra, messenger_cfg):
         for key in (
             "page_access_token",
             "pageAccessToken",
@@ -951,6 +1055,10 @@ def _apply_yaml_config(yaml_cfg: dict, messenger_cfg: dict) -> dict | None:
             "apiVersion",
             "dm_policy",
             "dmPolicy",
+            "allow_from",
+            "allowFrom",
+            "allow_all_users",
+            "allowAllUsers",
             "accounts",
         ):
             if key in source and source[key] not in (None, ""):
@@ -962,11 +1070,16 @@ def _apply_yaml_config(yaml_cfg: dict, messenger_cfg: dict) -> dict | None:
                 seeded["port"] = int(source["port"])
             except (TypeError, ValueError):
                 pass
-    if "allow_from" in messenger_cfg and not _env_value("MESSENGER_ALLOWED_USERS"):
-        value = messenger_cfg["allow_from"]
-        os.environ["MESSENGER_ALLOWED_USERS"] = ",".join(_coerce_list(value))
-    if "allow_all_users" in messenger_cfg and not _env_value("MESSENGER_ALLOW_ALL_USERS"):
-        os.environ["MESSENGER_ALLOW_ALL_USERS"] = str(messenger_cfg["allow_all_users"]).lower()
+    allow_from = _get_cfg_value(seeded, "allow_from", "allowFrom")
+    allow_all_users = _get_cfg_value(seeded, "allow_all_users", "allowAllUsers")
+    _bridge_yaml_env(
+        "MESSENGER_ALLOWED_USERS",
+        ",".join(_coerce_list(allow_from)) if allow_from is not None else None,
+    )
+    _bridge_yaml_env(
+        "MESSENGER_ALLOW_ALL_USERS",
+        str(allow_all_users).lower() if allow_all_users is not None else None,
+    )
     return seeded or None
 
 
@@ -994,9 +1107,16 @@ async def _standalone_send(
     try:
         if adapter._http is None:
             return {"error": "Messenger standalone send: httpx is not installed"}
-        result = await adapter.send(chat_id, message)
+        result = await adapter.send(
+            chat_id,
+            message,
+            metadata={"messenger_messaging_type": "UPDATE"},
+        )
         if not result.success:
-            return {"error": result.error or "Messenger send failed"}
+            payload = {"error": result.error or "Messenger send failed"}
+            if result.retryable:
+                payload["retryable"] = True
+            return payload
         if media_files:
             return {
                 "success": True,

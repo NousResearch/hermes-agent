@@ -705,6 +705,24 @@ class TestPromptPluginEnvVars:
 
         mock_prompt.assert_called_once()
 
+    def test_password_alias_uses_masked_prompt(self):
+        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
+        from unittest.mock import MagicMock, patch
+
+        console = MagicMock()
+        manifest = {
+            "name": "test",
+            "requires_env": [{"name": "SECRET_KEY", "password": True}],
+        }
+
+        with patch("hermes_cli.config.get_env_value", return_value=None), \
+             patch("builtins.input", side_effect=AssertionError("secret should be masked")), \
+             patch("hermes_cli.plugins_cmd.masked_secret_prompt", return_value="s3cret") as mock_prompt, \
+             patch("hermes_cli.config.save_env_value"):
+            _prompt_plugin_env_vars(manifest, console)
+
+        mock_prompt.assert_called_once()
+
     def test_empty_input_skips(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
         from unittest.mock import MagicMock, patch

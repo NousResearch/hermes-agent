@@ -17,11 +17,12 @@ Messenger is webhook-based: Meta sends inbound Page messages to a public HTTPS U
 3. Generate a Page Access Token for your Page.
 4. Copy the App Secret from **App Settings > Basic**.
 5. Generate a secure verify token, for example `openssl rand -hex 32`.
-6. Add the credentials to `~/.hermes/.env`.
-7. Start the Hermes gateway.
-8. Configure the Meta webhook callback URL as `https://<public-host>/messenger/webhook`.
-9. Subscribe the Page to `messages` and `messaging_postbacks`.
-10. DM the Page and approve the pairing code for the sender, or preconfigure `MESSENGER_ALLOWED_USERS`.
+6. Add the three credential values to `~/.hermes/.env`.
+7. Put Messenger behavior settings in `~/.hermes/config.yaml`.
+8. Start the Hermes gateway.
+9. Configure the Meta webhook callback URL as `https://<public-host>/messenger/webhook`.
+10. Subscribe the Page to `messages` and `messaging_postbacks`.
+11. DM the Page and approve the pairing code for the sender, or preconfigure `allow_from`.
 
 ## Requirements
 
@@ -40,24 +41,38 @@ Add the default-account credentials to `~/.hermes/.env`:
 MESSENGER_PAGE_ACCESS_TOKEN=EA...
 MESSENGER_APP_SECRET=...
 MESSENGER_VERIFY_TOKEN=...
-
-# Defaults shown for clarity.
-MESSENGER_HOST=0.0.0.0
-MESSENGER_PORT=8650
-MESSENGER_WEBHOOK_PATH=/messenger/webhook
-MESSENGER_API_VERSION=v21.0
-MESSENGER_DM_POLICY=pairing
 ```
 
-`MESSENGER_DM_POLICY=pairing` is the safe default. Unknown senders receive a pairing code and cannot talk to the agent until you approve it.
+Put non-secret behavior settings in `~/.hermes/config.yaml`:
+
+```yaml
+gateway:
+  platforms:
+    messenger:
+      enabled: true
+      dm_policy: pairing
+      extra:
+        host: 0.0.0.0
+        port: 8650
+        webhook_path: /messenger/webhook
+        api_version: v21.0
+```
+
+`dm_policy: pairing` is the safe default. Unknown senders receive a pairing code and cannot talk to the agent until you approve it.
 
 For a private deployment, pre-allow the Messenger PSIDs that may talk to Hermes:
 
-```env
-MESSENGER_ALLOWED_USERS=12345678901234567,98765432109876543
+```yaml
+gateway:
+  platforms:
+    messenger:
+      enabled: true
+      allow_from:
+        - "12345678901234567"
+        - "98765432109876543"
 ```
 
-Use `MESSENGER_ALLOW_ALL_USERS=true` only for tightly controlled development Pages.
+Use `allow_all_users: true` only for tightly controlled development Pages.
 
 ## Meta Developer Setup
 
@@ -146,23 +161,28 @@ Development-mode apps only work for app admins, developers, and testers. To let 
 
 ## Configuration Reference
 
-Default-account credentials can be set by environment variable:
+Default-account credentials are secrets and belong in `~/.hermes/.env`:
 
 | Variable | Description |
 |----------|-------------|
 | `MESSENGER_PAGE_ACCESS_TOKEN` | Facebook Page access token with Messenger permissions. |
 | `MESSENGER_APP_SECRET` | Meta app secret used for webhook HMAC-SHA256 verification. |
 | `MESSENGER_VERIFY_TOKEN` | Webhook verify token you configure in the Meta dashboard. |
-| `MESSENGER_HOST` | Webhook bind host. Defaults to `0.0.0.0`. |
-| `MESSENGER_PORT` | Webhook listen port. Defaults to `8650`. |
-| `MESSENGER_WEBHOOK_PATH` | Webhook path. Defaults to `/messenger/webhook`. |
-| `MESSENGER_API_VERSION` | Meta Graph API version. Defaults to `v21.0`. |
-| `MESSENGER_ALLOWED_USERS` | Comma-separated Messenger PSIDs allowed to DM Hermes. |
-| `MESSENGER_ALLOW_ALL_USERS` | Allow any Messenger sender. Use only for controlled development. |
-| `MESSENGER_HOME_CHANNEL` | Default Messenger PSID for cron or notification delivery. |
-| `MESSENGER_DM_POLICY` | Unauthorized DM behavior. `pairing` sends pairing codes; `disabled` drops inbound DMs. |
 
-Hermes can also read credentials from YAML under `gateway.platforms.messenger.extra`, including file-backed secrets:
+Non-secret behavior belongs in `config.yaml`:
+
+| Key | Description |
+|-----|-------------|
+| `gateway.platforms.messenger.extra.host` | Webhook bind host. Defaults to `0.0.0.0`. |
+| `gateway.platforms.messenger.extra.port` | Webhook listen port. Defaults to `8650`. |
+| `gateway.platforms.messenger.extra.webhook_path` | Webhook path. Defaults to `/messenger/webhook`. |
+| `gateway.platforms.messenger.extra.api_version` | Meta Graph API version. Defaults to `v21.0`. |
+| `gateway.platforms.messenger.allow_from` | Messenger PSIDs allowed to DM Hermes. |
+| `gateway.platforms.messenger.allow_all_users` | Allow any Messenger sender. Use only for controlled development. |
+| `gateway.platforms.messenger.home_channel.chat_id` | Default Messenger PSID for cron or notification delivery. |
+| `gateway.platforms.messenger.dm_policy` | Unauthorized DM behavior. `pairing` sends pairing codes; `disabled` drops inbound DMs. |
+
+Hermes can also read credentials from file-backed YAML references:
 
 ```yaml
 gateway:
@@ -170,12 +190,9 @@ gateway:
     messenger:
       enabled: true
       extra:
-        page_access_token: "EA..."
-        app_secret: "..."
-        verify_token: "verify-token"
-        # Or keep secrets in files:
-        # token_file: "~/.hermes/secrets/messenger-page-token"
-        # secret_file: "~/.hermes/secrets/messenger-app-secret"
+        token_file: "~/.hermes/secrets/messenger-page-token"
+        secret_file: "~/.hermes/secrets/messenger-app-secret"
+        verify_token_file: "~/.hermes/secrets/messenger-verify-token"
 ```
 
 Environment variables take priority over YAML values for the default account.
@@ -192,14 +209,14 @@ gateway:
       extra:
         accounts:
           page-a:
-            page_access_token: "EA..."
-            app_secret: "..."
-            verify_token: "verify-a"
+            token_file: "~/.hermes/secrets/page-a-token"
+            secret_file: "~/.hermes/secrets/page-a-app-secret"
+            verify_token_file: "~/.hermes/secrets/page-a-verify-token"
             webhook_path: "/messenger/webhook/page-a"
           page-b:
-            page_access_token: "EA..."
-            app_secret: "..."
-            verify_token: "verify-b"
+            token_file: "~/.hermes/secrets/page-b-token"
+            secret_file: "~/.hermes/secrets/page-b-app-secret"
+            verify_token_file: "~/.hermes/secrets/page-b-verify-token"
             webhook_path: "/messenger/webhook/page-b"
 ```
 
@@ -230,7 +247,7 @@ Messenger users can type text commands such as `/new`, `/reset`, `/status`, and 
 
 **Webhook verification returns 502 or times out**
 
-- The public tunnel or reverse proxy is not reaching `MESSENGER_PORT`.
+- The public tunnel or reverse proxy is not reaching the configured `gateway.platforms.messenger.extra.port`.
 - The gateway must be running before clicking **Verify and Save**.
 - Meta requires HTTPS for the public callback URL.
 
@@ -250,12 +267,12 @@ Messenger users can type text commands such as `/new`, `/reset`, `/status`, and 
 
 - Generate a long-lived Page token or System User token for production.
 - Confirm the token belongs to the connected Page.
-- Test the token with `curl "https://graph.facebook.com/me?access_token=<token>"`.
+- Test the token with `curl -H "Authorization: Bearer $MESSENGER_PAGE_ACCESS_TOKEN" https://graph.facebook.com/v21.0/me`.
 
 **Unknown sender gets a pairing code**
 
 - Approve the code with `hermes pairing approve messenger <code>`.
-- Or add the sender PSID to `MESSENGER_ALLOWED_USERS`.
+- Or add the sender PSID to `gateway.platforms.messenger.allow_from`.
 
 **Bot replies but the user cannot see messages**
 

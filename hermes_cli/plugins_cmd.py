@@ -360,7 +360,7 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
         name = spec["name"]
         desc = spec.get("description", "")
         url = spec.get("url", "")
-        secret = spec.get("secret", False)
+        secret = bool(spec.get("secret", False) or spec.get("password", False))
 
         label = f"  {name}"
         if desc:

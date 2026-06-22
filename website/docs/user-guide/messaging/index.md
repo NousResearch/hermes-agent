@@ -23,7 +23,7 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 | Slack | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Google Chat | — | ✅ | ✅ | ✅ | — | ✅ | — |
 | WhatsApp | — | ✅ | ✅ | — | — | ✅ | ✅ |
-| Messenger | — | ✅ | ✅ | — | — | ✅ | — |
+| Messenger | — | ✅ | Inbound | — | — | ✅ | — |
 | Signal | — | ✅ | ✅ | — | — | ✅ | ✅ |
 | SMS | — | — | — | — | — | — | — |
 | Email | — | ✅ | ✅ | ✅ | — | — | — |
@@ -43,7 +43,7 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 | ntfy | — | — | — | — | — | — | — |
 | Raft | — | — | — | — | — | — | — |
 
-**Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
+**Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Inbound** = receives but does not send native files. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
 
 ## Architecture
 
@@ -497,6 +497,7 @@ Each platform has its own toolset:
 | WhatsApp | `hermes-whatsapp` | Full tools including terminal |
 | WhatsApp Cloud API | `hermes-whatsapp` | Full tools including terminal (shares toolset with the Baileys bridge) |
 | Slack | `hermes-slack` | Full tools including terminal |
+| Messenger | `hermes-messenger` | Full tools including terminal |
 | Google Chat | `hermes-google_chat` | Full tools including terminal |
 | Signal | `hermes-signal` | Full tools including terminal |
 | SMS | `hermes-sms` | Full tools including terminal |

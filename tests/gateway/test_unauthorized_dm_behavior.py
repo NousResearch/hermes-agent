@@ -203,6 +203,41 @@ def test_simplex_allowlist_denies_unlisted(monkeypatch):
     assert runner._is_user_authorized(source) is False
 
 
+def test_plugin_platform_allowlist_makes_unauthorized_dm_ignored(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.delenv("MESSENGER_ALLOWED_USERS", raising=False)
+    monkeypatch.setenv("MESSENGER_ALLOWED_USERS", "page-a:12345678901234567")
+
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    previous = platform_registry.get("messenger")
+    platform_registry.unregister("messenger")
+    platform_registry.register(PlatformEntry(
+        name="messenger",
+        label="Messenger",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="MESSENGER_ALLOWED_USERS",
+        allow_all_env="MESSENGER_ALLOW_ALL_USERS",
+    ))
+
+    try:
+        messenger = Platform("messenger")
+        from gateway.authz_mixin import GatewayAuthorizationMixin
+
+        class Runner(GatewayAuthorizationMixin):
+            pass
+
+        runner = Runner()
+        runner.config = GatewayConfig(platforms={messenger: PlatformConfig(enabled=True)})
+
+        assert runner._get_unauthorized_dm_behavior(messenger) == "ignore"
+    finally:
+        platform_registry.unregister("messenger")
+        if previous is not None:
+            platform_registry.register(previous)
+
+
 def test_star_wildcard_in_allowlist_authorizes_any_user(monkeypatch):
     """WHATSAPP_ALLOWED_USERS=* should act as allow-all wildcard."""
     _clear_auth_env(monkeypatch)

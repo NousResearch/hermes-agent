@@ -231,6 +231,23 @@ class TestSendMessageTool:
         assert thread_id is None
         assert is_explicit is True
 
+    def test_messenger_account_scoped_target_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "messenger",
+            "page-a:12345678901234567",
+        )
+
+        assert chat_id == "page-a:12345678901234567"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_messenger_named_channel_still_resolves_via_directory(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("messenger", "team-page")
+
+        assert chat_id is None
+        assert thread_id is None
+        assert is_explicit is False
+
     def test_ntfy_topic_target_bypasses_channel_directory(self):
         ntfy_platform = Platform("ntfy")
         ntfy_cfg = SimpleNamespace(enabled=True, token=None, extra={"topic": "hermes-in"})
@@ -2761,6 +2778,37 @@ class TestSendViaAdapterStandaloneFallback:
         assert recorded["chat_id"] == "alerts-channel"
         assert recorded["content"] == "done"
         assert recorded["metadata"] == {"publish_topic": "alerts-channel"}
+
+    @pytest.mark.asyncio
+    async def test_live_messenger_adapter_receives_update_messaging_type(self, monkeypatch):
+        from tools.send_message_tool import _send_via_adapter
+
+        platform = _FakePlatform("messenger")
+        recorded = {}
+
+        class Adapter:
+            async def send(self, *, chat_id, content, metadata=None):
+                recorded["chat_id"] = chat_id
+                recorded["content"] = content
+                recorded["metadata"] = metadata
+                return SimpleNamespace(success=True, message_id="mid.1")
+
+        runner = SimpleNamespace(adapters={platform: Adapter()})
+        fake_gateway_run = ModuleType("gateway.run")
+        fake_gateway_run._gateway_runner_ref = lambda: runner
+        monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+
+        result = await _send_via_adapter(
+            platform,
+            SimpleNamespace(extra={}),
+            "page-a:12345678901234567",
+            "done",
+        )
+
+        assert result == {"success": True, "message_id": "mid.1"}
+        assert recorded["chat_id"] == "page-a:12345678901234567"
+        assert recorded["content"] == "done"
+        assert recorded["metadata"] == {"messenger_messaging_type": "UPDATE"}
 
     @pytest.mark.asyncio
     async def test_standalone_sender_fn_called_when_no_adapter(self, monkeypatch):

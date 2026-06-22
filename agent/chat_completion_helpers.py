@@ -229,6 +229,16 @@ def interruptible_api_call(agent, api_kwargs: dict):
                         invalidate_runtime_client(region)
                     raise
                 result["response"] = normalize_converse_response(raw_response)
+            elif agent.api_mode == "vertex_native":
+                # Vertex AI — uses GCP OAuth2/ADC auth, same Gemini message schema.
+                from agent.vertex_adapter import get_vertex_client
+                vertex_project = api_kwargs.pop("__vertex_project__", None)
+                vertex_region = api_kwargs.pop("__vertex_region__", None)
+                client = get_vertex_client(
+                    project=vertex_project,
+                    region=vertex_region,
+                )
+                result["response"] = client.chat.completions.create(**api_kwargs)
             else:
                 request_client = _set_request_client(
                     agent._create_request_openai_client(

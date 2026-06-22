@@ -314,7 +314,7 @@ def init_agent(
     agent.provider = provider_name or ""
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server", "vertex_native"}:
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
@@ -332,6 +332,12 @@ def init_agent(
     elif agent.provider == "anthropic" or (provider_name is None and agent._base_url_hostname == "api.anthropic.com"):
         agent.api_mode = "anthropic_messages"
         agent.provider = "anthropic"
+    elif agent.provider == "vertex" or (
+        provider_name is None
+        and "aiplatform.googleapis.com" in agent._base_url_hostname
+    ):
+        agent.api_mode = "vertex_native"
+        agent.provider = "vertex"
     elif agent._base_url_lower.rstrip("/").endswith("/anthropic"):
         # Third-party Anthropic-compatible endpoints (e.g. MiniMax, DashScope)
         # use a URL convention ending in /anthropic. Auto-detect these so the

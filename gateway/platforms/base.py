@@ -1230,6 +1230,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".log": "text/plain",
     ".json": "application/json",
     ".xml": "application/xml",
+    ".fb2": "application/xml",
     ".yaml": "application/yaml",
     ".yml": "application/yaml",
     ".toml": "application/toml",
@@ -1260,7 +1261,7 @@ SUPPORTED_DOCUMENT_TYPES = {
 # ---------------------------------------------------------------------------
 
 _TEXT_INJECT_EXTENSIONS = {
-    ".txt", ".md", ".markdown", ".csv", ".tsv", ".log",
+    ".txt", ".md", ".markdown", ".fb2", ".csv", ".tsv", ".log",
     ".json", ".jsonl", ".ndjson", ".xml", ".yaml", ".yml", ".toml",
     ".ini", ".cfg", ".conf", ".env", ".properties",
     ".html", ".htm", ".css", ".scss", ".sass", ".less",

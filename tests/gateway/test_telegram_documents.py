@@ -21,6 +21,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_VIDEO_TYPES,
 )
 
@@ -231,6 +232,25 @@ class TestDocumentDownloadBlock:
         await adapter._handle_media_message(update, MagicMock())
         event = adapter.handle_message.call_args[0][0]
         assert "# Title" in event.text
+
+    @pytest.mark.asyncio
+    async def test_supported_fb2_injects_xml_content(self, adapter):
+        content = """<?xml version=\"1.0\" encoding=\"utf-8\"?>
+<FictionBook><body><section><p>FB2 text</p></section></body></FictionBook>""".encode("utf-8")
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name="book.fb2", mime_type="application/xml",
+            file_size=len(content), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls and event.media_urls[0].endswith("book.fb2")
+        assert event.media_types == [SUPPORTED_DOCUMENT_TYPES[".fb2"]]
+        assert "[Content of book.fb2]" in event.text
+        assert "FB2 text" in event.text
 
     @pytest.mark.asyncio
     async def test_caption_preserved_with_injection(self, adapter):

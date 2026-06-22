@@ -9,6 +9,8 @@ import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
     find_hermes_node_executable,
+    find_node_executable,
+    find_node_executable_on_path,
     get_default_hermes_root,
     get_hermes_home,
     iter_hermes_node_dirs,
@@ -130,6 +132,35 @@ class TestHermesManagedNode:
         monkeypatch.setenv("HERMES_HOME", str(home))
 
         assert find_hermes_node_executable("npm") == str(npm_cmd)
+
+    def test_windows_path_fallback_prefers_npm_cmd(self, tmp_path, monkeypatch):
+        bin_dir = tmp_path / "nodejs"
+        bin_dir.mkdir()
+        extensionless = bin_dir / "npm"
+        powershell = bin_dir / "npm.ps1"
+        npm_cmd = bin_dir / "npm.cmd"
+        extensionless.write_text("#!/usr/bin/env node\n")
+        powershell.write_text("Write-Output npm\n")
+        npm_cmd.write_text("@echo off\n")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("PATH", str(bin_dir))
+
+        assert find_node_executable_on_path("npm") == str(npm_cmd)
+
+    def test_windows_node_executable_falls_back_to_safe_path_shim(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        home.mkdir()
+        bin_dir = tmp_path / "nodejs"
+        bin_dir.mkdir()
+        extensionless = bin_dir / "npm"
+        npm_cmd = bin_dir / "npm.cmd"
+        extensionless.write_text("#!/usr/bin/env node\n")
+        npm_cmd.write_text("@echo off\n")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("PATH", str(bin_dir))
+
+        assert find_node_executable("npm") == str(npm_cmd)
 
     def test_with_hermes_node_path_prepends_existing_managed_dirs(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"

@@ -4,6 +4,7 @@ import asyncio
 import os
 import json
 import shutil
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -3005,9 +3006,14 @@ class TestNewEndpoints:
         )
 
         assert resp.status_code == 200
-        wrapper_path = wrapper_dir / "writer"
+        is_windows = sys.platform == "win32"
+        wrapper_path = wrapper_dir / ("writer.bat" if is_windows else "writer")
         assert wrapper_path.exists()
-        assert wrapper_path.read_text() == '#!/bin/sh\nexec /opt/hermes/bin/hermes -p writer "$@"\n'
+        lines = [line.strip() for line in wrapper_path.read_text().splitlines() if line.strip()]
+        if is_windows:
+            assert lines == ["@echo off", "hermes -p writer %*"]
+        else:
+            assert lines == ["#!/bin/sh", 'exec /opt/hermes/bin/hermes -p writer "$@"']
 
     def test_profiles_create_with_clone_from_copies_source_skills(self, monkeypatch):
         from hermes_constants import get_hermes_home
@@ -4263,6 +4269,149 @@ class TestStatusRemoteGateway:
         assert data["gateway_running"] is True
         assert data["gateway_pid"] is None
         assert data["gateway_state"] == "running"
+
+
+class TestGatewayBusyReadout:
+    """Tests for the NAS busy/drainable readout on /api/status.
+
+    Behaviour contracts (not snapshots): assert how gateway_busy / gateway_drainable
+    must RELATE to gateway_running + gateway_state + active_agents, and that every
+    field degrades to a safe falsy value when the gateway is down or its status
+    file is absent. Liveness must key off gateway_running, NEVER gateway_updated_at.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_busy_when_running_with_active_agents(self, monkeypatch):
+        """gateway_busy is True iff running AND active_agents > 0."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": 2,
+            # A deliberately stale timestamp: busy must NOT depend on it.
+            "updated_at": "2020-01-01T00:00:00+00:00",
+        })
+
+        data = self.client.get("/api/status").json()
+        assert data["active_agents"] == 2
+        assert data["gateway_busy"] is True
+        assert data["gateway_drainable"] is True
+
+    def test_idle_running_is_drainable_but_not_busy(self, monkeypatch):
+        """A running gateway with zero in-flight turns is drainable, not busy."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": 0,
+        })
+
+        data = self.client.get("/api/status").json()
+        assert data["active_agents"] == 0
+        assert data["gateway_busy"] is False
+        assert data["gateway_drainable"] is True
+
+    def test_draining_state_is_neither_busy_nor_drainable(self, monkeypatch):
+        """While draining, the gateway is not a fresh begin-drain target, and
+        busy is False even with a stale active_agents>0 in the file — the state
+        gate dominates."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "draining",
+            "platforms": {},
+            "active_agents": 3,
+        })
+
+        data = self.client.get("/api/status").json()
+        assert data["gateway_busy"] is False
+        assert data["gateway_drainable"] is False
+
+    def test_down_gateway_degrades_to_safe_falsy(self, monkeypatch):
+        """Gateway down (no PID, no remote probe): busy/drainable False,
+        active_agents 0 — never a spurious busy that would wedge NAS."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+
+        data = self.client.get("/api/status").json()
+        assert data["gateway_running"] is False
+        assert data["active_agents"] == 0
+        assert data["gateway_busy"] is False
+        assert data["gateway_drainable"] is False
+
+    def test_down_gateway_with_stale_busy_file_still_not_busy(self, monkeypatch):
+        """A leftover status file claiming running + active_agents>0 must NOT
+        read as busy when the live PID probe says the gateway is down. Liveness
+        wins over the file."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+        # File says running with active turns, but get_running_pid()==None and
+        # get_runtime_status_running_pid finds no live PID → gateway_running False.
+        monkeypatch.setattr(ws, "get_runtime_status_running_pid", lambda *_a, **_k: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": 5,
+        })
+
+        data = self.client.get("/api/status").json()
+        assert data["gateway_running"] is False
+        assert data["gateway_busy"] is False
+        assert data["gateway_drainable"] is False
+
+    def test_restart_drain_timeout_surfaced_and_numeric(self, monkeypatch):
+        """restart_drain_timeout is present and resolves to a non-negative
+        float so NAS can size its poll deadline without out-of-band knowledge."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": 0,
+        })
+        monkeypatch.setenv("HERMES_RESTART_DRAIN_TIMEOUT", "90")
+
+        data = self.client.get("/api/status").json()
+        assert "restart_drain_timeout" in data
+        assert isinstance(data["restart_drain_timeout"], (int, float))
+        assert data["restart_drain_timeout"] == 90.0
+
+    def test_active_agents_unparseable_in_file_degrades_to_zero(self, monkeypatch):
+        """A corrupt active_agents value in the status file must not 500 or
+        produce a spurious busy — it degrades to 0/not-busy."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+            "active_agents": "garbage",
+        })
+
+        data = self.client.get("/api/status").json()
+        assert data["active_agents"] == 0
+        assert data["gateway_busy"] is False
 
 
 # ---------------------------------------------------------------------------

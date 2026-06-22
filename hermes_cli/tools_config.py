@@ -78,7 +78,7 @@ CONFIGURABLE_TOOLSETS = [
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
-    ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
+    ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),  
     ("langfuse",         "📊 Langfuse Observability",   "LLM call tracing & observability"),
 ]
 
@@ -517,21 +517,24 @@ TOOL_CATEGORIES = {
         ],
     },
     "computer_use": {
-        "name": "Computer Use (macOS)",
+        "name": "Computer Use (macOS/Windows/Linux)",
         "icon": "🖱️",
-        "platform_gate": "darwin",
+        # Runtime backends ship for macOS, Windows, and Linux (X11 today,
+        # Wayland via XWayland). Per-host gaps surface via `computer-use doctor`.
+        "platform_gate": ["darwin", "win32", "linux"],
         "providers": [
             {
                 "name": "cua-driver (background)",
                 "badge": "★ recommended · free · local",
                 "tag": (
-                    "macOS background computer-use via SkyLight SPIs — does "
-                    "NOT steal your cursor or focus. Works with any model."
+                    "Background computer-use via cua-driver — does NOT steal "
+                    "your cursor or focus. Works with any model."
                 ),
                 "env_vars": [
                     # cua-driver reads HOME/TMPDIR from the process env, no
-                    # extra keys required. HERMES_CUA_DRIVER_VERSION is an
-                    # optional pin for reproducibility across macOS updates.
+                    # extra keys required. Set HERMES_CUA_DRIVER_CMD to use a
+                    # specific binary (e.g. a local build); there is no
+                    # version-pin env var.
                 ],
                 "post_setup": "cua_driver",
             },
@@ -650,45 +653,95 @@ def _pip_install(
 
 
 def _check_cua_driver_asset_for_arch() -> bool:
-    """Check whether the latest CUA release ships an asset for this architecture.
+    """Check whether the latest CUA release ships an asset for this OS+arch.
 
     Returns True if the asset likely exists (or if we cannot determine it).
     Returns False and prints a warning when the asset is confirmed missing,
     so callers can skip the install attempt and avoid a raw 404.
+
+    Recognizes release-asset names across all supported platforms:
+
+    * macOS (``Darwin``)  — arm64 always ships; x86_64/amd64 probed.
+    * Windows (``AMD64``/``ARM64``) — amd64/x86_64 and arm64 probed.
+    * Linux (``x86_64``/``aarch64``) — x86_64/amd64 and aarch64/arm64 probed.
     """
     import platform as _plat
     import urllib.request
 
-    machine = _plat.machine()  # "x86_64" or "arm64"
-    if machine == "arm64":
-        # arm64 (Apple Silicon) assets are always published.
+    system = _plat.system()
+    machine = _plat.machine().lower()  # e.g. "x86_64", "arm64", "amd64", "aarch64"
+
+    # arm64 (Apple Silicon) macOS assets are always published — short-circuit
+    # to preserve the original fail-open behaviour and avoid a network call.
+    if system == "Darwin" and machine == "arm64":
         return True
 
-    # x86_64 / Intel — probe the latest release for an architecture-specific
-    # asset before falling through to the upstream installer.
+    # Map this host's arch to the set of asset-name substrings we'll accept.
+    # Asset names vary by OS (darwin-x86_64, windows-amd64, linux-aarch64, …),
+    # so we match on the architecture token only and let any of the common
+    # aliases satisfy the probe.
+    if machine in {"x86_64", "amd64", "x64"}:
+        arch_names = {"x86_64", "amd64", "x64"}
+        arch_label = "x86_64/amd64"
+    elif machine in {"arm64", "aarch64"}:
+        arch_names = {"arm64", "aarch64"}
+        arch_label = "arm64/aarch64"
+    else:
+        # Unknown arch — fail open and let the installer surface the error.
+        return True
+
+    # Probe the cua-driver release for an OS+arch asset before falling through
+    # to the upstream installer.
+    #
+    # The cua-driver-rs binaries are published to the trycua/cua monorepo under
+    # tag prefix ``cua-driver-rs-v*``. The repo's ``releases/latest`` is NOT
+    # that — it floats across the monorepo's other components (agent-*,
+    # computer-*, lume-*, train-*), most of which ship zero binary assets. So
+    # we list releases and pick the newest ``cua-driver-rs-v*`` tag, matching
+    # what the upstream install.sh does. Failing to find one => fail open and
+    # let the installer (which resolves the tag itself) be the source of truth.
+    driver_tag_prefix = "cua-driver-rs-v"
     api_url = (
-        "https://api.github.com/repos/trycua/cua/releases/latest"
+        "https://api.github.com/repos/trycua/cua/releases?per_page=100"
     )
     try:
         req = urllib.request.Request(api_url, headers={"Accept": "application/vnd.github+json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
-            release = _json.loads(resp.read().decode())
-        tag = release.get("tag_name", "")
-        assets = release.get("assets", [])
-        arch_names = {"x86_64", "amd64"}
+            releases = _json.loads(resp.read().decode())
+        if not isinstance(releases, list):
+            return True
+        # GitHub returns releases newest-first; take the first cua-driver-rs tag.
+        driver_release = next(
+            (
+                r for r in releases
+                if str(r.get("tag_name", "")).startswith(driver_tag_prefix)
+            ),
+            None,
+        )
+        if driver_release is None:
+            # No cua-driver-rs release surfaced (API hiccup / unexpected shape).
+            # Fail open — the installer resolves the tag on its own.
+            return True
+        tag = driver_release.get("tag_name", "")
+        assets = driver_release.get("assets", [])
+        # OS token gates the asset alongside arch so a darwin asset can't
+        # satisfy a Linux probe (every cua-driver-rs release ships all three
+        # OSes, so the arch token alone would always match).
+        os_token = {"Darwin": "darwin", "Windows": "windows", "Linux": "linux"}.get(system, "")
         has_asset = any(
-            any(a in a_info.get("name", "").lower() for a in arch_names)
+            os_token in (name := a_info.get("name", "").lower())
+            and any(a in name for a in arch_names)
             for a_info in assets
         )
         if not has_asset:
             _print_warning(
-                f"    Latest CUA release ({tag}) has no Intel (x86_64) asset."
+                f"    Latest cua-driver release ({tag}) has no {system} {arch_label} asset."
             )
             _print_info(
-                "    CUA Driver currently only ships Apple Silicon builds."
+                "    CUA Driver may not yet ship a build for this platform."
             )
             _print_info(
-                "    See: https://github.com/trycua/cua/issues/1493"
+                "    See: https://github.com/trycua/cua/releases"
             )
             return False
     except Exception:
@@ -711,28 +764,36 @@ def install_cua_driver(upgrade: bool = False) -> bool:
       by ``hermes computer-use install --upgrade``.
 
     Returns True iff cua-driver is installed (or successfully refreshed)
-    when the function returns. macOS-only — silently returns False on
-    other platforms.
+    when the function returns. Supported on macOS, Windows, and Linux
+    (Linux is alpha). Silently returns False on unsupported platforms.
     """
     import platform as _plat
     import shutil
     import subprocess
 
-    if _plat.system() != "Darwin":
+    system = _plat.system()
+    if system not in ("Darwin", "Windows", "Linux"):
         if upgrade:
-            # Silent on non-macOS — `hermes update` calls this for every
-            # user; only macOS users with cua-driver care.
+            # Silent on unsupported platforms — `hermes update` calls this
+            # for every user; only macOS/Windows/Linux users care.
             return False
-        _print_warning("    Computer Use (cua-driver) is macOS-only; skipping.")
+        _print_warning("    Computer Use (cua-driver) is unsupported on this platform; skipping.")
         return False
+
+    is_windows = system == "Windows"
+    is_linux = system == "Linux"
+
+    # The Windows installer (install.ps1) is fetched via PowerShell's `irm`,
+    # so it needs PowerShell rather than curl. macOS/Linux use curl | bash.
+    fetch_tool = "powershell" if is_windows else "curl"
 
     driver_cmd = _cua_driver_cmd()
     binary = shutil.which(driver_cmd)
 
     # Not installed → fresh install path (only when caller asked for it).
     if not binary and not upgrade:
-        if not shutil.which("curl"):
-            _print_warning("    curl not found — install manually:")
+        if not shutil.which(fetch_tool):
+            _print_warning(f"    {fetch_tool} not found — install manually:")
             _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
             return False
         if not _check_cua_driver_asset_for_arch():
@@ -749,18 +810,41 @@ def install_cua_driver(upgrade: bool = False) -> bool:
             _print_success(f"    {driver_cmd} already installed: {version or 'unknown version'}")
         except Exception:
             _print_success(f"    {driver_cmd} already installed.")
-        _print_info("    Grant macOS permissions if not done yet:")
-        _print_info("      System Settings > Privacy & Security > Accessibility")
-        _print_info("      System Settings > Privacy & Security > Screen Recording")
+        if is_windows:
+            _print_info("    cua-driver may spawn a UIAccess worker (cua-driver-uia.exe);")
+            _print_info("    Windows/SmartScreen may prompt the first time it runs.")
+        elif is_linux:
+            _print_warning("    Linux support is alpha.")
+        else:
+            _print_info("    Grant macOS permissions if not done yet:")
+            _print_info("      System Settings > Privacy & Security > Accessibility")
+            _print_info("      System Settings > Privacy & Security > Screen Recording")
         return True
 
     # upgrade=True path — refresh to the latest upstream release.
-    if not shutil.which("curl"):
-        _print_warning("    curl not found — cannot refresh cua-driver.")
+    if not shutil.which(fetch_tool):
+        _print_warning(f"    {fetch_tool} not found — cannot refresh cua-driver.")
         return bool(binary)
 
     if not _check_cua_driver_asset_for_arch():
         return bool(binary)
+
+    # Skip the (network) re-install when the driver itself reports it's already
+    # on the latest release. Best-effort: an older driver (no check-update
+    # verb) or an offline check returns None, in which case we fall through and
+    # re-run the installer as before.
+    if binary:
+        try:
+            from tools.computer_use.cua_backend import cua_driver_update_check
+            _state = cua_driver_update_check()
+            if _state is not None and not _state.get("update_available"):
+                _print_success(
+                    f"    {driver_cmd} is already on the latest release "
+                    f"({_state.get('current_version') or 'unknown'})."
+                )
+                return True
+        except Exception:
+            pass
 
     if binary:
         # Show before/after version when we have a baseline. Best-effort.
@@ -791,36 +875,70 @@ def install_cua_driver(upgrade: bool = False) -> bool:
 
 
 def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -> bool:
-    """Run the upstream cua-driver install.sh. Returns True on success.
+    """Run the upstream cua-driver installer for this platform.
 
-    The script is idempotent: it always downloads the latest release, so
-    re-running it on an already-installed system performs an upgrade.
+    The scripts are idempotent: they always download the latest release, so
+    re-running on an already-installed system performs an upgrade.
+
+    * macOS / Linux → ``curl -fsSL …/install.sh | /bin/bash``.
+    * Windows       → ``powershell -NoProfile -ExecutionPolicy Bypass -Command
+      "irm …/install.ps1 | iex"``.
     """
+    import platform as _plat
     import shutil
     import subprocess
 
-    install_cmd = (
-        "/bin/bash -c \"$(curl -fsSL "
-        "https://raw.githubusercontent.com/trycua/cua/main/"
-        "libs/cua-driver/scripts/install.sh)\""
-    )
+    system = _plat.system()
+    is_windows = system == "Windows"
+    is_linux = system == "Linux"
+
+    if is_windows:
+        # Mirror the one-liner printed by cua_driver_install_hint().
+        ps_oneliner = (
+            "irm https://raw.githubusercontent.com/trycua/cua/main/"
+            "libs/cua-driver/scripts/install.ps1 | iex"
+        )
+        install_cmd = [
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-Command", ps_oneliner,
+        ]
+        use_shell = False
+        manual_hint = (
+            'powershell -NoProfile -ExecutionPolicy Bypass -Command '
+            f'"{ps_oneliner}"'
+        )
+    else:
+        install_cmd = (
+            "/bin/bash -c \"$(curl -fsSL "
+            "https://raw.githubusercontent.com/trycua/cua/main/"
+            "libs/cua-driver/scripts/install.sh)\""
+        )
+        use_shell = True
+        manual_hint = install_cmd
+
     if verbose:
-        _print_info(f"    {label} cua-driver (macOS background computer-use)...")
+        _print_info(f"    {label} cua-driver (background computer-use)...")
     else:
         _print_info(f"    {label} cua-driver...")
     driver_cmd = _cua_driver_cmd()
     try:
-        result = subprocess.run(install_cmd, shell=True, timeout=300)
+        result = subprocess.run(install_cmd, shell=use_shell, timeout=300)
         if result.returncode == 0 and shutil.which(driver_cmd):
             if verbose:
                 _print_success(f"    {driver_cmd} installed.")
-                _print_info("    IMPORTANT — grant macOS permissions now:")
-                _print_info("      System Settings > Privacy & Security > Accessibility")
-                _print_info("      System Settings > Privacy & Security > Screen Recording")
-                _print_info("    Both must allow the terminal / Hermes process.")
+                if is_windows:
+                    _print_info("    cua-driver may spawn a UIAccess worker (cua-driver-uia.exe);")
+                    _print_info("    Windows/SmartScreen may prompt the first time it runs.")
+                elif is_linux:
+                    _print_warning("    Linux support is alpha.")
+                else:
+                    _print_info("    IMPORTANT — grant macOS permissions now:")
+                    _print_info("      System Settings > Privacy & Security > Accessibility")
+                    _print_info("      System Settings > Privacy & Security > Screen Recording")
+                    _print_info("    Both must allow the terminal / Hermes process.")
             return True
         _print_warning(f"    cua-driver {label.lower()} did not complete. Re-run manually:")
-        _print_info(f"      {install_cmd}")
+        _print_info(f"      {manual_hint}")
         return False
     except subprocess.TimeoutExpired:
         _print_warning(f"    cua-driver {label.lower()} timed out. Re-run manually.")
@@ -1285,6 +1403,24 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
     return default
 
 
+def enabled_mcp_server_names(config: dict) -> Set[str]:
+    """Names of MCP servers globally enabled in config.yaml.
+
+    Shared by the gateway/CLI platform resolver (``_get_platform_tools``) and
+    the cron per-job toolset resolver (``cron.scheduler``) so every path agrees
+    on MCP membership. A server is enabled unless its config sets an explicitly
+    falsey ``enabled`` (per ``_parse_enabled_flag``: false/0/no/off) — a missing
+    flag or an unrecognized value is treated as enabled.
+    """
+    mcp_servers = (config or {}).get("mcp_servers") or {}
+    return {
+        str(name)
+        for name, server_cfg in mcp_servers.items()
+        if isinstance(server_cfg, dict)
+        and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
+    }
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -1504,13 +1640,7 @@ def _get_platform_tools(
     # If the platform explicitly lists one or more MCP server names, treat that
     # as an allowlist. Otherwise include every globally enabled MCP server.
     # Special sentinel: "no_mcp" in the toolset list disables all MCP servers.
-    mcp_servers = config.get("mcp_servers") or {}
-    enabled_mcp_servers = {
-        str(name)
-        for name, server_cfg in mcp_servers.items()
-        if isinstance(server_cfg, dict)
-        and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
-    }
+    enabled_mcp_servers = enabled_mcp_server_names(config)
     # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
     if "no_mcp" in toolset_names:
         explicit_mcp_servers = set()

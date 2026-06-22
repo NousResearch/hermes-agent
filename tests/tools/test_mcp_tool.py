@@ -1190,7 +1190,14 @@ class TestToolsetInjection:
             broken_fixed = True
             call_count = 0
 
-            # Second call: should retry broken, skip good
+            # The failed server is now serving a post-failure backoff
+            # (#50394: prevents a tight re-spawn storm across the frequent
+            # per-worker-session discovery passes). Expire that cooldown to
+            # simulate the retry window having elapsed.
+            import tools.mcp_tool as _mcp_mod
+            _mcp_mod._server_connect_retry_after.pop("broken", None)
+
+            # Next call after the cooldown: should retry broken, skip good
             result2 = discover_mcp_tools()
             assert "mcp_good_ping" in result2
             assert "mcp_broken_ping" in result2

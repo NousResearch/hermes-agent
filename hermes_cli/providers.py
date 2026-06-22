@@ -366,6 +366,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "xai": "xAI",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 

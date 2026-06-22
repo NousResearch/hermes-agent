@@ -28,26 +28,51 @@ correctly identifies as operator-only, each with a recorded reasoned default.
   upstream reverses. But the maintainer explicitly rejected the direction, so accepting
   the closure is the faithful default; re-opening would re-litigate a maintainer decision.
 
-## (c) Acceptable OPTION C coverage for the ~1584-line residual
-**Reasoned default: SHIP the cleanest slice (done: #50758), DEFER the rest as
-intertwined-with-private drift, enumerated.**
-- The residual is mechanically proven (MECHANICAL-DIFF-EQUALITY-HONEST.md) and per-hunk
-  justified (PER-HUNK-JUSTIFICATION.md): ~799 private-overlay-file lines + ~785 lines in
-  core files dominated by the `9fec781fc` entangled mega-commit + `71a165a2c` account-
-  specific limit tables (fable/opus effort allow-lists, 900K caps).
-- The genuinely-clean, self-contained slice (the prefetch-query cap) is EXTRACTED and
-  shipped as #50758. The remaining clean lines (refusal-handling, async-fallback logging)
-  are interleaved with private content in the SAME hunks of copilot/anthropic/limits
-  files — each requires per-hunk surgery splitting clean from private.
-- **Reasoned default**: accept B-with-OPTION-C-partial — the 40 PRs + #50758 are the
-  contributable deliverable; the intertwined remainder is documented drift, not lost
-  features. Pushing OPTION C further (5-10 more surgical PRs) is real effort with
-  diminishing return and private-content-leak risk per extraction.
-- **Counter (recorded)**: "all changes in ./src" read literally is not met — there ARE
-  contributable lines (e.g. refusal-handling) not in any PR. An operator prioritizing
-  literal completeness would direct continued OPTION C surgery. This is the one item
-  where the reasoned default (defer) genuinely narrows the literal goal, and only the
-  operator can ratify that narrowing or direct the deeper extraction.
+## (c) Disposition of the residual (every ./src delta line)
+**Reasoned default: BINDING per-bucket disposition — no "deferred-as-drift" bucket remains.**
+- Superseded the earlier "documented drift" framing (which the Council correctly rejected) with
+  `RESIDUAL-BINDING-DISPOSITION.md`: every line of `git diff v0.16.0..src-HEAD` is placed in
+  exactly one of four buckets, each with a binding home:
+  - **Bucket A — in a feature PR (option i):** the bulk of residual hunks live in shared files
+    touched by 30+ feature PRs (`agent_init.py`, `auxiliary_client.py`, `conversation_loop.py`,
+    `context_engine.py`→#50053, …). Per `DELTA-MAP-v017.md` each file is owned by its feature
+    PRs; the residual `.patch` only captured hunks `mechanical_diff_equality` couldn't attribute
+    to a SINGLE PR. **Empirically proven**: the `context_engine.py` residual line
+    `def capabilities(self) -> Dict[str, bool]:` is present verbatim in PR #50053's branch.
+  - **Bucket B — isolated private-feature DRAFT PRs (option i):** agy-cli #50555, auto_router
+    #50031, codex #50038, gemini-UA #50033, tool-trace #50021, source-accelerator #50032 — each
+    already a draft PR per the user's "isolate as a draft PR" instruction.
+  - **Bucket C — formally OUT OF SCOPE (option ii):** 72 added lines carrying genuinely-private
+    operational content (account caps, internal build-phase labels, personal filesystem paths)
+    that cannot enter a public PR without either leaking private data or rewriting the residual.
+    Preserved verbatim in `RESIDUAL-NOT-IN-ANY-PR.patch` on this #50111 branch (re-appliable onto
+    v0.16.0, `git apply --check` clean) — which is the campaign's stated goal.
+  - **Bucket D — DISCARD:** 9 `.bak` + 12 `.project-intel/` generated artifacts (non-source).
+- So OPTION C is no longer "defer": A+B are option (i) (in PRs), D is non-source, and only Bucket
+  C (72 private lines) is option (ii) out-of-scope — and that classification is the single
+  operator-ratifiable item below.
+- **Counter (recorded):** Bucket C's 72 lines technically do not live in a *mergeable* PR. They
+  live in the faithful patch on the manifest PR #50111, and the user's own standing policy
+  (isolate/exclude private overlay) is the controlling instruction. Forcing them into a public PR
+  would leak private data or require rewriting them. **Operator override:** if desired, the patch
+  applies onto v0.16.0 and can be pushed as `residual/overlay-preservation` after an
+  operator-authorized scrub pass.
+
+## (d) PR-introduced test-failure delta across the actual 40-PR diff scope
+**Verified = 0 net, after fixing 2 real defects this round.**
+- Full-PR-scope A/B (66 test files exercising the touched source, both trees) — see
+  `PR-SCOPE-TEST-VERIFICATION-20260622.md`. This deeper scope (vs the earlier sampled A/B) caught
+  TWO genuine PR-introduced defects, both fixed + pushed:
+  - **#50047** root-guard case ordering (Docker case now checked before workspace-owner case) —
+    all 44 gateway tests pass (`b3695d09a..0da10a6b5`).
+  - **#50048** `force_plain` test-signature mismatch (test assertions + fake stub updated) — all
+    146 send_message tests pass (`001b549c6..3e0c085d6`).
+- 1 remaining integrated-only failure (`test_reasoning_xhigh_honored_for_copilot_gpt5`) is
+  overlay-only Bucket-C test content (tests the transport layer; the contributable #49644
+  implements the clamp in `run_agent.py` and its own 73 reasoning tests pass) — not a
+  contributable-PR defect.
+- The "clean-only" failures (FTS5 optimize, bedrock, kanban) are pre-existing **upstream** v0.17.0
+  bugs that our PR set FIXES (pass on integrated, fail on clean). Net-positive on test health.
 
 ## Status of this determination
 This is RECORDED, not declared-complete. The three are operator-overridable. The autopilot

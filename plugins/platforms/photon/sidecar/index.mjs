@@ -620,12 +620,24 @@ async function resolveSpace(spaceId) {
   const phoneTarget = phoneTargetFromSpaceId(spaceId);
   let space = null;
 
-  // A bare E.164 phone number addresses a DM, so callers can pass just
-  // "+1..." (e.g. PHOTON_HOME_CHANNEL for cron delivery) instead of an opaque
-  // inbound space id. Photon also represents DM chat ids as `any;-;+1...`;
-  // normalize those through the same path. `space.create` accepts the raw
-  // phone string directly.
-  if (phoneTarget) {
+  // Photon represents DM chat ids as `any;-;+1...`.  Those ids are already
+  // opaque Spectrum space ids, so after a sidecar restart prefer `space.get(id)`
+  // before falling back to `space.create(phone)`.  Creating from the phone first
+  // can be rejected by Spectrum as "Target not allowed for this project" even
+  // though replying to the existing inbound DM space is allowed.  Bare E.164
+  // phone numbers (PHOTON_HOME_CHANNEL / cron delivery) still use create().
+  if (DM_CHAT_GUID_RE.test(spaceId)) {
+    try {
+      space = await im.space.get(spaceId);
+    } catch (e) {
+      console.error(
+        "photon-sidecar: DM space.get failed: " +
+          (e && e.stack ? e.stack : String(e))
+      );
+    }
+  }
+
+  if (!space && phoneTarget) {
     try {
       space = await im.space.create(phoneTarget);
     } catch (e) {
@@ -635,9 +647,10 @@ async function resolveSpace(spaceId) {
       );
     }
   }
-  // Anything else — typically an opaque group GUID — is rehydrated from the
-  // persisted id via `space.get`, so group spaces stay reachable after a
-  // sidecar restart even before any fresh inbound message in that group.
+
+  // Non-DM-ish ids (group spaces, provider-native ids) resolve via `space.get`,
+  // so they stay reachable after a sidecar restart even before any fresh inbound
+  // message in that group.
   if (!space) {
     try {
       space = await im.space.get(spaceId);
@@ -648,6 +661,7 @@ async function resolveSpace(spaceId) {
       );
     }
   }
+
   if (!space) throw new Error(`unable to resolve space id ${spaceId}`);
 
   rememberKnownSpace(spaceId, space);

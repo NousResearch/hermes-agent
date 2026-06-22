@@ -96,6 +96,7 @@ _PHOTON_RETRYABLE_PATTERNS = (
     "reset reason: overflow",
     "upstream_overflow",
     "upstream_unavailable",
+    "authentication failed",
 )
 
 # Minimum seconds between typing-indicator calls for the same chat.
@@ -1303,8 +1304,8 @@ class PhotonAdapter(BasePlatformAdapter):
         content: str,
         reply_to: Optional[str] = None,
         metadata: Any = None,
-        max_retries: int = 1,
-        base_delay: float = 2.0,
+        max_retries: int = 3,
+        base_delay: float = 5.0,
     ) -> SendResult:
         """Retry sends without the generic Markdown banner.
 
@@ -1584,6 +1585,35 @@ async def _standalone_send(
         }
     base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
     headers = {"X-Hermes-Sidecar-Token": token}
+    def _standalone_retryable_error(text: str) -> bool:
+        lowered = (text or "").lower()
+        return any(pat in lowered for pat in _PHOTON_RETRYABLE_PATTERNS)
+
+    async def _post_with_retry(client: httpx.AsyncClient, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        last_error = ""
+        for attempt in range(1, 4):
+            try:
+                resp = await client.post(f"{base}{path}", json=body, headers=headers)
+                if resp.status_code != 200:
+                    last_error = f"sidecar returned {resp.status_code}: {resp.text[:200]}"
+                else:
+                    data = resp.json() or {}
+                    if data.get("ok"):
+                        return data
+                    last_error = data.get("error") or "sidecar reported failure"
+            except Exception as exc:
+                last_error = f"Photon standalone send failed: {exc}"
+            if attempt >= 3 or not _standalone_retryable_error(last_error):
+                break
+            logger.warning(
+                "[photon] standalone send failed (attempt %d/3, retrying in %ds): %s",
+                attempt,
+                5 * attempt,
+                last_error,
+            )
+            await asyncio.sleep(5 * attempt)
+        return {"error": last_error or "sidecar reported failure"}
+
     last_message_id: Optional[str] = None
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1595,14 +1625,9 @@ async def _standalone_send(
                 }
                 if _markdown_enabled():
                     send_body["format"] = "markdown"
-                resp = await client.post(
-                    f"{base}/send", json=send_body, headers=headers,
-                )
-                if resp.status_code != 200:
-                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
-                data = resp.json() or {}
-                if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
+                data = await _post_with_retry(client, "/send", send_body)
+                if data.get("error"):
+                    return data
                 last_message_id = data.get("messageId")
 
             # 2. Each attachment as a separate /send-attachment call.
@@ -1623,14 +1648,9 @@ async def _standalone_send(
                 }
                 if guessed:
                     att_body["mimeType"] = guessed
-                resp = await client.post(
-                    f"{base}/send-attachment", json=att_body, headers=headers,
-                )
-                if resp.status_code != 200:
-                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
-                data = resp.json() or {}
-                if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
+                data = await _post_with_retry(client, "/send-attachment", att_body)
+                if data.get("error"):
+                    return data
                 last_message_id = data.get("messageId") or last_message_id
 
         return {"success": True, "message_id": last_message_id}

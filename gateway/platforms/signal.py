@@ -97,6 +97,12 @@ def _guess_extension(data: bytes) -> str:
         return ".gif"
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return ".webp"
+    # RIFF/WAVE shares the ``RIFF`` chunk header with WebP; the form-type at
+    # bytes 8-11 disambiguates. Without this, an inbound WAV voice note fell
+    # through to ``.bin`` (octet-stream) and was cached as a document, so STT
+    # never saw it — even though ``.wav`` is in the audio allowlist + MIME map.
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return ".wav"
     if data[:4] == b"%PDF":
         return ".pdf"
     if len(data) >= 8 and data[4:8] == b"ftyp":

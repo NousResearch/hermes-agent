@@ -1,5 +1,17 @@
 # ⚠️ DEFERRED-WORK TRACKER — NOT FOR MERGE (draft, intentionally)
 
+> **Pull the whole set onto a release in one command:**
+> `bash pull_down_onto.sh <commit-or-tag> [<repo-checkout>]`
+> (default target = v0.17.0 commit `2bd1977d8`). Self-contained: it fetches the
+> open PRs + the `v017-conflict-resolutions/` patches itself, asserts the worktree
+> is checked out at your target, applies all 39 code PRs (auto-resolving the 9
+> drifted files), and compiles. Proven 39/39 on v0.17.0 (30 clean + 9 resolved)
+> and on post-v0.17.0 origin/main (39 clean) — see `PULLDOWN-v017.log` /
+> `PULLDOWN-post-v017.log`. No comment-thread reading required.
+>
+> **Count:** 40 open PRs = **39 code PRs** + this **1 manifest** (#50111, excluded
+> from apply).
+
 This draft PR holds the residual `./src` lines that are **not** part of the 37
 mergeable feature PRs, organized into **feature-scoped, individually-cherry-pickable**
 patch sets under `deferred/`. Each subdirectory is one coherent concern, so a downstream

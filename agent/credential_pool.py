@@ -112,6 +112,14 @@ SUPPORTED_POOL_STRATEGIES = {
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
+# Ollama Cloud weekly usage caps reset on a rolling ~7-day window and carry no
+# machine-readable reset timestamp. The default 1h 429 cooldown re-enters a
+# capped key every hour and re-hammers it (hundreds of dead 429s/day across
+# cron processes), stacking retry/backoff time until the cron inactivity
+# watchdog kills the job. Bench these ~24h so the pool reports the key
+# unavailable and falls back cleanly, re-probing once a day until the rolling
+# window frees the account.
+EXHAUSTED_TTL_OLLAMA_WEEKLY_SECONDS = 24 * 60 * 60   # 24 hours
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
@@ -526,6 +534,14 @@ class CredentialPool:
             terminal_status = STATUS_DEAD
         else:
             terminal_status = STATUS_EXHAUSTED
+        reset_at = normalized_error.get("reset_at")
+        # Ollama Cloud weekly cap with no provider reset_at: bench ~24h instead
+        # of the default 1h 429 TTL so a weekly-capped account doesn't re-enter
+        # rotation hourly and re-storm (see EXHAUSTED_TTL_OLLAMA_WEEKLY_SECONDS).
+        if reset_at is None and status_code == 429:
+            _msg = (normalized_error.get("message") or "").lower()
+            if "weekly usage limit" in _msg or "reached your weekly" in _msg:
+                reset_at = time.time() + EXHAUSTED_TTL_OLLAMA_WEEKLY_SECONDS
         updated = replace(
             entry,
             last_status=terminal_status,
@@ -533,7 +549,7 @@ class CredentialPool:
             last_error_code=status_code,
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),
-            last_error_reset_at=normalized_error.get("reset_at"),
+            last_error_reset_at=reset_at,
         )
         self._replace_entry(entry, updated)
         self._persist()

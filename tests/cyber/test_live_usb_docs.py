@@ -31,6 +31,22 @@ def _combined_output(result: subprocess.CompletedProcess[str]) -> str:
     return result.stdout + result.stderr
 
 
+def _list_usb_stub_env(tmp_path: Path) -> dict[str, str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    lsblk = bin_dir / "lsblk"
+    lsblk.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' 'NAME SIZE TRAN MODEL RM' 'sdb 15G usb FixtureUSB 1'\n",
+        encoding="utf-8",
+    )
+    column = bin_dir / "column"
+    column.write_text("#!/usr/bin/env bash\ncat\n", encoding="utf-8")
+    lsblk.chmod(0o755)
+    column.chmod(0o755)
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+
+
 def _live_usb_section() -> str:
     text = README.read_text(encoding="utf-8")
     start = text.index("## Live USB")
@@ -138,7 +154,7 @@ def test_direct_live_usb_mutation_scripts_require_exact_operator_approval() -> N
     )
 
 
-def test_direct_live_usb_approval_gate_behavior_is_fail_closed() -> None:
+def test_direct_live_usb_approval_gate_behavior_is_fail_closed(tmp_path: Path) -> None:
     missing_env = _run_script("live-usb/build_iso.sh", "--operator-approval", "provided-token")
     assert missing_env.returncode == 1
     missing_env_output = _combined_output(missing_env)
@@ -176,9 +192,11 @@ def test_direct_live_usb_approval_gate_behavior_is_fail_closed() -> None:
     assert missing_value.returncode == 1
     assert "--operator-approval requires a value" in _combined_output(missing_value)
 
-    list_only = _run_script("live-usb/write_usb.sh", "--list")
+    list_only = _run_script("live-usb/write_usb.sh", "--list", env=_list_usb_stub_env(tmp_path))
     assert list_only.returncode == 0
-    assert "Removable / USB block devices" in _combined_output(list_only)
+    list_only_output = _combined_output(list_only)
+    assert "Removable / USB block devices" in list_only_output
+    assert "sdb" in list_only_output
 
 
 def test_direct_live_usb_exact_approval_reaches_root_gate_before_device_probe() -> None:

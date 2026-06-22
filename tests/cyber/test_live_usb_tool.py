@@ -146,10 +146,65 @@ class TestLiveUsbTool:
         assert "available_isos" in out
         assert isinstance(out["available_isos"], list)
 
-    def test_list_usb_returns_removable_devices(self) -> None:
+    def test_list_usb_returns_removable_devices(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, Any] = {}
+
+        def fake_subprocess_run(cmd: list[str], **kwargs) -> types.SimpleNamespace:  # noqa: ANN003
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return types.SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "blockdevices": [
+                            {
+                                "name": "sdb",
+                                "size": "15G",
+                                "tran": "usb",
+                                "model": "Fixture USB",
+                                "rm": "1",
+                                "vendor": "TestVendor",
+                            },
+                            {
+                                "name": "nvme0n1",
+                                "size": "1T",
+                                "tran": "nvme",
+                                "model": "Internal Disk",
+                                "rm": "0",
+                                "vendor": "TestVendor",
+                            },
+                        ]
+                    }
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(live_usb.shutil, "which", lambda cmd: "/usr/bin/lsblk" if cmd == "lsblk" else None)
+        monkeypatch.setattr(live_usb.subprocess, "run", fake_subprocess_run)
+
         out = json.loads(_handle({"action": "list_usb"}))
-        # Either returns device list or an error if lsblk missing
-        assert "removable_devices" in out or "error" in out
+
+        assert captured["cmd"] == [
+            "lsblk",
+            "-d",
+            "-o",
+            "NAME,SIZE,TRAN,MODEL,RM,VENDOR",
+            "--sort",
+            "NAME",
+            "--json",
+        ]
+        assert captured["kwargs"]["timeout"] == 10
+        assert out["removable_devices"] == [
+            {
+                "device": "/dev/sdb",
+                "size": "15G",
+                "transport": "usb",
+                "model": "Fixture USB",
+                "removable": True,
+                "vendor": "TestVendor",
+            }
+        ]
+        assert len(out["all_block_devices"]) == 2
 
     def test_unknown_action_returns_error_and_valid_list(self) -> None:
         out = json.loads(_handle({"action": "nuke_everything"}))

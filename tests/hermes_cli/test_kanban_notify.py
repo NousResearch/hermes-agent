@@ -15,6 +15,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
+    profiles_dir = home / "profiles"
+    profiles_dir.mkdir()
+    # The kanban-create lint (card t_ddcf16e1) rejects unknown --assignee
+    # at the CLI boundary with exit 2. Tests in this file that use a
+    # placeholder profile name through the CLI need it to exist as a
+    # directory under HERMES_HOME; otherwise the lint would correctly
+    # reject the create and the test would fail.
+    for name in ("alice",):
+        (profiles_dir / name).mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # Allow the kanban notifier path-validator to upload artifacts the

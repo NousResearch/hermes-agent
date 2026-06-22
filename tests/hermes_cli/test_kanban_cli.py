@@ -18,6 +18,21 @@ from hermes_cli import kanban_db as kb
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
+    profiles_dir = home / "profiles"
+    profiles_dir.mkdir()
+    # The kanban-create lint (card t_ddcf16e1) rejects unknown --assignee
+    # values at the CLI entry point with exit 2. Tests in this file that
+    # use a placeholder profile name (alice, bob, etc.) need that name to
+    # exist as a profile directory under HERMES_HOME; otherwise the lint
+    # would correctly reject the create and the test would fail.
+    for name in (
+        "alice",
+        "bob",
+        "broken-model",
+        "newbie",
+        "orig",
+    ):
+        (profiles_dir / name).mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
@@ -566,3 +581,183 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+
+# ---------------------------------------------------------------------------
+# --assignee lint at the kanban create boundary (card t_ddcf16e1)
+# ---------------------------------------------------------------------------
+#
+# These tests exercise the full subprocess path so we catch the actual exit
+# code, stderr marker, and DB state. The lint runs in ``_cmd_create`` BEFORE
+# any DB write; a non-resolving --assignee must exit 2 with no card row.
+# The CLI subprocess is invoked via ``run_slash`` to match the project's
+# "exercise the real entry point both CLI and gateway use" style; the
+# underlying ``kanban_command`` returns the int exit code that ``run_slash``
+# surfaces through the SystemExit-raising path (we read it back via a small
+# wrapper that does NOT swallow SystemExit, so the int is captured exactly).
+#
+# The tests use the ``kanban_home`` fixture (which seeds ``alice``, ``bob``,
+# ``broken-model``, ``newbie``, ``orig``) so a happy-path --assignee resolves
+# against a real on-disk profile directory. The reject-path uses a name that
+# the fixture deliberately does NOT seed.
+
+
+class _AssigneeLintSubprocess:
+    """Drive the real ``hermes kanban create`` CLI in a temp HERMES_HOME.
+
+    Mirrors the subprocess pattern from ``tests/test_kanban_assignee_lint.py``
+    so the lint is exercised through the actual argparse → CLI → DB path,
+    not a mocked unit test. Captures (returncode, stdout, stderr) and the
+    post-call DB state.
+    """
+
+    HERMES_BIN = Path(
+        "/Users/charlessectish/.hermes/hermes-agent/venv/bin/hermes"
+    )
+
+    def __init__(self, kanban_home_dir: Path):
+        # kanban_home is already pointing at our temp HERMES_HOME (with the
+        # seeded profile dirs); reuse it directly. We just need to add a
+        # dedicated DB path so the subprocess doesn't accidentally share the
+        # in-process test DB.
+        self.home = kanban_home_dir
+        self.db_path = self.home / "kanban.db"
+
+    def run_create(self, *args: str) -> tuple[int, str, str]:
+        import subprocess
+        import sys
+
+        env = os.environ.copy()
+        # Strip dispatcher-set overrides so the lint is exercised in
+        # isolation, not against whatever board the parent test was on.
+        for var in (
+            "HERMES_KANBAN_DB",
+            "HERMES_KANBAN_HOME",
+            "HERMES_KANBAN_BOARD",
+            "HERMES_KANBAN_TASK",
+            "PYTHONPATH",
+            "PYTHONHOME",
+        ):
+            env.pop(var, None)
+        env["HERMES_HOME"] = str(self.home)
+        env["HERMES_KANBAN_DB"] = str(self.db_path)
+        env["PATH"] = str(self.HERMES_BIN.parent) + ":" + env.get("PATH", "")
+        r = subprocess.run(
+            [str(self.HERMES_BIN), "kanban", "create", *args],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+        return r.returncode, r.stdout, r.stderr
+
+    def db_row_count(self) -> int:
+        import sqlite3
+
+        if not self.db_path.exists():
+            return 0
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            return conn.execute(
+                "SELECT COUNT(*) FROM tasks"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    def db_assignee_for_title(self, title: str) -> object:
+        import sqlite3
+
+        if not self.db_path.exists():
+            return None
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            row = conn.execute(
+                "SELECT assignee FROM tasks WHERE title = ?", (title,)
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
+
+@pytest.fixture
+def assignee_lint(kanban_home):
+    if not _AssigneeLintSubprocess.HERMES_BIN.exists():
+        import pytest
+        pytest.skip(
+            f"hermes binary missing at {_AssigneeLintSubprocess.HERMES_BIN}"
+        )
+    return _AssigneeLintSubprocess(kanban_home)
+
+
+def test_create_with_valid_assignee_succeeds(assignee_lint):
+    """Happy path: a known profile → rc=0, card persisted with that assignee.
+
+    Acceptance criterion: ``hermes kanban create --assignee <seeded-valid-name>
+    \"x\"`` exits 0 and writes a card with the resolved assignee. The card
+    shape must be byte-identical to a pre-change valid create (no new columns,
+    no schema drift).
+    """
+    # "alice" is seeded by the kanban_home fixture (see top of this file).
+    rc, out, err = assignee_lint.run_create(
+        "Test valid", "--assignee", "alice",
+        "--body", "smoke", "--created-by", "test",
+    )
+    assert rc == 0, f"expected rc=0, got {rc}; stdout={out!r}; stderr={err!r}"
+    assert "Created" in out, f"missing 'Created' marker in stdout: {out!r}"
+    assert assignee_lint.db_row_count() == 1
+    assert assignee_lint.db_assignee_for_title("Test valid") == "alice"
+
+
+def test_create_with_unknown_assignee_exits_2(assignee_lint):
+    """Reject path: ghost profile → rc=2, stderr marker, no DB row.
+
+    Acceptance criterion: ``hermes kanban create --assignee ghostname \"x\"``
+    exits 2 with the exact ``unknown assignee: ghostname`` prefix on stderr
+    and writes no card.
+    """
+    rc, out, err = assignee_lint.run_create(
+        "Test ghost", "--assignee", "ghostname",
+        "--body", "smoke", "--created-by", "test",
+    )
+    assert rc == 2, f"expected rc=2, got {rc}; stdout={out!r}; stderr={err!r}"
+    assert "unknown assignee: ghostname" in err, (
+        f"expected 'unknown assignee: ghostname' in stderr, got: {err!r}"
+    )
+    # Stderr should also point the operator at the help command advertised
+    # by the codebase (see hermes_cli/profiles.py and existing kanban CLI
+    # output that references ``hermes profile list``).
+    assert "hermes profile list" in err, (
+        f"expected stderr to suggest 'hermes profile list', got: {err!r}"
+    )
+    # No card was written.
+    assert assignee_lint.db_row_count() == 0
+
+
+def test_create_with_assignee_any_bypass_allowed(assignee_lint):
+    """Bypass path: ``__any__`` and omitted ``--assignee`` both exit 0.
+
+    Acceptance criterion: ``hermes kanban create --assignee __any__ \"x\"``
+    and ``hermes kanban create \"x\"`` both exit 0 and persist the card.
+
+    The bypass whitelist is exactly ``__any__`` and the omitted-flag case.
+    ``default`` is NOT a magic value — it's a real profile directory and
+    resolves through ``profile_resolver.resolve_assignee`` normally.
+    """
+    # Pass 1: --assignee __any__ (literal magic value from the bypass whitelist).
+    rc1, out1, err1 = assignee_lint.run_create(
+        "Test any", "--assignee", "__any__",
+        "--body", "smoke", "--created-by", "test",
+    )
+    assert rc1 == 0, f"expected rc=0, got {rc1}; stdout={out1!r}; stderr={err1!r}"
+    assert "Created" in out1
+    # Pass 2: --assignee omitted entirely (no flag).
+    rc2, out2, err2 = assignee_lint.run_create(
+        "Test omitted", "--body", "smoke", "--created-by", "test",
+    )
+    assert rc2 == 0, f"expected rc=0, got {rc2}; stdout={out2!r}; stderr={err2!r}"
+    assert "Created" in out2
+
+    # Both cards present, with the expected assignee values.
+    assert assignee_lint.db_row_count() == 2
+    assert assignee_lint.db_assignee_for_title("Test any") == "__any__"
+    assert assignee_lint.db_assignee_for_title("Test omitted") is None

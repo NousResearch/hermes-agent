@@ -513,10 +513,13 @@ class TestCLI:
         assert _cli(["boards", "create", "projA"], env_extra=env).returncode == 0
         assert _cli(["boards", "create", "projB"], env_extra=env).returncode == 0
 
-        # Create one task on each via --board.
-        r = _cli(["--board", "projA", "create", "Task A", "--assignee", "dev"], env_extra=env)
+        # Create one task on each via --board. Use --assignee __any__ so the
+        # CLI create-lint (card t_ddcf16e1) accepts the input without needing
+        # a "dev" profile seeded; this test is about per-board isolation, not
+        # the lint.
+        r = _cli(["--board", "projA", "create", "Task A", "--assignee", "__any__"], env_extra=env)
         assert r.returncode == 0, r.stderr
-        r = _cli(["--board", "projB", "create", "Task B", "--assignee", "dev"], env_extra=env)
+        r = _cli(["--board", "projB", "create", "Task B", "--assignee", "__any__"], env_extra=env)
         assert r.returncode == 0, r.stderr
 
         # list on each board only shows its own.

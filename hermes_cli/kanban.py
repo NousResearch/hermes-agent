@@ -26,6 +26,7 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
+from hermes_cli.profile_resolver import resolve_assignee
 from hermes_cli.profiles import get_active_profile_name
 
 
@@ -1288,6 +1289,29 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
+    # --- Assignee lint (card t_ddcf16e1, root-cause fix) -----------------
+    # Resolve the --assignee value through the canonical profile_resolver
+    # BEFORE any DB write. The dispatcher's claim-time silent self-heal
+    # used to mask typos ("CEO" → some other registered profile), so we
+    # catch them at the CLI entry point with a clear stderr message and
+    # exit code 2. Bypass values (`__any__` and the omitted-flag case) are
+    # handled inside resolve_assignee itself; see hermes_cli/profile_resolver.
+    raw_assignee = getattr(args, "assignee", None)
+    resolved_assignee = resolve_assignee(raw_assignee)
+    if raw_assignee and resolved_assignee is None:
+        # Non-empty --assignee that didn't resolve: typo / ghost profile.
+        # Reject loudly without writing a card.
+        print(
+            f"unknown assignee: {raw_assignee}. "
+            "Run `hermes profile list` for valid options.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    # Persist the canonical (lowercased) form so the DB row matches the
+    # on-disk profile directory name. Mixed-case input like "Code-Craftsman"
+    # becomes "code-craftsman" here.
+    args.assignee = resolved_assignee
+
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))

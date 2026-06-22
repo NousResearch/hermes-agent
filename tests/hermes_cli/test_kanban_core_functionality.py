@@ -33,6 +33,24 @@ from hermes_cli.kanban import run_slash
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
+    profiles_dir = home / "profiles"
+    profiles_dir.mkdir()
+    # The kanban-create lint (card t_ddcf16e1) rejects unknown --assignee
+    # at the CLI boundary with exit 2. Tests in this file that use a
+    # placeholder profile name through the CLI need it to exist as a
+    # directory under HERMES_HOME; otherwise the lint would correctly
+    # reject the create and the test would fail.
+    #
+    # Note: do NOT seed "worker" here — test_dispatch_once_integrates_stale_detection
+    # relies on `profile_exists("worker") == False` to keep the stale-reclaimed
+    # task out of the dispatcher's spawn loop. Seeding it would re-route the
+    # task into a second claim cycle and break that test.
+    for name in (
+        "linguist",
+        "researcher",
+        "x",
+    ):
+        (profiles_dir / name).mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     # Existing crash-detection tests pre-date the grace window; pin to 0
     # so they keep their immediate-reclaim semantics.
@@ -2199,6 +2217,11 @@ def test_cli_create_on_fresh_home_auto_inits(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Seed the assignee used below — the kanban-create lint (card
+    # t_ddcf16e1) rejects unknown --assignee at the CLI boundary with
+    # exit 2; this test isn't about the lint, so give it a real profile.
+    (home / "profiles").mkdir()
+    (home / "profiles" / "worker").mkdir()
     # Sanity: kanban.db does NOT exist yet.
     import subprocess as _sp
     import sys as _sys
@@ -3443,7 +3466,12 @@ def test_cli_create_warns_when_no_gateway(kanban_home, monkeypatch, capsys):
         "hermes_cli.config.load_config",
         lambda: {"kanban": {"dispatch_in_gateway": True}},
     )
-    ns = _make_create_ns(title="warn-me", assignee="worker")
+    # "linguist" is a profile seeded by kanban_home — the assignee lint
+    # (card t_ddcf16e1) would reject "worker" now that we reject ghost
+    # profiles at the CLI boundary. This test isn't about the lint; pick a
+    # real profile so the create lands and the gateway warning is what we
+    # actually assert on.
+    ns = _make_create_ns(title="warn-me", assignee="linguist")
     assert kb_cli._cmd_create(ns) == 0
     captured = capsys.readouterr()
     # Stderr has the warning prefix + guidance.
@@ -3458,7 +3486,8 @@ def test_cli_create_silent_when_gateway_up(kanban_home, monkeypatch, capsys):
         "hermes_cli.config.load_config",
         lambda: {"kanban": {"dispatch_in_gateway": True}},
     )
-    ns = _make_create_ns(title="silent", assignee="worker")
+    # See comment in test_cli_create_warns_when_no_gateway above.
+    ns = _make_create_ns(title="silent", assignee="linguist")
     assert kb_cli._cmd_create(ns) == 0
     captured = capsys.readouterr()
     assert "hermes gateway start" not in captured.err

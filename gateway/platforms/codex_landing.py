@@ -7,8 +7,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 
 async def post_result(
@@ -39,8 +42,23 @@ async def post_result(
 
     final_text = "\n".join(parts)
 
-    # 若外部未提供发送函数，直接打印（防止意外崩溃）。
+    # 若外部未提供发送函数，用 lark-cli 直接发送
     if send_reply is None:
         print(f"[Feishu Reply] chat_id={chat_id}:\n{final_text}")
-    else:
+        return
+
+    try:
         await send_reply(final_text)
+    except Exception as e:
+        logger.warning("send_reply failed (%s), falling back to lark-cli", e)
+        await _send_via_lark_cli(chat_id, final_text)
+
+
+async def _send_via_lark_cli(chat_id: str, text: str) -> None:
+    """通过 lark-cli 独立发送消息，不依赖网关闭包"""
+    import subprocess
+    await asyncio.to_thread(
+        subprocess.run,
+        ["lark-cli", "im", "send", "--chat-id", chat_id, "--text", text],
+        capture_output=True, timeout=15,
+    )

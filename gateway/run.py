@@ -295,6 +295,22 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     return redacted
 
 
+def _redact_approval_command(cmd: "str | None") -> str:
+    """Redact credentials from a command before it goes into an approval prompt.
+
+    Tirith's *findings* are already redacted, but the gateway approval prompt
+    is built from the raw command string, so a credential-shaped value Tirith
+    flagged would otherwise be echoed verbatim to the chat platform (#48456).
+    Uses ``redact_sensitive_text(force=True)`` — the same Tirith-grade redactor
+    — so the prompt honors redaction even when ``security.redact_secrets`` is
+    off. Module-level so the wiring is unit-testable (the call site is a deeply
+    nested gateway closure that cannot be driven directly).
+    """
+    from agent.redact import redact_sensitive_text
+
+    return redact_sensitive_text(str(cmd or ""), force=True)
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
@@ -15745,6 +15761,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+
+                # Redact credentials from the command before displaying it in
+                # the approval prompt — Tirith's findings are already redacted,
+                # but the raw command string still leaks secrets to the chat
+                # platform (#48456). Applied here so BOTH the button-based
+                # (send_exec_approval) and plain-text fallback paths below use
+                # the redacted value.
+                cmd = _redact_approval_command(cmd)
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids

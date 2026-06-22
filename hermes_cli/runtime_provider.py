@@ -1646,7 +1646,7 @@ def resolve_runtime_provider(
                 "api_mode": "chat_completions",
                 "base_url": creds.get("base_url", ""),
                 "api_key": creds.get("api_key", ""),
-                "source": creds.get("source", "antigravity-oauth"),
+                "source": creds.get("source", "antigravity-oauth-pool"),
                 "expires_at_ms": creds.get("expires_at_ms"),
                 "email": creds.get("email", ""),
                 "project_id": creds.get("project_id", ""),

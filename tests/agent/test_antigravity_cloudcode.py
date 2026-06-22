@@ -357,25 +357,41 @@ class TestAntigravityRegistration:
         assert resolve_provider("google-antigravity-oauth") == "google-antigravity"
         assert resolve_provider("agy") == "google-antigravity"
 
-    def test_runtime_provider_raises_when_not_logged_in(self):
+    def test_runtime_provider_raises_when_not_logged_in(self, monkeypatch):
         from hermes_cli.auth import AuthError
         from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        def mock_load_pool(provider):
+            from agent.credential_pool import CredentialPool
+            return CredentialPool(provider, [])
+
+        # We need to mock it in the module where it's used or where it's imported.
+        # It's used inside resolve_antigravity_oauth_runtime_credentials, imported locally.
+        # The easiest way is to mock agent.credential_pool.load_pool directly.
+        monkeypatch.setattr("agent.credential_pool.load_pool", mock_load_pool)
 
         with pytest.raises(AuthError) as exc_info:
             resolve_runtime_provider(requested="google-antigravity")
         assert exc_info.value.code == "antigravity_oauth_not_logged_in"
 
-    def test_runtime_provider_returns_correct_shape_when_logged_in(self):
-        from agent.antigravity_oauth import AntigravityCredentials, save_credentials
+    def test_runtime_provider_returns_correct_shape_when_logged_in(self, monkeypatch):
         from hermes_cli.runtime_provider import resolve_runtime_provider
-
-        save_credentials(AntigravityCredentials(
-            access_token="live-tok",
-            refresh_token="rt",
-            expires_ms=int((time.time() + 3600) * 1000),
-            project_id="my-proj",
-            email="t@e.com",
-        ))
+        
+        def mock_load_pool(provider):
+            from agent.credential_pool import CredentialPool, PooledCredential
+            entry = PooledCredential(
+                provider=provider,
+                id="fake-id",
+                label="fake-id",
+                auth_type="oauth",
+                priority=1,
+                source="oauth",
+                access_token="live-tok",
+                extra={"email": "t@e.com", "project_id": "my-proj"}
+            )
+            return CredentialPool(provider, [entry])
+            
+        monkeypatch.setattr("agent.credential_pool.load_pool", mock_load_pool)
 
         result = resolve_runtime_provider(requested="google-antigravity")
         assert result["provider"] == "google-antigravity"

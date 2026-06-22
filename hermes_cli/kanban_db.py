@@ -1364,6 +1364,153 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     return candidate
 
 
+# SQLite emits this exact prefix when ``PRAGMA integrity_check`` finds an
+# index whose b-tree has a different row count than its table. The shape
+# is one row per affected index, e.g.
+# ``wrong # of entries in index idx_events_run``.
+_INDEX_DRIFT_ROW_RE = re.compile(
+    r"wrong # of entries in index\s+(?P<name>[A-Za-z_][\w]*)",
+    re.IGNORECASE,
+)
+
+
+def _collect_index_drift_rows(
+    rows: Iterable[Any],
+) -> list[str]:
+    """Extract index names from ``PRAGMA integrity_check`` rows.
+
+    SQLite's integrity_check emits one row per detected problem. The
+    "wrong # of entries in index <name>" class is recoverable via
+    ``REINDEX <name>`` (SQLite rebuilds the index from the table), so we
+    recognise it explicitly here. Returns the unique index names in
+    the order they appeared. Other error shapes (page-level corruption,
+    malformed b-tree, etc.) are NOT returned — REINDEX cannot fix those
+    and they must trip the backup-and-raise path in
+    :func:`_guard_existing_db_is_healthy`.
+    """
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for row in rows:
+        if not row:
+            continue
+        value = row[0]
+        if not isinstance(value, str):
+            continue
+        match = _INDEX_DRIFT_ROW_RE.search(value)
+        if not match:
+            continue
+        name = match.group("name")
+        if name in seen:
+            continue
+        seen.add(name)
+        ordered.append(name)
+    return ordered
+
+
+def _try_repair_index_drift(
+    path: Path,
+) -> tuple[bool, list[str]]:
+    """Attempt ``REINDEX`` repair of recoverable index drift.
+
+    The kanban DB sits behind 7+ active workers + a CLI surface + the
+    dispatcher heartbeat loop, all writing concurrently under WAL. On
+    macOS under burst load, SQLite occasionally surfaces
+    ``wrong # of entries in index <name>`` from
+    ``PRAGMA integrity_check`` — a recoverable corruption class where
+    an index's b-tree has a different row count than its underlying
+    table. ``REINDEX <name>`` rebuilds the index from the table and is
+    SQLite's native fix for this shape; the alternative (refuse to
+    open + force the operator to manually REINDEX) wastes the whole
+    kanban surface for a problem SQLite can repair in milliseconds.
+
+    Strategy:
+
+    1. Open a fresh read/write probe.
+    2. Run ``PRAGMA integrity_check`` and look for the
+       "wrong # of entries in index <name>" prefix across ALL returned
+       rows (the integrity check emits one row per affected index).
+    3. If found, run ``REINDEX <name>`` for each unique name.
+    4. Re-run integrity_check; return ``(True, names)`` on success.
+
+    If the integrity_check error is anything other than recoverable
+    index drift — page-level corruption, malformed b-tree headers,
+    disk image malformed — return ``(False, [])`` so the caller can
+    fall through to the backup-and-raise path.
+
+    ``OperationalError`` (lock/busy) is propagated raw; we cannot
+    safely REINDEX under contention and the caller wants to see the
+    real lock failure, not a corrupt-DB error.
+    """
+    try:
+        probe = _sqlite_connect(path)
+    except sqlite3.OperationalError:
+        raise
+    except sqlite3.DatabaseError:
+        return False, []
+    try:
+        try:
+            rows = probe.execute("PRAGMA integrity_check").fetchall()
+        except sqlite3.OperationalError:
+            raise
+        except sqlite3.DatabaseError:
+            return False, []
+
+        # Healthy DBs come back as a single ``("ok",)`` row.
+        if len(rows) == 1 and isinstance(rows[0][0], str) and rows[0][0].lower() == "ok":
+            return True, []
+
+        drifted = _collect_index_drift_rows(rows)
+        if not drifted:
+            # Some OTHER corruption shape (page-level, malformed
+            # b-tree, etc.). REINDEX cannot fix it; let the caller
+            # back up and raise.
+            return False, []
+
+        repaired: list[str] = []
+        for name in drifted:
+            # ``REINDEX`` does not support parameter binding for the
+            # index name; the name comes from SQLite's own output, so
+            # the injection surface is bounded to ``[A-Za-z_][\w]*``
+            # (enforced by ``_INDEX_DRIFT_ROW_RE``). Validate defensively
+            # anyway so a future regex change can't open an injection
+            # path against the kanban DB.
+            if not re.fullmatch(r"[A-Za-z_][\w]*", name):
+                _log.warning(
+                    "kanban: refusing to REINDEX suspicious index name %r",
+                    name,
+                )
+                return False, drifted
+            try:
+                probe.execute(f"REINDEX {name}")
+            except sqlite3.DatabaseError as exc:
+                _log.warning(
+                    "kanban: REINDEX %s failed during auto-repair: %s",
+                    name, exc,
+                )
+                return False, drifted
+            repaired.append(name)
+
+        # Verify the repair stuck. ``PRAGMA integrity_check`` runs
+        # across the whole DB, so a successful re-repair means the
+        # board is back to a known-good state.
+        try:
+            post_rows = probe.execute("PRAGMA integrity_check").fetchall()
+        except sqlite3.OperationalError:
+            raise
+        except sqlite3.DatabaseError:
+            return False, repaired
+
+        if len(post_rows) == 1 and isinstance(post_rows[0][0], str) \
+                and post_rows[0][0].lower() == "ok":
+            return True, repaired
+        return False, repaired
+    finally:
+        try:
+            probe.close()
+        except Exception:
+            pass
+
+
 def _guard_existing_db_is_healthy(path: Path) -> None:
     """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
 
@@ -1373,6 +1520,19 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     sidecars) to a timestamped backup and raise
     :class:`KanbanDbCorruptError` so callers cannot silently recreate
     the schema on top of a damaged DB.
+
+    **Recoverable index drift auto-repair:** when the integrity
+    check fails specifically with ``wrong # of entries in index
+    <name>``, SQLite's native fix is ``REINDEX <name>`` (rebuilds the
+    index b-tree from the table). This is a known, transient class
+    triggered by concurrent worker writes during dispatcher
+    heartbeats; instead of refusing to open and forcing the operator
+    to manually run ``sqlite3 ~/.hermes/kanban.db REINDEX``, we
+    attempt the repair here, log a WARNING so the operator has
+    audit visibility, and return success if integrity_check comes
+    back clean. Unrecoverable corruption shapes (page-level,
+    malformed b-tree, TLS-overwrite) still trip the backup-and-raise
+    path.
 
     Transient lock/busy errors (``sqlite3.OperationalError``) are NOT
     treated as corruption; they propagate raw so the caller sees a
@@ -1406,19 +1566,66 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     try:
         probe = _sqlite_connect(resolved)
         try:
-            row = probe.execute("PRAGMA integrity_check").fetchone()
+            rows = probe.execute("PRAGMA integrity_check").fetchall()
         finally:
             probe.close()
-        if not row or (row[0] or "").lower() != "ok":
-            reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
+        if not rows:
+            reason = "integrity_check returned no rows"
+        elif len(rows) == 1 and isinstance(rows[0][0], str) \
+                and rows[0][0].lower() == "ok":
+            # Healthy. Nothing to do.
+            return
+        else:
+            reason = f"integrity_check returned {len(rows)} error row(s); " \
+                f"first={rows[0][0]!r}"
     except sqlite3.OperationalError:
         # Lock contention, busy, transient IO — not corruption. Let it propagate.
         raise
     except sqlite3.DatabaseError as exc:
         reason = f"sqlite refused to open file: {exc}"
+
     if reason is None:
         return
+
+    # Before backing up the DB and refusing to open, see if this is the
+    # recoverable "index drift" shape. If so, repair in place and
+    # return success — saves the operator from a manual
+    # ``sqlite3 ~/.hermes/kanban.db REINDEX`` cycle for what is
+    # effectively a transient SQLite write race.
+    try:
+        repaired_ok, repaired_names = _try_repair_index_drift(resolved)
+    except sqlite3.OperationalError:
+        # Lock/busy during repair — propagate; do not corrupt-classify.
+        raise
+    except sqlite3.DatabaseError as exc:
+        _log.warning(
+            "kanban: index drift auto-repair raised %s; falling through "
+            "to backup-and-raise path",
+            exc,
+        )
+        repaired_ok, repaired_names = False, []
+
+    if repaired_ok and repaired_names:
+        _log.warning(
+            "kanban: auto-repaired %d drifted index(es) via REINDEX: %s. "
+            "This is a known transient class under concurrent worker "
+            "heartbeats; if it recurs frequently, file a CNS report "
+            "with the kanban.db path and recent dispatcher load.",
+            len(repaired_names),
+            ", ".join(repaired_names),
+        )
+        return
+
     backup = _backup_corrupt_db(resolved)
+    if repaired_names:
+        # We REINDEXed at least one index but the DB is still not clean.
+        # Surface that in the error so the operator sees the repair was
+        # attempted (and why it wasn't enough).
+        raise KanbanDbCorruptError(
+            resolved, backup,
+            f"{reason}; REINDEX attempted on {repaired_names!r} "
+            "but integrity_check still failing",
+        )
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 

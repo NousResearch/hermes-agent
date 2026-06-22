@@ -1,0 +1,85 @@
+# PER-PR PLATFORM STATUS — pulled directly from GitHub (NousResearch/hermes-agent)
+# Generated 2026-06-21. Verifies platform state, not just local reproducibility.
+# CI 'no-checks' = the public repo runs no PR CI workflow on fork branches (expected).
+# head-match = GitHub headRefOid == local PINNED-SHAS resolved SHA.
+#
+    PR  state  mergeable         CI  extReviewFeedback headMatch  head
+#----------------------------------------------------------------------
+#48024  ready    UNKNOWN  no-checks                  -        OK  c5346ea34
+#48057  ready    UNKNOWN  no-checks                  -        OK  a4589b165
+#48065  ready    UNKNOWN  no-checks                  -        OK  ea7e64f46
+#48069  ready    UNKNOWN  no-checks                  -        OK  4a1fbe9e1
+#48101  ready    UNKNOWN  no-checks                  -        OK  af2016d1e
+#49184  ready    UNKNOWN  no-checks                  -        OK  d684ef808
+#49449  ready    UNKNOWN  no-checks alt-glitch:related-xref        OK  cd27defe2
+#49644  ready    UNKNOWN  no-checks                  -        OK  bda59d73b
+#49915  draft    UNKNOWN  no-checks                  -        OK  e33e4f781
+#49916  draft    UNKNOWN  no-checks                  -        OK  1da02f748
+#49917  draft    UNKNOWN  no-checks                  -        OK  09a6734a8
+#50021  draft    UNKNOWN  no-checks                  -        OK  80ce95201
+#50022  draft    UNKNOWN  no-checks                  -        OK  6f6ab5839
+#50031  draft    UNKNOWN  no-checks                  -        OK  1bdae0a13
+#50032  draft    UNKNOWN  no-checks                  -        OK  9fc6f0e62
+#50033  draft    UNKNOWN  no-checks                  -        OK  44dc4d733
+#50038  draft    UNKNOWN  no-checks                  -        OK  cf14b5731
+#50040  draft    UNKNOWN  no-checks                  -        OK  25b495a06
+#50041  draft    UNKNOWN  no-checks                  -        OK  9103989ba
+#50042  draft    UNKNOWN  no-checks                  -        OK  a54e706a7
+#50045  draft    UNKNOWN  no-checks                  -        OK  5a12f857a
+#50046  draft    UNKNOWN  no-checks                  -        OK  0d226f1ee
+#50047  draft    UNKNOWN  no-checks                  -        OK  b3695d09a
+#50048  draft    UNKNOWN  no-checks                  -        OK  001b549c6
+#50053  draft    UNKNOWN  no-checks                  -        OK  15c27997e
+#50054  draft    UNKNOWN  no-checks                  -        OK  352b13184
+#50055  draft    UNKNOWN  no-checks                  -        OK  35da28816
+#50056  draft    UNKNOWN  no-checks                  -        OK  8c322d2ac
+#50064  draft    UNKNOWN  no-checks                  -        OK  415cbb11f
+#50066  draft    UNKNOWN  no-checks                  -        OK  37a76f469
+#50068  draft    UNKNOWN  no-checks                  -        OK  123efe8be
+#50073  draft    UNKNOWN  no-checks                  -        OK  c6103ae4e
+#50078  draft    UNKNOWN  no-checks                  -        OK  6be7d8231
+#50080  draft    UNKNOWN  no-checks                  -        OK  139e57647
+#50086  draft    UNKNOWN  no-checks alt-glitch:related-xref        OK  c7e2620c9
+#50111  draft    UNKNOWN  no-checks                  -  self-ref  f79affaac
+#50146  draft    UNKNOWN  no-checks                  -        OK  b674df630
+#50155  draft    UNKNOWN  no-checks alt-glitch:related-xref        OK  02e537931
+#50296  draft    UNKNOWN  no-checks alt-glitch:related-xref        OK  084b79bed
+#50457  draft    UNKNOWN  no-checks                  -        OK  9d3b3b99a
+#50555  draft    UNKNOWN  no-checks                  -        OK  405a6b571
+#50626  draft    UNKNOWN  no-checks                  -        OK  a11fc394c
+#
+## Reconciliation notes
+# - 42/42 OPEN (8 ready-for-review, 34 draft). draft->ready is the USER's call (a public side-effect), never auto-flipped.
+# - head-SHA: 41/41 feature PRs match local PINNED-SHAS. #50111 shows 'self-ref' because
+#   PINNED-SHAS.txt is committed INSIDE #50111 and cannot record its own post-commit SHA;
+#   the LIVE #50111 head is f79affaac (this push).
+# - CI: the public repo configures no fork-branch PR workflow, so all show 'no-checks'.
+#   Local CI-equivalent (ruff + py_compile + per-PR tests) is green; see V017-PER-PR-TEST-RESULTS.txt.
+# - External review feedback: the only non-author comments are 4 'Related: #X' cross-references
+#   from collaborator @alt-glitch on #49449/#50086/#50155/#50296. Each CONFIRMS the PR is
+#   distinct/complementary (not a duplicate) — supportive context, NOT change-requests. 0 unaddressed.
+# - The 6 v0.17.0 conflict resolutions are NOT pushed to the 6 PR branches BY DESIGN: those PRs
+#   target origin/main (where they apply clean); the resolutions are v0.17.0-specific and live as
+#   patches in v017-conflict-resolutions/ on #50111. Pushing them to the PR branches would make
+#   body != diff and break the PR base. Each of the 6 remains clean on its own (origin/main) base.
+
+## TWO OPEN QUESTIONS FOR THE USER (explicitly NOT assumed-resolved)
+These are the only two items neither the agent nor the Council can substitute for.
+Both are stated as OPEN, pending the user's explicit decision:
+
+  Q1. GROUPING INTENT — Does the 42-PR grouping match the organization you intended?
+      (one-PR-per-logical-change; /autopilot folded into #49917; CMX in
+      #48065/#50053/#50080/#50155; agy-cli isolated in #50555; per-provider PRs
+      gemini #50033 / codex #50038 / copilot #50064; source-accelerator #50032;
+      auto-router #50031. Full file->PR map in FILE-TO-PR-MAP.txt.)
+      Independent collaborator @alt-glitch has cross-confirmed 4 of these as
+      distinct/non-duplicate, but YOUR ratification of the overall grouping is open.
+
+  Q2. #50064 v0.17.0 FORWARD-COMPAT TEST REMOVAL — When #50064 is pulled onto
+      v0.17.0, the test test_routed_client_preserves_openai_sdk_default_headers is
+      dropped because v0.17.0 ITSELF removed both that test and the behavior it
+      asserts (commit 8d59881a6 / #2647). Do you accept dropping that one test on
+      the v0.17.0 rebase? (#50064's feature is intact: 61/62 tests pass on v0.17.0.)
+
+Until you rule on Q1 and Q2, all 42 PRs remain in their current draft/review state;
+nothing is merged, closed, or flipped to ready.

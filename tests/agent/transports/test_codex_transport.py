@@ -91,6 +91,42 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("prompt_cache_key") == "test-session-123"
 
+    def test_long_session_id_cache_key_clamped_to_64(self, transport):
+        """OpenAI rejects prompt_cache_key longer than 64 chars (HTTP 400).
+        Hermes cron session ids like
+        ``cron_<name>-<uuid>_<timestamp>`` overflow that limit, so the
+        transport must collapse anything over 64 to a stable <=64 key."""
+        long_id = "cron_openclaw-53df86b4-cfe9-4043-a394-f655d1c4f361_20260622_120024"
+        assert len(long_id) > 64
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            session_id=long_id,
+        )
+        key = kw.get("prompt_cache_key")
+        assert key is not None
+        assert len(key) <= 64
+        # Deterministic: same input -> same key (cross-turn cache hits).
+        kw2 = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            session_id=long_id,
+        )
+        assert kw2.get("prompt_cache_key") == key
+
+    def test_long_session_id_xai_extra_body_clamped(self, transport):
+        """The xAI extra_body cache key path must clamp too."""
+        long_id = "cron_openclaw-53df86b4-cfe9-4043-a394-f655d1c4f361_20260622_120024"
+        assert len(long_id) > 64
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4.3", messages=messages, tools=[],
+            session_id=long_id,
+            is_xai_responses=True,
+        )
+        key = kw.get("extra_body", {}).get("prompt_cache_key")
+        assert key is not None
+        assert len(key) <= 64
+
     def test_github_responses_no_cache_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

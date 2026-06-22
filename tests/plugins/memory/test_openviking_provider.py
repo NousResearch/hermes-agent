@@ -1511,6 +1511,28 @@ def test_handle_tool_call_forget_deletes_exact_memory_file_under_memories_root()
     }
 
 
+def test_handle_tool_call_forget_allows_non_generated_dot_md_memory_file():
+    uri = "viking://user/default/memories/preferences/.full.md"
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.delete.return_value = {
+        "status": "ok",
+        "result": {"uri": uri, "estimated_deleted_count": 1},
+    }
+
+    result = json.loads(provider.handle_tool_call("viking_forget", {"uri": uri}))
+
+    provider._client.delete.assert_called_once_with(
+        "/api/v1/fs",
+        params={"uri": uri, "recursive": False},
+    )
+    assert result == {
+        "status": "deleted",
+        "uri": uri,
+        "estimated_deleted_count": 1,
+    }
+
+
 @pytest.mark.parametrize("uri", [
     "",
     "https://example.com/mem.md",

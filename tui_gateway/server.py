@@ -2699,12 +2699,18 @@ def _session_info(agent, session: dict | None = None) -> dict:
     cfg_personality = ((_load_cfg().get("display") or {}).get("personality") or "")
     personality = (session or {}).get("personality", cfg_personality)
     reasoning_config = getattr(agent, "reasoning_config", None)
+    # Report reasoning state in the vocabulary the desktop/TUI frontend reads
+    # back: an *explicitly disabled* config must surface as "none" (the frontend
+    # treats "none" as Thinking-off), NOT "" -- empty means "unset/default"
+    # there, which isThinkingEnabled() reads as ON. Emitting "" for
+    # {"enabled": False} made the desktop Thinking toggle snap back on right
+    # after it was turned off (#50449).
     reasoning_effort = ""
-    if (
-        isinstance(reasoning_config, dict)
-        and reasoning_config.get("enabled") is not False
-    ):
-        reasoning_effort = str(reasoning_config.get("effort", "") or "")
+    if isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            reasoning_effort = "none"
+        else:
+            reasoning_effort = str(reasoning_config.get("effort", "") or "")
     service_tier = getattr(agent, "service_tier", None) or ""
     # Effective approval-bypass state — the same three sources that
     # check_all_command_guards() ORs together: persistent config

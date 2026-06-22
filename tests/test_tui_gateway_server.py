@@ -4434,6 +4434,34 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     assert info["mcp_servers"] == fake_status
 
 
+def test_session_info_reports_none_when_reasoning_disabled():
+    # Regression for #50449: when reasoning is explicitly disabled
+    # ({"enabled": False}), _session_info must report reasoning_effort as
+    # "none" -- the desktop/TUI frontend reads "" as the default (thinking ON)
+    # and would snap the Thinking toggle back on. "none" is the off vocabulary.
+    agent = types.SimpleNamespace(
+        tools=[], model="m", provider="p", reasoning_config={"enabled": False}
+    )
+    info = server._session_info(agent)
+    assert info["reasoning_effort"] == "none"
+
+
+def test_session_info_reports_effort_when_reasoning_enabled():
+    # Enabled reasoning still surfaces its effort level verbatim (#50449).
+    agent = types.SimpleNamespace(
+        tools=[], model="m", provider="p",
+        reasoning_config={"enabled": True, "effort": "high"},
+    )
+    assert server._session_info(agent)["reasoning_effort"] == "high"
+
+
+def test_session_info_reports_empty_when_reasoning_unset():
+    # No reasoning_config at all => "" (unset/default), unchanged by #50449.
+    agent = types.SimpleNamespace(tools=[], model="m", provider="p", reasoning_config=None)
+    assert server._session_info(agent)["reasoning_effort"] == ""
+
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either

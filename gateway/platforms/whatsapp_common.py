@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 
@@ -148,13 +149,72 @@ class WhatsAppBehaviorMixin:
 
     # ------------------------------------------------------------------ gating
     def _is_dm_allowed(self, sender_id: str) -> bool:
-        """Check whether a DM from the given sender should be processed."""
+        """Check whether a DM from the given sender should be processed.
+
+        Baileys 7.x sends ``senderId`` in LID format (e.g. ``<numeric>@lid``)
+        while user allowlists are typically phone numbers (``+<numeric>``).
+        Without LID↔phone resolution the allowlist never matches known users.
+        See ``scripts/whatsapp-bridge/allowlist.js`` for the JS-side mirror.
+        """
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
+            return self._sender_in_allowlist(sender_id)
         # "open" — all DMs allowed
         return True
+
+    def _lid_aliases(self, sender_id: str) -> set:
+        """Resolve a WhatsApp identifier to all known aliases (LID ↔ phone).
+
+        Reads ``lid-mapping-<id>.json`` and ``lid-mapping-<id>_reverse.json``
+        from the session directory (same files the JS bridge writes) and
+        walks both directions so either form resolves to the other.
+        """
+        if not sender_id:
+            return set()
+        normalized = self._normalize_whatsapp_id(sender_id).split("@", 1)[0].lstrip("+")
+        aliases = {normalized}
+        session_dir = getattr(self, "_session_path", None)
+        if session_dir is None:
+            return aliases
+        try:
+            queue = [normalized]
+            seen = set()
+            while queue:
+                current = queue.pop(0)
+                if not current or current in seen:
+                    continue
+                seen.add(current)
+                for suffix in ("", "_reverse"):
+                    mapping_file = Path(session_dir) / f"lid-mapping-{current}{suffix}.json"
+                    if not mapping_file.exists():
+                        continue
+                    try:
+                        import json as _json
+                        mapped = _json.loads(mapping_file.read_text(encoding="utf-8")).strip().lstrip("+")
+                        if mapped and mapped not in aliases:
+                            aliases.add(mapped)
+                            if mapped not in seen:
+                                queue.append(mapped)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return aliases
+
+    def _sender_in_allowlist(self, sender_id: str) -> bool:
+        """Check whether sender_id (any format) is in the DM allowlist."""
+        aliases = self._lid_aliases(sender_id)
+        # ``_allow_from`` is provided by the host adapter per the mixin contract
+        # (see module docstring). Pyright can't see across the mixin boundary.
+        allow_from = self._allow_from  # type: ignore[attr-defined]
+        for alias in aliases:
+            if alias in allow_from:
+                return True
+            # Also try with + prefix (allowlist entries may include +)
+            if f"+{alias}" in allow_from:
+                return True
+        return False
 
     def _is_group_allowed(self, chat_id: str) -> bool:
         """Check whether a group chat should be processed."""

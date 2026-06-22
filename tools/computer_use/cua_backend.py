@@ -107,6 +107,53 @@ def _parse_windows_from_text(text: str) -> List[Dict[str, Any]]:
     return windows
 
 
+def _coerce_int(value: Any) -> int:
+    """Best-effort conversion for cua-driver numeric fields."""
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _parse_elements_from_structured(raw_elements: Any) -> List[UIElement]:
+    """Parse cua-driver structured elements, preserving AX geometry.
+
+    cua-driver 0.6.0 returns first-class ``elements`` with ``frame`` records;
+    the markdown tree is now primarily a back-compat rendering and may not
+    carry geometry. Prefer this path whenever it is available so Hermes SOM
+    overlays and element-index summaries are spatially useful.
+    """
+    if not isinstance(raw_elements, list):
+        return []
+
+    elements: List[UIElement] = []
+    for item in raw_elements:
+        if not isinstance(item, dict):
+            continue
+        frame_raw = item.get("frame")
+        frame: Dict[str, Any] = frame_raw if isinstance(frame_raw, dict) else {}
+        label = item.get("label") or item.get("title") or item.get("value") or ""
+        elements.append(UIElement(
+            index=_coerce_int(item.get("element_index", item.get("index"))),
+            role=str(item.get("role") or ""),
+            label=str(label),
+            bounds=(
+                _coerce_int(frame.get("x")),
+                _coerce_int(frame.get("y")),
+                _coerce_int(frame.get("w", frame.get("width"))),
+                _coerce_int(frame.get("h", frame.get("height"))),
+            ),
+            pid=_coerce_int(item.get("pid")),
+            window_id=_coerce_int(item.get("window_id")),
+            attributes={
+                key: value
+                for key, value in item.items()
+                if key not in {"element_index", "index", "role", "label", "title", "value", "frame", "pid", "window_id"}
+            },
+        ))
+    return elements
+
+
 def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
     """Parse UIElement list from get_window_state AX tree markdown.
 
@@ -427,7 +474,7 @@ class CuaDriverBackend(ComputerUseBackend):
         """Capture the frontmost on-screen window (optionally filtered by app name).
 
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
-        `get_window_state` (ax/som) or `screenshot` (vision).
+        `get_window_state` with capture_mode set for the requested capture.
         """
         # Step 1: enumerate on-screen windows to find target pid/window_id.
         lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
@@ -497,31 +544,47 @@ class CuaDriverBackend(ComputerUseBackend):
         width = height = 0
         window_title = ""
 
+        # cua-driver 0.5.x no longer exposes the old standalone `screenshot`
+        # MCP tool. Screenshots now come from `get_window_state` when the
+        # requested capture_mode is `vision` or `som`.
+        gws_args: Dict[str, Any] = {
+            "pid": self._active_pid,
+            "window_id": self._active_window_id,
+        }
+        if mode in {"ax", "som", "vision"}:
+            gws_args["capture_mode"] = mode
+
+        gws_out = self._session.call_tool("get_window_state", gws_args)
+
+        gws_sc = gws_out.get("structuredContent") or {}
+        if isinstance(gws_sc, dict):
+            if gws_sc.get("screenshot_width"):
+                width = int(gws_sc["screenshot_width"])
+            if gws_sc.get("screenshot_height"):
+                height = int(gws_sc["screenshot_height"])
+
         if mode == "vision":
-            # screenshot tool: just the PNG, no AX walk.
-            sc_out = self._session.call_tool(
-                "screenshot",
-                {"window_id": self._active_window_id, "format": "jpeg", "quality": 85},
-            )
-            if sc_out["images"]:
-                png_b64 = sc_out["images"][0]
+            # Vision mode: just the PNG, no AX walk.
+            if gws_out.get("images"):
+                png_b64 = gws_out["images"][0]
         else:
-            # get_window_state: AX tree + optional screenshot.
-            gws_out = self._session.call_tool(
-                "get_window_state",
-                {"pid": self._active_pid, "window_id": self._active_window_id},
-            )
+            # ax/som mode: AX tree + optional screenshot.
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)
 
+            # Extract structured elements first. cua-driver 0.6.0 carries
+            # geometry there while the markdown tree is only a compatibility
+            # rendering; falling back preserves older driver support.
+            structured_elements = _parse_elements_from_structured(gws_sc.get("elements"))
+
             # Parse element count from summary e.g. "✅ AppName — 42 elements, turn 3..."
             m = re.search(r'(\d+)\s+elements?', summary)
-            if tree and not gws_out["images"]:
+            if tree and not gws_out.get("images"):
                 # ax mode — no screenshot
-                elements = _parse_elements_from_tree(tree)
-            elif gws_out["images"]:
+                elements = structured_elements or _parse_elements_from_tree(tree)
+            elif gws_out.get("images"):
                 png_b64 = gws_out["images"][0]
-                elements = _parse_elements_from_tree(tree)
+                elements = structured_elements or _parse_elements_from_tree(tree)
 
             # Extract window title from the AX tree first AXWindow line.
             wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
@@ -534,7 +597,7 @@ class CuaDriverBackend(ComputerUseBackend):
                 raw = base64.b64decode(png_b64, validate=False)
                 png_bytes_len = len(raw)
                 detected_width, detected_height = _image_dimensions_from_bytes(raw)
-                if detected_width and detected_height:
+                if not (width and height) and detected_width and detected_height:
                     width = detected_width
                     height = detected_height
             except Exception:

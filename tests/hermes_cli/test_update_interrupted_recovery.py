@@ -97,6 +97,36 @@ def test_recovery_runs_install_and_clears_marker(tmp_path, monkeypatch):
     assert not m._update_marker_path().exists(), "marker cleared on success"
 
 
+def test_recovery_uv_install_uses_active_sidecar_virtualenv(tmp_path, monkeypatch):
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    m._write_update_incomplete_marker()
+
+    sidecar = tmp_path / ".venv-bma-sidecar"
+    sidecar.mkdir()
+    monkeypatch.setattr(m.sys, "prefix", str(sidecar))
+    monkeypatch.setattr(m.sys, "base_prefix", "/usr")
+    monkeypatch.setattr(m, "_is_termux_env", lambda *a, **k: False)
+    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: "/usr/bin/uv")
+
+    class R:
+        returncode = 0
+
+    seen = {}
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: R())
+    monkeypatch.setattr(
+        m,
+        "_install_python_dependencies_with_optional_fallback",
+        lambda *a, **k: seen.update({"cmd": a[0], "env": k.get("env")}),
+    )
+
+    m._recover_from_interrupted_install()
+
+    assert seen["cmd"] == ["/usr/bin/uv", "pip"]
+    assert seen["env"]["VIRTUAL_ENV"] == str(sidecar)
+    assert not m._update_marker_path().exists()
+
+
 def test_recovery_keeps_marker_on_failure(tmp_path, monkeypatch):
     # If the install itself blows up, the marker must survive so the next
     # launch retries — and recovery must not raise.

@@ -6148,7 +6148,7 @@ def _update_via_zip(args):
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(_preferred_install_venv_root())}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -6877,7 +6877,7 @@ def _recover_from_interrupted_install() -> None:
 
             uv_bin = ensure_uv()
             if uv_bin:
-                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                uv_env = {**os.environ, "VIRTUAL_ENV": str(_preferred_install_venv_root())}
                 if _is_termux_env(uv_env):
                     uv_env.pop("PYTHONPATH", None)
                     uv_env.pop("PYTHONHOME", None)
@@ -7673,6 +7673,27 @@ def _resolve_install_target_python(
             return first
 
     return None
+
+
+def _preferred_install_venv_root() -> Path:
+    """Prefer the active runtime venv, but fall back to the checkout venv names."""
+    if sys.prefix != sys.base_prefix:
+        venv_root = Path(sys.prefix)
+        if venv_root.is_dir():
+            return venv_root
+
+    virtual_env = os.environ.get("VIRTUAL_ENV", "").strip()
+    if virtual_env:
+        venv_root = Path(virtual_env)
+        if venv_root.is_dir():
+            return venv_root
+
+    for venv_name in ("venv", ".venv"):
+        candidate = PROJECT_ROOT / venv_name
+        if candidate.is_dir():
+            return candidate
+
+    return PROJECT_ROOT / "venv"
 
 
 def _is_termux_env(env: dict[str, str] | None = None) -> bool:
@@ -9121,7 +9142,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(_preferred_install_venv_root())}
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)

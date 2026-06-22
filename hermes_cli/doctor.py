@@ -77,6 +77,66 @@ def _safe_which(cmd: str) -> str | None:
         return None
 
 
+def _runtime_venv_root() -> Path | None:
+    """Return the active runtime virtualenv when Hermes is running inside one."""
+    if sys.prefix != sys.base_prefix:
+        venv_root = Path(sys.prefix)
+        if venv_root.is_dir():
+            return venv_root
+
+    virtual_env = os.environ.get("VIRTUAL_ENV", "").strip()
+    if virtual_env:
+        venv_root = Path(virtual_env)
+        if venv_root.is_dir():
+            return venv_root
+
+    return None
+
+
+def _venv_bin_dir(venv_root: Path) -> Path:
+    return venv_root / ("Scripts" if sys.platform == "win32" else "bin")
+
+
+def _find_hermes_entrypoint(project_root: Path) -> Path | None:
+    runtime_venv = _runtime_venv_root()
+    if runtime_venv is not None:
+        candidate = _venv_bin_dir(runtime_venv) / ("hermes.exe" if sys.platform == "win32" else "hermes")
+        if candidate.exists():
+            return candidate
+
+    for venv_name in ("venv", ".venv"):
+        candidate = project_root / venv_name / ("Scripts" if sys.platform == "win32" else "bin") / (
+            "hermes.exe" if sys.platform == "win32" else "hermes"
+        )
+        if candidate.exists():
+            return candidate
+
+    return None
+
+
+def _display_project_path(path: Path, project_root: Path) -> str:
+    try:
+        return str(path.relative_to(project_root))
+    except ValueError:
+        return str(path)
+
+
+def _reinstall_entrypoint_command(project_root: Path) -> str:
+    runtime_venv = _runtime_venv_root()
+    if runtime_venv is not None:
+        venv_python = _venv_bin_dir(runtime_venv) / ("python.exe" if sys.platform == "win32" else "python")
+        if venv_python.exists():
+            if runtime_venv.parent == project_root and runtime_venv.name in {"venv", ".venv"}:
+                rel = _display_project_path(runtime_venv, project_root)
+                activate = "Scripts\\activate" if sys.platform == "win32" else "bin/activate"
+                return f"cd {project_root} && source {rel}/{activate} && pip install -e '.[all]'"
+            return (
+                f"cd {project_root} && uv pip install --python {venv_python} --editable '.[all]'"
+            )
+
+    return f"cd {project_root} && source venv/bin/activate && pip install -e '.[all]'"
+
+
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps: list[str] = []
     step = 1
@@ -1282,13 +1342,7 @@ def run_doctor(args):
 
     if sys.platform != "win32":
         _section("Command Installation")
-        # Determine the venv entry point location
-        _venv_bin = None
-        for _venv_name in ("venv", ".venv"):
-            _candidate = PROJECT_ROOT / _venv_name / "bin" / "hermes"
-            if _candidate.exists():
-                _venv_bin = _candidate
-                break
+        _venv_bin = _find_hermes_entrypoint(PROJECT_ROOT)
 
         # Determine the expected command link directory (mirrors install.sh logic)
         _prefix = os.environ.get("PREFIX", "")
@@ -1304,13 +1358,13 @@ def run_doctor(args):
         if _venv_bin is None:
             check_warn(
                 "Venv entry point not found",
-                "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"
+                "(could not resolve a hermes entry point from the active runtime or common project venv locations)"
             )
             manual_issues.append(
-                f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
+                f"Reinstall entry point: {_reinstall_entrypoint_command(PROJECT_ROOT)}"
             )
         else:
-            check_ok(f"Venv entry point exists ({_venv_bin.relative_to(PROJECT_ROOT)})")
+            check_ok(f"Venv entry point exists ({_display_project_path(_venv_bin, PROJECT_ROOT)})")
 
             # Check the symlink at the command link location
             if _cmd_link.is_symlink():

@@ -35,7 +35,7 @@
 | #50068 | draft | MERGEABLE | — | yes |
 | #50073 | draft | MERGEABLE | rebased (config.py keys) | yes |
 | #50078 | draft | MERGEABLE | — | yes |
-| #50080 | draft | MERGEABLE | leak-fix (cmx_grep) | yes |
+| #50080 | draft | MERGEABLE | leak-fix (example_search) | yes |
 | #50086 | draft | MERGEABLE | — | yes |
 | #50146 | draft | MERGEABLE | — | yes |
 | #50155 | draft | MERGEABLE | — | yes |

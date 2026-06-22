@@ -1937,6 +1937,117 @@ class TestTryMainAgentModelFallback:
         assert client is None
 
 
+class TestConfiguredFallbackChainLegacyFields:
+    """_try_configured_fallback_chain accepts legacy singular fallback_provider / fallback_model."""
+
+    def test_legacy_singular_fields_build_single_entry_chain(self):
+        """When fallback_chain is absent but fallback_provider is set, a single-entry chain is built."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        fake_client = MagicMock()
+        task_config = {
+            "provider": "bailian",
+            "model": "qwen3.7-plus",
+            "fallback_provider": "minimax-oai",
+            "fallback_model": "MiniMax-M3",
+        }
+
+        with patch("agent.auxiliary_client._get_auxiliary_task_config",
+                    return_value=task_config), \
+             patch("agent.auxiliary_client._resolve_fallback_entry",
+                    return_value=(fake_client, "MiniMax-M3")):
+            client, model, label = _try_configured_fallback_chain(
+                "vision", "bailian", reason="429 rate limit")
+
+        assert client is fake_client
+        assert model == "MiniMax-M3"
+        assert "minimax-oai" in label
+
+    def test_legacy_singular_fields_no_model_still_works(self):
+        """fallback_provider without fallback_model should still create a chain entry."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        fake_client = MagicMock()
+        task_config = {
+            "provider": "bailian",
+            "model": "qwen3.7-plus",
+            "fallback_provider": "minimax-oai",
+        }
+
+        with patch("agent.auxiliary_client._get_auxiliary_task_config",
+                    return_value=task_config), \
+             patch("agent.auxiliary_client._resolve_fallback_entry",
+                    return_value=(fake_client, "minimax-default")):
+            client, model, label = _try_configured_fallback_chain(
+                "vision", "bailian", reason="429 rate limit")
+
+        assert client is fake_client
+        assert "minimax-oai" in label
+
+    def test_chain_list_takes_precedence_over_legacy_fields(self):
+        """When fallback_chain (list) is present, legacy singular fields are ignored."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        chain_client = MagicMock()
+        task_config = {
+            "provider": "bailian",
+            "model": "qwen3.7-plus",
+            "fallback_provider": "minimax-oai",
+            "fallback_model": "MiniMax-M3",
+            "fallback_chain": [
+                {"provider": "openrouter", "model": "gpt-4o-mini"},
+            ],
+        }
+
+        with patch("agent.auxiliary_client._get_auxiliary_task_config",
+                    return_value=task_config), \
+             patch("agent.auxiliary_client._resolve_fallback_entry",
+                    return_value=(chain_client, "gpt-4o-mini")):
+            client, model, label = _try_configured_fallback_chain(
+                "vision", "bailian", reason="429 rate limit")
+
+        assert client is chain_client
+        assert "openrouter" in label
+        assert "minimax" not in label
+
+    def test_no_chain_no_legacy_returns_none(self):
+        """When neither fallback_chain nor fallback_provider is set, returns (None, None, '')."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        task_config = {
+            "provider": "bailian",
+            "model": "qwen3.7-plus",
+        }
+
+        with patch("agent.auxiliary_client._get_auxiliary_task_config",
+                    return_value=task_config):
+            client, model, label = _try_configured_fallback_chain(
+                "vision", "bailian", reason="429 rate limit")
+
+        assert client is None
+        assert model is None
+        assert label == ""
+
+    def test_legacy_fields_skip_failed_provider(self):
+        """Legacy fallback_provider matching the failed provider should be skipped."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        task_config = {
+            "provider": "bailian",
+            "model": "qwen3.7-plus",
+            "fallback_provider": "bailian",
+            "fallback_model": "qwen-turbo",
+        }
+
+        with patch("agent.auxiliary_client._get_auxiliary_task_config",
+                    return_value=task_config):
+            client, model, label = _try_configured_fallback_chain(
+                "vision", "bailian", reason="429 rate limit")
+
+        assert client is None
+        assert label == ""
+
+
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
 # ---------------------------------------------------------------------------

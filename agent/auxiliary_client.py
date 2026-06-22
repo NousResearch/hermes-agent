@@ -3158,6 +3158,10 @@ def _try_configured_fallback_chain(
     entry in order.  Each entry must have at least ``provider``; ``model``,
     ``base_url``, and ``api_key`` are optional.
 
+    Also supports the legacy singular ``fallback_provider`` /
+    ``fallback_model`` fields: when ``fallback_chain`` is absent, a
+    single-entry chain is built from those fields.
+
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
     """
@@ -3167,7 +3171,16 @@ def _try_configured_fallback_chain(
     task_config = _get_auxiliary_task_config(task)
     chain = task_config.get("fallback_chain")
     if not chain or not isinstance(chain, list):
-        return None, None, ""
+        # Support legacy singular fallback_provider / fallback_model fields.
+        # When fallback_chain is absent, build a single-entry chain from
+        # the singular fields so users with the old config form still get
+        # fallback coverage.
+        fb_provider = str(task_config.get("fallback_provider", "") or "").strip()
+        fb_model = str(task_config.get("fallback_model", "") or "").strip()
+        if fb_provider:
+            chain = [{"provider": fb_provider, "model": fb_model}]
+        else:
+            return None, None, ""
 
     skip = failed_provider.lower().strip()
     tried = []

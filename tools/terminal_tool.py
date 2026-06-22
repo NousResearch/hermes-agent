@@ -2770,10 +2770,14 @@ def terminal_tool(
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")
             exit_note = _interpret_exit_code(command, returncode)
 
+            # Keep exit_code/error ahead of output: large output is head-
+            # truncated for the provider (tool_result_storage previews the
+            # first chars), so leading with the small status fields keeps
+            # them visible inline even when output spills to the sandbox.
             result_dict = {
-                "output": output,
                 "exit_code": returncode,
                 "error": None,
+                "output": output,
             }
             try:
                 from agent.verification_evidence import record_terminal_result

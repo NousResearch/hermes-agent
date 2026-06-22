@@ -2351,10 +2351,12 @@ class TestExecuteToolCalls:
             + "\n\n... [OUTPUT TRUNCATED - 50,000 chars omitted out of 100,000 total] ...\n\n"
             + ("x" * 30_000)
         )
+        # Mirror terminal_tool's field order (status fields ahead of output)
+        # so the head-truncated preview keeps exit_code/error visible.
         terminal_result = json.dumps({
-            "output": terminal_stdout,
             "exit_code": 0,
             "error": None,
+            "output": terminal_stdout,
         })
         tc = _mock_tool_call(
             name="terminal",
@@ -2375,6 +2377,9 @@ class TestExecuteToolCalls:
         assert len(content.encode("utf-8")) < 8_192
         assert "Truncated" in content or "<persisted-output>" in content
         assert "x" * 9_000 not in content
+        # The exit status must survive truncation so the model still knows
+        # whether the command passed (regression guard for the head-cut).
+        assert '"exit_code"' in content
 
     def test_sequential_memory_remove_notifies_provider_with_tool_result(self, agent):
         old_text = "stale preference entry"

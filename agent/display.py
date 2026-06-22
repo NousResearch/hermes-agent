@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from utils import safe_json_loads
-from agent.tool_guardrails import _output_indicates_task_failure
+from agent.tool_failure_detection import output_indicates_task_failure
 from agent.tool_result_classification import file_mutation_result_landed
 
 # ANSI escape codes for coloring tool failure indicators
@@ -878,7 +878,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
                 return True, f" [exit {exit_code}]"
             # exit_code == 0 but output contains task-level failure
             output = data.get("output", "")
-            if output and _output_indicates_task_failure(output):
+            if output and output_indicates_task_failure(output):
                 return True, " [task_failure]"
         return False, ""
 
@@ -894,7 +894,7 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
             # status == "success" but output contains task-level failure
             if status == "success":
                 output = data.get("output", "")
-                if output and _output_indicates_task_failure(output):
+                if output and output_indicates_task_failure(output):
                     return True, " [task_failure]"
         return False, ""
 

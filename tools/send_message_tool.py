@@ -304,6 +304,13 @@ def _handle_send(args):
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
+
+    # Card sending is only supported for Feishu
+    if card is not None and platform_name != "feishu":
+        return tool_error(
+            f"Card sending is only supported for feishu targets, not '{platform_name}'. "
+            f"Remove the 'card' parameter or use a feishu target."
+        )
     target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
     thread_id = None

@@ -278,15 +278,10 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     # Per-turn state is cleared: exact_failure block is gone
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
-    # Cross-turn no_progress persists across reset_for_turn (by design — catches
-    # one-call-per-turn loops).  read_file still blocks because the cross-turn
-    # counter reached the threshold.
-    assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "block"
-
-    # After enough turns the TTL expires and the entry is pruned.
-    for _ in range(controller._cross_turn_ttl):
-        controller.reset_for_turn()
+    # read_file per-turn no_progress is also cleared after reset
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+    # Cross-turn tracking does NOT apply to read_file (read-only tool)
+    # — only terminal/execute_code are tracked cross-turn
 
 
 def test_terminal_exit_code_zero_with_task_failure_output_is_detected():
@@ -423,3 +418,86 @@ def test_cross_turn_no_progress_resets_on_different_result():
     controller.reset_for_turn()
     controller.after_call("terminal", {"command": "curl http://example.com"}, "Page not found", failed=False)
     assert controller.before_call("terminal", {"command": "curl http://example.com"}).action == "allow"
+
+
+def test_read_file_cross_turn_should_not_block():
+    """read_file across turns should NOT be blocked by cross-turn tracking."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=2, no_progress_warn_after=2)
+    )
+
+    # Turn 1
+    controller.after_call("read_file", {"path": "/tmp/config.yaml"}, "key: value", failed=False)
+
+    # Turn 2 — same result, should NOT block cross-turn
+    controller.reset_for_turn()
+    controller.after_call("read_file", {"path": "/tmp/config.yaml"}, "key: value", failed=False)
+    assert controller.before_call("read_file", {"path": "/tmp/config.yaml"}).action == "allow"
+
+    # Turn 3 — still should NOT block
+    controller.reset_for_turn()
+    controller.after_call("read_file", {"path": "/tmp/config.yaml"}, "key: value", failed=False)
+    assert controller.before_call("read_file", {"path": "/tmp/config.yaml"}).action == "allow"
+
+
+def test_read_file_same_turn_still_triggers_no_progress():
+    """read_file within the SAME turn should still trigger no-progress warning/block."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=2, no_progress_warn_after=2)
+    )
+
+    # Same turn: read_file repeated with same result
+    controller.after_call("read_file", {"path": "/tmp/x"}, "same content", failed=False)
+    assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+    d = controller.after_call("read_file", {"path": "/tmp/x"}, "same content", failed=False)
+    assert d.action == "warn"
+    assert d.code == "no_progress_warning"
+
+    blocked = controller.before_call("read_file", {"path": "/tmp/x"})
+    assert blocked.action == "block"
+    assert blocked.code == "no_progress_block"
+
+
+def test_output_indicates_task_failure_true_positives():
+    """Patterns that SHOULD be detected as task failures."""
+    from agent.tool_failure_detection import output_indicates_task_failure
+
+    assert output_indicates_task_failure("Traceback (most recent call last):\n  File ...")
+    assert output_indicates_task_failure("  Error: 400 Bad Request")
+    assert output_indicates_task_failure("HTTP/1.1 404 Not Found")
+    assert output_indicates_task_failure("HTTP 500 Internal Server Error")
+    assert output_indicates_task_failure("status_code=500")
+    assert output_indicates_task_failure("status: 404")
+    assert output_indicates_task_failure("bash: command not found")
+    assert output_indicates_task_failure("No such file or directory")
+    assert output_indicates_task_failure("Permission denied")
+    assert output_indicates_task_failure("Connection refused")
+    assert output_indicates_task_failure("Connection reset by peer")
+    assert output_indicates_task_failure("Connection timed out")
+    assert output_indicates_task_failure("Timeout expired")
+    assert output_indicates_task_failure("Fatal: something broke")
+
+
+def test_output_indicates_task_failure_false_positives():
+    """Patterns that should NOT be detected as task failures."""
+    from agent.tool_failure_detection import output_indicates_task_failure
+
+    assert not output_indicates_task_failure("Search result: no matching files found")
+    assert not output_indicates_task_failure("Expected Not Found response was returned")
+    assert not output_indicates_task_failure("404 page test passed")
+    assert not output_indicates_task_failure("pytest summary: 10 passed, 0 failed")
+    assert not output_indicates_task_failure("expected error path passed")
+    assert not output_indicates_task_failure("Testing that unauthorized access returns 401")
+    assert not output_indicates_task_failure("The forbidden fruit was delicious")
+    assert not output_indicates_task_failure("File not found in cache, generating fresh")
+    assert not output_indicates_task_failure("No errors found in the build")
+    assert not output_indicates_task_failure("All 404 tests passed successfully")
+
+
+def test_output_indicates_task_failure_traceback_at_end_of_long_output():
+    """Traceback at the end of a long output should still be detected."""
+    from agent.tool_failure_detection import output_indicates_task_failure
+
+    long_output = "Some normal log output\n" * 300 + "Traceback (most recent call last):\n  File 'app.py', line 1"
+    assert output_indicates_task_failure(long_output)

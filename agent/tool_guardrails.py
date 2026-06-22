@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
+
+from agent.tool_failure_detection import output_indicates_task_failure
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
@@ -194,50 +195,28 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
 NO_PROGRESS_MUTATING_TOOL_NAMES = frozenset({"terminal", "execute_code"})
 
 
-# Precise regexes for task-level failure detection.  Prefer structured signals
-# (stack traces, HTTP status lines, CLI error phrases) over bare keywords so
-# we don't false-positive on "0 failed", "expected error", "404 page test", etc.
-_TASK_FAILURE_REGEXES = (
-    # Python / JS / runtime stack traces
-    re.compile(r"(?im)^traceback \(most recent call last\):"),
-    re.compile(r"(?im)^\s*(?:error|fatal):\s+\S+"),
-    re.compile(r"(?im)^\s*❌\s*error:"),
+def _tracks_per_turn_no_progress(tool_name: str, config: ToolCallGuardrailConfig) -> bool:
+    """Track repeated identical success within a single turn.
 
-    # HTTP failures. Require HTTP wording, not bare "400" / "404".
-    re.compile(r"(?i)\bhttp(?:/\d(?:\.\d)?)?\s+(?:4\d\d|5\d\d)\b"),
-    re.compile(r"(?i)\b(?:status|status_code|code)\s*[:=]\s*(?:4\d\d|5\d\d)\b"),
-    re.compile(r"(?i)\b(?:bad request|unauthorized|forbidden|not found|internal server error)\b"),
-
-    # Common command/runtime failures.
-    re.compile(r"(?i)\bcommand not found\b"),
-    re.compile(r"(?i)\bno such file or directory\b"),
-    re.compile(r"(?i)\bpermission denied\b"),
-    re.compile(r"(?i)\bconnection (?:refused|reset|timed out)\b"),
-    re.compile(r"(?i)\btimeout expired\b"),
-)
-
-
-def _output_indicates_task_failure(output_text: str) -> bool:
-    """Check if output text contains signs of task-level failure.
-
-    Checks both the beginning and end of the output — long logs often put
-    the traceback or HTTP failure at the bottom.
-    """
-    if len(output_text) > 4000:
-        sample = output_text[:2000] + "\n" + output_text[-2000:]
-    else:
-        sample = output_text
-    return any(pattern.search(sample) for pattern in _TASK_FAILURE_REGEXES)
-
-
-def _tracks_no_progress(tool_name: str, config: ToolCallGuardrailConfig) -> bool:
-    """Track repeated identical success only for read-only tools plus the two
-    execution tools that commonly produce fake-success loops.
-
-    Do not apply this to every mutating tool: repeated write_file/browser
-    actions can be intentional and should not be blocked as "no progress".
+    Applies to idempotent (read-only) tools plus terminal/execute_code.
     """
     return tool_name in config.idempotent_tools or tool_name in NO_PROGRESS_MUTATING_TOOL_NAMES
+
+
+def _tracks_cross_turn_no_progress(tool_name: str, config: ToolCallGuardrailConfig) -> bool:
+    """Track repeated identical success across multiple turns.
+
+    Only applies to terminal/execute_code — we do NOT want to block
+    read-only tools (read_file, web_search, etc.) across turns because
+    the user legitimately re-reads the same file or re-runs the same
+    query in subsequent turns.
+    """
+    return tool_name in NO_PROGRESS_MUTATING_TOOL_NAMES
+
+
+# Backward compat alias — used by tool_executor.py post-execution loop
+def _tracks_no_progress(tool_name: str, config: ToolCallGuardrailConfig) -> bool:
+    return _tracks_per_turn_no_progress(tool_name, config)
 
 
 def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
@@ -268,7 +247,7 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
                 return True, f" [exit {exit_code}]"
             # exit_code == 0 but output contains task-level failure
             output = data.get("output", "")
-            if output and _output_indicates_task_failure(output):
+            if output and output_indicates_task_failure(output):
                 return True, " [task_failure]"
         return False, ""
 
@@ -280,7 +259,7 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
             # status == "success" but output contains task-level failure
             if status == "success":
                 output = data.get("output", "")
-                if output and _output_indicates_task_failure(output):
+                if output and output_indicates_task_failure(output):
                     return True, " [task_failure]"
         return False, ""
 
@@ -354,7 +333,7 @@ class ToolCallGuardrailController:
             return decision
 
         # Per-turn no-progress check
-        record = self._no_progress.get(signature) if _tracks_no_progress(tool_name, self.config) else None
+        record = self._no_progress.get(signature) if _tracks_per_turn_no_progress(tool_name, self.config) else None
         if record is not None:
             _result_hash, repeat_count = record
             if repeat_count >= self.config.no_progress_block_after:
@@ -374,7 +353,7 @@ class ToolCallGuardrailController:
                 return decision
 
         # Cross-turn no-progress check (catches one-call-per-turn loops)
-        if _tracks_no_progress(tool_name, self.config):
+        if _tracks_cross_turn_no_progress(tool_name, self.config):
             cross = self._no_progress_cross_turn.get(signature)
             if cross is not None:
                 _rh, _rc, _lt = cross
@@ -461,7 +440,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
-        if not _tracks_no_progress(tool_name, self.config):
+        if not _tracks_per_turn_no_progress(tool_name, self.config):
             self._no_progress.pop(signature, None)
             self._no_progress_cross_turn.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
@@ -473,29 +452,31 @@ class ToolCallGuardrailController:
             repeat_count = previous[1] + 1
         self._no_progress[signature] = (result_hash, repeat_count)
 
-        # Cross-turn no-progress tracking
-        cross_prev = self._no_progress_cross_turn.get(signature)
-        if cross_prev is not None and cross_prev[0] == result_hash:
-            self._no_progress_cross_turn[signature] = (result_hash, cross_prev[1] + 1, self._turn_counter)
-        else:
-            self._no_progress_cross_turn[signature] = (result_hash, 1, self._turn_counter)
+        # Cross-turn no-progress tracking (only for terminal/execute_code)
+        if _tracks_cross_turn_no_progress(tool_name, self.config):
+            cross_prev = self._no_progress_cross_turn.get(signature)
+            if cross_prev is not None and cross_prev[0] == result_hash:
+                self._no_progress_cross_turn[signature] = (result_hash, cross_prev[1] + 1, self._turn_counter)
+            else:
+                self._no_progress_cross_turn[signature] = (result_hash, 1, self._turn_counter)
 
         # Emit warning based on cross-turn count when per-turn count is 1
         # (i.e., the loop spans turns rather than repeating within one turn)
-        _cross_count = self._no_progress_cross_turn[signature][1]
-        if repeat_count == 1 and self.config.warnings_enabled and _cross_count >= self.config.no_progress_warn_after:
-            return ToolGuardrailDecision(
-                action="warn",
-                code="no_progress_cross_turn_warning",
-                message=(
-                    f"{tool_name} returned the same result {_cross_count} times across turns. "
-                    "Use the result already provided or change the query instead of "
-                    "repeating it unchanged."
-                ),
-                tool_name=tool_name,
-                count=_cross_count,
-                signature=signature,
-            )
+        if _tracks_cross_turn_no_progress(tool_name, self.config):
+            _cross_count = self._no_progress_cross_turn[signature][1]
+            if repeat_count == 1 and self.config.warnings_enabled and _cross_count >= self.config.no_progress_warn_after:
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="no_progress_cross_turn_warning",
+                    message=(
+                        f"{tool_name} returned the same result {_cross_count} times across turns. "
+                        "Use the result already provided or change the query instead of "
+                        "repeating it unchanged."
+                    ),
+                    tool_name=tool_name,
+                    count=_cross_count,
+                    signature=signature,
+                )
 
         if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
             return ToolGuardrailDecision(

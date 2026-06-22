@@ -70,7 +70,7 @@ def _ensure_authenticated():
 
 def _stored_token_scopes() -> list[str]:
     try:
-        data = json.loads(TOKEN_PATH.read_text())
+        data = json.loads(TOKEN_PATH.read_text(encoding="utf-8"))
     except Exception:
         return list(SCOPES)
     scopes = data.get("scopes")
@@ -192,7 +192,8 @@ def get_credentials():
             json.dumps(
                 _normalize_authorized_user_payload(json.loads(creds.to_json())),
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
     if not creds.valid:
         print("Token is invalid. Re-run setup.", file=sys.stderr)

@@ -620,7 +620,7 @@ def main(argv: list[str] | None = None) -> int:
     args_str = args.args
     if args_str.startswith("@"):
         try:
-            args_str = Path(args_str[1:]).read_text()
+            args_str = Path(args_str[1:]).read_text(encoding="utf-8")
         except OSError as e:
             emit_json({"error": f"Cannot read args file: {e}"})
             return 1

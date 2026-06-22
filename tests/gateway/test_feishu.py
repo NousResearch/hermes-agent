@@ -4944,3 +4944,80 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestFeishuDmQuoteReplyThreadRouting(unittest.TestCase):
+    """DM quote-reply must NOT create a thread session (issue #13).
+
+    In DMs, root_id (quote reply target) should only populate
+    reply_to_message_id for context injection, not thread_id for routing.
+    """
+
+    def _run_inbound(self, chat_type, *, thread_id=None, root_id=None, parent_id=None):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Test Chat", "type": chat_type}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "Tester", "user_id_alt": None}
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="quoted text")
+
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=thread_id,
+            root_id=root_id,
+            parent_id=parent_id,
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"hello"}',
+            message_id="om_new",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type=chat_type,
+                message_id="om_new",
+            )
+        )
+        return adapter._dispatch_inbound_event.await_args.args[0]
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_dm_quote_reply_no_thread_id(self):
+        """DM + root_id (quote reply) => thread_id must be None."""
+        event = self._run_inbound("p2p", root_id="om_quoted_msg")
+        self.assertIsNone(event.source.thread_id)
+        self.assertEqual(event.reply_to_message_id, "om_quoted_msg")
+        self.assertEqual(event.reply_to_text, "quoted text")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_dm_real_topic_preserves_thread_id(self):
+        """DM + real thread_id => thread_id preserved."""
+        event = self._run_inbound("p2p", thread_id="omt_topic123")
+        self.assertEqual(event.source.thread_id, "omt_topic123")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_group_quote_reply_keeps_thread_id_from_root_id(self):
+        """Group + root_id (no thread_id) => thread_id falls back to root_id (unchanged behavior)."""
+        event = self._run_inbound("group", root_id="om_group_quoted")
+        self.assertEqual(event.source.thread_id, "om_group_quoted")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_dm_no_reply_no_thread(self):
+        """DM + no root_id + no thread_id => thread_id is None."""
+        event = self._run_inbound("p2p")
+        self.assertIsNone(event.source.thread_id)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_dm_topic_with_quote_reply_uses_thread_id(self):
+        """DM topic + quote reply inside it => thread_id is the real topic, not root_id."""
+        event = self._run_inbound("p2p", thread_id="omt_topic123", root_id="om_quoted_msg")
+        self.assertEqual(event.source.thread_id, "omt_topic123")

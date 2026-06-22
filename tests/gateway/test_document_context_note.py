@@ -16,6 +16,7 @@ import pytest
 
 gateway_run = importlib.import_module("gateway.run")
 _build_document_context_note = gateway_run._build_document_context_note
+_sanitize_gateway_final_response = gateway_run._sanitize_gateway_final_response
 
 
 class TestTextDocumentNote:
@@ -55,3 +56,22 @@ class TestBinaryDocumentNote:
         # The text path claims content is inlined; the binary path must not.
         assert "included below" in text_note
         assert "included below" not in pdf_note
+
+
+class TestTelegramDocumentPathRedaction:
+    def test_telegram_final_response_redacts_cached_document_paths(self):
+        response = (
+            "פתחתי את /home/gidon/.hermes/cache/documents/doc_a90e9ffc40fb_jobs.json "
+            "והקובץ תקין."
+        )
+
+        sanitized = _sanitize_gateway_final_response("telegram", response)
+
+        assert "/home/gidon/.hermes/cache/documents/" not in sanitized
+        assert "doc_a90e9ffc40fb_jobs.json" not in sanitized
+        assert "[cached document]" in sanitized
+
+    def test_non_telegram_final_response_keeps_existing_behavior(self):
+        response = "See /home/gidon/.hermes/cache/documents/doc_a90e9ffc40fb_jobs.json"
+
+        assert _sanitize_gateway_final_response("discord", response) == response

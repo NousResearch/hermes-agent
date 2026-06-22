@@ -1050,6 +1050,9 @@ def test_text_reply_to_photo_caches_referenced_media(monkeypatch, tmp_path):
         assert event.media_urls == [str(cached_path)]
         assert event.media_types == ["image/png"]
         assert event.message_type == MessageType.PHOTO
+        assert "internal attachment" in event.text
+        assert str(cached_path) not in event.text
+        assert "saved at:" not in event.text
 
     asyncio.run(_run())
 

@@ -292,7 +292,28 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     redacted = str(text or "")
     for pattern in _GATEWAY_SECRET_PATTERNS:
         redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
+    redacted = _redact_gateway_user_facing_cache_paths(redacted)
     return redacted
+
+
+_GATEWAY_CACHE_DOCUMENT_PATH_RE = re.compile(
+    r"(?<![\w:/.-])"
+    r"(?:"
+    r"(?:~|/home/[^/\s\]\)\"']+|/root)/\.hermes/cache/documents/"
+    r"|/tmp/hermes[^/\s\]\)\"']*/cache/documents/"
+    r")"
+    r"[^\s\]\)\"']+"
+)
+
+
+def _redact_gateway_user_facing_cache_paths(text: str) -> str:
+    """Hide inbound cache file paths from user-visible gateway output.
+
+    The model may need local cache paths internally to inspect uploaded files,
+    but those paths are implementation details and should not be echoed into
+    Telegram chats.
+    """
+    return _GATEWAY_CACHE_DOCUMENT_PATH_RE.sub("[cached document]", str(text or ""))
 
 
 def _redact_approval_command(cmd: "str | None") -> str:

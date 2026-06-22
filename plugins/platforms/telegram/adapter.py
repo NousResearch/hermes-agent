@@ -5921,7 +5921,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.message_type = MessageType.VIDEO
         event.text = self._append_observed_note(
             event.text,
-            f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
+            f"[Replied-to {cached.kind} '{cached.display_name}' is available as an internal attachment]",
         )
         logger.info("[Telegram] Cached replied-to %s at %s", cached.kind, cached.path)
 

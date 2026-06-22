@@ -288,7 +288,14 @@ class SessionResetPolicy:
     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
     notify: bool = True  # Send a notification to the user when auto-reset occurs
     notify_exclude_platforms: tuple = ("api_server", "webhook")  # Platforms that don't get reset notifications
-    
+    # Opt-in (#43008 proposal #2): when an *idle* expiry would fire, if the next
+    # message lands within resume_grace_minutes of the idle deadline, resume the
+    # existing session instead of starting a blank one. Off = current hard-reset
+    # behavior. Daily resets are never affected (intentional boundaries).
+    resume_on_message: bool = False
+    resume_grace_minutes: int = 60  # Grace window (minutes) after idle expiry during
+    # which the next message resumes; only consulted when resume_on_message is True.
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "mode": self.mode,
@@ -296,8 +303,10 @@ class SessionResetPolicy:
             "idle_minutes": self.idle_minutes,
             "notify": self.notify,
             "notify_exclude_platforms": list(self.notify_exclude_platforms),
+            "resume_on_message": self.resume_on_message,
+            "resume_grace_minutes": self.resume_grace_minutes,
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
         # Handle both missing keys and explicit null values (YAML null → None)
@@ -306,12 +315,16 @@ class SessionResetPolicy:
         idle_minutes = data.get("idle_minutes")
         notify = data.get("notify")
         exclude = data.get("notify_exclude_platforms")
+        resume_on_message = data.get("resume_on_message")
+        resume_grace_minutes = data.get("resume_grace_minutes")
         return cls(
             mode=mode if mode is not None else "both",
             at_hour=at_hour if at_hour is not None else 4,
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
             notify=_coerce_bool(notify, True),
             notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
+            resume_on_message=_coerce_bool(resume_on_message, False),
+            resume_grace_minutes=resume_grace_minutes if resume_grace_minutes is not None else 60,
         )
 
 

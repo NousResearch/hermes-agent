@@ -934,21 +934,33 @@ class SessionStore:
         if policy.mode in {"idle", "both"}:
             idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
             if now > idle_deadline:
-                return "idle"
-        
+                # Opt-in resume-on-message (#43008 proposal #2): if the first
+                # message lands within the grace window after the idle deadline,
+                # resume the existing session instead of resetting it blank.
+                # Falls through to the daily check below (still enforced for
+                # mode="both"); a real daily boundary still wins.
+                grace = getattr(policy, "resume_grace_minutes", 0)
+                resume_ok = (
+                    getattr(policy, "resume_on_message", False)
+                    and grace > 0
+                    and now <= idle_deadline + timedelta(minutes=grace)
+                )
+                if not resume_ok:
+                    return "idle"
+
         if policy.mode in {"daily", "both"}:
             today_reset = now.replace(
-                hour=policy.at_hour, 
-                minute=0, 
-                second=0, 
+                hour=policy.at_hour,
+                minute=0,
+                second=0,
                 microsecond=0
             )
             if now.hour < policy.at_hour:
                 today_reset -= timedelta(days=1)
-            
+
             if entry.updated_at < today_reset:
                 return "daily"
-        
+
         return None
     
     def has_any_sessions(self) -> bool:
@@ -1020,6 +1032,12 @@ class SessionStore:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
                     entry.updated_at = now
+                    # A session resumed within the post-idle grace window
+                    # (#43008) was already memory-finalized by the expiry
+                    # watcher; clear the flag so it can be finalized again on
+                    # the next genuine expiry. No-op for normal active sessions.
+                    if getattr(entry, "expiry_finalized", False):
+                        entry.expiry_finalized = False
                     self._save()
                     return entry
                 else:

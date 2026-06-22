@@ -6745,6 +6745,13 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
+# Known enumerated config keys and their valid values.
+# Keys not in this dict accept any value.
+_ENUM_CONFIG_VALUES = {
+    "display.tool_progress": {"off", "new", "all", "verbose"},
+}
+
+
 def set_config_value(key: str, value: str):
     """Set a configuration value."""
     if is_managed():
@@ -6784,6 +6791,20 @@ def set_config_value(key: str, value: str):
         print(f"✓ Set {key} in {get_env_path()}")
         return
     
+    # Validate enum values before writing
+    key_lower = key.strip().lower()
+    if key_lower in _ENUM_CONFIG_VALUES:
+        valid = _ENUM_CONFIG_VALUES[key_lower]
+        if value.lower() not in valid:
+            print(
+                f"✗ Invalid value '{value}' for {key}. "
+                f"Valid options: {'|'.join(sorted(valid))}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # Normalize to lowercase
+        value = value.lower()
+
     # Otherwise it goes to config.yaml
     # Read the raw user config (not merged with defaults) to avoid
     # dumping all default values back to the file

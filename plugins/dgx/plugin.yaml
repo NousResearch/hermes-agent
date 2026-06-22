@@ -1,0 +1,11 @@
+name: dgx
+version: 0.1.0
+description: "NVIDIA DGX Spark integration for Hermes Agent. Manage local GPU inference
+  endpoints (Ollama, vLLM, LiteLLM proxy), inspect GPU memory and running models,
+  and switch between endpoints without editing config files manually."
+author: hartsock
+kind: standalone
+platforms:
+  - linux
+  - macos
+hooks: []

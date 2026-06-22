@@ -3289,6 +3289,24 @@ class TestHandleMaxIterations:
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
+    def test_summary_strips_timestamp_from_messages(self, agent):
+        """The non-wire 'timestamp' key (display.timestamps, /history) must
+        be stripped before the summary API call — strict gateways reject it
+        the same way they reject tool_name."""
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "hello", "timestamp": 1719000000},
+            {"role": "assistant", "content": "hi", "timestamp": 1719000001},
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get("messages", [])
+        for m in sent_msgs:
+            assert "timestamp" not in m, f"timestamp not stripped from {m}"
+
     def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
         agent.base_url = "https://api.openai.com/v1"
         agent._base_url_lower = agent.base_url.lower()

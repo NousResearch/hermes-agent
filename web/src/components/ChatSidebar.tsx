@@ -30,9 +30,11 @@ import { Card } from "@nous-research/ui/ui/components/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
+import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
+import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
@@ -43,6 +45,7 @@ interface SessionInfo {
   model?: string;
   provider?: string;
   credential_warning?: string;
+  title?: string;
 }
 
 interface RpcEnvelope {
@@ -77,6 +80,7 @@ interface ChatSidebarProps {
   profile?: string;
   className?: string;
   onDashboardNewSessionRequest?: () => void;
+  onSessionTitleChange?: (title: string | null) => void;
   /**
    * Render the tool-call activity card. Defaults to true. The dashboard Chat
    * tab sets this false so the right rail stays a thin model + session-list
@@ -90,6 +94,7 @@ export function ChatSidebar({
   profile,
   className,
   onDashboardNewSessionRequest,
+  onSessionTitleChange,
   showTools = true,
 }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
@@ -113,6 +118,14 @@ export function ChatSidebar({
   // elsewhere, so the badge would go stale. `/api/model/info` is profile-scoped
   // by `fetchJSON`, so it reads the same profile this sidebar is scoped to.
   const [effectiveModel, setEffectiveModel] = useState("");
+  // Whether the effective model supports reasoning effort — gates the
+  // ReasoningPicker. Read from the same `/api/model/info` capabilities the
+  // (currently unused) ModelInfoCard surfaces, so the dashboard exposes a
+  // control to *set* the level, not just a read-only "Reasoning" badge.
+  const [supportsReasoning, setSupportsReasoning] = useState(false);
+  // Bumped on model change/save so ReasoningPicker re-reads the saved effort
+  // (config is profile-scoped the same way the model badge is).
+  const [modelRefreshKey, setModelRefreshKey] = useState(0);
   // Set after the picker saves a model and the user declines the reload: config
   // is updated but the running session keeps its model until rebuilt.
   const [modelNotice, setModelNotice] = useState<string | null>(null);
@@ -127,6 +140,9 @@ export function ChatSidebar({
       .getModelInfo()
       .then((r) => {
         if (r?.model) setEffectiveModel(String(r.model));
+        setSupportsReasoning(!!r?.capabilities?.supports_reasoning);
+        // Bump so ReasoningPicker re-reads the saved effort for the new model.
+        setModelRefreshKey((k) => k + 1);
       })
       .catch(() => {
         // Best-effort: keep the last known label rather than blanking it.
@@ -187,6 +203,7 @@ export function ChatSidebar({
         // slash_worker subprocess) when the WS drops, instead of leaking it.
         return gw.request<{ session_id: string }>("session.create", {
           close_on_disconnect: true,
+          source: "tool",
           ...(profile ? { profile } : {}),
         });
       })
@@ -253,91 +270,96 @@ export function ChatSidebar({
       });
 
       ws.addEventListener("message", (ev) => {
-      let frame: RpcEnvelope;
+        let frame: RpcEnvelope;
 
-      try {
-        frame = JSON.parse(ev.data);
-      } catch {
-        return;
-      }
-
-      if (frame.method !== "event" || !frame.params) {
-        return;
-      }
-
-      const { type, payload } = frame.params;
-
-      if (type === "dashboard.new_session_requested") {
-        onDashboardNewSessionRequest?.();
-      } else if (type === "tool.start") {
-        const p = payload as
-          | { tool_id?: string; name?: string; context?: string }
-          | undefined;
-        const toolId = p?.tool_id;
-
-        if (!toolId) {
+        try {
+          frame = JSON.parse(ev.data);
+        } catch {
           return;
         }
 
-        setTools((prev) =>
-          [
-            ...prev,
-            {
-              kind: "tool" as const,
-              id: `tool-${toolId}-${prev.length}`,
-              tool_id: toolId,
-              name: p?.name ?? "tool",
-              context: p?.context,
-              status: "running" as const,
-              startedAt: Date.now(),
-            },
-          ].slice(-TOOL_LIMIT),
-        );
-      } else if (type === "tool.progress") {
-        const p = payload as
-          | { name?: string; preview?: string }
-          | undefined;
-
-        if (!p?.name || !p.preview) {
+        if (frame.method !== "event" || !frame.params) {
           return;
         }
 
-        setTools((prev) =>
-          prev.map((t) =>
-            t.status === "running" && t.name === p.name
-              ? { ...t, preview: p.preview }
-              : t,
-          ),
-        );
-      } else if (type === "tool.complete") {
-        const p = payload as
-          | {
-              tool_id?: string;
-              summary?: string;
-              error?: string;
-              inline_diff?: string;
-            }
-          | undefined;
+        const { type, payload } = frame.params;
 
-        if (!p?.tool_id) {
-          return;
+        if (type === "session.info") {
+          const title = titleFromSessionInfoPayload(payload);
+          if (title !== undefined) {
+            onSessionTitleChange?.(title);
+          }
+        } else if (type === "dashboard.new_session_requested") {
+          onDashboardNewSessionRequest?.();
+        } else if (type === "tool.start") {
+          const p = payload as
+            | { tool_id?: string; name?: string; context?: string }
+            | undefined;
+          const toolId = p?.tool_id;
+
+          if (!toolId) {
+            return;
+          }
+
+          setTools((prev) =>
+            [
+              ...prev,
+              {
+                kind: "tool" as const,
+                id: `tool-${toolId}-${prev.length}`,
+                tool_id: toolId,
+                name: p?.name ?? "tool",
+                context: p?.context,
+                status: "running" as const,
+                startedAt: Date.now(),
+              },
+            ].slice(-TOOL_LIMIT),
+          );
+        } else if (type === "tool.progress") {
+          const p = payload as
+            | { name?: string; preview?: string }
+            | undefined;
+
+          if (!p?.name || !p.preview) {
+            return;
+          }
+
+          setTools((prev) =>
+            prev.map((t) =>
+              t.status === "running" && t.name === p.name
+                ? { ...t, preview: p.preview }
+                : t,
+            ),
+          );
+        } else if (type === "tool.complete") {
+          const p = payload as
+            | {
+                tool_id?: string;
+                summary?: string;
+                error?: string;
+                inline_diff?: string;
+              }
+            | undefined;
+
+          if (!p?.tool_id) {
+            return;
+          }
+
+          setTools((prev) =>
+            prev.map((t) =>
+              t.tool_id === p.tool_id
+                ? {
+                    ...t,
+                    status: p.error ? "error" : "done",
+                    summary: p.summary,
+                    error: p.error,
+                    inline_diff: p.inline_diff,
+                    completedAt: Date.now(),
+                  }
+                : t,
+            ),
+          );
         }
-
-        setTools((prev) =>
-          prev.map((t) =>
-            t.tool_id === p.tool_id
-              ? {
-                  ...t,
-                  status: p.error ? "error" : "done",
-                  summary: p.summary,
-                  error: p.error,
-                  inline_diff: p.inline_diff,
-                  completedAt: Date.now(),
-                }
-              : t,
-          ),
-        );
-      }
       });
     })();
 
@@ -345,7 +367,7 @@ export function ChatSidebar({
       unmounting = true;
       ws?.close();
     };
-  }, [channel, onDashboardNewSessionRequest, version]);
+  }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
   // (a profile/channel switch bumps `version`).
@@ -403,6 +425,20 @@ export function ChatSidebar({
           {STATE_LABEL[state]}
         </Badge>
       </Card>
+
+      {supportsReasoning && (
+        <Card className="py-0">
+          <ReasoningPicker
+            currentModel={modelName}
+            refreshKey={modelRefreshKey}
+            onChanged={(effort) =>
+              setModelNotice(
+                `Reasoning effort set to ${effort}. Run /new or refresh the page to apply it to this chat.`,
+              )
+            }
+          />
+        </Card>
+      )}
 
       {modelNotice && (
         <Card className="flex items-start gap-2 border-warning/40 bg-warning/5 px-3 py-2 text-xs">

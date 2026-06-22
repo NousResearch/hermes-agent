@@ -24,6 +24,8 @@ import argparse
 import os
 import subprocess
 
+from hermes_cli.config import clear_model_endpoint_credentials
+
 
 def _prompt_auth_credentials_choice(title: str) -> str:
     """Prompt for reuse / reauthenticate / cancel with the standard radio UI.
@@ -123,6 +125,7 @@ def _model_flow_openrouter(config, current_model=""):
         model["provider"] = "openrouter"
         model["base_url"] = OPENROUTER_BASE_URL
         model["api_mode"] = "chat_completions"
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")
@@ -325,6 +328,9 @@ def _model_flow_nous(config, current_model="", args=None):
         # Reactivate Nous as the provider and update config
         inference_url = creds.get("base_url", "")
         _update_config_for_provider("nous", inference_url)
+        # Reload after the auth helper writes provider state. The incoming
+        # config object may still contain stale custom-provider fields.
+        config = load_config()
         current_model_cfg = config.get("model")
         if isinstance(current_model_cfg, dict):
             model_cfg = dict(current_model_cfg)
@@ -338,6 +344,7 @@ def _model_flow_nous(config, current_model="", args=None):
             model_cfg["base_url"] = inference_url.rstrip("/")
         else:
             model_cfg.pop("base_url", None)
+        clear_model_endpoint_credentials(model_cfg)
         config["model"] = model_cfg
         # Clear any custom endpoint that might conflict
         if get_env_value("OPENAI_BASE_URL"):
@@ -626,84 +633,6 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
     _update_config_for_provider("minimax-oauth", creds["base_url"])
     print(f"\u2713 Using MiniMax model: {selected}")
 
-def _model_flow_google_gemini_cli(_config, current_model=""):
-    """Google Gemini OAuth (PKCE) via Cloud Code Assist — supports free AND paid tiers.
-
-    Flow:
-      1. Show upfront warning about Google's ToS stance (per opencode-gemini-auth).
-      2. If creds missing, run PKCE browser OAuth via agent.google_oauth.
-      3. Resolve project context (env -> config -> auto-discover -> free tier).
-      4. Prompt user to pick a model.
-      5. Save to ~/.hermes/config.yaml.
-    """
-    from hermes_cli.auth import (
-        DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
-        get_gemini_oauth_auth_status,
-        resolve_gemini_oauth_runtime_credentials,
-        _prompt_model_selection,
-        _save_model_choice,
-        _update_config_for_provider,
-    )
-    from hermes_cli.models import _PROVIDER_MODELS
-
-    print()
-    print("⚠  Google considers using the Gemini CLI OAuth client with third-party")
-    print("   software a policy violation. Some users have reported account")
-    print("   restrictions. You can use your own API key via 'gemini' provider")
-    print("   for the lowest-risk experience.")
-    print()
-    try:
-        proceed = input("Continue with OAuth login? [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print("Cancelled.")
-        return
-    if proceed not in {"y", "yes"}:
-        print("Cancelled.")
-        return
-
-    status = get_gemini_oauth_auth_status()
-    if not status.get("logged_in"):
-        try:
-            from agent.google_oauth import resolve_project_id_from_env, start_oauth_flow
-
-            env_project = resolve_project_id_from_env()
-            start_oauth_flow(force_relogin=True, project_id=env_project)
-        except Exception as exc:
-            print(f"OAuth login failed: {exc}")
-            return
-
-    # Verify creds resolve + trigger project discovery
-    try:
-        creds = resolve_gemini_oauth_runtime_credentials(force_refresh=False)
-        project_id = creds.get("project_id", "")
-        if project_id:
-            print(f"  Using GCP project: {project_id}")
-        else:
-            print(
-                "  No GCP project configured — free tier will be auto-provisioned on first request."
-            )
-    except Exception as exc:
-        print(f"Failed to resolve Gemini credentials: {exc}")
-        return
-
-    models = list(_PROVIDER_MODELS.get("google-gemini-cli") or [])
-    default = current_model or (models[0] if models else "gemini-3-flash-preview")
-    selected = _prompt_model_selection(
-        models,
-        current_model=default,
-        confirm_provider="google-gemini-cli",
-        confirm_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
-    )
-    if selected:
-        _save_model_choice(selected)
-        _update_config_for_provider(
-            "google-gemini-cli", DEFAULT_GEMINI_CLOUDCODE_BASE_URL
-        )
-        print(
-            f"Default model set to: {selected} (via Google Gemini OAuth / Code Assist)"
-        )
-    else:
-        print("No change.")
 
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name.
@@ -1246,6 +1175,7 @@ def _model_flow_azure_foundry(config, current_model=""):
     model["api_mode"] = api_mode
     model["default"] = effective_model
     model["auth_mode"] = auth_mode_label
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
     if use_entra:
         # Persist only the non-default Entra scope so config.yaml stays tidy.
         # Azure identity selection stays in standard AZURE_* env vars.
@@ -1667,6 +1597,7 @@ def _model_flow_copilot(config, current_model=""):
             catalog=catalog,
             api_key=api_key,
         )
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         if selected_effort is not None:
             _set_reasoning_effort(cfg, selected_effort)
         save_config(cfg)
@@ -1792,6 +1723,7 @@ def _model_flow_copilot_acp(config, current_model=""):
     model["provider"] = provider_id
     model["base_url"] = effective_base
     model["api_mode"] = "chat_completions"
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
     save_config(cfg)
     deactivate_provider()
 
@@ -1881,6 +1813,7 @@ def _model_flow_kimi(config, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         model.pop("api_mode", None)  # let runtime auto-detect from URL
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         save_config(cfg)
         deactivate_provider()
 
@@ -1994,6 +1927,7 @@ def _model_flow_stepfun(config, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         model.pop("api_mode", None)
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         save_config(cfg)
         deactivate_provider()
 
@@ -2077,6 +2011,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         model["provider"] = "custom"
         model["base_url"] = mantle_base_url
         model.pop("api_mode", None)  # chat_completions is the default
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
 
         # Also save region in bedrock config for reference
         bedrock_cfg = cfg.get("bedrock", {})
@@ -2270,6 +2205,7 @@ def _model_flow_bedrock(config, current_model=""):
         model["provider"] = "bedrock"
         model["base_url"] = f"https://bedrock-runtime.{region}.amazonaws.com"
         model.pop("api_mode", None)  # bedrock_converse is auto-detected
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
 
         bedrock_cfg = cfg.get("bedrock", {})
         if not isinstance(bedrock_cfg, dict):
@@ -2563,6 +2499,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             cfg["model"] = model
         model["provider"] = provider_id
         model["base_url"] = effective_base
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
         if provider_id in {"opencode-zen", "opencode-go"}:
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:
@@ -2717,6 +2654,7 @@ def _model_flow_anthropic(config, current_model=""):
             cfg["model"] = model
         model["provider"] = "anthropic"
         model.pop("base_url", None)
+        clear_model_endpoint_credentials(model)
         save_config(cfg)
         deactivate_provider()
 

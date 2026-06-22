@@ -159,12 +159,6 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
     that direct-key problem into the final blocking summary.
     """
     normalized = (provider_label or "").strip().lower()
-    if normalized in {"google / gemini", "gemini"}:
-        try:
-            from hermes_cli.auth import get_gemini_oauth_auth_status
-            return bool((get_gemini_oauth_auth_status() or {}).get("logged_in"))
-        except Exception:
-            return False
     if normalized == "minimax":
         try:
             from hermes_cli.auth import get_minimax_oauth_auth_status
@@ -1078,7 +1072,6 @@ def run_doctor(args):
         from hermes_cli.auth import (
             get_nous_auth_status,
             get_codex_auth_status,
-            get_gemini_oauth_auth_status,
             get_minimax_oauth_auth_status,
         )
 
@@ -1105,20 +1098,6 @@ def run_doctor(args):
                     "(optional — only required to import tokens "
                     "from an existing Codex CLI login)"
                 )
-
-        gemini_status = get_gemini_oauth_auth_status()
-        if gemini_status.get("logged_in"):
-            email = gemini_status.get("email") or ""
-            project = gemini_status.get("project_id") or ""
-            pieces = []
-            if email:
-                pieces.append(email)
-            if project:
-                pieces.append(f"project={project}")
-            suffix = f" ({', '.join(pieces)})" if pieces else ""
-            check_ok("Google Gemini OAuth", f"(logged in{suffix})")
-        else:
-            check_warn("Google Gemini OAuth", "(not logged in)")
 
         minimax_status = get_minimax_oauth_auth_status()
         if minimax_status.get("logged_in"):
@@ -1586,11 +1565,20 @@ def run_doctor(args):
         # glob (which pulls in Electron, node-pty, etc.) is never resolved
         # for a routine security check. The web and ui-tui workspaces are
         # audited separately via --workspace flags. See #38772.
+        # The WhatsApp bridge may live under a writable HERMES_HOME mirror
+        # instead of the (possibly read-only) install tree in Docker — resolve
+        # it through the shared helper so we audit the dir that actually holds
+        # node_modules. See #49561.
+        try:
+            from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+            _whatsapp_bridge_dir = resolve_whatsapp_bridge_dir()
+        except Exception:
+            _whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
         npm_audit_targets = [
             (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
             (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
             (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
-            (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge", []),
+            (_whatsapp_bridge_dir, "WhatsApp bridge", []),
         ]
         for npm_dir, label, audit_extra in npm_audit_targets:
             # For workspace-scoped audits run from PROJECT_ROOT the

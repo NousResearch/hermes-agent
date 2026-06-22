@@ -679,15 +679,49 @@ def resolve_skill_config_values(
 # ── Description extraction ────────────────────────────────────────────────
 
 
+def _hermes_metadata(frontmatter: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the ``metadata.hermes`` mapping from skill frontmatter."""
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    hermes = metadata.get("hermes") or {}
+    if not isinstance(hermes, dict):
+        return {}
+    return hermes
+
+
+def _compact_text(value: Any, max_length: int) -> str:
+    """Normalize whitespace and truncate text to ``max_length`` chars."""
+    if value is None:
+        return ""
+    text = " ".join(str(value).strip().strip("'\"").split())
+    if not text:
+        return ""
+    if len(text) > max_length:
+        return text[: max_length - 3].rstrip() + "..."
+    return text
+
+
 def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
     """Extract a truncated description from parsed frontmatter."""
     raw_desc = frontmatter.get("description", "")
-    if not raw_desc:
-        return ""
-    desc = str(raw_desc).strip().strip("'\"")
-    if len(desc) > 60:
-        return desc[:57] + "..."
-    return desc
+    return _compact_text(raw_desc, 60)
+
+
+def extract_skill_prompt_summary(frontmatter: Dict[str, Any]) -> str:
+    """Extract the routing text used in the system prompt skills index.
+
+    Skill authors can provide ``metadata.hermes.prompt_summary`` when the
+    normal human-facing ``description`` is too long, too broad, or formatted
+    for docs/search rather than prompt routing.  The fallback intentionally
+    preserves the existing 60-character description cap so current prompts do
+    not grow unless a skill explicitly opts in to a longer prompt summary.
+    """
+    raw_summary = _hermes_metadata(frontmatter).get("prompt_summary")
+    summary = _compact_text(raw_summary, 180)
+    if summary:
+        return summary
+    return extract_skill_description(frontmatter)
 
 
 # ── File iteration ────────────────────────────────────────────────────────

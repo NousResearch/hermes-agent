@@ -415,6 +415,67 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_skills_index_prefers_prompt_summary(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "productivity" / "pdf"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: pdf\n"
+            "description: Human-facing description for docs, search results, and hub pages that should not be injected into every system prompt.\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    prompt_summary: Merge, split, OCR, rotate, watermark, encrypt, decrypt, and extract text/tables/images from PDF files.\n"
+            "---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "pdf" in result
+        assert "Merge, split, OCR, rotate" in result
+        assert "Human-facing description" not in result
+
+    def test_skills_index_caps_prompt_summary(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools" / "long-summary"
+        skills_dir.mkdir(parents=True)
+        long_summary = "route " + "word " * 80
+        (skills_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: long-summary\n"
+            "description: short fallback\n"
+            "metadata:\n"
+            "  hermes:\n"
+            f"    prompt_summary: {long_summary}\n"
+            "---\n"
+        )
+
+        result = build_skills_system_prompt()
+        entry = next(line for line in result.splitlines() if "- long-summary:" in line)
+
+        assert entry.endswith("...")
+        assert len(entry.split(": ", 1)[1]) <= 180
+        assert "short fallback" not in entry
+
+    def test_skills_index_fallback_description_stays_tightly_capped(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools" / "long-description"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: long-description\n"
+            "description: " + ("description " * 20) + "\n"
+            "---\n"
+        )
+
+        result = build_skills_system_prompt()
+        entry = next(line for line in result.splitlines() if "- long-description:" in line)
+
+        assert entry.endswith("...")
+        assert len(entry.split(": ", 1)[1]) <= 60
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

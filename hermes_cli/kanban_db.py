@@ -9066,9 +9066,15 @@ def dispatch_once(
             max_in_progress=max_in_progress,
             failure_limit=failure_limit,
             stale_timeout_seconds=stale_timeout_seconds,
+            stuck_after_seconds_default=stuck_after_seconds_default,
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            crash_breaker_enabled=crash_breaker_enabled,
+            crash_breaker_max_crashes=crash_breaker_max_crashes,
+            crash_breaker_window_seconds=crash_breaker_window_seconds,
+            crash_breaker_cooldown_seconds=crash_breaker_cooldown_seconds,
+            crash_breaker_max_cooldown_seconds=crash_breaker_max_cooldown_seconds,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -9082,9 +9088,15 @@ def dispatch_once(
             max_in_progress=max_in_progress,
             failure_limit=failure_limit,
             stale_timeout_seconds=stale_timeout_seconds,
+            stuck_after_seconds_default=stuck_after_seconds_default,
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            crash_breaker_enabled=crash_breaker_enabled,
+            crash_breaker_max_crashes=crash_breaker_max_crashes,
+            crash_breaker_window_seconds=crash_breaker_window_seconds,
+            crash_breaker_cooldown_seconds=crash_breaker_cooldown_seconds,
+            crash_breaker_max_cooldown_seconds=crash_breaker_max_cooldown_seconds,
         )
 
 
@@ -9098,9 +9110,15 @@ def _dispatch_once_locked(
     max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
+    stuck_after_seconds_default: int = DEFAULT_STUCK_AFTER_SECONDS,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    crash_breaker_enabled: bool = False,
+    crash_breaker_max_crashes: int = DEFAULT_CRASH_BREAKER_MAX_CRASHES,
+    crash_breaker_window_seconds: int = DEFAULT_CRASH_BREAKER_WINDOW_SECONDS,
+    crash_breaker_cooldown_seconds: int = DEFAULT_CRASH_BREAKER_COOLDOWN_SECONDS,
+    crash_breaker_max_cooldown_seconds: int = DEFAULT_CRASH_BREAKER_MAX_COOLDOWN_SECONDS,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 

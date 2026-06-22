@@ -7946,3 +7946,109 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         assert session["agent"].model == "claude-sonnet-4.6"
     finally:
         server._sessions.clear()
+
+
+# ---------------------------------------------------------------------------
+# /goal wait + /goal unwait parity
+# ---------------------------------------------------------------------------
+
+
+def _goal_dispatch(arg, mgr_class=None, session_extra=None):
+    """Helper: dispatch ``/goal <arg>`` through command.dispatch and return the
+    response dict.  Patches GoalManager with *mgr_class* (if given) and injects
+    a minimal session so the handler doesn't bail on "no active session"."""
+    session = _session(**(session_extra or {}))
+    server._sessions["gsid"] = session
+    ctx = patch("hermes_cli.goals.GoalManager", mgr_class) if mgr_class else patch(
+        "hermes_cli.goals.GoalManager",
+        lambda **kw: types.SimpleNamespace(
+            wait_on=lambda *a, **k: None,
+            stop_waiting=lambda: False,
+            has_goal=lambda: False,
+            status_line=lambda: "",
+            set=lambda t: types.SimpleNamespace(goal=t, max_turns=20),
+            pause=lambda **k: None,
+            resume=lambda: None,
+            clear=lambda: None,
+        ),
+    )
+    try:
+        with ctx:
+            return server.handle_request({
+                "id": "1",
+                "method": "command.dispatch",
+                "params": {"name": "goal", "arg": arg, "session_id": "gsid"},
+            })
+    finally:
+        server._sessions.pop("gsid", None)
+
+
+def test_goal_wait_parks_on_valid_pid():
+    calls = {}
+
+    class FakeMgr:
+        def __init__(self, **kw):
+            pass
+
+        def wait_on(self, pid, reason=""):
+            calls["pid"] = pid
+            calls["reason"] = reason
+
+    resp = _goal_dispatch("wait 1234 CI running", mgr_class=FakeMgr)
+    assert "result" in resp
+    assert resp["result"]["type"] == "exec"
+    assert "1234" in resp["result"]["output"]
+    assert "⏳" in resp["result"]["output"]
+    assert calls["pid"] == 1234
+    assert calls["reason"] == "CI running"
+
+
+def test_goal_wait_no_arg_shows_usage():
+    resp = _goal_dispatch("wait")
+    assert "result" in resp
+    assert "Usage" in resp["result"]["output"]
+
+
+def test_goal_wait_invalid_pid_shows_error():
+    resp = _goal_dispatch("wait abc")
+    assert "result" in resp
+    assert "integer" in resp["result"]["output"]
+
+
+def test_goal_wait_runtime_error_surfaces():
+    class FakeMgr:
+        def __init__(self, **kw):
+            pass
+
+        def wait_on(self, pid, reason=""):
+            raise RuntimeError("no active goal to park")
+
+    resp = _goal_dispatch("wait 999", mgr_class=FakeMgr)
+    assert "result" in resp
+    assert "no active goal" in resp["result"]["output"]
+
+
+def test_goal_unwait_clears_barrier():
+    class FakeMgr:
+        def __init__(self, **kw):
+            pass
+
+        def stop_waiting(self):
+            return True
+
+    resp = _goal_dispatch("unwait", mgr_class=FakeMgr)
+    assert "result" in resp
+    assert "barrier cleared" in resp["result"]["output"]
+
+
+def test_goal_unwait_no_barrier():
+    class FakeMgr:
+        def __init__(self, **kw):
+            pass
+
+        def stop_waiting(self):
+            return False
+
+    resp = _goal_dispatch("unwait", mgr_class=FakeMgr)
+    assert "result" in resp
+    assert "No wait barrier" in resp["result"]["output"]

@@ -339,6 +339,41 @@ class TestCodexBuildKwargs:
         )
         assert "reasoning" not in kw
 
+    def test_codex_backend_disabled_reasoning_omits_include_field(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            is_codex_backend=True,
+            reasoning_config={"enabled": False},
+        )
+        assert "include" not in kw
+        assert "reasoning" not in kw
+
+    def test_codex_backend_omits_reasoning_and_encrypted_reasoning_replay(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            is_codex_backend=True,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert "reasoning" not in kw
+        assert "include" not in kw
+
+    def test_build_kwargs_omits_tools_payload_when_tool_list_empty(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+        )
+        assert "tools" not in kw
+        assert "tool_choice" not in kw
+        assert "parallel_tool_calls" not in kw
+
 
 class TestCodexValidateResponse:
 

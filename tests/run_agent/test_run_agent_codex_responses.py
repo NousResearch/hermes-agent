@@ -312,11 +312,11 @@ def test_build_api_kwargs_codex(monkeypatch):
 
 
 def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
-    """'minimal' reasoning effort is clamped to 'low' on the Responses API.
+    """Codex backend hardening suppresses reasoning payloads entirely.
 
-    GPT-5.4 supports none/low/medium/high/xhigh but NOT 'minimal'.
-    Users may configure 'minimal' via OpenRouter conventions, so the Codex
-    Responses path must clamp it to the nearest supported level.
+    Even if the configured effort would normally be clamped for a generic
+    Responses backend, the ChatGPT Codex backend should omit both
+    `reasoning` and `include` for client-safety.
     """
     _patch_agent_bootstrap(monkeypatch)
 
@@ -341,11 +341,16 @@ def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
         ]
     )
 
-    assert kwargs["reasoning"]["effort"] == "low"
+    assert "reasoning" not in kwargs
+    assert "include" not in kwargs
 
 
 def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
-    """Effort levels natively supported by the Responses API pass through unchanged."""
+    """Codex backend hardening omits reasoning payloads for all configured efforts.
+
+    Preserve the loop over supported efforts, but assert the backend-specific
+    hardening behavior rather than the generic Responses behavior.
+    """
     _patch_agent_bootstrap(monkeypatch)
 
     for effort in ("low", "medium", "high", "xhigh"):
@@ -369,7 +374,8 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
                 {"role": "user", "content": "hi"},
             ]
         )
-        assert kwargs["reasoning"]["effort"] == effort, f"{effort} should pass through unchanged"
+        assert "reasoning" not in kwargs, f"{effort} should be suppressed on Codex backend"
+        assert "include" not in kwargs, f"{effort} should not request reasoning replay on Codex backend"
 
 
 def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):
@@ -479,6 +485,98 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_backfills_when_final_response_output_is_none(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    streamed_item = SimpleNamespace(
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="backfilled from done item")],
+    )
+
+    class _FakeResponsesStreamWithDoneItems(_FakeResponsesStream):
+        def __iter__(self):
+            return iter([
+                SimpleNamespace(type="response.output_item.done", item=streamed_item),
+            ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStreamWithDoneItems(
+                final_response=SimpleNamespace(output=None)
+            ),
+            create=lambda **kwargs: pytest.fail("fallback create should not be called"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.output == [streamed_item]
+    assert response.output[0].content[0].text == "backfilled from done item"
+
+
+def test_run_codex_stream_backfills_when_final_response_output_is_empty_list(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    streamed_item = SimpleNamespace(
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="backfilled from empty list")],
+    )
+
+    class _FakeResponsesStreamWithDoneItems(_FakeResponsesStream):
+        def __iter__(self):
+            return iter([
+                SimpleNamespace(type="response.output_item.done", item=streamed_item),
+            ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStreamWithDoneItems(
+                final_response=SimpleNamespace(output=[])
+            ),
+            create=lambda **kwargs: pytest.fail("fallback create should not be called"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.output == [streamed_item]
+    assert response.output[0].content[0].text == "backfilled from empty list"
+
+
+def test_run_codex_stream_falls_back_on_nonetype_iterable_typeerror(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"fallback": 0}
+    fallback_response = _codex_message_response("fallback ok")
+
+    class _RaisingResponsesStream:
+        def __enter__(self):
+            raise TypeError("'NoneType' object is not iterable")
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def _fake_fallback(api_kwargs, client=None):
+        calls["fallback"] += 1
+        assert api_kwargs == _codex_request_kwargs()
+        assert client is agent.client
+        return fallback_response
+
+    monkeypatch.setattr(agent, "_run_codex_create_stream_fallback", _fake_fallback)
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _RaisingResponsesStream(),
+            create=lambda **kwargs: pytest.fail("direct create path should not be called"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["fallback"] == 1
+    assert response is fallback_response
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

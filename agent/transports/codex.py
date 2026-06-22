@@ -92,6 +92,13 @@ class ResponsesApiTransport(ProviderTransport):
         _effort_clamp = {"minimal": "low"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
+        # Temporary client-safety hotfix for Darin/Mini3: the ChatGPT Codex
+        # backend is currently raising an SDK/internal TypeError when encrypted
+        # reasoning replay is requested, even on one-message smoke tests. Darin
+        # must answer Bryan before it preserves reasoning continuity.
+        if is_codex_backend:
+            reasoning_enabled = False
+
         response_tools = _responses_tools(tools)
         kwargs = {
             "model": model,
@@ -100,10 +107,10 @@ class ResponsesApiTransport(ProviderTransport):
                 payload_messages,
                 is_xai_responses=is_xai_responses,
             ),
-            "tools": response_tools,
             "store": False,
         }
         if response_tools:
+            kwargs["tools"] = response_tools
             kwargs["tool_choice"] = "auto"
             kwargs["parallel_tool_calls"] = True
 
@@ -137,7 +144,11 @@ class ResponsesApiTransport(ProviderTransport):
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
                 kwargs["include"] = ["reasoning.encrypted_content"]
         elif not is_github_responses and not is_xai_responses:
-            kwargs["include"] = []
+            # Do not send include=[] to the ChatGPT Codex backend; recent SDK/
+            # backend combinations can fail internally instead of treating it as
+            # omitted.
+            if not is_codex_backend:
+                kwargs["include"] = []
 
         request_overrides = params.get("request_overrides")
         if request_overrides:

@@ -1230,8 +1230,16 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
 
 
 def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
-    """Sanity: the guidance block is under 4 KB so it doesn't blow
-    up the cached prompt."""
+    """Sanity: the guidance block stays lean so it doesn't blow up the
+    cached prompt.
+
+    The ceiling guards against unbounded growth, not against any growth.
+    The block absorbed the load-bearing worker/orchestrator reference
+    details (workspace kinds, deliverable artifacts, created-card claims,
+    profile discovery) when the standalone kanban-worker / kanban-orchestrator
+    skills were removed and folded into this always-injected guidance, so the
+    ceiling is sized to fit that content with a little headroom.
+    """
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -1240,7 +1248,7 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
     from agent.prompt_builder import KANBAN_GUIDANCE
-    assert 1_500 < len(KANBAN_GUIDANCE) < 4_096, (
+    assert 1_500 < len(KANBAN_GUIDANCE) < 5_500, (
         f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
     )
 

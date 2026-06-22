@@ -283,6 +283,100 @@ _CREDENTIAL_FILES = (
     r'(?:~|\$home|\$\{home\})/\.'
     r'(?:netrc|pgpass|npmrc|pypirc)\b'
 )
+
+# ---------------------------------------------------------------------------
+# Credential file read detection (#50734)
+# ---------------------------------------------------------------------------
+# Patterns for detecting terminal commands that READ credential files.
+# The read_file tool already blocks these via get_read_block_error() in
+# agent/file_safety.py, but the terminal tool had no equivalent guard —
+# `cat ~/.hermes/.env` would succeed and exfiltrate credentials to the LLM
+# provider. These patterns detect file-reading commands targeting credential
+# paths so the approval system can gate or block them.
+#
+# The Hermes credential paths mirror what get_read_block_error() blocks:
+# auth.json, auth.lock, .anthropic_oauth.json, .env, webhook_subscriptions.json,
+# auth/google_oauth.json, cache/bws_cache.json, mcp-tokens/*, and any .env*
+# file under HERMES_HOME.
+#
+# Defense-in-depth: the terminal tool runs as the same OS user, so a
+# determined agent can still bypass via base64 encoding, python one-liners,
+# etc. These patterns catch the common/direct cases and surface an audit
+# trail. See get_read_block_error() docstring for the full threat model.
+# ---------------------------------------------------------------------------
+
+# Commands that read file contents (used to detect credential exfiltration).
+# `grep` is included because `grep API_KEY .env` directly emits secret-bearing
+# lines — review feedback on PR #50782.
+_CREDENTIAL_READ_COMMANDS = (
+    r'(?:cat|less|more|head|tail|tac|strings|xxd|od|hexdump|base64|openssl\s+base64|grep)'
+)
+
+# Credential file paths under HERMES_HOME that must not be read via terminal.
+# Matches both the active profile HERMES_HOME and the global Hermes root.
+# Uses the same path fragments as _HERMES_ENV_PATH for consistency.
+_HERMES_HOME_PREFIX = (
+    r'(?:~\/\.hermes/|'
+    r'(?:\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+)
+
+# Specific credential files under HERMES_HOME (mirrors get_read_block_error).
+_HERMES_CREDENTIAL_FILE = (
+    rf'(?:{_HERMES_HOME_PREFIX}'
+    r'(?:\.env|'
+    r'auth\.json|'
+    r'auth\.lock|'
+    r'\.anthropic_oauth\.json|'
+    r'webhook_subscriptions\.json|'
+    r'auth/google_oauth\.json|'
+    r'cache/bws_cache\.json'
+    r')\b)'
+)
+
+# mcp-tokens/ directory under HERMES_HOME (OAuth token material).
+_HERMES_MCP_TOKENS = (
+    rf'(?:{_HERMES_HOME_PREFIX}mcp-tokens(?:/|\b))'
+)
+
+# profiles/*/  subdirectories — each profile has its own .env, auth.json, etc.
+_HERMES_PROFILE_CREDENTIAL = (
+    rf'(?:{_HERMES_HOME_PREFIX}profiles/[^/\s"\'`]+/'
+    r'(?:\.env|auth\.json|auth\.lock|\.anthropic_oauth\.json)\b)'
+)
+
+# Combined: all Hermes credential paths that should be gated for reads.
+_HERMES_CREDENTIAL_READ_TARGET = (
+    rf'(?:{_HERMES_CREDENTIAL_FILE}|{_HERMES_MCP_TOKENS}|{_HERMES_PROFILE_CREDENTIAL})'
+)
+
+# Project-local .env files that contain secrets (mirrors _BLOCKED_PROJECT_ENV_BASENAMES
+# in agent/file_safety.py). This is more specific than _PROJECT_ENV_PATH because
+# .env.example and .env.template are safe documentation files that should be readable.
+_PROJECT_SECRET_ENV_BASENAMES = (
+    r'\.env(?:\.(?:local|development|production|test|staging))?\b|\.envrc\b'
+)
+_PROJECT_ENV_READ_TARGET = (
+    rf'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*(?:{_PROJECT_SECRET_ENV_BASENAMES}))'
+)
+
+# ---------------------------------------------------------------------------
+# Cloud provider credential paths (#50734 follow-up)
+# ---------------------------------------------------------------------------
+# These directories/files contain cloud provider credentials that should not
+# be read via terminal. Mirrors build_write_denied_prefixes() in file_safety.py.
+# ---------------------------------------------------------------------------
+_CLOUD_CREDENTIAL_PATHS = (
+    r'(?:~|\$home|\$\{home\})/'
+    r'(?:\.aws/(?:credentials|config)|'           # AWS credentials
+    r'\.kube/config|'                              # Kubernetes config
+    r'\.docker/config\.json|'                      # Docker registry auth
+    r'\.git-credentials|'                          # Git credential helper
+    r'\.config/gh/hosts\.yml|'                     # GitHub CLI tokens
+    r'\.config/gcloud/(?:credentials|application_default_credentials)(?:\.json)?|'  # GCP
+    r'\.azure/(?:accessTokens\.json|azureProfile\.json|msal_token_cache\.json)|'  # Azure
+    r'\.gnupg/(?:private-keys-v1\.d|secring\.gpg))'  # GPG private keys
+)
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/{etc,var,tmp,home}.
 # A command written to target /private/etc/sudoers works identically to
 # /etc/sudoers on macOS but bypasses a plain "/etc/" pattern check. Match
@@ -589,6 +683,66 @@ def _sudo_stdin_block_result(description: str) -> dict:
 
 
 # =========================================================================
+# Credential-read detection (#50734 — review follow-up)
+# =========================================================================
+# Separate from DANGEROUS_PATTERNS so check_all_command_guards() can call it
+# BEFORE the smart-approval phase. Credential reads must always require
+# explicit user approval — an LLM risk assessment (smart mode) must NOT be
+# allowed to auto-approve credential exfiltration. See:
+# https://github.com/NousResearch/hermes-agent/pull/50782 review feedback.
+
+_CREDENTIAL_READ_PATTERNS_RAW = (
+    # Hermes credential files under HERMES_HOME (auth.json, .env, etc.)
+    (rf'{_CMDPOS}{_CREDENTIAL_READ_COMMANDS}\b[^;|&\n]*{_HERMES_CREDENTIAL_READ_TARGET}',
+     "read Hermes credential file via terminal"),
+    # Project-local .env files anywhere on disk
+    (rf'{_CMDPOS}{_CREDENTIAL_READ_COMMANDS}\b[^;|&\n]*["\']?{_PROJECT_ENV_READ_TARGET}["\']?{_COMMAND_TAIL}',
+     "read project .env file via terminal"),
+    # User credential files (~/.netrc, ~/.pgpass, etc.)
+    (rf'{_CMDPOS}{_CREDENTIAL_READ_COMMANDS}\b[^;|&\n]*{_CREDENTIAL_FILES}',
+     "read user credential file via terminal"),
+    # SSH private keys (~/.ssh/id_rsa, ~/.ssh/id_ed25519, etc.)
+    # Note: authorized_keys contains PUBLIC keys and is safe to read.
+    (rf'{_CMDPOS}{_CREDENTIAL_READ_COMMANDS}\b[^;|&\n]*{_SSH_SENSITIVE_PATH}(?:id_\w+)\b',
+     "read SSH private key file via terminal"),
+    # Sourcing .env files loads credentials into shell environment where they
+    # can be exfiltrated via `env`, `export`, or subsequent commands.
+    (rf'{_CMDPOS}(?:source|\.)\s+["\']?{_PROJECT_ENV_READ_TARGET}["\']?{_COMMAND_TAIL}',
+     "source project .env file (leaks credentials to environment)"),
+    (rf'{_CMDPOS}(?:source|\.)\s+["\']?{_HERMES_CREDENTIAL_READ_TARGET}["\']?{_COMMAND_TAIL}',
+     "source Hermes credential file (leaks credentials to environment)"),
+    # Cloud provider credentials (AWS, GCP, Azure, Docker, Kubernetes, GitHub CLI, GPG)
+    (rf'{_CMDPOS}{_CREDENTIAL_READ_COMMANDS}\b[^;|&\n]*{_CLOUD_CREDENTIAL_PATHS}',
+     "read cloud provider credential via terminal"),
+)
+
+CREDENTIAL_READ_PATTERNS_COMPILED = [
+    (re.compile(pattern, _RE_FLAGS), description)
+    for pattern, description in _CREDENTIAL_READ_PATTERNS_RAW
+]
+
+
+def detect_credential_read_command(command: str) -> tuple:
+    """Check if a command reads credential files via the terminal.
+
+    Returns:
+        (is_credential_read, pattern_key, description) or (False, None, None)
+
+    This is separate from ``detect_dangerous_command`` so the approval gate
+    can force credential reads to manual approval — smart mode must NOT be
+    allowed to auto-approve credential exfiltration. The patterns also live
+    inside ``DANGEROUS_PATTERNS`` (via ``*_CREDENTIAL_READ_PATTERNS_RAW``) so
+    ``detect_dangerous_command`` still flags them for audit-trail purposes.
+    """
+    for command_variant in _command_detection_variants(command):
+        command_lower = command_variant.lower()
+        for pattern_re, description in CREDENTIAL_READ_PATTERNS_COMPILED:
+            if pattern_re.search(command_lower):
+                return (True, description, description)
+    return (False, None, None)
+
+
+# =========================================================================
 # Dangerous command patterns
 # =========================================================================
 
@@ -803,6 +957,13 @@ DANGEROUS_PATTERNS = [
     # into a single -X token. Catches the same threat class.
     (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b',
      "sudo with combined-flag privilege escalation"),
+    # -------------------------------------------------------------------------
+    # Credential file read detection (#50734)
+    # -------------------------------------------------------------------------
+    # Patterns are defined in _CREDENTIAL_READ_PATTERNS_RAW and unpacked here.
+    # They also feed CREDENTIAL_READ_PATTERNS_COMPILED for the dedicated
+    # detect_credential_read_command() check that runs before smart approval.
+    *_CREDENTIAL_READ_PATTERNS_RAW,
 ]
 
 
@@ -2808,12 +2969,21 @@ def check_all_command_guards(command: str, env_type: str,
     # Dangerous command check (detection only, no approval)
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
 
+    # Credential-read check — separate from detect_dangerous_command so we can
+    # force these to manual approval and prevent smart mode from auto-approving
+    # credential exfiltration (PR #50782 review feedback).
+    is_cred_read, _cred_read_key, _cred_read_desc = detect_credential_read_command(command)
+
     # --- Phase 2: Decide ---
 
     # Collect warnings that need approval
     warnings = []  # list of (pattern_key, description, is_tirith)
 
     session_key = get_current_session_key()
+
+    # Track whether smart approval must be skipped: credential reads require
+    # explicit user approval regardless of what the aux LLM decides.
+    _force_no_smart = False
 
     # Tirith block/warn → approvable warning with rich findings.
     # Previously, tirith "block" was a hard block with no approval prompt.
@@ -2831,6 +3001,18 @@ def check_all_command_guards(command: str, env_type: str,
         if not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
 
+    # Credential read: always require explicit user approval — even when
+    # detect_dangerous_command() above also matched (which would already be
+    # in warnings), we still need to flip _force_no_smart so smart mode
+    # cannot auto-approve the exfiltration.
+    if is_cred_read and not is_approved(session_key, _cred_read_key):
+        _force_no_smart = True
+        # Add a dedicated credential-read warning if detect_dangerous_command
+        # did not already add one (e.g. the pattern was approved for the
+        # session but the credential read was not — treat them independently).
+        if not any(key == _cred_read_key for key, _, _ in warnings):
+            warnings.append((_cred_read_key, _cred_read_desc, False))
+
     # Nothing to warn about
     if not warnings:
         return {"approved": True, "message": None}
@@ -2839,8 +3021,12 @@ def check_all_command_guards(command: str, env_type: str,
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
     # (openai/codex#13860).
+    #
+    # Credential reads bypass smart approval entirely: the aux LLM must not
+    # be allowed to auto-approve commands that exfiltrate API keys / tokens.
+    # See PR #50782 review feedback.
     smart_denied_for_owner = False
-    if approval_mode == "smart":
+    if approval_mode == "smart" and not _force_no_smart:
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         observer_payload = _prepare_smart_approval_observer(
             command=command,

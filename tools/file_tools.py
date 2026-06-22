@@ -1949,6 +1949,21 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
     try:
         offset, limit = normalize_search_pagination(offset, limit)
 
+        # ── Credential file guard ─────────────────────────────────────
+        # Block searching content of credential files (defense-in-depth,
+        # mirrors the read_file guard via get_read_block_error).
+        # Only applies to content search, not file search.
+        if target == "content" and path != ".":
+            try:
+                _search_path = _resolve_path_for_task(path, task_id)
+                # If path is a file (not directory), check if it's a credential file
+                if _search_path.is_file():
+                    block_error = get_read_block_error(str(_search_path))
+                    if block_error:
+                        return json.dumps({"error": block_error})
+            except (OSError, ValueError):
+                pass  # Path resolution failed, let search proceed
+
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated
         # results without tripping the repeated-search guard.

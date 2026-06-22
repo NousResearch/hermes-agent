@@ -186,9 +186,12 @@ def cmd_send(args: argparse.Namespace) -> None:
             "argument, use --file PATH, or pipe data via stdin.",
             _USAGE_EXIT)
 
-    # Optional subject line: a consistent header for alerting scripts.
+    # Optional: pass a transport-native subject when the platform supports it
+    # (email), while preserving the historical header-prepend behavior for
+    # chat platforms that do not have a subject field.
     subject = getattr(args, "subject", None)
-    if subject:
+    target_platform = target.split(":", 1)[0].strip().lower()
+    if subject and target_platform != "email":
         message = f"{subject}\n\n{message.lstrip()}"
 
     # Lazy import keeps `hermes send --help` fast (no tool registry / gateway config stack).
@@ -196,7 +199,14 @@ def cmd_send(args: argparse.Namespace) -> None:
 
     # Routes to the platform adapter (bot-token path for built-ins, live-adapter path for plugin
     # platforms); takes the standard tool-call dict and returns a JSON string.
-    result = send_message_tool({"action": "send", "target": target, "message": message})
+    tool_args = {
+        "action": "send",
+        "target": target,
+        "message": message,
+    }
+    if subject and target_platform == "email":
+        tool_args["subject"] = subject
+    result = send_message_tool(tool_args)
     sys.exit(_emit_result(result, json_mode=getattr(args, "json", False), quiet=getattr(args, "quiet", False)))
 
 

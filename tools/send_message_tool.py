@@ -252,10 +252,14 @@ def _handle_send(args):
     if _relay_denial:
         return tool_error(_relay_denial)
 
+    subject = args.get("subject") if platform_name == "email" else None
+
     try:
         from model_tools import _run_async
         # Only custom plugin handlers receive the complete typed request.
         handler_args = {"args": args} if entry is not None and entry.send_message_handler is not None else {}
+        if subject:
+            handler_args["subject"] = subject
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))
@@ -677,6 +681,10 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+            },
+            "subject": {
+                "type": "string",
+                "description": "Optional email subject. Honored for target='email:...' and ignored by chat-style platforms."
             },
             "emoji": {
                 "type": "string",

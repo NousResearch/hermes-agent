@@ -41,6 +41,7 @@ _SENSITIVE_PAYLOAD_KEYS = frozenset(
 # Test seam: tests can replace this with a fake factory without touching the
 # runtime MCP client implementation.
 _handler_factory = _make_tool_handler
+_discover_mcp_tools = None
 
 try:  # Best-effort safety boundary; keep the adapter usable if unavailable.
     from agent.redact import redact_sensitive_text as _redact_sensitive_text
@@ -226,6 +227,24 @@ def _parse_handler_result(
     return _redact_payload(response)
 
 
+def _refresh_mcp_registry() -> tuple[bool, str | None]:
+    """Best-effort lazy MCP discovery for gateway paths that missed startup discovery."""
+
+    global _discover_mcp_tools
+    if _discover_mcp_tools is None:
+        try:
+            from tools.mcp_tool import discover_mcp_tools as _discover
+        except Exception as exc:
+            return False, f"MCP discovery helper unavailable: {type(exc).__name__}: {exc}"
+        _discover_mcp_tools = _discover
+
+    try:
+        _discover_mcp_tools()
+    except Exception as exc:
+        return False, f"MCP discovery failed: {type(exc).__name__}: {exc}"
+    return True, None
+
+
 def call_ouroboros_tool(
     tool_name: str,
     args: dict | None = None,
@@ -256,8 +275,18 @@ def call_ouroboros_tool(
 
     entry = registry.get_entry(registry_name)
     if entry is None:
+        refreshed, refresh_error = _refresh_mcp_registry()
+        if not refreshed:
+            return _error(
+                refresh_error or "Ouroboros MCP discovery failed",
+                tool_name=raw_tool_name,
+                registry_name=registry_name,
+            )
+        entry = registry.get_entry(registry_name)
+
+    if entry is None:
         return _error(
-            "Ouroboros MCP tool is not registered or available",
+            "Ouroboros MCP tool is not registered or available after discovery",
             tool_name=raw_tool_name,
             registry_name=registry_name,
         )

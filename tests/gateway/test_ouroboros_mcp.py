@@ -77,16 +77,53 @@ def test_success_path_calls_registry_gated_handler(monkeypatch):
 
 def test_missing_registry_entry_returns_error_without_calling_handler(monkeypatch):
     registry_name, fake_registry = _install_registry(monkeypatch, None)
+    monkeypatch.setattr(ouroboros_mcp, "_discover_mcp_tools", lambda: None)
     calls = _install_handler_factory(monkeypatch)
 
     result = ouroboros_mcp.call_ouroboros_tool("ouroboros_interview", {})
 
-    assert fake_registry.lookups == [registry_name]
+    assert fake_registry.lookups == [registry_name, registry_name]
     assert calls == []
     assert result["success"] is False
     assert result["tool"] == "ouroboros_interview"
     assert result["registry_name"] == registry_name
     assert "registered" in result["error"] or "available" in result["error"]
+
+
+def test_missing_registry_entry_lazily_discovers_and_retries(monkeypatch):
+    registry_name, fake_registry = _install_registry(monkeypatch, None)
+    calls = _install_handler_factory(monkeypatch, response=json.dumps({"result": "ok"}))
+
+    def fake_discover():
+        fake_registry.entries[registry_name] = _entry()
+
+    monkeypatch.setattr(ouroboros_mcp, "_discover_mcp_tools", fake_discover)
+
+    result = ouroboros_mcp.call_ouroboros_tool("ouroboros_interview", {})
+
+    assert fake_registry.lookups == [registry_name, registry_name]
+    assert calls == [
+        ("factory", "ouroboros", "ouroboros_interview", 45.0),
+        ("handler", {}),
+    ]
+    assert result == {"result": "ok", "success": True}
+
+
+def test_lazy_discovery_failure_returns_safe_error_without_handler(monkeypatch):
+    _registry_name, _fake_registry = _install_registry(monkeypatch, None)
+    calls = _install_handler_factory(monkeypatch)
+
+    def fake_discover():
+        raise RuntimeError("discovery boom")
+
+    monkeypatch.setattr(ouroboros_mcp, "_discover_mcp_tools", fake_discover)
+
+    result = ouroboros_mcp.call_ouroboros_tool("ouroboros_interview", {})
+
+    assert calls == []
+    assert result["success"] is False
+    assert "discovery" in result["error"].lower()
+    assert "RuntimeError" in result["error"]
 
 
 def test_wrong_toolset_returns_error_without_calling_handler(monkeypatch):

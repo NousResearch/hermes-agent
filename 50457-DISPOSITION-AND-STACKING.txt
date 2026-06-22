@@ -1,0 +1,95 @@
+# #50457 DISPOSITION + STACKING ORDER (Council items 2 & 3)
+# Generated 2026-06-21. Resolves the two technical risks the Council flagged:
+# (A) #50457 is unrebaseable; (B) test failures on #50078/#50031/#50032/#50041.
+
+## (A) #50457 — opus-context bundle: RECOMMENDED CLOSE (covered + stale)
+
+#50457 (tests/copilot-opus-context-integration) carries 4 files, ALL investigated:
+
+1. hermes_cli/auth.py  (-670 lines vs main): REVERTS main's auth improvements
+   (main is 318 commits ahead of #50457's base = v0.17.0). MUST NOT land.
+2. hermes_cli/runtime_provider.py (-194): same — reverts main's env_int/_get_secret/
+   profile-scoped helpers. MUST NOT land.
+3. tests/agent/conftest.py (+10): an agy-cli test fixture (registers
+   `requires_ls_binary` for the Antigravity language_server). RELOCATED THIS RUN to
+   #50555 (feat/agy-cli-provider-isolated), where the agy-cli tests that need it live
+   (pushed d6c626665). So this useful piece is NOT lost.
+4. tests/agent/test_copilot_opus_context_fix_2026_06_04.py (+714): asserts the private
+   overlay's exact copilot routing / effort-clamp / mythos-alias internals AND imports
+   `agent.agy_cli_client` (private, only in #50555). On current main it fails 57-58
+   (37 = agy_cli import; the rest = assertions main's 318 commits changed). Its INTENT
+   (verify copilot-claude→/v1/messages routing + effort clamps) is ALREADY DELIVERED:
+   - main itself now routes claude→anthropic_messages (models.py:3212 copilot_model_api_mode)
+   - #49184 covers claude→v1messages routing (with its own passing tests)
+   - #49644 covers max/effort clamp; #49449 covers the limits
+   It is NOT cleanly rebaseable without rewriting the assertions (= inventing test code).
+
+RECOMMENDATION: CLOSE #50457 (like the prior #50049/#50484/#50487 closures). Its only
+non-revert, non-redundant piece (the agy-cli conftest) is already relocated to #50555.
+This is a USER decision (a public close side-effect) — surfaced here, not executed
+unilaterally. If kept, it must stay a draft explicitly marked "private opus-context
+snapshot, agy-cli-coupled, not rebaseable onto current main".
+
+COVERAGE IMPACT IF CLOSED: auth.py/runtime_provider.py reverts are unwanted (drop them).
+conftest.py is now in #50555. The test's intent is covered by main+#49184/#49644/#49449.
+So closing #50457 orphans nothing the campaign actually wants on a later release.
+
+## (B) Test 'failures' — stacking dependencies + WIP, NONE blocking pull-onto-v0.17.0
+
+Per-PR own-tests run standalone on origin/main. 4 PRs show failures, all characterized:
+
+- #50078 (orphan-test-catchup): 6 fail STANDALONE because its catch-up tests exercise
+  #49644's max-effort feature. STACKING ORDER: apply #49644 BEFORE #50078 → all pass
+  (PROVEN: test_max_is_a_valid_level + test_reasoning_xhigh both pass with #49644 applied).
+  This is correct campaign splitting (feature vs its catch-up tests), NOT a bug.
+- #50031 (auto-router): 1 LIVE test fails (discount ratio 1.0 vs expected ~0.9). #50031
+  is the USER-ISOLATED WIP auto-router draft (disposition rule 6: "may be incomplete,
+  isolate as draft, fix later"). Failure reflects its intentional WIP status.
+- #50032 (source-accelerator): 4 fail (ModuleNotFoundError source_accelerator). #50032
+  is the USER-ISOLATED WIP source-accelerator draft (rule 7: "own branch, NOT for review
+  yet"). The accelerator module is intentionally not in the public diff.
+- #50041 (doctor): 2 codex-cli-hint placement tests; depend on draft codex hint code.
+
+NONE of these block the pull-onto-v0.17.0 use case: the FULL STACKED replay onto v0.17.0
+(REPRODUCE-LOG-v017.txt) already shows 82 changed .py files compile with 0 failures when
+all PRs are applied together. The standalone failures are by-design split/WIP, documented
+here with the stacking order (#49644 → #50078) and the WIP acceptance (#50031/#50032).
+
+## RECOMMENDED STACK/APPLY ORDER onto v0.17.0
+1. ready-for-review foundation PRs first (#48024/#48057/#48065/#48069/#48101/#49184/#49449/#49644)
+2. then drafts; #49644 BEFORE #50078 (its catch-up tests)
+3. #50555 (agy-cli) BEFORE anything importing agent.agy_cli_client
+4. #50111 (tracker/evidence) last
+The APPLY-RESOLUTIONS-ON-v0.17.0.sh script applies in numeric order with the 6 documented
+resolutions and produces a 0-marker, 0-compile-failure tree (verified).
+
+## UPDATE (deeper investigation): #50457's src files ARE agy-cli cluster
+
+Investigating #50457's auth.py/runtime_provider.py "reverts" revealed they are NOT
+genuine overlay work being reverted — they are an ARTIFACT of diffing #50457's stale
+base (v0.17.0, 318 commits behind main) against current main. The overlay's GENUINE
+auth.py change vs v0.16.0 is only +10 lines: the **agy-cli ProviderConfig registration**
+(auth_type=external_process, inference_base_url="agy://antigravity", -> agy_cli_client.py).
+runtime_provider.py's genuine change is the `if provider == "agy-cli":` routing block.
+
+So #50457's 4 files decompose as:
+  - auth.py / runtime_provider.py genuine delta = AGY-CLI provider registration -> belongs
+    with #50555 (the isolated agy-cli cluster), NOT a separate opus-context PR.
+  - conftest.py = agy-cli test fixture -> ALREADY relocated to #50555 this run (d6c626665).
+  - opus-context test = stale + agy-cli-coupled + intent-covered by main+#49184/#49644/#49449.
+
+REFINED RECOMMENDATION: #50457 -> CLOSE. The entire agy-cli cluster (client, plugin,
+tests, conftest, AND the auth/runtime registration) consolidates under #50555, per the
+user's standing "isolate agy-cli to one draft PR, not-for-merge, fix later" rule (disp.
+rule 8). #50555 is itself stale-base WIP (318 commits behind main) by design — it is the
+agreed holding pen for agy-cli until the user does the upgrade. The auth/runtime
+registration can be added to #50555 at that upgrade time (it applies clean from v0.16.0).
+
+NOTHING the campaign wants on a later release is orphaned by closing #50457:
+  - agy-cli code -> #50555 (its designated home)
+  - opus-context test intent -> already in main + #49184/#49644/#49449
+  - the conftest -> already moved to #50555.
+The auth.py/runtime_provider.py main-reverts in #50457 are UNWANTED (they'd undo main).
+
+This is a USER decision (close = public side-effect): RECOMMENDED but not executed
+unilaterally. Q (#50457): close it (agy-cli consolidated in #50555, test intent covered)?

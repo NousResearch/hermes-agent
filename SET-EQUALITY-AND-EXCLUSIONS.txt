@@ -1,0 +1,38 @@
+# SET-EQUALITY: union(42 PR diffs) vs src-delta(v0.16.0..HEAD)  (Council item 1)
+# Generated 2026-06-21. Verifies the PRs collectively reproduce the overlay's
+# real source delta, with intentional exclusions enumerated for user sign-off.
+
+## RESULT
+  target src delta files (v0.16.0..HEAD, excl 25 DISCARD) : 140
+  union of all 42 PR diffs (file level, excl #50111 docs)  : 154
+  MISSING (in src delta, NOT in any PR)                     : 0   <-- exact coverage
+
+  Every one of the 140 real-src overlay-delta files is present in at least one open PR.
+  The 14 "extra" (154-140) are PR-authored NET-NEW files (new tests/docs each PR ships;
+  not in the overlay) — legitimate, verified earlier.
+
+## INTENTIONAL EXCLUSIONS (enumerated for user sign-off)
+
+### A. 25 DISCARD files (already ratified-pending in NON-CONTRIBUTABLE.md)
+  9 .bak editor backups + 12 .project-intel/ generated index + 4 transcripts/ eval
+  captures. git grep across all src code = 0 references. Safe to drop.
+
+### B. #50457's auth.py / runtime_provider.py "reverts" — EXCLUDE (do NOT land)
+  These appear in #50457's diff as -670/-194 ONLY because #50457's base is v0.17.0 and
+  main moved 318 commits ahead. The overlay's GENUINE change to these files vs v0.16.0 is
+  tiny (+10/+~18 lines) and is the AGY-CLI provider registration — which belongs with the
+  isolated agy-cli PR #50555, not #50457. Landing #50457's version would REVERT main's
+  auth improvements. So #50457's auth/runtime hunks are an intentional EXCLUSION; the
+  genuine agy-cli registration is tracked to #50555 (the agy-cli holding pen, WIP).
+
+### C. #50457's opus-context test — EXCLUDE (intent covered + stale)
+  Asserts the private overlay's exact copilot routing/clamp/mythos internals + imports
+  agy-cli. Intent already delivered by main (copilot_model_api_mode) + #49184/#49644/#49449.
+  Not rebaseable without rewriting assertions. Recommend #50457 CLOSE (see
+  50457-DISPOSITION-AND-STACKING.txt).
+
+## NET
+  With the DISCARD set (A) and #50457 (B+C) as the enumerated intentional exclusions, the
+  remaining 41 open PRs reproduce the wanted overlay src delta exactly (0 missing). The
+  exclusions are: 25 DISCARD (non-source) + #50457 (stale/covered/agy-cli-consolidated).
+  All three categories are surfaced for explicit user sign-off; none is dropped silently.

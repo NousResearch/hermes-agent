@@ -8,7 +8,8 @@
   "type": "module",
   "main": "electron/main.cjs",
   "engines": {
-    "node": "^20.19.0 || >=22.12.0"
+    "node": "^20.19.0 || >=22.12.0",
+    "npm": ">=11.10.0"
   },
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",

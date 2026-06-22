@@ -15,5 +15,8 @@
   },
   "overrides": {
     "protobufjs": "^7.5.5"
+  },
+  "engines": {
+    "npm": ">=11.10.0"
   }
 }

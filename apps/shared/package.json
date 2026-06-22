@@ -12,5 +12,8 @@
   },
   "devDependencies": {
     "typescript": "^6.0.3"
+  },
+  "engines": {
+    "npm": ">=11.10.0"
   }
 }

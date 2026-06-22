@@ -1219,6 +1219,13 @@ def _handle_skill_graph_search(args: dict | None = None, **kw) -> str:
                         "properties": json.loads(row["properties"]) if row["properties"] else {},
                     })
 
+        _hint = (
+            "Call skill_load(name) to load full content of a discovered skill."
+            if results
+            else "No skills matched your query. "
+                 "Try skills_list() to browse all available skills, "
+                 "or skill_manage(action='create') to create a new one."
+        )
         return json.dumps({
             "success": True,
             "query": query,
@@ -1226,7 +1233,7 @@ def _handle_skill_graph_search(args: dict | None = None, **kw) -> str:
             "edges_between_results": edges_between,
             "total_skills_in_graph": total,
             "result_count": len(results),
-            "hint": "Call skill_load(name) to load full content of a discovered skill.",
+            "hint": _hint,
         }, ensure_ascii=False)
 
     except Exception as e:

@@ -1261,6 +1261,27 @@ class TestIsPaymentError:
         exc = Exception("connection reset")
         assert _is_payment_error(exc) is False
 
+    def test_zai_1311_subscription_plan_is_payment(self):
+        """z.ai returns HTTP 429 code 1311 when the plan lacks the model
+        (e.g. GLM-5V-Turbo on the coding plan). Permanent -- must route to
+        payment fallback, not transient rate-limit handling."""
+        exc = Exception(
+            "{'error': {'code': '1311', 'message': "
+            "'Your current subscription plan does not yet include access to GLM-5V-Turbo'}}"
+        )
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
+    def test_zai_1305_overloaded_is_not_payment(self):
+        """Transient overload must NOT be classified as payment -- it will
+        recover, and misclassifying it skips retry/cooldown paths."""
+        exc = Exception(
+            "{'error': {'code': '1305', 'message': "
+            "'The service may be temporarily overloaded, please try again later'}}"
+        )
+        exc.status_code = 429
+        assert _is_payment_error(exc) is False
+
     # ── Daily / monthly quota exhaustion (#26803) ────────────────────────────
 
     def test_429_quota_exceeded(self):

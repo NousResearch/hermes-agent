@@ -300,6 +300,11 @@ def build_memory_context_block(raw_context: str) -> str:
     clean = sanitize_context(raw_context)
     if clean != raw_context:
         logger.warning("memory provider returned pre-wrapped context; stripped")
+    # If sanitizing removed everything (e.g. the provider returned only a
+    # pre-wrapped <memory-context> block / system note), emit no block at all
+    # rather than an empty fenced wrapper with a hollow system note.
+    if not clean.strip():
+        return ""
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "

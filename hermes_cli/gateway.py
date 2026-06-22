@@ -3066,7 +3066,7 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     if _refuse_temp_home_service_write(new_unit, "systemd unit"):
         return False
 
-    unit_path.write_text(new_unit, encoding="utf-8")
+    unit_path.write_text(new_unit, encoding="utf-8", encoding="utf-8")
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     print(
         f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install"
@@ -3248,7 +3248,7 @@ def systemd_install(
     if _refuse_temp_home_service_write(new_unit, "systemd unit"):
         return
     print(f"Installing {_service_scope_label(system)} systemd service to: {unit_path}")
-    unit_path.write_text(new_unit, encoding="utf-8")
+    unit_path.write_text(new_unit, encoding="utf-8", encoding="utf-8")
 
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     if enable_on_startup:
@@ -4082,7 +4082,7 @@ def refresh_launchd_plist_if_needed() -> bool:
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return False
 
-    plist_path.write_text(new_plist, encoding="utf-8")
+    plist_path.write_text(new_plist, encoding="utf-8", encoding="utf-8")
     label = get_launchd_label()
     domain = _launchd_domain()
     target = f"{domain}/{label}"
@@ -4251,7 +4251,7 @@ def launchd_install(force: bool = False):
     if _refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")
-    plist_path.write_text(new_plist)
+    plist_path.write_text(new_plist, encoding="utf-8")
 
     try:
         _launchctl_bootstrap(
@@ -4301,7 +4301,7 @@ def launchd_start():
             sys.exit(1)
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
-        plist_path.write_text(new_plist, encoding="utf-8")
+        plist_path.write_text(new_plist, encoding="utf-8", encoding="utf-8")
         try:
             _launchctl_bootstrap(_launchd_domain(), plist_path, label, timeout=30)
             subprocess.run(

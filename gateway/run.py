@@ -68,8 +68,8 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
-_TELEGRAM_NOISY_STATUS_RE = re.compile(
-    r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
+_GATEWAY_NOISY_STATUS_RE = re.compile(
+    r"("  # transient/auxiliary status that should stay in logs, not gateway chats
     r"auxiliary\s+.+\s+failed"
     r"|compression\s+summary\s+failed"
     r"|fallback\s+context\s+marker"
@@ -388,17 +388,26 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
-    """Filter/sanitize agent status callbacks before platform delivery."""
+    """Filter/sanitize agent status callbacks before platform delivery.
+
+    Local/CLI sessions keep the raw diagnostic stream. Messaging gateway
+    surfaces should not receive transient auxiliary/compression chatter: those
+    events are useful in logs, but in chat they look like assistant replies and
+    leak raw provider errors (for example OpenRouter 402 bodies during
+    auto-detected compression fallback).
+    """
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
+
+    platform_value = _gateway_platform_value(platform)
+    if platform_value == "local":
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
-    if _TELEGRAM_NOISY_STATUS_RE.search(text):
+    if _GATEWAY_NOISY_STATUS_RE.search(text):
         return None
-    if _looks_like_gateway_provider_error(text):
+    if platform_value == "telegram" and _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text
 

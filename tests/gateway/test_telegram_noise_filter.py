@@ -7,12 +7,13 @@ from gateway.run import (
 )
 
 
-def test_telegram_status_suppresses_auxiliary_and_retry_noise():
-    """Auxiliary failures and retry backoff chatter should not hit Telegram."""
+def test_gateway_status_suppresses_auxiliary_and_retry_noise_on_chat_platforms():
+    """Auxiliary failures and retry backoff chatter should not hit gateway chats."""
     noisy_messages = [
         "⚠ Auxiliary title generation failed: HTTP 400: Operation contains cybersecurity risk",
-        "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
+        "⚠ Compression summary failed: Error code: 402 - {'message': This request requires more credits, or fewer max_tokens. You requested up to 65536 tokens, but can only afford 612. To increase, visit https://openrouter.ai/settings/credits ...}. Inserted a fallback context marker.",
         "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
+        "📦 Preflight compression: ~237,261 tokens >= 231,200 threshold. This may take a moment.",
         "ℹ Configured compression model 'small-model' failed (timeout). Recovered using main model — check auxiliary.compression.model in config.yaml.",
         "⏳ Retrying in 4.2s (attempt 1/3)...",
         "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
@@ -21,14 +22,22 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
 
     for message in noisy_messages:
         assert _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message) is None
+        assert _prepare_gateway_status_message(Platform.DISCORD, "warn", message) is None
+        assert _prepare_gateway_status_message(Platform.SLACK, "warn", message) is None
 
 
-def test_non_telegram_status_is_unchanged():
-    """The Telegram quieting policy must not hide CLI/Discord diagnostics."""
+def test_local_status_is_unchanged():
+    """CLI/local diagnostics should keep raw status chatter for debugging."""
     message = "⏳ Retrying in 4.2s (attempt 1/3)..."
 
-    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) == message
     assert _prepare_gateway_status_message("local", "lifecycle", message) == message
+
+
+def test_non_noisy_discord_status_is_unchanged():
+    """Normal non-Telegram status messages should still be delivered."""
+    message = "✅ Gateway restarted successfully."
+
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) == message
 
 
 def test_telegram_status_sanitizes_raw_provider_security_errors():

@@ -13,7 +13,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageType
 
 
-def _make_adapter(allow_from=None, allowed_chats=None, group_allowed_chats=None):
+def _make_adapter(allow_from=None, allowed_chats=None, group_allowed_chats=None, callback_auth=None):
     from gateway.platforms.telegram import TelegramAdapter
 
     extra = {}
@@ -38,7 +38,8 @@ def _make_adapter(allow_from=None, allowed_chats=None, group_allowed_chats=None)
     adapter._forum_command_registered = set()
     adapter._active_sessions = {}
     adapter._pending_messages = {}
-    adapter._is_callback_user_authorized = lambda user_id, **_kw: True
+    if callback_auth is not None:
+        adapter._is_callback_user_authorized = callback_auth
     return adapter
 
 
@@ -222,11 +223,85 @@ def test_is_user_authorized_from_message_no_from_user():
 
 def test_is_user_authorized_from_message_callback():
     """_is_user_authorized_from_message should use _is_callback_user_authorized."""
-    adapter = _make_adapter()
-    adapter._is_callback_user_authorized = lambda uid: uid == "555"
+    adapter = _make_adapter(callback_auth=lambda uid, **_kw: uid == "555")
 
     msg = _make_message(from_user_id=555)
     assert adapter._is_user_authorized_from_message(msg) is True
 
     msg = _make_message(from_user_id=666)
+    assert adapter._is_user_authorized_from_message(msg) is False
+
+
+def test_unknown_dm_with_no_allowlist_passes_to_pairing(monkeypatch):
+    """Unknown DMs must still reach the gateway pairing flow when no allowlist exists."""
+    for key in (
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "TELEGRAM_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = _make_adapter()
+    msg = _make_message(from_user_id=111, chat_id=111, chat_type="private")
+
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+
+def test_runner_auth_gets_group_user_allowlist_context(monkeypatch):
+    """Group user allowlists need a group-shaped source, not a DM-shaped one."""
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "111")
+    seen_sources = []
+
+    class Runner:
+        def _is_user_authorized(self, source):
+            seen_sources.append(source)
+            return source.chat_type == "group" and source.chat_id == "-100" and source.user_id == "111"
+
+        async def handle(self, event):
+            return None
+
+    runner = Runner()
+    adapter = _make_adapter()
+    adapter._message_handler = runner.handle
+    msg = _make_message(from_user_id=111, chat_id=-100, chat_type="group")
+
+    assert adapter._is_user_authorized_from_message(msg) is True
+    assert seen_sources
+    assert seen_sources[0].chat_type == "group"
+    assert seen_sources[0].chat_id == "-100"
+
+
+def test_runner_auth_gets_group_chat_allowlist_context(monkeypatch):
+    """Group chat allowlists need the real chat id before intake drops updates."""
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_CHATS", "-222")
+    seen_sources = []
+
+    class Runner:
+        def _is_user_authorized(self, source):
+            seen_sources.append(source)
+            return source.chat_type == "group" and source.chat_id == "-222"
+
+        async def handle(self, event):
+            return None
+
+    runner = Runner()
+    adapter = _make_adapter()
+    adapter._message_handler = runner.handle
+    msg = _make_message(from_user_id=111, chat_id=-222, chat_type="group")
+
+    assert adapter._is_user_authorized_from_message(msg) is True
+    assert seen_sources
+    assert seen_sources[0].chat_type == "group"
+    assert seen_sources[0].chat_id == "-222"
+
+
+def test_removed_dm_user_blocked_before_pairing_when_allowlist_exists(monkeypatch):
+    """A user removed from TELEGRAM_ALLOWED_USERS should be blocked at intake."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "222")
+    adapter = _make_adapter()
+    msg = _make_message(from_user_id=111, chat_id=111, chat_type="private")
+
     assert adapter._is_user_authorized_from_message(msg) is False

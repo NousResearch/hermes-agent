@@ -559,62 +559,101 @@ class TelegramAdapter(BasePlatformAdapter):
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or normalized_user_id in allowed_ids
 
+    def _source_from_message_for_auth(self, message: Message):
+        """Build the same Telegram source shape the gateway auth path expects."""
+        from gateway.session import SessionSource
+
+        user = getattr(message, "from_user", None)
+        chat = getattr(message, "chat", None)
+        user_id = str(getattr(user, "id", "")).strip() or None
+        chat_id = str(getattr(chat, "id", "")).strip() or user_id
+        chat_type = str(getattr(chat, "type", "dm")).strip().lower() or "dm"
+        if chat_type == "private":
+            chat_type = "dm"
+        elif chat_type == "supergroup":
+            thread_id_raw = getattr(message, "message_thread_id", None)
+            is_topic_message = bool(getattr(message, "is_topic_message", False))
+            is_forum_group = getattr(chat, "is_forum", False) is True
+            chat_type = "forum" if thread_id_raw is not None and (is_topic_message or is_forum_group) else "group"
+
+        thread_id = None
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        if thread_id_raw is not None:
+            is_topic_message = bool(getattr(message, "is_topic_message", False))
+            is_forum_group = getattr(chat, "is_forum", False) is True
+            if chat_type == "forum" and (is_topic_message or is_forum_group):
+                thread_id = str(thread_id_raw)
+            elif chat_type == "dm" and is_topic_message:
+                thread_id = str(thread_id_raw)
+
+        user_name = (
+            str(getattr(user, "username", "") or getattr(user, "full_name", "") or "").strip()
+            or None
+        )
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id or "",
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=thread_id,
+        )
+
+    def _telegram_auth_env_configured(self) -> bool:
+        """Return True when Telegram auth env vars make an early decision safe."""
+        keys = (
+            "TELEGRAM_ALLOWED_USERS",
+            "TELEGRAM_GROUP_ALLOWED_USERS",
+            "TELEGRAM_GROUP_ALLOWED_CHATS",
+            "TELEGRAM_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOWED_USERS",
+            "GATEWAY_ALLOW_ALL_USERS",
+        )
+        return any(os.getenv(key, "").strip() for key in keys)
+
     def _is_user_authorized_from_message(self, message: Message) -> bool:
         """Check if the sender of a Telegram message is authorized.
 
-        Priority:
-        1. Adapter-level ``allow_from`` config (when set, takes full precedence).
-        2. Adapter-level ``_is_callback_user_authorized`` callback (for tests).
-        3. Runner-level ``_is_user_authorized`` callback (handles GATEWAY_ALLOW_ALL_USERS).
-        4. ``TELEGRAM_ALLOWED_USERS`` env var (global gateway-level allowlist).
-
-        Returns True for messages with no from_user (e.g. channel posts) since
-        chat-level authorization is enforced separately by the gateway runner.
+        This is an intake prefilter, not a replacement for the gateway auth
+        path. It only rejects when it can make the same context-aware decision
+        the runner would make. Unknown DMs with no allowlist still pass through
+        so the normal pairing flow can run.
         """
-        user_id = str(getattr(getattr(message, "from_user", None), "id", "")).strip()
+        source = self._source_from_message_for_auth(message)
+        user_id = source.user_id
         if not user_id:
             return True
 
-        # 1. Adapter-level allow_from: when set, it is the sole authority.
+        # Adapter-level allow_from: when set, it is the sole authority.
         adapter_allow_from = self.config.extra.get("allow_from")
         if adapter_allow_from is not None:
             allowed = {str(u).strip() for u in adapter_allow_from if str(u).strip()}
             return user_id in allowed or "*" in allowed
 
-        # 2. Adapter-level callback auth (used by tests and custom setups).
-        callback_auth = getattr(self, "_is_callback_user_authorized", None)
+        # Test/custom injection only. The class method named
+        # _is_callback_user_authorized is for inline button callbacks and must
+        # not be treated as a user-id-only shortcut for real messages.
+        callback_auth = self.__dict__.get("_is_callback_user_authorized")
         if callable(callback_auth):
             try:
-                return bool(callback_auth(user_id))
+                return bool(
+                    callback_auth(
+                        user_id,
+                        chat_id=source.chat_id,
+                        chat_type=source.chat_type,
+                        thread_id=source.thread_id,
+                        user_name=source.user_name,
+                    )
+                )
             except Exception:
                 pass
 
-        # 3. Runner-level auth callback (handles GATEWAY_ALLOW_ALL_USERS).
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         auth_fn = getattr(runner, "_is_user_authorized", None)
         if callable(auth_fn):
+            if not self._telegram_auth_env_configured():
+                return True
             try:
-                from gateway.session import SessionSource
-
-                chat_obj = getattr(message, "chat", None)
-                chat_id = str(getattr(chat_obj, "id", "")).strip()
-                chat_type_raw = str(getattr(chat_obj, "type", "dm")).strip().lower()
-                if chat_type_raw == "private":
-                    chat_type_raw = "dm"
-                elif chat_type_raw == "supergroup":
-                    thread_id = getattr(message, "message_thread_id", None)
-                    chat_type_raw = "forum" if thread_id is not None else "group"
-                user_name = str(getattr(getattr(message, "from_user", None), "username", "") or "").strip() or None
-                thread_id = str(getattr(message, "message_thread_id", "") or "").strip() or None
-
-                source = SessionSource(
-                    platform=Platform.TELEGRAM,
-                    chat_id=chat_id or user_id,
-                    chat_type=chat_type_raw,
-                    user_id=user_id,
-                    user_name=user_name,
-                    thread_id=thread_id,
-                )
                 return bool(auth_fn(source))
             except Exception:
                 logger.debug(
@@ -623,10 +662,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
-        # 4. TELEGRAM_ALLOWED_USERS env var (global gateway-level allowlist).
         allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
         if not allowed_csv:
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+            return True
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or user_id in allowed_ids
 

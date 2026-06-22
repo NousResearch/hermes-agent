@@ -611,6 +611,30 @@ class TestSessionStoreSwitchSession:
         db.close()
 
 
+class TestSessionStoreLookupBySessionId:
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None
+        s._loaded = True
+        return s
+
+    def test_returns_active_entry_for_persisted_session_id(self, store):
+        source = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="!room:example.org",
+            chat_type="group",
+            user_id="@alice:example.org",
+        )
+        entry = store.get_or_create_session(source)
+
+        assert store.lookup_by_session_id(entry.session_id) is entry
+        assert store.lookup_by_session_id("missing") is None
+        assert store.lookup_by_session_id("") is None
+
+
 class TestWhatsAppSessionKeyConsistency:
     """Regression: WhatsApp session keys must collapse JID/LID aliases to a
     single stable identity for both DM chat_ids and group participant_ids."""
@@ -783,6 +807,53 @@ class TestWhatsAppSessionKeyConsistency:
         assert build_session_key(first) == "agent:main:telegram:dm:99"
         assert build_session_key(second) == "agent:main:telegram:dm:100"
         assert build_session_key(first) != build_session_key(second)
+
+    def test_dm_without_chat_id_falls_back_to_user_id(self):
+        """A DM source missing chat_id must isolate on the sender's user_id
+        rather than collapsing into the shared per-platform sink."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="",
+            chat_type="dm",
+            user_id="jordan",
+        )
+        assert build_session_key(source) == "agent:main:telegram:dm:jordan"
+
+    def test_dm_without_chat_id_distinct_users_do_not_collide(self):
+        """Two different DM senders without chat_id must not share one
+        session (the cross-user history-bleed footgun)."""
+        first = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="", chat_type="dm", user_id="jordan"
+        )
+        second = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="", chat_type="dm", user_id="dima"
+        )
+        assert build_session_key(first) != build_session_key(second)
+        assert build_session_key(first) == "agent:main:telegram:dm:jordan"
+        assert build_session_key(second) == "agent:main:telegram:dm:dima"
+
+    def test_dm_without_chat_id_prefers_user_id_alt(self):
+        """user_id_alt wins over user_id for the DM fallback, matching the
+        group-path participant precedence."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="",
+            chat_type="dm",
+            user_id="primary",
+            user_id_alt="alt",
+        )
+        assert build_session_key(source) == "agent:main:telegram:dm:alt"
+
+    def test_dm_without_chat_id_or_user_id_falls_back_to_thread_then_sink(self):
+        """With neither chat_id nor user identifiers, thread_id is the next
+        discriminator; only a completely identifier-less DM hits the sink."""
+        threaded = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="", chat_type="dm", thread_id="7"
+        )
+        assert build_session_key(threaded) == "agent:main:telegram:dm:7"
+
+        bare = SessionSource(platform=Platform.TELEGRAM, chat_id="", chat_type="dm")
+        assert build_session_key(bare) == "agent:main:telegram:dm"
 
     def test_discord_group_includes_chat_id(self):
         """Group/channel keys include chat_type and chat_id."""

@@ -2,32 +2,21 @@ import type { Unstable_TriggerAdapter } from '@assistant-ui/core'
 import { ComposerPrimitive } from '@assistant-ui/react'
 import type { ReactNode } from 'react'
 
-export const COMPLETION_DRAWER_CLASS = [
-  'absolute bottom-[calc(100%+0.25rem)] left-0 z-50',
-  'w-60 max-w-[calc(100vw-2rem)]',
-  'max-h-[min(23rem,calc(100vh-8rem))] overflow-y-auto overscroll-contain',
-  'rounded-lg border border-(--ui-stroke-secondary)',
-  'bg-[color-mix(in_srgb,var(--ui-bg-elevated)_96%,transparent)]',
-  'p-1 text-xs text-popover-foreground shadow-md',
-  'backdrop-blur-md'
-].join(' ')
+import { composerFusedDockCard } from '@/components/chat/composer-dock'
+import { cn } from '@/lib/utils'
 
-export const COMPLETION_DRAWER_BELOW_CLASS = [
-  'absolute left-0 top-[calc(100%+0.25rem)] z-50',
-  'w-60 max-w-[calc(100vw-2rem)]',
-  'max-h-[min(23rem,calc(100vh-8rem))] overflow-y-auto overscroll-contain',
-  'rounded-lg border border-(--ui-stroke-secondary)',
-  'bg-[color-mix(in_srgb,var(--ui-bg-elevated)_96%,transparent)]',
-  'p-1 text-xs text-popover-foreground shadow-md',
-  'backdrop-blur-md'
-].join(' ')
+// Same docked chrome as the queue/status stack, but its own thing: a narrow,
+// left-aligned card (not full width) that fuses to the composer's edge instead
+// of floating above it. `left-1` matches the stack's `mx-1` inset; the negative
+// margin overlaps the seam so the composer's (now-transparent) edge border reads
+// as shared. Fused (opaque) fill — the composer surface swaps to the same fill
+// while a drawer is open, so the two paint as one panel.
+const DRAWER_SHELL =
+  'absolute left-1 z-50 w-80 max-w-[calc(100%-0.5rem)] max-h-[min(22rem,calc(100vh-8rem))] overflow-y-auto overscroll-contain p-1 text-xs text-popover-foreground'
 
-export const COMPLETION_DRAWER_ROW_CLASS = [
-  'relative flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1',
-  'w-full min-w-0 text-left text-xs outline-hidden transition-colors',
-  'hover:bg-(--ui-bg-tertiary)',
-  'data-[highlighted]:bg-(--ui-bg-tertiary) data-[highlighted]:text-foreground'
-].join(' ')
+export const COMPLETION_DRAWER_CLASS = cn(DRAWER_SHELL, 'bottom-full -mb-[9px]', composerFusedDockCard('top'))
+
+export const COMPLETION_DRAWER_BELOW_CLASS = cn(DRAWER_SHELL, 'top-full -mt-[9px]', composerFusedDockCard('bottom'))
 
 export function ComposerCompletionDrawer({
   adapter,

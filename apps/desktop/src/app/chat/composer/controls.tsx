@@ -1,12 +1,15 @@
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { KbdCombo } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { AudioLines, Layers3, Loader2, Square } from '@/lib/icons'
+import { AudioLines, Layers3, Loader2, Square, SteeringWheel } from '@/lib/icons'
+import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 
 import type { ConversationStatus } from './hooks/use-voice-conversation'
+import { ModelPill } from './model-pill'
 import type { ChatBarState, VoiceStatus } from './types'
 
 export const ICON_BTN = 'size-(--composer-control-size) shrink-0 rounded-md'
@@ -38,16 +41,19 @@ interface ConversationProps {
 export function ComposerControls({
   busy,
   busyAction,
+  canSteer,
   canSubmit,
   conversation,
   disabled,
   hasComposerPayload,
   state,
   voiceStatus,
-  onDictate
+  onDictate,
+  onSteer
 }: {
   busy: boolean
   busyAction: 'queue' | 'stop'
+  canSteer: boolean
   canSubmit: boolean
   conversation: ConversationProps
   disabled: boolean
@@ -55,9 +61,19 @@ export function ComposerControls({
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
+  onSteer: () => void
 }) {
   const { t } = useI18n()
   const c = t.composer
+  const steerCombo = formatCombo('mod+enter')
+  const steerLabel = `${c.steer} (${steerCombo})`
+
+  const steerTip = (
+    <span className="inline-flex items-center gap-1.5">
+      {c.steer}
+      <KbdCombo combo="mod+enter" size="sm" variant="inverted" />
+    </span>
+  )
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
@@ -67,7 +83,26 @@ export function ComposerControls({
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
-      <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
+      <ModelPill disabled={disabled} model={state.model} />
+      {/* While the agent runs and the user is typing, steer takes over the mic's
+          slot rather than crowding the row with an extra button. */}
+      {canSteer ? (
+        <Tip label={steerTip}>
+          <Button
+            aria-label={steerLabel}
+            className={GHOST_ICON_BTN}
+            disabled={disabled}
+            onClick={onSteer}
+            size="icon"
+            type="button"
+            variant="ghost"
+          >
+            <SteeringWheel size={16} />
+          </Button>
+        </Tip>
+      ) : (
+        <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
+      )}
       {showVoicePrimary ? (
         <Tip label={c.startVoice}>
           <Button

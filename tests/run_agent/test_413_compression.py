@@ -230,11 +230,10 @@ class TestHTTP413Compression:
     def test_413_clears_conversation_history_on_persist(self, agent):
         """After 413-triggered compression, _persist_session must receive None history.
 
-        Bug: _compress_context() creates a new session and resets _last_flushed_db_idx=0,
-        but if conversation_history still holds the original (pre-compression) list,
-        _flush_messages_to_session_db computes flush_from = max(len(history), 0) which
-        exceeds len(compressed_messages), so messages[flush_from:] is empty and nothing
-        is written to the new session → "Session found but has no messages" on resume.
+        Bug: after _compress_context() creates a compressed session, stale
+        conversation_history can make positional flush logic slice past the
+        compacted message list. Nothing is written to the new session, so
+        resume reports "Session found but has no messages."
         """
         err_413 = _make_413_error()
         ok_resp = _mock_response(content="OK", finish_reason="stop")

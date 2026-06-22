@@ -87,6 +87,25 @@ class TestGoalMigratesOnRotation:
             goals._DB_CACHE.clear()
 
 
+class TestCompressedChildDurability:
+    def test_rotation_writes_child_messages_before_turn_finalization(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_CHILD_ROWS"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent)
+
+        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        child = agent.session_id
+
+        assert child != parent
+        rows = db.get_messages_as_conversation(child)
+        assert [row["content"] for row in rows] == [
+            "[CONTEXT COMPACTION] summary",
+            "tail",
+        ]
+        assert agent._last_flushed_db_idx == len(rows)
+
+
 class TestOrphanRollbackOnCreateFailure:
     def test_rolls_back_to_parent_when_child_create_fails(self, tmp_path: Path):
         db = SessionDB(db_path=tmp_path / "state.db")

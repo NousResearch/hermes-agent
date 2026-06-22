@@ -7,7 +7,7 @@ agent) and JSONL (via the gateway).
 Bug scenario (pre-fix):
   1. Gateway loads 200-message history, passes to agent
   2. Agent's run_conversation() compresses to ~30 messages mid-run
-  3. _compress_context() resets _last_flushed_db_idx = 0
+  3. The old positional flush logic re-baselines at the compressed session
   4. On exit, _flush_messages_to_session_db() calculates:
      flush_from = max(len(conversation_history=200), _last_flushed_db_idx=0) = 200
   5. messages[200:] is empty (only ~30 messages after compression)

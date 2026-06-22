@@ -338,6 +338,16 @@ def compress_context(
     # Set True once the in-place DB write actually completes (the DB block can
     # raise and skip it). Surfaced to the gateway via agent._last_compaction_in_place.
     compacted_in_place = False
+    compressed_messages_persisted = False
+
+    def _mark_compressed_messages_persisted() -> None:
+        """Align the incremental DB flush cursor with the compacted transcript."""
+        agent._flushed_db_message_ids = {
+            id(msg) for msg in compressed if isinstance(msg, dict)
+        }
+        agent._flushed_db_message_session_id = getattr(agent, "session_id", None)
+        agent._last_flushed_db_idx = len(compressed)
+
     logger.info(
         "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r",
         agent.session_id or "none", _pre_msg_count,
@@ -544,12 +554,13 @@ def compress_context(
                 # WITHOUT destroying history, unlike a hard replace_messages).
                 # See #38763.
                 agent._session_db.archive_and_compact(agent.session_id, compressed)
-                # Reset the flush identity set so the next turn's appends are
-                # diffed against the COMPACTED transcript: the compacted dicts
-                # are passed as conversation_history next turn and skipped by
-                # identity, so only genuinely new turn messages get appended
-                # (no dup of the summary, no resurrection of dropped turns).
-                agent._flushed_db_message_ids = set()
+                # Mark the compacted dicts as already persisted. Auto-
+                # compression continues the same turn after this call, and
+                # final persistence may run before the next turn reloads
+                # conversation_history from SQLite; the identity cursor keeps
+                # that final flush from appending the summary a second time.
+                _mark_compressed_messages_persisted()
+                compressed_messages_persisted = True
                 # Rotation-independent signal: the conversation was compacted in
                 # place (id unchanged). The gateway reads this (NOT an id-change
                 # diff) to re-baseline transcript handling.
@@ -639,6 +650,20 @@ def compress_context(
                     agent._session_db_created = True
                     raise
                 agent._session_db_created = True
+                try:
+                    # The continuation child must be durable immediately after
+                    # rotation. Waiting for final turn persistence leaves a
+                    # restart window where the child row exists but has no live
+                    # transcript, so resume starts from only the next prompt.
+                    agent._session_db.replace_messages(agent.session_id, compressed)
+                    _mark_compressed_messages_persisted()
+                    compressed_messages_persisted = True
+                except Exception as _msg_err:
+                    logger.warning(
+                        "Compression child transcript write failed for session %s: %s",
+                        agent.session_id or "?",
+                        _msg_err,
+                    )
                 # Carry a persistent /goal onto the continuation session.
                 # Compression mints a fresh child id; load_goal does a flat
                 # per-session lookup with no parent walk, so without this an
@@ -658,10 +683,11 @@ def compress_context(
 
             # Shared post-write steps (both modes target agent.session_id, which
             # in-place keeps and rotation has already reassigned to the new id):
-            # refresh the stored system prompt and reset the flush cursor so the
-            # next turn re-bases its append diff.
+            # refresh the stored system prompt and only reset the flush cursor
+            # when the compacted rows were not durably written above.
             agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
-            agent._last_flushed_db_idx = 0
+            if not compressed_messages_persisted:
+                agent._last_flushed_db_idx = 0
         except Exception as e:
             # If the rotation rolled back to the parent (orphan-avoidance
             # above), agent.session_id is the still-indexed parent and

@@ -364,7 +364,25 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    # Use run_conversation (not the thin .chat() wrapper) so we can read the
+    # turn's "error" field.  Every non-success terminal path in the
+    # conversation loop returns ``final_response: None`` *plus* a descriptive
+    # ``error`` (provider/API failure, truncation, content-policy block, an
+    # invalid model id, missing/unusable credentials for the resolved
+    # provider, ...).  ``.chat()`` returns only ``final_response``, so an empty
+    # result reaches the caller with the real reason discarded -- surfacing as
+    # the generic "no final response was produced" with nothing in the log to
+    # explain it.  That swallowing is exactly the failure mode in #50420 (a
+    # non-default profile resolves to a provider whose call fails, and the run
+    # exits after plugin discovery with no diagnostic).  Raise the captured
+    # error so run_oneshot()'s handler reports it on the real stderr.
+    result = agent.run_conversation(prompt)
+    response = result.get("final_response")
+    if not (response or "").strip():
+        err = (result.get("error") or "").strip()
+        if err:
+            raise RuntimeError(err)
+    return response or ""
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

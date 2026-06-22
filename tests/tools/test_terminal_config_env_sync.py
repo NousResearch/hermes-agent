@@ -322,3 +322,21 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_modal_mode_is_bridged_everywhere():
+    """Regression pin for ``terminal.modal_mode`` being silently dropped.
+
+    ``terminal.modal_mode`` selects the Modal credential strategy
+    (auto/direct/managed).  The key was present in DEFAULT_CONFIG
+    (``"modal_mode": "auto"``), TERMINAL_CONFIG_ENV_MAP, and consumed by
+    terminal_tool via ``os.getenv("TERMINAL_MODAL_MODE", "auto")`` — but was
+    missing from cli.py's env_mappings and gateway/run.py's _terminal_env_map.
+    A user who hand-edited ``terminal.modal_mode: direct`` in config.yaml had
+    the setting silently reverted to "auto" on CLI and gateway/desktop paths.
+    Same bug class as docker_extra_args (PR #50631).
+    """
+    assert "modal_mode" in _cli_env_map_keys()
+    assert "modal_mode" in _gateway_env_map_keys()
+    assert "modal_mode" in _save_config_env_sync_keys()
+    assert "TERMINAL_MODAL_MODE" in _terminal_tool_env_var_names()

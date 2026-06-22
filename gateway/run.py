@@ -1453,6 +1453,7 @@ if _config_path.exists():
                 "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
                 "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
                 "modal_image": "TERMINAL_MODAL_IMAGE",
+                "modal_mode": "TERMINAL_MODAL_MODE",
                 "daytona_image": "TERMINAL_DAYTONA_IMAGE",
                 "ssh_host": "TERMINAL_SSH_HOST",
                 "ssh_user": "TERMINAL_SSH_USER",

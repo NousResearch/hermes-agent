@@ -49,6 +49,13 @@ from typing import TYPE_CHECKING, List, Optional
 if TYPE_CHECKING:  # numpy is an optional ("voice" extra) dep — never import at runtime top-level
     import numpy as np
 
+try:
+    import discord
+except ImportError:
+    _DiscordAudioSourceBase = object
+else:
+    _DiscordAudioSourceBase = discord.AudioSource
+
 logger = logging.getLogger(__name__)
 
 
@@ -145,7 +152,7 @@ class MixerChild:
         return samples
 
 
-class VoiceMixer:
+class VoiceMixer(_DiscordAudioSourceBase):
     """A continuous ``discord.AudioSource`` that mixes N child streams.
 
     Use :meth:`set_ambient` to install/replace the looping idle bed and

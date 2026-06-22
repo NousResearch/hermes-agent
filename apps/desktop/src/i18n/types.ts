@@ -918,6 +918,10 @@ export interface Translations {
     deleteFolderTitle: string
     deleteFolderConfirm: (name: string) => string
     folderEmpty: string
+    pinFolder: string
+    unpinFolder: string
+    folderPinnedBadge: string
+    reorderFolder: (name: string) => string
     folderActionsFor: (name: string) => string
     folderCreated: string
     folderRenamed: string

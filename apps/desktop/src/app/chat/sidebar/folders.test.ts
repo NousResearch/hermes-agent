@@ -4,7 +4,7 @@ import { sessionPinId } from '@/store/session'
 import type { SidebarFolder } from '@/store/sidebar-folders'
 import type { SessionInfo } from '@/types/hermes'
 
-import { filterUnfiledSessions, resolveFolderSessions } from './folders'
+import { filterUnfiledSessions, resolveFolderSessions, visibleFoldersForScope } from './folders'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
   archived: false,
@@ -84,6 +84,27 @@ describe('resolveFolderSessions', () => {
     const resolved = resolveFolderSessions(folder({ sessionIds: ['root', 'tip'] }), map)
 
     expect(resolved.map(s => s.id)).toEqual(['tip'])
+  })
+})
+
+describe('visibleFoldersForScope', () => {
+  it('shows only folders belonging to the active profile', () => {
+    const a = folder({ id: 'a', profileKey: 'film-maker' })
+    const b = folder({ id: 'b', profileKey: 'life-advisor' })
+
+    expect(visibleFoldersForScope([a, b], 'film-maker').map(f => f.id)).toEqual(['a'])
+  })
+
+  it('shows pinned (global) folders in every profile', () => {
+    const a = folder({ id: 'a', pinned: true, profileKey: 'film-maker' })
+
+    expect(visibleFoldersForScope([a], 'life-advisor').map(f => f.id)).toEqual(['a'])
+  })
+
+  it('treats pre-scoping folders (no profileKey) as global', () => {
+    const legacy = folder({ id: 'legacy' })
+
+    expect(visibleFoldersForScope([legacy], 'anything').map(f => f.id)).toEqual(['legacy'])
   })
 })
 

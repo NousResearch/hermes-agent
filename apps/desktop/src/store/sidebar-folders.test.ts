@@ -12,7 +12,8 @@ import {
   reorderFolders,
   reorderFolderSessions,
   setFolderOpen,
-  toggleFolderOpen
+  toggleFolderOpen,
+  toggleFolderPinned
 } from './sidebar-folders'
 
 const STORAGE_KEY = 'hermes.desktop.sidebarFolders'
@@ -57,6 +58,37 @@ describe('sidebar-folders store', () => {
 
       expect(a).not.toBe(b)
       expect($sidebarFolders.get()).toHaveLength(2)
+    })
+  })
+
+  describe('profile scoping', () => {
+    it('captures the profileKey on create', () => {
+      createFolder('Work', 'film-maker')
+
+      expect($sidebarFolders.get()[0].profileKey).toBe('film-maker')
+    })
+
+    it('creates a global folder when no profileKey is given', () => {
+      createFolder('Global')
+
+      expect($sidebarFolders.get()[0].profileKey).toBeUndefined()
+    })
+
+    it('toggleFolderPinned flips the global flag', () => {
+      const id = createFolder('Work', 'film-maker')
+
+      toggleFolderPinned(id)
+      expect($sidebarFolders.get()[0].pinned).toBe(true)
+
+      toggleFolderPinned(id)
+      expect($sidebarFolders.get()[0].pinned).toBe(false)
+    })
+
+    it('round-trips profileKey + pinned through localStorage', () => {
+      const id = createFolder('Work', 'film-maker')
+      toggleFolderPinned(id)
+
+      expect(persisted()[0]).toMatchObject({ pinned: true, profileKey: 'film-maker' })
     })
   })
 

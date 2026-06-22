@@ -13,6 +13,12 @@ export interface SidebarFolder {
   // resolve to a visible row until that session loads again.
   sessionIds: string[]
   open: boolean
+  // The profile (normalizeProfileKey) this folder belongs to; the folder only
+  // shows while that profile is the active scope. Undefined on folders created
+  // before scoping existed — those are treated as global (see normalize).
+  profileKey?: string
+  // Global folder: shows in every profile regardless of profileKey.
+  pinned?: boolean
 }
 
 const STORAGE_KEY = 'hermes.desktop.sidebarFolders'
@@ -40,6 +46,10 @@ function normalize(value: SidebarFolder): SidebarFolder {
     // Drop blank/duplicate keys defensively so a corrupted store can't render
     // ghost rows or double-count.
     open: typeof value.open === 'boolean' ? value.open : true,
+    // Pre-scoping folders have no profileKey: leaving it undefined makes
+    // visibleFoldersForScope treat them as global so they don't vanish.
+    pinned: typeof value.pinned === 'boolean' ? value.pinned : undefined,
+    profileKey: typeof value.profileKey === 'string' && value.profileKey.length > 0 ? value.profileKey : undefined,
     sessionIds: [...new Set(value.sessionIds.filter(id => id.length > 0))]
   }
 }
@@ -102,13 +112,26 @@ function setFolders(next: SidebarFolder[]) {
   $sidebarFolders.set(next)
 }
 
-export function createFolder(name: string): string {
+// `profileKey` scopes the folder to the profile it was created in (the active
+// scope at creation time). Omit it to create a global folder.
+export function createFolder(name: string, profileKey?: string): string {
   const trimmed = name.trim()
   const id = createFolderId()
 
-  setFolders([...$sidebarFolders.get(), { id, name: trimmed, open: true, sessionIds: [] }])
+  setFolders([...$sidebarFolders.get(), { id, name: trimmed, open: true, profileKey, sessionIds: [] }])
 
   return id
+}
+
+// Toggle a folder between profile-scoped and global (shows in every profile).
+export function toggleFolderPinned(id: string) {
+  const current = $sidebarFolders.get()
+
+  if (!current.some(f => f.id === id)) {
+    return
+  }
+
+  setFolders(current.map(f => (f.id === id ? { ...f, pinned: !f.pinned } : f)))
 }
 
 export function renameFolder(id: string, name: string) {

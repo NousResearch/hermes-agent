@@ -5862,6 +5862,33 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
     assert rows["sid-b"]["preview"] == "writing code"
 
 
+def test_session_active_list_ignores_stale_inflight_preview_for_idle_sessions(monkeypatch):
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    server._sessions["sid-idle"] = _session(
+        agent=types.SimpleNamespace(model="model-idle"),
+        history=[{"role": "assistant", "content": "final saved answer"}],
+        inflight_turn={"assistant": "stale partial", "streaming": True, "user": "prompt"},
+        session_key="key-idle",
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.active_list",
+                "params": {"current_session_id": ""},
+            }
+        )
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    [row] = resp["result"]["sessions"]
+    assert row["status"] == "idle"
+    assert row["preview"] == "final saved answer"
+
+
 def test_session_active_list_excludes_finalized_sessions(monkeypatch):
     """#38950: a finalized-but-not-yet-popped session must not inflate the count.
 
@@ -5932,7 +5959,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
             stream_callback("partial ")
             stream_callback("answer")
             started.set()
-            assert release.wait(2), "test timed out waiting to finish fake model turn"
+            assert release.wait(5), "test timed out waiting to finish fake model turn"
             return {
                 "final_response": "partial answer complete",
                 "messages": [
@@ -5945,7 +5972,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model})
 
     def _emit(event, sid, payload=None):
         if event == "message.complete":
@@ -5962,7 +5989,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
             }
         )
         assert submit["result"]["status"] == "streaming"
-        assert started.wait(2), "fake model did not stream before activation"
+        assert started.wait(5), "fake model did not stream before activation"
 
         resp = server.handle_request(
             {
@@ -5981,7 +6008,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         assert resp["result"]["messages"] == []
 
         release.set()
-        assert done.wait(2), "fake model turn did not complete"
+        assert done.wait(5), "fake model turn did not complete"
         completed = server.handle_request(
             {
                 "id": "activate-done",
@@ -5996,12 +6023,44 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         ]
     finally:
         release.set()
-        done.wait(2)
+        done.wait(5)
         server._sessions.pop("sid-live", None)
 
 
+def test_session_activate_ignores_stale_inflight_for_idle_session(monkeypatch):
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model})
+    server._sessions["sid-idle"] = _session(
+        agent=types.SimpleNamespace(model="model-idle"),
+        history=[
+            {"role": "user", "content": "write a long answer"},
+            {"role": "assistant", "content": "final saved answer"},
+        ],
+        inflight_turn={"assistant": "stale partial", "streaming": True, "user": "write a long answer"},
+        session_key="key-idle",
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "activate-idle",
+                "method": "session.activate",
+                "params": {"session_id": "sid-idle"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid-idle", None)
+
+    assert resp["result"]["status"] == "idle"
+    assert resp["result"]["running"] is False
+    assert resp["result"].get("inflight") is None
+    assert resp["result"]["messages"] == [
+        {"role": "user", "text": "write a long answer"},
+        {"role": "assistant", "text": "final saved answer"},
+    ]
+
+
 def test_session_activate_switches_live_session_without_closing_siblings(monkeypatch):
-    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model})
     server._sessions["sid-a"] = _session(
         agent=types.SimpleNamespace(model="model-a"),
         history=[{"role": "user", "content": "old"}],

@@ -4886,6 +4886,13 @@ def _message_preview(history: list) -> str:
     return ""
 
 
+def _live_inflight_snapshot(session: dict, status: str) -> dict | None:
+    # Idle live sessions must render from persisted history only. If a stale
+    # inflight_turn survives completion, surfacing it here resurrects an
+    # already-finished Thinking state when the desktop/TUI re-attaches.
+    return _inflight_snapshot(session) if status != "idle" else None
+
+
 def _session_live_title(session: dict, key: str) -> str:
     title = str(session.get("pending_title") or "").strip()
     db = _get_db()
@@ -4902,7 +4909,7 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     agent = session.get("agent")
     history = list(session.get("history") or [])
     status = _session_live_status(sid, session)
-    inflight = _inflight_snapshot(session)
+    inflight = _live_inflight_snapshot(session, status)
     preview = _message_preview(history)
     if inflight:
         preview = inflight.get("assistant") or inflight.get("user") or preview
@@ -4962,8 +4969,9 @@ def _live_session_payload(
         history = list(session.get("display_history_prefix") or []) + list(
             session.get("history") or []
         )
-        inflight = _inflight_snapshot(session)
         running = bool(session.get("running"))
+    status = _session_live_status(sid, session)
+    inflight = _live_inflight_snapshot(session, status)
     payload = {
         "info": _fallback_session_info(session),
         "message_count": len(history),
@@ -4972,7 +4980,7 @@ def _live_session_payload(
         "session_id": sid,
         "session_key": session.get("session_key") or sid,
         "started_at": float(session.get("created_at") or time.time()),
-        "status": _session_live_status(sid, session),
+        "status": status,
     }
     if inflight:
         payload["inflight"] = inflight

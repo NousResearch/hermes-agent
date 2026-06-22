@@ -28,6 +28,11 @@ def test_augment_path_includes_managed_node_dir(tmp_path, monkeypatch):
     """
     # Force the Windows branch without running on Windows.
     monkeypatch.setattr(stdio, "is_windows", lambda: True)
+    # Force Windows PATH semantics too: the production code splits/joins PATH
+    # with os.pathsep, so on a non-Windows runner (os.pathsep == ":") a Windows
+    # drive path like ``C:\Windows\System32`` would be split at the ``C:``
+    # prefix and the assertions below would pass/fail for the wrong reason.
+    monkeypatch.setattr(os, "pathsep", ";")
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
 
     # The managed Node dir exists on disk (the loop is os.path.isdir-guarded).
@@ -39,7 +44,8 @@ def test_augment_path_includes_managed_node_dir(tmp_path, monkeypatch):
     git_cmd_dir = tmp_path / "hermes" / "git" / "cmd"
     git_cmd_dir.mkdir(parents=True)
 
-    # Clear PATH so the managed dirs are genuinely absent before the call.
+    # Clear PATH so the managed dirs are genuinely absent before the call. With
+    # ``;`` as the separator this stays a single pre-existing entry.
     monkeypatch.setenv("PATH", r"C:\Windows\System32")
 
     stdio._augment_path_with_known_tools()
@@ -48,6 +54,10 @@ def test_augment_path_includes_managed_node_dir(tmp_path, monkeypatch):
     assert str(node_dir) in resulting
     # The pre-existing mirrored entry still works — locks the contract.
     assert str(git_cmd_dir) in resulting
+    # The managed dirs must be *prepended* ahead of the pre-existing PATH so
+    # they win resolution, not merely appended somewhere after it.
+    assert resulting.index(str(node_dir)) < resulting.index(r"C:\Windows\System32")
+    assert resulting.index(str(git_cmd_dir)) < resulting.index(r"C:\Windows\System32")
 
 
 def test_augment_path_skips_managed_node_dir_when_absent(tmp_path, monkeypatch):
@@ -58,6 +68,9 @@ def test_augment_path_skips_managed_node_dir_when_absent(tmp_path, monkeypatch):
     that did not use portable Node).
     """
     monkeypatch.setattr(stdio, "is_windows", lambda: True)
+    # Force Windows PATH semantics so the seeded drive path is not split at the
+    # ``C:`` prefix on a non-Windows runner (os.pathsep would otherwise be ":").
+    monkeypatch.setattr(os, "pathsep", ";")
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     # Deliberately do NOT create hermes/node on disk.
     monkeypatch.setenv("PATH", r"C:\Windows\System32")

@@ -1381,6 +1381,55 @@ def _resolve_explicit_runtime(
     return None
 
 
+def _find_custom_provider_for_model(model_name: str) -> Optional[Dict[str, Any]]:
+    """Find a custom_providers entry whose 'model' field matches the given model.
+
+    Used to recover the right custom provider when the desktop UI rewrites
+    model.provider to a built-in (e.g. "openrouter") but the user's
+    configured default model belongs to a custom_providers entry.
+    See GitHub #39753.
+    """
+    if not model_name:
+        return None
+    try:
+        config = load_config()
+    except Exception:
+        return None
+
+    target = model_name.strip().lower()
+
+    # New-style providers dict
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for ep_name, entry in providers.items():
+            if not isinstance(entry, dict):
+                continue
+            entry_model = str(
+                entry.get("default_model") or entry.get("model") or ""
+            ).strip().lower()
+            if entry_model == target:
+                return {
+                    "name": entry.get("name", ep_name),
+                    "base_url": entry.get("api") or entry.get("url") or entry.get("base_url"),
+                    "model": entry.get("default_model") or entry.get("model"),
+                    "api_mode": entry.get("api_mode") or entry.get("transport"),
+                }
+
+    # Legacy custom_providers list
+    try:
+        custom_providers = get_compatible_custom_providers(config)
+    except Exception:
+        custom_providers = None
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        entry_model = str(entry.get("model") or "").strip().lower()
+        if entry_model == target:
+            return entry
+
+    return None
+
+
 def resolve_runtime_provider(
     *,
     requested: Optional[str] = None,
@@ -1399,6 +1448,7 @@ def resolve_runtime_provider(
     behavior (api_mode derived from config).
     """
     requested_provider = resolve_requested_provider(requested)
+    model_cfg = _get_model_config()
 
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
     # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
@@ -1444,12 +1494,34 @@ def resolve_runtime_provider(
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
 
+    # GitHub #39753: when the desktop UI rewrites model.provider to a built-in
+    # (e.g. "openrouter") but the configured default model belongs to a named
+    # custom_provider, honor the custom_provider instead of falling through to
+    # OpenRouter and silently routing/billing wrong.
+    # Also mitigates #5358 for the same reason.
+    if not explicit_api_key and not explicit_base_url:
+        target = (target_model or model_cfg.get("default") or "").strip()
+        if target:
+            cp_match = _find_custom_provider_for_model(target)
+            if cp_match:
+                cp_name = str(cp_match.get("name") or "").strip()
+                if cp_name:
+                    cp_menu_key = f"custom:{_normalize_custom_provider_name(cp_name)}"
+                    cp_runtime = _resolve_named_custom_runtime(
+                        requested_provider=cp_menu_key,
+                        explicit_api_key=explicit_api_key,
+                        explicit_base_url=explicit_base_url,
+                    )
+                    if cp_runtime:
+                        cp_runtime["requested_provider"] = requested_provider
+                        cp_runtime["model"] = target
+                        return cp_runtime
+
     provider = resolve_provider(
         requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
     )
-    model_cfg = _get_model_config()
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,

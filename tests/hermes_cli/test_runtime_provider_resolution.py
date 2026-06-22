@@ -2835,3 +2835,57 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+def test_custom_provider_wins_when_ui_rewrote_provider_to_openrouter(monkeypatch):
+    """GitHub #39753: when model.provider was rewritten to 'openrouter' but
+    the default model belongs to a custom_providers entry, the custom provider
+    must win over the OpenRouter fallback.
+
+    Before the fix, this test would fail because resolve_runtime_provider
+    would call _resolve_openrouter_runtime() and route to openrouter.ai.
+    After the fix, _find_custom_provider_for_model() detects the match and
+    _resolve_named_custom_runtime() is retried with the custom:<name> menu key.
+    """
+    from hermes_cli import runtime_provider as rp
+
+    fake_config = {
+        "model": {
+            "default": "z-ai/glm-5.2-free",
+            "provider": "openrouter",  # rewritten by UI bug #39753
+            "base_url": "",
+            "api_key": "",
+        },
+        "custom_providers": [
+            {
+                "name": "Zenmux.ai",
+                "base_url": "https://zenmux.ai/api/v1",
+                "api_key": "",
+                "api_key_env": "ZENMUX_API_KEY",
+                "model": "z-ai/glm-5.2-free",
+            }
+        ],
+    }
+
+    monkeypatch.setattr(rp, "load_config", lambda: fake_config)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: fake_config["model"])
+    monkeypatch.setenv("ZENMUX_API_KEY", "sk-fake-test-key")
+
+    # Remove OPENROUTER_API_KEY from env so the OpenRouter path can't accidentally win
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    runtime = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert runtime["provider"] == "custom", (
+        f"Expected provider='custom', got provider={runtime.get('provider')!r}, "
+        f"base_url={runtime.get('base_url')!r}, source={runtime.get('source')!r}"
+    )
+    assert runtime["base_url"] == "https://zenmux.ai/api/v1", (
+        f"Expected base_url='https://zenmux.ai/api/v1', got {runtime.get('base_url')!r}"
+    )
+    assert runtime["api_key"] == "sk-fake-test-key", (
+        f"Expected api_key='sk-fake-test-key', got {runtime.get('api_key')!r}"
+    )
+    assert runtime.get("model") == "z-ai/glm-5.2-free", (
+        f"Expected model='z-ai/glm-5.2-free', got {runtime.get('model')!r}"
+    )

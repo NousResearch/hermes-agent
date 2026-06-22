@@ -3995,6 +3995,393 @@ def test_init_db_allows_missing_then_healthy(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Index drift auto-repair (FIX-KANBAN-DB-INDEX-CORRUPTION)
+# ---------------------------------------------------------------------------
+#
+# Concurrent worker writes under WAL can leave an index b-tree with a
+# different row count than its table — ``PRAGMA integrity_check`` then
+# returns ``wrong # of entries in index <name>``. ``REINDEX <name>`` is
+# SQLite's native fix (rebuilds the index from the table). The tests
+# below pin the behaviour: the parser only fires on the exact prefix,
+# the helper does the repair transparently, and the corruption guard
+# only creates a ``.corrupt`` backup when REINDEX can't recover.
+
+def test_collect_index_drift_rows_parses_wrong_entries_pattern():
+    """The parser must recognise SQLite's exact ``wrong # of entries in
+    index <name>`` prefix and return the index names in order."""
+    rows = [
+        ("wrong # of entries in index idx_events_run",),
+        ("wrong # of entries in index idx_tasks_assignee_status",),
+        ("*** in database main ***\nPage 4: never used",),
+    ]
+    names = kb._collect_index_drift_rows(rows)
+    assert names == ["idx_events_run", "idx_tasks_assignee_status"]
+
+
+def test_collect_index_drift_rows_ignores_unrelated_messages():
+    """Other integrity-check shapes (page-level corruption, malformed
+    b-tree, etc.) must NOT be classified as recoverable index drift —
+    they must fall through to the backup-and-raise path."""
+    rows = [
+        ("*** in database main ***\nPage 4: never used",),
+        ("rowid N missing from index idx_x",),
+        ("database disk image is malformed",),
+    ]
+    assert kb._collect_index_drift_rows(rows) == []
+
+
+def test_collect_index_drift_rows_dedupes_repeated_index():
+    """If multiple error rows mention the same index (rare but possible
+    after partial repair), the helper must repair each index exactly
+    once — running REINDEX twice wastes a full table scan."""
+    rows = [
+        ("wrong # of entries in index idx_events_run",),
+        ("wrong # of entries in index idx_events_run",),
+    ]
+    names = kb._collect_index_drift_rows(rows)
+    assert names == ["idx_events_run"]
+
+
+def test_collect_index_drift_rows_handles_non_string_rows():
+    """Robustness: rows may contain None or non-strings from a buggy
+    connection — the parser must skip them rather than crashing."""
+    rows = [(None,), (b"binary",), ("wrong # of entries in index idx_x",)]
+    assert kb._collect_index_drift_rows(rows) == ["idx_x"]
+
+
+def test_try_repair_index_drift_no_op_on_healthy_db(tmp_path):
+    """A real healthy kanban.db must round-trip with no repair action."""
+    db_path = tmp_path / "healthy.db"
+    kb.init_db(db_path=db_path)
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is True
+    assert names == []
+
+
+def test_try_repair_index_drift_repairs_drifted_index(tmp_path, monkeypatch):
+    """When integrity_check returns the recoverable ``wrong # of
+    entries in index`` rows, the helper must REINDEX the named indexes
+    and verify the post-repair integrity_check comes back clean."""
+    db_path = tmp_path / "drifted.db"
+    kb.init_db(db_path=db_path)
+
+    # Install a fake probe connection that returns the recoverable error
+    # pattern from integrity_check the first time, ``ok`` after REINDEX.
+    state = {"calls": [], "integrity_calls": 0, "reindex_calls": []}
+
+    class _FakeConn:
+        def __init__(self, path):
+            state["calls"].append(path)
+            self._closed = False
+
+        def execute(self, sql, *args, **kwargs):
+            state.setdefault("exec_calls", []).append(sql)
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                state["integrity_calls"] += 1
+                if state["integrity_calls"] == 1:
+                    return _FakeCursor([
+                        ("wrong # of entries in index idx_events_run",),
+                    ])
+                return _FakeCursor([("ok",)])
+            if normalized.startswith("reindex "):
+                state["reindex_calls"].append(sql)
+                return _FakeCursor([])
+            return _FakeCursor([])
+
+        def close(self):
+            self._closed = True
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is True
+    assert names == ["idx_events_run"]
+    assert state["reindex_calls"] == ["REINDEX idx_events_run"]
+    assert state["integrity_calls"] == 2  # one before REINDEX, one after
+
+
+def test_try_repair_index_drift_repairs_multiple_indexes(tmp_path, monkeypatch):
+    """When several indexes drift at once, REINDEX runs for each name."""
+    db_path = tmp_path / "multi.db"
+    kb.init_db(db_path=db_path)
+
+    reindexed: list[str] = []
+    integrity_calls = {"n": 0}
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                integrity_calls["n"] += 1
+                if integrity_calls["n"] == 1:
+                    return _FakeCursor([
+                        ("wrong # of entries in index idx_a",),
+                        ("wrong # of entries in index idx_b",),
+                    ])
+                return _FakeCursor([("ok",)])
+            if normalized.startswith("reindex "):
+                reindexed.append(sql)
+            return _FakeCursor([])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is True
+    assert names == ["idx_a", "idx_b"]
+    assert reindexed == ["REINDEX idx_a", "REINDEX idx_b"]
+
+
+def test_try_repair_index_drift_no_op_on_unrepairable_corruption(tmp_path, monkeypatch):
+    """Page-level / disk-image-malformed corruption does NOT match the
+    recoverable pattern — the helper must return (False, []) so the
+    caller can fall through to the backup-and-raise path."""
+    db_path = tmp_path / "bad.db"
+    kb.init_db(db_path=db_path)
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                return _FakeCursor([("*** in database main ***\nPage 4: never used",)])
+            return _FakeCursor([])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is False
+    assert names == []
+
+
+def test_init_db_auto_repairs_index_drift_and_logs_warning(tmp_path, monkeypatch, caplog):
+    """End-to-end: when the guard sees the recoverable drift pattern, it
+    calls REINDEX transparently, logs a WARNING naming the repaired
+    index(es), and returns success — no KanbanDbCorruptError.
+
+    We test the guard (``_guard_existing_db_is_healthy``) directly
+    rather than ``init_db`` because the post-guard ``connect()`` flow
+    runs the additive migration against the same connection — that
+    surface is already covered by the dedicated migration tests. Our
+    focus here is the guard's transparent-REINDEX behaviour and the
+    audit log line that lets an operator spot the repair."""
+    import logging
+
+    db_path = tmp_path / "auto.db"
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    # State machine shared across the guard's probe AND the repair probe:
+    # - Before any REINDEX has been issued, integrity_check returns the
+    #   recoverable drift pattern.
+    # - Once REINDEX has been issued, integrity_check returns ``ok``.
+    # This mirrors what real SQLite would do: pre-repair = drift,
+    # post-repair = clean.
+    reindexed: list[str] = []
+    repaired_flag = {"done": False}
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                if not repaired_flag["done"]:
+                    return _FakeCursor([
+                        ("wrong # of entries in index idx_events_run",),
+                    ])
+                return _FakeCursor([("ok",)])
+            if normalized.startswith("reindex "):
+                reindexed.append(sql)
+                repaired_flag["done"] = True
+            return _FakeCursor([])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        kb._guard_existing_db_is_healthy(db_path)  # must NOT raise
+
+    assert reindexed == ["REINDEX idx_events_run"]
+    repair_warnings = [
+        r for r in caplog.records
+        if "auto-repaired" in r.getMessage()
+        and "idx_events_run" in r.getMessage()
+    ]
+    assert repair_warnings, (
+        "expected a WARNING naming idx_events_run; got "
+        f"{[r.getMessage() for r in caplog.records]!r}"
+    )
+
+    # No spurious .corrupt backup was created for an auto-repairable case.
+    backups = list(tmp_path.glob("*.corrupt.*"))
+    assert backups == [], (
+        f"auto-repair path must not produce a .corrupt backup; got {backups}"
+    )
+
+
+def test_init_db_unrepairable_corruption_still_raises_kanban_db_corrupt_error(
+    tmp_path, monkeypatch, caplog
+):
+    """Existing backup-and-raise path must keep working for genuine
+    corruption (page-level, malformed b-tree, TLS-overwrite, etc.)."""
+    import logging
+
+    db_path = tmp_path / "real_bad.db"
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                return _FakeCursor([("database disk image is malformed",)])
+            return _FakeCursor([])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+            kb._guard_existing_db_is_healthy(db_path)
+
+    assert excinfo.value.backup_path is not None
+    assert excinfo.value.backup_path.exists()
+
+
+def test_init_db_partial_repair_failure_includes_attempt_in_error(tmp_path, monkeypatch):
+    """Edge case: REINDEX fixes the named index but the DB is still
+    failing integrity_check (multiple broken indexes, only one
+    repairable). The error must surface the repair attempt so the
+    operator knows what was tried.
+
+    Like the auto-repair test above, we drive the guard directly — the
+    post-guard ``connect()`` flow is covered by the dedicated migration
+    tests; here we only care that the guard logs the attempt in the
+    ``KanbanDbCorruptError`` message so the operator can see the
+    repair was tried."""
+    db_path = tmp_path / "partial.db"
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    reindexed: list[str] = []
+    repaired_flag = {"done": False}
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                if not repaired_flag["done"]:
+                    # First call: recoverable index drift + page-level
+                    # corruption mixed together.
+                    return _FakeCursor([
+                        ("wrong # of entries in index idx_events_run",),
+                        ("*** in database main ***\nPage 4: never used",),
+                    ])
+                # REINDEX was attempted but the DB is STILL not clean —
+                # this is the partial-repair-failed case.
+                return _FakeCursor([("*** in database main ***\nPage 4: still bad",)])
+            if normalized.startswith("reindex "):
+                reindexed.append(sql)
+                repaired_flag["done"] = True
+            return _FakeCursor([])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+        kb._guard_existing_db_is_healthy(db_path)
+
+    assert "REINDEX attempted" in str(excinfo.value)
+    assert "idx_events_run" in str(excinfo.value)
+    assert reindexed == ["REINDEX idx_events_run"]
+
+
+# ---------------------------------------------------------------------------
 # First-use tip for scratch workspaces
 # ---------------------------------------------------------------------------
 

@@ -931,6 +931,65 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    # ------------------------------------------------------------------
+    # Reactions (unified cross-platform contract — see BasePlatformAdapter)
+    # ------------------------------------------------------------------
+    # Baileys natively supports reactions via
+    # ``sock.sendMessage(jid, { react: { text, key } })``. The bridge's
+    # ``/react`` endpoint resolves the original message from its bounded,
+    # TTL'd message store (populated as inbound + sent messages flow through,
+    # so the group ``participant`` on the key survives) and forwards the call.
+    # This is the same store the ``whatsapp_action`` tool reacts through.
+    SUPPORTS_REACTIONS = True
+
+    async def _bridge_react(
+        self,
+        chat_id: str,
+        message_id: Optional[str],
+        emoji: str,
+    ) -> Dict[str, Any]:
+        """POST to the bridge ``/react`` endpoint (emoji='' clears)."""
+        if not self._running or not self._http_session:
+            return {"success": False, "error": "Not connected"}
+        if not message_id:
+            return {"success": False, "error": "message_id is required to react"}
+        bridge_exit = await self._check_managed_bridge_exit()
+        if bridge_exit:
+            return {"success": False, "error": bridge_exit}
+        try:
+            import aiohttp
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/react",
+                json={
+                    "chatId": to_whatsapp_jid(chat_id),
+                    "messageId": message_id,
+                    "emoji": emoji,
+                },
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 200:
+                    return {"success": True}
+                return {"success": False, "error": await resp.text()}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Attach an emoji reaction to a message via the Baileys bridge."""
+        return await self._bridge_react(chat_id, message_id, emoji)
+
+    async def remove_reaction(
+        self,
+        chat_id: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Retract a reaction (Baileys clears with an empty reaction text)."""
+        return await self._bridge_react(chat_id, message_id, "")
+
     async def _send_media_to_bridge(
         self,
         chat_id: str,

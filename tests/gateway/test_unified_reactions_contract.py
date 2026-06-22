@@ -62,6 +62,7 @@ def test_signal_message_id_round_trip():
         ("gateway.platforms.signal", "SignalAdapter"),
         ("plugins.platforms.telegram.adapter", "TelegramAdapter"),
         ("plugins.platforms.photon.adapter", "PhotonAdapter"),
+        ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
     ],
 )
 def test_reaction_capable_adapters_advertise_and_implement(module_path, class_name):

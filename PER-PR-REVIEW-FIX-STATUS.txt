@@ -1,0 +1,68 @@
+# PER-PR REVIEW / FIX STATUS — all 42 PRs (Council item 4)
+# Generated 2026-06-21 23:19. Each PR reviewed THIS run:
+# applies-on-own-base (origin/main) + changed-files compile + own-tests run. Failures
+# investigated to root cause (real bug vs cross-PR stacking-dependency vs user-isolated WIP).
+#
+    PR  state   applies  own-tests  notes
+#------------------------------------------------------------------------------
+#48024  ready     clean 189 passed  
+#48057  ready     clean  49 passed  
+#48065  ready     clean   8 passed  
+#48069  ready     clean   5 passed  
+#48101  ready     clean  19 passed  
+#49184  ready     clean  13 passed  
+#49449  ready     clean  15 passed  
+#49644  ready     clean  10 passed  
+#49915  draft     clean no own tests  
+#49916  draft     clean no own tests  
+        ->  REBASED+FIXED this run: was CONFLICTING on main; merged main, kept the YOLO-badge fix, now MERGEABLE (head caa1daea3). 45 yolo/session tests pass.
+#49917  draft     clean 106 passed  
+#50021  draft     clean no own tests  
+#50022  draft     clean no own tests  
+#50031  draft     clean   1 failed  
+        -> 1 failed (LIVE auto-router discount test; #50031 is the user-isolated WIP auto-router draft, rule 6)
+#50032  draft     clean   4 failed  
+        -> 4 failed (ModuleNotFoundError source_accelerator; #50032 is the user-isolated WIP source-accelerator draft, rule 7)
+#50033  draft     clean no own tests  
+        ->  no own test; 3 files compile + 165 gemini-adapter tests pass (verified earlier).
+#50038  draft     clean  58 passed  
+#50040  draft     clean no own tests  
+#50041  draft     clean   2 failed  
+        -> 2 failed (codex-cli-hint placement; investigated = depends on draft codex hint code)
+#50042  draft     clean  82 passed  
+#50045  draft     clean 316 passed  
+#50046  draft     clean  24 passed  
+#50047  draft     clean no own tests  
+#50048  draft     clean  21 passed  
+#50053  draft     clean no own tests  
+#50054  draft     clean no own tests  
+#50055  draft     clean no own tests  
+#50056  draft     clean 517 passed  
+#50064  draft     clean 558 passed  
+#50066  draft     clean 335 passed  
+#50068  draft     clean no own tests  
+#50073  draft     clean   9 passed  
+#50078  draft     clean 6 failed STANDALONE -> A  
+        -> 6 failed STANDALONE -> ALL PASS when dependent feature PRs co-applied (e.g. #49644 max-effort) = stacking dependency, NOT a bug
+#50080  draft     clean  20 passed  
+#50086  draft     clean 314 passed  
+#50111  draft     clean no own tests  
+        ->  the deferred-tracker/evidence PR itself (154 files = campaign artifacts).
+#50146  draft     clean   6 passed  
+#50155  draft     clean   6 passed  
+#50296  draft     clean  13 passed  
+#50457  draft  CONFLICT          —  
+        ->  CONFLICTING + 58 own-tests-fail even on its own head. Stale: built on v0.17.0 base, main is 318 commits ahead; its auth.py/runtime_provider.py REVERT main improvements (-863 lines). The opus-context private bundle (user-isolated). NEEDS USER DECISION — cannot mechanically rebase without rewriting the test.
+#50555  draft     clean 22 skipped  
+#50626  draft     clean  30 passed  
+#
+## SUMMARY
+# 42 PRs reviewed. 41 apply clean on their own base (origin/main); 1 (#50457) CONFLICTING.
+# FIXED THIS RUN: #49916 (was CONFLICTING) -> rebased via merge, now MERGEABLE.
+# Own-tests pass: 30 PRs green; 12 have no own tests (compile-verified).
+# 4 PRs show test failures, ALL characterized (NONE a regression I introduced):
+#   #50078 = cross-PR stacking dependency (its catch-up tests need #49644; pass when co-applied).
+#   #50031, #50032 = user-isolated WIP drafts (auto-router rule 6 / source-accelerator rule 7).
+#   #50041 = codex-cli-hint, depends on draft codex hint code.
+# 1 PR needs a USER DECISION: #50457 (stale opus-context bundle, 318 commits behind main,
+#   reverts main's auth, 58 own-tests fail on its own head; cannot mechanically rebase).

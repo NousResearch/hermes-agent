@@ -5378,11 +5378,85 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Set skip flag (again) so the text-change event fired when the
             # editor closes does not re-collapse the returned content.
             self._skip_paste_collapse = True
-            target_buffer.open_in_editor(validate_and_handle=False)
+            # Open the editor, then submit the saved draft on a clean exit —
+            # matching the TUI's Ctrl+G (openEditor), which sends the buffer
+            # instead of requiring a second Enter. Submission in this CLI is
+            # driven by the custom `enter` keybinding, NOT the buffer's
+            # accept_handler, so validate_and_handle can't route through it;
+            # chain a done-callback on the returned Task that re-uses the
+            # real submit pipeline via _submit_editor_buffer().
+            task = target_buffer.open_in_editor(validate_and_handle=False)
+            if task is not None and hasattr(task, "add_done_callback"):
+                task.add_done_callback(
+                    lambda _t, b=target_buffer: self._submit_editor_buffer(b)
+                )
             return True
         except Exception as exc:
             _cprint(f"{_DIM}Failed to open external editor: {exc}{_RST}")
             return False
+
+    def _submit_editor_buffer(self, buffer) -> None:
+        """Submit the draft an external editor left in ``buffer``.
+
+        Invoked from the Ctrl+G done-callback so saving the editor sends the
+        prompt (TUI parity) instead of leaving it sitting in the input area.
+        Mirrors the idle/queue branches of the `enter` keybinding handler:
+        an empty save is ignored (never submits a blank turn), a slash command
+        is dispatched, otherwise the text is routed through the same input
+        queues the normal Enter path uses. Runs on the prompt_toolkit event
+        loop via the Task callback, so it must be cheap and non-blocking.
+        """
+        try:
+            text = (getattr(buffer, "text", "") or "").strip()
+        except Exception:
+            return
+        if not text:
+            # Editor saved empty / was cleared — match the TUI, which drops
+            # an empty draft instead of submitting a blank turn.
+            return
+
+        app = getattr(self, "_app", None)
+
+        # Slash commands: dispatch directly, same as the Enter handler's
+        # _looks_like_slash_command branch.
+        if _looks_like_slash_command(text):
+            try:
+                if not self.process_command(text):
+                    self._should_exit = True
+                    if app is not None and app.is_running:
+                        app.exit()
+            except Exception as exc:
+                _cprint(f"  {_DIM}Command failed: {exc}{_RST}")
+            finally:
+                self._reset_input_buffer(buffer)
+                if app is not None:
+                    app.invalidate()
+            return
+
+        # Regular prompt: route through the same queues the Enter handler uses.
+        if self._agent_running:
+            # Agent busy → honour the configured busy-input behaviour by
+            # queueing for the next turn (the safe default; interrupt/steer
+            # remain reachable via the normal Enter path).
+            self._interrupt_queue.put(text) if self.busy_input_mode == "interrupt" else self._pending_input.put(text)
+            preview = text[:80] + ("..." if len(text) > 80 else "")
+            _cprint(f"  Queued for the next turn: {preview}")
+        else:
+            self._pending_input.put(text)
+
+        self._reset_input_buffer(buffer)
+        if app is not None:
+            app.invalidate()
+
+    def _reset_input_buffer(self, buffer) -> None:
+        """Clear an input buffer after a programmatic submit (best-effort)."""
+        try:
+            buffer.reset(append_to_history=True)
+        except Exception:
+            try:
+                buffer.text = ""
+            except Exception:
+                pass
 
 
 

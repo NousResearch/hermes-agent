@@ -301,13 +301,31 @@ class ToolCallGuardrailController:
 
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
         self.config = config or ToolCallGuardrailConfig()
-        self.reset_for_turn()
-
-    def reset_for_turn(self) -> None:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
+        # Per-turn no-progress tracking (same-turn duplicates).
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        # Cross-turn no-progress tracking for terminal/execute_code so that
+        # loops spanning multiple turns (one identical call per turn) are still
+        # caught.  Value is (result_hash, repeat_count, last_turn).
+        self._no_progress_cross_turn: dict[ToolCallSignature, tuple[str, int, int]] = {}
+        self._turn_counter: int = 0
         self._halt_decision: ToolGuardrailDecision | None = None
+        self._cross_turn_ttl: int = 10  # forget entries older than N turns
+
+    def reset_for_turn(self) -> None:
+        self._turn_counter += 1
+        self._exact_failure_counts = {}
+        self._same_tool_failure_counts = {}
+        self._no_progress = {}
+        self._halt_decision = None
+        # Prune stale cross-turn entries so the dict doesn't grow unbounded.
+        _cutoff = self._turn_counter - self._cross_turn_ttl
+        self._no_progress_cross_turn = {
+            sig: val
+            for sig, val in self._no_progress_cross_turn.items()
+            if val[2] >= _cutoff
+        }
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -335,6 +353,7 @@ class ToolCallGuardrailController:
             self._halt_decision = decision
             return decision
 
+        # Per-turn no-progress check
         record = self._no_progress.get(signature) if _tracks_no_progress(tool_name, self.config) else None
         if record is not None:
             _result_hash, repeat_count = record
@@ -353,6 +372,27 @@ class ToolCallGuardrailController:
                 )
                 self._halt_decision = decision
                 return decision
+
+        # Cross-turn no-progress check (catches one-call-per-turn loops)
+        if _tracks_no_progress(tool_name, self.config):
+            cross = self._no_progress_cross_turn.get(signature)
+            if cross is not None:
+                _rh, _rc, _lt = cross
+                if _rc >= self.config.no_progress_block_after:
+                    decision = ToolGuardrailDecision(
+                        action="block",
+                        code="no_progress_cross_turn_block",
+                        message=(
+                            f"Blocked {tool_name}: this call returned the same "
+                            f"result {_rc} times across multiple turns. Stop repeating it unchanged; "
+                            "use the result already provided or try a different approach."
+                        ),
+                        tool_name=tool_name,
+                        count=_rc,
+                        signature=signature,
+                    )
+                    self._halt_decision = decision
+                    return decision
 
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -423,6 +463,7 @@ class ToolCallGuardrailController:
 
         if not _tracks_no_progress(tool_name, self.config):
             self._no_progress.pop(signature, None)
+            self._no_progress_cross_turn.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
         result_hash = _result_hash(result)
@@ -431,6 +472,30 @@ class ToolCallGuardrailController:
         if previous is not None and previous[0] == result_hash:
             repeat_count = previous[1] + 1
         self._no_progress[signature] = (result_hash, repeat_count)
+
+        # Cross-turn no-progress tracking
+        cross_prev = self._no_progress_cross_turn.get(signature)
+        if cross_prev is not None and cross_prev[0] == result_hash:
+            self._no_progress_cross_turn[signature] = (result_hash, cross_prev[1] + 1, self._turn_counter)
+        else:
+            self._no_progress_cross_turn[signature] = (result_hash, 1, self._turn_counter)
+
+        # Emit warning based on cross-turn count when per-turn count is 1
+        # (i.e., the loop spans turns rather than repeating within one turn)
+        _cross_count = self._no_progress_cross_turn[signature][1]
+        if repeat_count == 1 and self.config.warnings_enabled and _cross_count >= self.config.no_progress_warn_after:
+            return ToolGuardrailDecision(
+                action="warn",
+                code="no_progress_cross_turn_warning",
+                message=(
+                    f"{tool_name} returned the same result {_cross_count} times across turns. "
+                    "Use the result already provided or change the query instead of "
+                    "repeating it unchanged."
+                ),
+                tool_name=tool_name,
+                count=_cross_count,
+                signature=signature,
+            )
 
         if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
             return ToolGuardrailDecision(

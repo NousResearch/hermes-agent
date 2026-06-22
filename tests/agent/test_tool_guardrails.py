@@ -276,7 +276,16 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     controller.reset_for_turn()
 
+    # Per-turn state is cleared: exact_failure block is gone
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
+    # Cross-turn no_progress persists across reset_for_turn (by design — catches
+    # one-call-per-turn loops).  read_file still blocks because the cross-turn
+    # counter reached the threshold.
+    assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "block"
+
+    # After enough turns the TTL expires and the entry is pruned.
+    for _ in range(controller._cross_turn_ttl):
+        controller.reset_for_turn()
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
 
 
@@ -363,3 +372,54 @@ def test_mutating_tool_task_failure_triggers_exact_failure_counting():
     blocked = controller.before_call("terminal", args)
     assert blocked.action == "block"
     assert blocked.code == "repeated_exact_failure_block"
+
+
+def test_cross_turn_no_progress_catches_one_call_per_turn_loop():
+    """One identical terminal call per turn should still be caught by cross-turn tracking."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=3, no_progress_warn_after=2)
+    )
+
+    # Turn 1
+    controller.after_call("terminal", {"command": "curl http://example.com"}, "Page not found", failed=False)
+    assert controller.before_call("terminal", {"command": "curl http://example.com"}).action == "allow"
+
+    # Turn 2 (reset clears per-turn, but cross-turn persists)
+    controller.reset_for_turn()
+    d = controller.after_call("terminal", {"command": "curl http://example.com"}, "Page not found", failed=False)
+    # Cross-turn count is 2 — should warn
+    assert d.action == "warn"
+    assert d.code == "no_progress_cross_turn_warning"
+    assert controller.before_call("terminal", {"command": "curl http://example.com"}).action == "allow"
+
+    # Turn 3
+    controller.reset_for_turn()
+    d = controller.after_call("terminal", {"command": "curl http://example.com"}, "Page not found", failed=False)
+    # Cross-turn count is 3 — still warn (warn_after=2, already warned)
+    # before_call should now block
+    assert controller.before_call("terminal", {"command": "curl http://example.com"}).action == "block"
+    assert controller.before_call("terminal", {"command": "curl http://example.com"}).code == "no_progress_cross_turn_block"
+
+
+def test_cross_turn_no_progress_resets_on_different_result():
+    """A different result should reset the cross-turn counter."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=2, no_progress_warn_after=2)
+    )
+
+    # Turn 1
+    controller.after_call("terminal", {"command": "curl http://example.com"}, "Page not found", failed=False)
+
+    # Turn 2 — same result
+    controller.reset_for_turn()
+    controller.after_call("terminal", {"command": "curl http://example.com"}, "Page not found", failed=False)
+
+    # Turn 3 — different result (streak broken)
+    controller.reset_for_turn()
+    controller.after_call("terminal", {"command": "curl http://example.com"}, "OK success", failed=False)
+    assert controller.before_call("terminal", {"command": "curl http://example.com"}).action == "allow"
+
+    # Turn 4 — even if we go back to "Page not found", it starts fresh
+    controller.reset_for_turn()
+    controller.after_call("terminal", {"command": "curl http://example.com"}, "Page not found", failed=False)
+    assert controller.before_call("terminal", {"command": "curl http://example.com"}).action == "allow"

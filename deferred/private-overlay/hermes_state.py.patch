@@ -1,5 +1,5 @@
 diff --git a/hermes_state.py b/hermes_state.py
-index 256bcc8c4..ad6827358 100644
+index 256bcc8c4..8e2220bbd 100644
 --- a/hermes_state.py
 +++ b/hermes_state.py
 @@ -16,13 +16,68 @@ Key design decisions:
@@ -81,7 +81,69 @@ index 256bcc8c4..ad6827358 100644
  
  _FTS_TRIGGERS = (
      "messages_fts_insert",
-@@ -141,7 +198,7 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
+@@ -110,6 +167,61 @@ def get_last_init_error() -> Optional[str]:
+     return _last_init_error
+ 
+ 
++# Distinctive opening shared by both background-review harness prompts
++# (_SKILL_REVIEW_PROMPT and _MEMORY_REVIEW_PROMPT in agent/background_review.py).
++# Matched case-sensitively against the leading content of a user/system message.
++_REVIEW_HARNESS_PREFIXES = (
++    "Review the conversation above and update the skill library",
++    "Review the conversation above and consider saving to memory",
++)
++
++
++def _is_background_review_harness_message(msg: Dict[str, Any]) -> bool:
++    """True when ``msg`` is a persisted background-review harness prompt.
++
++    These are user/system turns the forked skill/memory review agent wrote into
++    a real session in older builds (before the ``_persist_disabled`` isolation
++    fix). They instruct the agent to act as the curator under a hard tool
++    restriction, so replaying them as live history hijacks the session.
++    """
++    if not isinstance(msg, dict):
++        return False
++    if msg.get("role") not in {"user", "system"}:
++        return False
++    content = msg.get("content")
++    if not isinstance(content, str):
++        return False
++    head = content.lstrip()
++    return any(head.startswith(p) for p in _REVIEW_HARNESS_PREFIXES)
++
++
++def _strip_background_review_harness(
++    messages: List[Dict[str, Any]],
++) -> List[Dict[str, Any]]:
++    """Drop background-review harness messages and the curator-mode assistant
++    reply that immediately followed each one.
++
++    Walk the list once; when a harness user/system message is found, skip it and
++    also skip the next message if it is the assistant turn that answered it.
++    Everything else passes through untouched and in order.
++    """
++    if not messages:
++        return messages
++    out: List[Dict[str, Any]] = []
++    skip_next_assistant = False
++    for msg in messages:
++        if _is_background_review_harness_message(msg):
++            skip_next_assistant = True
++            continue
++        if skip_next_assistant:
++            skip_next_assistant = False
++            if isinstance(msg, dict) and msg.get("role") == "assistant":
++                # The curator-mode reply to the harness prompt — drop it.
++                continue
++        out.append(msg)
++    return out
++
++
+ def format_session_db_unavailable(prefix: str = "Session database not available") -> str:
+     """Format a user-facing 'session DB unavailable' message with cause.
+ 
+@@ -141,7 +253,7 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
      """
      try:
          row = conn.execute("PRAGMA journal_mode").fetchone()
@@ -90,7 +152,7 @@ index 256bcc8c4..ad6827358 100644
          return None
      if row is None:
          return None
-@@ -185,13 +242,13 @@ def apply_wal_with_fallback(
+@@ -185,13 +297,13 @@ def apply_wal_with_fallback(
          current_mode = conn.execute("PRAGMA journal_mode").fetchone()
          if current_mode and current_mode[0] == "wal":
              return "wal"
@@ -106,7 +168,7 @@ index 256bcc8c4..ad6827358 100644
          msg = str(exc).lower()
          if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
              # Unrelated OperationalError — don't silently swallow.
-@@ -226,6 +283,27 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
+@@ -226,6 +338,27 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
          exc,
      )
  
@@ -134,7 +196,7 @@ index 256bcc8c4..ad6827358 100644
  SCHEMA_SQL = """
  CREATE TABLE IF NOT EXISTS schema_version (
      version INTEGER NOT NULL
-@@ -421,7 +499,7 @@ class SessionDB:
+@@ -421,7 +554,7 @@ class SessionDB:
                      timeout=1.0,
                      isolation_level=None,
                  )
@@ -143,7 +205,7 @@ index 256bcc8c4..ad6827358 100644
                  return
  
              self.db_path.parent.mkdir(parents=True, exist_ok=True)
-@@ -437,7 +515,7 @@ class SessionDB:
+@@ -437,7 +570,7 @@ class SessionDB:
                  # ourselves.
                  isolation_level=None,
              )
@@ -152,7 +214,7 @@ index 256bcc8c4..ad6827358 100644
              apply_wal_with_fallback(self._conn, db_label="state.db")
              self._conn.execute("PRAGMA foreign_keys=ON")
  
-@@ -484,7 +562,7 @@ class SessionDB:
+@@ -484,7 +617,7 @@ class SessionDB:
              cursor.execute("CREATE VIRTUAL TABLE temp._hermes_fts5_probe USING fts5(x)")
              cursor.execute("DROP TABLE temp._hermes_fts5_probe")
              return True
@@ -161,7 +223,7 @@ index 256bcc8c4..ad6827358 100644
              if not self._is_fts5_unavailable_error(exc):
                  raise
              self._warn_fts5_unavailable(exc)
-@@ -495,7 +573,7 @@ class SessionDB:
+@@ -495,7 +628,7 @@ class SessionDB:
          for trigger in _FTS_TRIGGERS:
              try:
                  cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
@@ -170,7 +232,7 @@ index 256bcc8c4..ad6827358 100644
                  pass
  
      @staticmethod
-@@ -533,7 +611,7 @@ class SessionDB:
+@@ -533,7 +666,7 @@ class SessionDB:
          try:
              cursor.execute(f"SELECT * FROM {table_name} LIMIT 0")
              return True
@@ -179,7 +241,7 @@ index 256bcc8c4..ad6827358 100644
              if self._is_fts5_unavailable_error(exc):
                  self._warn_fts5_unavailable(exc)
                  return None
-@@ -556,7 +634,7 @@ class SessionDB:
+@@ -556,7 +689,7 @@ class SessionDB:
              # them to keep message writes working.
              cursor.executescript(ddl)
              return True
@@ -188,7 +250,7 @@ index 256bcc8c4..ad6827358 100644
              if not self._is_fts5_unavailable_error(exc):
                  raise
              self._warn_fts5_unavailable(exc)
-@@ -596,7 +674,7 @@ class SessionDB:
+@@ -596,7 +729,7 @@ class SessionDB:
                  if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
                      self._try_wal_checkpoint()
                  return result
@@ -197,7 +259,7 @@ index 256bcc8c4..ad6827358 100644
                  err_msg = str(exc).lower()
                  if "locked" in err_msg or "busy" in err_msg:
                      last_err = exc
-@@ -723,7 +801,7 @@ class SessionDB:
+@@ -723,7 +856,7 @@ class SessionDB:
                  rows = cursor.execute(
                      f'PRAGMA table_info("{table_name}")'
                  ).fetchall()
@@ -206,7 +268,7 @@ index 256bcc8c4..ad6827358 100644
                  continue  # Table doesn't exist yet (shouldn't happen after executescript)
              live_cols = set()
              for row in rows:
-@@ -738,7 +816,7 @@ class SessionDB:
+@@ -738,7 +871,7 @@ class SessionDB:
                          cursor.execute(
                              f'ALTER TABLE "{table_name}" ADD COLUMN "{safe_name}" {col_type}'
                          )
@@ -215,7 +277,7 @@ index 256bcc8c4..ad6827358 100644
                          # Expected: "duplicate column name" from a race or
                          # re-run.  Unexpected: "Cannot add a NOT NULL column
                          # with default value NULL" from a schema mistake.
-@@ -747,6 +825,21 @@ class SessionDB:
+@@ -747,6 +880,21 @@ class SessionDB:
                              "reconcile %s.%s: %s", table_name, col_name, exc,
                          )
  
@@ -237,7 +299,7 @@ index 256bcc8c4..ad6827358 100644
      def _init_schema(self):
          """Create tables and FTS if they don't exist, reconcile columns.
  
-@@ -781,7 +874,7 @@ class SessionDB:
+@@ -781,7 +929,7 @@ class SessionDB:
                  "ON messages(session_id, platform_message_id) "
                  "WHERE platform_message_id IS NOT NULL"
              )
@@ -246,7 +308,7 @@ index 256bcc8c4..ad6827358 100644
              logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
  
          # Deferred indexes that reference the reconciler-added ``active``
-@@ -849,7 +942,7 @@ class SessionDB:
+@@ -849,7 +997,7 @@ class SessionDB:
                      for _tbl in ("messages_fts", "messages_fts_trigram"):
                          try:
                              cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
@@ -255,7 +317,7 @@ index 256bcc8c4..ad6827358 100644
                              if not self._is_fts5_unavailable_error(exc):
                                  raise
                              self._warn_fts5_unavailable(exc)
-@@ -897,7 +990,7 @@ class SessionDB:
+@@ -897,7 +1045,7 @@ class SessionDB:
                      cursor.execute(
                          "UPDATE messages SET active = 1 WHERE active IS NULL"
                      )
@@ -264,7 +326,7 @@ index 256bcc8c4..ad6827358 100644
                      pass
              if current_version < SCHEMA_VERSION and fts_migrations_complete:
                  cursor.execute(
-@@ -911,7 +1004,7 @@ class SessionDB:
+@@ -911,7 +1059,7 @@ class SessionDB:
                  "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
                  "ON sessions(title) WHERE title IS NOT NULL"
              )
@@ -273,7 +335,25 @@ index 256bcc8c4..ad6827358 100644
              pass  # Index already exists
  
          if fts5_available:
-@@ -2922,7 +3015,8 @@ class SessionDB:
+@@ -2493,6 +2641,17 @@ class SessionDB:
+             if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
+                 continue
+             messages.append(msg)
++        # DEFENSE-IN-DEPTH against background-review session pollution: a forked
++        # skill/memory review that (in older builds, before the _persist_disabled
++        # fix) shared the parent's session_id wrote its harness turn into this
++        # real session. The harness is a user/system message instructing the
++        # agent to "Review the conversation above and update the skill library /
++        # save to memory" under a hard tool restriction; re-loading it as live
++        # history makes the agent adopt the curator role and refuse the user's
++        # actual task. Strip any such harness message AND the curator-mode
++        # assistant reply immediately following it, so a polluted session
++        # resumes clean even if stray rows exist.
++        messages = _strip_background_review_harness(messages)
+         return messages
+ 
+     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
+@@ -2922,7 +3081,8 @@ class SessionDB:
                  self._count_cjk(t) < 3 for t in _tokens_for_check
              )
  
@@ -283,7 +363,7 @@ index 256bcc8c4..ad6827358 100644
                  # Trigram FTS5 path — quote each non-operator token to handle
                  # FTS5 special chars (%, *, etc.) while preserving boolean
                  # operators (AND, OR, NOT) for multi-term queries.
-@@ -2970,11 +3064,14 @@ class SessionDB:
+@@ -2970,11 +3130,14 @@ class SessionDB:
                  with self._lock:
                      try:
                          tri_cursor = self._conn.execute(tri_sql, tri_params)
@@ -301,7 +381,7 @@ index 256bcc8c4..ad6827358 100644
                  # Short / mixed CJK query: trigram cannot match tokens with
                  # <3 CJK chars. Fall back to LIKE substring search.
                  # For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江"),
-@@ -3025,7 +3122,7 @@ class SessionDB:
+@@ -3025,7 +3188,7 @@ class SessionDB:
              with self._lock:
                  try:
                      cursor = self._conn.execute(sql, params)
@@ -310,7 +390,7 @@ index 256bcc8c4..ad6827358 100644
                      # FTS5 query syntax error despite sanitization — return empty
                      return []
                  else:
-@@ -3768,7 +3865,7 @@ class SessionDB:
+@@ -3768,7 +3931,7 @@ class SessionDB:
                          "DELETE FROM telegram_dm_topic_bindings WHERE chat_id = ?",
                          (str(chat_id),),
                      )
@@ -319,7 +399,7 @@ index 256bcc8c4..ad6827358 100644
                  # Tables don't exist yet — nothing to disable.
                  return
          self._execute_write(_do)
-@@ -3784,7 +3881,7 @@ class SessionDB:
+@@ -3784,7 +3947,7 @@ class SessionDB:
                      """,
                      (str(chat_id), str(user_id)),
                  ).fetchone()
@@ -328,7 +408,7 @@ index 256bcc8c4..ad6827358 100644
                  return False
          if row is None:
              return False
-@@ -3807,7 +3904,7 @@ class SessionDB:
+@@ -3807,7 +3970,7 @@ class SessionDB:
                      """,
                      (str(chat_id), str(thread_id)),
                  ).fetchone()
@@ -337,7 +417,7 @@ index 256bcc8c4..ad6827358 100644
                  return None
          return dict(row) if row else None
  
-@@ -3828,7 +3925,7 @@ class SessionDB:
+@@ -3828,7 +3991,7 @@ class SessionDB:
                      "WHERE chat_id = ? ORDER BY updated_at DESC",
                      (str(chat_id),),
                  ).fetchall()
@@ -346,7 +426,7 @@ index 256bcc8c4..ad6827358 100644
                  return []
          return [dict(row) for row in rows]
  
-@@ -3852,7 +3949,7 @@ class SessionDB:
+@@ -3852,7 +4015,7 @@ class SessionDB:
                      """,
                      (str(session_id),),
                  ).fetchone()
@@ -355,7 +435,7 @@ index 256bcc8c4..ad6827358 100644
                  return None
          return dict(row) if row else None
  
-@@ -3938,7 +4035,7 @@ class SessionDB:
+@@ -3938,7 +4101,7 @@ class SessionDB:
                      """,
                      (str(session_id),),
                  ).fetchone()
@@ -364,7 +444,7 @@ index 256bcc8c4..ad6827358 100644
                  return False
          return row is not None
  
-@@ -3984,7 +4081,7 @@ class SessionDB:
+@@ -3984,7 +4147,7 @@ class SessionDB:
                      """,
                      (str(user_id), int(limit)),
                  ).fetchall()
@@ -373,7 +453,7 @@ index 256bcc8c4..ad6827358 100644
                  # telegram_dm_topic_bindings doesn't exist yet — no bindings
                  # means every telegram session for this user is "unlinked".
                  rows = self._conn.execute(
-@@ -4030,7 +4127,7 @@ class SessionDB:
+@@ -4030,7 +4193,7 @@ class SessionDB:
          try:
              self._conn.execute(f"SELECT 1 FROM {name} LIMIT 0")
              return True
@@ -382,7 +462,7 @@ index 256bcc8c4..ad6827358 100644
              return False
  
      def optimize_fts(self) -> int:
-@@ -4066,7 +4163,7 @@ class SessionDB:
+@@ -4066,7 +4229,7 @@ class SessionDB:
                          f"INSERT INTO {tbl}({tbl}) VALUES('optimize')"
                      )
                      optimized += 1

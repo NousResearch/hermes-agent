@@ -268,6 +268,8 @@ def _handle_send(args):
     if _relay_denial:
         return tool_error(_relay_denial)
 
+    subject = args.get("subject") if platform_name == "email" else None
+
     try:
         from model_tools import _run_async
         # Only custom plugin handlers receive the complete typed request. ``mentions`` is only for platforms
@@ -277,6 +279,8 @@ def _handle_send(args):
         mentions = args.get("mentions")
         if mentions and entry is not None and entry.standalone_send is not None and entry.standalone_send.mentions:
             handler_args["mentions"] = [mentions] if isinstance(mentions, str) else list(mentions)
+        if subject:
+            handler_args["subject"] = subject
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))

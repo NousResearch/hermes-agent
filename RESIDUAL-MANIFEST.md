@@ -27,5 +27,5 @@ handling. The remaining set applies cleanly with no overlay mechanism.
 See APPLY-MATRIX-v0.17.0-FRESH.txt and verify_prs_on_v017_fresh.sh.
 
 ## Coverage (v0.16.0 3c231eb → overlay HEAD)
-- 160 delta files: 138 in feature PRs, 22 non-contributable (see NON-CONTRIBUTABLE.md).
+- 160 delta files: 138 in feature PRs, 21 non-contributable + agy-cli isolated to #50555 (see NON-CONTRIBUTABLE.md).
 - Real-source orphans: 0.

@@ -49,7 +49,36 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = get_default_hermes_root().resolve()
+def _cron_storage_scope() -> str:
+    """Return cron storage scope: root (default) or profile.
+
+    Historically cron storage was anchored at the default Hermes root so jobs
+    created from a profile-scoped session were visible to a single
+    profile-less gateway. Isolated profile gateways, however, need their own
+    cron stores: if they read the root store, every persona gateway competes to
+    run the default profile's jobs and misses its own profile-local jobs.
+
+    Keep the old root behavior by default and allow sensitive/isolated
+    profiles to opt into profile-local cron with ``cron.storage_scope:
+    profile`` in that profile's config.yaml.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        value = cfg_get(load_config(), "cron", "storage_scope", default="root")
+        return str(value or "root").strip().lower().replace("-", "_")
+    except Exception:
+        return "root"
+
+
+def _resolve_cron_storage_home() -> Path:
+    scope = _cron_storage_scope()
+    if scope in {"profile", "profile_local", "local"}:
+        return get_hermes_home().resolve()
+    return get_default_hermes_root().resolve()
+
+
+HERMES_DIR = _resolve_cron_storage_home()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 # Heartbeat file the in-process ticker touches on every loop iteration. The

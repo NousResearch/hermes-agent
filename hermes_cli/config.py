@@ -2296,6 +2296,13 @@ DEFAULT_CONFIG = {
         # An unknown or unavailable provider falls back to the built-in, so cron
         # never loses its trigger.
         "provider": "",
+        # Cron storage scope. "root" (default) keeps the historical single
+        # store at <default HERMES_HOME>/cron so jobs created from ordinary
+        # profile-scoped sessions are visible to the root/default gateway.
+        # Isolated persona gateways that own their own schedule can set
+        # "profile" to use <profile HERMES_HOME>/cron instead, preventing
+        # cross-profile gateways from running each other's jobs.
+        "storage_scope": "root",
         # Chronos (NAS-mediated managed cron) settings. Only consulted when
         # provider == "chronos". All non-secret (URLs + the JWT audience): the
         # agent holds NO external-scheduler credentials. For hosted agents, NAS

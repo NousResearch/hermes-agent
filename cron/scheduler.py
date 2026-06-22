@@ -316,17 +316,19 @@ def _get_hermes_home() -> Path:
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
-    """Resolve cron lock paths at call time so profile/env changes are honored.
+    """Resolve cron lock paths at call time so storage changes are honored.
 
-    Anchored on the DEFAULT ROOT home (not the active profile), matching the
-    jobs store in cron.jobs (which uses get_default_hermes_root). The tick lock
-    is storage-coordination — it must live next to the single jobs.json so that
-    tickers running under different profiles share one lock and can't
-    double-fire the relocated store (#32091). Execution context (.env,
-    config.yaml, scripts) stays profile-aware via _get_hermes_home().
+    The tick lock is storage-coordination, so it must live next to the active
+    jobs.json. Default/root cron keeps the historical root-wide lock; profiles
+    that opt into ``cron.storage_scope: profile`` get an independent lock next
+    to their profile-local cron store so isolated persona gateways do not
+    compete to run each other's jobs.
     """
-    from hermes_constants import get_default_hermes_root
-    lock_dir = (_hermes_home or get_default_hermes_root()) / "cron"
+    if _hermes_home is not None:
+        lock_dir = _hermes_home / "cron"
+    else:
+        from cron.jobs import CRON_DIR
+        lock_dir = CRON_DIR
     return lock_dir, lock_dir / ".tick.lock"
 
 

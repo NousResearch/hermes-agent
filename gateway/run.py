@@ -7768,16 +7768,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "kanban":
                 return await self._handle_kanban_command(event)
 
-            # /goal is safe mid-run for status/pause/clear (inspection and
-            # control-plane only — doesn't interrupt the running turn).
+            # /goal is safe mid-run for status/pause/clear/wait (inspection
+            # and control-plane only — doesn't interrupt the running turn).
             # Setting a new goal text mid-run is rejected with the same
             # "wait or /stop" message as /model so we don't race a second
             # continuation prompt against the current turn.
             if _cmd_def_inner and _cmd_def_inner.name == "goal":
                 _goal_arg = (event.get_command_args() or "").strip().lower()
-                if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
+                _goal_verb = _goal_arg.split(None, 1)[0] if _goal_arg else ""
+                # Exact-match control verbs (unchanged semantics), plus the
+                # wait/unwait barrier verbs which take a pid argument.
+                _is_control = (
+                    not _goal_arg
+                    or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done", "unwait"}
+                    or _goal_verb == "wait"
+                )
+                if _is_control:
                     return await self._handle_goal_command(event)
-                return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
+                return "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
 
             # /subgoal is safe mid-run — it only modifies the goal's
             # subgoals list, which the judge reads at the next turn
@@ -10634,7 +10642,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not mgr.is_active():
             return
 
-        decision = mgr.evaluate_after_turn(final_response or "", user_initiated=True)
+        try:
+            from hermes_cli.goals import gather_background_processes as _gather_bg
+            _bg_procs = _gather_bg()
+        except Exception:
+            _bg_procs = None
+
+        decision = mgr.evaluate_after_turn(
+            final_response or "",
+            user_initiated=True,
+            background_processes=_bg_procs,
+        )
         msg = decision.get("message") or ""
 
         # Defer the status line until after the adapter has delivered the

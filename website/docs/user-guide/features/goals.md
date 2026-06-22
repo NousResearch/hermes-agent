@@ -44,6 +44,8 @@ What you'll see:
 | `/goal pause` | Stop the auto-continuation loop without clearing the goal. |
 | `/goal resume` | Resume the loop (resets the turn counter back to zero). |
 | `/goal clear` | Drop the goal entirely. |
+| `/goal wait <pid> [reason]` | Park the loop on a background process — it stops re-poking the agent every turn while the process runs, and auto-resumes when it exits. |
+| `/goal unwait` | Drop the wait barrier and resume the loop immediately. |
 
 Works identically on the CLI and every gateway platform (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, API server, and the web dashboard).
 
@@ -61,6 +63,29 @@ While a goal is active you can append extra acceptance criteria with `/subgoal <
 Subgoals are persisted alongside the goal in `SessionDB.state_meta`, so they survive `/resume`. Setting a new `/goal <text>` replaces the goal and clears the subgoal list; `/goal clear` does the same.
 
 Use this when you start a loop ("fix the failing tests") and notice partway through that you also want it to "and add a regression test for the bug you just patched" — `/subgoal add a regression test` tightens the success criteria without breaking the running loop.
+
+## Parking on a background process: automatic, with a manual override
+
+Some goals are gated on something that takes minutes and runs on its own — CI on a pushed PR, a long build, a test matrix, a deploy, a rate-limit cooldown. Without help, the goal loop would re-poke the agent every turn into "is it done yet?" busy-work while it waits.
+
+**This is handled automatically.** Every turn, the judge is shown the agent's live background processes (the `terminal(background=true)` registry — pid, session id, command, uptime, recent output, and any `watch_patterns` / `notify_on_complete` trigger) alongside the goal and the agent's response. When the agent's progress is genuinely gated on one of them, the judge returns a **`wait`** verdict instead of `continue`, and the loop **parks**: the next turns are skipped (no judge call, no continuation, no turn consumed) until the wait is satisfied — then it resumes normally with the result in hand. The judge can also park on a **time** basis (`wait_for_seconds`) for backoff/cooldown waits. `/goal status` shows `⏳ Goal (parked …)` while parked.
+
+The judge picks the right kind of wait from the process's own signal:
+
+- **`wait_on_session <id>`** — releases when the process's *own trigger* fires: it exits, **or** (if it was started with `watch_patterns`) its pattern matches. This is the one for a long-lived watcher / server / poller that signals **mid-run** (e.g. a build process that prints `BUILD SUCCESSFUL` and keeps running, or a `notify_on_complete` watcher) and may never exit on its own.
+- **`wait_on_pid <pid>`** — releases on process exit only.
+- **`wait_for_seconds <n>`** — releases after a fixed delay.
+
+You don't type anything for this — it's the judge's decision, made from the process context the loop hands it. The manual commands exist as an override:
+
+| Command | What it does |
+|---|---|
+| `/goal wait <pid> [reason]` | Manually park the loop until the process with that PID exits. |
+| `/goal unwait` | Clear any wait barrier (judge- or manually-set) and resume immediately. |
+
+The barrier (pid- or time-based) is persisted with the goal in `SessionDB.state_meta`, so it survives `/resume`. `/goal pause`, `/goal resume`, and `/goal clear` all drop it. If the PID is already dead when the barrier is set (or dies while parked), or the time deadline passes, the barrier clears on the next check — a stale barrier can never wedge the loop.
+
+Typical flow: the agent pushes a PR, starts a CI watcher with `terminal(background=true, notify_on_complete=true)`, and reports "watching CI." The judge sees the watcher process still running, returns `wait` on its pid, and the loop goes quiet — then picks back up the instant CI finishes and judges the goal against the actual result.
 
 ## Behavior details
 
@@ -94,7 +119,7 @@ Any real message you send while a goal is active takes priority over the continu
 
 ### Mid-run safety (gateway)
 
-While an agent is already running, `/goal status`, `/goal pause`, and `/goal clear` are safe to run — they only touch control-plane state and don't interrupt the current turn. Setting a **new** goal mid-run (`/goal <new text>`) is rejected with a message telling you to `/stop` first, so the old continuation can't race the new one.
+While an agent is already running, `/goal status`, `/goal pause`, `/goal clear`, `/goal wait`, and `/goal unwait` are safe to run — they only touch control-plane state and don't interrupt the current turn. Setting a **new** goal mid-run (`/goal <new text>`) is rejected with a message telling you to `/stop` first, so the old continuation can't race the new one.
 
 ### Persistence
 

@@ -255,6 +255,7 @@ if _try_termux_ultrafast_version():
 import argparse
 import hashlib
 import json
+import shlex
 import shutil
 import stat
 import subprocess
@@ -5429,16 +5430,25 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     if sandbox_lstat.st_uid == 0 and stat.S_IMODE(sandbox_lstat.st_mode) == 0o4755:
         return True
 
+    # Check if we have a TTY before attempting sudo.  When invoked from a
+    # background process or non-interactive shell, sudo will fail with
+    # ``a terminal is required to read the password`` and kill the launch.
+    # Warn and continue — Electron will fail at runtime if it needs this.
+    if not sys.stdin.isatty():
+        print("⚠ No terminal; skipping Electron sandbox setup.")
+        print(f"  Run once: sudo chown root:root {shlex.quote(str(sandbox))} && sudo chmod 4755 {shlex.quote(str(sandbox))}")
+        return True
+
     sudo = shutil.which("sudo")
     if not sudo:
-        print("✗ Hermes Desktop requires sudo to configure Electron's Linux sandbox helper.")
-        return False
+        print(f"✗ Hermes Desktop requires sudo to configure Electron's Linux sandbox helper.")
+        return True
 
     print("→ Configuring Electron Linux sandbox helper (sudo required)...")
     for command in ([sudo, "chown", "root:root", str(sandbox)], [sudo, "chmod", "4755", str(sandbox)]):
         if subprocess.run(command, check=False).returncode != 0:
             print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
-            return False
+            return True
     return True
 
 

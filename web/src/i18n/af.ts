@@ -158,6 +158,7 @@ export const af: Translations = {
     selectedSessionsDeleted: "{count} sessies geskrap",
     failedToDeleteSelected: "Kon nie gekose sessies skrap nie",
     resumeInChat: "Hervat in Klets",
+    newChat: "Nuwe klets",
     previousPage: "Vorige bladsy",
     nextPage: "Volgende bladsy",
     roles: {

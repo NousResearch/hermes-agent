@@ -49,6 +49,58 @@ Wire protocol
 
     # Silent no-op:
     <empty or any non-matching JSON object>
+
+Per-event ``extra`` keys
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``extra`` object contains every kwarg that is **not** one of the
+top-level payload keys (``tool_name``, ``args``, ``session_id``,
+``parent_session_id``).  The tables below list the ``extra`` keys
+emitted by each built-in hook site.
+
+``post_tool_call`` (emitted from ``model_tools.py``)::
+
+    result          – tool return value (serialised string)
+    status          – "ok" | "error" | "blocked"
+    error_type      – error category (e.g. "ValueError"), or None
+    error_message   – human-readable error text, or None
+    duration_ms     – wall-clock time in milliseconds
+    task_id         – current task id (empty string if none)
+    tool_call_id    – provider tool-call id
+    turn_id         – current turn id
+    api_request_id  – current API request id
+    middleware_trace – list of dicts from tool middleware chain
+
+``pre_tool_call`` (emitted from ``model_tools.py``)::
+
+    task_id         – current task id (empty string if none)
+    tool_call_id    – provider tool-call id
+    turn_id         – current turn id
+    api_request_id  – current API request id
+    middleware_trace – list of dicts from tool middleware chain
+
+``on_session_start`` (emitted from ``agent/conversation_loop.py``)::
+
+    model           – model name (e.g. "claude-sonnet-4-20250514")
+    platform        – platform identifier (e.g. "cli", "whatsapp")
+
+``on_session_end`` (emitted from ``agent/turn_finalizer.py``)::
+
+    task_id         – current task id
+    turn_id         – current turn id
+    completed       – bool, True when the turn produced a final response
+    interrupted     – bool, True when the user interrupted
+    model           – model name
+    platform        – platform identifier
+
+``subagent_stop`` (emitted from ``tools/delegate_tool.py``)::
+
+    parent_turn_id  – parent agent's current turn id
+    child_session_id – child (subagent) session id
+    child_role      – role string of the child agent
+    child_summary   – summary of the child's work
+    child_status    – exit status string (e.g. "success", "error")
+    duration_ms     – wall-clock time of the child run in milliseconds
 """
 
 from __future__ import annotations

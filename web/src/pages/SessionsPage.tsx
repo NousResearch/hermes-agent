@@ -30,6 +30,7 @@ import {
   Archive,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { shouldRefreshSessions } from "@/lib/session-refresh";
 import type {
   SessionInfo,
   SessionMessage,
@@ -794,10 +795,9 @@ export default function SessionsPage() {
       <Button
         outlined
         size="sm"
-        className="gap-1.5"
         onClick={() => setPruneOpen(true)}
+        prefix={<Archive />}
       >
-        <Archive className="h-3.5 w-3.5" />
         Prune old sessions
       </Button>,
     );
@@ -806,8 +806,12 @@ export default function SessionsPage() {
     };
   }, [setEnd]);
 
-  const loadSessions = useCallback((p: number) => {
-    setLoading(true);
+  const loadSessions = useCallback((p: number, silent = false) => {
+    // ``silent`` skips the loading spinner so background refreshes
+    // (triggered when the overview poll detects a new session from
+    // another process) don't flicker the whole page or drop the user's
+    // scroll position.
+    if (!silent) setLoading(true);
     api
       .getSessions(PAGE_SIZE, p * PAGE_SIZE)
       .then((resp) => {
@@ -815,7 +819,9 @@ export default function SessionsPage() {
         setTotal(resp.total);
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!silent) setLoading(false);
+      });
   }, []);
 
   const loadStats = useCallback(() => {
@@ -828,6 +834,15 @@ export default function SessionsPage() {
   useEffect(() => {
     loadStats();
   }, [loadStats]);
+
+  // Refs for the overview poll's new-session detection. The poll effect
+  // below is mounted once with stable deps, so it reads the current page
+  // and the last-seen newest session id through refs instead of capturing
+  // stale values. ``newestSeenRef`` starts null so the first poll sets a
+  // baseline without triggering a redundant reload (mount already loads).
+  const newestSeenRef = useRef<string | null>(null);
+  const pageRef = useRef(page);
+  pageRef.current = page;
 
   useEffect(() => {
     loadSessions(page);
@@ -842,13 +857,27 @@ export default function SessionsPage() {
         .catch(() => {});
       api
         .getSessions(50)
-        .then((r) => setOverviewSessions(r.sessions))
+        .then((r) => {
+          setOverviewSessions(r.sessions);
+          // The dashboard server and a terminal CLI are separate
+          // processes sharing one session DB — there is no push channel,
+          // so we detect sessions created in another process here. The
+          // overview poll already fetches the 50 newest sessions, so we
+          // reuse its head id as a cheap change signal: when it changes,
+          // silently refresh the paginated list so the new session shows
+          // up in real time without a visible loading flicker.
+          const newest = r.sessions[0]?.id ?? null;
+          if (shouldRefreshSessions(newestSeenRef.current, newest)) {
+            loadSessions(pageRef.current, true);
+          }
+          newestSeenRef.current = newest;
+        })
         .catch(() => {});
     };
     loadOverview();
     const id = setInterval(loadOverview, 5000);
     return () => clearInterval(id);
-  }, []);
+  }, [loadSessions]);
 
   useEffect(() => {
     const el = logScrollRef.current;
@@ -1491,8 +1520,8 @@ export default function SessionsPage() {
                 onClick={() => setDeleteEmptyOpen(true)}
                 aria-label={t.sessions.deleteEmpty}
                 title={t.sessions.deleteEmpty}
+                prefix={<Eraser />}
               >
-                <Eraser className="h-3.5 w-3.5" />
                 <span className="font-mondwest normal-case text-xs">
                   {t.sessions.deleteEmpty} ({emptyCount})
                 </span>
@@ -1565,8 +1594,8 @@ export default function SessionsPage() {
               "{count}",
               String(selectedIds.size),
             )}
+            prefix={<Trash2 />}
           >
-            <Trash2 className="h-3.5 w-3.5" />
             <span className="font-mondwest normal-case text-xs">
               {t.sessions.deleteSelected.replace(
                 "{count}",

@@ -166,6 +166,42 @@ class TestHandleTitleCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_set_title_propagates_to_telegram_topic_rename(self, tmp_path):
+        """/title <name> also renames the visible Telegram topic, not just the DB."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+
+        runner = _make_runner(session_db=db)
+        runner._schedule_telegram_topic_title_rename = MagicMock()
+
+        event = _make_event(text="/title My Topic Name")
+        result = await runner._handle_title_command(event)
+
+        assert "My Topic Name" in result
+        runner._schedule_telegram_topic_title_rename.assert_called_once_with(
+            event.source, "test_session_123", "My Topic Name"
+        )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_show_title_does_not_rename_topic(self, tmp_path):
+        """Showing the title (no arg) must not trigger a topic rename."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("test_session_123", "telegram")
+        db.set_session_title("test_session_123", "Existing Title")
+
+        runner = _make_runner(session_db=db)
+        runner._schedule_telegram_topic_title_rename = MagicMock()
+
+        event = _make_event(text="/title")
+        await runner._handle_title_command(event)
+
+        runner._schedule_telegram_topic_title_rename.assert_not_called()
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_works_across_platforms(self, tmp_path):
         """The /title command works for Discord, Slack, and WhatsApp too."""
         from hermes_state import SessionDB

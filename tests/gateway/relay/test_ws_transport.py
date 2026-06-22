@@ -177,3 +177,25 @@ async def test_disconnect_fails_pending_waiters_cleanly(server):
     # After disconnect, an outbound returns a structured failure rather than hanging.
     result = await t.send_outbound({"op": "send", "chat_id": "c", "content": "x"})
     assert result["success"] is False
+
+
+def test_https_url_normalized_to_wss():
+    """The relay URL is configured once as the http(s):// BASE (for the provision
+    POST), but websockets.connect needs ws(s):// and the connector mounts its WS
+    server at /relay. The transport must convert scheme AND ensure the /relay
+    path. Regression for the live staging failures 'scheme isn't ws or wss' then
+    'server rejected WebSocket connection: HTTP 400' (wrong path)."""
+    t = WebSocketRelayTransport("https://connector.example", "discord", "b")
+    assert t._url == "wss://connector.example/relay"
+    t2 = WebSocketRelayTransport("http://connector.local:8080", "discord", "b")
+    assert t2._url == "ws://connector.local:8080/relay"
+
+
+def test_ws_dial_url_idempotent_with_scheme_and_path():
+    # Already ws(s):// and/or already ending in /relay -> unchanged (no double append).
+    t = WebSocketRelayTransport("wss://connector.example/relay", "discord", "b")
+    assert t._url == "wss://connector.example/relay"
+    t2 = WebSocketRelayTransport("https://connector.example/relay/", "discord", "b")
+    assert t2._url == "wss://connector.example/relay"
+    t3 = WebSocketRelayTransport("ws://127.0.0.1:9", "discord", "b")
+    assert t3._url == "ws://127.0.0.1:9/relay"

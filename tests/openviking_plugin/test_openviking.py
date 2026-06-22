@@ -265,6 +265,355 @@ class TestOpenVikingSkillQuerySafety:
         assert RecordingVikingClient.calls == []
 
 
+class TestOpenVikingTurnConversion:
+    def test_extract_current_turn_anchors_on_latest_matching_user_and_assistant(self):
+        messages = [
+            {"role": "user", "content": "Please inspect the repository for assemble hooks."},
+            {"role": "assistant", "content": "Earlier answer."},
+            {"role": "user", "content": "Please inspect the repository for assemble hooks."},
+            {
+                "role": "assistant",
+                "content": "I will search the codebase.",
+                "tool_calls": [
+                    {
+                        "id": "call_rg_1",
+                        "type": "function",
+                        "function": {
+                            "name": "shell_command",
+                            "arguments": json.dumps({"command": "rg assemble"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_rg_1",
+                "name": "shell_command",
+                "content": "agent/context_engine.py: no preassemble hook",
+            },
+            {"role": "assistant", "content": "The current main does not expose assemble."},
+        ]
+
+        turn = OpenVikingMemoryProvider._extract_current_turn_messages(
+            messages,
+            "Please inspect the repository for assemble hooks.",
+            "The current main does not expose assemble.",
+        )
+
+        assert turn == messages[2:]
+
+    def test_messages_to_openviking_batch_coalesces_tool_results(self):
+        turn = [
+            {"role": "user", "content": "Please inspect the repository for assemble hooks."},
+            {
+                "role": "assistant",
+                "content": "I will search the codebase.",
+                "tool_calls": [
+                    {
+                        "id": "call_rg_1",
+                        "type": "function",
+                        "function": {
+                            "name": "shell_command",
+                            "arguments": json.dumps({"command": "rg assemble"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_rg_1",
+                "name": "shell_command",
+                "content": "agent/context_engine.py: no preassemble hook",
+            },
+            {"role": "assistant", "content": "The current main does not expose assemble."},
+        ]
+
+        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
+
+        assert [message["role"] for message in batch] == ["user", "assistant", "assistant", "assistant"]
+        assert batch[0]["parts"] == [
+            {"type": "text", "text": "Please inspect the repository for assemble hooks."}
+        ]
+        assert batch[1]["parts"] == [
+            {"type": "text", "text": "I will search the codebase."}
+        ]
+        assert batch[2]["parts"] == [
+            {
+                "type": "tool",
+                "tool_id": "call_rg_1",
+                "tool_name": "shell_command",
+                "tool_input": {"command": "rg assemble"},
+                "tool_output": "agent/context_engine.py: no preassemble hook",
+                "tool_status": "completed",
+            }
+        ]
+        assert batch[3]["parts"] == [
+            {"type": "text", "text": "The current main does not expose assemble."}
+        ]
+
+    def test_messages_to_openviking_batch_marks_json_tool_error_results(self):
+        turn = [
+            {"role": "user", "content": "Check the file."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": json.dumps({"path": "missing.md"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_read_1",
+                "name": "read_file",
+                "content": json.dumps({"error": "File not found", "exit_code": 1}),
+            },
+        ]
+
+        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
+
+        assert batch[1]["role"] == "assistant"
+        assert batch[1]["parts"] == [
+            {
+                "type": "tool",
+                "tool_id": "call_read_1",
+                "tool_name": "read_file",
+                "tool_input": {"path": "missing.md"},
+                "tool_output": json.dumps({"error": "File not found", "exit_code": 1}),
+                "tool_status": "error",
+            }
+        ]
+
+    def test_messages_to_openviking_batch_keeps_pending_tool_call_without_result(self):
+        turn = [
+            {"role": "user", "content": "Start a long running check."},
+            {
+                "role": "assistant",
+                "content": "Starting it now.",
+                "tool_calls": [
+                    {
+                        "id": "call_long_1",
+                        "type": "function",
+                        "function": {
+                            "name": "long_check",
+                            "arguments": json.dumps({"target": "repo"}),
+                        },
+                    }
+                ],
+            },
+        ]
+
+        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
+
+        assert batch[1]["parts"] == [
+            {"type": "text", "text": "Starting it now."},
+            {
+                "type": "tool",
+                "tool_id": "call_long_1",
+                "tool_name": "long_check",
+                "tool_input": {"target": "repo"},
+                "tool_status": "pending",
+            },
+        ]
+
+    def test_messages_to_openviking_batch_coalesces_adjacent_tool_results(self):
+        turn = [
+            {"role": "user", "content": "Run both tools."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {
+                            "name": "first_tool",
+                            "arguments": json.dumps({"x": 1}),
+                        },
+                    },
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {
+                            "name": "second_tool",
+                            "arguments": json.dumps({"y": 2}),
+                        },
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_a", "name": "first_tool", "content": "a"},
+            {"role": "tool", "tool_call_id": "call_b", "name": "second_tool", "content": "b"},
+            {"role": "assistant", "content": "Done."},
+        ]
+
+        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
+
+        assert [message["role"] for message in batch] == ["user", "assistant", "assistant"]
+        assert batch[1]["parts"] == [
+            {
+                "type": "tool",
+                "tool_id": "call_a",
+                "tool_name": "first_tool",
+                "tool_input": {"x": 1},
+                "tool_output": "a",
+                "tool_status": "completed",
+            },
+            {
+                "type": "tool",
+                "tool_id": "call_b",
+                "tool_name": "second_tool",
+                "tool_input": {"y": 2},
+                "tool_output": "b",
+                "tool_status": "completed",
+            },
+        ]
+
+    def test_messages_to_openviking_batch_skips_openviking_recall_tool_results(self):
+        for recall_tool_name in ("viking_search", "viking_read", "viking_browse"):
+            turn = [
+                {"role": "user", "content": "What did we decide about context assembly?"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_recall_1",
+                            "type": "function",
+                            "function": {
+                                "name": recall_tool_name,
+                                "arguments": json.dumps({"query": "context assembly decision"}),
+                            },
+                        },
+                        {
+                            "id": "call_shell_1",
+                            "type": "function",
+                            "function": {
+                                "name": "shell_command",
+                                "arguments": json.dumps({"command": "rg preassemble"}),
+                            },
+                        },
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_recall_1",
+                    "name": recall_tool_name,
+                    "content": json.dumps({
+                        "results": [
+                            {
+                                "uri": "viking://user/hermes/memories/context",
+                                "abstract": "Old OpenViking memory content",
+                            }
+                        ]
+                    }),
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_shell_1",
+                    "name": "shell_command",
+                    "content": "plugins/memory/openviking/__init__.py",
+                },
+                {"role": "assistant", "content": "We decided to keep sync_turn scoped to ingestion."},
+            ]
+
+            batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
+
+            assert [message["role"] for message in batch] == ["user", "assistant", "assistant"]
+            assert batch[1]["parts"] == [
+                {
+                    "type": "tool",
+                    "tool_id": "call_shell_1",
+                    "tool_name": "shell_command",
+                    "tool_input": {"command": "rg preassemble"},
+                    "tool_output": "plugins/memory/openviking/__init__.py",
+                    "tool_status": "completed",
+                }
+            ]
+            batch_text = json.dumps(batch)
+            assert recall_tool_name not in batch_text
+            assert "Old OpenViking memory content" not in batch_text
+
+    def test_messages_to_openviking_batch_empty_tool_id_does_not_drop_other_results(self):
+        # A recall tool result that arrives with an empty tool_call_id must not
+        # poison the skip set with "" and silently drop unrelated tool results
+        # that also lack an id. Empty tool_call_id is reachable in the canonical
+        # transcript (agent_runtime_helpers defaults it to "").
+        turn = [
+            {"role": "user", "content": "What did we decide?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "",
+                        "type": "function",
+                        "function": {
+                            "name": "viking_search",
+                            "arguments": json.dumps({"query": "decision"}),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "",
+                "name": "viking_search",
+                "content": json.dumps({"results": ["recall stuff"]}),
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "",
+                "name": "shell_command",
+                "content": "important shell output",
+            },
+            {"role": "assistant", "content": "done"},
+        ]
+
+        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
+
+        batch_text = json.dumps(batch)
+        # The unrelated (empty-id) shell result must survive.
+        assert "important shell output" in batch_text
+        # The recall tool result must still be excluded.
+        assert "recall stuff" not in batch_text
+        assert "viking_search" not in batch_text
+
+    def test_messages_to_openviking_batch_preserves_responses_text_parts(self):
+        turn = [
+            {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "answer"}]},
+        ]
+
+        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
+
+        assert batch == [
+            {"role": "user", "parts": [{"type": "text", "text": "hello"}]},
+            {"role": "assistant", "parts": [{"type": "text", "text": "answer"}]},
+        ]
+
+    def test_messages_to_openviking_batch_adds_assistant_peer_id_when_requested(self):
+        turn = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "answer"},
+        ]
+
+        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(
+            turn,
+            assistant_peer_id="hermes",
+        )
+
+        assert batch == [
+            {"role": "user", "parts": [{"type": "text", "text": "hello"}]},
+            {"role": "assistant", "parts": [{"type": "text", "text": "answer"}], "peer_id": "hermes"},
+        ]
+
+
 class TestOpenVikingRead:
     def test_overview_read_normalizes_uri_and_unwraps_result(self):
         provider = OpenVikingMemoryProvider()

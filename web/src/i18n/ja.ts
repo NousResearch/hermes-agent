@@ -158,6 +158,7 @@ export const ja: Translations = {
     selectedSessionsDeleted: "{count}件のセッションを削除しました",
     failedToDeleteSelected: "選択したセッションの削除に失敗しました",
     resumeInChat: "チャットで再開",
+    newChat: "新しいチャット",
     previousPage: "前のページ",
     nextPage: "次のページ",
     roles: {

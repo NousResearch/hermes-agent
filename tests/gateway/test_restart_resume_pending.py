@@ -153,14 +153,24 @@ def _simulate_note_injection(
             if reason == "shutdown_timeout"
             else "a gateway interruption"
         )
+        if message:
+            resume_guidance = (
+                "Address the user's NEW message below FIRST and focus "
+                "on what the user is asking now."
+            )
+        else:
+            resume_guidance = (
+                "Report to the user that the session was restored "
+                "successfully and ask what they would like to do next."
+            )
         message = (
-            f"[System note: A new message has arrived. The previous turn "
-            f"was interrupted by {reason_phrase}. "
-            f"Address the user's NEW message below FIRST. "
+            f"[System note: The previous turn was interrupted by "
+            f"{reason_phrase}; the gateway is now back online. "
+            f"Any restart/shutdown command in the history has already "
+            f"run — do NOT re-execute or verify it. {resume_guidance} "
             f"Do NOT re-execute old tool calls — skip any unfinished "
-            f"work from the conversation history and focus on what the "
-            f"user is asking now.]\n\n"
-            + message
+            f"work from the conversation history.]"
+            + (f"\n\n{message}" if message else "")
         )
     elif has_fresh_tool_tail:
         message = (
@@ -653,6 +663,47 @@ class TestResumePendingSystemNote:
         ]
         result = _simulate_note_injection(history, "ping", resume_entry=None)
         assert result == "ping"
+
+    def test_resume_pending_note_warns_against_reexecuting_restart(self):
+        """The resume-pending note tells the model any restart/shutdown
+        command in the history already ran and must not be re-executed or
+        verified — the cognitive backstop to the source-level tail strip.
+        """
+        entry = self._pending_entry(reason="restart_timeout")
+        result = _simulate_note_injection(
+            history=[
+                {"role": "assistant", "content": "in progress", "timestamp": time.time()},
+            ],
+            user_message="restarted!",
+            resume_entry=entry,
+        )
+        assert "[System note:" in result
+        assert "back online" in result
+        assert "already" in result and "do NOT re-execute or verify" in result
+        assert "restarted!" in result
+
+    def test_resume_pending_empty_message_reports_recovery(self):
+        """On the empty-message auto-resume startup turn there is no NEW user
+        message, so the note instructs the model to report recovery and ask
+        for instructions rather than 'address the user's NEW message'.
+        """
+        entry = self._pending_entry(reason="restart_timeout")
+        result = _simulate_note_injection(
+            history=[
+                {"role": "assistant", "content": "in progress", "timestamp": time.time()},
+            ],
+            user_message="",
+            resume_entry=entry,
+        )
+        assert "[System note:" in result
+        assert "gateway restart" in result
+        assert "restored successfully" in result
+        assert "ask what they would like to do next" in result
+        assert "do NOT re-execute or verify" in result
+        # No phantom "NEW message" instruction when there is no new message.
+        assert "NEW message" not in result
+        # Nothing appended after the closing bracket (no empty user text).
+        assert result.rstrip().endswith("]")
 
 
 # ---------------------------------------------------------------------------

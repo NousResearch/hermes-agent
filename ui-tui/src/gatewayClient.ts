@@ -307,6 +307,13 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
+  publishLocalEvent(ev: GatewayEvent) {
+    const frame = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: ev })
+
+    this.mirrorEventToSidecar(frame)
+    this.publish(ev)
+  }
+
   private handleWebSocketFrame(raw: unknown) {
     const text = asWireText(raw)
 

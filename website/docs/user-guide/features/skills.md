@@ -379,6 +379,12 @@ A bundle is just a YAML alias — it doesn't install skills for you. The skills 
 
 The agent can create, update, and delete its own skills via the `skill_manage` tool. This is the agent's **procedural memory** — when it figures out a non-trivial workflow, it saves the approach as a skill for future reuse.
 
+Skills and memory work together in the self-improvement loop: memory stores
+small durable facts that should always be in context, while skills store longer
+procedures that should load only when relevant. The background review can
+suggest or stage skill changes after a session, but the write-approval gate
+below lets you require human review before those changes land.
+
 ### When the Agent Creates Skills
 
 - After completing a complex task (5+ tool calls) successfully

@@ -16,7 +16,7 @@ import math
 
 import pytest
 
-from gateway.platforms.telegram import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.fixture

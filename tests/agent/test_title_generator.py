@@ -7,6 +7,7 @@ from agent.title_generator import (
     generate_title,
     auto_title_session,
     maybe_auto_title,
+    _title_language,
 )
 
 
@@ -21,6 +22,42 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("help me fix this import", "Sure, let me check...")
             assert title == "Debugging Python Import Errors"
+
+    def test_default_prompt_matches_user_language(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Some Title"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as llm:
+            generate_title("質問です", "回答です")
+
+        system_prompt = llm.call_args.kwargs["messages"][0]["content"]
+        assert "same language the user is writing in" in system_prompt
+
+    def test_configured_language_pins_prompt(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Some Title"
+
+        with (
+            patch("agent.title_generator.call_llm", return_value=mock_response) as llm,
+            patch("agent.title_generator._title_language", return_value="Japanese"),
+        ):
+            generate_title("hello", "hi")
+
+        system_prompt = llm.call_args.kwargs["messages"][0]["content"]
+        assert "Write the title in Japanese" in system_prompt
+        assert "same language the user" not in system_prompt
+
+    def test_title_language_reads_config(self):
+        cfg = {"auxiliary": {"title_generation": {"language": "  French "}}}
+
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert _title_language() == "French"
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert _title_language() == ""
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")):
+            assert _title_language() == ""
 
     def test_strips_quotes(self):
         mock_response = MagicMock()

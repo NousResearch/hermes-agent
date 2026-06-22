@@ -25,7 +25,7 @@ _GATEWAY_LIFECYCLE_PATTERNS = re.compile(
     r"(?i)"
     r"(hermes\s+gateway\s+(restart|stop|start))"
     r"|(launchctl\s+(kickstart|unload|load|stop|restart)\s+.*hermes)"
-    r"|(systemctl\s+(restart|stop|start)\s+.*hermes)"
+    r"|(systemctl\s+(-\S+\s+)*(restart|stop|start)\s+.*hermes)"
     r"|(p?kill\s+.*hermes.*gateway)"
 )
 
@@ -160,8 +160,48 @@ def cron_status():
 
     pids = find_gateway_pids()
     if pids:
-        print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
-        print(f"  PID: {', '.join(map(str, pids))}")
+        # The gateway PROCESS is alive — but the cron ticker THREAD inside it
+        # can die silently, or stay alive while every tick fails. Check both
+        # the liveness heartbeat and the last-successful-tick marker so we
+        # don't report "will fire" when the ticker is dead or failing
+        # (#32612, #32895).
+        from cron.jobs import (
+            get_ticker_heartbeat_age,
+            get_ticker_success_age,
+            TICKER_INTERVAL_SECONDS,
+        )
+
+        # Allow ~3 missed ticker iterations (+ a little slack) before declaring
+        # trouble. Derived from the shared interval constant so this threshold
+        # tracks the ticker cadence instead of assuming a hardcoded 60s.
+        STALE_AFTER = TICKER_INTERVAL_SECONDS * 3 + 20  # = 200s at the 60s default
+        hb_age = get_ticker_heartbeat_age()
+        ok_age = get_ticker_success_age()
+
+        if hb_age is not None and hb_age > STALE_AFTER:
+            # No heartbeat at all → the ticker thread is gone.
+            print(color(
+                "⚠ Gateway is running but the cron ticker looks STALLED — "
+                f"no heartbeat for {int(hb_age)}s (expected every ~60s).",
+                Colors.YELLOW,
+            ))
+            print(f"  PID: {', '.join(map(str, pids))}")
+            print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
+        elif hb_age is not None and ok_age is not None and ok_age > STALE_AFTER:
+            # Loop is alive (fresh heartbeat) but no tick has SUCCEEDED in a
+            # long time → ticks are failing every iteration.
+            print(color(
+                "⚠ Gateway and cron ticker are running, but no tick has "
+                f"succeeded in {int(ok_age)}s — ticks may be failing.",
+                Colors.YELLOW,
+            ))
+            print(f"  PID: {', '.join(map(str, pids))}")
+            print("  Check the gateway log for 'Cron tick error'.")
+        else:
+            print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
+            print(f"  PID: {', '.join(map(str, pids))}")
+            if hb_age is not None:
+                print(f"  Ticker heartbeat: {int(hb_age)}s ago")
     else:
         print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
         print()
@@ -313,7 +353,14 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     if action in {"resume", "run"} and result.get("job", {}).get("next_run_at"):
         print(f"  Next run: {result['job']['next_run_at']}")
     if action == "run":
-        print("  It will run on the next scheduler tick.")
+        job = result.get("job", {})
+        if job.get("executed"):
+            outcome = "succeeded" if job.get("execution_success") else "failed"
+            print(f"  Ran now: {outcome}.")
+        elif job.get("execution_skipped"):
+            print(f"  {job['execution_skipped']}")
+        else:
+            print("  It will run on the next scheduler tick.")
     return 0
 
 

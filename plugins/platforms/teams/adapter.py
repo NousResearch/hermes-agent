@@ -1189,14 +1189,22 @@ class TeamsAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
-    async def send_image(
+    async def _send_media_attachment(
         self,
         chat_id: str,
-        image_url: str,
+        source: str,
+        default_mime: str,
         caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        media_label: str = "media",
     ) -> SendResult:
+        """Send any media file/URL as a Teams attachment.
+
+        Remote ``http(s)://`` URLs are attached by reference; local paths
+        (with optional ``file://`` prefix) are base64-encoded into a data
+        URI. MIME type is guessed from the path/extension, falling back to
+        ``default_mime``. Shared by send_image / send_video / send_voice /
+        send_document so every media kind uses the same Attachment path.
+        """
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
 
@@ -1205,13 +1213,13 @@ class TeamsAdapter(BasePlatformAdapter):
             import mimetypes
             from microsoft_teams.api import Attachment, MessageActivityInput
 
-            if image_url.startswith("http://") or image_url.startswith("https://"):
-                content_url = image_url
-                mime_type = "image/png"
+            if source.startswith("http://") or source.startswith("https://"):
+                content_url = source
+                mime_type = mimetypes.guess_type(source.split("?")[0])[0] or default_mime
             else:
                 # Local path — encode as base64 data URI
-                path = image_url.removeprefix("file://")
-                mime_type = mimetypes.guess_type(path)[0] or "image/png"
+                path = source.removeprefix("file://")
+                mime_type = mimetypes.guess_type(path)[0] or default_mime
                 with open(path, "rb") as f:
                     content_url = f"data:{mime_type};base64,{base64.b64encode(f.read()).decode()}"
 
@@ -1228,8 +1236,24 @@ class TeamsAdapter(BasePlatformAdapter):
 
             return SendResult(success=True, message_id=getattr(result, "id", None))
         except Exception as e:
-            logger.error("[teams] send_image failed: %s", e, exc_info=True)
+            logger.error("[teams] send_%s failed: %s", media_label, e, exc_info=True)
             return SendResult(success=False, error=str(e), retryable=True)
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        return await self._send_media_attachment(
+            chat_id=chat_id,
+            source=image_url,
+            default_mime="image/png",
+            caption=caption,
+            media_label="image",
+        )
 
     async def send_image_file(
         self,
@@ -1244,6 +1268,58 @@ class TeamsAdapter(BasePlatformAdapter):
             image_url=image_path,
             caption=caption,
             reply_to=reply_to,
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_media_attachment(
+            chat_id=chat_id,
+            source=video_path,
+            default_mime="video/mp4",
+            caption=caption,
+            media_label="video",
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_media_attachment(
+            chat_id=chat_id,
+            source=audio_path,
+            default_mime="audio/mpeg",
+            caption=caption,
+            media_label="voice",
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._send_media_attachment(
+            chat_id=chat_id,
+            source=file_path,
+            default_mime="application/octet-stream",
+            caption=caption,
+            media_label="document",
         )
 
     async def get_chat_info(self, chat_id: str) -> dict:

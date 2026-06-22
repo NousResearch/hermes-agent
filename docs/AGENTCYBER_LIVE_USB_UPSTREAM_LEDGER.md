@@ -1089,3 +1089,51 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 - Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
 - Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If no upstream drift or new Live USB gap is found, continue treating the lane as verification/no-op.
+
+### 2026-06-22T03:43:30Z — remove sudo from read-only Live USB list docs
+
+**Commands / status**
+
+- `git status --short --branch && git remote -v && git branch --show-current`: started clean on `agentcyber/upstream-sync-20260621-194355...origin/agentcyber/upstream-sync-20260621-194355` at `146beb3ed1e8d5f3e749efc3bc42177c1204f6e2`; no `MERGE_HEAD` or unmerged files.
+- `git fetch --prune origin && git fetch --prune upstream`: fetched origin/upstream read-only; upstream `main` did not advance beyond `e448b21414b9dece9b74c3281f04ba4f5c79a771`.
+- Drift after fetch: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `106`; `HEAD..origin/main` -> `0`; `origin/main..HEAD` -> `297`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`.
+- Baseline focused wrapper before edits: `scripts/run_tests.sh tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py` -> `308 tests passed, 0 failed`.
+- Read-only upstream preservation review: `PASS`; required Live USB files present/tracked, executable modes preserved, branch clean, and no upstream drift.
+- Read-only Live USB safety/docs next-gap review before the fix: `REQUEST_CHANGES`; `README.md` still showed `sudo live-usb/write_usb.sh --list` for read-only USB discovery, which normalized unnecessary sudo for a safe list action.
+
+**Changed files**
+
+- `README.md`: changed the Step 3 discovery example to `# Find your USB drive (read-only; no sudo required)` and `live-usb/write_usb.sh --list` without `sudo`.
+- `tests/cyber/test_live_usb_docs.py`: added a targeted docs invariant rejecting `sudo live-usb/write_usb.sh --list` in the Live USB README section.
+- `docs/AGENTCYBER_LIVE_USB_UPSTREAM_LEDGER.md`: added this run entry.
+
+**Verification**
+
+- RED check after adding only the invariant: `uv run --frozen python -m pytest tests/cyber/test_live_usb_docs.py -q -o addopts= --tb=short` -> failed as expected because `sudo live-usb/write_usb.sh --list` was still present.
+- After README fix: `uv run --frozen python -m pytest tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py -q -o addopts= --tb=short` -> `58 passed in 0.75s`.
+- `uv run --frozen python -m ruff check tests/cyber/test_live_usb_docs.py tools/cyber_live_usb.py tests/cyber/test_live_usb_tool.py` -> `All checks passed!`.
+- Focused wrapper acceptance after the fix: `scripts/run_tests.sh tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py` -> `308 tests passed, 0 failed`.
+- `scripts/agentcyber status --json` summary -> `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, local runtime health `ok: true`, and git `dirty: true` only because this docs/test lane was in progress.
+- `scripts/agentcyber hermes tools list` -> `cyber` enabled and `live_usb` disabled.
+- Conflict marker search for lines starting `<<<<<<< ` or `>>>>>>> ` returned `0` matches.
+- `git diff --check && git diff --cached --check` -> passed with no output before the ledger edit.
+- Spec review after the fix: `PASS`.
+- Quality review after the fix: `APPROVED`; no critical, important, or minor issues.
+
+**Blockers / boundaries**
+
+- No upstream drift was present, so no upstream merge was needed this run.
+- No cron jobs were scheduled, created, updated, paused, resumed, or removed.
+- No default `~/.hermes`, default gateway, default cron, or default profiles were modified.
+- No files were deleted.
+- No USB/block-device writes, ISO builds as root, `sudo`, package installs, hardware actions, external security actions, cloud spend, credential access/disclosure, or public disclosure were performed.
+- Status commands contacted only the configured local Ollama health endpoint and printed booleans/status fields, not secrets.
+
+**Commit / push**
+
+- This scoped README docs/test fix and ledger entry should be committed and pushed to `origin/agentcyber/upstream-sync-20260621-194355` without force. After pushing, final verification should check local `HEAD` equals the remote sync branch tip and stop rather than amending this ledger solely to mention the commit SHA.
+
+**Next lane**
+
+- Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
+- Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If no upstream drift or new Live USB gap is found, continue treating the lane as verification/no-op.

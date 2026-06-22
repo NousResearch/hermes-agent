@@ -210,8 +210,8 @@ The build bundles the current repo into the ISO so the target PC needs no intern
 ### Step 3 — Write to USB
 
 ```bash
-# Find your USB drive
-sudo live-usb/write_usb.sh --list
+# Find your USB drive (read-only; no sudo required)
+live-usb/write_usb.sh --list
 
 # Basic write (will prompt for confirmation)
 sudo live-usb/write_usb.sh --device /dev/sdb

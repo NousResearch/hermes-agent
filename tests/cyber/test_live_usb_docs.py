@@ -51,6 +51,7 @@ def test_readme_live_usb_examples_do_not_imply_root_alone_is_enough() -> None:
     obsolete_root_only_claims = (
         "build` and `write` require the agent session to run as root",
         "need no root. `build` and `write` require",
+        "sudo live-usb/write_usb.sh --list",
     )
     for obsolete_claim in obsolete_root_only_claims:
         assert obsolete_claim not in lowered

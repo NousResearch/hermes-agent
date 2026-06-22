@@ -30,6 +30,7 @@ import re
 import inspect
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -449,26 +450,66 @@ class MemoryManager:
         """
         return extract_user_instruction_from_skill_message(text)
 
+    # Hard ceiling on how long a single provider's synchronous prefetch()
+    # can run before we give up on it and move on. prefetch() is documented
+    # as "should be fast" but that's not enforced -- a provider that hangs
+    # on network I/O (or anything else) with no internal timeout would
+    # otherwise block the calling thread indefinitely. On the ACP transport
+    # this manifests as the agent loop hanging silently before the first
+    # API call, since build_turn_context() -> prefetch_all() runs
+    # synchronously on the ACP worker thread before any LLM call is made
+    # or logged (issue #50765).
+    _PREFETCH_TIMEOUT_SECONDS = 8.0
+
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
         """Collect prefetch context from all providers.
 
         Returns merged context text labeled by provider. Empty providers
-        are skipped. Failures in one provider don't block others.
+        are skipped. Failures in one provider don't block others. Each
+        provider's prefetch() is bounded by _PREFETCH_TIMEOUT_SECONDS --
+        a provider that hangs (no internal timeout of its own) is skipped
+        rather than blocking the turn indefinitely.
         """
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
             return ""
         parts = []
         for provider in self._providers:
+            # One throwaway single-worker executor PER provider call.  A
+            # shared executor would serialize providers behind each other
+            # -- a hung provider would also stall every provider queued
+            # after it for up to its own timeout (e.g. 2 providers each
+            # waiting 8s becomes 16s of total blocking). A dedicated
+            # one-shot executor guarantees one provider's hang costs at
+            # most _PREFETCH_TIMEOUT_SECONDS total, independent of how
+            # many other providers are registered.
+            _one_shot = ThreadPoolExecutor(max_workers=1)
             try:
-                result = provider.prefetch(clean_query, session_id=session_id)
+                future = _one_shot.submit(
+                    provider.prefetch, clean_query, session_id=session_id
+                )
+                result = future.result(timeout=self._PREFETCH_TIMEOUT_SECONDS)
                 if result and result.strip():
                     parts.append(result)
+            except FutureTimeoutError:
+                logger.warning(
+                    "Memory provider '%s' prefetch exceeded %.0fs timeout; "
+                    "skipping for this turn (non-fatal)",
+                    provider.name, self._PREFETCH_TIMEOUT_SECONDS,
+                )
+                # wait=False: do NOT join the abandoned thread. Python
+                # threads cannot be forcibly killed, and waiting here would
+                # re-introduce the exact hang this fix exists to avoid. The
+                # thread is reclaimed once provider.prefetch() eventually
+                # returns on its own, or at interpreter exit.
+                _one_shot.shutdown(wait=False)
+                continue
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
                     provider.name, e,
                 )
+            _one_shot.shutdown(wait=False)
         return "\n\n".join(parts)
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:

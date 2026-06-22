@@ -1,6 +1,7 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
+import time
 import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -1491,3 +1492,98 @@ class TestContextEngineToolsetGate:
         """Gate is moot without a context_compressor."""
         tools, names, engine_names = self._run_context_engine_injection(None, None)
         assert tools == []
+
+
+class TestPrefetchAllTimeout:
+    """Regression tests for issue #50765: a provider whose prefetch() hangs
+    (no internal timeout, e.g. blocked network I/O) must not block the
+    calling thread indefinitely. On the ACP transport this manifested as
+    the agent loop hanging silently before the first API call, since
+    build_turn_context() -> prefetch_all() runs synchronously on the ACP
+    worker thread before any LLM call is logged.
+    """
+
+    def test_hanging_provider_does_not_block_indefinitely(self):
+        """A provider whose prefetch() never returns must be abandoned
+        after the timeout rather than hanging the caller forever.
+        """
+        class HangingProvider(MemoryProvider):
+            name = "hanging"
+
+            def initialize(self, session_id, **kwargs):
+                pass
+
+            def is_available(self):
+                return True
+
+            def get_tool_schemas(self):
+                return []
+
+            def prefetch(self, query, *, session_id=""):
+                time.sleep(60)
+                return "should never be returned"
+
+        mgr = MemoryManager()
+        mgr.add_provider(HangingProvider())
+
+        start = time.monotonic()
+        result = mgr.prefetch_all("test query")
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 15, f"prefetch_all blocked for {elapsed:.1f}s"
+        assert result == ""
+
+    def test_hanging_provider_does_not_block_other_providers(self):
+        """One hanging provider must not prevent a healthy provider's
+        result from being collected. Uses name='builtin' for the hanging
+        provider since add_provider() only allows one EXTERNAL provider --
+        'builtin' bypasses that registry restriction so both fakes can
+        coexist for this test of the timeout mechanism itself.
+        """
+        class HangingProvider(MemoryProvider):
+            name = "builtin"
+
+            def initialize(self, session_id, **kwargs):
+                pass
+
+            def is_available(self):
+                return True
+
+            def get_tool_schemas(self):
+                return []
+
+            def prefetch(self, query, *, session_id=""):
+                time.sleep(60)
+                return "should never be returned"
+
+        healthy = FakeMemoryProvider("healthy")
+        healthy._prefetch_result = "healthy provider result"
+
+        mgr = MemoryManager()
+        mgr.add_provider(HangingProvider())
+        mgr.add_provider(healthy)
+
+        start = time.monotonic()
+        result = mgr.prefetch_all("test query")
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 15, f"prefetch_all blocked for {elapsed:.1f}s"
+        assert "healthy provider result" in result
+
+    def test_fast_provider_unaffected_by_timeout_mechanism(self):
+        """A normally-fast provider must not be slowed down or otherwise
+        affected by the timeout-enforcement wrapper.
+        """
+        fast = FakeMemoryProvider("fast")
+        fast._prefetch_result = "fast result"
+
+        mgr = MemoryManager()
+        mgr.add_provider(fast)
+
+        start = time.monotonic()
+        result = mgr.prefetch_all("test query")
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 2.0
+        assert result == "fast result"
+        assert fast.prefetch_queries == ["test query"]

@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "name": "public-oss-pr-review-beta",
+  "description": "Seed public GitHub PR corpus for Hermes PR Reviewer beta evaluation. Entries record observed head SHA and check status counts so live eval refreshes can be compared against fixture/unit expectations without private repositories.",
+  "observed_at": "2026-06-21T00:00:00Z",
+  "cases": [
+    {
+      "id": "small-docs-fastapi-15815",
+      "pr": "fastapi/fastapi#15815",
+      "category": "small-docs",
+      "title": "📝 Fix dead Ariadne FastAPI docs link in `How To - GraphQL`",
+      "observed_head_sha": "7cd17d2624f55bf5adfbd6de7102f63d7b959d33",
+      "observed_check_status": {"skipped": 3, "success": 29, "unknown": 1},
+      "changed_files": 1,
+      "additions": 1,
+      "deletions": 1,
+      "rationale": "Tiny documentation-only change for low-risk parsing and summary baselines."
+    },
+    {
+      "id": "frontend-react-36835",
+      "pr": "facebook/react#36835",
+      "category": "frontend",
+      "title": "feat(react-dom): support fetchPriority for module resources",
+      "observed_head_sha": "3544a31112525411010bf595251c1bc5f06b8a10",
+      "observed_check_status": {"skipped": 4, "success": 3},
+      "changed_files": 4,
+      "additions": 263,
+      "deletions": 16,
+      "rationale": "Frontend/runtime feature touching generated fixtures and browser resource attributes."
+    },
+    {
+      "id": "security-react-36839",
+      "pr": "facebook/react#36839",
+      "category": "security",
+      "title": "Avoid HTML injection in standalone errors",
+      "observed_head_sha": "f6ef55213d81f973377bde8e29eabe5b20565ced",
+      "observed_check_status": {"skipped": 4, "success": 238},
+      "changed_files": 1,
+      "additions": 23,
+      "deletions": 20,
+      "rationale": "Security-shaped change with a small diff where reviewer should reason about injection boundaries."
+    },
+    {
+      "id": "backend-django-21516",
+      "pr": "django/django#21516",
+      "category": "backend",
+      "title": "Fixed #37101, #37174 -- Used netstring delimiter to prevent collisions in cache keys.",
+      "observed_head_sha": "04cd6b464116edfcadc5801531768d9a8bce8e4a",
+      "observed_check_status": {"skipped": 9, "success": 11, "unknown": 25},
+      "changed_files": 4,
+      "additions": 44,
+      "deletions": 10,
+      "rationale": "Backend/data-integrity fix where collisions and compatibility matter."
+    },
+    {
+      "id": "browser-tooling-playwright-41396",
+      "pr": "microsoft/playwright#41396",
+      "category": "browser-tooling",
+      "title": "feat(mcp): add `compress` option to `browser_snapshot` to collapse repeated ARIA nodes",
+      "observed_head_sha": "3d068ea257deebb689a3e1e9bbafb3c008393cca",
+      "observed_check_status": {"success": 1},
+      "changed_files": 4,
+      "additions": 305,
+      "deletions": 3,
+      "rationale": "Browser/tooling API change with model-facing behavior and snapshot output concerns."
+    },
+    {
+      "id": "ci-failing-vite-22733",
+      "pr": "vitejs/vite#22733",
+      "category": "ci-failing",
+      "title": "refactor!: remove importGlobRestoreExtension option (fix #22710)",
+      "observed_head_sha": "578db0a2b2a7c8db3cf43d0fc007989955af8139",
+      "observed_check_status": {"failure": 1, "neutral": 3, "skipped": 2, "success": 11, "unknown": 1},
+      "changed_files": 6,
+      "additions": 20,
+      "deletions": 137,
+      "rationale": "CI-failing refactor case for check-context rendering and advisory no-post behavior."
+    },
+    {
+      "id": "generated-deps-vite-22735",
+      "pr": "vitejs/vite#22735",
+      "category": "generated-dependency-heavy",
+      "title": "chore(deps): update actions/checkout action to v7",
+      "observed_head_sha": "185323f6ff980c31f04d5f2231884ccbc9cb2ef0",
+      "observed_check_status": {"failure": 2, "neutral": 1, "skipped": 3, "success": 16, "unknown": 1},
+      "changed_files": 12,
+      "additions": 14,
+      "deletions": 14,
+      "rationale": "Dependency/update-heavy PR that should mostly exercise generated/dependency filtering and CI signal."
+    },
+    {
+      "id": "large-stress-rust-158228",
+      "pr": "rust-lang/rust#158228",
+      "category": "large-stress",
+      "title": "Rollup of 9 pull requests",
+      "observed_head_sha": "4849b10ea9dcd0f95b74e5e2aaaeaef667aa51ea",
+      "observed_check_status": {"cancelled": 6, "failure": 1, "in_progress": 1, "skipped": 1, "success": 5},
+      "changed_files": 90,
+      "additions": 1012,
+      "deletions": 891,
+      "rationale": "Large/stress rollup to verify truncation, artifact summaries, and non-live fixture paths scale."
+    }
+  ]
+}

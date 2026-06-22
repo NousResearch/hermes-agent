@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from hermes_cli.config import DEFAULT_CONFIG
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from plugins.pr_review import cli as pr_review_cli
-from plugins.pr_review import core, register
+from plugins.pr_review import core, evals, register
 
 
 def test_register_adds_cli_command():
@@ -308,3 +308,112 @@ def test_cmd_review_posts_comment_with_mocked_gh_and_llm(monkeypatch, tmp_path):
     assert posted["result"]["action"] == "created"
     review_path = tmp_path / ref.storage_name / "9" / "abc123def456" / "review.md"
     assert review_path.exists()
+
+
+def test_public_eval_manifest_parses_and_summarizes_seed_corpus():
+    manifest = evals.load_eval_manifest()
+    summary = evals.summarize_eval_manifest(manifest)
+
+    assert manifest.schema_version == 1
+    assert summary["case_count"] >= 8
+    assert set(summary["categories"]) == evals.CASE_CATEGORIES
+    assert summary["categories"]["small-docs"] == 1
+    assert summary["observed_check_status"]["failure"] >= 1
+    assert summary["totals"]["changed_files"] > 0
+    assert all("#" in ref and not ref.startswith(("larry/", "NousResearch/")) for ref in summary["prs"])
+
+
+def test_eval_manifest_rejects_duplicate_case_ids():
+    raw = {
+        "schema_version": 1,
+        "name": "bad",
+        "description": "bad",
+        "cases": [
+            {
+                "id": "dup",
+                "pr": "owner/repo#1",
+                "category": "small-docs",
+                "title": "One",
+                "observed_head_sha": "abc",
+                "observed_check_status": {"success": 1},
+            },
+            {
+                "id": "dup",
+                "pr": "owner/repo#2",
+                "category": "backend",
+                "title": "Two",
+                "observed_head_sha": "def",
+                "observed_check_status": {"success": 1},
+            },
+        ],
+    }
+
+    try:
+        evals.parse_eval_manifest(raw)
+    except ValueError as exc:
+        assert "duplicate" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected duplicate case id to fail")
+
+
+def test_cmd_eval_manifest_prints_summary(capsys):
+    args = argparse.Namespace(pr_review_command="eval-manifest", manifest=None, json=False)
+
+    rc = pr_review_cli.pr_review_command(args)
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "public-oss-pr-review-beta" in captured.out
+    assert "Cases:" in captured.out
+    assert "large-stress" in captured.out
+
+
+def test_cmd_review_dry_run_fixture_path_uses_public_manifest_without_posting(monkeypatch, tmp_path: Path):
+    manifest = evals.load_eval_manifest()
+    case = next(item for item in manifest.cases if item.category == "small-docs")
+    ref = core.parse_pr_ref(case.pr)
+    monkeypatch.setattr(core, "artifacts_root", lambda: tmp_path)
+    monkeypatch.setattr(core, "fetch_pr_metadata", lambda _ref: {
+        "number": ref.number,
+        "title": case.title,
+        "baseRefName": "main",
+        "headRefName": "docs/fix-link",
+        "headRefOid": case.observed_head_sha,
+        "changedFiles": case.changed_files,
+        "additions": case.additions,
+        "deletions": case.deletions,
+        "url": f"https://github.com/{ref.full_name}/pull/{ref.number}",
+        "statusCheckRollup": [
+            {"name": status, "status": "COMPLETED", "conclusion": status.upper()}
+            for status, count in case.observed_check_status.items()
+            for _ in range(count)
+        ],
+    })
+    monkeypatch.setattr(core, "fetch_pr_diff", lambda _ref: "diff --git a/docs.md b/docs.md\n+fixed link")
+    monkeypatch.setattr(core, "fetch_pr_files", lambda _ref: [{"filename": "docs.md"}])
+    monkeypatch.setattr(core, "load_reviewer_config", lambda _ref, _base: {"config_path": None, "extra_doc_paths": [], "ignore_patterns": [], "config_error": None})
+    monkeypatch.setattr(core, "collect_trusted_docs", lambda _ref, _base, extra_doc_paths=(): {"README.md": "Project docs"})
+
+    def unexpected_post(*_args, **_kwargs):  # pragma: no cover - should not run
+        raise AssertionError("dry-run/no-post eval path must not write GitHub comments")
+
+    monkeypatch.setattr(core, "post_or_update_summary_comment", unexpected_post)
+    args = argparse.Namespace(
+        pr=case.pr,
+        no_llm=True,
+        dry_run=True,
+        max_diff_chars=5000,
+        post_comment=False,
+        json=True,
+        mode="balanced",
+    )
+
+    rc = pr_review_cli._cmd_review(args, ctx=None)
+
+    assert rc == 0
+    review_path = tmp_path / ref.storage_name / str(ref.number) / case.observed_head_sha[:12] / "review.md"
+    manifest_path = review_path.with_name("context-manifest.json")
+    assert review_path.exists()
+    saved_manifest = json.loads(manifest_path.read_text())
+    assert saved_manifest["head_sha"] == case.observed_head_sha
+    assert saved_manifest["check_context"]["observed"] is True

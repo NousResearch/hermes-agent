@@ -296,6 +296,7 @@ GitHub allows 5,000 API requests/hour for authenticated users. Each PR review us
 
 ## What's Next?
 
+- **[PR Reviewer Evaluations](./pr-review-evaluations.md)** — public OSS eval manifest and fixture-vs-live eval workflow
 - **[Webhook-Based PR Reviews](./webhook-github-pr-review.md)** — get instant reviews when PRs are opened (requires a public endpoint)
 - **[Daily Briefing Bot](/guides/daily-briefing-bot)** — combine PR reviews with your morning news digest
 - **[Build a Plugin](/guides/build-a-hermes-plugin)** — wrap the review logic into a shareable plugin

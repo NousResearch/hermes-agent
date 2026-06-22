@@ -7,7 +7,7 @@ import json
 import sys
 from typing import Any, Dict
 
-from plugins.pr_review import core
+from plugins.pr_review import core, evals
 
 
 SYSTEM_PROMPT = """You are Hermes PR Reviewer, an evidence-first code review specialist.
@@ -83,6 +83,21 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         help="Create or update the persistent Hermes summary comment on the PR",
     )
 
+    eval_manifest = subs.add_parser(
+        "eval-manifest",
+        help="Validate and summarize the bundled public OSS PR eval manifest",
+    )
+    eval_manifest.add_argument(
+        "manifest",
+        nargs="?",
+        help="Path to an eval manifest JSON file (default: bundled public PR corpus)",
+    )
+    eval_manifest.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable summary JSON",
+    )
+
     subs.add_parser("setup", help="Check local prerequisites for PR review")
     subparser.set_defaults(func=pr_review_command)
 
@@ -94,10 +109,29 @@ def pr_review_command(args: argparse.Namespace, *, ctx=None) -> int:
         return 2
     if sub == "setup":
         return _cmd_setup()
+    if sub == "eval-manifest":
+        return _cmd_eval_manifest(args)
     if sub == "review":
         return _cmd_review(args, ctx=ctx)
     print(f"unknown pr-review subcommand: {sub}")
     return 2
+
+
+def _cmd_eval_manifest(args: argparse.Namespace) -> int:
+    try:
+        manifest = evals.load_eval_manifest(getattr(args, "manifest", None))
+        summary = evals.summarize_eval_manifest(manifest)
+    except Exception as exc:
+        if getattr(args, "json", False):
+            print(json.dumps({"success": False, "error": str(exc)}))
+        else:
+            print(f"hermes pr-review eval-manifest: {exc}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps({"success": True, **summary}, indent=2, sort_keys=True))
+    else:
+        print(evals.render_eval_summary(manifest))
+    return 0
 
 
 def _cmd_setup() -> int:

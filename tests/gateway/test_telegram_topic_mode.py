@@ -94,6 +94,31 @@ def _make_runner(session_db=None):
         chat_type="dm",
         origin=source,
     )
+    # HRM-T0a step 5: the live inbound path now awaits the async pair. Without
+    # AsyncMock side_effects the MagicMock returns a non-awaitable sentinel and
+    # `await session_store.get_or_create_session_async(...)` raises TypeError.
+    runner.session_store._generate_session_key_async = AsyncMock(
+        side_effect=lambda source: build_session_key(
+            source,
+            group_sessions_per_user=getattr(runner.config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(runner.config, "thread_sessions_per_user", False),
+        )
+    )
+    runner.session_store.get_or_create_session_async = AsyncMock(
+        side_effect=lambda source, force_new=False: SessionEntry(
+            session_key=build_session_key(
+                source,
+                group_sessions_per_user=getattr(runner.config, "group_sessions_per_user", True),
+                thread_sessions_per_user=getattr(runner.config, "thread_sessions_per_user", False),
+            ),
+            session_id="sess-topic" if source.thread_id else "sess-root",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            origin=source,
+        )
+    )
     runner.session_store.load_transcript.return_value = []
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.append_to_transcript = MagicMock()

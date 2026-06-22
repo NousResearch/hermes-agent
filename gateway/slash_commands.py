@@ -2787,9 +2787,342 @@ class GatewaySlashCommandsMixin:
             logger.warning("Manual compress failed: %s", e)
             return t("gateway.compress.failed", error=e)
 
-    async def _handle_topic_command(self, event: MessageEvent, args: str = "") -> str:
-        """Handle /topic for Telegram DM user-managed topic sessions."""
+    # ── HRM-T0a step 5: /topic active-topic-pointer subcommands ────────
+
+    _TOPIC_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,63}$")
+
+    def _topic_principal_for_source(self, source):
+        """Build a ``PlatformPrincipal`` from a SessionSource.
+
+        Returns ``None`` if the principal can't be assembled (missing
+        user_id/chat_id) so the caller emits a user-visible error rather
+        than touching the pointer table.
+        """
+        from gateway.active_topic import PlatformPrincipal
+        app_id = getattr(self.config, "topic_default_app_id", None)
+        try:
+            return PlatformPrincipal.from_source(source, app_id=str(app_id))
+        except ValueError:
+            return None
+
+    async def _emit_topic_pointer_banner(self, source, banner_text: str) -> None:
+        """Emit the topic-switch banner via the platform adapter.
+
+        Raises on transport failure so the caller can roll the pointer
+        write back — charter § Owner confirmation contract: if the
+        gateway cannot emit the banner, the switch MUST be rolled back,
+        not silently held.
+        """
+        adapter = (
+            self.adapters.get(source.platform)
+            if getattr(self, "adapters", None)
+            else None
+        )
+        if adapter is None:
+            raise RuntimeError(
+                f"no adapter for platform={source.platform!r}; cannot emit topic banner"
+            )
+        from gateway.platforms.base import _thread_metadata_for_source
+        meta = _thread_metadata_for_source(source)
+        await adapter.send(str(source.chat_id), banner_text, metadata=meta)
+
+    async def _rollback_topic_pointer(
+        self,
+        principal,
+        *,
+        prior_row,
+        updated_by: str,
+    ) -> None:
+        """Compensating-rollback: restore pointer to ``prior_row`` or clear.
+
+        Uses ``require_registered=False`` because the prior row already
+        passed registry at original write time; re-checking on rollback
+        would refuse legitimate restoration if the topic was concurrently
+        de-registered, which is the wrong failure mode for a rollback.
+        """
+        from gateway.active_topic import set_active_topic, clear_active_topic
+        if prior_row is None:
+            try:
+                await clear_active_topic(
+                    self._session_db, principal, updated_by=updated_by
+                )
+            except Exception:
+                logger.exception("topic pointer rollback (clear) failed")
+            return
+        try:
+            await set_active_topic(
+                self._session_db,
+                principal,
+                topic_id=str(prior_row.get("topic_id")),
+                bound_thread_id=prior_row.get("bound_thread_id"),
+                updated_by=updated_by,
+                require_registered=False,
+            )
+        except Exception:
+            logger.exception("topic pointer rollback (restore) failed")
+
+    def _topic_help_text(self) -> str:
+        return (
+            "/topic — same-chat active-topic-pointer routing\n"
+            "  /topic                show current active topic\n"
+            "  /topic list           list active pointer + bound thread\n"
+            "  /topic switch <slug>  set active topic (registers + banner)\n"
+            "  /topic new <slug>     alias for switch (must already be registered)\n"
+            "  /topic clear          clear active topic\n"
+            "  /topic bind-thread    bind current thread to active topic\n"
+            "  /topic unbind-thread  clear thread binding on active topic\n"
+            "  /topic help           this text"
+        )
+
+    async def _handle_topic_pointer_command(self, event: MessageEvent) -> str:
+        """HRM-T0a same-chat active-topic-pointer subcommand dispatcher."""
         source = event.source
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            return format_session_db_unavailable(
+                prefix=t("gateway.shared.session_db_unavailable_prefix")
+            )
+
+        # Authorization defence-in-depth (mirrors legacy handler).
+        auth_fn = getattr(self, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                if not auth_fn(source):
+                    return t("gateway.topic.unauthorized")
+            except Exception:
+                logger.debug("topic-pointer auth check failed", exc_info=True)
+
+        principal = self._topic_principal_for_source(source)
+        if principal is None:
+            return (
+                "/topic requires both user_id and chat_id on the inbound "
+                "principal — refused."
+            )
+
+        raw_args = (event.get_command_args() or "").strip()
+        if not raw_args:
+            return await self._handle_topic_subcommand_show(principal)
+        try:
+            parts = shlex.split(raw_args)
+        except ValueError as exc:
+            return f"/topic: failed to parse args: {exc}"
+        if not parts:
+            return await self._handle_topic_subcommand_show(principal)
+        sub = parts[0].lower()
+        rest = parts[1:]
+
+        if sub in {"help", "?", "-h", "--help"}:
+            return self._topic_help_text()
+        if sub == "list":
+            return await self._handle_topic_subcommand_show(principal)
+        if sub in {"switch", "new"}:
+            if not rest:
+                return f"/topic {sub} <slug> — slug required"
+            return await self._handle_topic_subcommand_switch(
+                source, principal, rest[0]
+            )
+        if sub == "clear":
+            return await self._handle_topic_subcommand_clear(source, principal)
+        if sub == "bind-thread":
+            return await self._handle_topic_subcommand_bind_thread(source, principal)
+        if sub == "unbind-thread":
+            return await self._handle_topic_subcommand_unbind_thread(source, principal)
+        return (
+            f"/topic: unknown subcommand {sub!r}. "
+            f"Try `/topic help`."
+        )
+
+    async def _handle_topic_subcommand_show(self, principal) -> str:
+        from gateway.active_topic import read_active_topic
+        row = await read_active_topic(self._session_db, principal)
+        if not row:
+            return "[topic] no active topic — `/topic switch <slug>` to set one"
+        bound = row.get("bound_thread_id")
+        if bound:
+            return f"[topic] active: {row['topic_id']} (bound thread: {bound})"
+        return f"[topic] active: {row['topic_id']}"
+
+    async def _handle_topic_subcommand_switch(
+        self, source, principal, raw_slug: str
+    ) -> str:
+        from gateway.active_topic import (
+            TopicNotRegisteredError,
+            read_active_topic,
+            set_active_topic,
+        )
+        slug = raw_slug.strip().lower()
+        if not self._TOPIC_ID_RE.match(slug):
+            return (
+                f"/topic switch: {raw_slug!r} is not a valid topic slug "
+                f"(use lowercase alphanumerics, _ or -, ≤64 chars)"
+            )
+
+        prior = await read_active_topic(self._session_db, principal)
+        if prior and prior.get("topic_id") == slug:
+            return f"[topic → {slug}] already active"
+
+        updated_by = f"slash:/topic switch:{source.user_id}"
+        try:
+            resp = await set_active_topic(
+                self._session_db,
+                principal,
+                topic_id=slug,
+                bound_thread_id=None,
+                updated_by=updated_by,
+            )
+        except TopicNotRegisteredError as exc:
+            return (
+                f"/topic switch: refused — topic {slug!r} is not registered "
+                f"under app {principal.app_id!r} ({exc})"
+            )
+        prior_row = resp.get("prior") if isinstance(resp, dict) else None
+
+        banner = f"[topic → {slug}]"
+        try:
+            await self._emit_topic_pointer_banner(source, banner)
+        except Exception as exc:
+            logger.warning(
+                "topic banner emit failed; rolling back pointer: %s", exc
+            )
+            await self._rollback_topic_pointer(
+                principal,
+                prior_row=prior_row,
+                updated_by=f"slash:/topic rollback:{source.user_id}",
+            )
+            return (
+                f"/topic switch: failed to confirm switch (banner emit "
+                f"error: {exc}); pointer rolled back."
+            )
+        return ""
+
+    async def _handle_topic_subcommand_clear(self, source, principal) -> str:
+        from gateway.active_topic import clear_active_topic, set_active_topic
+        updated_by = f"slash:/topic clear:{source.user_id}"
+        prior = await clear_active_topic(
+            self._session_db, principal, updated_by=updated_by
+        )
+        if prior is None:
+            return "[topic] no active topic to clear"
+
+        banner = "[topic cleared]"
+        try:
+            await self._emit_topic_pointer_banner(source, banner)
+        except Exception as exc:
+            logger.warning(
+                "topic banner emit failed on clear; rolling back: %s", exc
+            )
+            try:
+                await set_active_topic(
+                    self._session_db,
+                    principal,
+                    topic_id=str(prior.get("topic_id")),
+                    bound_thread_id=prior.get("bound_thread_id"),
+                    updated_by=f"slash:/topic rollback:{source.user_id}",
+                    require_registered=False,
+                )
+            except Exception:
+                logger.exception("topic clear rollback failed")
+            return (
+                f"/topic clear: failed to confirm clear (banner emit "
+                f"error: {exc}); pointer rolled back."
+            )
+        return ""
+
+    async def _handle_topic_subcommand_bind_thread(self, source, principal) -> str:
+        from gateway.active_topic import read_active_topic, set_active_topic
+        thread_id = getattr(source, "thread_id", None)
+        if not thread_id:
+            return "/topic bind-thread: no thread_id on inbound message"
+        prior = await read_active_topic(self._session_db, principal)
+        if not prior:
+            return "/topic bind-thread: no active topic to bind"
+        topic_id = str(prior.get("topic_id"))
+        updated_by = f"slash:/topic bind-thread:{source.user_id}"
+        try:
+            await set_active_topic(
+                self._session_db,
+                principal,
+                topic_id=topic_id,
+                bound_thread_id=str(thread_id),
+                updated_by=updated_by,
+                require_registered=False,
+            )
+        except Exception as exc:
+            return f"/topic bind-thread: failed: {exc}"
+        banner = f"[topic {topic_id} ⇄ thread {thread_id}]"
+        try:
+            await self._emit_topic_pointer_banner(source, banner)
+        except Exception as exc:
+            logger.warning(
+                "topic banner emit failed on bind-thread; rolling back: %s", exc
+            )
+            await self._rollback_topic_pointer(
+                principal,
+                prior_row=prior,
+                updated_by=f"slash:/topic rollback:{source.user_id}",
+            )
+            return (
+                f"/topic bind-thread: failed to confirm bind (banner emit "
+                f"error: {exc}); pointer rolled back."
+            )
+        return ""
+
+    async def _handle_topic_subcommand_unbind_thread(self, source, principal) -> str:
+        from gateway.active_topic import read_active_topic, set_active_topic
+        prior = await read_active_topic(self._session_db, principal)
+        if not prior:
+            return "/topic unbind-thread: no active topic"
+        if not prior.get("bound_thread_id"):
+            return "/topic unbind-thread: no thread binding to clear"
+        topic_id = str(prior.get("topic_id"))
+        updated_by = f"slash:/topic unbind-thread:{source.user_id}"
+        try:
+            await set_active_topic(
+                self._session_db,
+                principal,
+                topic_id=topic_id,
+                bound_thread_id=None,
+                updated_by=updated_by,
+                require_registered=False,
+            )
+        except Exception as exc:
+            return f"/topic unbind-thread: failed: {exc}"
+        banner = f"[topic {topic_id} — thread unbound]"
+        try:
+            await self._emit_topic_pointer_banner(source, banner)
+        except Exception as exc:
+            logger.warning(
+                "topic banner emit failed on unbind-thread; rolling back: %s", exc
+            )
+            await self._rollback_topic_pointer(
+                principal,
+                prior_row=prior,
+                updated_by=f"slash:/topic rollback:{source.user_id}",
+            )
+            return (
+                f"/topic unbind-thread: failed to confirm (banner emit "
+                f"error: {exc}); pointer rolled back."
+            )
+        return ""
+
+    async def _handle_topic_command(self, event: MessageEvent, args: str = "") -> str:
+        """Handle /topic.
+
+        HRM-T0a step 5: when ``topic_slash_ux_enabled`` (default-deny) is
+        on AND the gateway has a ``topic_default_app_id`` configured, the
+        same-chat active-topic-pointer subcommands (new / switch /
+        bind-thread / unbind-thread / list / clear) run. When the flag is
+        off, the legacy Telegram-DM forum-thread handler runs unchanged
+        — preserving fall-through for existing users (charter §
+        Legacy compatibility).
+        """
+        source = event.source
+        if (
+            getattr(self.config, "topic_slash_ux_enabled", False)
+            and getattr(self.config, "topic_pointer_mode_enabled", True)
+            and getattr(self.config, "topic_default_app_id", None)
+        ):
+            return await self._handle_topic_pointer_command(event)
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
             return t("gateway.topic.not_telegram_dm")
         if not self._session_db:

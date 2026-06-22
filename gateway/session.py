@@ -874,6 +874,12 @@ class SessionStore:
         no default app_id, no pointer row, registry rejects/unwired)
         returns the existing thread-derived key built via
         :func:`build_session_key`.
+
+        NOTE: the sync resolver inside calls ``asyncio.run`` for the
+        registry check, which fails closed when invoked from a thread
+        that already has a running event loop. The live inbound async
+        path MUST call :meth:`_generate_session_key_async` instead so
+        the registry check actually runs and the route flips.
         """
         profile = self._resolve_profile_for_key(source)
         topic_key = self._resolve_topic_session_key(source, profile=profile)
@@ -885,6 +891,60 @@ class SessionStore:
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
             profile=profile,
         )
+
+    async def _generate_session_key_async(self, source: SessionSource) -> str:
+        """Async variant of :meth:`_generate_session_key`.
+
+        HRM-T0a step 5 precondition: the live inbound async path goes
+        through this method so :func:`resolve_topic_session_key_async`
+        runs inside the per-key asyncio lock and the routing decision
+        is serialised against any in-flight slash write on the same
+        principal. The sync resolver short-circuits when called from a
+        running event loop; this one does not.
+        """
+        profile = self._resolve_profile_for_key(source)
+        topic_key = await self._resolve_topic_session_key_async(
+            source, profile=profile
+        )
+        if topic_key:
+            return topic_key
+        return build_session_key(
+            source,
+            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            profile=profile,
+        )
+
+    async def _resolve_topic_session_key_async(
+        self,
+        source: SessionSource,
+        *,
+        profile: Optional[str],
+    ) -> Optional[str]:
+        """Async pre-pass wrapper — locked routing read for the live path."""
+        if not getattr(self.config, "topic_pointer_mode_enabled", True):
+            return None
+        app_id = getattr(self.config, "topic_default_app_id", None)
+        if not app_id:
+            return None
+        if self._db is None:
+            return None
+        try:
+            from gateway.active_topic import resolve_topic_session_key_async
+            return await resolve_topic_session_key_async(
+                source,
+                self._db,
+                app_id=app_id,
+                profile=profile,
+                pointer_mode_enabled=True,
+                require_registered_check=True,
+            )
+        except Exception:  # noqa: BLE001 — defensive: never fail routing
+            logger.debug(
+                "resolve_topic_session_key_async raised; falling through to legacy key",
+                exc_info=True,
+            )
+            return None
 
     def _resolve_topic_session_key(
         self,
@@ -1026,18 +1086,42 @@ class SessionStore:
             self._ensure_loaded_locked()
             return len(self._entries) > 1
 
+    async def get_or_create_session_async(
+        self,
+        source: SessionSource,
+        force_new: bool = False,
+    ) -> SessionEntry:
+        """Async entrypoint — resolves topic-pointer route under the lock.
+
+        Live inbound path goes through this so the routing flip honours
+        active-topic pointers even when an event loop is already running.
+        """
+        session_key = await self._generate_session_key_async(source)
+        return self.get_or_create_session(
+            source, force_new=force_new, _session_key=session_key
+        )
+
     def get_or_create_session(
         self,
         source: SessionSource,
-        force_new: bool = False
+        force_new: bool = False,
+        *,
+        _session_key: Optional[str] = None,
     ) -> SessionEntry:
         """
         Get an existing session or create a new one.
 
         Evaluates reset policy to determine if the existing session is stale.
         Creates a session record in SQLite when a new session starts.
+
+        ``_session_key`` lets the async wrapper inject a pre-resolved key so
+        the sync ``_generate_session_key`` path (which fails closed for the
+        topic pre-pass inside a running event loop) is skipped.
         """
-        session_key = self._generate_session_key(source)
+        if _session_key is None:
+            session_key = self._generate_session_key(source)
+        else:
+            session_key = _session_key
         now = _now()
 
         # SQLite calls are made outside the lock to avoid holding it during I/O.

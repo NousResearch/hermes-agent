@@ -568,6 +568,12 @@ class GatewayConfig:
     # principal ⇒ legacy fall-through.
     topic_pointer_mode_enabled: bool = True
     topic_default_app_id: Optional[str] = None
+    # HRM-T0a step 5: enable the new ``/topic`` slash UX (new / switch /
+    # bind-thread / unbind-thread / list / clear) that manages the
+    # active-topic pointer for the same-chat routing model. Default-deny
+    # — when False the legacy Telegram-DM forum-thread ``/topic`` handler
+    # runs unchanged, preserving fall-through for existing users.
+    topic_slash_ux_enabled: bool = False
 
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
@@ -676,6 +682,7 @@ class GatewayConfig:
             "topic": {
                 "pointer_mode_enabled": self.topic_pointer_mode_enabled,
                 "default_app_id": self.topic_default_app_id,
+                "slash_ux_enabled": self.topic_slash_ux_enabled,
             },
         }
     
@@ -761,6 +768,9 @@ class GatewayConfig:
             if topic_default_app_id_raw
             else None
         )
+        topic_slash_ux_enabled_raw = data.get("topic_slash_ux_enabled")
+        if topic_slash_ux_enabled_raw is None:
+            topic_slash_ux_enabled_raw = topic_block.get("slash_ux_enabled")
 
         return cls(
             platforms=platforms,
@@ -786,6 +796,9 @@ class GatewayConfig:
                 topic_pointer_mode_enabled_raw, True
             ),
             topic_default_app_id=topic_default_app_id,
+            topic_slash_ux_enabled=_coerce_bool(
+                topic_slash_ux_enabled_raw, False
+            ),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:

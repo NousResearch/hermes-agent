@@ -3042,6 +3042,70 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def exit_code(self) -> Optional[int]:
         return self._exit_code
 
+    async def _session_key_for_source_async(self, source: SessionSource) -> str:
+        """Async variant of :meth:`_session_key_for_source`.
+
+        HRM-T0a step 5 precondition: the live async inbound path calls
+        this so the topic-pointer routing pre-pass runs inside the
+        per-key asyncio lock. The sync resolver fails closed under a
+        running event loop (its ``asyncio.run`` raises ``RuntimeError``);
+        this one does not.
+        """
+        if hasattr(self, "session_store") and self.session_store is not None:
+            try:
+                session_key = await self.session_store._generate_session_key_async(source)
+                if isinstance(session_key, str) and session_key:
+                    return session_key
+            except Exception:
+                logger.debug(
+                    "session_store._generate_session_key_async failed; falling back to sync",
+                    exc_info=True,
+                )
+        # Same fallback chain as the sync helper. The active-topic pre-pass
+        # is the only branch that benefits from being awaited; we run it
+        # directly here to honour the lock even on the session_store-less
+        # init paths (early boot, tests).
+        config = getattr(self, "config", None)
+        _profile = None
+        if getattr(config, "multiplex_profiles", False):
+            if source.profile:
+                _profile = source.profile
+            else:
+                try:
+                    from hermes_cli.profiles import get_active_profile_name
+                    _profile = get_active_profile_name() or "default"
+                except Exception:
+                    _profile = None
+        if (
+            getattr(config, "topic_pointer_mode_enabled", True)
+            and getattr(config, "topic_default_app_id", None)
+        ):
+            session_db = getattr(self, "_session_db", None)
+            if session_db is not None:
+                try:
+                    from gateway.active_topic import resolve_topic_session_key_async
+                    topic_key = await resolve_topic_session_key_async(
+                        source,
+                        session_db,
+                        app_id=config.topic_default_app_id,
+                        profile=_profile,
+                        pointer_mode_enabled=True,
+                        require_registered_check=True,
+                    )
+                    if topic_key:
+                        return topic_key
+                except Exception:
+                    logger.debug(
+                        "async topic routing pre-pass failed in session_key fallback",
+                        exc_info=True,
+                    )
+        return build_session_key(
+            source,
+            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            profile=_profile,
+        )
+
     def _session_key_for_source(self, source: SessionSource) -> str:
         """Resolve the current session key for a source, honoring gateway config when available.
 
@@ -3050,6 +3114,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         pre-pass. The session-store-less fallback path below mirrors the
         same pre-pass so a session_store-less init (early boot, tests)
         still honours pointer-mode routing.
+
+        NOTE: this sync helper's pointer pre-pass fails closed when
+        invoked from a thread with a running event loop (the registry
+        check uses ``asyncio.run``). Live async inbound callsites must
+        prefer :meth:`_session_key_for_source_async` so the route flips
+        when a pointer + checker is in play.
         """
         if hasattr(self, "session_store") and self.session_store is not None:
             try:
@@ -7401,7 +7471,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # IMPORTANT: recognized slash commands must bypass this interception.
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
-        _quick_key = self._session_key_for_source(source)
+        # HRM-T0a step 5 precondition: live async inbound — resolve under
+        # the per-key lock so the routing key honours active-topic pointers.
+        # Mismatch with the legacy sync resolver would split running-agent
+        # sentinel state from the agent's actual session_key.
+        _quick_key = await self._session_key_for_source_async(source)
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -8546,7 +8620,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Use the same helper every other call site uses so the write key here
         # matches the consume key at the run_conversation site — even if the
         # session store overrides build_session_key's default behavior.
-        session_key = self._session_key_for_source(source)
+        # HRM-T0a step 5 precondition: async resolver under per-key lock.
+        session_key = await self._session_key_for_source_async(source)
         # Reset only this session's per-call buffer; other sessions may be
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
@@ -8869,7 +8944,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-        session_entry = self.session_store.get_or_create_session(source)
+        # HRM-T0a step 5 precondition: the live async inbound path resolves
+        # the session_key inside the per-key asyncio lock so an in-flight
+        # /topic switch on the same principal is serialised against this
+        # routing read. ``get_or_create_session_async`` calls
+        # ``_generate_session_key_async`` which awaits the locked pre-pass.
+        session_entry = await self.session_store.get_or_create_session_async(source)
         session_key = session_entry.session_key
         self._cache_session_source(session_key, source)
         if self._is_telegram_topic_lane(source):

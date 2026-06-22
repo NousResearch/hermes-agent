@@ -51,26 +51,26 @@ def _register_context_engine_tools(schemas):
 
 
 def test_bare_schema_wraps_correctly():
-    bare = [{"name": "cmx_grep", "description": "d", "parameters": {"type": "object", "properties": {}}}]
+    bare = [{"name": "example_search", "description": "d", "parameters": {"type": "object", "properties": {}}}]
     tools, names = _register_context_engine_tools(bare)
     assert len(tools) == 1
     assert tools[0]["type"] == "function"
-    assert tools[0]["function"]["name"] == "cmx_grep"          # outer name present
+    assert tools[0]["function"]["name"] == "example_search"          # outer name present
     assert "function" not in tools[0]["function"]              # not double-wrapped
-    assert names == {"cmx_grep"}
+    assert names == {"example_search"}
 
 
 def test_already_wrapped_schema_is_unwrapped_not_double_wrapped():
     wrapped = [{"type": "function", "function": {
-        "name": "cmx_grep", "description": "d",
+        "name": "example_search", "description": "d",
         "parameters": {"type": "object", "properties": {}}}}]
     tools, names = _register_context_engine_tools(wrapped)
     assert len(tools) == 1
     # The critical assertion: outer function.name must be the real name, NOT empty
-    assert tools[0]["function"]["name"] == "cmx_grep"
+    assert tools[0]["function"]["name"] == "example_search"
     # And it must NOT be {"function": {"function": {...}}}
     assert "function" not in tools[0]["function"], "schema was double-wrapped"
-    assert names == {"cmx_grep"}
+    assert names == {"example_search"}
 
 
 def test_mixed_bare_and_wrapped():
@@ -90,7 +90,7 @@ def test_mixed_bare_and_wrapped():
 def test_no_empty_names_emitted():
     """The exact failure signature: no tool may reach the provider with an empty name."""
     wrapped = [
-        {"type": "function", "function": {"name": "cmx_grep", "description": "d", "parameters": {}}},
+        {"type": "function", "function": {"name": "example_search", "description": "d", "parameters": {}}},
         {"type": "function", "function": {"name": "cmx_expand", "description": "d", "parameters": {}}},
         {"type": "function", "function": {"name": "cmx_recall", "description": "d", "parameters": {}}},
     ]

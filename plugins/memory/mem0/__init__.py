@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, List
@@ -220,12 +221,61 @@ class Mem0MemoryProvider(MemoryProvider):
 
     @staticmethod
     def _unwrap_results(response: Any) -> list:
-        """Normalize Mem0 API response — v2 wraps results in {"results": [...]}."""
+        """Normalize Mem0 API response — v2 wraps results in {"results": [...]}"""
         if isinstance(response, dict):
             return response.get("results", [])
         if isinstance(response, list):
             return response
         return []
+
+    @staticmethod
+    def _query_terms(query: str) -> List[str]:
+        """Extract simple lowercase terms from a query for local fallback matching."""
+        return [t for t in re.findall(r"[A-Za-z0-9_\-]+", query.lower()) if len(t) >= 3]
+
+    def _search_results_look_relevant(self, query: str, results: List[Dict[str, Any]]) -> bool:
+        """Heuristic guard for obviously drifted hosted search results.
+
+        Treat the hosted search as suspicious when none of the top hits mention any
+        salient query term. This preserves semantic matches when they at least touch
+        the query surface form, while allowing a local fallback for exact-ish probes.
+        """
+        if not results:
+            return False
+        terms = self._query_terms(query)
+        if not terms:
+            return True
+        top = results[: min(3, len(results))]
+        for item in top:
+            memory = str(item.get("memory", "")).lower()
+            if any(term in memory for term in terms):
+                return True
+        return False
+
+    def _fallback_search(self, client: Any, query: str, top_k: int) -> List[Dict[str, Any]]:
+        """Fallback search using get_all + simple substring ranking within the user scope."""
+        memories = self._unwrap_results(client.get_all(filters=self._read_filters()))
+        terms = self._query_terms(query)
+        query_lc = query.lower().strip()
+        ranked: List[Dict[str, Any]] = []
+        for item in memories:
+            memory = str(item.get("memory", ""))
+            memory_lc = memory.lower()
+            score = 0
+            if query_lc and query_lc in memory_lc:
+                score += 1000
+            if terms:
+                score += sum(10 for term in terms if term in memory_lc)
+            elif query_lc and memory_lc:
+                score += 1
+            if score > 0:
+                ranked.append({
+                    "memory": memory,
+                    "score": score,
+                    "source": "local_fallback",
+                })
+        ranked.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return ranked[:top_k]
 
     def system_prompt_block(self) -> str:
         return (
@@ -328,17 +378,32 @@ class Mem0MemoryProvider(MemoryProvider):
             rerank = args.get("rerank", False)
             top_k = min(int(args.get("top_k", 10)), 50)
             try:
-                results = self._unwrap_results(client.search(
+                hosted_results = self._unwrap_results(client.search(
                     query=query,
                     filters=self._read_filters(),
                     rerank=rerank,
                     top_k=top_k,
                 ))
+                results = hosted_results
+                fallback_used = False
+                if not self._search_results_look_relevant(query, hosted_results):
+                    fallback_results = self._fallback_search(client, query, top_k)
+                    if fallback_results:
+                        results = fallback_results
+                        fallback_used = True
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
-                items = [{"memory": r.get("memory", ""), "score": r.get("score", 0)} for r in results]
-                return json.dumps({"results": items, "count": len(items)})
+                items = []
+                for r in results:
+                    item = {"memory": r.get("memory", ""), "score": r.get("score", 0)}
+                    if fallback_used:
+                        item["source"] = "local_fallback"
+                    items.append(item)
+                payload = {"results": items, "count": len(items)}
+                if fallback_used:
+                    payload["fallback_used"] = True
+                return json.dumps(payload)
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Search failed: {e}")

@@ -127,14 +127,34 @@ def build_thinking_prompt(state: ThinkingState) -> str:
 
 ## SELF-ESCALATION (Dynamic Thinking Control)
 
-Tu es en thinking OFF. Si la tâche est complexe (analyse approfondie, debug, planification, synthèse multi-sources), tu DOIS répondre avec ce format exact en premier :
+Tu es en thinking OFF. Si la tâche est complexe, tu DOIS répondre en premier avec :
 
 [ESCALATE_THINKING: true]
 [RAISON: pourquoi c'est complexe]
 
 Puis tu peux donner une réponse préliminaire.
 
-Si la tâche est simple (extraction, formatage, navigation, tool calls simples, réponses directes), réponds directement sans ce marqueur.
+### Quand escalader (thinking ON) :
+- Analyse de code avec bugs à identifier ou failles de sécurité
+- Debug d'erreur avec traceback à diagnostiquer
+- Données contradictoires à arbitrer
+- Planification multi-étapes (architecture, déploiement, stratégie)
+- Synthèse de plusieurs sources d'information
+- Question ouverte demandant réflexion et jugement
+
+### Quand NE PAS escalader (répondre directement) :
+- Calcul mathématique, conversion d'unités
+- Traduction, reformulation
+- Question factuelle (date, définition, formule)
+- Lister le contenu d'un répertoire ou d'un fichier
+- Navigation, recherche d'information simple
+- Tool call direct (exécuter une commande, lire un fichier)
+
+### Cas borderline — règle d'or :
+- Un simple "pourquoi cette erreur ?" avec une ligne d'erreur claire → RÉPOND DIRECTEMENT
+- "Quels fichiers sont dans ce dossier ?" → RÉPOND DIRECTEMENT
+- Mais "analyse ce code et trouve les problèmes" → ESCALADE
+- Mais "explique le concept X" → RÉPOND DIRECTEMENT
 
 ## MODE ACTUEL
 thinking: {state_label}"""

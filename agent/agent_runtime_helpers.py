@@ -1619,6 +1619,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     )
 
     # ── LM Studio: preload before probing context length ──
+    # Eager mode only — honors model.preload (a no-op in lazy mode), so
+    # switching a session's model never spins it up until it's actually used.
     agent._ensure_lmstudio_runtime_loaded()
 
     # ── Update context compressor ──

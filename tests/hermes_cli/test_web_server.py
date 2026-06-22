@@ -3950,6 +3950,81 @@ class TestModelContextLengthSchema:
         assert "category" in entry
 
 
+class TestModelPreloadConfig:
+    """Tests for model.preload <-> model_preload (normalize/denormalize + schema).
+
+    Mirrors the model_context_length virtual field: surfaced to the web UI as a
+    top-level boolean and round-tripped into the model dict on save.
+    """
+
+    def test_normalize_surfaces_preload_false(self):
+        from hermes_cli.web_server import _normalize_config_for_web
+
+        cfg = {"model": {"default": "local/test-model", "provider": "lmstudio", "preload": False}}
+        result = _normalize_config_for_web(cfg)
+        assert result["model"] == "local/test-model"
+        assert result["model_preload"] is False
+
+    def test_normalize_defaults_preload_true(self):
+        from hermes_cli.web_server import _normalize_config_for_web
+
+        # dict without a preload key
+        assert _normalize_config_for_web(
+            {"model": {"default": "local/test-model"}}
+        )["model_preload"] is True
+        # bare string model
+        assert _normalize_config_for_web({"model": "local/test-model"})["model_preload"] is True
+
+    def test_denormalize_writes_preload_false_preserving_subkeys(self):
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({"model": {"default": "local/test-model", "provider": "lmstudio", "base_url": ""}})
+        result = _denormalize_config_from_web({
+            "model": "local/test-model",
+            "model_preload": False,
+            "model_context_length": 0,
+        })
+        assert isinstance(result["model"], dict)
+        assert result["model"]["preload"] is False
+        assert result["model"]["provider"] == "lmstudio"  # subkeys preserved
+        assert "model_preload" not in result  # virtual field removed
+
+    def test_denormalize_true_omits_preload_key(self):
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({"model": {"default": "local/test-model", "provider": "lmstudio", "preload": False}})
+        result = _denormalize_config_from_web({
+            "model": "local/test-model",
+            "model_preload": True,
+            "model_context_length": 0,
+        })
+        assert isinstance(result["model"], dict)
+        assert "preload" not in result["model"]  # default true -> key omitted
+
+    def test_denormalize_upgrades_bare_string_when_preload_disabled(self):
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({"model": "local/test-model"})
+        result = _denormalize_config_from_web({
+            "model": "local/test-model",
+            "model_preload": False,
+            "model_context_length": 0,
+        })
+        assert isinstance(result["model"], dict)
+        assert result["model"]["preload"] is False
+
+    def test_schema_has_model_preload_boolean_after_context_length(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        assert CONFIG_SCHEMA["model_preload"]["type"] == "boolean"
+        keys = list(CONFIG_SCHEMA.keys())
+        # order: model -> model_context_length -> model_preload
+        assert keys[keys.index("model") + 2] == "model_preload"
+
+
 class TestModelInfoEndpoint:
     """Tests for GET /api/model/info endpoint."""
 

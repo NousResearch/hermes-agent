@@ -897,7 +897,16 @@ hermes model
 # If LM Studio server auth is enabled, enter LM_API_KEY when prompted
 ```
 
-Hermes will automatically load a LM Studio model with 64K context length
+By default (`model.preload: true`, eager) Hermes preloads the LM Studio model
+with at least 64K context as soon as you select or switch to it.
+
+**Running several local models, one at a time?** If you can hold only one model
+in VRAM, set `model.preload: false` (lazy) in your config. Hermes then never
+preloads — the model loads on your first message via LM Studio's own JIT loading
+plus "Auto-Evict", so opening or switching a session never spins one up, and
+models swap cleanly. In lazy mode LM Studio uses each model's saved context
+window, so set that per-model (below) or set `model.context_length` if the
+default is too small.
 
 To change context length in LM Studio:
 

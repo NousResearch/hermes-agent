@@ -669,7 +669,15 @@ class AIAgent:
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
         Preload the LM Studio model with at least Hermes' minimum context.
+
+        Eager/lazy is controlled by ``model.preload`` (default eager). In lazy
+        mode (``preload: false``) this is a no-op everywhere, so the model is
+        never preloaded — it loads on the first real request via the server's
+        native JIT. In eager mode it runs on agent build, model switch, and
+        before the first request.
         """
+        if not getattr(self, "_model_preload", True):
+            return
         if (self.provider or "").strip().lower() != "lmstudio":
             return
         try:

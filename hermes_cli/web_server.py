@@ -475,6 +475,17 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Context window override (0 = auto-detect from model metadata)",
         "category": "general",
     },
+    "model_preload": {
+        "type": "boolean",
+        "description": (
+            "Eager vs lazy loading for local models (LM Studio / Ollama / vLLM). "
+            "On (default): preload the model up front when you open or switch to "
+            "it. Off (lazy): never preload — it loads on your first message via "
+            "the server's native JIT/Auto-Evict, so opening or switching a session "
+            "never spins it up. Turn off if you run several local models on one GPU."
+        ),
+        "category": "general",
+    },
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
@@ -663,11 +674,13 @@ CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
 # by the normalize/denormalize cycle.  Insert model_context_length right after
 # the "model" key so it renders adjacent in the frontend.
 _mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
+_preload_entry = _SCHEMA_OVERRIDES["model_preload"]
 _ordered_schema: Dict[str, Dict[str, Any]] = {}
 for _k, _v in CONFIG_SCHEMA.items():
     _ordered_schema[_k] = _v
     if _k == "model":
         _ordered_schema["model_context_length"] = _mcl_entry
+        _ordered_schema["model_preload"] = _preload_entry
 CONFIG_SCHEMA = _ordered_schema
 
 
@@ -3268,8 +3281,10 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
         ctx_len = model_val.get("context_length", 0)
         config["model"] = model_val.get("default", model_val.get("name", ""))
         config["model_context_length"] = ctx_len if isinstance(ctx_len, int) else 0
+        config["model_preload"] = bool(model_val.get("preload", True))
     else:
         config["model_context_length"] = 0
+        config["model_preload"] = True
     return config
 
 
@@ -3977,6 +3992,10 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
         except (TypeError, ValueError):
             ctx_override = 0
 
+    # Extract model_preload (default True). Only persisted when disabled, so a
+    # default config stays clean and ``model`` can remain a bare string.
+    preload_val = bool(config.pop("model_preload", True))
+
     model_val = config.get("model")
     if isinstance(model_val, str) and model_val:
         # Read the current disk config to recover model subkeys
@@ -3991,14 +4010,21 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                     disk_model["context_length"] = ctx_override
                 else:
                     disk_model.pop("context_length", None)
+                # preload defaults to True — only write the key when disabled
+                if preload_val:
+                    disk_model.pop("preload", None)
+                else:
+                    disk_model["preload"] = False
                 config["model"] = disk_model
-            # Model was previously a bare string — upgrade to dict if
-            # user is setting a context_length override
-            elif ctx_override > 0:
-                config["model"] = {
-                    "default": model_val,
-                    "context_length": ctx_override,
-                }
+            # Model was previously a bare string — upgrade to dict if the user
+            # set a context_length override or disabled preload
+            elif ctx_override > 0 or not preload_val:
+                new_model: Dict[str, Any] = {"default": model_val}
+                if ctx_override > 0:
+                    new_model["context_length"] = ctx_override
+                if not preload_val:
+                    new_model["preload"] = False
+                config["model"] = new_model
         except Exception:
             pass  # can't read disk config — just use the string form
     return config

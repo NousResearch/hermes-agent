@@ -72,6 +72,24 @@ model:
   #
 # max_tokens: 8192
 
+  # ── Local model loading (LM Studio / Ollama / vLLM / llama.cpp) ────────────
+  #
+  # preload: eager vs lazy loading of local models (LM Studio / Ollama / vLLM).
+  #   Default: true (eager — the original behavior).
+  #   - true  (eager): Hermes preloads the model (with at least its minimum
+  #            context) as soon as you open or switch to it, so it's ready and
+  #            context-length probing is accurate.
+  #   - false (lazy):  Hermes never preloads; the model loads on your first
+  #            message via the server's own JIT/auto-evict. Opening or switching
+  #            a session never spins up a model. Recommended if you run several
+  #            local models but can hold only one in VRAM at a time. With LM
+  #            Studio, enable JIT loading + "Auto-Evict" so models swap cleanly.
+  #            Note: in lazy mode LM Studio uses each model's saved context
+  #            window — set that per-model, or set context_length above, if the
+  #            default is too small.
+  #
+  # preload: false
+
   # ── Custom request headers (optional) ─────────────────────────────────────
   #
   # default_headers: extra HTTP headers sent on every request to an

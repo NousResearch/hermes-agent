@@ -1486,9 +1486,22 @@ def init_agent(
     # AFTER the custom_providers branch so per-model overrides aren't lost.
     agent._config_context_length = _config_context_length
 
+    # ``model.preload`` selects eager vs lazy loading for local models:
+    #   true  (default): eagerly preload the model — here on build, and on
+    #          switch — with at least Hermes' minimum context. The original
+    #          LM Studio behavior; keeps the model ready and context probing
+    #          accurate.
+    #   false (lazy): never preload; the model loads on the first real request
+    #          via the server's native JIT. Opening or switching a session
+    #          never spins one up — practical for single-GPU, multi-model setups.
+    # The gate lives in _ensure_lmstudio_runtime_loaded, so the call below is a
+    # no-op in lazy mode.
+    agent._model_preload = (
+        bool(_model_cfg.get("preload", True))
+        if isinstance(_model_cfg, dict)
+        else True
+    )
     agent._ensure_lmstudio_runtime_loaded(_config_context_length)
-
-
 
     # Select context engine: config-driven (like memory providers).
     # 1. Check config.yaml context.engine setting

@@ -221,7 +221,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // Persist a single agent.* default by round-tripping the whole config record
   // (PUT /api/config replaces it) — optimistic, with rollback on failure.
   const writeAgentDefault = useCallback(
-    async (key: string, value: string) => {
+    async (key: string, value: boolean | string) => {
       if (!config) {
         return
       }
@@ -523,6 +523,23 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               </label>
             )}
           </div>
+        )}
+        {config && (
+          <label className="mt-3 flex items-start gap-2 text-xs">
+            <span className="shrink-0">Preload model</span>
+            <Switch
+              checked={getNested(config, 'model_preload') !== false}
+              onCheckedChange={checked => void writeAgentDefault('model_preload', checked)}
+              size="xs"
+            />
+            <span className="text-muted-foreground">
+              Eager vs lazy local-model loading. On (default): preload the model up front —
+              when you open it or switch to it — with Hermes’ minimum context. Off (lazy):
+              never preload; it loads on your first message via the server’s own JIT/Auto-Evict,
+              so opening or switching a session never spins it up. Turn off if you run several
+              local models on one GPU.
+            </span>
+          </label>
         )}
         {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
         {switchStaleAux.length > 0 && (

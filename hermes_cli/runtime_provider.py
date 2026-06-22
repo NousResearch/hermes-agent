@@ -1641,6 +1641,23 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    if provider == "agy-cli":
+        # Antigravity CLI: auth is fully internal to the `agy` binary
+        # (~/.local/bin/agy + its own OAuth/cloudcode-pa session). Hermes
+        # has nothing to resolve; we just hand back the marker base_url so
+        # init_agent's "if api_key and base_url" branch takes over and
+        # routes the request to AgyCliClient via agent_runtime_helpers.
+        return {
+            "provider": "agy-cli",
+            "api_mode": "agy_cli",
+            "base_url": "agy://antigravity",
+            # Placeholder api_key: AgyCliClient doesn't use it but the
+            # init path requires non-empty creds to reach the client builder.
+            "api_key": "agy-cli-external-process",
+            "source": "process",
+            "requested_provider": requested_provider,
+        }
+
     # Anthropic (native Messages API)
     if provider == "anthropic":
         # Allow base URL override from config.yaml model.base_url, but only

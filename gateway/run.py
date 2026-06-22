@@ -7118,23 +7118,25 @@ class GatewayRunner:
                 logger.info("STOP for session %s — agent interrupted, session lock released", _quick_key)
                 return EphemeralReply(t("gateway.stop.stopped"))
 
-            # /reset and /new must bypass the running-agent guard so they
-            # actually dispatch as commands instead of being queued as user
-            # text (which would be fed back to the agent with the same
-            # broken history — #2170).  Interrupt the agent first, then
-            # clear the adapter's pending queue so the stale "/reset" text
-            # doesn't get re-processed as a user message after the
-            # interrupt completes.
-            if _cmd_def_inner and _cmd_def_inner.name == "new":
+            # /reset, /new, and session-boundary variants like /resetlead must
+            # bypass the running-agent guard so they actually dispatch as
+            # commands instead of being queued as user text (which would be fed
+            # back to the agent with the same broken history — #2170).
+            # Interrupt the agent first, then clear the adapter's pending queue
+            # so the stale slash text doesn't get re-processed as a user
+            # message after the interrupt completes.
+            if _cmd_def_inner and _cmd_def_inner.name in {"new", "resetlead"}:
                 # Clear any pending messages so the old text doesn't replay
                 await self._interrupt_and_clear_session(
                     _quick_key,
                     source,
                     interrupt_reason=_INTERRUPT_REASON_RESET,
-                    invalidation_reason="new_command",
+                    invalidation_reason=f"{_cmd_def_inner.name}_command",
                 )
                 # Clean up the running agent entry so the reset handler
                 # doesn't think an agent is still active.
+                if _cmd_def_inner.name == "resetlead":
+                    return await self._handle_resetlead_command(event)
                 return await self._handle_reset_command(event)
 
             # /queue <prompt> — queue without interrupting.
@@ -7510,6 +7512,20 @@ class GatewayRunner:
                     _cmd_def = _resolve_cmd(command) if command else None
                     canonical = _cmd_def.name if _cmd_def else command
                     break
+
+        if canonical == "resetlead":
+            async def _do_resetlead():
+                return await self._handle_resetlead_command(event)
+            return await self._maybe_confirm_destructive_slash(
+                event=event,
+                command="resetlead",
+                title="/resetlead",
+                detail=(
+                    "This resets the current lead state and starts a fresh "
+                    "conversation session."
+                ),
+                execute=_do_resetlead,
+            )
 
         if canonical == "new":
             if self._is_telegram_topic_root_lobby(source):
@@ -8348,16 +8364,20 @@ class GatewayRunner:
             session_entry.auto_reset_reason = None
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
-        # Discord channel_skill_bindings).  Supports a single name or ordered list.
-        # Only inject on NEW sessions — ongoing conversations already have the
-        # skill content in their conversation history from the first message.
+        # Discord/Slack/WhatsApp channel_skill_bindings). Supports a single
+        # name or ordered list. For new sessions, inject into the transcript so
+        # the conversation starts with the bound context. For all turns, also
+        # add the bound skill content to the ephemeral channel prompt so long-
+        # lived sessions keep the lane behaviour without requiring a fresh
+        # session after every refinement.
         _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
+        if _auto:
             _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
                 from agent.skill_commands import _load_skill_payload, _build_skill_message
                 _combined_parts: list[str] = []
                 _loaded_names: list[str] = []
+                _ephemeral_parts: list[str] = []
                 for _sname in _skill_names:
                     _loaded = _load_skill_payload(_sname, task_id=_quick_key)
                     if _loaded:
@@ -8368,10 +8388,21 @@ class GatewayRunner:
                         )
                         _part = _build_skill_message(_loaded_skill, _skill_dir, _note)
                         if _part:
-                            _combined_parts.append(_part)
+                            _ephemeral_parts.append(_part)
+                            if _is_new_session:
+                                _combined_parts.append(_part)
                             _loaded_names.append(_sname)
                     else:
                         logger.warning("[Gateway] Auto-skill '%s' not found", _sname)
+                if _ephemeral_parts:
+                    _ephemeral_block = "\n\n".join(_ephemeral_parts)
+                    if event.channel_prompt:
+                        event.channel_prompt = (
+                            f"{event.channel_prompt.rstrip()}\n\n"
+                            f"[Auto-loaded lane skill context]\n{_ephemeral_block}"
+                        )
+                    else:
+                        event.channel_prompt = f"[Auto-loaded lane skill context]\n{_ephemeral_block}"
                 if _combined_parts:
                     # Append the user's original text after all skill payloads
                     _combined_parts.append(event.text)
@@ -9347,6 +9378,126 @@ class GatewayRunner:
             lines.append(f"◆ Endpoint: {base_url}")
 
         return "\n".join(lines)
+
+    def _skyops_leads_script_path(self, event: MessageEvent | None = None) -> Path:
+        if event is not None:
+            source = getattr(event, "source", None)
+            platform = getattr(source, "platform", None)
+            adapter = self.adapters.get(platform) if platform else None
+            if adapter is not None:
+                hook_script = getattr(adapter, "_lead_state_hook_script", None)
+                hook_chat_ids = getattr(adapter, "_lead_state_hook_chat_ids", None) or set()
+                chat_id = str(getattr(source, "chat_id", "") or "")
+                if hook_script and chat_id and chat_id in hook_chat_ids:
+                    return Path(str(hook_script))
+        return get_hermes_home() / "scripts" / "skyops_leads.py"
+
+    def _build_resetlead_lookup_args(self, event: MessageEvent) -> list[str]:
+        source = event.source
+        manual_lead_id = event.get_command_args().strip()
+        if manual_lead_id:
+            return ["--lead-id", manual_lead_id]
+
+        args: list[str] = []
+        platform_value = source.platform.value if source.platform else ""
+        user_id = (source.user_id or "").strip()
+        chat_id = (source.chat_id or "").strip()
+        user_name = (source.user_name or "").strip()
+
+        if platform_value == "whatsapp":
+            if user_id:
+                args.extend(["--whatsapp-id", user_id])
+            elif chat_id:
+                args.extend(["--whatsapp-id", chat_id])
+        elif platform_value == "email":
+            email_candidate = ""
+            for candidate in (user_id, chat_id):
+                if candidate and "@" in candidate:
+                    email_candidate = candidate
+                    break
+            if email_candidate:
+                args.extend(["--email", email_candidate])
+            elif user_id:
+                args.extend(["--lead-id", user_id])
+            elif chat_id:
+                args.extend(["--lead-id", chat_id])
+        else:
+            fallback = user_id or chat_id
+            if fallback:
+                args.extend(["--lead-id", fallback])
+
+        if user_name:
+            args.extend(["--display-name", user_name])
+        return args
+
+    async def _handle_resetlead_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        script_path = self._skyops_leads_script_path(event)
+        if not script_path.exists():
+            return "This profile does not have lead state support configured."
+
+        lookup_args = self._build_resetlead_lookup_args(event)
+        if not lookup_args:
+            return "I couldn't infer which lead to reset here. Use /resetlead <lead-id>."
+
+        command = [
+            sys.executable,
+            str(script_path),
+            "reset",
+            "--allow-missing",
+            *lookup_args,
+        ]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+        except asyncio.TimeoutError:
+            return "Lead reset timed out before the session could be restarted."
+        except Exception as exc:
+            logger.warning("/resetlead failed to launch helper: %s", exc)
+            return f"Lead reset helper failed to start: {exc}"
+
+        stdout_text = stdout.decode("utf-8", errors="replace").strip()
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+        payload = None
+        if stdout_text:
+            try:
+                payload = json.loads(stdout_text)
+            except Exception:
+                payload = None
+
+        if proc.returncode != 0:
+            if isinstance(payload, dict) and payload.get("error"):
+                return f"Lead reset failed: {payload['error']}"
+            detail = stderr_text or stdout_text or f"exit {proc.returncode}"
+            return f"Lead reset failed: {detail}"
+
+        lead_id = ""
+        lead_note = "Lead state reset."
+        if isinstance(payload, dict):
+            lead_id = str(payload.get("lead_id", "")).strip()
+            if payload.get("reset"):
+                previous_state = str(payload.get("previous_state", "")).strip()
+                if lead_id and previous_state:
+                    lead_note = f"Lead {lead_id} reset (previous state: {previous_state})."
+                elif lead_id:
+                    lead_note = f"Lead {lead_id} reset."
+            else:
+                lead_note = (
+                    f"No stored lead state was found for {lead_id}; starting a fresh session anyway."
+                    if lead_id
+                    else "No stored lead state was found; starting a fresh session anyway."
+                )
+
+        reset_reply = await self._handle_reset_command(event)
+        reset_text = str(reset_reply)
+        combined = f"{lead_note}\n\n{reset_text}" if reset_text else lead_note
+        if isinstance(reset_reply, EphemeralReply):
+            return EphemeralReply(combined, ttl_seconds=reset_reply.ttl_seconds)
+        return combined
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""

@@ -113,6 +113,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
+    CommandDef("resetlead", "SkyOps: reset the current lead state and start a fresh session", "Session",
+               gateway_only=True, aliases=("reset-lead",), args_hint="[lead-id]"),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
 

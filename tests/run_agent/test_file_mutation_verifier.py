@@ -301,6 +301,21 @@ class TestFormatFooter:
         assert len(bullet_lines) == 11  # 10 shown + 1 summary
 
 
+class TestApplyFailureAdvisory:
+    def test_no_failures_returns_original_response(self):
+        response = "Todo aplicado."
+        assert AIAgent._apply_file_mutation_failure_advisory(response, {}) == response
+
+    def test_warning_is_prepended_and_footer_appended(self):
+        failed = {"/tmp/a.md": {"tool": "patch", "error_preview": "Could not find old_string"}}
+        out = AIAgent._apply_file_mutation_failure_advisory("Hecho.", failed)
+        assert out.startswith("⚠️ Partial edit result:")
+        assert "Hecho." in out
+        assert "/tmp/a.md" in out
+        assert "Could not find old_string" in out
+        assert out.index("Hecho.") < out.index("/tmp/a.md")
+
+
 # ---------------------------------------------------------------------------
 # _file_mutation_verifier_enabled — env + config precedence
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -188,6 +189,8 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
+    resolve_channel_prompt,
+    resolve_channel_skills,
 )
 
 
@@ -270,6 +273,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._bridge_log: Optional[Path] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
+        self._lead_state_hook_script: Optional[str] = self._coerce_optional_str(
+            config.extra.get("lead_state_hook_script")
+        )
+        self._lead_state_hook_chat_ids: set[str] = self._coerce_allow_list(
+            config.extra.get("lead_state_hook_chat_ids")
+            or config.extra.get("leadStateHookChatIds")
+        )
+        self._lead_state_hook_enabled: bool = self._coerce_bool(
+            config.extra.get("lead_state_hook_enabled"),
+            default=bool(self._lead_state_hook_script and self._lead_state_hook_chat_ids),
+        )
         # Set to True by disconnect() before we SIGTERM our child bridge so
         # _check_managed_bridge_exit() can distinguish an intentional
         # shutdown-time exit (returncode -15 / -2 / 0) from a real crash.
@@ -314,6 +328,26 @@ class WhatsAppAdapter(BasePlatformAdapter):
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
     @staticmethod
+    def _coerce_bool(raw, default: bool = False) -> bool:
+        if raw is None:
+            return default
+        if isinstance(raw, str):
+            lowered = raw.strip().lower()
+            if lowered in {"true", "1", "yes", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "off"}:
+                return False
+            return default
+        return bool(raw)
+
+    @staticmethod
+    def _coerce_optional_str(raw) -> Optional[str]:
+        if raw is None:
+            return None
+        value = str(raw).strip()
+        return value or None
+
+    @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
         """Parse allow_from / group_allow_from from config or env var."""
         if raw is None:
@@ -321,6 +355,101 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _should_run_lead_state_hook(self, event: MessageEvent) -> bool:
+        if not self._lead_state_hook_enabled:
+            return False
+        if not self._lead_state_hook_script:
+            return False
+        if not self._lead_state_hook_chat_ids:
+            return False
+        if event.is_command():
+            return False
+        source = event.source
+        if source is None:
+            return False
+        if source.chat_type != "group":
+            return False
+        return str(source.chat_id or "") in self._lead_state_hook_chat_ids
+
+    def _lead_state_message_text(self, event: MessageEvent) -> str:
+        text = (event.text or "").strip()
+        if text:
+            return text
+        msg_type = getattr(event.message_type, "value", str(event.message_type or "message"))
+        return f"[{msg_type}]"
+
+    async def _run_lead_state_inbound_hook(self, event: MessageEvent) -> None:
+        if not self._should_run_lead_state_hook(event):
+            return
+
+        source = event.source
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        whatsapp_id = self._normalize_whatsapp_id(
+            source.user_id if source is not None else None
+        ) or self._normalize_whatsapp_id(
+            raw.get("senderId") or raw.get("from") or raw.get("author") or raw.get("participant")
+        )
+        display_name = (
+            (source.user_name if source is not None else None)
+            or raw.get("senderName")
+            or raw.get("pushName")
+            or raw.get("notifyName")
+            or raw.get("name")
+        )
+
+        cmd = [
+            "python3",
+            self._lead_state_hook_script,
+            "record-inbound",
+            "--source",
+            "whatsapp",
+            "--preferred-channel",
+            "whatsapp",
+            "--message",
+            self._lead_state_message_text(event),
+        ]
+        if display_name:
+            cmd.extend(["--display-name", str(display_name)])
+        if whatsapp_id:
+            cmd.extend(["--whatsapp-id", whatsapp_id])
+
+        logger.info(
+            "[%s] Running lead-state inbound hook for chat=%s user=%s script=%s",
+            self.name,
+            source.chat_id if source is not None else "",
+            whatsapp_id or (source.user_id if source is not None else ""),
+            self._lead_state_hook_script,
+        )
+
+        def _run() -> subprocess.CompletedProcess:
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+        result = await asyncio.to_thread(_run)
+        if result.returncode != 0:
+            stdout = (result.stdout or "").strip()
+            stderr = (result.stderr or "").strip()
+            logger.warning(
+                "[%s] Lead-state inbound hook failed rc=%s cmd=%s stdout=%s stderr=%s",
+                self.name,
+                result.returncode,
+                shlex.join(cmd),
+                stdout[:500],
+                stderr[:500],
+            )
+            return
+
+        output = (result.stdout or "").strip()
+        if output:
+            logger.info("[%s] Lead-state inbound hook output: %s", self.name, output[:500])
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        await self._run_lead_state_inbound_hook(event)
 
     @staticmethod
     def _is_broadcast_chat(chat_id: str) -> bool:
@@ -1183,6 +1312,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 user_id=data.get("senderId"),
                 user_name=data.get("senderName"),
             )
+            channel_id = str(data.get("chatId", "") or "")
+            _channel_prompt = resolve_channel_prompt(self.config.extra, channel_id, None)
+            _auto_skill = resolve_channel_skills(self.config.extra, channel_id, None)
             
             # Download media URLs to the local cache so agent tools
             # can access them reliably regardless of URL expiration.
@@ -1276,6 +1408,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                channel_prompt=_channel_prompt,
+                auto_skill=_auto_skill,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

@@ -2012,6 +2012,30 @@ class AIAgent:
             lines.append(f"  • … and {remaining} more")
         return "\n".join(lines)
 
+    @classmethod
+    def _apply_file_mutation_failure_advisory(
+        cls,
+        response: str,
+        failed: Dict[str, Dict[str, Any]],
+    ) -> str:
+        """Prepend a prominent warning and append the footer for failed edits.
+
+        The footer alone catches false success claims after the fact, but it can
+        still appear below a cheery "done" summary. This helper hardens the
+        user-facing surface by making the partial-failure state visible before
+        any model-authored prose.
+        """
+        if not response:
+            return response
+        footer = cls._format_file_mutation_failure_footer(failed)
+        if not footer:
+            return response
+        advisory = (
+            "⚠️ Partial edit result: one or more file mutations failed and were NOT "
+            "applied. Treat any contrary wording below as incorrect."
+        )
+        return advisory + "\n\n" + response.rstrip() + "\n\n" + footer
+
     def _apply_pending_steer_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:
         """Forwarder — see ``agent.agent_runtime_helpers.apply_pending_steer_to_tool_results``."""
         from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results

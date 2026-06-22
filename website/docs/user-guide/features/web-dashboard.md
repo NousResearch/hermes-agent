@@ -181,6 +181,44 @@ curl -s http://VM_IP:9119/api/status | jq '.auth_required, .auth_providers'
 
 If `/api/status` shows the gate is on with the `"basic"` provider and Desktop *still* fails to connect after signing in, the issue is past basic setup — grab a fresh `desktop.log` (Settings → Gateway → Open logs) plus the dashboard's logs from the same retry window and look for the `/api/ws` close code (4403 = chat WS rejected by the request guard, e.g. Host/peer mismatch; 4401 = the WS ticket didn't authenticate).
 
+#### Behind a reverse proxy (cloudflared, nginx, Caddy)
+
+A common alternative to binding the dashboard on a public address is to keep it on **loopback** (`127.0.0.1`) and put a reverse proxy in front that terminates a public hostname and adds its own auth (Cloudflare Access, an nginx `auth_request`, etc.). The proxy connects to the dashboard over loopback, so the bundled auth gate stays off and the legacy session token remains the app-layer credential.
+
+This works for HTTP out of the box, but the WebSocket upgrade has one extra catch. The browser sends `Origin: https://your-public-host` on the `/api/ws`, `/api/pty`, `/api/pub` and `/api/events` handshakes. Even when the proxy rewrites `Host` to the loopback bind (so the Host check passes), it forwards `Origin` verbatim — and the dashboard's DNS-rebinding guard refuses any `http(s)` Origin whose host doesn't match the bind. The symptom is that the page and its assets load fine but **every WebSocket fails**, with `pty refused: origin_mismatch origin=https://your-public-host bound=127.0.0.1` in the dashboard log and close code `4403` in the browser.
+
+Declare the proxy's public host(s) so those upgrades are accepted — only the exact hosts you list, never a blanket accept-any, so the DNS-rebinding defence still holds for every other origin:
+
+```bash
+# ~/.hermes/.env  (or the LaunchAgent/systemd EnvironmentFile)
+HERMES_DASHBOARD_ALLOWED_ORIGINS="dashboard.example.com"
+# multiple hosts: comma- or semicolon-separated, bare host or full URL
+# HERMES_DASHBOARD_ALLOWED_ORIGINS="dashboard.example.com, https://app.example.com"
+```
+
+or in `~/.hermes/config.yaml`:
+
+```yaml
+dashboard:
+  allowed_origins: "dashboard.example.com"   # string, or a YAML list
+```
+
+The env var and the config value are unioned, so you can keep a base list in `config.yaml` and extend it per-deploy via the env var. Only the **host** is matched (scheme and port are ignored).
+
+For a [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) tunnel fronting the dashboard, the matching ingress keeps `Host` pointed at the loopback bind while the public host flows through in `Origin`:
+
+```yaml
+# ~/.cloudflared/config.yml
+ingress:
+  - hostname: dashboard.example.com
+    service: http://127.0.0.1:9120
+    originRequest:
+      httpHostHeader: "127.0.0.1:9120"   # satisfies the Host check
+  - service: http_status:404
+```
+
+then set `HERMES_DASHBOARD_ALLOWED_ORIGINS=dashboard.example.com` for the dashboard process. After changing it, restart the dashboard and hard-reload the page.
+
 ### Config
 
 A form-based editor for `config.yaml`. All 150+ configuration fields are auto-discovered from `DEFAULT_CONFIG` and organized into tabbed categories:

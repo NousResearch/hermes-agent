@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_cli.dashboard_auth import prefix as dash_prefix
 from hermes_cli.dashboard_auth.ws_tickets import (
     _reset_for_tests,
     consume_internal_credential,
@@ -528,6 +529,79 @@ class TestWsHostOriginGuardOrigins:
         # gateway connections — every WS upgrade got HTTP 403 even with a valid
         # ticket.
         ws = self._ws(origin="file://", host="fly-app.fly.dev")
+        assert web_server._ws_host_origin_is_allowed(ws) is True
+
+
+class TestWsHostOriginGuardAllowlist:
+    """Operator-declared HERMES_DASHBOARD_ALLOWED_ORIGINS / dashboard.allowed_origins.
+
+    A loopback-bound dashboard fronted by a reverse proxy (cloudflared, nginx,
+    Caddy) that terminates a public hostname sees that hostname in the browser's
+    WS ``Origin`` header. The proxy rewrites ``Host`` to the loopback bind so the
+    Host check passes, but ``Origin`` is forwarded verbatim and otherwise trips
+    the DNS-rebinding guard. The allowlist lets the declared host(s) — and only
+    those — through, without weakening the guard for any undeclared origin.
+    """
+
+    def _ws(self, *, origin, host="127.0.0.1:9120"):
+        ws = _fake_ws(query={}, path="/api/ws")
+        ws.headers = {"host": host, "origin": origin}
+        return ws
+
+    @pytest.fixture(autouse=True)
+    def _no_config_leak(self, monkeypatch):
+        # Keep the resolver hermetic: the env var is the only allowlist source
+        # under test, so stub the config.yaml fallback to an empty section.
+        monkeypatch.setattr(dash_prefix, "_load_dashboard_section", lambda: {})
+
+    def test_loopback_allowlisted_origin_allowed(self, loopback_app, monkeypatch):
+        monkeypatch.setenv("HERMES_DASHBOARD_ALLOWED_ORIGINS", "dashboard.example.com")
+        ws = self._ws(origin="https://dashboard.example.com")
+        assert web_server._ws_host_origin_is_allowed(ws) is True
+
+    def test_loopback_allowlisted_origin_port_ignored(self, loopback_app, monkeypatch):
+        # Only the host is matched — a port on the Origin must not defeat it.
+        monkeypatch.setenv("HERMES_DASHBOARD_ALLOWED_ORIGINS", "dashboard.example.com")
+        ws = self._ws(origin="https://dashboard.example.com:8443")
+        assert web_server._ws_host_origin_is_allowed(ws) is True
+
+    def test_loopback_full_url_entry_allowed(self, loopback_app, monkeypatch):
+        # The operator may declare a full origin URL; only its host is used.
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ALLOWED_ORIGINS", "https://dashboard.example.com"
+        )
+        ws = self._ws(origin="https://dashboard.example.com")
+        assert web_server._ws_host_origin_is_allowed(ws) is True
+
+    def test_loopback_separator_list_allowed(self, loopback_app, monkeypatch):
+        # Comma- and semicolon-separated lists both parse.
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ALLOWED_ORIGINS", "a.example.com; b.example.com,c.example.com"
+        )
+        ws = self._ws(origin="https://b.example.com")
+        assert web_server._ws_host_origin_is_allowed(ws) is True
+
+    def test_loopback_unlisted_origin_rejected(self, loopback_app, monkeypatch):
+        # An origin not on the allowlist is still refused (defence intact).
+        monkeypatch.setenv("HERMES_DASHBOARD_ALLOWED_ORIGINS", "dashboard.example.com")
+        ws = self._ws(origin="https://evil.test")
+        assert web_server._ws_host_origin_is_allowed(ws) is False
+
+    def test_loopback_no_allowlist_keeps_default_rejection(self, loopback_app, monkeypatch):
+        # With no allowlist declared, the prior cross-site rejection is unchanged.
+        monkeypatch.delenv("HERMES_DASHBOARD_ALLOWED_ORIGINS", raising=False)
+        ws = self._ws(origin="https://dashboard.example.com")
+        assert web_server._ws_host_origin_is_allowed(ws) is False
+
+    def test_config_yaml_allowlist_allowed(self, loopback_app, monkeypatch):
+        # The config.yaml fallback (here a native YAML list) is honoured too.
+        monkeypatch.delenv("HERMES_DASHBOARD_ALLOWED_ORIGINS", raising=False)
+        monkeypatch.setattr(
+            dash_prefix,
+            "_load_dashboard_section",
+            lambda: {"allowed_origins": ["dashboard.example.com"]},
+        )
+        ws = self._ws(origin="https://dashboard.example.com")
         assert web_server._ws_host_origin_is_allowed(ws) is True
 
     def test_gated_null_origin_allowed(self, gated_app):

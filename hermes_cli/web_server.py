@@ -11031,6 +11031,27 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     return client_host in _LOOPBACK_HOSTS
 
 
+def _origin_host_is_allowlisted(netloc: str) -> bool:
+    """True if ``netloc``'s host is an operator-declared trusted proxy origin.
+
+    A loopback-bound dashboard behind a reverse proxy (cloudflared, nginx,
+    Caddy) that terminates a public hostname receives that hostname in the
+    browser's WS ``Origin`` header. The proxy rewrites ``Host`` to the
+    loopback bind, so the Host check passes, but ``Origin`` is forwarded
+    verbatim and would otherwise trip the DNS-rebinding guard. Operators
+    declare the trusted host(s) via ``HERMES_DASHBOARD_ALLOWED_ORIGINS`` /
+    ``dashboard.allowed_origins`` so only those exact origins are accepted —
+    never a blanket accept-any. Reuses :func:`_is_accepted_host` so port and
+    bracket stripping match the rest of the Host/Origin guard exactly.
+    """
+    from hermes_cli.dashboard_auth.prefix import resolve_allowed_origin_hosts
+
+    allowed = resolve_allowed_origin_hosts()
+    if not allowed:
+        return False
+    return any(_is_accepted_host(netloc, host) for host in allowed)
+
+
 def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     """Return a Host/Origin rejection reason, or None when allowed.
 
@@ -11060,7 +11081,9 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(parsed.netloc, bound_host) and not _origin_host_is_allowlisted(
+        parsed.netloc
+    ):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 

@@ -1772,6 +1772,23 @@ DEFAULT_CONFIG = {
         # falls through to request reconstruction rather than breaking
         # the login flow.
         "public_url": "",
+        # Extra hostnames trusted in the WebSocket Origin header, for a
+        # loopback-bound dashboard fronted by a reverse proxy (cloudflared,
+        # nginx, Caddy) that terminates a public hostname. The proxy rewrites
+        # ``Host`` to the loopback bind so the Host check passes, but the
+        # browser's ``Origin`` (the public hostname) is forwarded verbatim and
+        # otherwise trips the DNS-rebinding guard, refusing every WS upgrade
+        # (``/api/ws``, ``/api/pty``, ``/api/pub``, ``/api/events``) with
+        # ``origin_mismatch``. Declare the proxy's public host(s) here to let
+        # those upgrades through — only these EXACT hosts are allowed, never a
+        # blanket accept-any, so the DNS-rebinding defence still holds.
+        #
+        # Accepts a comma- or semicolon-separated string, or a YAML list, of
+        # bare hosts or full origin URLs (the scheme and port are ignored;
+        # only the host is matched). Env override / extension:
+        # ``HERMES_DASHBOARD_ALLOWED_ORIGINS`` (unioned with this value).
+        # Example: ``dashboard.example.com, https://app.example.com``.
+        "allowed_origins": "",
     },
 
     # Privacy settings

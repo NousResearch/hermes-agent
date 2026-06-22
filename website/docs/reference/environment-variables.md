@@ -723,6 +723,15 @@ These go in `~/.hermes/config.yaml` under the `provider_routing` section:
 | `require_parameters` | Only use providers supporting all request params (`true`/`false`) |
 | `data_collection` | `"allow"` (default) or `"deny"` to exclude data-storing providers |
 
+## Dashboard
+
+These configure the [web dashboard](/user-guide/features/web-dashboard). Each env var takes precedence over (or, where noted, is unioned with) the matching `dashboard.*` key in `config.yaml`.
+
+| Variable | Description |
+|----------|-------------|
+| `HERMES_DASHBOARD_ALLOWED_ORIGINS` | Extra hostnames trusted in the WebSocket `Origin` header, for a loopback-bound dashboard behind a reverse proxy (cloudflared, nginx, Caddy) that terminates a public hostname. Without it, the DNS-rebinding guard refuses every WS upgrade whose browser `Origin` doesn't match the bind (`origin_mismatch` in the log; close code `4403`). Comma- or semicolon-separated list of bare hosts or full origin URLs; only the host is matched. **Unioned** with `dashboard.allowed_origins`. Only the exact hosts listed are allowed — never accept-any. See [Behind a reverse proxy](/user-guide/features/web-dashboard#behind-a-reverse-proxy-cloudflared-nginx-caddy). |
+| `HERMES_DASHBOARD_PUBLIC_URL` | Complete public URL (scheme + host + optional path prefix, e.g. `https://example.com/hermes`) the OAuth `redirect_uri` is built from. Set this for deploys behind reverse proxies that don't reliably forward `X-Forwarded-Host`/`-Proto`/`-Prefix`. Overrides `dashboard.public_url`; a value without an `http(s)://` scheme is logged and ignored. |
+
 :::tip
 Use `hermes config set` to set environment variables — it automatically saves them to the right file (`.env` for secrets, `config.yaml` for everything else).
 :::

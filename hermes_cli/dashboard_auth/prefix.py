@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import urllib.parse
-from typing import Optional
+from typing import FrozenSet, List, Optional
 
 _log = logging.getLogger(__name__)
 
@@ -199,3 +200,127 @@ def resolve_public_url() -> str:
     if not cfg_clean:
         _warn_if_malformed("dashboard.public_url in config.yaml", cfg_raw)
     return cfg_clean
+
+
+# ---------------------------------------------------------------------------
+# HERMES_DASHBOARD_ALLOWED_ORIGINS / dashboard.allowed_origins
+# ---------------------------------------------------------------------------
+
+# Dedup set for malformed allowed-origin warnings — same rationale as
+# ``_warned_malformed_public_urls``: the resolver runs on every WebSocket
+# upgrade, so an un-deduplicated warning would flood the logs.
+_warned_malformed_origins: set = set()
+
+
+def _warn_if_malformed_origin(source: str, raw: str) -> None:
+    """Warn (once per distinct value) when an allowed-origin entry was
+    rejected by :func:`_normalise_origin_host`.
+
+    Most rejections are a missing/empty token or a value carrying
+    quote/whitespace/control characters (a typo or header-injection
+    attempt). Surfacing it turns a silently-dropped allowlist entry — which
+    would otherwise look like "I allowlisted my proxy host but WebSockets
+    are still refused" — into a self-diagnosing one.
+    """
+    cleaned = raw.strip() if raw else ""
+    if not cleaned:
+        return
+    key = (source, cleaned)
+    if key in _warned_malformed_origins:
+        return
+    _warned_malformed_origins.add(key)
+    _log.warning(
+        "%s contains %r, which was ignored because it is not a valid "
+        "origin host. Use a bare hostname (e.g. dashboard.example.com) or "
+        "a full origin URL (e.g. https://dashboard.example.com); quotes, "
+        "spaces and control characters are rejected.",
+        source,
+        cleaned,
+    )
+
+
+def _parse_origin_list(raw) -> List[str]:
+    """Split a raw allowed-origins value into individual tokens.
+
+    Accepts a string (comma- or semicolon-separated) or a list/tuple — the
+    latter so ``dashboard.allowed_origins`` can be written as a native YAML
+    list in ``config.yaml``. Returns the stripped, non-empty tokens;
+    normalisation to hostnames happens in :func:`_normalise_origin_host`.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple)):
+        items = [str(x) for x in raw]
+    else:
+        items = re.split(r"[;,]", str(raw))
+    return [tok.strip() for tok in items if tok and tok.strip()]
+
+
+def _normalise_origin_host(raw: str) -> str:
+    """Reduce one allowed-origin token to a bare lowercase hostname.
+
+    Accepts ``https://host:443``, ``host:443``, or ``host`` and returns the
+    hostname (no scheme, no port, IPv6 brackets stripped) lowercased, or
+    ``""`` when the token is empty or carries characters that suggest header
+    injection. Matching on the host alone — not scheme or port — mirrors the
+    WS Origin guard, which compares the Origin's ``netloc`` against the bound
+    host with the port suffix removed.
+    """
+    if not raw:
+        return ""
+    tok = raw.strip()
+    if not tok or any(c in tok for c in _REJECT_CHARS):
+        return ""
+    if "://" in tok:
+        tok = urllib.parse.urlparse(tok).netloc
+    tok = tok.strip().lower()
+    if not tok:
+        return ""
+    # Strip the port (IPv6 addresses use [::1]:port bracket notation).
+    if tok.startswith("["):
+        close = tok.find("]")
+        tok = tok[1:close] if close != -1 else tok.strip("[]")
+    elif ":" in tok:
+        tok = tok.rsplit(":", 1)[0]
+    return tok
+
+
+def resolve_allowed_origin_hosts() -> "FrozenSet[str]":
+    """Resolve operator-declared trusted hostnames for the WS Origin guard.
+
+    A loopback-bound dashboard fronted by a reverse proxy (cloudflared,
+    nginx, Caddy) that terminates a public hostname sees that hostname in the
+    browser's WebSocket ``Origin`` header. The proxy rewrites ``Host`` to the
+    loopback bind — so the Host check passes — but ``Origin`` is forwarded
+    verbatim and trips the DNS-rebinding guard, refusing every upgrade with
+    ``origin_mismatch``.
+
+    The union of hostnames declared in ``HERMES_DASHBOARD_ALLOWED_ORIGINS``
+    (env) and ``dashboard.allowed_origins`` (config.yaml) is returned. Both
+    accept a comma- or semicolon-separated list (config may also use a native
+    YAML list) of bare hosts or full origin URLs. Unlike
+    :func:`resolve_public_url`, the two sources are unioned rather than
+    env-overrides-config, so an operator can keep a base list in config and
+    extend it per-deploy via the env var.
+
+    Only these exact hosts are added — never a blanket accept-any — so the
+    DNS-rebinding defence still holds for every undeclared origin.
+    """
+    hosts: set = set()
+    for source, raw in (
+        (
+            "HERMES_DASHBOARD_ALLOWED_ORIGINS env var",
+            os.environ.get("HERMES_DASHBOARD_ALLOWED_ORIGINS", ""),
+        ),
+        (
+            "dashboard.allowed_origins in config.yaml",
+            _load_dashboard_section().get("allowed_origins", ""),
+        ),
+    ):
+        for token in _parse_origin_list(raw):
+            host = _normalise_origin_host(token)
+            if host:
+                hosts.add(host)
+            else:
+                _warn_if_malformed_origin(source, token)
+    return frozenset(hosts)

@@ -11,6 +11,8 @@ from agent.image_routing import (
     _coerce_capability_bool,
     _coerce_mode,
     _explicit_aux_vision_override,
+    _file_to_data_url,
+    _guess_mime,
     _lookup_supports_vision,
     _supports_vision_override,
     build_native_content_parts,
@@ -636,3 +638,55 @@ class TestBuildNativeContentPartsURLs:
         )
         assert parts[0]["type"] == "text"
         assert parts[0]["text"].startswith("What do you see in this image?")
+
+
+# ─── MIME validation: non-image files must not be routed as images (#50793) ──
+
+class TestNonImageRoutingGuard:
+    """A document whose filename merely contains "Image" must not be encoded
+    as a fake image/jpeg — magic bytes / declared MIME win over the filename.
+    """
+
+    _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+    def test_guess_mime_real_png_by_magic_bytes(self, tmp_path):
+        p = tmp_path / "weird_name.dat"
+        p.write_bytes(self._PNG)
+        assert _guess_mime(p, raw=self._PNG) == "image/png"
+
+    def test_guess_mime_html_named_image_is_none(self, tmp_path):
+        p = tmp_path / "Image_2_1.html"
+        raw = b"<!DOCTYPE html>\n<html></html>"
+        p.write_bytes(raw)
+        assert _guess_mime(p, raw=raw) is None
+
+    def test_guess_mime_markdown_named_image_is_none(self, tmp_path):
+        p = tmp_path / "Image_3_1.markdown"
+        raw = b"---\ntitle: x\n---\n# hi"
+        p.write_bytes(raw)
+        assert _guess_mime(p, raw=raw) is None
+
+    def test_guess_mime_known_image_suffix_still_maps(self, tmp_path):
+        # A real image with a corrupt header but a known suffix still routes.
+        p = tmp_path / "photo.jpg"
+        p.write_bytes(b"not-really-jpeg-bytes")
+        assert _guess_mime(p, raw=b"not-really-jpeg-bytes") == "image/jpeg"
+
+    def test_file_to_data_url_skips_non_image(self, tmp_path):
+        p = tmp_path / "Image_2_1.html"
+        p.write_bytes(b"<!DOCTYPE html><html></html>")
+        assert _file_to_data_url(p) is None
+
+    def test_build_parts_skips_non_image_keeps_real_image(self, tmp_path):
+        html = tmp_path / "Image_2_1.html"
+        html.write_bytes(b"<!DOCTYPE html><html></html>")
+        png = tmp_path / "real.png"
+        png.write_bytes(self._PNG)
+        parts, skipped = build_native_content_parts(
+            "look", [str(html), str(png)]
+        )
+        image_parts = [p for p in parts if p.get("type") in ("image_url", "input_image")]
+        assert len(image_parts) == 1
+        assert str(html) in skipped
+        # No fabricated image/jpeg from the HTML bytes.
+        assert all("data:image/jpeg" not in str(p) or "real.png" for p in image_parts)

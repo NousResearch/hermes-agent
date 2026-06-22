@@ -396,11 +396,17 @@ def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
     return None
 
 
-def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
-    """Return image MIME type for *path*.
+def _guess_mime(path: Path, raw: Optional[bytes] = None) -> Optional[str]:
+    """Return the image MIME type for *path*, or ``None`` when the file is not
+    an image.
 
-    If *raw* bytes are provided, magic-byte sniffing wins (authoritative).
-    Otherwise we fall back to ``mimetypes`` then suffix-based defaults.
+    Resolution order: magic-byte sniffing (authoritative when *raw* is
+    provided) → ``mimetypes`` (only when it reports an ``image/*`` type) →
+    known image suffixes. A non-image file (e.g. an ``.html``/``.markdown``
+    document whose filename merely contains "Image") returns ``None`` so the
+    caller skips it instead of fabricating a fake ``image/jpeg`` payload that
+    providers reject with HTTP 400 (#50793). Magic bytes / declared MIME win
+    over the filename.
     """
     if raw is not None:
         sniffed = _sniff_mime_from_bytes(raw)
@@ -409,8 +415,10 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
     mime, _ = mimetypes.guess_type(str(path))
     if mime and mime.startswith("image/"):
         return mime
-    # mimetypes on some Linux distros mis-maps .jpg; default to jpeg when
-    # the suffix looks imagey.
+    # mimetypes on some Linux distros mis-maps .jpg; keep a tight suffix map so
+    # a real image with a quirky local mimetypes DB still routes. Unknown
+    # suffixes return None (NOT a jpeg default) so non-image documents are not
+    # encoded as images.
     suffix = path.suffix.lower()
     return {
         ".jpg": "image/jpeg",
@@ -419,7 +427,7 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
         ".gif": "image/gif",
         ".webp": "image/webp",
         ".bmp": "image/bmp",
-    }.get(suffix, "image/jpeg")
+    }.get(suffix)
 
 
 def _file_to_data_url(path: Path) -> Optional[str]:
@@ -440,6 +448,15 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
     mime = _guess_mime(path, raw=raw)
+    if mime is None:
+        # Not a real image (magic bytes + declared MIME + suffix all say
+        # non-image). Skip rather than encode document bytes as a fake
+        # image/jpeg, which providers reject with HTTP 400 (#50793).
+        logger.warning(
+            "image_routing: %s is not a recognized image — skipping native "
+            "image routing", path,
+        )
+        return None
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 

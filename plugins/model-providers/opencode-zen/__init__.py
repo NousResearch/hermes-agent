@@ -31,6 +31,18 @@ def _is_deepseek_thinking_model(model: str | None) -> bool:
     return m == "deepseek-reasoner"
 
 
+def _is_glm_thinking_model(model: str | None) -> bool:
+    """Return True for GLM models that expose reasoning controls on OpenCode Go.
+
+    GLM-5 model IDs currently route through this profile, but Hermes was
+    treating them like generic chat-completions models and silently dropping
+    `/reasoning`. Reuse the existing DeepSeek-style mapping so GLM-5 requests
+    can forward ``reasoning_effort`` or the fallback ``extra_body.thinking``
+    fields instead of falling through this gate.
+    """
+    return _flat_model_name(model).startswith("glm-5")
+
+
 class OpenCodeGoProfile(ProviderProfile):
     """OpenCode Go - model-specific reasoning controls."""
 
@@ -80,7 +92,10 @@ class OpenCodeGoProfile(ProviderProfile):
                 extra_body["thinking"] = {"type": "enabled"}
             return extra_body, top_level
 
-        if not _is_deepseek_thinking_model(model):
+        if not (
+            _is_deepseek_thinking_model(model)
+            or _is_glm_thinking_model(model)
+        ):
             return extra_body, top_level
 
         enabled = True

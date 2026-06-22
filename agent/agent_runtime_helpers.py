@@ -1350,6 +1350,13 @@ def anthropic_prompt_cache_policy(
         # pi-mono's "alibaba" cacheControlFormat.
         return True, False
 
+    # Custom OpenAI-compatible endpoint serving a Claude model (e.g. LiteLLM
+    # proxying to Anthropic or Bedrock).  The model name contains "claude" so
+    # we know caching is supported; use envelope layout since we're on the
+    # OpenAI wire format, not the native Anthropic messages API.
+    if provider_lower == "custom" and is_claude:
+        return True, False
+
     return False, False
 
 

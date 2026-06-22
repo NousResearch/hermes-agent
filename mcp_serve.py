@@ -1013,8 +1013,8 @@ def create_profile_router_mcp_server(
             "workspace_diff, and policy-gated local/private OpenViking context "
             "tools viking_search and viking_read. Private HTTP nodes also register "
             "file_patch, file_write, and terminal_run for the public gateway's "
-            "approved pilot wrappers; those direct tools require fresh workspace "
-            "context plus filesystem.write or terminal.execution policy. It does "
+            "explicit production wrappers; those direct tools require fresh "
+            "workspace context plus filesystem.write or terminal.execution policy. It does "
             "not expose conversation messaging, session dumps, cron, deploy, "
             "Git push/merge, or agent-loop execution tools."
         ),
@@ -1328,7 +1328,7 @@ def create_profile_router_mcp_server(
         replace_all: bool = False,
         context_token: str | None = None,
     ) -> str:
-        """Private direct text patch for approved gateway pilot wrappers."""
+        """Private direct text patch for explicit production gateway wrappers."""
         return _call_tool(
             "file_patch",
             PROFILE_ROUTER_WRITE_SCOPE,
@@ -1349,7 +1349,7 @@ def create_profile_router_mcp_server(
         content: str,
         context_token: str | None = None,
     ) -> str:
-        """Private direct UTF-8 write for approved gateway pilot wrappers."""
+        """Private direct UTF-8 write for explicit production gateway wrappers."""
         return _call_tool(
             "file_write",
             PROFILE_ROUTER_WRITE_SCOPE,
@@ -1370,7 +1370,7 @@ def create_profile_router_mcp_server(
         context_token: str | None = None,
         max_output_chars: int | None = 60000,
     ) -> str:
-        """Private direct read/test terminal allowlist for approved gateway pilot wrappers."""
+        """Private direct read/test terminal allowlist for explicit production gateway wrappers."""
         return _call_tool(
             "terminal_run",
             PROFILE_ROUTER_TERMINAL_SCOPE,

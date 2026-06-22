@@ -4,8 +4,9 @@ This module is intentionally small and side-effect free: it only parses
 fully-qualified profile refs and exposes read-only local profile inventory for
 the ChatGPT ↔ Hermes MCP router, plus policy-gated read-only workspace access.
 It must not import or call the Hermes agent loop, provider clients, or AI coding
-CLIs. Later filesystem/terminal tools should build on the explicit cost
-metadata here rather than exposing arbitrary Hermes tools by default.
+CLIs. Filesystem/terminal action tools are private/direct only, no-model, and
+must remain gated by explicit profile/root/context policy rather than exposing
+arbitrary Hermes tools by default.
 """
 
 from __future__ import annotations

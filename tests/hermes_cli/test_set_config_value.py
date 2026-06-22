@@ -163,6 +163,45 @@ class TestFalsyValues:
         config = _read_config(_isolated_hermes_home)
         assert "model" in config
 
+    def test_space_separated_key_form_sets_value(self, _isolated_hermes_home):
+        """`config set memory provider holographic` (space-separated key) must
+        be equivalent to `config set memory.provider holographic`.
+
+        Regression for #50553: switching the memory provider via the natural
+        space-separated form previously failed to take effect (argparse
+        rejected the trailing token, so memory.provider was never written).
+        """
+        import yaml as _yaml
+        args = argparse.Namespace(
+            config_command="set", key="memory", value="provider",
+            extra=["holographic"],
+        )
+        config_command(args)
+        data = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert data["memory"]["provider"] == "holographic"
+
+    def test_space_separated_deeper_key(self, _isolated_hermes_home):
+        """Three key tokens fold into a dotted path: a b c value."""
+        import yaml as _yaml
+        args = argparse.Namespace(
+            config_command="set", key="terminal", value="docker_env",
+            extra=["FOO", "bar"],
+        )
+        config_command(args)
+        data = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert data["terminal"]["docker_env"]["FOO"] == "bar"
+
+    def test_dotted_key_form_still_works(self, _isolated_hermes_home):
+        """The canonical dotted form must be unaffected by the new extra arg."""
+        import yaml as _yaml
+        args = argparse.Namespace(
+            config_command="set", key="memory.provider", value="holographic",
+            extra=[],
+        )
+        config_command(args)
+        data = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert data["memory"]["provider"] == "holographic"
+
 
 # ---------------------------------------------------------------------------
 # List navigation — regression tests for #17876

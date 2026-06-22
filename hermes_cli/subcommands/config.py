@@ -6,6 +6,7 @@ Handler injected to avoid importing ``main``.
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 
@@ -33,6 +34,12 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
         "key", nargs="?", help="Configuration key (e.g., model, terminal.backend)"
     )
     config_set.add_argument("value", nargs="?", help="Value to set")
+    # Accept the space-separated key form (e.g. ``config set memory provider
+    # holographic``) alongside the dotted form (``memory.provider``). Any
+    # trailing tokens are folded into the dotted key by the handler so
+    # ``set <section> <key> <value>`` does the obvious thing instead of
+    # failing with "unrecognized arguments". See issue #50553.
+    config_set.add_argument("extra", nargs="*", help=argparse.SUPPRESS)
 
     # config path
     config_subparsers.add_parser("path", help="Print config file path")

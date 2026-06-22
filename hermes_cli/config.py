@@ -6831,6 +6831,15 @@ def config_command(args):
     elif subcmd == "set":
         key = getattr(args, 'key', None)
         value = getattr(args, 'value', None)
+        # Support the space-separated key form: `config set memory provider
+        # holographic` is treated as key=`memory.provider` value=`holographic`.
+        # The last positional is the value; everything before it is the dotted
+        # key. This makes `set <section> <subkey> <value>` work instead of
+        # failing with "unrecognized arguments". See issue #50553.
+        extra = list(getattr(args, 'extra', None) or [])
+        if extra and key is not None and value is not None:
+            key = ".".join([key, value] + extra[:-1])
+            value = extra[-1]
         if not key or value is None:
             print("Usage: hermes config set <key> <value>")
             print()

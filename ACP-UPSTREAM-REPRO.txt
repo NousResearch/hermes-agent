@@ -1,0 +1,2 @@
+FAILED tests/acp/test_approval_isolation.py::TestAcpExecAskGate::test_interactive_env_var_routes_to_callback
+1 failed, 294 passed, 6 warnings in 25.78s

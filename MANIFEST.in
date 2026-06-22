@@ -1,3 +1,4 @@
+include uv.lock
 graft skills
 graft optional-skills
 graft optional-mcps

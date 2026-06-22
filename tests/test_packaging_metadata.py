@@ -116,6 +116,14 @@ def test_manifest_includes_bundled_skills():
     assert "graft optional-skills" in manifest
 
 
+def test_manifest_includes_uv_lock_for_sdist():
+    manifest_lines = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8").splitlines()
+
+    assert "include uv.lock" in manifest_lines, (
+        "MANIFEST.in must include uv.lock so PyPI sdists ship the lockfile"
+    )
+
+
 def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     """Regression test for #34034 / #28149.
 

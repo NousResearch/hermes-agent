@@ -2347,6 +2347,19 @@ def create_task(
         # usually pass several at once (`skills=["web", "browser", "terminal"]`)
         # and serial-correcting one per failure round-trips wastes tokens.
         toolset_typos: list[str] = []
+        # Structural-safety guard (2026-06-21): profile names like
+        # "code-craftsman" leaked into skills columns via orchestrator
+        # templates that copied the assignee into skills. Loading a profile
+        # name as a skill crashes the worker at CLI startup
+        # ("Unknown skill(s):") and produces a crash-loop class
+        # (t_47727c99 / t_ca595dd2 / t_6e6c889a hit 18+ crash runs).
+        # Raise loudly instead of silently persisting bad data.
+        profile_typos: list[str] = []
+        from pathlib import Path as _P
+        _known_profile_names: set[str] = set()
+        _profiles_dir = _P.home() / ".hermes" / "profiles"
+        if _profiles_dir.is_dir():
+            _known_profile_names = {p.name for p in _profiles_dir.iterdir() if p.is_dir()}
         for s in skills:
             if not s:
                 continue
@@ -2361,10 +2374,24 @@ def create_task(
             if name.casefold() in KNOWN_TOOLSET_NAMES:
                 toolset_typos.append(name)
                 continue
+            if name in _known_profile_names:
+                profile_typos.append(name)
+                continue
             if name in seen:
                 continue
             seen.add(name)
             cleaned.append(name)
+        if profile_typos:
+            quoted = ", ".join(repr(n) for n in profile_typos)
+            noun = "is a profile name" if len(profile_typos) == 1 else "are profile names"
+            raise ValueError(
+                f"{quoted} {noun}, not skill name(s). Profiles are runtime "
+                "contexts selected via --profile / -p; they cannot be force-"
+                "loaded as skills. If you want the worker's toolset, pass it "
+                "via the assignee profile's `toolsets:` config. If you want "
+                "a specialist skill, use the skill bundle name (e.g. "
+                "'code-craftsman-toolkit' for the code-craftsman toolkit)."
+            )
         if toolset_typos:
             quoted = ", ".join(repr(n) for n in toolset_typos)
             noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"

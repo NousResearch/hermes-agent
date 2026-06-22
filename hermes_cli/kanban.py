@@ -26,7 +26,13 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
-from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
+from hermes_cli.profiles import (
+    get_active_profile_name,
+    get_profile_dir,
+    list_profiles,
+    profile_exists,
+    seed_profile_skills,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +178,7 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
             "Gateway is running but kanban.dispatch_in_gateway=false in "
             "config.yaml — the task will sit in 'ready' until you flip it "
             "back on and restart the gateway, OR run the legacy "
-            "standalone daemon (`hermes kanban daemon --force`)."
+            "standalone daemon (`hermes kanban daemon --force`).",
         )
     return (
         False,
@@ -183,6 +189,144 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
         "default); your task will be picked up on the next tick after "
         "the gateway comes up."
     )
+
+
+# ---------------------------------------------------------------------------
+# Assignee lint (card t_13660393, 2026-06-21)
+# ---------------------------------------------------------------------------
+#
+# Three kanban cards were filed today (t_3df0834d, t_b3c5d58b,
+# t_c3f1f98e) with assignee names that aren't registered Hermes
+# profiles. The dispatcher silently self-heals to a real profile at
+# claim-time, which hides the typo from the operator and routes the
+# work to the wrong agent. We catch the typo at the CLI entry point
+# so the operator learns about it before any DB write.
+#
+# Scope:
+#   - This lint runs ONLY in ``_cmd_create`` (the operator-facing CLI
+#     create path). The agent-facing ``kanban_create`` tool surface
+#     (``tools/kanban_tools.py``) is intentionally untouched to
+#     preserve backwards compat for programmatic task creation —
+#     automated orchestrators may legitimately target a profile
+#     that isn't installed in HERMES_HOME (e.g. cross-host spawn).
+#   - The dispatcher's claim-time silent-self-heal is also untouched.
+#     That's a separate bug, scoped to a follow-up card.
+#
+# Out of scope (deliberately not validated here, follow-up card):
+#   - Platform-agent IDs (``BU-022``, ``CEO``, etc.). Today the
+#     roster is Hermes-profile-only. Operators can ``hermes profile
+#     list`` to confirm what counts.
+
+def _levenshtein(a: str, b: str) -> int:
+    """Pure-Python Levenshtein edit distance.
+
+    Standard textbook DP — O(len(a) * len(b)). Good enough for the
+    ~15-element profile roster; no need to pull in a library.
+    """
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        cur = [i + 1]
+        for j, cb in enumerate(b):
+            ins = cur[j] + 1          # insertion
+            dele = prev[j + 1] + 1    # deletion
+            sub = prev[j] + (0 if ca == cb else 1)  # substitution
+            cur.append(min(ins, dele, sub))
+        prev = cur
+    return prev[-1]
+
+
+def _suggest_profile(name: str) -> Optional[str]:
+    """Return the closest registered profile to ``name``, or None.
+
+    Suggestion policy (per card t_13660393 acceptance criteria):
+      * Levenshtein distance ``<= 2`` against any roster entry, OR
+      * Unique case-insensitive prefix match of length ``>= 3``.
+
+    "Unique" means exactly one roster entry starts with the prefix —
+    if the prefix is ambiguous (e.g. ``co`` matches both
+    ``code-craftsman`` and ``content-curator``), no suggestion is
+    returned. ``list_profiles`` is deterministic (default first, then
+    alphabetical), so ties on Levenshtein distance resolve to the
+    alphabetically-first match.
+    """
+    try:
+        roster = [p.name for p in list_profiles()]
+    except Exception:
+        return None  # can't enumerate — don't suggest a guess
+    if not roster:
+        return None
+    name_l = name.strip().lower()
+    if not name_l:
+        return None
+
+    # 1. Levenshtein <= 2 (closest match wins; ties go to first hit
+    # in roster order, which is default-then-alphabetical).
+    best: Optional[str] = None
+    best_dist = 99
+    for r in roster:
+        d = _levenshtein(name_l, r.lower())
+        if d <= 2 and d < best_dist:
+            best_dist = d
+            best = r
+    if best is not None:
+        return best
+
+    # 2. Unique prefix match of length >= 3.
+    if len(name_l) >= 3:
+        matches = [r for r in roster if r.lower().startswith(name_l)]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def _validate_assignee(name: Optional[str]) -> int:
+    """Reject ghost assignees at the CLI create boundary.
+
+    Returns ``0`` if the assignee is acceptable (None / empty / a
+    registered profile) and ``2`` (argparse convention, same as
+    ``_parse_workspace_flag`` and the ``--max-retries`` guard) if it
+    should be rejected. On rejection, prints a clear error to stderr
+    and — when a close match exists — a ``Did you mean: …`` hint.
+
+    Note: ``profile_exists`` normalizes case (lowercase for named
+    profiles, case-insensitive for the ``default`` alias), so
+    ``--assignee Code-Craftsman`` is accepted on the same path as
+    ``--assignee code-craftsman``. That matches the existing
+    ingress-point normalization pattern in ``hermes_cli.profiles``
+    (see issue #18498 referenced in ``normalize_profile_name``).
+    """
+    if not name:
+        return 0  # unassigned tasks are valid
+    try:
+        if profile_exists(name):
+            return 0
+    except Exception as exc:
+        # If the profile roster itself can't be read, refuse rather
+        # than silently route. Better to make the operator look than
+        # to dispatch a task to an unintended profile.
+        print(
+            f"kanban: assignee {name!r}: unable to verify against the "
+            f"profile roster ({exc!r}). Refusing to create — run "
+            f"`hermes profile list` to confirm installed profiles.",
+            file=sys.stderr,
+        )
+        return 2
+    # Ghost — print the rejection + optional suggestion.
+    print(
+        f"kanban: assignee {name!r} is not a registered Hermes profile. "
+        f"Run `hermes profile list` to see valid profiles.",
+        file=sys.stderr,
+    )
+    suggestion = _suggest_profile(name)
+    if suggestion:
+        print(f"Did you mean: {suggestion}?", file=sys.stderr)
+    return 2
 
 
 # ---------------------------------------------------------------------------
@@ -1325,6 +1469,49 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    # Structural-safety guard (2026-06-21): profile names (e.g.
+    # "code-craftsman") leaked into --skill args because some
+    # orchestrator-side templates copy the assignee into the skills list.
+    # Passing a profile name to --skills fails the CLI with
+    # "Unknown skill(s):" and the worker exits 1 before doing work —
+    # observed as the t_47727c99 / t_ca595dd2 / t_6e6c889a loop class
+    # (18+ crash runs each). Strip known profile names and warn.
+    from pathlib import Path as _Path
+    _known_profiles = set()
+    _hermes_root = _Path.home() / ".hermes"
+    _profiles_dir = _hermes_root / "profiles"
+    if _profiles_dir.is_dir():
+        _known_profiles = {p.name for p in _profiles_dir.iterdir() if p.is_dir()}
+    _raw_skills = list(getattr(args, "skills", []) or [])
+    _clean_skills = [s for s in _raw_skills if s and s not in _known_profiles]
+    _stripped = [s for s in _raw_skills if s in _known_profiles]
+    if _stripped:
+        print(
+            f"kanban: stripped {len(_stripped)} profile-name(s) from --skill "
+            f"({', '.join(sorted(_stripped))}). Profile names are not valid "
+            f"skills; pass a real skill bundle name (e.g. "
+            f"'code-craftsman-toolkit') or omit.",
+            file=sys.stderr,
+        )
+    args.skills = _clean_skills
+    # Ghost-assignee lint (card t_13660393, 2026-06-21): reject
+    # unregistered profile names BEFORE the DB write so the operator
+    # learns about typos immediately, instead of letting the
+    # dispatcher silently self-heal to an unintended profile at
+    # claim time. Out of scope: agent tool surface (kanban_create
+    # tool) and dispatcher claim-time fallback — both are separate
+    # cards. Tool-surface programmatic callers are intentionally
+    # exempt to preserve backward compat for orchestrators that
+    # legitimately target a profile not installed in HERMES_HOME.
+    #
+    # NB: ``main.py`` does ``args.func(args)`` and discards the
+    # return value (line ~12643), so a plain ``return 2`` here would
+    # exit 0. We ``raise SystemExit(rc)`` instead — the same pattern
+    # used by ``hermes_cli/doctor.py:514`` and
+    # ``hermes_cli/fallback_cmd.py:354`` for arg-validation errors.
+    rc = _validate_assignee(args.assignee)
+    if rc != 0:
+        raise SystemExit(rc)
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,

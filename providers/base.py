@@ -88,6 +88,9 @@ class ProviderProfile:
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
+    # Optional provider-level default for the agent's outer API retry loop.
+    # User config (agent.api_max_retries) still wins when present.
+    default_api_max_retries: int | None = None
     # Optional profile-level stale-call default for providers whose Responses or
     # chat-completions turns legitimately run longer than Hermes' global 90s
     # implicit stale detector. User config and HERMES_API_CALL_STALE_TIMEOUT

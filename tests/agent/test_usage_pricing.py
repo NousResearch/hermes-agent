@@ -1,3 +1,4 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
@@ -104,6 +105,35 @@ def test_normalize_usage_openai_prefers_prompt_tokens_details_over_top_level():
 
     assert normalized.cache_read_tokens == 600
     assert normalized.cache_write_tokens == 150
+
+
+def test_normalize_usage_sakana_preserves_and_counts_orchestration_tokens():
+    usage = SimpleNamespace(
+        input_tokens=100,
+        output_tokens=20,
+        input_tokens_details=SimpleNamespace(
+            cached_tokens=10,
+            orchestration_input_tokens=30,
+            orchestration_input_cached_tokens=5,
+        ),
+        output_tokens_details=SimpleNamespace(
+            reasoning_tokens=2,
+            orchestration_output_tokens=7,
+        ),
+    )
+
+    normalized = normalize_usage(
+        usage,
+        provider="sakana-fugu",
+        api_mode="codex_responses",
+    )
+
+    assert normalized.input_tokens == 120
+    assert normalized.cache_read_tokens == 15
+    assert normalized.output_tokens == 27
+    assert normalized.reasoning_tokens == 2
+    assert normalized.raw_usage["input_tokens_details"]["orchestration_input_tokens"] == 30
+    assert normalized.raw_usage["output_tokens_details"]["orchestration_output_tokens"] == 7
 
 
 def test_openrouter_models_api_pricing_is_converted_from_per_token_to_per_million(monkeypatch):
@@ -236,6 +266,58 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     assert float(entry.input_cost_per_million) == 1.74
     assert float(entry.output_cost_per_million) == 3.48
     assert float(entry.cache_read_cost_per_million) == 0.0145
+
+
+def test_sakana_fugu_ultra_official_pricing_entry_exists():
+    entry = get_pricing_entry(
+        "fugu-ultra",
+        provider="sakana-fugu",
+        base_url="https://api.sakana.ai/v1",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 5.0
+    assert float(entry.output_cost_per_million) == 30.0
+    assert float(entry.cache_read_cost_per_million) == 0.5
+    assert entry.context_tier_threshold_tokens == 272_000
+    assert float(entry.context_tier_input_cost_per_million) == 10.0
+    assert float(entry.context_tier_output_cost_per_million) == 45.0
+    assert float(entry.context_tier_cache_read_cost_per_million) == 1.0
+
+
+def test_sakana_fugu_ultra_long_context_tier_prices_entire_request():
+    result = estimate_usage_cost(
+        "fugu-ultra",
+        CanonicalUsage(input_tokens=272_001, output_tokens=1000, cache_read_tokens=10),
+        provider="sakana-fugu",
+        base_url="https://api.sakana.ai/v1",
+    )
+
+    assert result.status == "estimated"
+    expected = (
+        Decimal(272_001) * Decimal("10.00") / Decimal(1_000_000)
+        + Decimal(1000) * Decimal("45.00") / Decimal(1_000_000)
+        + Decimal(10) * Decimal("1.00") / Decimal(1_000_000)
+    )
+    assert result.amount_usd == expected
+    assert "long-context" in " ".join(result.notes)
+
+
+def test_sakana_fugu_ultra_context_tier_boundary_is_strictly_greater_than_threshold():
+    result = estimate_usage_cost(
+        "fugu-ultra",
+        CanonicalUsage(input_tokens=272_000, output_tokens=1000),
+        provider="sakana-fugu",
+        base_url="https://api.sakana.ai/v1",
+    )
+
+    assert result.status == "estimated"
+    expected = (
+        Decimal(272_000) * Decimal("5.00") / Decimal(1_000_000)
+        + Decimal(1000) * Decimal("30.00") / Decimal(1_000_000)
+    )
+    assert result.amount_usd == expected
+    assert not any("long-context" in note for note in result.notes)
 
 
 def test_deepseek_v4_pro_estimate_usage_cost():

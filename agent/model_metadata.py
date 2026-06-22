@@ -248,6 +248,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek-chat": 1_000_000,
     "deepseek-reasoner": 1_000_000,
     "deepseek": 128000,
+    # Sakana Fugu — official catalog lists 1M context for Fugu/Fugu Ultra.
+    # Specific entries must come before any broad fallback.
+    "fugu-ultra": 1_000_000,
+    "fugu": 1_000_000,
     # Meta
     "llama": 131072,
     # Qwen — specific model families before the catch-all.

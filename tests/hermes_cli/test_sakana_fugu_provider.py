@@ -27,6 +27,8 @@ class TestSakanaFuguProfile:
         assert profile.base_url == "https://api.sakana.ai/v1"
         assert profile.env_vars == ("SAKANA_API_KEY", "SAKANA_BASE_URL")
         assert profile.default_aux_model == "fugu"
+        assert profile.default_max_tokens == 10000
+        assert profile.default_api_max_retries == 5
         assert profile.default_stale_timeout_seconds == 7200.0
         assert profile.fallback_models == ("fugu-ultra", "fugu")
         sakana_alias = get_provider_profile("sakana")
@@ -61,6 +63,33 @@ class TestSakanaFuguProfile:
         )
 
         assert kwargs["reasoning"] == {"effort": "high"}
+
+
+    def test_responses_kwargs_use_official_max_output_default(self):
+        from agent.transports.codex import ResponsesApiTransport
+
+        profile = get_provider_profile("sakana-fugu")
+        kwargs = ResponsesApiTransport().build_kwargs(
+            model="fugu-ultra",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[],
+            max_tokens=None,
+            provider_profile=profile,
+            base_url="https://api.sakana.ai/v1",
+        )
+
+        assert kwargs["max_output_tokens"] == 10000
+
+        kwargs = ResponsesApiTransport().build_kwargs(
+            model="fugu-ultra",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[],
+            max_tokens=4096,
+            provider_profile=profile,
+            base_url="https://api.sakana.ai/v1",
+        )
+
+        assert kwargs["max_output_tokens"] == 4096
 
 
 class TestSakanaFuguRegistries:
@@ -119,11 +148,17 @@ class TestSakanaFuguRegistries:
 
 class TestSakanaFuguMetadata:
     def test_provider_prefix_and_endpoint_inference(self):
-        from agent.model_metadata import _infer_provider_from_url, _strip_provider_prefix
+        from agent.model_metadata import (
+            _infer_provider_from_url,
+            _strip_provider_prefix,
+            get_model_context_length,
+        )
 
         assert _strip_provider_prefix("sakana-fugu:fugu-ultra") == "fugu-ultra"
         assert _strip_provider_prefix("fugu:fugu-ultra") == "fugu-ultra"
         assert _infer_provider_from_url("https://api.sakana.ai/v1") == "sakana-fugu"
+        assert get_model_context_length("fugu-ultra", provider="sakana-fugu") == 1_000_000
+        assert get_model_context_length("fugu", provider="sakana-fugu") == 1_000_000
 
 
 class TestSakanaFuguEnvironmentDocs:

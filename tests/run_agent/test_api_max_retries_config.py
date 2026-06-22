@@ -9,7 +9,7 @@ from unittest.mock import patch
 from run_agent import AIAgent
 
 
-def _make_agent(api_max_retries=None):
+def _make_agent(api_max_retries=None, *, provider=None, base_url=None, model="test/model"):
     """Build an AIAgent with a mocked config.load_config that returns a
     config tree containing the given agent.api_max_retries (or default)."""
     cfg = {"agent": {}}
@@ -20,8 +20,9 @@ def _make_agent(api_max_retries=None):
          patch("hermes_cli.config.load_config", return_value=cfg):
         return AIAgent(
             api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            model="test/model",
+            base_url=base_url or "https://openrouter.ai/api/v1",
+            provider=provider or "",
+            model=model,
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -32,6 +33,37 @@ def test_default_api_max_retries_is_three():
     """No config override → legacy default of 3 retries preserved."""
     agent = _make_agent()
     assert agent._api_max_retries == 3
+
+
+def test_provider_default_api_max_retries_applies_when_config_absent():
+    """Official Sakana Fugu Codex bundle allows more stream retries than Hermes' global default."""
+    agent = _make_agent(
+        provider="sakana-fugu",
+        base_url="https://api.sakana.ai/v1",
+        model="fugu-ultra",
+    )
+
+    assert agent._api_max_retries == 5
+
+
+def test_provider_default_api_max_retries_can_be_inferred_from_base_url():
+    agent = _make_agent(
+        base_url="https://api.sakana.ai/v1",
+        model="fugu-ultra",
+    )
+
+    assert agent._api_max_retries == 5
+
+
+def test_config_api_max_retries_overrides_provider_default():
+    agent = _make_agent(
+        api_max_retries=2,
+        provider="sakana-fugu",
+        base_url="https://api.sakana.ai/v1",
+        model="fugu-ultra",
+    )
+
+    assert agent._api_max_retries == 2
 
 
 def test_api_max_retries_honors_config_override():

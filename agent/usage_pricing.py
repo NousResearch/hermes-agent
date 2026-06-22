@@ -61,6 +61,13 @@ class PricingEntry:
     cache_read_cost_per_million: Optional[Decimal] = None
     cache_write_cost_per_million: Optional[Decimal] = None
     request_cost: Optional[Decimal] = None
+    # Optional request-context tier. Some providers (Sakana Fugu Ultra) price
+    # the entire request at a higher tier once prompt context crosses a threshold.
+    context_tier_threshold_tokens: Optional[int] = None
+    context_tier_input_cost_per_million: Optional[Decimal] = None
+    context_tier_output_cost_per_million: Optional[Decimal] = None
+    context_tier_cache_read_cost_per_million: Optional[Decimal] = None
+    context_tier_cache_write_cost_per_million: Optional[Decimal] = None
     source: CostSource = "none"
     source_url: Optional[str] = None
     pricing_version: Optional[str] = None
@@ -83,6 +90,19 @@ _UTC_NOW = lambda: datetime.now(timezone.utc)
 
 # Official docs snapshot entries. Models whose published pricing and cache
 # semantics are stable enough to encode exactly.
+_SAKANA_FUGU_ULTRA_PRICING = PricingEntry(
+    input_cost_per_million=Decimal("5.00"),
+    output_cost_per_million=Decimal("30.00"),
+    cache_read_cost_per_million=Decimal("0.50"),
+    context_tier_threshold_tokens=272_000,
+    context_tier_input_cost_per_million=Decimal("10.00"),
+    context_tier_output_cost_per_million=Decimal("45.00"),
+    context_tier_cache_read_cost_per_million=Decimal("1.00"),
+    source="official_docs_snapshot",
+    source_url="https://sakana.ai/fugu/",
+    pricing_version="sakana-fugu-ultra-20260615",
+)
+
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     # ── Anthropic Claude 4.8 ─────────────────────────────────────────────
     # Same $5/$25 base pricing as 4.6/4.7.  Fast-mode variant is a separate
@@ -410,6 +430,9 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
         pricing_version="deepseek-pricing-2026-05-12",
     ),
+    # Sakana Fugu Ultra — product page pricing for fugu-ultra-20260615.
+    ("sakana-fugu", "fugu-ultra"): _SAKANA_FUGU_ULTRA_PRICING,
+    ("sakana-fugu", "fugu-ultra-20260615"): _SAKANA_FUGU_ULTRA_PRICING,
     # Google Gemini
     (
         "google",
@@ -561,6 +584,49 @@ def _to_int(value: Any) -> int:
         return 0
 
 
+def _usage_to_dict(value: Any, *, _seen: set[int] | None = None, _depth: int = 0) -> Any:
+    """Best-effort JSON-like copy of provider usage details.
+
+    Providers can add billable nested usage fields before Hermes knows how to
+    aggregate them. Preserve the raw shape so observability/cost tooling can
+    inspect those fields instead of losing them at normalization time.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Decimal):
+        return str(value)
+    if _depth > 16:
+        return "<max-depth>"
+    if _seen is None:
+        _seen = set()
+    obj_id = id(value)
+    if obj_id in _seen:
+        return "<cycle>"
+    _seen.add(obj_id)
+    if isinstance(value, dict):
+        return {
+            str(k): _usage_to_dict(v, _seen=_seen, _depth=_depth + 1)
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_usage_to_dict(v, _seen=_seen, _depth=_depth + 1) for v in value]
+    if hasattr(value, "model_dump"):
+        try:
+            return _usage_to_dict(value.model_dump(), _seen=_seen, _depth=_depth + 1)
+        except Exception:
+            pass
+    if hasattr(value, "__dict__"):
+        try:
+            return {
+                str(k): _usage_to_dict(v, _seen=_seen, _depth=_depth + 1)
+                for k, v in vars(value).items()
+                if not str(k).startswith("_")
+            }
+        except Exception:
+            pass
+    return str(value)
+
+
 def resolve_billing_route(
     model_name: str,
     provider: Optional[str] = None,
@@ -585,6 +651,8 @@ def resolve_billing_route(
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name == "openai":
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name in {"sakana-fugu", "sakana", "fugu", "sakana-ai", "sakanaai"} or base_url_host_matches(base_url or "", "api.sakana.ai"):
+        return BillingRoute(provider="sakana-fugu", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
@@ -722,6 +790,10 @@ def get_pricing_entry(
             source="none",
             pricing_version="included-route",
         )
+    if route.provider == "sakana-fugu":
+        entry = _lookup_official_docs_pricing(route)
+        if entry:
+            return entry
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
     if route.base_url:
@@ -758,6 +830,7 @@ def normalize_usage(
 
     provider_name = (provider or "").strip().lower()
     mode = (api_mode or "").strip().lower()
+    raw_usage = _usage_to_dict(response_usage)
 
     if mode == "anthropic_messages" or provider_name == "anthropic":
         input_tokens = _to_int(getattr(response_usage, "input_tokens", 0))
@@ -768,11 +841,33 @@ def normalize_usage(
         input_total = _to_int(getattr(response_usage, "input_tokens", 0))
         output_tokens = _to_int(getattr(response_usage, "output_tokens", 0))
         details = getattr(response_usage, "input_tokens_details", None)
-        cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
+        base_cache_read_tokens = _to_int(
+            getattr(details, "cached_tokens", 0) if details else 0
+        )
+        # Sakana Fugu Ultra reports orchestration usage in separate nested
+        # fields (Vercel AI SDK integration notes these are billable in
+        # addition to top-level input/output tokens). Treat those fields as
+        # additive for Sakana only; raw usage remains preserved for any provider
+        # so future route-specific accounting can opt in deliberately.
+        is_sakana_fugu_usage = provider_name in {
+            "sakana-fugu", "sakana", "fugu", "sakana-ai", "sakanaai"
+        }
+        orchestration_input_tokens = _to_int(
+            getattr(details, "orchestration_input_tokens", 0)
+            if details and is_sakana_fugu_usage
+            else 0
+        )
+        orchestration_cache_read_tokens = _to_int(
+            getattr(details, "orchestration_input_cached_tokens", 0)
+            if details and is_sakana_fugu_usage
+            else 0
+        )
+        cache_read_tokens = base_cache_read_tokens + orchestration_cache_read_tokens
         cache_write_tokens = _to_int(
             getattr(details, "cache_creation_tokens", 0) if details else 0
         )
-        input_tokens = max(0, input_total - cache_read_tokens - cache_write_tokens)
+        input_tokens = max(0, input_total - base_cache_read_tokens - cache_write_tokens)
+        input_tokens += orchestration_input_tokens
     else:
         prompt_total = _to_int(getattr(response_usage, "prompt_tokens", 0))
         output_tokens = _to_int(getattr(response_usage, "completion_tokens", 0))
@@ -799,6 +894,10 @@ def normalize_usage(
     output_details = getattr(response_usage, "output_tokens_details", None)
     if output_details:
         reasoning_tokens = _to_int(getattr(output_details, "reasoning_tokens", 0))
+        if provider_name in {"sakana-fugu", "sakana", "fugu", "sakana-ai", "sakanaai"}:
+            output_tokens += _to_int(
+                getattr(output_details, "orchestration_output_tokens", 0)
+            )
 
     return CanonicalUsage(
         input_tokens=input_tokens,
@@ -806,6 +905,7 @@ def normalize_usage(
         cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens,
         reasoning_tokens=reasoning_tokens,
+        raw_usage=raw_usage if isinstance(raw_usage, dict) else None,
     )
 
 
@@ -834,12 +934,44 @@ def estimate_usage_cost(
     notes: list[str] = []
     amount = _ZERO
 
-    if usage.input_tokens and entry.input_cost_per_million is None:
+    input_rate = entry.input_cost_per_million
+    output_rate = entry.output_cost_per_million
+    cache_read_rate = entry.cache_read_cost_per_million
+    cache_write_rate = entry.cache_write_cost_per_million
+    if (
+        entry.context_tier_threshold_tokens is not None
+        and usage.prompt_tokens > entry.context_tier_threshold_tokens
+    ):
+        input_rate = (
+            entry.context_tier_input_cost_per_million
+            if entry.context_tier_input_cost_per_million is not None
+            else input_rate
+        )
+        output_rate = (
+            entry.context_tier_output_cost_per_million
+            if entry.context_tier_output_cost_per_million is not None
+            else output_rate
+        )
+        cache_read_rate = (
+            entry.context_tier_cache_read_cost_per_million
+            if entry.context_tier_cache_read_cost_per_million is not None
+            else cache_read_rate
+        )
+        cache_write_rate = (
+            entry.context_tier_cache_write_cost_per_million
+            if entry.context_tier_cache_write_cost_per_million is not None
+            else cache_write_rate
+        )
+        notes.append(
+            f"long-context pricing tier applies above {entry.context_tier_threshold_tokens:,} prompt tokens"
+        )
+
+    if usage.input_tokens and input_rate is None:
         return CostResult(amount_usd=None, status="unknown", source=entry.source, label="n/a")
-    if usage.output_tokens and entry.output_cost_per_million is None:
+    if usage.output_tokens and output_rate is None:
         return CostResult(amount_usd=None, status="unknown", source=entry.source, label="n/a")
     if usage.cache_read_tokens:
-        if entry.cache_read_cost_per_million is None:
+        if cache_read_rate is None:
             return CostResult(
                 amount_usd=None,
                 status="unknown",
@@ -848,7 +980,7 @@ def estimate_usage_cost(
                 notes=("cache-read pricing unavailable for route",),
             )
     if usage.cache_write_tokens:
-        if entry.cache_write_cost_per_million is None:
+        if cache_write_rate is None:
             return CostResult(
                 amount_usd=None,
                 status="unknown",
@@ -857,14 +989,14 @@ def estimate_usage_cost(
                 notes=("cache-write pricing unavailable for route",),
             )
 
-    if entry.input_cost_per_million is not None:
-        amount += Decimal(usage.input_tokens) * entry.input_cost_per_million / _ONE_MILLION
-    if entry.output_cost_per_million is not None:
-        amount += Decimal(usage.output_tokens) * entry.output_cost_per_million / _ONE_MILLION
-    if entry.cache_read_cost_per_million is not None:
-        amount += Decimal(usage.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_MILLION
-    if entry.cache_write_cost_per_million is not None:
-        amount += Decimal(usage.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_MILLION
+    if input_rate is not None:
+        amount += Decimal(usage.input_tokens) * input_rate / _ONE_MILLION
+    if output_rate is not None:
+        amount += Decimal(usage.output_tokens) * output_rate / _ONE_MILLION
+    if cache_read_rate is not None:
+        amount += Decimal(usage.cache_read_tokens) * cache_read_rate / _ONE_MILLION
+    if cache_write_rate is not None:
+        amount += Decimal(usage.cache_write_tokens) * cache_write_rate / _ONE_MILLION
     if entry.request_cost is not None and usage.request_count:
         amount += Decimal(usage.request_count) * entry.request_cost
 

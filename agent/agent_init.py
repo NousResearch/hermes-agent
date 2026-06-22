@@ -1282,9 +1282,35 @@ def init_agent(
     agent._platform_hint_overrides = _platform_hints_cfg
 
     # App-level API retry count (wraps each model API call).  Default 3,
-    # overridable via agent.api_max_retries in config.yaml.  See #11616.
+    # overridable via agent.api_max_retries in config.yaml.  Provider profiles
+    # may raise the default for slow/deep orchestration backends (for example
+    # Sakana's official Codex bundle uses 5 stream retries); explicit user
+    # config still wins.  See #11616.
+    _profile_api_retry_default = 3
+    if "api_max_retries" not in _agent_section:
+        try:
+            from providers import get_provider_profile
+            _profile_provider_name = (getattr(agent, "provider", "") or "").strip()
+            if not _profile_provider_name and base_url_host_matches(
+                getattr(agent, "base_url", "") or "", "api.sakana.ai"
+            ):
+                _profile_provider_name = "sakana-fugu"
+            _provider_profile = get_provider_profile(_profile_provider_name)
+            _profile_default = getattr(_provider_profile, "default_api_max_retries", None)
+            if _profile_default is not None:
+                _profile_api_retry_default = int(_profile_default)
+        except Exception as _exc:
+            logger.debug(
+                "Failed to resolve provider default api_max_retries for %s: %s",
+                getattr(agent, "provider", ""),
+                _exc,
+            )
+            _profile_api_retry_default = 3
     try:
-        _raw_api_retries = _agent_section.get("api_max_retries", 3)
+        if "api_max_retries" in _agent_section:
+            _raw_api_retries = _agent_section.get("api_max_retries", 3)
+        else:
+            _raw_api_retries = _profile_api_retry_default
         _api_retries = int(_raw_api_retries)
         _api_retries = max(_api_retries, 1)  # 1 = no retry (single attempt)
     except (TypeError, ValueError):

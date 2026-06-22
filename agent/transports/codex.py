@@ -331,6 +331,11 @@ class ResponsesApiTransport(ProviderTransport):
                 kwargs["extra_headers"] = merged_extra_headers
 
         max_tokens = params.get("max_tokens")
+        if max_tokens is None and profile is not None:
+            try:
+                max_tokens = profile.get_max_tokens(model)
+            except Exception:
+                max_tokens = None
         if max_tokens is not None and not is_codex_backend:
             kwargs["max_output_tokens"] = max_tokens
 

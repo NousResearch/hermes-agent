@@ -44,6 +44,8 @@ sakana_fugu = SakanaFuguProfile(
     auth_type="api_key",
     supports_vision=True,
     default_aux_model="fugu",
+    default_max_tokens=10_000,
+    default_api_max_retries=5,
     fallback_models=("fugu-ultra", "fugu"),
     default_stale_timeout_seconds=7200.0,
 )

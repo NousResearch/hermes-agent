@@ -225,6 +225,7 @@ def computer_use_capability_status(
         },
         "browser": browser.to_dict(),
         "input_proposals": _input_proposal_capability_status(),
+        "browser_input_execution": _browser_input_execution_capability_status(),
         "windows_uia_readonly": _windows_uia_readonly_capability_status(platform_id),
         "routes": [asdict(route) for route in routes],
         "risk_policy": {
@@ -435,6 +436,20 @@ def _input_proposal_capability_status() -> dict[str, Any]:
             "will_execute": False,
             "schemas": [],
             "reason": f"Input proposal capability module unavailable: {exc}",
+        }
+
+
+def _browser_input_execution_capability_status() -> dict[str, Any]:
+    try:
+        from .browser_input import browser_input_execution_capability_status
+
+        return browser_input_execution_capability_status()
+    except Exception as exc:
+        return {
+            "available": False,
+            "requires_injected_backend": True,
+            "native_gui_mutation_allowed": False,
+            "reason": f"Browser input execution capability module unavailable: {exc}",
         }
 
 

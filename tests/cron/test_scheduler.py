@@ -3710,3 +3710,44 @@ class TestCronDeliveryMirror:
         # Exactly one mirror, and it is the origin chat (123) — not 999.
         mirror_mock.assert_called_once()
         assert mirror_mock.call_args[0][1] == "123"
+
+    # --- multi-participant parity with send_message (user_id passthrough) ---
+
+    def test_mirror_passes_user_id_through(self):
+        """The helper forwards user_id to mirror_to_session so a per-user-
+        isolated group resolves to the exact member who scheduled the job —
+        parity with interactive send_message."""
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery(
+                {"id": "j1"}, "telegram", "123", "brief",
+                thread_id=None, user_id="U999", enabled=True,
+            )
+        m.assert_called_once()
+        assert m.call_args.kwargs.get("user_id") == "U999"
+
+    def test_delivery_forwards_origin_user_id(self):
+        """End-to-end: a job whose origin carries user_id mirrors with that
+        user_id, so multi-participant resolution matches send_message."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123", "user_id": "U42"},
+                "attach_to_session": True,
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("user_id") == "U42"

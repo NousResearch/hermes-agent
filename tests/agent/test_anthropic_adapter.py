@@ -106,11 +106,13 @@ class TestBuildAnthropicClient:
 
     def test_custom_base_url(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
+            build_anthropic_client("***", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
+            # Updated 2026-06-04: _COMMON_BETAS now includes the two betas the
+            # official Copilot Chat extension sends — see Worker-A wave1 RE.
             assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,advanced-tool-use-2025-11-20,context-management-2025-06-27"
             }
 
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
@@ -1065,6 +1067,72 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["model"] == "claude-sonnet-4-20250514"
 
+    def test_copilot_vision_header_added_for_image_request(self):
+        """Image-bearing requests to Copilot get Copilot-Vision-Request: true.
+
+        Without it, Copilot's /v1/messages proxy returns an empty content block
+        (HTTP 200) and the loop fails the turn as an invalid response.
+        """
+        _png = (
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1"
+            "HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": _png}},
+                ],
+            }
+        ]
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4.8",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            base_url="https://api.githubcopilot.com",
+        )
+        assert kwargs.get("extra_headers", {}).get("Copilot-Vision-Request") == "true"
+
+    def test_copilot_no_vision_header_without_image(self):
+        """Text-only Copilot requests must NOT carry the vision header."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4.8",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            base_url="https://api.githubcopilot.com",
+        )
+        assert "Copilot-Vision-Request" not in kwargs.get("extra_headers", {})
+
+    def test_direct_anthropic_image_request_has_no_copilot_header(self):
+        """The Copilot-only header must never leak to api.anthropic.com."""
+        _png = (
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1"
+            "HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": _png}},
+                ],
+            }
+        ]
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4.8",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            base_url="https://api.anthropic.com",
+        )
+        assert "Copilot-Vision-Request" not in kwargs.get("extra_headers", {})
+
     def test_fast_mode_oauth_default_omits_context_1m_beta(self):
         """Default OAuth fast-mode avoids context-1m for subscriptions without it."""
         kwargs = build_anthropic_kwargs(
@@ -1172,6 +1240,78 @@ class TestBuildAnthropicKwargs:
         assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert kwargs["output_config"] == {"effort": "max"}
 
+    def test_copilot_clamps_xhigh_to_medium_for_opus_4_8(self):
+        # GitHub Copilot deploys opus-4.7/4.8 with a more restrictive effort
+        # allow-list than vendor-direct Anthropic: only ``medium``. Forwarding
+        # xhigh returns HTTP 400 invalid_reasoning_effort and crash-loops the
+        # conversation. With the Copilot base_url, clamp to the catalog allow-
+        # list. Catalog mocked so the test is deterministic offline.
+        from unittest.mock import patch as _patch
+
+        with _patch(
+            "hermes_cli.models.github_model_reasoning_efforts",
+            return_value=["medium"],
+        ):
+            kwargs = build_anthropic_kwargs(
+                model="claude-opus-4-8",
+                messages=[{"role": "user", "content": "think harder"}],
+                tools=None,
+                max_tokens=4096,
+                reasoning_config={"enabled": True, "effort": "xhigh"},
+                base_url="https://api.githubcopilot.com",
+            )
+        assert kwargs["output_config"] == {"effort": "medium"}
+
+    def test_vendor_direct_keeps_xhigh_for_opus_4_8(self):
+        # The Copilot clamp must NOT affect vendor-direct Anthropic, which DOES
+        # support xhigh on 4.7/4.8. No base_url / anthropic.com base_url → xhigh
+        # is preserved.
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-8",
+            messages=[{"role": "user", "content": "think harder"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            base_url="https://api.anthropic.com",
+        )
+        assert kwargs["output_config"] == {"effort": "xhigh"}
+
+    def test_copilot_effort_clamp_uses_offline_fallback_when_catalog_empty(self):
+        # When the live catalog can't be fetched (returns []), the offline
+        # Copilot allow-list is consulted. It must clamp a level the model
+        # genuinely lacks (opus-4.6 has no 'xhigh' → high) while honoring one
+        # the model DOES support (opus-4.8 lists 'xhigh'/'max'). It must not
+        # blanket-clamp everything to medium (the previous, since-disproven
+        # snapshot) nor mistake "couldn't fetch" for "accepts everything".
+        from unittest.mock import patch as _patch
+
+        with _patch(
+            "hermes_cli.models.github_model_reasoning_efforts",
+            return_value=[],
+        ):
+            clamped = build_anthropic_kwargs(
+                model="claude-opus-4-6",
+                messages=[{"role": "user", "content": "think harder"}],
+                tools=None,
+                max_tokens=4096,
+                reasoning_config={"enabled": True, "effort": "xhigh"},
+                base_url="https://api.githubcopilot.com",
+            )
+            honored = build_anthropic_kwargs(
+                model="claude-opus-4-8",
+                messages=[{"role": "user", "content": "think harder"}],
+                tools=None,
+                max_tokens=4096,
+                reasoning_config={"enabled": True, "effort": "xhigh"},
+                base_url="https://api.githubcopilot.com",
+            )
+        # opus-4.6 lacks xhigh but supports max → rounds to the nearest
+        # supported level (max), proving the offline fallback is consulted and
+        # adjusts the value (not "accept everything").
+        assert clamped["output_config"] == {"effort": "max"}
+        # opus-4.8 supports xhigh → honored, not clamped to medium.
+        assert honored["output_config"] == {"effort": "xhigh"}
+
     def test_opus_4_7_strips_sampling_params(self):
         # Opus 4.7 returns 400 on non-default temperature/top_p/top_k.
         # build_anthropic_kwargs must strip them as a safety net even if an
@@ -1271,6 +1411,7 @@ class TestBuildAnthropicKwargs:
             max_tokens=None,
             reasoning_config=None,
         )
+        # Plan §1b kickoff override: opus-4.6 = 128K (matches opus-4.7/4.8)
         assert kwargs["max_tokens"] == 128_000
 
     def test_default_max_tokens_sonnet_4_6(self):
@@ -1305,7 +1446,7 @@ class TestBuildAnthropicKwargs:
         assert kwargs["max_tokens"] == 8_192
 
     def test_default_max_tokens_unknown_model_uses_highest(self):
-        """Unknown future models should get the highest known limit."""
+        """Unknown future models get the vendor-fallback default (32K per plan §1b)."""
         kwargs = build_anthropic_kwargs(
             model="claude-ultra-5-20260101",
             messages=[{"role": "user", "content": "Hi"}],
@@ -1313,7 +1454,7 @@ class TestBuildAnthropicKwargs:
             max_tokens=None,
             reasoning_config=None,
         )
-        assert kwargs["max_tokens"] == 128_000
+        assert kwargs["max_tokens"] == 32_000
 
     def test_explicit_max_tokens_overrides_default(self):
         """User-specified max_tokens should be respected."""
@@ -1359,15 +1500,57 @@ class TestBuildAnthropicKwargs:
 class TestGetAnthropicMaxOutput:
     def test_opus_4_6(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
+        # Kickoff override: opus-4.6 = 128K (matches opus-4.7/4.8)
         assert _get_anthropic_max_output("claude-opus-4-6") == 128_000
 
     def test_opus_4_6_variant(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-opus-4-6:1m:fast") == 128_000
 
+    def test_opus_4_7(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        # Plan §1b: Armin override → opus-4.7 = 128K (matches opus-4.8 surface)
+        assert _get_anthropic_max_output("claude-opus-4-7") == 128_000
+
+    def test_opus_4_8(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        # Plan §1b: opus-4.8 vendor-confirmed = 128K
+        assert _get_anthropic_max_output("claude-opus-4-8") == 128_000
+
     def test_sonnet_4_6(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-sonnet-4-6") == 64_000
+
+    def test_sonnet_4_7(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        # Plan §1b: all sonnet-* → 64K
+        assert _get_anthropic_max_output("claude-sonnet-4-7") == 64_000
+
+    def test_sonnet_4_8(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-sonnet-4-8") == 64_000
+
+    def test_haiku_4_5(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        # Plan §1b: Armin override → haiku-4.5 = 64K
+        assert _get_anthropic_max_output("claude-haiku-4-5") == 64_000
+
+    def test_mythos_substring_match_base(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        # Plan §1b: all claude-mythos* variants alias to opus-4.8 (128K)
+        assert _get_anthropic_max_output("claude-mythos") == 128_000
+
+    def test_mythos_variant_1_preview(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-mythos-1-preview") == 128_000
+
+    def test_mythos_variant_adaptive(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-mythos-1-adaptive") == 128_000
+
+    def test_mythos_variant_extended(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-mythos-extended") == 128_000
 
     def test_sonnet_4_date_stamped(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
@@ -1383,13 +1566,29 @@ class TestGetAnthropicMaxOutput:
 
     def test_unknown_future_model(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
-        assert _get_anthropic_max_output("claude-ultra-5-20260101") == 128_000
+        # Plan §1b: vendor-fallback default lowered to 32_000 to avoid
+        # over-advertising output budget for truly unknown families.
+        assert _get_anthropic_max_output("claude-ultra-5-20260101") == 32_000
 
     def test_longest_prefix_wins(self):
         """'claude-3-5-sonnet' should match before 'claude-3-5'."""
         from agent.anthropic_adapter import _get_anthropic_max_output
         # claude-3-5-sonnet (8192) should win over a hypothetical shorter match
         assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
+
+    def test_copilot_base_url_uses_copilot_table(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        # Copilot table also has opus-4.8 = 128K
+        assert _get_anthropic_max_output(
+            "claude-opus-4-8", "https://api.githubcopilot.com"
+        ) == 128_000
+
+    def test_anthropic_direct_base_url_uses_vendor_table(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        # No live key in test env → falls back to vendor table
+        assert _get_anthropic_max_output(
+            "claude-opus-4-7", "https://api.anthropic.com"
+        ) == 128_000
 
 
 # ---------------------------------------------------------------------------

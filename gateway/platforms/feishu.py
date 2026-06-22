@@ -1420,7 +1420,6 @@ class LiveCardState(_enum.Enum):
     IDLE = "idle"
     ACK_SENT = "ack_sent"
     LIVE = "live"
-    FINALIZING = "finalizing"
 
 
 MIN_PATCH_INTERVAL = 1.5
@@ -1433,7 +1432,7 @@ class LiveCardManager:
     __slots__ = (
         "state", "card_message_id", "accumulated_text", "tool_lines",
         "started_at", "last_tool", "last_patch_ts", "heartbeat_task",
-        "degraded", "_deferred_handle",
+        "degraded",
     )
 
     def __init__(self) -> None:
@@ -1446,7 +1445,6 @@ class LiveCardManager:
         self.last_patch_ts: float = 0.0
         self.heartbeat_task: Optional[asyncio.Task] = None
         self.degraded: bool = False
-        self._deferred_handle: Optional[asyncio.TimerHandle] = None
 
     def start(self, card_message_id: str, *, started_at: float) -> None:
         self.state = LiveCardState.ACK_SENT
@@ -1486,9 +1484,9 @@ class LiveCardManager:
         self.last_tool = None
         self.last_patch_ts = 0.0
         self.degraded = False
-        if self._deferred_handle is not None:
-            self._deferred_handle.cancel()
-            self._deferred_handle = None
+        if self.heartbeat_task is not None:
+            self.heartbeat_task.cancel()
+            self.heartbeat_task = None
 
     def mark_degraded(self) -> None:
         self.degraded = True
@@ -2017,6 +2015,11 @@ class FeishuAdapter(BasePlatformAdapter):
                     target_id = ack_msg_id or live.card_message_id
                     if live.heartbeat_task is not None:
                         live.heartbeat_task.cancel()
+                        try:
+                            await live.heartbeat_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                        live.heartbeat_task = None
                     result = await self._patch_card(
                         message_id=target_id, card=card,
                     )
@@ -3467,8 +3470,6 @@ class FeishuAdapter(BasePlatformAdapter):
         if chat_id:
             live = self._live_cards.pop(chat_id, None)
             if live:
-                if live.heartbeat_task is not None:
-                    live.heartbeat_task.cancel()
                 live.reset()
                 logger.debug("[Feishu] LiveCard cleanup: %s", chat_id)
 

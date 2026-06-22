@@ -178,6 +178,17 @@ class TestLiveCardManager:
         assert mgr.tool_lines == []
         assert mgr.card_message_id is None
 
+    def test_reset_cancels_heartbeat(self):
+        from gateway.platforms.feishu import LiveCardManager
+        mgr = LiveCardManager()
+        mgr.start("msg_001", started_at=100.0)
+        mock_task = Mock()
+        mock_task.cancel = Mock()
+        mgr.heartbeat_task = mock_task
+        mgr.reset()
+        mock_task.cancel.assert_called_once()
+        assert mgr.heartbeat_task is None
+
     def test_build_card_ack_state(self):
         from gateway.platforms.feishu import LiveCardManager
         mgr = LiveCardManager()

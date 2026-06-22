@@ -687,7 +687,24 @@ def get_pricing_entry(
             pricing_version="included-route",
         )
     if route.provider == "openrouter":
-        return _openrouter_pricing_entry(route)
+        entry = _openrouter_pricing_entry(route)
+        if entry is not None:
+            return entry
+        # Fallback: OpenRouter model IDs are "provider/model" (e.g.
+        # "anthropic/claude-sonnet-4-6").  When the models API is unavailable
+        # (disk cache missing + network failure), try the official docs
+        # snapshot for the underlying provider/model rather than returning
+        # None and showing $0.00.
+        if "/" in route.model:
+            sub_provider, sub_model = route.model.split("/", 1)
+            fallback_route = BillingRoute(
+                provider=sub_provider.lower(),
+                model=sub_model,
+                base_url=route.base_url,
+                billing_mode="official_docs_snapshot",
+            )
+            return _lookup_official_docs_pricing(fallback_route)
+        return None
     if route.base_url:
         entry = _pricing_entry_from_metadata(
             fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),

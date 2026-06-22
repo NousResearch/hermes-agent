@@ -41,7 +41,7 @@ Withdrawn after **maintainer feedback** (not my call alone):
 | 1 | #50064 stale-test drop on v0.17.0 (canonical tree itself dropped it) | **ACCEPT the drop** |
 | 2 | 40→now 39-PR grouping (one-PR-per-logical-change) | **ACCEPT as-is** |
 | 3 | Delivery: per-PR branches + #50111 patch manifest (vs one integration branch) | **ACCEPT per-PR + manifest** |
-| 4 | #50626: its `subdirectory_hints.py` half duplicates maintainer-preferred #29433 | **Keep only the xAI-label half** (defer subdir-guard to #29433) |
+| 4 | #50626: ~~its `subdirectory_hints.py` half duplicates maintainer-preferred #29433~~ **DONE** — #50626 trimmed to its unique xAI-label half (1 line); subdir-hint dup deferred to upstream #29433 | **EXECUTED** (mechanical hygiene; no decision needed) |
 | 5 | 8 ready-for-review, 31 draft — flip draft→ready? | **Keep current split** (you flip when ready) |
 
 **▶ Recommended default: CONFIRM all 5.**
@@ -51,9 +51,9 @@ Withdrawn after **maintainer feedback** (not my call alone):
 
 ## What happens on each reply
 
-- **"accept defaults"** → I record A=accept, B=accept, C=confirm-all in `PROCEDURE.md`, apply the
-  single follow-on (decision C4: trim #50626 to its xAI-label half), re-run
-  `verification/reproduce-coverage.sh` as the closing artifact, and the run is **done**.
+- **"accept defaults"** → I record A=accept, B=accept, C=confirm-all in `PROCEDURE.md` (C4 is
+  already executed — #50626 trimmed), re-run `verification/reproduce-coverage.sh` as the closing
+  artifact, and the run is **done**. No mechanical follow-on remains.
 - **Any override** → I record it, make the implied change (e.g. if you reject a WITHDRAWN file, I
   build a PR for it; if you keep #50626 whole, no trim), then re-run the coverage script to confirm
   `165 = covered + discard + withdrawn + 0 orphans` still balances.
@@ -61,7 +61,7 @@ Withdrawn after **maintainer feedback** (not my call alone):
 ## Current verified state (unchanged by your decision)
 
 - **39/39 open code PRs stack CLEAN on v0.17.0** (set-level, `stack-apply-v017.sh`); 135 .py compile, 0 fail.
-- Coverage: **165 = 131 in PRs + 25 DISCARD + 9 WITHDRAWN + 0 orphans** (`reproduce-coverage.sh`).
+- Coverage: **165 = 129 in PRs + 25 DISCARD + 9 WITHDRAWN + 2 SUPERSEDED(#29433) + 0 orphans** (`reproduce-coverage.sh`).
 - 6 forward-port patches verified apply-clean + tests pass, linked from each PR.
 - Latest stable target = **v0.17.0 (`v2026.6.19` / `2bd1977d8`)**, confirmed `isLatest`.
 - Canonical `./src` untouched; nothing merged.

@@ -2148,6 +2148,35 @@ def _load_gateway_config() -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _resolve_hygiene_threshold_pct(
+    compression_config: dict | None,
+    *,
+    default: float = 0.85,
+    minimum: float = 0.05,
+    maximum: float = 0.95,
+) -> float:
+    """Resolve the gateway pre-agent hygiene compression threshold.
+
+    ``compression.hygiene_threshold`` is intentionally separate from
+    ``compression.threshold``: the latter controls the in-agent compressor loop,
+    while this value is a higher pre-agent safety guard for long-lived gateway
+    sessions that may otherwise rehydrate an over-budget transcript before the
+    agent can start. Invalid/out-of-range values fail open to the default.
+    """
+    if not isinstance(compression_config, dict):
+        return default
+    raw = compression_config.get("hygiene_threshold")
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if minimum <= value <= maximum:
+        return value
+    return default
+
+
 def _load_gateway_runtime_config() -> dict:
     """Load gateway config for runtime reads, expanding supported ``${VAR}`` refs.
 
@@ -9105,14 +9134,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _hyg_provider = _model_cfg.get("provider") or None
                         _hyg_base_url = _model_cfg.get("base_url") or None
 
-                    # Read compression settings — only use enabled flag.
-                    # The threshold is intentionally separate from the agent's
-                    # compression.threshold (hygiene runs higher).
+                    # Read compression settings. ``compression.threshold`` is
+                    # intentionally NOT reused here: it controls the agent's
+                    # in-loop compressor (default 0.50), while gateway hygiene
+                    # is a pre-agent safety guard that should normally fire much
+                    # later (default 0.85) to prevent over-budget rehydration.
                     _comp_cfg = _hyg_data.get("compression", {})
                     if isinstance(_comp_cfg, dict):
                         _hyg_compression_enabled = str(
                             _comp_cfg.get("enabled", True)
                         ).lower() in {"true", "1", "yes"}
+                        _hyg_threshold_pct = _resolve_hygiene_threshold_pct(_comp_cfg)
                         _raw_hard_limit = _comp_cfg.get("hygiene_hard_message_limit")
                         if _raw_hard_limit is not None:
                             try:

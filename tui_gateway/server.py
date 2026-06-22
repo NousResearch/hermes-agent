@@ -7439,6 +7439,36 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"cols": session["cols"]})
 
 
+# ── Methods: delegations ─────────────────────────────────────────────
+
+
+@method("delegations.list")
+def _(rid, params: dict) -> dict:
+    """Return recent async delegation records for the requesting session.
+
+    Allows the WebUI to recover missed background subagent results. Returns
+    both running and completed (consumed + unconsumed) delegations so the
+    caller can show progress and surface stale results.
+    """
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    session_key = str(session.get("session_key") or "")
+    if not session_key:
+        return _ok(rid, {"delegations": []})
+    try:
+        from tools.async_delegation import list_async_delegations
+        all_delegs = list_async_delegations()
+        # Filter to this session's delegations
+        matching = [
+            d for d in all_delegs
+            if d.get("session_key", "") == session_key
+        ]
+        return _ok(rid, {"delegations": matching})
+    except Exception as exc:
+        return _err(rid, 5000, f"delegations.list failed: {exc}")
+
+
 # ── Methods: prompt ──────────────────────────────────────────────────
 
 
@@ -7595,6 +7625,49 @@ def _notification_poller_loop(
     from tools.process_registry import process_registry, format_process_notification
 
     _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
+
+    # --- Recovery sweep: pick up completions that arrived while no poller ---
+    # was running (tab closed, session reconnect, etc.). These sit in the
+    # in-memory async_delegation records with consumed=False.
+    _session_key = str(session.get("session_key") or "")
+    if _session_key:
+        try:
+            from tools.async_delegation import (
+                list_async_completions,
+                mark_async_delegation_consumed,
+            )
+            for rec in list_async_completions(_session_key):
+                text = format_process_notification(rec)
+                if not text:
+                    # Can't format — mark consumed so we don't spin forever
+                    mark_async_delegation_consumed(rec.get("delegation_id", ""))
+                    continue
+                _dedup_key = _notification_event_dedup_key(rec)
+                if _dedup_key not in _emitted:
+                    _emit("status.update", sid, {"kind": "process", "text": text})
+                    _emitted.add(_dedup_key)
+                # Try to inject as a turn if session is idle
+                with session["history_lock"]:
+                    if session.get("running"):
+                        # Session busy — leave unconsumed so next reconnect retries
+                        continue
+                    session["running"] = True
+                    rid = f"__recover__{int(time.time() * 1000)}"
+                    try:
+                        _emit("message.start", sid)
+                        _run_prompt_submit(rid, sid, session, text)
+                        # Only mark consumed after successful injection
+                        mark_async_delegation_consumed(rec.get("delegation_id", ""))
+                    except Exception:
+                        with session["history_lock"]:
+                            session["running"] = False
+        except Exception as exc:
+            print(
+                f"[tui_gateway] async delegation recovery sweep failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+
     while not stop_event.is_set() and not session.get("_finalized"):
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
@@ -7638,6 +7711,13 @@ def _notification_poller_loop(
         try:
             _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text)
+            # Mark async delegation as consumed so recovery sweep won't re-inject
+            if evt.get("type") == "async_delegation":
+                try:
+                    from tools.async_delegation import mark_async_delegation_consumed
+                    mark_async_delegation_consumed(evt.get("delegation_id", ""))
+                except Exception:
+                    pass
         except Exception as exc:
             print(
                 f"[tui_gateway] notification poller dispatch failed: "

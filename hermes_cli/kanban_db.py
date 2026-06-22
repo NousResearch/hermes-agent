@@ -8035,6 +8035,8 @@ def run_daemon(
     interval: float = 60.0,
     max_spawn: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
+    stranded_timeout_seconds: int = DEFAULT_STRANDED_TIMEOUT_SECONDS,
+    stranded_action: str = DEFAULT_STRANDED_ACTION,
     stop_event=None,
     on_tick=None,
 ) -> None:
@@ -8044,6 +8046,16 @@ def run_daemon(
     on SIGINT / SIGTERM so ``hermes kanban daemon`` is systemd-friendly.
     ``stop_event`` (a :class:`threading.Event`) and ``on_tick`` (a
     callable receiving the :class:`DispatchResult`) are test hooks.
+
+    ``stranded_timeout_seconds`` and ``stranded_action`` mirror the
+    matching config keys (``kanban.stranded_timeout_seconds`` and
+    ``kanban.stranded_action``) and are passed through to every
+    :func:`dispatch_once` call so the legacy standalone ``hermes kanban
+    daemon --force`` path honours the same operator tuning the gateway
+    does. Set ``stranded_timeout_seconds`` to 0 or a negative value to
+    disable the reaper entirely; pass an ``action`` outside
+    :data:`VALID_STRANDED_ACTIONS` and ``dispatch_once`` will fall back
+    to :data:`DEFAULT_STRANDED_ACTION` so a typo can't crash the loop.
     """
     import signal
     import threading
@@ -8072,6 +8084,8 @@ def run_daemon(
                     conn,
                     max_spawn=max_spawn,
                     failure_limit=failure_limit,
+                    stranded_timeout_seconds=stranded_timeout_seconds,
+                    stranded_action=stranded_action,
                 )
             if on_tick is not None:
                 try:

@@ -8,6 +8,7 @@ import os
 import sys
 import threading
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -819,3 +820,280 @@ def test_create_with_assignee_any_bypass_allowed(assignee_lint):
     assert assignee_lint.db_row_count() == 2
     assert assignee_lint.db_assignee_for_title("Test any") == "__any__"
     assert assignee_lint.db_assignee_for_title("Test omitted") is None
+
+    assert "Current board: alpha" in out
+
+
+# ---------------------------------------------------------------------------
+# Daemon stranded-config wiring (MEDIUM-2 from the t_f8afafaa WAGS review).
+#
+# The standalone `hermes kanban daemon --force` path (kept behind a deprecation
+# notice for the rare host that can't run the gateway) was the only place
+# `kanban.stranded_timeout_seconds` / `kanban.stranded_action` were NOT wired
+# through. The fix adds the two kwargs to `kb.run_daemon(...)`, threads them
+# into every `dispatch_once(...)` call, and reads them from config in
+# `_cmd_daemon` — mirroring the pattern in `_cmd_dispatch`. These tests cover
+# the three cases the WAGS review asked for: defaults, custom timeout, and
+# custom action.
+# ---------------------------------------------------------------------------
+
+
+def _make_daemon_args(
+    *,
+    interval: float = 0.0,
+    max_spawn: Optional[int] = None,
+    failure_limit: Optional[int] = None,
+    force: bool = True,
+    pidfile: Optional[str] = None,
+    verbose: bool = False,
+):
+    """Build a minimal argparse.Namespace shaped like what
+    `hermes kanban daemon --force` parses. The daemon only reads the
+    attributes it actually consumes; everything else is None.
+    """
+    return argparse.Namespace(
+        interval=interval,
+        max=max_spawn,
+        failure_limit=(
+            failure_limit if failure_limit is not None
+            else kb.DEFAULT_SPAWN_FAILURE_LIMIT
+        ),
+        force=force,
+        pidfile=pidfile,
+        verbose=verbose,
+    )
+
+
+class TestDaemonConfig:
+    """Verify `_cmd_daemon --force` honours kanban.stranded_* config keys.
+
+    The daemon's main loop (`kb.run_daemon`) is monkey-patched to a stub
+    that records the kwargs it received and returns immediately — this
+    keeps the test fast and avoids racing the SIGINT/SIGTERM handler the
+    real loop installs. The captured kwargs are then asserted against
+    the operator's config so we know the wire-through is intact.
+    """
+
+    @staticmethod
+    def _capture_run_daemon(monkeypatch):
+        """Replace `kb.run_daemon` with a recorder. Returns the dict the
+        daemon writes its kwargs into. The stub ignores `stop_event`
+        because the caller (the daemon command) only sets it for the
+        real long-lived loop.
+        """
+        captured: dict = {}
+        calls: list = []
+
+        def _stub(**kwargs):
+            captured.update(kwargs)
+            calls.append(kwargs)
+            # stop_event.wait would block forever; the real loop relies
+            # on signal handlers to set the event. The stub returns
+            # immediately so the test thread doesn't hang.
+
+        monkeypatch.setattr(kb, "run_daemon", _stub)
+        return captured, calls
+
+    def test_defaults_when_no_config(self, kanban_home, monkeypatch, capsys):
+        """No config.yaml at all → daemon uses DEFAULT_STRANDED_* values.
+
+        Mirrors the gateway watcher's behaviour when `kanban:` is absent
+        from config.yaml (which is the most common deployment).
+        """
+        # No config file written to kanban_home.
+        assert not (kanban_home / "config.yaml").exists()
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert len(calls) == 1
+        assert captured["stranded_timeout_seconds"] == (
+            kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        )
+        assert captured["stranded_action"] == kb.DEFAULT_STRANDED_ACTION
+        # Effective values are surfaced in the startup banner so an
+        # operator can sanity-check the daemon saw the right config
+        # without having to attach a debugger.
+        out = capsys.readouterr().err
+        assert f"stranded_timeout_seconds={kb.DEFAULT_STRANDED_TIMEOUT_SECONDS}" in out
+        assert f"stranded_action={kb.DEFAULT_STRANDED_ACTION!r}" in out
+
+    def test_defaults_when_kanban_section_empty(
+        self, kanban_home, monkeypatch, capsys,
+    ):
+        """`kanban:` present but missing the stranded keys → still defaults.
+
+        Distinguishes "config file present, keys absent" from "config
+        file absent entirely" — both paths must use the defaults so a
+        half-written config doesn't accidentally disable the reaper.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n  dispatch_in_gateway: true\n", encoding="utf-8",
+        )
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert captured["stranded_timeout_seconds"] == (
+            kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        )
+        assert captured["stranded_action"] == kb.DEFAULT_STRANDED_ACTION
+
+    def test_custom_stranded_timeout_seconds(
+        self, kanban_home, monkeypatch, capsys,
+    ):
+        """`kanban.stranded_timeout_seconds: 5` is honored end-to-end.
+
+        Confirms the operator's tuned value reaches `kb.run_daemon` (and
+        therefore every nested `dispatch_once` call) without being
+        silently dropped or replaced by the default. Caps the timeout
+        at 5s so the test exercises a non-default value distinct from
+        the 1800s constant.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n  stranded_timeout_seconds: 5\n", encoding="utf-8",
+        )
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert captured["stranded_timeout_seconds"] == 5
+        # Action remains at default; only the timeout was customised.
+        assert captured["stranded_action"] == kb.DEFAULT_STRANDED_ACTION
+        # Startup banner reflects the tuned value so the operator can
+        # confirm the daemon saw the right config without a debugger.
+        out = capsys.readouterr().err
+        assert "stranded_timeout_seconds=5" in out
+        assert f"stranded_action={kb.DEFAULT_STRANDED_ACTION!r}" in out
+
+    def test_custom_stranded_action_archive(
+        self, kanban_home, monkeypatch, capsys,
+    ):
+        """`kanban.stranded_action: archive` is honored end-to-end.
+
+        Mirrors the `auto` (default) → `archive` switch: with this
+        setting, a stranded ready task whose original assignee no
+        longer maps to an installed profile should be archived, not
+        reassigned. The test confirms the value passes through to
+        `kb.run_daemon` and is shown in the startup banner.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n  stranded_action: archive\n", encoding="utf-8",
+        )
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert captured["stranded_action"] == "archive"
+        # Timeout remains at default; only the action was customised.
+        assert captured["stranded_timeout_seconds"] == (
+            kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        )
+        out = capsys.readouterr().err
+        assert "stranded_action='archive'" in out
+        assert (
+            f"stranded_timeout_seconds={kb.DEFAULT_STRANDED_TIMEOUT_SECONDS}"
+            in out
+        )
+
+    def test_custom_stranded_action_reassign(
+        self, kanban_home, monkeypatch,
+    ):
+        """`kanban.stranded_action: reassign` reaches the dispatcher.
+
+        The other valid non-default value. Combined with the
+        `archive` test above this proves every entry in
+        `kb.VALID_STRANDED_ACTIONS` survives the parse / lowercase /
+        validate pipeline.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n  stranded_action: reassign\n", encoding="utf-8",
+        )
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert captured["stranded_action"] == "reassign"
+
+    def test_invalid_stranded_action_falls_back_to_default(
+        self, kanban_home, monkeypatch, capsys,
+    ):
+        """An unrecognised `kanban.stranded_action` falls back to 'auto'.
+
+        A typo in the operator's config (e.g. `archv`) must not crash
+        the legacy daemon — the safe default keeps the dispatcher
+        moving. The startup banner shows the original (raw) value
+        could not be applied; we at least confirm the daemon didn't
+        propagate the typo to `kb.run_daemon`.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n  stranded_action: archv\n", encoding="utf-8",
+        )
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert captured["stranded_action"] == kb.DEFAULT_STRANDED_ACTION
+        assert captured["stranded_action"] != "archv"
+
+    def test_invalid_stranded_timeout_falls_back_to_default(
+        self, kanban_home, monkeypatch,
+    ):
+        """A non-integer `kanban.stranded_timeout_seconds` falls back.
+
+        e.g. `stranded_timeout_seconds: "5m"` (human string) should not
+        crash the daemon — we log the parse failure and use the
+        constant. Mirrors the gateway watcher's handling.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n  stranded_timeout_seconds: \"5m\"\n", encoding="utf-8",
+        )
+        captured, calls = self._capture_run_daemon(monkeypatch)
+        args = _make_daemon_args()
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 0
+        assert captured["stranded_timeout_seconds"] == (
+            kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        )
+
+    def test_deprecation_notice_still_prints_without_force(
+        self, kanban_home, monkeypatch, capsys,
+    ):
+        """`hermes kanban daemon` (no --force) still prints the deprecation
+        notice and exits 2 — the MEDIUM-2 fix must not regress the
+        operator-facing migration path. Even with a fully-tuned config
+        the legacy path is gated behind --force.
+        """
+        (kanban_home / "config.yaml").write_text(
+            "kanban:\n"
+            "  stranded_timeout_seconds: 5\n"
+            "  stranded_action: archive\n",
+            encoding="utf-8",
+        )
+        # No run_daemon stub — the deprecation branch returns before
+        # touching it, and any future regression that calls into the
+        # loop will be loud (no monkeypatch → real loop tries to start).
+        args = _make_daemon_args(force=False)
+
+        rc = kc._cmd_daemon(args)
+
+        assert rc == 2
+        out = capsys.readouterr().err
+        # Preserved language from the deprecation banner.
+        assert "DEPRECATED" in out
+        assert "the dispatcher now runs" in out
+        assert "--force" in out

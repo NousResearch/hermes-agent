@@ -2525,10 +2525,42 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         except OSError as exc:
             print(f"warning: could not write pidfile {pidfile}: {exc}", file=sys.stderr)
 
+    # Honour the same kanban.stranded_* config keys that _cmd_dispatch and
+    # the gateway watcher read (MEDIUM-2 from the t_f8afafaa WAGS review).
+    # Mirroring the dispatch path's try/except fallback keeps a corrupted
+    # or unreadable config from blocking the legacy daemon — the operator
+    # can still bring the standalone loop up with the safe defaults.
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+        raw_stranded = _kanban_cfg.get("stranded_timeout_seconds", None)
+        if raw_stranded is None:
+            stranded_timeout_seconds = kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        else:
+            try:
+                stranded_timeout_seconds = int(raw_stranded)
+            except (TypeError, ValueError):
+                stranded_timeout_seconds = kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        raw_action = _kanban_cfg.get("stranded_action", None)
+        if not raw_action or not str(raw_action).strip():
+            stranded_action = kb.DEFAULT_STRANDED_ACTION
+        else:
+            _candidate = str(raw_action).strip().lower()
+            if _candidate in kb.VALID_STRANDED_ACTIONS:
+                stranded_action = _candidate
+            else:
+                stranded_action = kb.DEFAULT_STRANDED_ACTION
+    except Exception:
+        stranded_timeout_seconds = kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        stranded_action = kb.DEFAULT_STRANDED_ACTION
+
     verbose = bool(getattr(args, "verbose", False))
     print(
         f"Kanban dispatcher running STANDALONE via --force "
-        f"(interval={args.interval}s, pid={os.getpid()}). "
+        f"(interval={args.interval}s, pid={os.getpid()}, "
+        f"stranded_timeout_seconds={stranded_timeout_seconds}, "
+        f"stranded_action={stranded_action!r}). "
         f"Ctrl-C to stop. NOTE: if a gateway is also running with "
         f"dispatch_in_gateway=true (default), you have two dispatchers "
         f"racing for claims.",
@@ -2604,6 +2636,8 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             interval=args.interval,
             max_spawn=args.max,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+            stranded_timeout_seconds=stranded_timeout_seconds,
+            stranded_action=stranded_action,
             on_tick=_on_tick,
         )
     finally:

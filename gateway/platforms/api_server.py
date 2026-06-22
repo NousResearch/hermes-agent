@@ -3728,7 +3728,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
             tokens = self._bind_api_server_session(
                 chat_id=session_id or "",
-                session_key=gateway_session_key or session_id or "",
+                # When no X-Hermes-Session-Key header is provided (e.g. no
+                # API_SERVER_KEY configured), construct the canonical gateway
+                # session_key format so async-delegation completion events can
+                # be routed back to this session.  Without this, bare UUID
+                # session_ids cause _parse_session_key() to fail, dropping
+                # delegation results silently.  (#delegation-routing)
+                session_key=gateway_session_key or (
+                    f"agent:main:api_server:dm:{session_id}" if session_id else ""
+                ),
                 session_id=session_id or "",
             )
             try:
@@ -3917,7 +3925,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
-        approval_session_key = gateway_session_key or session_id or run_id
+        # Construct canonical session_key format when no X-Hermes-Session-Key
+        # header is provided, so async-delegation completion events can be
+        # routed back to this session.  Mirror the fix in _run_agent.
+        approval_session_key = gateway_session_key or (
+            f"agent:main:api_server:dm:{session_id}" if session_id else run_id
+        )
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()

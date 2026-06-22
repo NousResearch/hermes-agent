@@ -131,6 +131,7 @@ const TranscriptPane = memo(function TranscriptPane({
                     row.index,
                     { commandOverride: ui.detailsModeCommandOverride, detailsMode: ui.detailsMode, sections: ui.sections }
                   )}
+                  screenReaderMode={ui.screenReaderMode}
                   sections={ui.sections}
                   t={ui.theme}
                 />
@@ -149,14 +150,17 @@ const TranscriptPane = memo(function TranscriptPane({
             detailsModeCommandOverride={ui.detailsModeCommandOverride}
             prevMsg={transcript.historyItems[transcript.historyItems.length - 1]}
             progress={progress}
+            screenReaderMode={ui.screenReaderMode}
             sections={ui.sections}
           />
         </Box>
       </ScrollBox>
 
-      <NoSelect flexShrink={0} marginLeft={1}>
-        <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
-      </NoSelect>
+      {!ui.screenReaderMode && (
+        <NoSelect flexShrink={0} marginLeft={1}>
+          <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
+        </NoSelect>
+      )}
 
       <StickyPromptTracker
         messages={transcript.historyItems}
@@ -311,7 +315,7 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  placeholder={ui.screenReaderMode ? '' : composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />
@@ -354,6 +358,10 @@ const StatusRulePane = memo(function StatusRulePane({
 }: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top' }) {
   const ui = useStore($uiState)
 
+  if (ui.screenReaderMode) {
+    return null
+  }
+
   if (ui.statusBar !== at) {
     return null
   }
@@ -375,6 +383,7 @@ const StatusRulePane = memo(function StatusRulePane({
         onSessionCountClick={() => patchOverlayState({ sessions: true })}
         sessionStartedAt={status.sessionStartedAt}
         showCost={ui.showCost}
+        showLiveTimers={ui.showLiveTimers}
         status={ui.status}
         statusColor={status.statusColor}
         t={ui.theme}

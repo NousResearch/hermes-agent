@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
 import {
@@ -9,7 +9,6 @@ import {
   normalizeMouseTracking,
   normalizeStatusBar
 } from '../app/useConfigSync.js'
-import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {
@@ -26,7 +25,9 @@ describe('applyDisplay', () => {
             bell_on_complete: true,
             details_mode: 'expanded',
             inline_diffs: false,
+            screen_reader_mode: true,
             show_cost: true,
+            show_live_timers: false,
             show_reasoning: true,
             streaming: false,
             tui_compact: true,
@@ -42,7 +43,9 @@ describe('applyDisplay', () => {
     expect(s.compact).toBe(true)
     expect(s.detailsMode).toBe('expanded')
     expect(s.inlineDiffs).toBe(false)
+    expect(s.screenReaderMode).toBe(true)
     expect(s.showCost).toBe(true)
+    expect(s.showLiveTimers).toBe(false)
     expect(s.showReasoning).toBe(true)
     expect(s.statusBar).toBe('off')
     expect(s.streaming).toBe(false)
@@ -66,7 +69,9 @@ describe('applyDisplay', () => {
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(false)
     expect(s.inlineDiffs).toBe(true)
+    expect(s.screenReaderMode).toBe(false)
     expect(s.showCost).toBe(false)
+    expect(s.showLiveTimers).toBe(true)
     expect(s.showReasoning).toBe(false)
     expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)

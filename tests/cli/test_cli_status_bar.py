@@ -8,11 +8,30 @@ from cli import HermesCLI
 
 
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
+    display = cli_mod.CLI_CONFIG.setdefault("display", {})
+    display["screen_reader_mode"] = False
+    display["screen_reader_progress"] = "milestones"
+    display["screen_reader_detail"] = "normal"
+    display["show_live_timers"] = True
     cli_obj = HermesCLI.__new__(HermesCLI)
     cli_obj.model = model
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    cli_obj.show_reasoning = False
+    cli_obj.show_timestamps = False
+    cli_obj.final_response_markdown = "strip"
+    cli_obj._voice_recording = False
+    cli_obj._voice_processing = False
+    cli_obj._sudo_state = None
+    cli_obj._secret_state = None
+    cli_obj._approval_state = None
+    cli_obj._slash_confirm_state = None
+    cli_obj._clarify_freetext = False
+    cli_obj._clarify_state = None
+    cli_obj._command_running = False
+    cli_obj._agent_running = False
+    cli_obj._voice_mode = False
     return cli_obj
 
 
@@ -163,6 +182,258 @@ class TestCLIStatusBar:
 
         assert "⚕" in text
         assert "claude-sonnet-4-20250514" in text
+
+    def test_tool_spinner_hides_elapsed_when_live_timers_disabled(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = "⚡ terminal"
+        cli_obj._tool_start_time = time.monotonic() - 3.2
+
+        with patch.dict(cli_mod.CLI_CONFIG.setdefault("display", {}), {"show_live_timers": False}):
+            text = cli_obj._render_spinner_text()
+
+        assert text == "  ⚡ terminal"
+        assert "s)" not in text
+
+    def test_status_bar_hides_time_fields_when_live_timers_disabled(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._prompt_start_time = time.time() - 3
+        cli_obj._prompt_duration = 0.0
+        cli_obj._last_turn_finished_at = time.time() - 42
+
+        with patch.dict(cli_mod.CLI_CONFIG.setdefault("display", {}), {"show_live_timers": False}):
+            snapshot = cli_obj._get_status_bar_snapshot()
+            text = cli_obj._build_status_bar_text(width=120)
+
+        assert snapshot["duration"] == ""
+        assert snapshot["prompt_elapsed"] == ""
+        assert snapshot["idle_since"] == ""
+        assert "⏱" not in text
+        assert "⏲" not in text
+
+    def test_screen_reader_mode_hides_classic_tui_chrome(self):
+        cli_obj = _make_cli()
+        cli_obj._agent_running = True
+
+        with patch.dict(cli_mod.CLI_CONFIG.setdefault("display", {}), {"screen_reader_mode": True}):
+            assert cli_obj._build_status_bar_text(width=120) == ""
+            assert cli_obj._get_status_bar_fragments() == []
+            assert cli_obj._tui_input_rule_height("top", width=120) == 0
+            assert cli_obj._tui_input_rule_height("bottom", width=120) == 0
+            assert cli_obj._agent_spacer_height(width=120) == 0
+
+    def test_screen_reader_mode_suppresses_reasoning_stream(self):
+        cli_obj = _make_cli()
+        cli_obj._stream_box_opened = False
+        cli_obj._reasoning_buf = ""
+
+        emitted = []
+        with patch.dict(cli_mod.CLI_CONFIG.setdefault("display", {}), {"screen_reader_mode": True}), \
+             patch.object(cli_mod, "_cprint", lambda text: emitted.append(text)):
+            cli_obj._stream_reasoning_delta("first line\n")
+            cli_obj._stream_reasoning_delta("second line")
+            cli_obj._close_reasoning_box()
+
+        combined = "\n".join(emitted)
+        assert "Reasoning:" not in combined
+        assert "┌" not in combined
+        assert "└" not in combined
+        assert "first line" not in combined
+        assert "second line" not in combined
+
+    def test_screen_reader_mode_hides_spinner_and_uses_plain_prompt(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = "⚡ honcho_search long query"
+        cli_obj._tool_start_time = time.monotonic() - 3.2
+        cli_obj._agent_running = True
+
+        with patch.dict(cli_mod.CLI_CONFIG.setdefault("display", {}), {"screen_reader_mode": True}):
+            assert cli_obj._render_spinner_text() == ""
+            assert cli_obj._spinner_widget_height(width=120) == 0
+            assert cli_obj._get_tui_prompt_text() == "> "
+
+    def test_screen_reader_mode_streams_answer_without_box_chrome(self):
+        cli_obj = _make_cli()
+        cli_obj._reset_stream_state()
+        emitted = []
+
+        with patch.dict(cli_mod.CLI_CONFIG.setdefault("display", {}), {"screen_reader_mode": True}), \
+             patch.object(cli_mod, "_cprint", lambda text: emitted.append(text)):
+            cli_obj._emit_stream_text("hello\nworld")
+            cli_obj._flush_stream()
+
+        combined = "\n".join(emitted)
+        assert "hello" in combined
+        assert "world" in combined
+        assert "╭" not in combined
+        assert "╰" not in combined
+        assert "⚕ Hermes" not in combined
+
+    def test_screen_reader_mode_emits_sparse_tool_progress_milestones(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = ""
+        cli_obj._tool_start_time = 0.0
+        cli_obj._pending_tool_info = {}
+        cli_obj._screen_reader_preparing_tools = set()
+        cli_obj._invalidate = lambda *args, **kwargs: None
+        emitted = []
+
+        with patch.dict(cli_mod.CLI_CONFIG.setdefault("display", {}), {"screen_reader_mode": True, "screen_reader_progress": "milestones"}), \
+             patch.object(cli_mod, "_cprint", lambda text: emitted.append(text)):
+            cli_obj._on_tool_progress(
+                "tool.started",
+                function_name="honcho_search",
+                preview="Quant Researcher AI Power User long query",
+                function_args={"query": "Quant Researcher AI Power User long query"},
+            )
+            cli_obj._on_tool_progress("tool.completed", function_name="honcho_search", duration=0.1)
+
+        assert emitted == [
+            "Progress: running tool - honcho-search",
+            "Progress: finished tool - honcho-search",
+        ]
+        assert "Quant Researcher" not in "\n".join(emitted)
+        assert cli_obj._spinner_text == ""
+        assert cli_obj._tool_start_time == 0.0
+
+    def test_screen_reader_mode_includes_concise_terminal_command(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = ""
+        cli_obj._tool_start_time = 0.0
+        cli_obj._pending_tool_info = {}
+        cli_obj._screen_reader_preparing_tools = set()
+        cli_obj._invalidate = lambda *args, **kwargs: None
+        emitted = []
+
+        with patch.dict(cli_mod.CLI_CONFIG.setdefault("display", {}), {"screen_reader_mode": True, "screen_reader_progress": "milestones"}), \
+             patch.object(cli_mod, "_cprint", lambda text: emitted.append(text)):
+            cli_obj._on_tool_progress(
+                "tool.started",
+                function_name="terminal",
+                function_args={"command": "git status --short\npython -m pytest tests/cli/test_cli_status_bar.py"},
+            )
+
+        assert emitted == [
+            "Progress: running tool - terminal - git status --short python -m pytest tests/cli/test_cli_status_bar.py"
+        ]
+
+    def test_screen_reader_terminal_command_redacts_inline_secrets(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = ""
+        cli_obj._tool_start_time = 0.0
+        cli_obj._pending_tool_info = {}
+        cli_obj._screen_reader_preparing_tools = set()
+        cli_obj._invalidate = lambda *args, **kwargs: None
+        emitted = []
+
+        with patch.dict(cli_mod.CLI_CONFIG.setdefault("display", {}), {"screen_reader_mode": True, "screen_reader_progress": "milestones"}), \
+             patch.object(cli_mod, "_cprint", lambda text: emitted.append(text)):
+            cli_obj._on_tool_progress(
+                "tool.started",
+                function_name="terminal",
+                function_args={"command": "curl -H 'Authorization: Bearer abc123' API_KEY=sk-test"},
+            )
+
+        combined = "\n".join(emitted)
+        assert "abc123" not in combined
+        assert "sk-test" not in combined
+        assert combined == "Progress: running tool - terminal - curl -H 'Authorization: Bearer <redacted>' API_KEY=<redacted>"
+
+    def test_screen_reader_mode_coalesces_file_read_flood_in_normal_detail(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = ""
+        cli_obj._tool_start_time = 0.0
+        cli_obj._pending_tool_info = {}
+        cli_obj._screen_reader_preparing_tools = set()
+        cli_obj._screen_reader_flood_state = {}
+        cli_obj._invalidate = lambda *args, **kwargs: None
+        emitted = []
+
+        with patch.dict(cli_mod.CLI_CONFIG.setdefault("display", {}), {"screen_reader_mode": True, "screen_reader_progress": "milestones", "screen_reader_detail": "normal"}), \
+             patch.object(cli_mod, "_cprint", lambda text: emitted.append(text)):
+            for idx, path in enumerate(["cli.py", "config.py", "display.py", "tools.py", "tests.py"], start=1):
+                cli_obj._on_tool_progress(
+                    "tool.started",
+                    function_name="read_file",
+                    function_args={"path": path, "offset": idx, "limit": 80},
+                )
+                cli_obj._on_tool_progress("tool.completed", function_name="read_file", duration=0.1)
+            cli_obj._on_tool_progress(
+                "tool.started",
+                function_name="patch",
+                function_args={"path": "cli.py", "old_string": "a\nb\nc", "new_string": "x"},
+            )
+
+        assert emitted == [
+            "Progress: reading files - cli.py",
+            "Progress: reading files - cli.py and 4 more",
+            "Progress: running tool - patch - cli.py, matching 3 line block",
+        ]
+
+    def test_screen_reader_full_detail_includes_file_line_range(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = ""
+        cli_obj._tool_start_time = 0.0
+        cli_obj._pending_tool_info = {}
+        cli_obj._screen_reader_preparing_tools = set()
+        cli_obj._screen_reader_flood_state = {}
+        cli_obj._invalidate = lambda *args, **kwargs: None
+        emitted = []
+
+        with patch.dict(cli_mod.CLI_CONFIG.setdefault("display", {}), {"screen_reader_mode": True, "screen_reader_progress": "milestones", "screen_reader_detail": "full"}), \
+             patch.object(cli_mod, "_cprint", lambda text: emitted.append(text)):
+            cli_obj._on_tool_progress(
+                "tool.started",
+                function_name="read_file",
+                function_args={"path": "cli.py", "offset": 4150, "limit": 80},
+            )
+
+        assert emitted == ["Progress: running tool - read-file - cli.py, lines 4150-4229"]
+
+    def test_screen_reader_tool_preparation_milestone_is_deduped(self):
+        cli_obj = _make_cli()
+        cli_obj._stream_box_opened = False
+        cli_obj._reasoning_box_opened = False
+        cli_obj._reasoning_buf = ""
+        cli_obj._screen_reader_preparing_tools = set()
+        emitted = []
+
+        with patch.dict(cli_mod.CLI_CONFIG.setdefault("display", {}), {"screen_reader_mode": True, "screen_reader_progress": "milestones"}), \
+             patch.object(cli_mod, "_cprint", lambda text: emitted.append(text)):
+            cli_obj._on_tool_gen_start("terminal")
+            cli_obj._on_tool_gen_start("terminal")
+
+        assert emitted == ["Progress: preparing tool - terminal"]
+
+    def test_screen_reader_progress_can_be_turned_off(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = ""
+        cli_obj._tool_start_time = 0.0
+        cli_obj._pending_tool_info = {}
+        cli_obj._screen_reader_preparing_tools = set()
+        cli_obj._invalidate = lambda *args, **kwargs: None
+        emitted = []
+
+        with patch.dict(cli_mod.CLI_CONFIG.setdefault("display", {}), {"screen_reader_mode": True, "screen_reader_progress": "off"}), \
+             patch.object(cli_mod, "_cprint", lambda text: emitted.append(text)):
+            cli_obj._on_tool_progress(
+                "tool.started",
+                function_name="honcho_search",
+                preview="Quant Researcher AI Power User long query",
+                function_args={"query": "Quant Researcher AI Power User long query"},
+            )
+            cli_obj._on_tool_progress("tool.completed", function_name="honcho_search", duration=0.1)
+
+        assert emitted == []
+        assert cli_obj._spinner_text == ""
+        assert cli_obj._tool_start_time == 0.0
 
     def test_compression_count_shown_in_wide_status_bar(self):
         cli_obj = _attach_agent(

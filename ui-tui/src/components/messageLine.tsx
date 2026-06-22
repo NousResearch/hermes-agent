@@ -35,6 +35,7 @@ export const MessageLine = memo(function MessageLine({
   isStreaming = false,
   msg,
   prev,
+  screenReaderMode = false,
   sections,
   t,
   tools = []
@@ -82,6 +83,7 @@ export const MessageLine = memo(function MessageLine({
           detailsMode={detailsMode}
           reasoning={thinking}
           reasoningTokens={msg.thinkingTokens}
+          screenReaderMode={screenReaderMode}
           sections={sections}
           t={t}
           tools={tools}
@@ -207,6 +209,7 @@ export const MessageLine = memo(function MessageLine({
             detailsMode={detailsMode}
             reasoning={thinking}
             reasoningTokens={msg.thinkingTokens}
+            screenReaderMode={screenReaderMode}
             sections={sections}
             t={t}
             toolTokens={msg.toolTokens}
@@ -254,6 +257,7 @@ interface MessageLineProps {
   // the transcript or when spacing is irrelevant.
   prev?: Msg
   sections?: SectionVisibility
+  screenReaderMode?: boolean
   t: Theme
   tools?: ActiveTool[]
 }

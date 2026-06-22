@@ -28,6 +28,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   detailsModeCommandOverride,
   prevMsg,
   progress,
+  screenReaderMode,
   sections
 }: StreamingAssistantProps) {
   const ui = useStore($uiState)
@@ -78,6 +79,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
             key={block.key}
             msg={block.msg}
             prev={prev}
+            screenReaderMode={screenReaderMode}
             sections={sections}
             t={ui.theme}
             {...(block.tools ? { tools: block.tools } : {})}
@@ -114,5 +116,6 @@ interface StreamingAssistantProps {
   detailsModeCommandOverride: boolean
   prevMsg?: Msg
   progress: AppLayoutProgressProps
+  screenReaderMode?: boolean
   sections?: SectionVisibility
 }

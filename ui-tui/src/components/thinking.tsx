@@ -695,6 +695,7 @@ export const ToolTrail = memo(function ToolTrail({
   reasoning = '',
   reasoningTokens,
   reasoningStreaming = false,
+  screenReaderMode = false,
   sections,
   subagents = [],
   t,
@@ -711,6 +712,7 @@ export const ToolTrail = memo(function ToolTrail({
   reasoning?: string
   reasoningTokens?: number
   reasoningStreaming?: boolean
+  screenReaderMode?: boolean
   sections?: SectionVisibility
   subagents?: SubagentProgress[]
   t: Theme
@@ -901,6 +903,53 @@ export const ToolTrail = memo(function ToolTrail({
   const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
   const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
+
+  if (screenReaderMode) {
+    const reasoningForDisplay = thinkingPreview(busy ? reasoning : cot, 'full', THINKING_COT_MAX)
+    const reasoningLines = reasoningForDisplay.split('\n').map(line => line.replace(/\t/g, '  ')).filter(line => line.trim())
+
+    return (
+      <Box flexDirection="column">
+        {hasThinking && visible.thinking !== 'hidden'
+          ? reasoningLines.map((line, index) => (
+              <Text color={t.color.muted} key={`sr-thinking-${index}`} wrap="wrap-trim">
+                {line}
+              </Text>
+            ))
+          : null}
+        {hasTools && visible.tools !== 'hidden'
+          ? groups.map(group => (
+              <Box flexDirection="column" key={`sr-${group.key}`}>
+                <Text color={group.color} wrap="wrap-trim">
+                  {group.label}
+                </Text>
+                {group.details.map(detail =>
+                  typeof detail.content === 'string' ? (
+                    <Text color={detail.color} dim={detail.dimColor} key={`sr-${detail.key}`} wrap="wrap-trim">
+                      {detail.content}
+                    </Text>
+                  ) : null
+                )}
+              </Box>
+            ))
+          : null}
+        {hasMeta && visible.activity !== 'hidden'
+          ? meta.map(row =>
+              typeof row.content === 'string' ? (
+                <Text color={row.color} dim={row.dimColor} key={`sr-${row.key}`} wrap="wrap-trim">
+                  {row.content}
+                </Text>
+              ) : null
+            )
+          : null}
+        {outcome ? (
+          <Text color={t.color.muted} dim wrap="wrap-trim">
+            {outcome}
+          </Text>
+        ) : null}
+      </Box>
+    )
+  }
 
   const toolLabel = (group: Group) => {
     const { duration, label } = splitToolDuration(String(group.content))

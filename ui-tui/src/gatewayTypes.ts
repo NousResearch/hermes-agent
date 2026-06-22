@@ -158,7 +158,9 @@ export interface ConfigDisplayConfig {
   inline_diffs?: boolean
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
+  screen_reader_mode?: boolean
   show_cost?: boolean
+  show_live_timers?: boolean
   show_reasoning?: boolean
   streaming?: boolean
   thinking_mode?: string

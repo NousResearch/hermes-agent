@@ -102,6 +102,10 @@ class LocalEditSnapshot:
 _tool_preview_max_len: int = 0  # 0 = unlimited
 
 
+def _screen_reader_mode_enabled() -> bool:
+    return os.getenv("HERMES_SCREEN_READER_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def set_tool_preview_max_len(n: int) -> None:
     """Set the global max length for tool call previews. 0 = no limit."""
     global _tool_preview_max_len
@@ -725,6 +729,12 @@ class KawaiiSpinner:
             return False
 
     def _animate(self):
+        if _screen_reader_mode_enabled():
+            self._write(f"  [tool] {self.message}", flush=True)
+            while self.running:
+                time.sleep(0.5)
+            return
+
         # When stdout is not a real terminal (e.g. Docker, systemd, pipe),
         # skip the animation entirely — it creates massive log bloat.
         # Just log the start once and let stop() log the completion.

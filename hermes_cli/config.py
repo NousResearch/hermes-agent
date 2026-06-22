@@ -1572,6 +1572,19 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        # Minimize live terminal chrome for screen-reader users. When enabled,
+        # the interactive TUIs avoid status bars, separator rules, prompt
+        # placeholders, and other low-value visual-only rows so NVDA/VoiceOver
+        # can focus on the transcript, reasoning, tools, and final answers.
+        "screen_reader_mode": False,
+        # Screen-reader mode normally suppresses animated status chrome. This
+        # optional sparse progress stream keeps long turns from feeling silent
+        # without exposing timers, reasoning text, or result previews.
+        # Supported: off | milestones.
+        "screen_reader_progress": "milestones",
+        # Screen-reader progress detail uses deliberately simple words.
+        # Supported: short | normal | full.
+        "screen_reader_detail": "normal",
         "show_reasoning": False,
         # When reasoning display is on, the post-response "Reasoning" recap box
         # collapses long thinking to the first 10 lines. Set true to print the
@@ -1626,6 +1639,11 @@ DEFAULT_CONFIG = {
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # Show live elapsed-time read-outs in interactive terminal chrome
+        # (status bars and tool/busy indicators). Screen readers can announce
+        # every changing number, so users may set this false to keep the TUI
+        # stable while work is running.
+        "show_live_timers": True,
         # Seconds between prompt_toolkit redraws in the classic CLI when idle.
         # Default 1.0 keeps the wall-clock status-bar read-outs (idle-since-
         # last-turn) ticking and keeps the bottom chrome alive during idle —

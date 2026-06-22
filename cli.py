@@ -163,6 +163,7 @@ def realign_markdown_tables(*args, **kwargs):
 from hermes_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_SCREEN_READER_FLOOD_EMIT_COUNTS = {1, 5, 10, 20, 50}
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
@@ -454,6 +455,7 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "reasoning_full": False,
             "streaming": True,
+            "screen_reader_progress": "milestones",
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
@@ -3397,19 +3399,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.console = Console()
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
+        self.screen_reader_mode = self._screen_reader_mode()
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
+        # In screen-reader mode the live tool trail is low-value chrome: NVDA
+        # announces tool names and long argument previews repeatedly while the
+        # user is waiting for the actual answer.  Force it off for the classic
+        # prompt_toolkit UI even if an older config still says "all".
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
-        self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)
+        self.tool_progress_mode = "off" if self.screen_reader_mode or _raw_tp is False else str(_raw_tp)
         # resume_display: "full" (show history) | "minimal" (one-liner only)
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
-        self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        self.show_reasoning = bool(CLI_CONFIG["display"].get("show_reasoning", False)) and not self.screen_reader_mode
         # reasoning_full: when reasoning display is on, print the post-response
         # recap box uncollapsed instead of clamping to the first 10 lines.
         self.reasoning_full = CLI_CONFIG["display"].get("reasoning_full", False)
+        os.environ["HERMES_SCREEN_READER_MODE"] = "1" if self.screen_reader_mode else "0"
         _configure_output_history(
             enabled=CLI_CONFIG["display"].get("persistent_output", True),
             max_lines=CLI_CONFIG["display"].get("persistent_output_max_lines", 200),
@@ -3763,6 +3771,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
         self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
+        self._screen_reader_preparing_tools: set[str] = set()  # per-turn dedupe for sparse SR progress
+        self._screen_reader_flood_state: dict = {}  # per-turn coalescing for repeated read/search progress
         self._last_scrollback_tool: str = ""  # last tool name printed to scrollback (for "new" dedup)
         self._command_running = False
         self._command_status = ""
@@ -4131,6 +4141,234 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     @staticmethod
+    def _show_live_timers() -> bool:
+        """Return whether live elapsed-time labels should be rendered."""
+        try:
+            raw = (CLI_CONFIG.get("display") or {}).get("show_live_timers", True)
+        except Exception:
+            return True
+        if isinstance(raw, str):
+            return raw.strip().lower() not in {"0", "false", "no", "off"}
+        return raw is not False
+
+    @staticmethod
+    def _screen_reader_mode() -> bool:
+        """Return whether interactive chrome should be minimized for screen readers."""
+        try:
+            raw = (CLI_CONFIG.get("display") or {}).get("screen_reader_mode", False)
+        except Exception:
+            return False
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"1", "true", "yes", "on"}
+        return raw is True
+
+    @staticmethod
+    def _screen_reader_progress_mode() -> str:
+        """Return sparse progress policy for screen-reader mode."""
+        try:
+            raw = (CLI_CONFIG.get("display") or {}).get("screen_reader_progress", "milestones")
+        except Exception:
+            return "milestones"
+        if isinstance(raw, bool):
+            return "milestones" if raw else "off"
+        mode = str(raw or "milestones").strip().lower().replace("_", "-")
+        if mode in {"0", "false", "no", "none", "silent", "quiet", "off"}:
+            return "off"
+        if mode in {"milestone", "milestones", "status", "brief"}:
+            return "milestones"
+        return "milestones"
+
+    def _screen_reader_progress_enabled(self) -> bool:
+        return self._screen_reader_mode() and self._screen_reader_progress_mode() != "off"
+
+    @staticmethod
+    def _screen_reader_detail_level() -> str:
+        """Return how much detail screen-reader progress lines should include."""
+        try:
+            raw = (CLI_CONFIG.get("display") or {}).get("screen_reader_detail", "normal")
+        except Exception:
+            return "normal"
+        level = str(raw or "normal").strip().lower().replace("_", "-")
+        if level in {"short", "brief", "simple", "low", "less", "small"}:
+            return "short"
+        if level in {"full", "detail", "detailed", "verbose", "high", "more", "all"}:
+            return "full"
+        return "normal"
+
+    def _screen_reader_detail(self) -> str:
+        if not self._screen_reader_progress_enabled():
+            return "off"
+        return self._screen_reader_detail_level()
+
+    @staticmethod
+    def _screen_reader_noisy_tool(function_name: Optional[str]) -> bool:
+        return function_name in {"read_file", "search_files"}
+
+    @staticmethod
+    def _screen_reader_important_tool(function_name: Optional[str]) -> bool:
+        return function_name in {
+            "terminal",
+            "execute_code",
+            "patch",
+            "write_file",
+            "skill_manage",
+            "memory",
+            "cronjob",
+            "process",
+        }
+
+    @staticmethod
+    def _screen_reader_tool_label(function_name: Optional[str]) -> str:
+        """Return a short, non-argument tool label for accessible progress."""
+        name = str(function_name or "tool").strip().lstrip("_") or "tool"
+        return name.replace("_", "-")
+
+    @staticmethod
+    def _screen_reader_compact_text(value: Any, max_len: int = 120) -> str:
+        """Collapse tool details to one short screen-reader-friendly line."""
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        text = re.sub(
+            r"(?i)\b([A-Z0-9_]*(?:API[_-]?KEY|TOKEN|PASSWORD|PASS|SECRET)[A-Z0-9_]*)=([^\s]+)",
+            r"\1=<redacted>",
+            text,
+        )
+        text = re.sub(r"(?i)\b(bearer)\s+[^\s'\"]+", r"\1 <redacted>", text)
+        if max_len > 0 and len(text) > max_len:
+            return text[:max_len - 3].rstrip() + "..."
+        return text
+
+    @staticmethod
+    def _screen_reader_line_range(args: dict) -> str:
+        try:
+            offset = int(args.get("offset", 1) or 1)
+        except Exception:
+            offset = 1
+        try:
+            limit = int(args.get("limit", 500) or 500)
+        except Exception:
+            limit = 500
+        if limit <= 0:
+            return f"line {offset}"
+        return f"lines {offset}-{offset + limit - 1}"
+
+    @staticmethod
+    def _screen_reader_patch_files(args: dict) -> list[str]:
+        patch_text = str(args.get("patch") or "")
+        files: list[str] = []
+        for match in re.finditer(r"^\*\*\* (?:Update|Add|Delete) File:\s*(.+)$", patch_text, re.MULTILINE):
+            candidate = match.group(1).strip()
+            if candidate and candidate not in files:
+                files.append(candidate)
+        return files
+
+    def _screen_reader_tool_detail(
+        self,
+        function_name: Optional[str],
+        function_args: Optional[dict],
+        detail_level: Optional[str] = None,
+    ) -> str:
+        """Return sparse but useful details for screen-reader tool progress."""
+        detail_level = detail_level or self._screen_reader_detail()
+        label = self._screen_reader_tool_label(function_name)
+        args = function_args if isinstance(function_args, dict) else {}
+        if not args:
+            return label
+
+        if function_name == "terminal":
+            command = self._screen_reader_compact_text(args.get("command"), 90 if detail_level == "short" else 140)
+            return f"{label} - {command}" if command else label
+
+        if function_name == "read_file":
+            path = self._screen_reader_compact_text(args.get("path"), 100)
+            if path:
+                if detail_level != "full":
+                    return f"{label} - {path}"
+                return f"{label} - {path}, {self._screen_reader_line_range(args)}"
+            return label
+
+        if function_name == "write_file":
+            path = self._screen_reader_compact_text(args.get("path"), 120)
+            return f"{label} - {path}" if path else label
+
+        if function_name == "patch":
+            mode = str(args.get("mode") or "replace")
+            path = self._screen_reader_compact_text(args.get("path"), 100)
+            if path:
+                old_lines = str(args.get("old_string") or "").count("\n") + 1 if args.get("old_string") else 0
+                scope = f", matching {old_lines} line block" if old_lines > 1 and detail_level != "short" else ""
+                return f"{label} - {path}{scope}"
+            files = self._screen_reader_patch_files(args)
+            if files:
+                shown = ", ".join(self._screen_reader_compact_text(p, 60) for p in files[:3])
+                more = f", plus {len(files) - 3} more" if len(files) > 3 else ""
+                return f"{label} - {mode} patch: {shown}{more}"
+            return f"{label} - {mode} patch"
+
+        if function_name == "search_files":
+            pattern = self._screen_reader_compact_text(args.get("pattern"), 70)
+            path = self._screen_reader_compact_text(args.get("path", "."), 70)
+            target = self._screen_reader_compact_text(args.get("target", "content"), 30)
+            if detail_level != "full":
+                if path and pattern:
+                    return f"{label} - {path}: {pattern}"
+                return label
+            return f"{label} - {target} search in {path}: {pattern}" if pattern else label
+
+        if function_name == "execute_code":
+            code = str(args.get("code") or "")
+            lines = len(code.splitlines()) if code else 0
+            return f"{label} - Python script, {lines} lines" if lines else label
+
+        if function_name == "skill_manage":
+            action = self._screen_reader_compact_text(args.get("action"), 30)
+            name = self._screen_reader_compact_text(args.get("name"), 80)
+            file_path = self._screen_reader_compact_text(args.get("file_path"), 80)
+            target = f"{name}/{file_path}" if name and file_path else name
+            return f"{label} - {action} {target}".strip() if action or target else label
+
+        return label
+
+    def _screen_reader_flood_summary(self, function_name: Optional[str], function_args: Optional[dict]) -> Optional[str]:
+        """Coalesce repeated read/search progress into screen-reader-sized summaries."""
+        detail_level = self._screen_reader_detail()
+        if detail_level == "full" or function_name not in {"read_file", "search_files"}:
+            return None
+        if detail_level == "short":
+            return ""
+        args = function_args if isinstance(function_args, dict) else {}
+        now = time.monotonic()
+        state = getattr(self, "_screen_reader_flood_state", {})
+        bucket = state.get(function_name)
+        if not bucket or now - float(bucket.get("window_start", 0.0)) > 2.0:
+            bucket = {"window_start": now, "count": 0, "first": "", "last_emit_count": 0}
+        bucket["count"] = int(bucket.get("count", 0)) + 1
+        count = int(bucket["count"])
+
+        if function_name == "read_file":
+            first = bucket.get("first") or self._screen_reader_compact_text(args.get("path"), 100) or "file"
+            bucket["first"] = first
+            action = "reading files"
+        else:
+            first = bucket.get("first") or self._screen_reader_compact_text(args.get("pattern"), 80) or "search"
+            bucket["first"] = first
+            action = "searching files"
+
+        state[function_name] = bucket
+        self._screen_reader_flood_state = state
+
+        should_emit = count in _SCREEN_READER_FLOOD_EMIT_COUNTS
+        if not should_emit:
+            return ""
+        bucket["last_emit_count"] = count
+        if count == 1:
+            return f"{action} - {first}"
+        return f"{action} - {first} and {count - 1} more"
+
+    def _emit_screen_reader_progress(self, message: str) -> None:
+        if self._screen_reader_progress_enabled():
+            _cprint(f"Progress: {message}")
+
+    @staticmethod
     def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
         """Format per-prompt elapsed time for the status bar.
 
@@ -4194,19 +4432,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        show_live_timers = self._show_live_timers()
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
-            "duration": format_duration_compact(elapsed_seconds),
-            "prompt_elapsed": self._format_prompt_elapsed(
-                getattr(self, "_prompt_start_time", None),
-                getattr(self, "_prompt_duration", 0.0),
-                live=getattr(self, "_prompt_start_time", None) is not None,
+            "duration": format_duration_compact(elapsed_seconds) if show_live_timers else "",
+            "prompt_elapsed": (
+                self._format_prompt_elapsed(
+                    getattr(self, "_prompt_start_time", None),
+                    getattr(self, "_prompt_duration", 0.0),
+                    live=getattr(self, "_prompt_start_time", None) is not None,
+                )
+                if show_live_timers
+                else ""
             ),
-            "idle_since": self._format_idle_since(
-                getattr(self, "_last_turn_finished_at", None),
-                turn_live=getattr(self, "_prompt_start_time", None) is not None,
+            "idle_since": (
+                self._format_idle_since(
+                    getattr(self, "_last_turn_finished_at", None),
+                    turn_live=getattr(self, "_prompt_start_time", None) is not None,
+                )
+                if show_live_timers
+                else ""
             ),
             "context_tokens": 0,
             "context_length": None,
@@ -4367,6 +4614,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Return the visible height for the top/bottom input separator rules."""
         if position not in {"top", "bottom"}:
             raise ValueError(f"Unknown input rule position: {position}")
+        if self._screen_reader_mode():
+            return 0
         if getattr(self, "_status_bar_suppressed_after_resize", False):
             return 0
         if position == "top":
@@ -4377,10 +4626,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Return the spacer height shown above the status bar while the agent runs."""
         if not getattr(self, "_agent_running", False):
             return 0
+        if self._screen_reader_mode():
+            return 0
         return 0 if self._use_minimal_tui_chrome(width=width) else 1
 
     def _spinner_widget_height(self, width: Optional[int] = None) -> int:
         """Return the visible height for the spinner/status text line above the status bar."""
+        if self._screen_reader_mode():
+            return 0
         spinner_line = self._render_spinner_text()
         if not spinner_line:
             return 0
@@ -4395,11 +4648,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _render_spinner_text(self) -> str:
         """Return the live spinner/status text exactly as rendered in the TUI."""
+        if self._screen_reader_mode():
+            return ""
         txt = getattr(self, "_spinner_text", "")
         if not txt:
             return ""
         t0 = getattr(self, "_tool_start_time", 0) or 0
         if t0 > 0:
+            if not self._show_live_timers():
+                return f"  {txt}"
             elapsed = time.monotonic() - t0
             if elapsed >= 60:
                 _m, _s = int(elapsed // 60), int(elapsed % 60)
@@ -4468,6 +4725,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
+        if self._screen_reader_mode():
+            return ""
         try:
             snapshot = self._get_status_bar_snapshot()
             if width is None:
@@ -4478,7 +4737,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             yolo_active = self._is_session_yolo_active()
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"⚕ {snapshot['model_short']}"
+                if duration_label:
+                    text += f" · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
@@ -4493,7 +4754,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 bg_proc_count = snapshot.get("active_background_processes", 0)
                 if bg_proc_count:
                     parts.append(f"⚙ {bg_proc_count}")
-                parts.append(duration_label)
+                if duration_label:
+                    parts.append(duration_label)
                 if yolo_active:
                     parts.append("⚠ YOLO")
                 return self._trim_status_bar_text(" · ".join(parts), width)
@@ -4515,7 +4777,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             bg_proc_count = snapshot.get("active_background_processes", 0)
             if bg_proc_count:
                 parts.append(f"⚙ {bg_proc_count}")
-            parts.append(duration_label)
+            if duration_label:
+                parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
@@ -4529,6 +4792,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
+        if self._screen_reader_mode():
+            return []
         if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
             return []
         try:
@@ -4546,9 +4811,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 frags = [
                     ("class:status-bar", " ⚕ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
-                    ("class:status-bar-dim", " · "),
-                    ("class:status-bar-dim", duration_label),
                 ]
+                if duration_label:
+                    frags.extend([
+                        ("class:status-bar-dim", " · "),
+                        ("class:status-bar-dim", duration_label),
+                    ])
                 if yolo_active:
                     frags.append(("class:status-bar-dim", " · "))
                     frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -4575,10 +4843,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if bg_proc_count:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
-                    frags.extend([
-                        ("class:status-bar-dim", " · "),
-                        ("class:status-bar-dim", duration_label),
-                    ])
+                    if duration_label:
+                        frags.extend([
+                            ("class:status-bar-dim", " · "),
+                            ("class:status-bar-dim", duration_label),
+                        ])
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -4614,10 +4883,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if bg_proc_count:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
-                    frags.extend([
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", duration_label),
-                    ])
+                    if duration_label:
+                        frags.extend([
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-dim", duration_label),
+                        ])
                     # Position 7: per-prompt elapsed timer (live or frozen)
                     prompt_elapsed = snapshot.get("prompt_elapsed")
                     if prompt_elapsed:
@@ -4950,6 +5220,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
+        if self._screen_reader_mode():
+            return
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         text = str(user_input or "")
         if "\n" in text:
@@ -4971,6 +5243,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not text:
             return
         self._reasoning_shown_this_turn = True
+        if self._screen_reader_mode():
+            return
         if getattr(self, "_stream_box_opened", False):
             return
 
@@ -5006,6 +5280,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._reasoning_box_opened = False
 
             # Flush any content that was deferred while reasoning was rendering.
+            deferred = getattr(self, "_deferred_content", "")
+            if deferred:
+                self._deferred_content = ""
+                self._emit_stream_text(deferred)
+        elif getattr(self, "_reasoning_plain_opened", False):
+            buf = getattr(self, "_reasoning_buf", "")
+            if buf.strip():
+                _cprint(f"{_DIM}{buf}{_RST}")
+            self._reasoning_buf = ""
+            self._reasoning_plain_opened = False
+
             deferred = getattr(self, "_deferred_content", "")
             if deferred:
                 self._deferred_content = ""
@@ -5192,9 +5477,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._stream_text_ansi = ""
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime('%H:%M')}"
-            w = self._scrollback_box_width()
-            fill = w - 2 - HermesCLI._status_bar_display_width(label)
-            _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            if not self._screen_reader_mode():
+                w = self._scrollback_box_width()
+                fill = w - 2 - HermesCLI._status_bar_display_width(label)
+                _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
         self._stream_buf += text
 
@@ -5202,6 +5488,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _tc = getattr(self, "_stream_text_ansi", "")
 
         def _emit_one(printed_line: str) -> None:
+            if self._screen_reader_mode():
+                _cprint(printed_line)
+                return
             _cprint(f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
 
         def _flush_table_buf() -> None:
@@ -5284,15 +5573,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 joined = _strip_markdown_syntax(joined)
             block = realign_markdown_tables(joined, _terminal_width_for_streaming())
             for ln in block.split("\n"):
-                _cprint(f"{_STREAM_PAD}{_tc}{ln}{_RST}" if _tc else f"{_STREAM_PAD}{ln}")
+                if self._screen_reader_mode():
+                    _cprint(ln)
+                else:
+                    _cprint(f"{_STREAM_PAD}{_tc}{ln}{_RST}" if _tc else f"{_STREAM_PAD}{ln}")
 
         if self._stream_buf:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
-            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
+            if self._screen_reader_mode():
+                _cprint(line)
+            else:
+                _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
             self._stream_buf = ""
 
         # Close the response box
-        if self._stream_box_opened:
+        if self._stream_box_opened and not self._screen_reader_mode():
             w = self._scrollback_box_width()
             _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
 
@@ -10098,6 +10393,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._flush_stream()
             self._stream_box_opened = False
         self._close_reasoning_box()
+        if self._screen_reader_mode():
+            label = self._screen_reader_tool_label(tool_name)
+            detail = self._screen_reader_detail()
+            if detail == "short" and not self._screen_reader_important_tool(tool_name):
+                return
+            if detail == "normal" and self._screen_reader_noisy_tool(tool_name):
+                return
+            preparing = getattr(self, "_screen_reader_preparing_tools", set())
+            if label not in preparing:
+                preparing.add(label)
+                self._screen_reader_preparing_tools = preparing
+                self._emit_screen_reader_progress(f"preparing tool - {label}")
+            return
 
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚡")
@@ -10122,6 +10430,47 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         stacked line to scrollback on tool.completed so users can see the
         full history of tool calls (not just the current one in the spinner).
         """
+        if self._screen_reader_mode():
+            detail = self._screen_reader_detail()
+            if event_type == "tool.completed":
+                self._tool_start_time = 0.0
+                stored = self._pending_tool_info.get(function_name) if function_name else None
+                if stored:
+                    stored.pop(0)
+                if function_name and not stored:
+                    self._pending_tool_info.pop(function_name, None)
+                if function_name:
+                    preparing = getattr(self, "_screen_reader_preparing_tools", set())
+                    preparing.discard(self._screen_reader_tool_label(function_name))
+                    self._screen_reader_preparing_tools = preparing
+                    if kwargs.get("is_error", False):
+                        self._emit_screen_reader_progress(
+                            f"tool failed - {self._screen_reader_tool_label(function_name)}"
+                        )
+                    elif detail == "full" or not self._screen_reader_noisy_tool(function_name):
+                        self._emit_screen_reader_progress(
+                            f"finished tool - {self._screen_reader_tool_label(function_name)}"
+                        )
+            elif event_type == "tool.started":
+                self._spinner_text = ""
+                self._tool_start_time = 0.0
+                self._pending_tool_info.setdefault(function_name, []).append(
+                    function_args if function_args is not None else {}
+                )
+                preparing = getattr(self, "_screen_reader_preparing_tools", set())
+                preparing.discard(self._screen_reader_tool_label(function_name))
+                self._screen_reader_preparing_tools = preparing
+                flood = self._screen_reader_flood_summary(function_name, function_args)
+                if flood is None:
+                    if detail != "short" or self._screen_reader_important_tool(function_name):
+                        self._emit_screen_reader_progress(
+                            f"running tool - {self._screen_reader_tool_detail(function_name, function_args, detail)}"
+                        )
+                elif flood:
+                    self._emit_screen_reader_progress(flood)
+            self._invalidate()
+            return
+
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
             # Print stacked scrollback line for "all" / "new" modes
@@ -11268,6 +11617,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             # Reset streaming display state for this turn
             self._reset_stream_state()
+            self._screen_reader_preparing_tools = set()
+            self._screen_reader_flood_state = {}
+            self._emit_screen_reader_progress("working on request")
             # Separate from _reset_stream_state because this must persist
             # across intermediate turn boundaries (tool-calling loops) — only
             # reset at the start of each user turn.
@@ -11951,6 +12303,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         compact = self._use_minimal_tui_chrome(width=self._get_tui_terminal_width())
 
         def _state_fragment(style: str, icon: str, extra: str = ""):
+            if self._screen_reader_mode():
+                return [(style, "> ")]
             if compact:
                 text = icon
                 if extra:
@@ -11983,6 +12337,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return _state_fragment("class:prompt-working", "⚕")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
+        if self._screen_reader_mode():
+            return [("class:prompt", "> ")]
         return [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:
@@ -13376,6 +13732,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
+                if cli_ref._screen_reader_mode():
+                    return ""
                 return "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
             if cli_ref._voice_mode:
                 _label = cli_ref._voice_record_key_label()

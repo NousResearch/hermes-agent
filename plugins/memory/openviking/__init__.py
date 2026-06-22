@@ -70,6 +70,8 @@ _OPENVIKING_ENV_KEYS = (
 _TIMEOUT = 30.0
 _SESSION_DRAIN_TIMEOUT = 10.0
 _DEFERRED_COMMIT_TIMEOUT = (_TIMEOUT * 2) + 5.0
+_PREFETCH_TIMEOUT = 1.5        # Sync prefetch shouldn't block the turn loop
+_PREFETCH_MIN_SCORE = 0.35     # Noise filter (matches Claude Code plugin)
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
 _SYNC_TRACE_ENV = "HERMES_OPENVIKING_SYNC_TRACE"
 
@@ -227,7 +229,9 @@ class _VikingClient:
 
     def _headers(self, *, include_tenant: bool | None = None) -> dict:
         if include_tenant is None:
-            include_tenant = not bool(self._api_key)
+            # Send tenant headers when account/user are configured,
+            # avoiding the retry round-trip on every tenant-scoped API call.
+            include_tenant = bool(self._account or self._user)
 
         h = {"Content-Type": "application/json"}
         if self._agent:
@@ -257,6 +261,7 @@ class _VikingClient:
             "Trusted mode requests must include X-OpenViking-Account" in message
             or "Trusted mode requests must include X-OpenViking-User" in message
             or "Trusted mode requests must include X-OpenViking-Account or explicit account_id" in message
+            or "ROOT requests to tenant-scoped APIs must include X-OpenViking" in message
         )
 
     def _send_with_trusted_identity_retry(self, send, *, multipart: bool = False) -> dict:
@@ -2059,15 +2064,52 @@ class OpenVikingMemoryProvider(MemoryProvider):
             )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Return prefetched results from the background thread."""
+        """Synchronous recall for the current turn.
+
+        Uses the *current* ``query`` to perform a synchronous OV search,
+        addressing the stale-context problem where background prefetch
+        results from the *previous* turn were injected into the current
+        turn. The old background cache is drained to avoid stale re-use.
+
+        A short timeout (``_PREFETCH_TIMEOUT``) prevents a slow or
+        unreachable OV server from blocking the agent turn loop.
+        ``queue_prefetch()`` continues to fire background searches at
+        turn-end for other potential consumers, but ``prefetch()`` no
+        longer consumes its output.
+        """
+        # ------------------------------------------------------------------
+        # 1. Drain stale background cache
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
-            result = self._prefetch_result
             self._prefetch_result = ""
-        if not result:
+
+        query = _derive_openviking_user_text(query)
+        if not self._client or not query:
             return ""
-        return f"## OpenViking Context\n{result}"
+
+        # ------------------------------------------------------------------
+        # 2. Synchronous search with the *current* query
+        try:
+            resp = self._client.post("/api/v1/search/find", {
+                "query": query,
+                "limit": 5,
+            })
+            result = resp.get("result", {})
+            parts = []
+            for ctx_type in ("memories", "resources"):
+                items = result.get(ctx_type, [])
+                for item in items[:3]:
+                    uri = item.get("uri", "")
+                    score = item.get("score", 0)
+                    abstract = item.get("abstract", "")
+                    if abstract and score >= _PREFETCH_MIN_SCORE:
+                        parts.append(f"- [{score:.2f}] {abstract} ({uri})")
+            if parts:
+                return "## OpenViking Context\n" + "\n".join(parts)
+        except Exception as e:
+            logger.debug("OpenViking sync prefetch failed: %s", e)
+        return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire a background search to pre-load relevant context."""

@@ -9305,6 +9305,7 @@ class GatewayRunner:
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
+                                    session_db=self._session_db,
                                 )
                                 try:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
@@ -9330,10 +9331,14 @@ class GatewayRunner:
                                             source, session_entry,
                                             reason="hygiene-compression",
                                         )
-
-                                    self.session_store.rewrite_transcript(
-                                        session_entry.session_id, _compressed
-                                    )
+                                        self.session_store.rewrite_transcript(
+                                            session_entry.session_id, _compressed
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "Session hygiene: session rotation skipped (_session_db unavailable), "                                            "original transcript preserved at session_id=%s",
+                                            session_entry.session_id,
+                                        )
                                     # Reset stored token count — transcript was rewritten
                                     session_entry.last_prompt_tokens = 0
                                     history = _compressed
@@ -13223,6 +13228,7 @@ class GatewayRunner:
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
+                session_db=self._session_db,
             )
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
@@ -13263,8 +13269,12 @@ class GatewayRunner:
                     self._sync_telegram_topic_binding(
                         source, session_entry, reason="compress-command",
                     )
-
-                self.session_store.rewrite_transcript(new_session_id, compressed)
+                    self.session_store.rewrite_transcript(new_session_id, compressed)
+                else:
+                    logger.warning(
+                        "Manual compress: session rotation skipped (_session_db unavailable), "                        "original transcript preserved at session_id=%s",
+                        session_entry.session_id,
+                    )
                 # Reset stored token count — transcript changed, old value is stale
                 self.session_store.update_session(
                     session_entry.session_key, last_prompt_tokens=0

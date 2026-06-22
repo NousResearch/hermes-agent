@@ -5543,6 +5543,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
             return
+        if not self._is_user_authorized_from_message(update.message):
+            logger.info("[Telegram] Ignoring media from unauthorized user")
+            return
         if not self._should_process_message(update.message):
             if self._should_observe_unmentioned_group_message(update.message):
                 _m = update.message

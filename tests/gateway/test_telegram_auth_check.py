@@ -14,7 +14,10 @@ from gateway.platforms.base import MessageType
 
 
 def _make_adapter(allow_from=None, allowed_chats=None, group_allowed_chats=None, callback_auth=None):
-    from gateway.platforms.telegram import TelegramAdapter
+    try:
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+    except ModuleNotFoundError:  # PR branch before Telegram plugin extraction
+        from gateway.platforms.telegram import TelegramAdapter
 
     extra = {}
     if allow_from is not None:
@@ -56,6 +59,14 @@ def _make_message(text="hello", *, from_user_id=111, chat_id=-100, chat_type="gr
         from_user=SimpleNamespace(id=from_user_id, full_name="Test User", first_name="Test"),
         reply_to_message=None,
         date=None,
+        location=None,
+        photo=None,
+        video=None,
+        audio=None,
+        voice=None,
+        document=None,
+        sticker=None,
+        media_group_id=None,
     )
 
 
@@ -305,3 +316,37 @@ def test_removed_dm_user_blocked_before_pairing_when_allowlist_exists(monkeypatc
     msg = _make_message(from_user_id=111, chat_id=111, chat_type="private")
 
     assert adapter._is_user_authorized_from_message(msg) is False
+
+
+@pytest.mark.asyncio
+async def test_media_from_removed_user_blocked_before_event_building(monkeypatch):
+    """Removed users must not inject prompt-bearing documents via media handlers."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "222")
+    adapter = _make_adapter()
+    adapter.handle_message = AsyncMock()
+
+    build_called = False
+
+    def track_build(*_args, **_kwargs):
+        nonlocal build_called
+        build_called = True
+        raise AssertionError("media handler built an event for an unauthorized user")
+
+    adapter._build_message_event = track_build
+    document = SimpleNamespace(
+        file_name="payload.txt",
+        mime_type="text/plain",
+        file_size=42,
+        get_file=AsyncMock(side_effect=AssertionError("unauthorized document was downloaded")),
+    )
+    msg = _make_message(text=None, from_user_id=111, chat_id=111, chat_type="private")
+    msg.caption = "please process this caption"
+    msg.document = document
+
+    update = SimpleNamespace(update_id=1, message=msg, effective_message=None)
+
+    await adapter._handle_media_message(update, SimpleNamespace())
+
+    assert build_called is False
+    adapter.handle_message.assert_not_awaited()
+    document.get_file.assert_not_awaited()

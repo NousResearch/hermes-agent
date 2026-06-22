@@ -8040,10 +8040,26 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     # Note: upstream/<branch> may not exist for non-main branches (a fork's
     # bb/gui has no upstream counterpart), so when the caller picks a
     # non-default branch we skip the upstream probe and use origin directly.
+    # Installer checkouts are shallow (`git clone --depth 1`). A plain
+    # `git fetch` would unshallow the repo (dragging in the whole history —
+    # the exact cost the shallow clone avoided) and the rev-list count below
+    # would then report a huge bogus "behind" number. Detect shallow up front:
+    # fetch with --depth 1 to preserve the boundary and report presence-only.
+    is_shallow = (
+        subprocess.run(
+            git_cmd + ["rev-parse", "--is-shallow-repository"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == "true"
+    )
+    depth_args = ["--depth", "1"] if is_shallow else []
+
     if branch == "main":
         print("→ Fetching from upstream...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "upstream", branch],
+            git_cmd + ["fetch"] + depth_args + ["upstream", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -8052,7 +8068,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             # Fallback to origin if upstream doesn't exist
             print("→ Fetching from origin...")
             fetch_result = subprocess.run(
-                git_cmd + ["fetch", "origin", branch],
+                git_cmd + ["fetch"] + depth_args + ["origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
@@ -8066,7 +8082,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin", branch],
+            git_cmd + ["fetch"] + depth_args + ["origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -8099,6 +8115,26 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if verify_result.returncode != 0:
         print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
         sys.exit(1)
+
+    if is_shallow:
+        # No history to count across the shallow boundary. Compare tip SHAs and
+        # report presence-only (mirrors the banner's _check_via_local_git).
+        head_sha = subprocess.run(
+            git_cmd + ["rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True,
+        ).stdout.strip()
+        target_sha = subprocess.run(
+            git_cmd + ["rev-parse", compare_branch],
+            cwd=PROJECT_ROOT, capture_output=True, text=True,
+        ).stdout.strip()
+        if head_sha and target_sha and head_sha == target_sha:
+            print("✓ Already up to date.")
+        else:
+            print(f"⚕ Update available (behind {compare_branch}).")
+            from hermes_cli.config import recommended_update_command
+
+            print(f"  Run '{recommended_update_command()}' to install.")
+        return
 
     rev_result = subprocess.run(
         git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],

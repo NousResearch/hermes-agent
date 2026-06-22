@@ -139,7 +139,7 @@ def test_judge_completion_total_failure_fails_open(monkeypatch):
 # Integration: real Hermes Council offline lane (deterministic, no network)    #
 # --------------------------------------------------------------------------- #
 def _council_src():
-    for c in (os.environ.get("COUNCIL_SRC", ""), "/mnt/devvm/custom/hermes/council/src"):
+    for c in (os.environ.get("COUNCIL_SRC", ""), "/path/to/council/src"):
         if c and (Path(c) / "libs" / "hermes_council" / "deliberation.py").exists():
             return c
     return None

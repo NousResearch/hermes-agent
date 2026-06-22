@@ -26,5 +26,19 @@ Superseded by the EARLIER open #29433 (by udatny), which is a strict SUPERSET:
 No coverage lost — the file's fix lives in #29433 (more complete).
 
 ## Coverage invariant held across all closures
-Final reconcile (git diff v0.16.0..HEAD vs union of open-PR diffs):
-160 delta files, 139 in PRs, 21 explicit DISCARD, 0 real-source orphans.
+Final reconcile (git diff v0.16.0..HEAD vs union of open-PR diffs, using
+`git diff --name-only origin/main...<head>` per open PR — NOT `gh pr view --files`,
+which caps at 100 entries and undercounts):
+**165 delta files = 140 real src (all in open PRs) + 25 DISCARD + 0 real-source orphans.**
+DISCARD = 9 `.bak` snapshots + 12 `.project-intel/` generated artifacts + 4 `transcripts/`.
+
+(An earlier "160 / 139 / 21" figure here was the gh-`--files`-based undercount; the
+git-diff ground-truth numbers above supersede it.)
+
+## #50049 content fully re-homed (2026-06-21)
+The subdirectory_hints `RuntimeError` guard + its complementary regression test
+(`tests/agent/test_subdirectory_hints.py`, 30 tests) and the unrelated `hermes_cli/providers.py`
+`xai`->`xAI` label were re-homed into NEW open draft PR **#50626**
+(`feat/subdir-hints-and-xai-label`) so no real-source file is orphaned by the #50049
+closure. The source-file fix also lives in upstream #29433 (superset); #50626 carries
+the regression test + the xAI label.

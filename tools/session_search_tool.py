@@ -588,8 +588,9 @@ def _discover(
         entry = {
             "session_id": hit_sid,
             "when": _format_timestamp(
-                session_meta.get("started_at") or match_info.get("session_started")
+                match_info.get("timestamp") or session_meta.get("started_at")
             ),
+            "started_at": _format_timestamp(session_meta.get("started_at")),
             "source": session_meta.get("source") or match_info.get("source", "unknown"),
             "model": session_meta.get("model") or match_info.get("model") or "unknown",
             "title": session_meta.get("title") or None,

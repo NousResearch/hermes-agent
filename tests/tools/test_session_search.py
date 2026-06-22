@@ -297,6 +297,48 @@ class TestRoleFilter:
 
 
 # =========================================================================
+# Discover 'when' / 'started_at' field regression
+# =========================================================================
+
+class TestDiscoverWhenTimestamp:
+    """Regression: 'when' should show matched message time, not session creation time.
+
+    https://github.com/NousResearch/hermes-agent/issues/50900
+    """
+
+    def test_when_shows_message_time_not_session_time(self, db):
+        session_start = 1000000000
+        db.create_session("s1", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (session_start, "s1"),
+        )
+        db.append_message("s1", role="user", content="hello", timestamp=session_start + 10)
+        # This message is 1 day later — the one we'll match
+        msg_ts = session_start + 86400
+        db.append_message("s1", role="user", content="needle in haystack", timestamp=msg_ts)
+        db._conn.commit()
+
+        result = json.loads(session_search(query="needle haystack", db=db))
+        assert result["count"] >= 1
+        hit = result["results"][0]
+
+        # 'when' must reflect the matched message, not session start
+        assert hit["when"] != _format_timestamp(session_start)
+        assert "started_at" in hit
+        assert hit["started_at"] == _format_timestamp(session_start)
+
+    def test_started_always_present_in_discover(self, db):
+        db.create_session("s1", source="cli")
+        db.append_message("s1", role="user", content="needle", timestamp=1000000000)
+        db._conn.commit()
+
+        result = json.loads(session_search(query="needle", db=db))
+        assert result["count"] >= 1
+        assert "started_at" in result["results"][0]
+
+
+# =========================================================================
 # Scroll shape (session_id + around_message_id)
 # =========================================================================
 

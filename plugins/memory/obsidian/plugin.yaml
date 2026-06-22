@@ -1,0 +1,14 @@
+name: obsidian
+version: 1.0.0
+description: "Obsidian vault memory — hybrid BM25+semantic search, Graph RAG, live index, session notes, and daily note sync."
+pip_dependencies:
+  - pyyaml
+  - numpy
+  - watchdog
+  - sentence-transformers
+hooks:
+  - on_session_end
+  - on_pre_compress
+  - on_memory_write
+  - on_delegation
+  - on_session_switch

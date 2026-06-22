@@ -4374,13 +4374,15 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
+        # Markdown content (including tables) is sent via post + tag:md, which
+        # Feishu now renders correctly across all clients. Plain text falls
+        # through to msg_type=text.
+        #
+        # Historical note: this routine used to force msg_type=text for any
+        # content containing a markdown table, because older Feishu/Lark
+        # clients rendered tables inside post+md as blank. That bug has been
+        # fixed upstream — see hermes-agent issues #26658 and #27529.
+        if _MARKDOWN_TABLE_RE.search(content) or _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)

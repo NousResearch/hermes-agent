@@ -6,13 +6,28 @@ import json
 import os
 import subprocess
 import sys
+import socket
 import time
+import threading
 from pathlib import Path
 from typing import Optional
 
 NOVNC_DIR = Path.home() / "noVNC"
 PID_FILE = Path.home() / ".hermes" / "novnc.pid"
+LOG_FILE = Path.home() / ".hermes" / "logs" / "novnc.log"
 DEFAULT_WEB_ROOT = NOVNC_DIR
+
+
+def _is_port_in_use(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex((host, port)) == 0
+
+
+def _check_vnc_reachable(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(3)
+        return s.connect_ex((host, port)) == 0
 
 
 def _find_websockify() -> list[str]:
@@ -134,14 +149,32 @@ def cmd_novnc_start(
         print(f"  → http://localhost:{existing_port}/vnc.html")
         return
 
+    # Pre-flight checks
+    if _is_port_in_use("127.0.0.1", port):
+        print(
+            f"! Port {port} is already in use on this machine. "
+            f"Try a different port: --port {port + 1}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not _check_vnc_reachable(vnc_host, vnc_port):
+        print(
+            f"! Cannot reach VNC server at {vnc_host}:{vnc_port}.\n"
+            f"  Make sure the VNC server is running and reachable before starting noVNC.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     websockify_cmd = _find_websockify()
     target = f"{vnc_host}:{vnc_port}"
     cmd = [*websockify_cmd, "--web", str(DEFAULT_WEB_ROOT), str(port), target]
 
     print(f"  Starting websockify on port {port} (→ {target})")
     print(f"  Web root: {DEFAULT_WEB_ROOT}")
-    print(f"  Command: {' '.join(cmd)}")
 
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = LOG_FILE.open("w", encoding="utf-8")
     startup_info = None
     if sys.platform == "win32":
         startup_info = subprocess.STARTUPINFO()
@@ -149,7 +182,7 @@ def cmd_novnc_start(
 
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
+        stdout=log_handle,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
@@ -158,11 +191,21 @@ def cmd_novnc_start(
     _save_state(proc.pid, port)
     print(f"  Started (PID {proc.pid})")
 
-    # Wait briefly for startup
+    # Wait briefly for startup, polling log for errors
     time.sleep(1.5)
     if proc.poll() is not None:
+        log_handle.flush()
+        recent_log = LOG_FILE.read_text(encoding="utf-8").strip()
         print(f"! websockify exited immediately (code {proc.returncode})", file=sys.stderr)
-        print("  Check that the VNC server is running and reachable.", file=sys.stderr)
+        if recent_log:
+            print("  Log output:", file=sys.stderr)
+            for line in recent_log.splitlines()[-8:]:
+                print(f"    {line}", file=sys.stderr)
+        else:
+            print(
+                "  Is the VNC server running? Is the port already in use?",
+                file=sys.stderr,
+            )
         PID_FILE.unlink(missing_ok=True)
         sys.exit(1)
 
@@ -218,7 +261,13 @@ def cmd_novnc_status() -> None:
 
 def novnc_command(args) -> None:
     """Dispatch ``hermes novnc <subcommand>``."""
-    sub = args.novnc_command
+    sub = getattr(args, "novnc_command", None)
+    if sub is None:
+        print("Usage: hermes novnc {start|stop|status}")
+        print("  start   Launch websockify + open browser")
+        print("  stop    Kill the running websockify process")
+        print("  status  Show PID and URL if running")
+        sys.exit(0)
     if sub == "start":
         cmd_novnc_start(
             port=args.port,
@@ -231,5 +280,5 @@ def novnc_command(args) -> None:
     elif sub == "status":
         cmd_novnc_status()
     else:
-        print("Usage: hermes novnc {start|stop|status}", file=sys.stderr)
+        print(f"Unknown subcommand: {sub}", file=sys.stderr)
         sys.exit(1)

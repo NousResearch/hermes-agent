@@ -12,7 +12,10 @@ def build_novnc_parser(subparsers, *, cmd_novnc: Callable) -> None:
         help="Start/stop a noVNC web-based VNC session",
         description="Manage noVNC + websockify sessions: start a web-based VNC client, stop it, or check its status.",
     )
-    novnc_sub = novnc_parser.add_subparsers(dest="novnc_command")
+    novnc_sub = novnc_parser.add_subparsers(
+        dest="novnc_command",
+        help="Subcommands: start, stop, status",
+    )
 
     start_parser = novnc_sub.add_parser(
         "start",

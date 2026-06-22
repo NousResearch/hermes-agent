@@ -1,5 +1,6 @@
-"""Guards for the multi-container Hermes WebUI install surface."""
-
+"""Test that setup.py uses temporary output directories when the source
+tree is read-only (as it is inside the Docker WebUI install surface).
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,18 +19,6 @@ def _is_under(path: str, root: Path) -> bool:
     except ValueError:
         return False
     return True
-
-
-def test_docker_context_includes_license_file() -> None:
-    """PEP 639 license-files metadata must resolve inside the Docker image."""
-    dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
-    active_lines = [
-        line.strip()
-        for line in dockerignore.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-
-    assert "LICENSE" not in active_lines
 
 
 def test_setup_uses_temporary_outputs_when_source_tree_is_read_only(

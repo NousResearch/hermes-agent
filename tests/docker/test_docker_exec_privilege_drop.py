@@ -22,6 +22,7 @@ These tests verify:
 """
 
 from __future__ import annotations
+from tests.docker.conftest import docker_exec
 
 import subprocess
 import time
@@ -36,8 +37,8 @@ _RUN_READY_TIMEOUT_S = 20
 
 def _wait_for_init(container: str) -> None:
     """Block until /init is up enough that `docker exec` is responsive."""
-    deadline = time.time() + _RUN_READY_TIMEOUT_S
-    while time.time() < deadline:
+    deadline = time.monotonic() + _RUN_READY_TIMEOUT_S
+    while time.monotonic() < deadline:
         r = subprocess.run(
             ["docker", "exec", container, "true"],
             capture_output=True, timeout=5,

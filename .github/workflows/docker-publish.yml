@@ -138,7 +138,7 @@ jobs:
           NOUS_API_KEY: ""
         run: |
           source .venv/bin/activate
-          python -m pytest tests/docker/ -v --tb=short
+          python scripts/run_tests_parallel.py tests/docker/ --file-timeout 300 -- -v --tb=short
 
       - name: Log in to Docker Hub
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'

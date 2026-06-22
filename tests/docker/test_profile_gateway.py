@@ -26,7 +26,7 @@ from __future__ import annotations
 import subprocess
 import time
 
-from tests.docker.conftest import docker_exec_sh
+from tests.docker.conftest import docker_exec_sh, start_container
 
 PROFILE = "test-harness-profile"
 
@@ -69,12 +69,7 @@ def _svstat_wants_up(container: str) -> bool:
 def test_profile_create_then_gateway_start(
     built_image: str, container_name: str,
 ) -> None:
-    subprocess.run(
-        ["docker", "run", "-d", "--name", container_name, built_image,
-         "sleep", "120"],
-        check=True, capture_output=True, timeout=30,
-    )
-    time.sleep(3)
+    start_container(built_image, container_name, cmd="sleep 120")
 
     r = _sh(container_name, f"hermes profile create {PROFILE}")
     assert r.returncode == 0, f"profile create failed: {r.stderr}"
@@ -114,12 +109,7 @@ def test_profile_delete_stops_gateway(
 ) -> None:
     """Deleting a profile should stop its gateway and remove the s6
     service slot."""
-    subprocess.run(
-        ["docker", "run", "-d", "--name", container_name, built_image,
-         "sleep", "120"],
-        check=True, capture_output=True, timeout=30,
-    )
-    time.sleep(3)
+    start_container(built_image, container_name, cmd="sleep 120")
 
     _sh(container_name, f"hermes profile create {PROFILE}")
     _sh(container_name, f"hermes -p {PROFILE} gateway start", timeout=60)

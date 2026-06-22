@@ -6045,6 +6045,49 @@ ipcMain.handle('hermes:logs:reveal', async () => {
   }
 })
 
+// Reveal a file-path hyperlink's target in the OS file manager. Accepts a bare
+// path OR a file:// URL (resolved via resolveRequestedPathForIpc, which also
+// validates against the unsafe-path blocklist). Returns the resolved path so
+// the renderer can show it in the menu label.
+ipcMain.handle('hermes:shell:revealInFolder', (_event, rawPath) => {
+  const localPath = resolveRequestedPathForIpc(String(rawPath || ''), { purpose: 'Reveal in folder' })
+  shell.showItemInFolder(localPath)
+  return { ok: true, path: localPath }
+})
+
+// Open the system "open with" app picker for a file-path hyperlink's target.
+// Windows: rundll32 shell32.dll,OpenAs_RunDLL shows the native picker. macOS:
+// `open -a` with no app argument is ambiguous, so we fall back to openPath
+// (which dispatches to the default handler). Linux: xdg-open is the closest
+// analogue (no standard picker) — we delegate to openPath as best-effort.
+ipcMain.handle('hermes:shell:openWith', (_event, rawPath) => {
+  const localPath = resolveRequestedPathForIpc(String(rawPath || ''), { purpose: 'Open with' })
+
+  if (process.platform === 'win32') {
+    // OpenAs_RunDLL expects a Windows-native path with backslashes.
+    const winPath = localPath.replace(/\//g, '\\')
+    const proc = spawn('rundll32.exe', ['shell32.dll,OpenAs_RunDLL', winPath], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false
+    })
+    proc.on('error', error => {
+      rememberLog(`[shell] openWith rundll32 failed: ${error.message}; falling back to openPath`)
+      void shell.openPath(localPath)
+    })
+    proc.unref()
+    return { ok: true, path: localPath }
+  }
+
+  // macOS / Linux: no standard native picker via a single command. Best-effort
+  // is to open with the default handler (the user can then choose another app
+  // from there on macOS via the Open With submenu in Finder, but that's a
+  // follow-up). Log so the behaviour is debuggable.
+  rememberLog(`[shell] openWith on ${process.platform}: delegating to openPath for ${localPath}`)
+  void shell.openPath(localPath)
+  return { ok: true, path: localPath }
+})
+
 ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
 
 function isExecutableFile(filePath) {

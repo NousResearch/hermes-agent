@@ -45,6 +45,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
+  // File-path hyperlink shell actions (right-click menu on file:// links in
+  // assistant output). Copy uses writeClipboard above; open-in-default-app
+  // uses openExternal with a file:// URL. These two are reveal + open-with.
+  shell: {
+    revealInFolder: rawPath => ipcRenderer.invoke('hermes:shell:revealInFolder', rawPath),
+    openWith: rawPath => ipcRenderer.invoke('hermes:shell:openWith', rawPath)
+  },
   sanitizeWorkspaceCwd: cwd => ipcRenderer.invoke('hermes:workspace:sanitize', cwd),
   settings: {
     getDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:get'),

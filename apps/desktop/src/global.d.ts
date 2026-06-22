@@ -61,6 +61,13 @@ declare global {
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
+      // File-path hyperlink shell actions (right-click menu on file:// links
+      // in assistant output). revealInFolder → OS file manager; openWith →
+      // system "open with" app picker. Both accept a bare path or file:// URL.
+      shell: {
+        revealInFolder: (rawPath: string) => Promise<{ ok: boolean; path: string; error?: string }>
+        openWith: (rawPath: string) => Promise<{ ok: boolean; path: string; error?: string }>
+      }
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {
         getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>

@@ -12,6 +12,7 @@ import {
   type ComponentProps,
   memo,
   type ReactNode,
+  useCallback,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -23,6 +24,12 @@ import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger
+} from '@/components/ui/context-menu'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -237,6 +244,80 @@ function childrenToText(children: unknown): string {
   return ''
 }
 
+// Resolve a `file://` href (or bare path) to the OS-native absolute path the
+// IPC handlers expect. `window.hermesDesktop.shell.*` accept both forms via
+// resolveRequestedPathForIpc, but we pass the original href through so the
+// main process does the canonical resolution + validation.
+function hrefToShellPath(href: string): string {
+  return href
+}
+
+// A file-path hyperlink rendered from a `file://` markdown link. Left-click
+// opens the file in the OS default app (same as any link); right-click shows a
+// context menu with Copy path / Reveal in Explorer / Open / Open with…
+// (the four actions the feature request specifies). The label retains any
+// `:line:col` suffix the preprocessor captured so the user sees what the model
+// wrote, even though the href targets the file only (file:// can't carry line
+// info — see markdown-preprocess.ts).
+function FilePathLink({
+  children,
+  className,
+  href,
+  ...props
+}: ComponentProps<'a'>) {
+  const path = hrefToShellPath(href ?? '')
+
+  const handleCopyPath = useCallback(() => {
+    void window.hermesDesktop?.writeClipboard?.(path)
+  }, [path])
+
+  const handleRevealInFolder = useCallback(() => {
+    void window.hermesDesktop?.shell?.revealInFolder?.(path)
+  }, [path])
+
+  const handleOpen = useCallback(() => {
+    // openExternal routes file:// through shell.openPath (default app).
+    if (href) {
+      void window.hermesDesktop?.openExternal?.(href)
+    }
+  }, [href])
+
+  const handleOpenWith = useCallback(() => {
+    void window.hermesDesktop?.shell?.openWith?.(path)
+  }, [path])
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <a
+          className={cn(
+            'font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere cursor-pointer',
+            className
+          )}
+          href={href}
+          onClick={event => {
+            // Left-click: open in default app via the IPC bridge (Chromium
+            // blocks file:// navigation from the app origin, so we intercept
+            // and route through openExternal → shell.openPath).
+            event.preventDefault()
+            handleOpen()
+          }}
+          rel="noopener noreferrer"
+          {...props}
+        >
+          {children}
+        </a>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={handleCopyPath}>Copy path</ContextMenuItem>
+        <ContextMenuItem onSelect={handleRevealInFolder}>Open path in Explorer</ContextMenuItem>
+        <ContextMenuItem onSelect={handleOpen}>Open in default app</ContextMenuItem>
+        <ContextMenuItem onSelect={handleOpenWith}>Open with…</ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  )
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const mediaPath = mediaPathFromMarkdownHref(href)
 
@@ -248,6 +329,13 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 
   if (previewTarget) {
     return <PreviewAttachment source="explicit-link" target={previewTarget} />
+  }
+
+  // File-path hyperlinks emitted by the preprocessor's linkifyFilePaths()
+  // arrive as `file://` hrefs. Render them with the right-click context menu
+  // (copy / reveal / open / open-with) instead of the generic anchor.
+  if (href && /^file:\/\//i.test(href)) {
+    return <FilePathLink className={className} href={href} {...props}>{children}</FilePathLink>
   }
 
   const target = href ? normalizeExternalUrl(href) : href

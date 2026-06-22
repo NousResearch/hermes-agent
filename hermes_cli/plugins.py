@@ -171,6 +171,11 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Cron pre-dispatch hook. Fired by cron/scheduler.py before a due job
+    # executes either the no-agent script path or the LLM-agent path. Plugins may
+    # return {"action": "skip", "reason": "..."} to block dispatch, or
+    # {"action": "allow"}/None to continue. Kwargs: job, scheduler_module.
+    "pre_cron_dispatch",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).

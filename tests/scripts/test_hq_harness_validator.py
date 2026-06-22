@@ -24,6 +24,7 @@ def test_default_manifest_is_allowed():
 def test_default_fixture_set_meets_minimum_coverage():
     assert len(hq_harness_validator.DEFAULT_MEMORY_FIXTURES) >= 6
     assert len(hq_harness_validator.DEFAULT_POLICY_FIXTURES) >= 5
+    assert len(hq_harness_validator.DEFAULT_RED_TEAM_FIXTURES) >= 4
 
 
 def test_missing_required_manifest_field_is_rejected():
@@ -86,6 +87,38 @@ def test_default_policy_fixtures_match_expected_decisions():
         "policy-live-enforcement": "confirm",
     }
     assert all(decision.passed for decision in decisions)
+
+
+def test_default_red_team_fixtures_match_expected_decisions():
+    decisions = [
+        hq_harness_validator.evaluate_red_team_fixture(fixture)
+        for fixture in hq_harness_validator.DEFAULT_RED_TEAM_FIXTURES
+    ]
+
+    assert {decision.fixture_id: decision.actual_decision for decision in decisions} == {
+        "redteam-gateway-injection-as-data": "confirm",
+        "redteam-secret-exfiltration-rejected": "reject",
+        "redteam-fixture-intake-policy-reviewed": "allow",
+        "redteam-live-gate-approval-recorded": "allow",
+    }
+    assert all(decision.passed for decision in decisions)
+
+
+def test_sandbox_eval_gate_mode_includes_red_team_fixtures():
+    report = hq_harness_validator.run_eval(
+        hq_harness_validator.DEFAULT_MANIFEST,
+        [
+            *hq_harness_validator.DEFAULT_MEMORY_FIXTURES,
+            *hq_harness_validator.DEFAULT_POLICY_FIXTURES,
+            *hq_harness_validator.DEFAULT_RED_TEAM_FIXTURES,
+        ],
+        "synthetic-test",
+        mode="sandbox_eval_gate",
+    )
+
+    assert report["mode"] == "sandbox_eval_gate"
+    assert report["failed"] == 0
+    assert any(d["fixture_id"] == "redteam-live-gate-approval-recorded" for d in report["decisions"])
 
 
 def test_run_eval_and_report_writer(tmp_path):

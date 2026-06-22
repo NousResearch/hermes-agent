@@ -407,49 +407,47 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const isMac =
       typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
 
+    // Flag: the custom key handler below asked xterm.js to skip a printable
+    // key.  xterm.js sometimes ignores this for keyCode >= 48 and fires
+    // onData anyway.  We check the flag in onData and skip sending there,
+    // because the input-event handler below will forward the correctly-
+    // composed character instead.
+    let skipNextOnData = false;
+
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
-      // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
-      // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
-      // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
-      // without a selection it passes through to the TUI so agents can still
-      // react to the keypress.
-      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
-      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
-      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+      // Printable-character press: ask xterm.js to skip keyboard evaluation.
+      // The correctly-composed character arrives via the textarea's InputEvent
+      // (see capture-phase input handler below).
+      if (
+        !ev.ctrlKey &&
+        !ev.altKey &&
+        !ev.metaKey &&
+        ev.key &&
+        ev.key.length === 1
+      ) {
+        skipNextOnData = true;
+        return false;
+      }
 
-      if (copyModifier && ev.key.toLowerCase() === "c") {
+      // Clipboard: Cmd+C/Ctrl+Shift+C copy, Ctrl+Shift+V paste.
+      const copyMod = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+      const pasteMod = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+      if (copyMod && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
         if (sel) {
-          // Direct writeText inside the keydown handler preserves the user
-          // gesture — async round-trips through OSC 52 can lose activation
-          // and fail with "Document is not focused".
-          navigator.clipboard.writeText(sel).catch((err) => {
-            console.warn("[dashboard clipboard] direct copy failed:", err.message);
-          });
-          // Clear xterm.js's highlight after copy (matches gnome-terminal).
+          navigator.clipboard.writeText(sel).catch(() => {});
           term.clearSelection();
           ev.preventDefault();
           return false;
         }
-        // No selection → fall through so the TUI receives Ctrl+Shift+C
-        // (or the bare ev if the user used a different modifier).
       }
-
-      if (pasteModifier && ev.key.toLowerCase() === "v") {
-        navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text) term.paste(text);
-          })
-          .catch((err) => {
-            console.warn("[dashboard clipboard] paste failed:", err.message);
-          });
+      if (pasteMod && ev.key.toLowerCase() === "v") {
+        navigator.clipboard.readText().then((t) => term.paste(t)).catch(() => {});
         ev.preventDefault();
         return false;
       }
-
       return true;
     });
 
@@ -480,6 +478,46 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.loadAddon(new WebLinksAddon());
 
     term.open(host);
+
+    // --- Keyboard layout fix: redirect ALL printable input through -------
+    // --- the textarea's HTML InputEvent instead of xterm.js's keydown ---
+    //
+    // xterm.js's evaluateKeyboardEvent maps keyCode→char using a US-layout
+    // table.  For non-Latin layouts the browser sends a different character
+    // than what keyCode implies, so xterm.js outputs wrong chars.
+    //
+    // Fix: the custom key handler above sets skipNextOnData=true for every
+    // printable-character keydown and asks xterm.js to skip processing.
+    // xterm.js sometimes ignores this and fires onData anyway — in that
+    // case the onData handler below checks the flag and skips sending.
+    // The correctly-composed character is read from the textarea's native
+    // HTML InputEvent (capture-phase handler below), which always contains
+    // the correct character for the active keyboard layout.
+    const textareaEl = host.querySelector<HTMLTextAreaElement>(
+      ".xterm-helper-textarea",
+    );
+    let textareaInputCleanup: (() => void) | null = null;
+    if (textareaEl) {
+      // Capture-phase input: forward correctly-composed characters from
+      // the textarea to the WebSocket.
+      const onTextareaInput = (e: Event) => {
+        const ie = e as InputEvent;
+        if (
+          ie.inputType === "insertText" &&
+          ie.data &&
+          wsRef.current?.readyState === WebSocket.OPEN
+        ) {
+          e.stopImmediatePropagation();
+          wsRef.current.send(ie.data);
+          textareaEl!.value = "";
+        }
+      };
+      textareaEl.addEventListener("input", onTextareaInput, {
+        capture: true,
+      });
+      textareaInputCleanup = () =>
+        textareaEl.removeEventListener("input", onTextareaInput);
+    }
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
@@ -712,6 +750,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           return;
         }
 
+        // Printable key that the custom handler flagged but xterm.js
+        // processed anyway — skip, the input-event handler sends it.
+        if (skipNextOnData) {
+          skipNextOnData = false;
+          return;
+        }
+
         ws.send(data);
       });
 
@@ -729,6 +774,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       syncMetricsRef.current = null;
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
+      textareaInputCleanup?.();
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(

@@ -1,0 +1,14 @@
+.........................................F.............................. [ 23%]
+........................................................................ [ 46%]
+........................................................................ [ 69%]
+........................................................................ [ 93%]
+.....................                                                    [100%]
+=============================== warnings summary ===============================
+tests/tui_gateway/test_custom_provider_session_persistence.py::TestResumeRoundTrip::test_round_trip_restores_entry_credentials
+  <VENV>/lib64/python3.11/site-packages/discord/player.py:30: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
+    import audioop
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/tui_gateway/test_goal_command.py::test_goal_set_returns_send_with_notice
+1 failed, 308 passed, 1 warning in 136.51s (0:02:16)

@@ -202,6 +202,17 @@ class GatewayStreamConsumer:
         # this response and route through edit-based for graceful degradation.
         self._draft_failures = 0
         self._before_finalize_notified = False
+        # Set when _reset_segment_state is called with preserve_no_edit=True
+        # (segment break on a __no_edit__ platform).  Signals _send_fallback_final
+        # to include "guest_segment_start": True on its first chunk so the
+        # Telegram adapter replaces the guest reply buffer instead of appending —
+        # preventing inter-tool commentary from earlier segments from bleeding
+        # into the answerGuestQuery reply.
+        self._had_no_edit_segment_break = False
+        # Offset into _accumulated where the most-recent segment began.  Updated
+        # by each __no_edit__ segment-break so _send_fallback_final can extract
+        # only the last segment's text when the adapter opts in.
+        self._no_edit_segment_text_start = 0
 
     def _metadata_for_send(
         self,
@@ -312,6 +323,16 @@ class GatewayStreamConsumer:
 
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
+            # Preserve the __no_edit__ sentinel so _send_fallback_final remains
+            # the final delivery path — resetting to None would re-enter the
+            # first-send path on every segment break and create one platform
+            # message per tool call (the cause of 155 PR comments in #8124).
+            # Track where the current segment begins in _accumulated so
+            # adapters that deliver only the final segment (e.g. Telegram guest
+            # mode via answerGuestQuery) can extract it without accumulating
+            # inter-tool narration from earlier segments.
+            self._had_no_edit_segment_break = True
+            self._no_edit_segment_text_start = len(self._accumulated)
             return
         self._message_id = None
         self._message_created_ts = None
@@ -876,8 +897,25 @@ class GatewayStreamConsumer:
 
         Retries each chunk once on flood-control failures with a short delay.
         """
+        # When the adapter opts in (e.g. Telegram guest mode / answerGuestQuery),
+        # deliver ONLY the last segment's text so inter-tool commentary from
+        # earlier segments does not appear in the reply.  The adapter is then
+        # signalled via "guest_segment_start": True on the first chunk to REPLACE
+        # its buffer (rather than append) so any stale preamble is discarded.
+        _deliver_last_segment_only = (
+            self._had_no_edit_segment_break
+            and getattr(self.adapter, "GUEST_MODE_DROPS_PRIOR_SEGMENTS", False) is True
+        )
         final_text = self._clean_for_display(text)
-        continuation = self._continuation_text(final_text)
+        if _deliver_last_segment_only:
+            continuation = self._clean_for_display(
+                text[self._no_edit_segment_text_start:]
+            ).strip()
+            if not continuation:
+                continuation = final_text  # fallback to full text if last segment empty
+        else:
+            continuation = self._continuation_text(final_text)
+        self._had_no_edit_segment_break = False
         self._fallback_final_send = False
         if not continuation.strip():
             # Nothing new to send — the visible partial already matches final text.
@@ -930,14 +968,25 @@ class GatewayStreamConsumer:
         last_message_id: Optional[str] = None
         last_successful_chunk = ""
         sent_any_chunk = False
+        # Signal the first chunk as a "segment start" so adapters that buffer
+        # replies (e.g. Telegram guest mode / answerGuestQuery) replace their
+        # stale inter-tool preamble instead of appending to it.
+        _tag_segment_start = _deliver_last_segment_only
         for chunk in chunks:
             # Try sending with one retry on flood-control errors.
             result = None
+            _base_meta = self._metadata_for_send(final=True)
+            if _tag_segment_start:
+                _chunk_meta: Optional[dict] = dict(_base_meta or {})
+                _chunk_meta["guest_segment_start"] = True
+                _tag_segment_start = False  # only the first chunk gets this flag
+            else:
+                _chunk_meta = _base_meta
             for attempt in range(2):
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=chunk,
-                    metadata=self._metadata_for_send(final=True),
+                    metadata=_chunk_meta,
                 )
                 if result.success:
                     break

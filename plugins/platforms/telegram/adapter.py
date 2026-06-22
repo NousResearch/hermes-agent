@@ -435,6 +435,13 @@ class TelegramAdapter(BasePlatformAdapter):
     # Fixes #25710.
     REQUIRES_EDIT_FINALIZE: bool = True
 
+    # In guest mode (answerGuestQuery), the reply must be a single coherent
+    # answer, not a concatenation of all inter-tool commentary segments.
+    # Setting this True tells stream_consumer._send_fallback_final to deliver
+    # only the last segment's text and tag it with "guest_segment_start" so
+    # the send() buffer replaces instead of appending stale preamble.
+    GUEST_MODE_DROPS_PRIOR_SEGMENTS: bool = True
+
     # Adaptive text-batch ingress: short messages need a tighter delay so the
     # first token reaches the agent fast.  Numbers tuned for "feels instant":
     # ≤320 codepoints (one short paragraph) settles in ~180ms; ≤1024
@@ -2550,7 +2557,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     _clean = _clean[:-1]
 
                 _existing = self._guest_reply_buffer.get(chat_id, "")
-                if _existing and _clean.startswith(_existing):
+                if metadata and metadata.get("guest_segment_start"):
+                    # Stream consumer had a tool-call segment break on a __no_edit__
+                    # platform: inter-tool commentary was cleared in the consumer and
+                    # this is the start of the final-answer delivery.  Replace the
+                    # buffer so preamble text ("searching...", failed-tool narration)
+                    # from earlier segments does not appear in the answerGuestQuery.
+                    self._guest_reply_buffer[chat_id] = _clean
+                elif _existing and _clean.startswith(_existing):
                     # Cumulative streaming update: new content contains all
                     # prior content as a prefix → replace so the last call wins.
                     self._guest_reply_buffer[chat_id] = _clean

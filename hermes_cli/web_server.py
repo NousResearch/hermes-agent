@@ -7662,15 +7662,21 @@ def _find_cron_job_profile(job_id: str) -> Optional[str]:
 async def list_cron_jobs(profile: str = "all"):
     requested = (profile or "all").strip()
     if requested.lower() != "all":
-        return _call_cron_for_profile(requested, "list_jobs", True)
+        return await asyncio.to_thread(
+            _call_cron_for_profile, requested, "list_jobs", True
+        )
 
     jobs: List[Dict[str, Any]] = []
-    for item in _cron_profile_dicts():
+    for item in await asyncio.to_thread(_cron_profile_dicts):
         name = str(item.get("name") or "")
         if not name:
             continue
         try:
-            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
+            jobs.extend(
+                await asyncio.to_thread(
+                    _call_cron_for_profile, name, "list_jobs", True
+                )
+            )
         except Exception:
             _log.exception("Failed to list cron jobs for profile %s", name)
     return jobs

@@ -187,6 +187,111 @@ async def test_cron_delete_with_profile_deletes_only_target_profile(isolated_pro
 
 
 @pytest.mark.asyncio
+async def test_list_cron_jobs_does_not_block_event_loop_when_sync_io_is_slow(
+    isolated_profiles, monkeypatch
+):
+    """Regression test for #45072: slow synchronous sub-functions must NOT
+    block the asyncio event loop.
+
+    Before the fix, ``_cron_profile_dicts()`` and ``_call_cron_for_profile()``
+    were called directly in the ``async def list_cron_jobs()`` handler, which
+    freezes the event loop for the duration of every synchronous I/O call.
+
+    After the fix, these calls are offloaded via ``asyncio.to_thread()`` so
+    the event loop stays responsive.
+
+    The test injects slow sync functions (time.sleep) and runs a concurrent
+    heartbeat coroutine. If the event loop were blocked, the heartbeat would
+    stall; with the fix, it continues ticking.
+    """
+    import asyncio
+    import time as time_mod
+
+    from hermes_cli import web_server
+
+    SLEEP_PER_CALL = 0.2  # seconds per monkeypatched sync function
+    TICK_INTERVAL = 0.01  # heartbeat granularity
+    EXPECTED_TICKS = 10   # generous lower bound
+
+    original_dicts = web_server._cron_profile_dicts
+    original_call = web_server._call_cron_for_profile
+
+    def slow_dicts():
+        time_mod.sleep(SLEEP_PER_CALL)
+        return original_dicts()
+
+    def slow_call(profile, func_name, *args, **kwargs):
+        time_mod.sleep(SLEEP_PER_CALL)
+        return original_call(profile, func_name, *args, **kwargs)
+
+    monkeypatch.setattr(web_server, "_cron_profile_dicts", slow_dicts)
+    monkeypatch.setattr(web_server, "_call_cron_for_profile", slow_call)
+
+    start = time_mod.monotonic()
+    deadline = start + 1.0  # plenty of room for 3× slow calls
+
+    ticks = 0
+
+    async def heartbeat():
+        nonlocal ticks
+        while time_mod.monotonic() < deadline:
+            ticks += 1
+            await asyncio.sleep(TICK_INTERVAL)
+
+    await asyncio.gather(
+        web_server.list_cron_jobs(profile="all"),
+        heartbeat(),
+    )
+
+    # If the event loop were blocked by synchronous calls, ticks would be
+    # very low (~0-2). With async.offloaded to thread pool it should be
+    # well above EXPECTED_TICKS.
+    assert ticks > EXPECTED_TICKS, (
+        f"Heartbeat only ticked {ticks} times (expected >{EXPECTED_TICKS}). "
+        "This means synchronous cron/profile functions blocked the event loop."
+    )
+
+    # Also verify that the single-profile path is non-blocking
+    ticks2 = 0
+    start2 = time_mod.monotonic()
+    deadline2 = start2 + 0.4
+
+    async def heartbeat2():
+        nonlocal ticks2
+        while time_mod.monotonic() < deadline2:
+            ticks2 += 1
+            await asyncio.sleep(TICK_INTERVAL)
+
+    await asyncio.gather(
+        web_server.list_cron_jobs(profile="default"),
+        heartbeat2(),
+    )
+
+    assert ticks2 > 5, (
+        f"Single-profile heartbeat only ticked {ticks2} times "
+        "(expected >5). The sync offload for single-profile path is broken."
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_cron_jobs_preserves_exceptions_from_sync_functions(
+    isolated_profiles, monkeypatch
+):
+    """Verify that exceptions raised inside asyncio.to_thread still
+    propagate correctly with the original error type and message."""
+    from hermes_cli import web_server
+
+    def broken_dicts():
+        msg = "simulated sync crash"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(web_server, "_cron_profile_dicts", broken_dicts)
+
+    with pytest.raises(RuntimeError, match="simulated sync crash"):
+        await web_server.list_cron_jobs(profile="all")
+
+
+@pytest.mark.asyncio
 async def test_cron_profile_validation_errors(isolated_profiles):
     from hermes_cli import web_server
 

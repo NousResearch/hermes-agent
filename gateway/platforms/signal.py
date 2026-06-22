@@ -253,6 +253,11 @@ class SignalAdapter(BasePlatformAdapter):
     # square behind in chat clients when edit attempts fail.
     SUPPORTS_MESSAGE_EDITING = False
 
+    # Native sendReaction (also drives the 👀/✅ processing-lifecycle hooks,
+    # gated by SIGNAL_REACTIONS). add_reaction below implements the unified
+    # cross-platform reaction contract for the agent.
+    SUPPORTS_REACTIONS = True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIGNAL)
 
@@ -1549,7 +1554,7 @@ class SignalAdapter(BasePlatformAdapter):
     # Reactions
     # ------------------------------------------------------------------
 
-    async def send_reaction(
+    async def _send_reaction_raw(
         self,
         chat_id: str,
         emoji: str,
@@ -1582,7 +1587,7 @@ class SignalAdapter(BasePlatformAdapter):
         logger.debug("Signal: sendReaction failed (chat=%s, emoji=%s)", chat_id[:20], emoji)
         return False
 
-    async def remove_reaction(
+    async def _remove_reaction_raw(
         self,
         chat_id: str,
         target_author: str,
@@ -1605,9 +1610,63 @@ class SignalAdapter(BasePlatformAdapter):
         result = await self._rpc("sendReaction", params)
         return result is not None
 
-    # ------------------------------------------------------------------
-    # Processing Lifecycle Hooks (reactions as progress indicators)
-    # ------------------------------------------------------------------
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Unified reaction contract for Signal.
+
+        Signal addresses a message by (target_author, target_timestamp), not a
+        single opaque id, so the unified ``message_id`` is a composite token
+        ``"<author>:<timestamp_ms>"`` (as surfaced on inbound MessageEvents).
+        """
+        author, ts = self._parse_signal_message_id(message_id)
+        if not author or not ts:
+            return {
+                "success": False,
+                "error": "signal requires message_id as '<author>:<timestamp_ms>'",
+            }
+        ok = await self._send_reaction_raw(chat_id, emoji, author, ts)
+        return (
+            {"success": True, "message_id": message_id}
+            if ok
+            else {"success": False, "error": "signal sendReaction failed"}
+        )
+
+    async def remove_reaction(
+        self,
+        chat_id: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Unified reaction contract — retract a Signal reaction."""
+        author, ts = self._parse_signal_message_id(message_id)
+        if not author or not ts:
+            return {
+                "success": False,
+                "error": "signal requires message_id as '<author>:<timestamp_ms>'",
+            }
+        ok = await self._remove_reaction_raw(chat_id, author, ts)
+        return (
+            {"success": True, "message_id": message_id}
+            if ok
+            else {"success": False, "error": "signal remove reaction failed"}
+        )
+
+    @staticmethod
+    def _parse_signal_message_id(
+        message_id: Optional[str],
+    ) -> tuple[Optional[str], Optional[int]]:
+        """Split a composite ``"<author>:<timestamp_ms>"`` reaction target."""
+        if not message_id or ":" not in message_id:
+            return (None, None)
+        author, _, ts_raw = message_id.rpartition(":")
+        try:
+            return (author or None, int(ts_raw))
+        except (TypeError, ValueError):
+            return (None, None)
+
 
     def _extract_reaction_target(self, event: MessageEvent) -> Optional[tuple]:
         """Extract (target_author, target_timestamp) from a MessageEvent.
@@ -1648,7 +1707,7 @@ class SignalAdapter(BasePlatformAdapter):
             return
         target = self._extract_reaction_target(event)
         if target:
-            await self.send_reaction(event.source.chat_id, "👀", *target)
+            await self._send_reaction_raw(event.source.chat_id, "👀", *target)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: "ProcessingOutcome") -> None:
         """Swap the 👀 reaction for ✅ (success) or ❌ (failure).
@@ -1665,11 +1724,11 @@ class SignalAdapter(BasePlatformAdapter):
             return
         chat_id = event.source.chat_id
         # Remove the in-progress reaction, then add the final one
-        await self.remove_reaction(chat_id, *target)
+        await self._remove_reaction_raw(chat_id, *target)
         if outcome == ProcessingOutcome.SUCCESS:
-            await self.send_reaction(chat_id, "✅", *target)
+            await self._send_reaction_raw(chat_id, "✅", *target)
         elif outcome == ProcessingOutcome.FAILURE:
-            await self.send_reaction(chat_id, "❌", *target)
+            await self._send_reaction_raw(chat_id, "❌", *target)
 
     # ------------------------------------------------------------------
     # Chat Info

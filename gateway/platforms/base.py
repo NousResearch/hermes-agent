@@ -2915,6 +2915,65 @@ class BasePlatformAdapter(ABC):
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
 
+    # Whether this adapter can attach/retract emoji reactions on a message.
+    # Reactions are the lightweight "social acknowledgement" output channel —
+    # a participation primitive distinct from sending a message (a 👀 / 😂 /
+    # 👍 that says "seen / amused / agreed" without composing a reply). Most
+    # chat platforms support them, but with platform-specific call shapes, so
+    # the capability is advertised by this flag and normalized behind the two
+    # coroutines below. Adapters that implement reactions set this True; the
+    # default is False so callers (e.g. the ``send_message`` tool's ``react``
+    # action) can give a clean "not supported here" answer instead of probing
+    # for a method that may not exist.
+    SUPPORTS_REACTIONS: bool = False
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Attach an emoji reaction to a message in ``chat_id``.
+
+        This is the unified, cross-platform reaction contract. Each platform's
+        native reaction API differs (Signal needs the target author + Signal
+        timestamp; Telegram replaces all reactions in one call; Discord is
+        additive; WhatsApp routes through its bridge), so adapters normalize
+        their native call behind this signature.
+
+        Args:
+            chat_id: The chat/channel ID containing the target message.
+            emoji: The reaction emoji (e.g. "👀", "✅", "😂").
+            message_id: The target message ID. When ``None``, adapters that
+                track it react to the most recent inbound message in the chat
+                (the one being responded to); adapters that cannot resolve a
+                target without an explicit id return a ``success: False`` error.
+
+        Returns:
+            A dict with at least ``success: bool``; on failure it carries an
+            ``error`` string. The default implementation reports that the
+            platform does not support reactions.
+        """
+        return {
+            "success": False,
+            "error": f"{self.name} does not support message reactions",
+        }
+
+    async def remove_reaction(
+        self,
+        chat_id: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Retract a previously-added reaction (best-effort).
+
+        Mirror of :meth:`add_reaction`. The default is a no-op error for
+        adapters without reaction support.
+        """
+        return {
+            "success": False,
+            "error": f"{self.name} does not support message reactions",
+        }
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

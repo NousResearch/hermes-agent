@@ -273,7 +273,10 @@ def _handle_react(args, remove=False):
         )
     fn_name = "remove_reaction" if remove else "add_reaction"
     react_fn = getattr(adapter, fn_name, None)
-    if not callable(react_fn):
+    # The base adapter now always defines add_reaction/remove_reaction (default
+    # no-op), so advertise support via the SUPPORTS_REACTIONS capability flag
+    # rather than method presence.
+    if not callable(react_fn) or not getattr(adapter, "SUPPORTS_REACTIONS", False):
         return tool_error(
             f"Platform '{platform_name}' does not support message reactions."
         )

@@ -433,6 +433,11 @@ class TelegramAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # Telegram MarkdownV2 renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+
+    # Native set_message_reaction (gated separately by TELEGRAM_REACTIONS for
+    # the automatic processing-lifecycle 👀/👍 indicators; add_reaction below
+    # implements the unified cross-platform reaction contract for the agent).
+    SUPPORTS_REACTIONS = True
     # Bot API 10.1 Rich Messages cap the raw markdown/html text at 32,768
     # UTF-8 characters. Content above this is sent via the legacy chunking path.
     RICH_MESSAGE_MAX_CHARS = 32768
@@ -8327,6 +8332,49 @@ class TelegramAdapter(BasePlatformAdapter):
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
         return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Unified reaction contract — set a single emoji reaction on a message.
+
+        Telegram replaces all bot-set reactions in one call, so this maps
+        directly onto ``set_message_reaction``. A ``message_id`` is required
+        (Telegram has no "react to the latest message" affordance); callers
+        pass the id of the message being reacted to.
+        """
+        if not message_id:
+            return {
+                "success": False,
+                "error": "telegram requires an explicit message_id to react",
+            }
+        ok = await self._set_reaction(chat_id, message_id, emoji)
+        return (
+            {"success": True, "message_id": message_id}
+            if ok
+            else {"success": False, "error": "telegram set_message_reaction failed"}
+        )
+
+    async def remove_reaction(
+        self,
+        chat_id: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Unified reaction contract — clear bot-set reactions from a message."""
+        if not message_id:
+            return {
+                "success": False,
+                "error": "telegram requires an explicit message_id to unreact",
+            }
+        ok = await self._clear_reactions(chat_id, message_id)
+        return (
+            {"success": True, "message_id": message_id}
+            if ok
+            else {"success": False, "error": "telegram clear reactions failed"}
+        )
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""

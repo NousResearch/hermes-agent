@@ -3617,6 +3617,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             depth += 1
         return depth
 
+    def _remove_queued_message(self, conversation_id: str, message_id: str) -> int:
+        """Remove queued events by conversation/chat id plus platform message id."""
+        removed = 0
+        if not conversation_id or not message_id:
+            return removed
+
+        for adapter in getattr(self, "adapters", {}).values():
+            pending_slot = getattr(adapter, "_pending_messages", None)
+            if not isinstance(pending_slot, dict):
+                continue
+            for key, event in list(pending_slot.items()):
+                source = getattr(event, "source", None)
+                if (
+                    str(getattr(source, "chat_id", "") or "") == str(conversation_id)
+                    and str(getattr(event, "message_id", "") or "") == str(message_id)
+                ):
+                    pending_slot.pop(key, None)
+                    removed += 1
+
+        queued_events = getattr(self, "_queued_events", None)
+        if isinstance(queued_events, dict):
+            for key, overflow in list(queued_events.items()):
+                kept = [
+                    event for event in overflow
+                    if not (
+                        str(getattr(getattr(event, "source", None), "chat_id", "") or "")
+                        == str(conversation_id)
+                        and str(getattr(event, "message_id", "") or "") == str(message_id)
+                    )
+                ]
+                removed += len(overflow) - len(kept)
+                if kept:
+                    queued_events[key] = kept
+                else:
+                    queued_events.pop(key, None)
+
+        return removed
+
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /goal continuation turns.
@@ -4207,6 +4245,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    async def _notify_adapter_message_accepted(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        phase: str = "active",
+    ) -> None:
+        source = getattr(event, "source", None)
+        platform = getattr(source, "platform", None)
+        if platform is None:
+            return
+        adapter = self.adapters.get(platform)
+        if adapter is None:
+            return
+        hook = getattr(adapter, "on_gateway_message_accepted", None)
+        if not callable(hook):
+            return
+        try:
+            result = hook(event, session_key, phase=phase)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.debug("Adapter accepted-message hook failed", exc_info=True)
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -4274,9 +4336,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode
+        delivery_intent = str(getattr(event, "delivery_intent", "") or "").strip().lower()
+        if delivery_intent == "queue":
+            effective_mode = "queue"
+        elif delivery_intent == "interrupt":
+            effective_mode = "interrupt"
+
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
         if (
-            event.message_type == MessageType.TEXT
+            not delivery_intent
+            and event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
             and effective_mode != "steer"
         ):
@@ -4323,6 +4392,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
+            else:
+                await self._notify_adapter_message_accepted(
+                    event,
+                    session_key,
+                    phase="steer",
+                )
 
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
@@ -4340,7 +4415,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # turn in arrival order while still preserving photo-burst / album
         # merge semantics for media.
         if not steered:
-            self._queue_or_replace_pending_event(session_key, event)
+            if delivery_intent == "interrupt":
+                adapter._pending_messages[session_key] = event
+            else:
+                self._queue_or_replace_pending_event(session_key, event)
+            queue_changed = getattr(adapter, "_on_runtime_queue_changed", None)
+            if callable(queue_changed):
+                try:
+                    await queue_changed(session_key)
+                except Exception:
+                    logger.debug("Runtime queue-change hook failed", exc_info=True)
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -4475,6 +4559,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Failed to send busy-ack: %s", e)
 
         return True
+
+    async def _handle_runtime_control_signal(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        signal: str,
+    ) -> bool:
+        """Handle trusted platform runtime controls without user-text dispatch."""
+        source = event.source
+        adapter = self.adapters.get(source.platform) if source else None
+        if not source or not session_key:
+            return False
+
+        if signal in {"interrupt", "stop_and_drop"}:
+            if signal == "stop_and_drop":
+                if adapter is not None and hasattr(adapter, "_pending_messages"):
+                    adapter._pending_messages.pop(session_key, None)
+                queued_events = getattr(self, "_queued_events", None)
+                if isinstance(queued_events, dict):
+                    queued_events.pop(session_key, None)
+            await self._interrupt_and_clear_session(
+                session_key,
+                source,
+                interrupt_reason=_INTERRUPT_REASON_STOP,
+                invalidation_reason=f"runtime_control_{signal}",
+                discard_pending=signal == "stop_and_drop",
+            )
+            return True
+
+        if signal == "new_session":
+            if adapter is not None and hasattr(adapter, "_pending_messages"):
+                adapter._pending_messages.pop(session_key, None)
+            queued_events = getattr(self, "_queued_events", None)
+            if isinstance(queued_events, dict):
+                queued_events.pop(session_key, None)
+            await self._interrupt_and_clear_session(
+                session_key,
+                source,
+                interrupt_reason=_INTERRUPT_REASON_RESET,
+                invalidation_reason="runtime_control_new_session",
+            )
+            await self._handle_reset_command(event)
+            return True
+
+        return False
 
     async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()
@@ -5418,6 +5547,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exc_info=True,
             )
         
+        # Discover Python plugins before inspecting auth env vars so plugin
+        # platforms can contribute allowlist metadata to the startup warning.
+        # The CLI startup path does this via hermes_cli/main.py; the gateway
+        # lazily imports run_agent inside per-request handlers, so the
+        # discover_plugins() side-effect in model_tools.py is not guaranteed
+        # to have run by the time we reach this point.
+        try:
+            from hermes_cli.plugins import discover_plugins
+            discover_plugins()
+        except Exception:
+            logger.warning(
+                "plugin discovery failed at gateway startup", exc_info=True,
+            )
+
         # Warn if no user allowlists are configured and open access is not opted in
         _builtin_allowed_vars = (
             "TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
@@ -5461,8 +5604,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from gateway.platform_registry import platform_registry
             _plugin_allowed_vars = tuple(
-                e.allowed_users_env for e in platform_registry.plugin_entries()
-                if e.allowed_users_env
+                env
+                for e in platform_registry.plugin_entries()
+                for env in (
+                    e.allowed_users_env,
+                    e.group_allowed_users_env,
+                    e.group_allowed_chats_env,
+                )
+                if env
             )
             _plugin_allow_all_vars = tuple(
                 e.allow_all_env for e in platform_registry.plugin_entries()
@@ -5484,20 +5633,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
             )
         
-        # Discover Python plugins before shell hooks so plugin block
-        # decisions take precedence in tie cases.  The CLI startup path
-        # does this via an explicit call in hermes_cli/main.py; the
-        # gateway lazily imports run_agent inside per-request handlers,
-        # so the discover_plugins() side-effect in model_tools.py is NOT
-        # guaranteed to have run by the time we reach this point.
-        try:
-            from hermes_cli.plugins import discover_plugins
-            discover_plugins()
-        except Exception:
-            logger.warning(
-                "plugin discovery failed at gateway startup", exc_info=True,
-            )
-
         # Register the generic relay adapter when a connector relay URL is
         # configured (GATEWAY_RELAY_URL / gateway.relay_url). No URL -> no-op, so
         # direct/single-tenant deployments are unaffected. When configured, the
@@ -5633,6 +5768,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter._busy_text_mode = self._busy_text_mode
+            if hasattr(adapter, "set_runtime_control_handler"):
+                adapter.set_runtime_control_handler(self._handle_runtime_control_signal)
+            if hasattr(adapter, "set_queue_depth_provider"):
+                adapter.set_queue_depth_provider(
+                    lambda session_key, _adapter=adapter: self._queue_depth(
+                        session_key,
+                        adapter=_adapter,
+                    )
+                )
+            if hasattr(adapter, "set_queued_message_delete_handler"):
+                adapter.set_queued_message_delete_handler(self._remove_queued_message)
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -6400,6 +6546,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter._busy_text_mode = self._busy_text_mode
+                    if hasattr(adapter, "set_runtime_control_handler"):
+                        adapter.set_runtime_control_handler(self._handle_runtime_control_signal)
+                    if hasattr(adapter, "set_queue_depth_provider"):
+                        adapter.set_queue_depth_provider(
+                            lambda session_key, _adapter=adapter: self._queue_depth(
+                                session_key,
+                                adapter=_adapter,
+                            )
+                        )
+                    if hasattr(adapter, "set_queued_message_delete_handler"):
+                        adapter.set_queued_message_delete_handler(self._remove_queued_message)
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
@@ -7060,6 +7217,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter._busy_text_mode = self._busy_text_mode
+            if hasattr(adapter, "set_runtime_control_handler"):
+                adapter.set_runtime_control_handler(self._handle_runtime_control_signal)
+            if hasattr(adapter, "set_queue_depth_provider"):
+                adapter.set_queue_depth_provider(
+                    lambda session_key, _adapter=adapter: self._queue_depth(
+                        session_key,
+                        adapter=_adapter,
+                    )
+                )
+            if hasattr(adapter, "set_queued_message_delete_handler"):
+                adapter.set_queued_message_delete_handler(self._remove_queued_message)
 
             try:
                 with _profile_runtime_scope(profile_home):
@@ -7386,6 +7554,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+        if not is_internal:
+            await self._notify_adapter_message_accepted(
+                event,
+                _quick_key,
+                phase="active",
+            )
+
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -13713,6 +13888,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         interrupt_reason: str,
         invalidation_reason: str,
         release_running_state: bool = True,
+        discard_pending: bool = True,
     ) -> None:
         """Interrupt the current run and clear queued session state consistently."""
         if not session_key:
@@ -13724,9 +13900,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter = self.adapters.get(source.platform)
         if adapter and hasattr(adapter, "interrupt_session_activity"):
             await adapter.interrupt_session_activity(session_key, source.chat_id)
-        if adapter and hasattr(adapter, "get_pending_message"):
+        if discard_pending and adapter and hasattr(adapter, "get_pending_message"):
             adapter.get_pending_message(session_key)  # consume and discard
-        self._pending_messages.pop(session_key, None)
+        if discard_pending:
+            self._pending_messages.pop(session_key, None)
         if release_running_state:
             self._release_running_agent_state(session_key)
 
@@ -14166,6 +14343,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if source.platform == Platform.MATRIX:
                         _effective_cursor = ""
                         _buffer_only = True
+                    _stream_metadata = _thread_metadata
+                    _stream_hook = getattr(_adapter, "prepare_streaming_preview", None)
+                    if callable(_stream_hook):
+                        try:
+                            _stream_overrides = _stream_hook(
+                                metadata=_stream_metadata,
+                                cursor=_effective_cursor,
+                                buffer_only=_buffer_only,
+                            )
+                            if isinstance(_stream_overrides, dict):
+                                if "metadata" in _stream_overrides:
+                                    _stream_metadata = _stream_overrides["metadata"]
+                                if "cursor" in _stream_overrides:
+                                    _effective_cursor = str(_stream_overrides["cursor"] or "")
+                                if "buffer_only" in _stream_overrides:
+                                    _buffer_only = bool(_stream_overrides["buffer_only"])
+                        except Exception:
+                            logger.debug("streaming preview hook failed", exc_info=True)
                     # Fresh-final applies to Telegram only — other
                     # platforms either edit in place cheaply (Discord,
                     # Slack) or don't have the timestamp-on-edit
@@ -14188,7 +14383,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         adapter=_adapter,
                         chat_id=source.chat_id,
                         config=_consumer_cfg,
-                        metadata=_thread_metadata,
+                        metadata=_stream_metadata,
                         on_before_finalize=_pause_typing_before_finalize,
                         initial_reply_to_id=event_message_id,
                     )
@@ -15341,6 +15536,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if source.platform == Platform.MATRIX:
                             _effective_cursor = ""
                             _buffer_only = True
+                        _stream_metadata = _status_thread_metadata
+                        _stream_hook = getattr(_adapter, "prepare_streaming_preview", None)
+                        if callable(_stream_hook):
+                            try:
+                                _stream_overrides = _stream_hook(
+                                    metadata=_stream_metadata,
+                                    cursor=_effective_cursor,
+                                    buffer_only=_buffer_only,
+                                )
+                                if isinstance(_stream_overrides, dict):
+                                    if "metadata" in _stream_overrides:
+                                        _stream_metadata = _stream_overrides["metadata"]
+                                    if "cursor" in _stream_overrides:
+                                        _effective_cursor = str(_stream_overrides["cursor"] or "")
+                                    if "buffer_only" in _stream_overrides:
+                                        _buffer_only = bool(_stream_overrides["buffer_only"])
+                            except Exception:
+                                logger.debug("streaming preview hook failed", exc_info=True)
                         # Fresh-final applies to Telegram only — other
                         # platforms either edit in place cheaply or don't
                         # have the edit-timestamp-stays-stale problem.
@@ -15363,7 +15576,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata=_status_thread_metadata,
+                            metadata=_stream_metadata,
                             on_new_message=(
                                 (lambda: progress_queue.put(("__reset__",)))
                                 if progress_queue is not None
@@ -16891,6 +17104,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    await self._notify_adapter_message_accepted(
+                        pending_event,
+                        session_key,
+                        phase="queued_turn",
+                    )
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background

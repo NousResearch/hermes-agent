@@ -640,6 +640,83 @@ async def _send_via_adapter(
       3. A descriptive error explaining both options.
     """
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
+
+    async def _await_live_adapter(coro, runner_obj):
+        gateway_loop = getattr(runner_obj, "_gateway_loop", None)
+        if gateway_loop and gateway_loop.is_running():
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+            if gateway_loop is not current_loop:
+                future = asyncio.run_coroutine_threadsafe(coro, gateway_loop)
+                return await asyncio.wrap_future(future)
+        return await coro
+
+    def _metadata():
+        metadata = {}
+        if thread_id:
+            metadata["thread_id"] = thread_id
+        if platform_name == "ntfy" and chat_id:
+            metadata["publish_topic"] = chat_id
+        return metadata or None
+
+    def _adapter_result(result):
+        if getattr(result, "success", False):
+            return {"success": True, "message_id": getattr(result, "message_id", None)}
+        return {"error": f"Adapter send failed: {getattr(result, 'error', None)}"}
+
+    async def _send_live_media(adapter, runner_obj):
+        metadata = _metadata()
+        last_result = None
+        for index, (media_path, is_voice) in enumerate(media_files or []):
+            ext = os.path.splitext(str(media_path))[1].lower()
+            caption = chunk if index == 0 and str(chunk or "").strip() else None
+            if force_document:
+                method_name = "send_document"
+                kwargs = {"file_path": media_path}
+            elif is_voice:
+                method_name = "send_voice"
+                kwargs = {"audio_path": media_path}
+            elif ext in _IMAGE_EXTS:
+                method_name = "send_image_file"
+                kwargs = {"image_path": media_path}
+            elif ext in _VIDEO_EXTS:
+                method_name = "send_video"
+                kwargs = {"video_path": media_path}
+            elif ext in _AUDIO_EXTS:
+                method_name = "send_voice"
+                kwargs = {"audio_path": media_path}
+            else:
+                method_name = "send_document"
+                kwargs = {"file_path": media_path}
+
+            method = getattr(adapter, method_name, None)
+            if method is None:
+                if method_name != "send_document":
+                    method = getattr(adapter, "send_document", None)
+                    kwargs = {"file_path": media_path}
+                if method is None:
+                    return {
+                        "error": (
+                            f"Adapter does not support native media delivery for {media_path}"
+                        )
+                    }
+
+            result = await _await_live_adapter(
+                method(
+                    chat_id=chat_id,
+                    caption=caption,
+                    metadata=metadata,
+                    **kwargs,
+                ),
+                runner_obj,
+            )
+            last_result = _adapter_result(result)
+            if not last_result.get("success"):
+                return last_result
+        return last_result or {"success": True, "message_id": None}
+
     runner = None
     try:
         from gateway.run import _gateway_runner_ref
@@ -654,21 +731,17 @@ async def _send_via_adapter(
             adapter = None
         if adapter is not None:
             try:
-                metadata = {}
-                if thread_id:
-                    metadata["thread_id"] = thread_id
-                if platform_name == "ntfy" and chat_id:
-                    metadata["publish_topic"] = chat_id
-                if not metadata:
-                    metadata = None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                if media_files:
+                    return await _send_live_media(adapter, runner)
+                result = await _await_live_adapter(
+                    adapter.send(chat_id=chat_id, content=chunk, metadata=_metadata()),
+                    runner,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 return {"error": f"Plugin platform send failed: {e}"}
-            if result.success:
-                return {"success": True, "message_id": result.message_id}
-            return {"error": f"Adapter send failed: {result.error}"}
+            return _adapter_result(result)
 
     entry = None
     try:

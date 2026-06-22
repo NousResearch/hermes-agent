@@ -240,6 +240,54 @@ class TestBusySessionAck:
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
+    async def test_delivery_intent_queue_overrides_interrupt_mode(self):
+        """Platform delivery_intent='queue' queues without interrupting."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="queue me")
+        event.delivery_intent = "queue"
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent._active_children = []
+        runner._running_agents[sk] = agent
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        assert adapter._pending_messages.get(sk) is event
+        agent.interrupt.assert_not_called()
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queued for the next turn" in content
+
+    @pytest.mark.asyncio
+    async def test_delivery_intent_interrupt_overrides_queue_mode(self):
+        """Platform delivery_intent='interrupt' interrupts despite queue mode."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        event = _make_event(text="interrupt now")
+        event.delivery_intent = "interrupt"
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent._active_children = []
+        runner._running_agents[sk] = agent
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        assert adapter._pending_messages.get(sk) is event
+        agent.interrupt.assert_called_once_with("interrupt now")
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Interrupting current task" in content
+
+    @pytest.mark.asyncio
     async def test_busy_text_mode_queue_delegates_to_adapter_handle_message(self):
         """busy_text_mode=queue lets the adapter debounce text silently."""
         runner, sentinel = _make_runner()

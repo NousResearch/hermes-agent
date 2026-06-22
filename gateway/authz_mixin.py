@@ -210,6 +210,14 @@ class GatewayAuthorizationMixin:
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
+            if not chat_allowlist_env:
+                try:
+                    from gateway.platform_registry import platform_registry
+                    entry = platform_registry.get(source.platform.value)
+                    if entry and entry.group_allowed_chats_env:
+                        chat_allowlist_env = entry.group_allowed_chats_env
+                except Exception:
+                    pass
             if chat_allowlist_env:
                 raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
                 if raw_chat_allowlist:
@@ -287,6 +295,10 @@ class GatewayAuthorizationMixin:
                         platform_env_map[source.platform] = entry.allowed_users_env
                     if entry.allow_all_env:
                         platform_allow_all_map[source.platform] = entry.allow_all_env
+                    if entry.group_allowed_users_env:
+                        platform_group_user_env_map[source.platform] = entry.group_allowed_users_env
+                    if entry.group_allowed_chats_env:
+                        platform_group_chat_env_map[source.platform] = entry.group_allowed_chats_env
             except Exception:
                 pass
 
@@ -317,7 +329,7 @@ class GatewayAuthorizationMixin:
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
         group_user_allowlist = ""
         group_chat_allowlist = ""
-        if source.chat_type in {"group", "forum"}:
+        if source.chat_type in {"group", "forum", "channel"}:
             group_user_allowlist = os.getenv(platform_group_user_env_map.get(source.platform, ""), "").strip()
             group_chat_allowlist = os.getenv(platform_group_chat_env_map.get(source.platform, ""), "").strip()
         global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
@@ -364,7 +376,7 @@ class GatewayAuthorizationMixin:
         # Telegram can optionally authorize group traffic by chat ID.
         # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates
         # the sender user ID for group/forum messages.
-        if group_chat_allowlist and source.chat_type in {"group", "forum"} and source.chat_id:
+        if group_chat_allowlist and source.chat_type in {"group", "forum", "channel"} and source.chat_id:
             allowed_group_ids = {
                 chat_id.strip() for chat_id in group_chat_allowlist.split(",") if chat_id.strip()
             }
@@ -537,6 +549,25 @@ class GatewayAuthorizationMixin:
                 ),
                 Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
             }
+            if platform not in platform_env_map:
+                try:
+                    from gateway.platform_registry import platform_registry
+                    entry = platform_registry.get(platform.value)
+                    if entry:
+                        if entry.allowed_users_env:
+                            platform_env_map[platform] = entry.allowed_users_env
+                        group_envs = tuple(
+                            env
+                            for env in (
+                                entry.group_allowed_users_env,
+                                entry.group_allowed_chats_env,
+                            )
+                            if env
+                        )
+                        if group_envs:
+                            platform_group_env_map[platform] = group_envs
+                except Exception:
+                    pass
             if os.getenv(platform_env_map.get(platform, ""), "").strip():
                 return "ignore"
             for env_key in platform_group_env_map.get(platform, ()):

@@ -261,6 +261,80 @@ def test_non_owning_platform_still_default_denies(monkeypatch):
     assert runner._is_user_authorized(_source(Platform.TELEGRAM)) is False
 
 
+def test_plugin_group_allowed_chats_authorizes_without_sender(monkeypatch):
+    """Plugin-declared group chat allowlists authorize anonymous group traffic."""
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TESTCHAT_GROUP_ALLOWED_CONVERSATIONS", "room-1")
+    platform_registry.register(
+        PlatformEntry(
+            name="testchat",
+            label="Test Chat",
+            adapter_factory=lambda cfg: SimpleNamespace(),
+            check_fn=lambda: True,
+            group_allowed_users_env="TESTCHAT_GROUP_ALLOWED_USERS",
+            group_allowed_chats_env="TESTCHAT_GROUP_ALLOWED_CONVERSATIONS",
+        )
+    )
+    try:
+        platform = Platform("testchat")
+        config = GatewayConfig(platforms={platform: PlatformConfig(enabled=True)})
+        runner, _adapter = _make_runner(platform, config, enforces=False)
+        source = SessionSource(
+            platform=platform,
+            user_id=None,
+            chat_id="room-1",
+            user_name="anonymous",
+            chat_type="group",
+        )
+
+        assert runner._is_user_authorized(source) is True
+    finally:
+        platform_registry.unregister("testchat")
+
+
+def test_plugin_group_allowed_users_authorizes_group_sender(monkeypatch):
+    """Plugin-declared group user allowlists are scoped to group conversations."""
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TESTCHAT_GROUP_ALLOWED_USERS", "group-user")
+    platform_registry.register(
+        PlatformEntry(
+            name="testchat-users",
+            label="Test Chat Users",
+            adapter_factory=lambda cfg: SimpleNamespace(),
+            check_fn=lambda: True,
+            group_allowed_users_env="TESTCHAT_GROUP_ALLOWED_USERS",
+            group_allowed_chats_env="TESTCHAT_GROUP_ALLOWED_CONVERSATIONS",
+        )
+    )
+    try:
+        platform = Platform("testchat-users")
+        config = GatewayConfig(platforms={platform: PlatformConfig(enabled=True)})
+        runner, _adapter = _make_runner(platform, config, enforces=False)
+        group_source = SessionSource(
+            platform=platform,
+            user_id="group-user",
+            chat_id="room-2",
+            user_name="tester",
+            chat_type="group",
+        )
+        dm_source = SessionSource(
+            platform=platform,
+            user_id="group-user",
+            chat_id="dm-1",
+            user_name="tester",
+            chat_type="dm",
+        )
+
+        assert runner._is_user_authorized(group_source) is True
+        assert runner._is_user_authorized(dm_source) is False
+    finally:
+        platform_registry.unregister("testchat-users")
+
+
 def test_env_allowlist_still_takes_precedence_for_own_policy_platform(monkeypatch):
     """When an env allowlist IS set, it governs — adapter trust is a fallback.
 

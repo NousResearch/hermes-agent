@@ -600,6 +600,22 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     except Exception:
         pass
 
+    raw_delivery_content = str(content or "")
+    safe_delivery_body = raw_delivery_content
+    try:
+        from gateway.run import _sanitize_gateway_final_response
+
+        origin = _resolve_origin(job) or {}
+        platform_hint = origin.get("platform")
+        if not platform_hint and targets:
+            platform_hint = targets[0].get("platform")
+        safe_delivery_body = _sanitize_gateway_final_response(
+            platform_hint or "telegram",
+            raw_delivery_content,
+        )
+    except Exception:
+        safe_delivery_body = raw_delivery_content
+
     if wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
@@ -607,11 +623,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
-            f"{content}\n\n"
+            f"{safe_delivery_body}\n\n"
             f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
         )
     else:
-        delivery_content = content
+        delivery_content = safe_delivery_body
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
@@ -1695,7 +1711,11 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 or (result.get("final_response") or "").strip()
                 or "agent reported failure"
             )
-            raise RuntimeError(_err_text)
+            # Preserve the exact failure in cron logs, but raise a generic
+            # message so origin delivery never leaks raw Python/provider errors
+            # to a client inbox.
+            logger.error("Cron agent reported failure for job %r: %s", job_name, _err_text)
+            raise RuntimeError("internal runtime issue; retry required")
 
         final_response = result.get("final_response", "") or ""
         # Strip leaked placeholder text that upstream may inject on empty completions.

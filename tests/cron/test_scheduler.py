@@ -1195,6 +1195,53 @@ class TestRunJobSessionPersistence:
         # Ephemeral cron agent must still be closed even on agent-flagged failure.
         mock_agent.close.assert_called_once()
 
+    def test_run_job_agent_failure_logs_detailed_error_but_raises_bounded_failure(
+        self, tmp_path, caplog
+    ):
+        """Cron logs should retain raw operator detail while the returned error stays bounded."""
+        job = {
+            "id": "runtime-failing-job",
+            "name": "runtime fail",
+            "prompt": "do something",
+        }
+        fake_db = MagicMock()
+        agent_result = {
+            "final_response": "",
+            "failed": True,
+            "completed": False,
+            "error": "OpenRouterError: HTTP 502 upstream timeout request_id=req_abc traceback chunk",
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = agent_result
+            mock_agent_cls.return_value = mock_agent
+
+            with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+                success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert error == "RuntimeError: internal runtime issue; retry required"
+        assert "(FAILED)" in output
+        assert "OpenRouterError" in caplog.text
+        assert "HTTP 502" in caplog.text
+        assert "request_id=req_abc" in caplog.text
+        mock_agent.close.assert_called_once()
+
     def test_run_job_completed_true_without_failed_flag_succeeds(self, tmp_path):
         """Regression guard: a normal success result (``completed=True``,
         ``failed`` absent) must not trip the failure-flag check.
@@ -1822,6 +1869,59 @@ class TestSilentDelivery:
             from cron.scheduler import tick
             tick(verbose=False)
         deliver_mock.assert_called_once()
+
+    def test_tick_delivers_generic_safe_failure_text_for_runtime_failure(self):
+        """Tick should deliver the bounded runtime failure string produced by the cron path."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch(
+                 "cron.scheduler.run_job",
+                 return_value=(
+                     False,
+                     "# Cron Job: monitor (FAILED)\n\n## Error\n\n```\nRuntimeError: internal runtime issue; retry required\n```",
+                     "",
+                     "RuntimeError: internal runtime issue; retry required",
+                 ),
+             ), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        deliver_mock.assert_called_once()
+        delivered = deliver_mock.call_args.args[1]
+        assert "internal runtime issue; retry required" in delivered
+        assert "request_id" not in delivered.lower()
+        assert "traceback" not in delivered.lower()
+        assert "HTTP 502" not in delivered
+
+    def test_tick_failed_delivery_never_contains_raw_provider_or_traceback_substrings(self):
+        """Delivery-layer output must sanitize malformed/raw upstream failure text."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        raw_failure = (
+            "HTTP 500 provider stack exploded request_id=req_bad "
+            "Incorrect API key provided: sk-live-secret"
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler._resolve_delivery_targets", return_value=[{"platform": "telegram", "chat_id": "123", "thread_id": None}]), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            _deliver_result(self._make_job(), raw_failure)
+
+        send_mock.assert_called_once()
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        lowered = sent_content.lower()
+        assert "traceback" not in lowered
+        assert "HTTP 500" not in sent_content
+        assert "request_id" not in lowered
+        assert "sk-live" not in lowered
+        assert "provider stack" not in lowered
 
     def test_output_saved_even_when_delivery_suppressed(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \

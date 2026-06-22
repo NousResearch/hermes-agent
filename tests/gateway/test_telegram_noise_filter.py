@@ -65,7 +65,7 @@ def test_telegram_final_response_redacts_auth_secrets():
     """Authentication errors should be useful without leaking key material."""
     raw = (
         "⚠️ Provider authentication failed: Incorrect API key provided: "
-        "sk-live_abcdefghijklmnopqrstuvwxyz1234567890"
+        "sk-liv...7890"
     )
 
     sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
@@ -73,6 +73,39 @@ def test_telegram_final_response_redacts_auth_secrets():
     assert "authentication failed" in sanitized.lower()
     assert "check the configured credentials" in sanitized.lower()
     assert "sk-live" not in sanitized
+
+
+def test_telegram_final_response_sanitizes_raw_runtime_provider_exception_text():
+    """Runtime/provider exception envelopes should be collapsed to a bounded category."""
+    raw = (
+        "API call failed after 3 retries: HTTP 500: provider stack exploded "
+        "request_id=req_123 traceback=RuntimeError: boom"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "provider failed after retries" in sanitized.lower()
+    assert "HTTP 500" not in sanitized
+    assert "request_id" not in sanitized.lower()
+    assert "traceback" not in sanitized.lower()
+    assert "provider stack exploded" not in sanitized.lower()
+
+
+def test_telegram_final_response_omits_traceback_and_provider_internal_substrings():
+    """Telegram final replies must not expose traceback/request_id/provider internals."""
+    raw = (
+        "HTTP 500 provider stack request_id=req_123 "
+        "Incorrect API key provided: sk-live-secret"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    lowered = sanitized.lower()
+    assert "traceback" not in lowered
+    assert "HTTP 500" not in sanitized
+    assert "request_id" not in lowered
+    assert "sk-live" not in lowered
+    assert "provider stack" not in lowered
 
 
 def test_telegram_final_response_keeps_normal_answers():

@@ -1465,13 +1465,15 @@ def _normalize_empty_agent_response(
         ) or ("400" in error_str and history_len > 50)
         if is_context_failure:
             return (
-                "⚠️ Session too large for the model's context window.\n"
-                "Use /compact to compress the conversation, or "
-                "/reset to start fresh."
+                "⚠️ This conversation got too large for me to answer safely.\n"
+                "Please send the next ask as a fresh, short message and I’ll continue from there."
             )
+        # Client-facing boundary: never expose raw provider/runtime exceptions
+        # to the human inbox. Keep the exact exception in logs only.
         return (
-            f"The request failed: {str(error_detail)[:300]}\n"
-            "Try again or use /reset to start a fresh session."
+            "I hit an internal runtime issue and I’m not going to guess. "
+            "Please send that one again, or send the key details in a shorter message, "
+            "and I’ll pick it back up cleanly."
         )
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)

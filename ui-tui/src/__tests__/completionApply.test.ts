@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyCompletion, completionToApplyOnSubmit } from '../domain/slash.js'
+import { applyCompletion, completionToApplyOnSubmit, valueToDispatchOnSubmit } from '../domain/slash.js'
 
 describe('applyCompletion', () => {
   it('replaces from compReplace and drops the leading slash from the row', () => {
@@ -47,5 +47,19 @@ describe('completionToApplyOnSubmit', () => {
   it('returns null when there is no row text', () => {
     expect(completionToApplyOnSubmit('/exit', undefined, 1)).toBeNull()
     expect(completionToApplyOnSubmit('/exit', '', 1)).toBeNull()
+  })
+})
+
+describe('valueToDispatchOnSubmit', () => {
+  it('dispatches the completed slash command on the same Enter press', () => {
+    expect(valueToDispatchOnSubmit('/ex', 'exit', 1)).toBe('/exit')
+  })
+
+  it('dispatches the completed argument on the same Enter press', () => {
+    expect(valueToDispatchOnSubmit('/cron ad', 'add', 6)).toBe('/cron add')
+  })
+
+  it('keeps the current value when the completion only adds trailing space', () => {
+    expect(valueToDispatchOnSubmit('/exit', 'exit ', 1)).toBe('/exit')
   })
 })

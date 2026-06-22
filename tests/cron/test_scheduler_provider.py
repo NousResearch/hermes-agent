@@ -174,14 +174,14 @@ def test_default_config_cron_provider_is_empty():
 def test_discover_cron_schedulers_returns_list():
     """Discovery returns a list. May be empty — the built-in is core, not
     discovered, and no bundled non-default provider ships yet."""
-    from plugins.cron import discover_cron_schedulers
+    from plugins.cron_providers import discover_cron_schedulers
 
     result = discover_cron_schedulers()
     assert isinstance(result, list)
 
 
 def test_load_unknown_cron_scheduler_returns_none():
-    from plugins.cron import load_cron_scheduler
+    from plugins.cron_providers import load_cron_scheduler
 
     assert load_cron_scheduler("does-not-exist-xyz") is None
 
@@ -219,7 +219,7 @@ def test_resolve_unknown_provider_falls_back_to_builtin(monkeypatch):
 def test_resolve_unavailable_provider_falls_back(monkeypatch):
     """A provider that loads but reports is_available()==False → built-in."""
     import hermes_cli.config as cfg
-    import plugins.cron as pc
+    import plugins.cron_providers as pc
     from cron import scheduler_provider as sp
     from cron.scheduler_provider import CronScheduler
 
@@ -243,7 +243,7 @@ def test_resolve_unavailable_provider_falls_back(monkeypatch):
 def test_resolve_available_provider_is_used(monkeypatch):
     """A provider that loads and is available is returned (not the fallback)."""
     import hermes_cli.config as cfg
-    import plugins.cron as pc
+    import plugins.cron_providers as pc
     from cron import scheduler_provider as sp
     from cron.scheduler_provider import CronScheduler
 

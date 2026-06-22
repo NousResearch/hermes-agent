@@ -2,7 +2,7 @@
 
 Scans two directories for cron scheduler provider plugins:
 
-1. Bundled providers: ``plugins/cron/<name>/`` (shipped with hermes-agent)
+1. Bundled providers: ``plugins/cron_providers/<name>/`` (shipped with hermes-agent)
 2. User-installed providers: ``$HERMES_HOME/plugins/<name>/``
 
 Each subdirectory must contain ``__init__.py`` with a class implementing the
@@ -19,7 +19,7 @@ Only ONE provider can be active at a time, selected via ``cron.provider`` in
 config.yaml (empty = built-in). See ``cron.scheduler_provider.resolve_cron_scheduler``.
 
 Usage:
-    from plugins.cron import discover_cron_schedulers, load_cron_scheduler
+    from plugins.cron_providers import discover_cron_schedulers, load_cron_scheduler
 
     available = discover_cron_schedulers()   # [(name, desc, available), ...]
     provider = load_cron_scheduler("chronos")  # CronScheduler instance
@@ -52,7 +52,7 @@ def _register_synthetic_package(name: str, search_locations: List[str]) -> None:
     in ``sys.modules``, any relative import inside the plugin
     (``from . import config``) fails with
     ``ModuleNotFoundError: No module named '_hermes_user_cron'`` — the same
-    reason the loader already registers ``plugins`` and ``plugins.cron`` for
+    reason the loader already registers ``plugins`` and ``plugins.cron_providers`` for
     bundled providers.
     """
     if name in sys.modules:
@@ -101,7 +101,7 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     seen: set = set()
     dirs: List[Tuple[str, Path]] = []
 
-    # 1. Bundled providers (plugins/cron/<name>/)
+    # 1. Bundled providers (plugins/cron_providers/<name>/)
     if _CRON_PLUGINS_DIR.is_dir():
         for child in sorted(_CRON_PLUGINS_DIR.iterdir()):
             if not child.is_dir() or child.name.startswith(("_", ".")):
@@ -190,7 +190,7 @@ def discover_cron_schedulers() -> List[Tuple[str, str, bool]]:
 def load_cron_scheduler(name: str) -> Optional["CronScheduler"]:  # noqa: F821
     """Load and return a CronScheduler instance by name.
 
-    Checks both bundled (``plugins/cron/<name>/``) and user-installed
+    Checks both bundled (``plugins/cron_providers/<name>/``) and user-installed
     (``$HERMES_HOME/plugins/<name>/``) directories. Bundled takes precedence
     on name collisions.
 
@@ -223,7 +223,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["CronScheduler"]:  #
     # Use a separate namespace for user-installed plugins so they don't
     # collide with bundled providers in sys.modules.
     _is_bundled = _CRON_PLUGINS_DIR in provider_dir.parents or provider_dir.parent == _CRON_PLUGINS_DIR
-    module_name = f"plugins.cron.{name}" if _is_bundled else f"{_USER_NAMESPACE}.{name}"
+    module_name = f"plugins.cron_providers.{name}" if _is_bundled else f"{_USER_NAMESPACE}.{name}"
     init_file = provider_dir / "__init__.py"
 
     if not init_file.exists():
@@ -236,7 +236,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["CronScheduler"]:  #
         mod = cached
     else:
         # Ensure the parent packages are registered (for relative imports)
-        for parent in ("plugins", "plugins.cron"):
+        for parent in ("plugins", "plugins.cron_providers"):
             if parent not in sys.modules:
                 parent_path = Path(__file__).parent
                 if parent == "plugins":
@@ -271,6 +271,12 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["CronScheduler"]:  #
         mod = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = mod
 
+        # Explicitly bind the submodule to its parent package module so that
+        # standard attribute access (and tools like pytest's monkeypatch) always find it.
+        parent_module_name = "plugins.cron_providers" if _is_bundled else _USER_NAMESPACE
+        if parent_module_name in sys.modules:
+            setattr(sys.modules[parent_module_name], name, mod)
+
         # Register submodules so relative imports work
         # e.g., "from ._nas_client import NasCronClient" in the chronos plugin
         for sub_file in provider_dir.glob("*.py"):
@@ -285,6 +291,8 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["CronScheduler"]:  #
                 if sub_spec:
                     sub_mod = importlib.util.module_from_spec(sub_spec)
                     sys.modules[full_sub_name] = sub_mod
+                    # Bind the submodule to its parent module
+                    setattr(mod, sub_name, sub_mod)
                     try:
                         sub_spec.loader.exec_module(sub_mod)
                     except Exception as e:

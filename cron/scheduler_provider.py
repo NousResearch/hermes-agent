@@ -134,7 +134,7 @@ def resolve_cron_scheduler() -> "CronScheduler":
         return InProcessCronScheduler()
 
     try:
-        from plugins.cron import load_cron_scheduler
+        from plugins.cron_providers import load_cron_scheduler
         provider = load_cron_scheduler(name)
         if provider is None:
             logger.warning("cron.provider '%s' not found; using built-in ticker", name)

@@ -810,3 +810,89 @@ class TestMatrixConfigBridge:
             )
 
         assert os.getenv("MATRIX_REQUIRE_MENTION") == "true"
+
+
+class TestOutboundMentionPlaceholderRestoration:
+    """Regression tests for nested placeholder restoration (#50432).
+
+    When ``_protect_outbound_mention_regions`` nests placeholders (inline
+    code inside a markdown link), the restoration loop must process them
+    in reverse order so that outer placeholders are unwrapped before the
+    inner ones they embed.
+    """
+
+    def test_flat_placeholders_restored(self):
+        """Two non-nested placeholders are both restored."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter.__new__(MatrixAdapter)
+        text = "See `code` and [link](https://example.com) here"
+        result = adapter._inject_outbound_mention_links(text)
+        assert "`code`" in result
+        assert "[link](https://example.com)" in result
+        assert "\x00" not in result
+        assert "MENTION_PROTECTED" not in result
+
+    def test_inline_code_inside_markdown_link_restored(self):
+        """Inline code nested inside a markdown link must be fully restored."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter.__new__(MatrixAdapter)
+        text = "Check [this `code` link](https://example.com) for details"
+        result = adapter._inject_outbound_mention_links(text)
+        assert "`code`" in result
+        assert "[this `code` link](https://example.com)" in result
+        assert "\x00" not in result
+        assert "MENTION_PROTECTED" not in result
+
+    def test_triple_backtick_inside_markdown_link_restored(self):
+        """Fenced code nested inside a markdown link must be fully restored."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter.__new__(MatrixAdapter)
+        text = "See [the code ```x=1``` here](https://example.com)"
+        result = adapter._inject_outbound_mention_links(text)
+        assert "```x=1```" in result
+        assert "\x00" not in result
+        assert "MENTION_PROTECTED" not in result
+
+    def test_mention_outside_link_still_wrapped(self):
+        """Mention links should be created for @user:server outside code."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter.__new__(MatrixAdapter)
+        text = "Hey @alice:example.org check [link](https://example.com)"
+        result = adapter._inject_outbound_mention_links(text)
+        assert "matrix.to/#/@alice:example.org" in result
+        assert "[link](https://example.com)" in result
+        assert "\x00" not in result
+        assert "MENTION_PROTECTED" not in result
+
+    def test_mention_inside_code_not_wrapped(self):
+        """@user:server inside inline code should stay literal."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter.__new__(MatrixAdapter)
+        text = "Run `@bot:example.org` to test"
+        result = adapter._inject_outbound_mention_links(text)
+        assert "`@bot:example.org`" in result
+        assert "matrix.to" not in result
+        assert "\x00" not in result
+        assert "MENTION_PROTECTED" not in result
+
+    def test_empty_text_passthrough(self):
+        """Empty/None text returns as-is."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter.__new__(MatrixAdapter)
+        assert adapter._inject_outbound_mention_links("") == ""
+        assert adapter._inject_outbound_mention_links(None) is None
+
+    def test_no_placeholders_text_unchanged(self):
+        """Plain text with no code/links passes through unchanged."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter.__new__(MatrixAdapter)
+        text = "Hello world, no special markup here"
+        result = adapter._inject_outbound_mention_links(text)
+        assert result == text

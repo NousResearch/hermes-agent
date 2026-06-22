@@ -3801,8 +3801,13 @@ class MatrixAdapter(BasePlatformAdapter):
             protected,
         )
 
-        for idx, original in enumerate(placeholders):
-            linked = linked.replace(f"\x00MENTION_PROTECTED{idx}\x00", original)
+        # Restore in reverse order so that outer placeholders (higher idx)
+        # are unwrapped before inner ones — otherwise the inner placeholder
+        # text is embedded inside the outer's ``original`` string and the
+        # forward loop skips it, leaking ``\x00MENTION_PROTECTED{idx}\x00``
+        # into the HTML output (visible as "MENTION_PROTECTED0" etc.).
+        for idx in range(len(placeholders) - 1, -1, -1):
+            linked = linked.replace(f"\x00MENTION_PROTECTED{idx}\x00", placeholders[idx])
 
         return linked
 

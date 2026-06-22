@@ -1,0 +1,205 @@
+{
+  "name": "Star Gate",
+  "slug": "star-gate-1968",
+  "year": 1968,
+  "collection": "1939-flagship",
+  "source": "2001: A Space Odyssey (Star Gate sequence)",
+  "source_type": "film_still",
+  "roles": {
+    "Background": {
+      "hex": "#0A0A0A",
+      "tints": [
+        "#4E4E4E",
+        "#393939",
+        "#252525",
+        "#171717",
+        "#0A0A0A",
+        "#040404",
+        "#000000",
+        "#000000",
+        "#000000",
+        "#000000"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#C1BFB4",
+      "tints": [
+        "#FAF8ED",
+        "#EBE9DE",
+        "#DBD9CE",
+        "#CECCC1",
+        "#C1BFB4",
+        "#DBD9CE",
+        "#A7A69B",
+        "#959389",
+        "#838177",
+        "#717066"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#1E593C",
+      "tints": [
+        "#87C2A0",
+        "#69A382",
+        "#4B8465",
+        "#2D6749",
+        "#1E593C",
+        "#1E593C",
+        "#00351B",
+        "#002108",
+        "#000D00",
+        "#000100"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#D15348",
+      "tints": [
+        "#FFC4B3",
+        "#FFA393",
+        "#FF8374",
+        "#E36356",
+        "#D15348",
+        "#9E211C",
+        "#A42822",
+        "#890106",
+        "#6E0000",
+        "#540000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#7680B5",
+      "tints": [
+        "#E3EFFF",
+        "#C2CEFF",
+        "#A3AEE6",
+        "#858FC5",
+        "#7680B5",
+        "#5A6396",
+        "#515A8C",
+        "#3C4474",
+        "#282E5C",
+        "#161946"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#753675",
+      "tints": [
+        "#E59EE4",
+        "#C47FC3",
+        "#A461A3",
+        "#844484",
+        "#753675",
+        "#4F1050",
+        "#4F1050",
+        "#380039",
+        "#220024",
+        "#0C0010"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#509D76",
+      "tints": [
+        "#BEFFE2",
+        "#9FEDC3",
+        "#7FCCA4",
+        "#60AC85",
+        "#509D76",
+        "#4A9771",
+        "#257551",
+        "#005E3C",
+        "#004727",
+        "#003213"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#6E93B8",
+      "tints": [
+        "#A4CCF3",
+        "#95BCE2",
+        "#86ACD2",
+        "#79A0C5",
+        "#6E93B8",
+        "#779DC2",
+        "#567B9F",
+        "#456A8C",
+        "#35587A",
+        "#345879"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 2.4,
+    "highlight_on_background": 4.75,
+    "highlight_on_canvas": 2.26,
+    "support_on_background": 5.21,
+    "chart1_on_background": 2.4,
+    "chart2_on_background": 6.06,
+    "canvas_on_background": 10.73
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.01057
+}

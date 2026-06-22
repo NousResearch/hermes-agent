@@ -1,0 +1,7 @@
+# Required for MCP server
+mcp>=1.0.0
+fastmcp>=0.1.0
+
+# Optional — improve fuzzy matching (server degrades gracefully without these):
+# metaphone
+# python-Levenshtein

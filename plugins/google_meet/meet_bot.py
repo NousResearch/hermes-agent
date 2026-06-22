@@ -164,7 +164,7 @@ class _BotState:
             "leaveReason": self.leave_reason,
         }
         tmp = self.status_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8", encoding="utf-8")
         tmp.replace(self.status_path)
 
     def set(self, **kwargs) -> None:

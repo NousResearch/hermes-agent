@@ -58,7 +58,7 @@ def _write_active(data: Dict[str, Any]) -> None:
     p = _active_file()
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8", encoding="utf-8")
     tmp.replace(p)
 
 

@@ -47,7 +47,7 @@ def main() -> int:
         raise SystemExit(f"Refusing to overwrite existing file: {output_path}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(render_template(args.template, args.name), encoding="utf-8")
+    output_path.write_text(render_template(args.template, args.name), encoding="utf-8", encoding="utf-8")
     print(f"Wrote {output_path}")
     return 0
 

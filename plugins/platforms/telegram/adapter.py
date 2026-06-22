@@ -4408,7 +4408,7 @@ class TelegramAdapter(BasePlatformAdapter):
             home = get_hermes_home()
             response_path = home / ".update_response"
             tmp = response_path.with_suffix(".tmp")
-            tmp.write_text(answer)
+            tmp.write_text(answer, encoding="utf-8")
             tmp.replace(response_path)
             logger.info("Telegram update prompt answered '%s' by user %s",
                         answer, getattr(query.from_user, "id", "unknown"))

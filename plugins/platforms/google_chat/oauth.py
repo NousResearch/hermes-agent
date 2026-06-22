@@ -419,7 +419,7 @@ def store_client_secret(path: str) -> None:
         sys.exit(1)
 
     try:
-        data = json.loads(src.read_text())
+        data = json.loads(src.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         print("ERROR: File is not valid JSON.")
         sys.exit(1)
@@ -459,7 +459,7 @@ def _load_pending_auth(email: Optional[str] = None) -> dict:
         print("ERROR: No pending OAuth session found. Run --auth-url first.")
         sys.exit(1)
     try:
-        data = json.loads(pending.read_text())
+        data = json.loads(pending.read_text(encoding="utf-8"))
     except Exception as exc:
         print(f"ERROR: Could not read pending OAuth session: {exc}")
         print("Run --auth-url again to start a fresh session.")

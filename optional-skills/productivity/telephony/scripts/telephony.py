@@ -159,7 +159,7 @@ def _load_state(path: Path | None = None) -> dict[str, Any]:
 def _save_state(state: dict[str, Any], path: Path | None = None) -> Path:
     state_file = path or _state_path()
     state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    state_file.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8", encoding="utf-8")
     return state_file
 
 
@@ -199,7 +199,7 @@ def _upsert_env_file(updates: dict[str, str], env_path: Path | None = None) -> P
         if key not in seen:
             new_lines.append(f"{key}={_quote_env_value(str(value))}")
 
-    path.write_text("\n".join(new_lines).rstrip() + "\n", encoding="utf-8")
+    path.write_text("\n".join(new_lines).rstrip() + "\n", encoding="utf-8", encoding="utf-8")
     return path
 
 

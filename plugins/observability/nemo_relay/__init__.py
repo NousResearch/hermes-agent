@@ -213,7 +213,7 @@ class _Runtime:
             return
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         filename = self.settings.atif_filename_template.format(session_id=state.session_id)
-        Path(output_dir, filename).write_text(state.atif_exporter.export_json(), encoding="utf-8")
+        Path(output_dir, filename).write_text(state.atif_exporter.export_json(), encoding="utf-8", encoding="utf-8")
 
     def close_session(self, kwargs: dict[str, Any]) -> None:
         session_id = _session_id(kwargs)

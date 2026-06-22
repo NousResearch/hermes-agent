@@ -2039,7 +2039,7 @@ class FeishuAdapter(BasePlatformAdapter):
     def _write_update_prompt_response(answer: str) -> None:
         response_path = get_hermes_home() / ".update_response"
         tmp_path = response_path.with_suffix(".tmp")
-        tmp_path.write_text(answer)
+        tmp_path.write_text(answer, encoding="utf-8")
         tmp_path.replace(response_path)
 
     async def send_voice(

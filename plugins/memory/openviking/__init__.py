@@ -856,7 +856,7 @@ def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ..
             new_lines.append(f"{key}={val}")
     # Pre-create with 0600 so secrets are never briefly world-readable.
     _precreate_secret_file(env_path)
-    env_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8")
+    env_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8", encoding="utf-8")
     _restrict_secret_file_permissions(env_path)
 
 

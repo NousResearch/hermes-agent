@@ -379,7 +379,7 @@ def parse_env_file(path: Path) -> Dict[str, str]:
 def save_env_file(path: Path, data: Dict[str, str]) -> None:
     ensure_parent(path)
     lines = [f"{key}={value}" for key, value in data.items()]
-    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8", encoding="utf-8")
 
 
 def backup_existing(path: Path, backup_root: Path) -> Optional[Path]:
@@ -705,7 +705,7 @@ def write_report(output_dir: Path, report: Dict[str, Any]) -> None:
         for step in next_steps:
             lines.append(f"- {step}")
 
-    (output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8", encoding="utf-8")
 
 
 class Migrator:
@@ -1102,7 +1102,7 @@ class Migrator:
         self.overflow_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{kind.replace('-', '_')}_overflow.txt"
         path = self.overflow_dir / filename
-        path.write_text("\n".join(entries) + "\n", encoding="utf-8")
+        path.write_text("\n".join(entries) + "\n", encoding="utf-8", encoding="utf-8")
         return path
 
     def copy_file(self, source: Path, destination: Path, kind: str,
@@ -1124,7 +1124,7 @@ class Migrator:
             if transform:
                 content = read_text(source)
                 content = transform(content)
-                destination.write_text(content, encoding="utf-8")
+                destination.write_text(content, encoding="utf-8", encoding="utf-8")
                 shutil.copystat(source, destination)
             else:
                 shutil.copy2(source, destination)
@@ -1184,7 +1184,7 @@ class Migrator:
                 return
             backup_path = self.maybe_backup(destination)
             ensure_parent(destination)
-            destination.write_text(ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""), encoding="utf-8")
+            destination.write_text(ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""), encoding="utf-8", encoding="utf-8")
             self.record(
                 kind,
                 source,
@@ -1883,7 +1883,7 @@ class Migrator:
         if self.execute:
             desc_path.parent.mkdir(parents=True, exist_ok=True)
             if not desc_path.exists():
-                desc_path.write_text(SKILL_CATEGORY_DESCRIPTION + "\n", encoding="utf-8")
+                desc_path.write_text(SKILL_CATEGORY_DESCRIPTION + "\n", encoding="utf-8", encoding="utf-8")
         elif not desc_path.exists():
             self.record("shared-skill-category", None, desc_path, "migrated", "Would create category description")
 
@@ -1930,7 +1930,7 @@ class Migrator:
                 return
             backup_path = self.maybe_backup(destination)
             ensure_parent(destination)
-            destination.write_text(ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""), encoding="utf-8")
+            destination.write_text(ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""), encoding="utf-8", encoding="utf-8")
             self.record(
                 "daily-memory",
                 source_dir,
@@ -1993,7 +1993,7 @@ class Migrator:
         if self.execute:
             desc_path.parent.mkdir(parents=True, exist_ok=True)
             if not desc_path.exists():
-                desc_path.write_text(SKILL_CATEGORY_DESCRIPTION + "\n", encoding="utf-8")
+                desc_path.write_text(SKILL_CATEGORY_DESCRIPTION + "\n", encoding="utf-8", encoding="utf-8")
         elif not desc_path.exists():
             self.record("skill-category", None, desc_path, "migrated", "Would create category description")
 
@@ -2187,7 +2187,7 @@ class Migrator:
         if self.archive_dir and self.execute:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
             dest = self.archive_dir / "plugins-config.json"
-            dest.write_text(json.dumps(plugins, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            dest.write_text(json.dumps(plugins, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
             self.record("plugins-config", "openclaw.json plugins.*", str(dest), "archived",
                         "Plugins config archived for manual review")
         else:
@@ -2226,7 +2226,7 @@ class Migrator:
             if self.archive_dir and self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
                 dest = self.archive_dir / "cron-config.json"
-                dest.write_text(json.dumps(cron, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                dest.write_text(json.dumps(cron, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
                 self.record("cron-jobs", "openclaw.json cron.*", str(dest), "archived",
                             "Cron config archived. Use 'hermes cron' to recreate jobs manually.")
             else:
@@ -2257,7 +2257,7 @@ class Migrator:
         if self.archive_dir and self.execute:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
             dest = self.archive_dir / "hooks-config.json"
-            dest.write_text(json.dumps(hooks, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            dest.write_text(json.dumps(hooks, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
             self.record("hooks-config", "openclaw.json hooks.*", str(dest), "archived",
                         "Hooks config archived for manual review")
         else:
@@ -2380,7 +2380,7 @@ class Migrator:
             if self.archive_dir and self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
                 dest = self.archive_dir / "agents-list.json"
-                dest.write_text(json.dumps(agent_list, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                dest.write_text(json.dumps(agent_list, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
             self.record("agent-config", "openclaw.json agents.list", "archive/agents-list.json",
                         "archived", f"Multi-agent setup ({len(agent_list)} agents) archived for manual recreation")
 
@@ -2390,7 +2390,7 @@ class Migrator:
             if self.archive_dir and self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
                 dest = self.archive_dir / "bindings.json"
-                dest.write_text(json.dumps(bindings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                dest.write_text(json.dumps(bindings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
             self.record("agent-config", "openclaw.json bindings", "archive/bindings.json",
                         "archived", f"Agent routing bindings ({len(bindings)} rules) archived")
 
@@ -2406,7 +2406,7 @@ class Migrator:
         if self.archive_dir and self.execute:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
             dest = self.archive_dir / "gateway-config.json"
-            dest.write_text(json.dumps(gateway, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            dest.write_text(json.dumps(gateway, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
         self.record("gateway-config", "openclaw.json gateway.*", "archive/gateway-config.json",
                     "archived", "Gateway config archived. Use 'hermes gateway' to configure.")
 
@@ -2473,7 +2473,7 @@ class Migrator:
             if self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
                 dest = self.archive_dir / "session-config.json"
-                dest.write_text(json.dumps(complex_session, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                dest.write_text(json.dumps(complex_session, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
             self.record("session-config", "openclaw.json session (advanced)",
                         "archive/session-config.json", "archived",
                         "Advanced session settings archived (identity links, thread bindings, etc.)")
@@ -2548,7 +2548,7 @@ class Migrator:
             if self.archive_dir and self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
                 dest = self.archive_dir / "model-aliases.json"
-                dest.write_text(json.dumps(model_aliases, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                dest.write_text(json.dumps(model_aliases, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
             self.record("full-providers", "agents.defaults.models", "archive/model-aliases.json",
                         "archived", f"Model aliases/catalog ({len(model_aliases)} entries) archived")
 
@@ -2635,7 +2635,7 @@ class Migrator:
             if self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
                 dest = self.archive_dir / "channels-deep-config.json"
-                dest.write_text(json.dumps(complex_archive, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                dest.write_text(json.dumps(complex_archive, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
             self.record("deep-channels", "openclaw.json channels (advanced settings)",
                         "archive/channels-deep-config.json", "archived",
                         f"Deep channel config for {len(complex_archive)} channels archived")
@@ -2676,7 +2676,7 @@ class Migrator:
             if self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
                 dest = self.archive_dir / "browser-config.json"
-                dest.write_text(json.dumps(advanced, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                dest.write_text(json.dumps(advanced, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
             self.record("browser-config", "openclaw.json browser (advanced)",
                         "archive/browser-config.json", "archived")
 
@@ -2720,7 +2720,7 @@ class Migrator:
             if self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
                 dest = self.archive_dir / "tools-config.json"
-                dest.write_text(json.dumps(tools, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                dest.write_text(json.dumps(tools, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
             self.record("tools-config", "openclaw.json tools (full)", "archive/tools-config.json",
                         "archived", "Full tools config archived for reference")
 
@@ -2753,7 +2753,7 @@ class Migrator:
             if self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
                 dest = self.archive_dir / "approvals-config.json"
-                dest.write_text(json.dumps(approvals, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                dest.write_text(json.dumps(approvals, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
             self.record("approvals-config", "openclaw.json approvals (rules)",
                         "archive/approvals-config.json", "archived")
 
@@ -2768,7 +2768,7 @@ class Migrator:
         if self.archive_dir and self.execute:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
             dest = self.archive_dir / "memory-backend-config.json"
-            dest.write_text(json.dumps(memory, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            dest.write_text(json.dumps(memory, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
         self.record("memory-backend", "openclaw.json memory.*", "archive/memory-backend-config.json",
                     "archived", "Memory backend config (QMD, vector search, citations) archived for manual review")
 
@@ -2784,7 +2784,7 @@ class Migrator:
         if self.archive_dir and self.execute:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
             dest = self.archive_dir / "skills-registry-config.json"
-            dest.write_text(json.dumps(skills, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            dest.write_text(json.dumps(skills, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
         self.record("skills-config", "openclaw.json skills.*", "archive/skills-registry-config.json",
                     "archived", f"Skills registry config ({len(entries)} entries) archived")
 
@@ -2799,7 +2799,7 @@ class Migrator:
         if self.archive_dir and self.execute:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
             dest = self.archive_dir / "ui-identity-config.json"
-            dest.write_text(json.dumps(ui, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            dest.write_text(json.dumps(ui, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
         self.record("ui-identity", "openclaw.json ui.*", "archive/ui-identity-config.json",
                     "archived", "UI theme and identity settings archived")
 
@@ -2820,7 +2820,7 @@ class Migrator:
         if self.archive_dir and self.execute:
             self.archive_dir.mkdir(parents=True, exist_ok=True)
             dest = self.archive_dir / "logging-diagnostics-config.json"
-            dest.write_text(json.dumps(combined, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            dest.write_text(json.dumps(combined, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", encoding="utf-8")
         self.record("logging-config", "openclaw.json logging/diagnostics",
                     "archive/logging-diagnostics-config.json", "archived")
 

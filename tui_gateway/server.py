@@ -4129,6 +4129,8 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         role = m.get("role")
         if role not in {"user", "assistant", "tool", "system"}:
             continue
+        if m.get("_compressed_summary") or m.get("compressed_summary"):
+            continue
         content_text = _coerce_message_text(m.get("content"))
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:

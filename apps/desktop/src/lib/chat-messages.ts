@@ -178,6 +178,10 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   return [refs.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
+function isCompressedSummaryMessage(message: SessionMessage): boolean {
+  return Boolean(message._compressed_summary || message.compressed_summary)
+}
+
 const STREAM_PART: Record<'reasoning' | 'text', (text: string) => ChatMessagePart> = {
   reasoning: reasoningPart,
   text: textPart
@@ -735,6 +739,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   }
 
   messages.forEach((message, index) => {
+    if (isCompressedSummaryMessage(message)) {
+      return
+    }
+
     if (message.role === 'tool') {
       const updatedPendingToolParts = applyStoredToolResultToParts(pendingToolParts, message)
 

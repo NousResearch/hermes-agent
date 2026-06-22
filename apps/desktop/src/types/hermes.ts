@@ -350,7 +350,9 @@ export interface SessionInfo {
 }
 
 export interface SessionMessage {
+  _compressed_summary?: boolean | number
   codex_reasoning_items?: unknown
+  compressed_summary?: boolean | number
   content: unknown
   context?: unknown
   name?: string

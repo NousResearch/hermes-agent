@@ -20,6 +20,7 @@ from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
 )
+from hermes_state import SessionDB
 
 
 def _make_compressor():
@@ -91,3 +92,63 @@ class TestMetadataFlagNeverReachesWire:
             isinstance(m, dict) and m.get(COMPRESSED_SUMMARY_METADATA_KEY)
             for m in out
         )
+
+
+class TestMetadataFlagPersistence:
+    def test_replace_messages_round_trips_compressed_summary_flag(self, tmp_path):
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            db.create_session("session-1", source="test")
+            db.replace_messages(
+                "session-1",
+                [
+                    {"role": "user", "content": "real prompt"},
+                    {
+                        "role": "assistant",
+                        "content": "internal summary",
+                        COMPRESSED_SUMMARY_METADATA_KEY: True,
+                    },
+                    {
+                        "role": "user",
+                        "content": "[Your active task list was preserved across context compression]\n- [>] 1. keep going (in_progress)",
+                    },
+                    {"role": "assistant", "content": "visible reply"},
+                ],
+            )
+
+            raw = db.get_messages("session-1")
+            assert raw[1]["compressed_summary"] == 1
+            assert raw[2]["compressed_summary"] == 1
+            assert raw[0]["compressed_summary"] == 0
+
+            replay = db.get_messages_as_conversation("session-1")
+            assert replay[1][COMPRESSED_SUMMARY_METADATA_KEY] is True
+            assert replay[2][COMPRESSED_SUMMARY_METADATA_KEY] is True
+            assert COMPRESSED_SUMMARY_METADATA_KEY not in replay[0]
+        finally:
+            db.close()
+
+    def test_schema_upgrade_backfills_legacy_summary_prefixes(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path)
+        try:
+            db.create_session("session-1", source="test")
+            db.append_message(
+                "session-1",
+                role="user",
+                content="[Your active task list was preserved across context compression]\n- [>] 1. keep going (in_progress)",
+            )
+            db._conn.execute("UPDATE messages SET compressed_summary = 0")
+            db._conn.execute("UPDATE schema_version SET version = 16")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        upgraded = SessionDB(db_path)
+        try:
+            raw = upgraded.get_messages("session-1")
+            assert raw[0]["compressed_summary"] == 1
+            replay = upgraded.get_messages_as_conversation("session-1")
+            assert replay[0][COMPRESSED_SUMMARY_METADATA_KEY] is True
+        finally:
+            upgraded.close()

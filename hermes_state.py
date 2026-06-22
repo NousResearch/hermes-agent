@@ -116,7 +116,16 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
+
+# Keep in sync with agent.context_compressor.COMPRESSED_SUMMARY_METADATA_KEY.
+# Duplicated here to avoid importing the agent package from the state layer.
+COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+COMPRESSED_SUMMARY_PREFIXES = (
+    "[CONTEXT COMPACTION",
+    "[CONTEXT SUMMARY]:",
+    "[Your active task list was preserved across context compression]",
+)
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -576,7 +585,8 @@ CREATE TABLE IF NOT EXISTS messages (
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
-    compacted INTEGER NOT NULL DEFAULT 0
+    compacted INTEGER NOT NULL DEFAULT 0,
+    compressed_summary INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -1300,6 +1310,22 @@ class SessionDB:
                         "            WHERE m.session_id = sessions.id AND m.role = 'tool') "
                         "AND NOT EXISTS (SELECT 1 FROM sessions ch "
                         "                WHERE ch.parent_session_id = sessions.id)"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            if current_version < 17:
+                # v17: persist the in-process compressed-summary marker so
+                # Desktop/TUI transcript replay can hide internal compaction
+                # handoff rows instead of rendering them as user messages.
+                # Backfill the legacy prefix shapes that were already stored
+                # before the metadata column existed.
+                try:
+                    cursor.execute(
+                        "UPDATE messages SET compressed_summary = 1 "
+                        "WHERE compressed_summary = 0 AND content IS NOT NULL "
+                        "AND (content LIKE '[CONTEXT COMPACTION%' "
+                        "OR content LIKE '[CONTEXT SUMMARY]:%' "
+                        "OR content LIKE '[Your active task list was preserved across context compression]%')"
                     )
                 except sqlite3.OperationalError:
                     pass
@@ -2505,6 +2531,7 @@ class SessionDB:
         platform_message_id: str = None,
         observed: bool = False,
         timestamp: Any = None,
+        compressed_summary: bool = False,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -2535,6 +2562,7 @@ class SessionDB:
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
+        is_compressed_summary = compressed_summary or self._looks_like_compressed_summary(content)
 
         message_timestamp = time.time()
         if timestamp is not None:
@@ -2556,8 +2584,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, compressed_summary)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -2575,6 +2603,7 @@ class SessionDB:
                     codex_message_items_json,
                     platform_message_id,
                     1 if observed else 0,
+                    1 if is_compressed_summary else 0,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -2642,13 +2671,18 @@ class SessionDB:
             platform_msg_id = (
                 msg.get("platform_message_id") or msg.get("message_id")
             )
+            compressed_summary = bool(
+                msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                or msg.get("compressed_summary")
+                or self._looks_like_compressed_summary(msg.get("content"))
+            )
 
             conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, compressed_summary)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -2666,6 +2700,7 @@ class SessionDB:
                     codex_message_items_json,
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
+                    1 if compressed_summary else 0,
                 ),
             )
             inserted += 1
@@ -2675,6 +2710,13 @@ class SessionDB:
                 )
             now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)
         return inserted, tool_calls_total
+
+    @staticmethod
+    def _looks_like_compressed_summary(content: Any) -> bool:
+        if not isinstance(content, str):
+            return False
+        text = content.lstrip()
+        return any(text.startswith(prefix) for prefix in COMPRESSED_SUMMARY_PREFIXES)
 
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Atomically replace every message for a session.
@@ -3099,7 +3141,8 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
+                "codex_reasoning_items, codex_message_items, platform_message_id, "
+                "observed, compressed_summary, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 f"{active_clause} ORDER BY timestamp, id",
                 tuple(session_ids),
@@ -3132,6 +3175,8 @@ class SessionDB:
                 msg["message_id"] = row["platform_message_id"]
             if row["observed"]:
                 msg["observed"] = True
+            if row["compressed_summary"]:
+                msg[COMPRESSED_SUMMARY_METADATA_KEY] = True
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.

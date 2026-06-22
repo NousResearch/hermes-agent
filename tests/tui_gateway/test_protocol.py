@@ -71,6 +71,27 @@ def test_err_envelope(server):
     }
 
 
+def test_history_to_messages_hides_compressed_summary_rows(server):
+    messages = server._history_to_messages(
+        [
+            {"role": "user", "content": "real prompt"},
+            {
+                "role": "assistant",
+                "content": "internal summary",
+                "_compressed_summary": True,
+            },
+            {
+                "role": "user",
+                "content": "legacy internal summary",
+                "compressed_summary": 1,
+            },
+            {"role": "assistant", "content": "visible reply"},
+        ]
+    )
+
+    assert [m["text"] for m in messages] == ["real prompt", "visible reply"]
+
+
 # ── write_json ───────────────────────────────────────────────────────
 
 

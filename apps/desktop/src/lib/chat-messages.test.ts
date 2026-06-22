@@ -69,6 +69,28 @@ describe('toChatMessages', () => {
     expect(chatMessageText(assistantMessages[0])).toContain('Now let me check git status and commit.')
   })
 
+  it('hides compressed summary metadata rows from loaded transcripts', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'real prompt', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: 'internal summary',
+        timestamp: 2,
+        _compressed_summary: true
+      },
+      {
+        role: 'user',
+        content: 'legacy internal summary',
+        timestamp: 3,
+        compressed_summary: 1
+      },
+      { role: 'assistant', content: 'visible reply', timestamp: 4 }
+    ])
+
+    expect(messages).toHaveLength(2)
+    expect(messages.map(message => chatMessageText(message))).toEqual(['real prompt', 'visible reply'])
+  })
+
   it('hides attached context payloads from user message display', () => {
     const [message] = toChatMessages([
       {

@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_review_handoff as krh
 
 
 @pytest.fixture
@@ -2007,6 +2008,81 @@ def test_dispatch_once_includes_stranded_reaped(
     assert res.stranded_reaped[0][0] == t
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "archived"
+
+
+def test_dispatch_once_runs_review_handoff(
+    kanban_home, monkeypatch,
+):
+    """``dispatch_once`` MUST run the review producer as part of the
+    tick — IMPLEMENT-KANBAN-REVIEW-HANDOFF's contract is that the
+    dispatcher is the de-facto cron safety net, so a missing wiring
+    would let cards rot in the worker's blocked queue.
+
+    This test creates a ``blocked(review-required)`` card and asserts
+    that one ``dispatch_once`` call moves it through the review
+    queue (the dispatch tick will immediately spawn a reviewer for
+    it, so we verify via the handoff audit event + result fields,
+    not the final status, since the spawn happens in the same tick).
+    """
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+
+    tid = _seed_blocked_review_required(kanban_home, assignee="code-craftsman")
+
+    with kb.connect() as conn:
+        res = kb.dispatch_once(
+            conn, spawn_fn=lambda task, workspace: None,
+        )
+
+    # The handoff was the producer step; it ran before the spawn loop
+    # in the same tick, so the result field MUST list this task.
+    assert res.review_handed_off == [tid]
+    assert res.review_completed_routed == []
+    # The card was reassigned to wags-reviewer and the audit event was
+    # emitted. Final status depends on whether the dispatch spawn loop
+    # also ran (it does — has_spawnable_review sees the freshly moved
+    # card and claim_review_task runs) but the handoff itself is
+    # visible via the event regardless.
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        handoff_events = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == krh.HANDOFF_EVENT
+        ]
+    assert task is not None and task.assignee == krh.REVIEWER
+    assert len(handoff_events) == 1
+    assert handoff_events[0].payload["from_assignee"] == "code-craftsman"
+
+
+def test_dispatch_once_runs_review_handoff_idempotent(
+    kanban_home, monkeypatch,
+):
+    """A second ``dispatch_once`` after the card has been moved to
+    ``review`` MUST NOT re-emit a ``review_handoff`` event and MUST
+    return an empty ``review_handed_off`` list. Belt-and-braces for
+    the idempotency guarantee at the dispatch-tick level, not just the
+    function level."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+
+    tid = _seed_blocked_review_required(kanban_home, assignee="code-craftsman")
+
+    with kb.connect() as conn:
+        first = kb.dispatch_once(
+            conn, spawn_fn=lambda task, workspace: None,
+        )
+        second = kb.dispatch_once(
+            conn, spawn_fn=lambda task, workspace: None,
+        )
+
+    assert first.review_handed_off == [tid]
+    assert second.review_handed_off == []
+    with kb.connect() as conn:
+        events = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == krh.HANDOFF_EVENT
+        ]
+    assert len(events) == 1  # exactly one, even after two ticks
 
 
 def test_reap_stranded_unblocks_dependent_children(
@@ -4885,3 +4961,330 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# hermes_cli.kanban_review_handoff — producer + consumer
+# ---------------------------------------------------------------------------
+#
+# These tests pin down the contract for IMPLEMENT-KANBAN-REVIEW-HANDOFF:
+#
+#   blocked(review-required) --producer--> review, wags-reviewer
+#   review, wags-reviewer, done --consumer--> PASS  -> closed
+#                                       \-> FAIL  -> ready, original
+#                                       \-> WAIVER-> ready, original
+#
+# The producer MUST be idempotent: a re-run on an already-handed-off
+# card is a no-op (no second `review_handoff` event). The consumer MUST
+# not regress a card whose most recent comment has no parseable
+# verdict — that's the case while a reviewer is still drafting.
+
+
+def _seed_blocked_review_required(kanban_home, *, assignee="code-craftsman",
+                                  reason="review-required: needs eyes on X"):
+    """Create + claim + block a task with the standard review-required
+    marker. Returns the task id. Mirrors the path a real worker walks
+    via ``kanban_block(reason="review-required: ...")``."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="needs review", assignee=assignee,
+        )
+        assert kb.claim_task(conn, tid) is not None
+        assert kb.block_task(conn, tid, reason=reason) is True
+    return tid
+
+
+def test_handoff_blocked_to_review_moves_card(kanban_home):
+    """Producer: a ``blocked(review-required)`` card lands in the
+    review queue under ``wags-reviewer`` with one ``review_handoff``
+    event that records the original assignee."""
+    tid = _seed_blocked_review_required(kanban_home)
+
+    with kb.connect() as conn:
+        handed = krh.handoff_blocked_to_review(conn)
+
+    assert handed == [tid]
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == krh.HANDOFF_EVENT
+        ]
+    assert task is not None and task.status == "review"
+    assert task is not None and task.assignee == krh.REVIEWER
+    assert len(events) == 1
+    payload = events[0].payload
+    assert payload == {"from_assignee": "code-craftsman",
+                       "to_assignee": krh.REVIEWER}
+
+
+def test_handoff_is_idempotent_on_already_routed_card(kanban_home):
+    """Producer MUST no-op on cards already in the review queue.
+
+    Without this guard a dispatcher tick that fires twice (or a cron
+    safety-net that races a normal tick) would emit duplicate
+    ``review_handoff`` events and confuse the consumer's
+    ``from_assignee`` lookup. Re-running the producer must return []
+    AND emit zero new events."""
+    tid = _seed_blocked_review_required(kanban_home)
+
+    with kb.connect() as conn:
+        first = krh.handoff_blocked_to_review(conn)
+        events_after_first = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_events "
+            "WHERE task_id = ? AND kind = ?",
+            (tid, krh.HANDOFF_EVENT),
+        ).fetchone()["n"]
+        second = krh.handoff_blocked_to_review(conn)
+        events_after_second = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_events "
+            "WHERE task_id = ? AND kind = ?",
+            (tid, krh.HANDOFF_EVENT),
+        ).fetchone()["n"]
+
+    assert first == [tid]
+    assert second == []
+    assert events_after_first == 1
+    assert events_after_second == 1
+
+
+def test_handoff_skips_non_review_blocked_tasks(kanban_home):
+    """Producer MUST NOT touch ``blocked`` cards whose latest block
+    reason isn't ``review-required:``. t_540bd4f-style operator
+    blocks (``User turn 'Refactor X.' — X is undefined``) wait for a
+    human, not a reviewer."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="operator question", assignee="code-craftsman",
+        )
+        assert kb.claim_task(conn, tid) is not None
+        assert kb.block_task(conn, tid, reason="need operator input first") is True
+
+    with kb.connect() as conn:
+        handed = krh.handoff_blocked_to_review(conn)
+
+    assert handed == []
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.get_task(conn, tid).assignee == "code-craftsman"
+
+
+def test_handoff_routes_latest_blocked_when_older_was_non_review(kanban_home):
+    """If a card cycles blocked→unblock→blocked, only the latest
+    reason should drive the hand-off decision. A prior blocked event
+    without the marker must not count."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="cycles", assignee="code-craftsman",
+        )
+        kb.claim_task(conn, tid)
+        # First block: not review-required.
+        kb.block_task(conn, tid, reason="needs input")
+        # Unblock manually.
+        kb.unblock_task(conn, tid)
+        # Re-claim and block again with the review-required marker.
+        kb.claim_task(conn, tid)
+        kb.block_task(conn, tid, reason="review-required: second pass needs eyes")
+
+    with kb.connect() as conn:
+        handed = krh.handoff_blocked_to_review(conn)
+
+    assert handed == [tid]
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "review"
+
+
+def test_completion_route_fail_returns_card_to_original(kanban_home):
+    """Consumer: a wags-reviewer ``done`` card whose last comment
+    carries ``Verdict: FAIL`` must be reassigned to the original
+    worker and flipped back to ``ready``. The ``review_completion``
+    event records the verdict + reassignment for the audit log."""
+    tid = _seed_blocked_review_required(kanban_home, assignee="code-craftsman")
+    with kb.connect() as conn:
+        krh.handoff_blocked_to_review(conn)
+        # Simulate the reviewer claiming and finishing with FAIL.
+        assert kb.claim_review_task(conn, tid) is not None
+        assert kb.complete_task(conn, tid,
+                                summary="Verdict: FAIL — see comments") is True
+        kb.add_comment(conn, tid, author="wags-reviewer",
+                       body="Verdict: FAIL — the docstring lies about X.")
+        routed = krh.completion_route(conn)
+
+    assert routed == [tid]
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        completion_events = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == krh.COMPLETION_EVENT
+        ]
+    assert task is not None and task.status == "ready"
+    assert task is not None and task.assignee == "code-craftsman"
+    assert len(completion_events) == 1
+    payload = completion_events[0].payload
+    assert payload == {"verdict": "FAIL", "action": "reassigned",
+                       "to_assignee": "code-craftsman"}
+
+
+def test_completion_route_waiver_also_returns_to_original(kanban_home):
+    """WAIVER is treated like FAIL for routing purposes — we still
+    want the original worker to see the verdict and any follow-up
+    notes. The audit event records ``verdict='WAIVER'`` so the
+    dashboard can colour these differently from hard fails."""
+    tid = _seed_blocked_review_required(kanban_home, assignee="code-craftsman")
+    with kb.connect() as conn:
+        krh.handoff_blocked_to_review(conn)
+        kb.claim_review_task(conn, tid)
+        kb.complete_task(conn, tid, summary="Verdict: WAIVER")
+        kb.add_comment(conn, tid, author="wags-reviewer",
+                       body="Verdict: WAIVER — accept the risk.")
+        routed = krh.completion_route(conn)
+
+    assert routed == [tid]
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == krh.COMPLETION_EVENT
+        ]
+    assert task is not None and task.status == "ready"
+    assert task is not None and task.assignee == "code-craftsman"
+    assert events and events[0].payload["verdict"] == "WAIVER"
+
+
+def test_completion_route_pass_closes_card(kanban_home):
+    """PASS leaves the card ``done`` under ``wags-reviewer``. The
+    consumer's job is just to emit the audit event — closing the
+    orchestrator loop is somebody else's responsibility (the
+    orchestrator that spawned the worker, typically)."""
+    tid = _seed_blocked_review_required(kanban_home, assignee="code-craftsman")
+    with kb.connect() as conn:
+        krh.handoff_blocked_to_review(conn)
+        kb.claim_review_task(conn, tid)
+        kb.complete_task(conn, tid, summary="Verdict: PASS")
+        kb.add_comment(conn, tid, author="wags-reviewer",
+                       body="Verdict: PASS — ship it.")
+        routed = krh.completion_route(conn)
+
+    assert routed == [tid]
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == krh.COMPLETION_EVENT
+        ]
+    assert task is not None and task.status == "done"
+    assert task is not None and task.assignee == krh.REVIEWER  # NOT reassigned
+    assert events and events[0].payload["action"] == "closed"
+
+
+def test_completion_route_skips_done_card_without_verdict(kanban_home):
+    """If the reviewer's last comment doesn't parse as a verdict
+    (e.g. they wrote ``need more info from operator``), the consumer
+    MUST leave the card alone. Re-running the consumer on the same
+    card must be a no-op until a verdict-bearing comment lands."""
+    tid = _seed_blocked_review_required(kanban_home, assignee="code-craftsman")
+    with kb.connect() as conn:
+        krh.handoff_blocked_to_review(conn)
+        kb.claim_review_task(conn, tid)
+        kb.complete_task(conn, tid, summary="no verdict yet")
+        kb.add_comment(conn, tid, author="wags-reviewer",
+                       body="need more info from operator")
+        routed = krh.completion_route(conn)
+
+    assert routed == []
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == krh.COMPLETION_EVENT
+        ]
+    assert task is not None and task.status == "done"
+    assert task is not None and task.assignee == krh.REVIEWER
+    assert events == []
+
+
+def test_parse_verdict_accepts_known_forms():
+    """Pure-Python regression for the regex. Belt-and-braces: the SQL
+    path is covered above, but the regex itself is the contract the
+    reviewer writes against, so we pin it down directly."""
+    assert krh.parse_verdict("Verdict: PASS, ship it") == "PASS"
+    assert krh.parse_verdict("verdict: pass") == "PASS"
+    assert krh.parse_verdict("Decision: FAIL") == "FAIL"
+    assert krh.parse_verdict("DECISION: WAIVER") == "WAIVER"
+    assert krh.parse_verdict("Verdict=FAIL") == "FAIL"
+    # Bare PASS at start of comment is accepted as a weak signal.
+    assert krh.parse_verdict("PASS") == "PASS"
+    assert krh.parse_verdict("**PASS**") == "PASS"
+    # FAIL/WAIVER without the prefix is NOT matched (too ambiguous).
+    assert krh.parse_verdict("this looks like a failure to me") is None
+    assert krh.parse_verdict("") is None
+    assert krh.parse_verdict(None) is None
+
+
+def test_handoff_full_round_trip(kanban_home):
+    """End-to-end: a card blocked with review-required → handed off
+    → reviewer claims and fails → consumer reassigns → card is
+    ready under the original assignee. This is the path the 15
+    currently-stuck cards will walk once the producer ticks (minus
+    the reviewer half, which still requires wags-reviewer to claim
+    and post a verdict)."""
+    tid = _seed_blocked_review_required(kanban_home, assignee="code-craftsman")
+    with kb.connect() as conn:
+        # Producer.
+        assert krh.handoff_blocked_to_review(conn) == [tid]
+        task_after_handoff = kb.get_task(conn, tid)
+        assert task_after_handoff is not None
+        assert task_after_handoff.status == "review"
+
+        # Reviewer claims, fails.
+        assert kb.claim_review_task(conn, tid) is not None
+        assert kb.complete_task(conn, tid, summary="Verdict: FAIL") is True
+        kb.add_comment(conn, tid, author="wags-reviewer",
+                       body="Verdict: FAIL — see notes.")
+
+        # Consumer.
+        assert krh.completion_route(conn) == [tid]
+
+        task = kb.get_task(conn, tid)
+        handoff_events = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == krh.HANDOFF_EVENT
+        ]
+        completion_events = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == krh.COMPLETION_EVENT
+        ]
+
+    # Final state: card is ready under the original assignee, ready
+    # for the dispatcher to claim again.
+    assert task is not None and task.status == "ready"
+    assert task is not None and task.assignee == "code-craftsman"
+    assert len(handoff_events) == 1
+    assert len(completion_events) == 1
+
+
+def test_handoff_skips_card_already_assigned_to_reviewer(kanban_home):
+    """Idempotency guard #2: if a card is somehow already in
+    ``status='blocked'`` with ``assignee='wags-reviewer'`` (e.g. a
+    reviewer self-blocked), the producer must skip it rather than
+    try to ``assign_task`` to itself."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="self-blocked reviewer", assignee=krh.REVIEWER,
+        )
+        kb.claim_task(conn, tid)
+        kb.block_task(conn, tid, reason="review-required: reviewer self-flagged")
+
+    with kb.connect() as conn:
+        handed = krh.handoff_blocked_to_review(conn)
+
+    assert handed == []
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == krh.HANDOFF_EVENT
+        ]
+    assert task.status == "blocked"
+    assert task.assignee == krh.REVIEWER
+    assert events == []  # no event emitted

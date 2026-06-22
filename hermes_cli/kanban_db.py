@@ -6711,6 +6711,21 @@ def dispatch_once(
             action=stranded_action,
             default_assignee=default_assignee,
         )
+        # Review loop — producer + consumer. Both functions are
+        # idempotent so this is safe to call on every tick (the daemon
+        # tick is the de-facto safety net for the cron `*/2 * * * *`
+        # spec'd by IMPLEMENT-KANBAN-REVIEW-HANDOFF). Local import to
+        # avoid the circular dependency kanban_review_handoff → kanban_db.
+        try:
+            from hermes_cli import kanban_review_handoff as _krh
+        except Exception:
+            # Don't let a missing/ broken module kill the dispatcher
+            # tick. The review loop is an enhancement; the rest of the
+            # dispatch is more important.
+            _krh = None
+        if _krh is not None:
+            result.review_handed_off = _krh.handoff_blocked_to_review(conn)
+            result.review_completed_routed = _krh.completion_route(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full

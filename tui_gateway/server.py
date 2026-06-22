@@ -3712,6 +3712,18 @@ def _make_agent(
     from run_agent import AIAgent
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
+    # Ensure hook-based plugins (Langfuse, etc.) are discovered and their
+    # hooks registered before the agent starts processing.  The gateway path
+    # (gateway/run.py) already calls discover_plugins() at startup, but the
+    # TUI/dashboard path never did — so has_hook() always returned False and
+    # hooks silently never fired.  discover_plugins() is idempotent (guarded by
+    # a loaded flag internally), so repeated calls are safe.
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    except Exception:
+        pass
+
     # MCP tool discovery runs in a background daemon thread at startup so a
     # dead server can't freeze the shell.  The agent snapshots its tool list
     # once here and never re-reads it, so briefly wait for in-flight discovery

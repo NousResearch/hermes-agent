@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>superattention.ai Growth Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Playfair+Display:wght@700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="noise"></div>
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+    <div class="orb orb-c"></div>
+
+    <main class="shell">
+      <nav class="nav">
+        <div class="brand-mark">
+          <span class="brand-spark"></span>
+          <div>
+            <strong>superattention.ai</strong>
+            <small>Attention to revenue engine</small>
+          </div>
+        </div>
+        <div class="nav-pills">
+          <button class="pill active" data-jump="dashboard">Dashboard</button>
+          <button class="pill" data-jump="campaign">Campaign</button>
+          <button class="pill" data-jump="studio">Studio</button>
+          <button class="pill" data-jump="tracker">Tracker</button>
+        </div>
+      </nav>
+
+      <section id="dashboard" class="hero panel">
+        <div class="hero-copy">
+          <div class="eyebrow">AI growth system for early D2C brands</div>
+          <h1>Turn attention into revenue.</h1>
+          <p>
+            Fire every growth engine from Instagram Reels to website
+            conversion, WhatsApp campaigns, founder-led LinkedIn, offers, and
+            weekly learning loops.
+          </p>
+          <div class="hero-actions">
+            <button class="primary-action" data-jump="campaign">
+              View 30-day growth plan
+            </button>
+            <button class="ghost-action" data-jump="studio">
+              Open content studio
+            </button>
+          </div>
+        </div>
+
+        <div class="growth-card">
+          <div class="card-header">
+            <span>The Pickle Romance</span>
+            <strong>Aam Romantics</strong>
+          </div>
+          <div class="revenue-ring">
+            <svg viewBox="0 0 160 160" aria-label="Revenue progress">
+              <circle class="ring-bg" cx="80" cy="80" r="68"></circle>
+              <circle class="ring-progress" cx="80" cy="80" r="68"></circle>
+            </svg>
+            <div class="ring-copy">
+              <span>Target</span>
+              <strong>₹50K</strong>
+              <small>84 combos</small>
+            </div>
+          </div>
+          <div class="metric-grid">
+            <div>
+              <span>Stock</span>
+              <strong>150</strong>
+              <small>combos</small>
+            </div>
+            <div>
+              <span>Price</span>
+              <strong>₹599</strong>
+              <small>launch</small>
+            </div>
+            <div>
+              <span>Weekly</span>
+              <strong>21</strong>
+              <small>orders</small>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="engine-strip">
+        <article>
+          <span>01</span>
+          <strong>Attention</strong>
+          <p>Reels, LinkedIn, UGC, founder story, product moments.</p>
+        </article>
+        <article>
+          <span>02</span>
+          <strong>Demand</strong>
+          <p>Offers, proof, objections, WhatsApp intent capture.</p>
+        </article>
+        <article>
+          <span>03</span>
+          <strong>Conversion</strong>
+          <p>Website copy, CTA, product listing, order scripts.</p>
+        </article>
+        <article>
+          <span>04</span>
+          <strong>Learning</strong>
+          <p>Track what worked and sharpen next week's growth loop.</p>
+        </article>
+      </section>
+
+      <section id="campaign" class="section">
+        <div class="section-title">
+          <span>30-day command plan</span>
+          <h2>Aam Romantics campaign</h2>
+          <p>
+            A weekly execution map to sell ₹50,000 through Instagram, website,
+            WhatsApp, and local trust.
+          </p>
+        </div>
+        <div class="timeline" id="timeline"></div>
+      </section>
+
+      <section id="studio" class="section studio-grid">
+        <div class="section-title sticky-title">
+          <span>Content studio</span>
+          <h2>Ready-to-use growth assets</h2>
+          <p>
+            Copy hooks, Reel scripts, WhatsApp CTAs, website copy, and founder
+            LinkedIn posts from one console.
+          </p>
+          <div class="tab-list" id="assetTabs"></div>
+        </div>
+        <div class="asset-stage">
+          <div class="asset-card" id="assetCard"></div>
+          <div class="reel-builder panel">
+            <div class="builder-header">
+              <span>V2 preview</span>
+              <strong>Asset-to-Reel Builder</strong>
+            </div>
+            <div class="upload-grid">
+              <div class="upload-slot">Jar photo</div>
+              <div class="upload-slot">Meal shot</div>
+              <div class="upload-slot">Packing clip</div>
+              <div class="upload-slot">Logo</div>
+            </div>
+            <ol class="scene-list">
+              <li>Detect product and food context</li>
+              <li>Choose a sales angle</li>
+              <li>Generate storyboard and text overlays</li>
+              <li>Export ready-to-post Reel draft</li>
+            </ol>
+          </div>
+        </div>
+      </section>
+
+      <section id="tracker" class="section tracker panel">
+        <div class="section-title">
+          <span>Growth tracker</span>
+          <h2>Manual inputs, smart next actions</h2>
+          <p>
+            V1 tracks results manually. V2 can connect channels and update the
+            learning loop automatically.
+          </p>
+        </div>
+        <div class="tracker-layout">
+          <form class="tracker-form" id="trackerForm">
+            <label>
+              Reel views
+              <input type="number" name="views" value="4200" min="0" />
+            </label>
+            <label>
+              WhatsApp inquiries
+              <input type="number" name="inquiries" value="38" min="0" />
+            </label>
+            <label>
+              Orders
+              <input type="number" name="orders" value="14" min="0" />
+            </label>
+            <label>
+              Revenue
+              <input type="number" name="revenue" value="8386" min="0" />
+            </label>
+          </form>
+          <div class="insight-card" id="insightCard"></div>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -249,6 +249,50 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
+    def test_gateway_drain_begin_writes_marker(self):
+        from gateway import drain_control
+
+        resp = self.client.post("/api/gateway/drain", json={"action": "drain"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True and data["action"] == "drain"
+        assert data["draining"] is True
+        assert drain_control.drain_requested() is True
+        # cleanup
+        drain_control.clear_drain_request()
+
+    def test_gateway_drain_defaults_to_begin(self):
+        from gateway import drain_control
+
+        resp = self.client.post("/api/gateway/drain", json={})
+        assert resp.status_code == 200
+        assert resp.json()["action"] == "drain"
+        assert drain_control.drain_requested() is True
+        drain_control.clear_drain_request()
+
+    def test_gateway_drain_cancel_removes_marker(self):
+        from gateway import drain_control
+
+        drain_control.write_drain_request()
+        resp = self.client.post("/api/gateway/drain", json={"action": "cancel"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True and data["action"] == "cancel"
+        assert data["was_draining"] is True
+        assert drain_control.drain_requested() is False
+
+    def test_gateway_drain_cancel_idempotent(self):
+        from gateway import drain_control
+
+        resp = self.client.post("/api/gateway/drain", json={"action": "cancel"})
+        assert resp.status_code == 200
+        assert resp.json()["was_draining"] is False
+        assert drain_control.drain_requested() is False
+
+    def test_gateway_drain_bad_action_400(self):
+        resp = self.client.post("/api/gateway/drain", json={"action": "explode"})
+        assert resp.status_code == 400
+
     def test_get_status_hides_update_capability_in_managed_runtime(self, monkeypatch):
         import hermes_cli.web_server as web_server
 

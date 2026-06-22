@@ -139,3 +139,22 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
+
+
+@pytest.mark.asyncio
+async def test_new_command_stops_typing_indicator():
+    """/new must call adapter.interrupt_session_activity() to stop any
+    orphaned _keep_typing task from the previous run (#50766)."""
+    runner = _make_runner()
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.interrupt_session_activity = AsyncMock()
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    adapter.interrupt_session_activity.assert_awaited_once()
+    call_args = adapter.interrupt_session_activity.call_args
+    assert call_args is not None
+    # First positional arg is the session key, second is the chat_id
+    args, _ = call_args
+    assert len(args) == 2
+    assert args[1] == "c1"  # chat_id from _make_source()

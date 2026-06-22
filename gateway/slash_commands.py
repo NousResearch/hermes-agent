@@ -91,6 +91,19 @@ class GatewaySlashCommandsMixin:
                 self._cleanup_agent_resources(_old_agent)
         self._evict_cached_agent(session_key)
 
+        # Stop any orphaned typing indicator / _keep_typing task from the
+        # previous run.  Without this, /new dispatched via the normal command
+        # path (no agent in _running_agents) skips _interrupt_and_clear_session,
+        # and a surviving _keep_typing loop keeps sending typing indicators
+        # indefinitely (#50766).
+        _adapters = getattr(self, "adapters", None)
+        adapter = _adapters.get(source.platform) if _adapters else None
+        if adapter and hasattr(adapter, "interrupt_session_activity"):
+            try:
+                await adapter.interrupt_session_activity(session_key, source.chat_id)
+            except Exception:
+                pass
+
         # Discard any /queue overflow for this session — /new is a
         # conversation-boundary operation, queued follow-ups from the
         # previous conversation must not bleed into the new one.

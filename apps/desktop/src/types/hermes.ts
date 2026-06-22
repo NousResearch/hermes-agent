@@ -579,6 +579,36 @@ export interface ToolsetConfig {
   active_provider: string | null
 }
 
+/** Shape of `GET /api/tools/computer-use/status`.
+ *
+ *  Computer Use drives the Mac through cua-driver, whose Accessibility +
+ *  Screen Recording grants attach to cua-driver's OWN TCC identity
+ *  (`com.trycua.driver`), not the Hermes app. Permission booleans are
+ *  `null` when unknown (binary missing, or no CuaDriver daemon running to
+ *  answer for its own identity). */
+export interface ComputerUsePermissionSource {
+  attribution?: string
+  executable?: string
+  note?: string
+  pid?: number
+  responsible_ppid?: number
+}
+
+export interface ComputerUseStatus {
+  /** macOS is the only platform with the TCC permission model cua-driver gates. */
+  platform_supported: boolean
+  /** cua-driver binary resolved on PATH. */
+  installed: boolean
+  /** e.g. "cua-driver 0.5.1", or null when unknown. */
+  version: string | null
+  accessibility: boolean | null
+  screen_recording: boolean | null
+  screen_recording_capturable: boolean | null
+  source: ComputerUsePermissionSource | null
+  /** Populated when the status probe itself failed. */
+  error: string | null
+}
+
 export interface SessionSearchResult {
   /** Lineage root of the matched conversation. Stable across compression and
    *  used as the durable pin id; falls back to session_id when absent. */

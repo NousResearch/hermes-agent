@@ -12507,6 +12507,33 @@ def main():
         action="store_true",
         help="Emit the raw structured payload as JSON (same shape as `tools/call`).",
     )
+    computer_use_perms = computer_use_sub.add_parser(
+        "permissions",
+        help="Check or grant macOS Accessibility + Screen Recording (macOS)",
+        description=(
+            "Computer Use drives the Mac through cua-driver, whose TCC grants\n"
+            "attach to cua-driver's own identity (com.trycua.driver) — not the\n"
+            "terminal or the Hermes app. `status` reports the driver's grant\n"
+            "state; `grant` launches CuaDriver via LaunchServices so the macOS\n"
+            "permission dialog is attributed to the process that does the work."
+        ),
+    )
+    computer_use_perms_sub = computer_use_perms.add_subparsers(
+        dest="computer_use_perms_action"
+    )
+    computer_use_perms_status = computer_use_perms_sub.add_parser(
+        "status",
+        help="Report Accessibility + Screen Recording grant state (read-only)",
+    )
+    computer_use_perms_status.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the normalized permission payload as JSON.",
+    )
+    computer_use_perms_sub.add_parser(
+        "grant",
+        help="Request the grants (opens the dialog attributed to CuaDriver)",
+    )
 
     def cmd_computer_use(args):
         action = getattr(args, "computer_use_action", None)
@@ -12564,6 +12591,36 @@ def main():
                 json_output=bool(getattr(args, "json", False)),
             )
             sys.exit(code)
+        if action == "permissions":
+            perms_action = getattr(args, "computer_use_perms_action", None)
+            if perms_action == "grant":
+                from tools.computer_use.permissions import request_permissions_grant
+                sys.exit(request_permissions_grant())
+            if perms_action == "status":
+                import json as _json
+                from tools.computer_use.permissions import permissions_status
+                st = permissions_status()
+                if bool(getattr(args, "json", False)):
+                    print(_json.dumps(st, indent=2, sort_keys=True))
+                else:
+                    if not st["installed"]:
+                        print("cua-driver: not installed")
+                        print("  Run: hermes computer-use install")
+                    elif not st["platform_supported"]:
+                        print("Computer Use permissions are managed on macOS only.")
+                    else:
+                        def _glyph(v):
+                            return "✅" if v is True else ("❌" if v is False else "•")
+                        print(f"cua-driver: {st.get('version') or 'installed'}")
+                        print(f"  {_glyph(st['accessibility'])} Accessibility")
+                        print(f"  {_glyph(st['screen_recording'])} Screen Recording")
+                        if st.get("error"):
+                            print(f"  ⚠ {st['error']}")
+                        if st["accessibility"] is not True or st["screen_recording"] is not True:
+                            print("  Grant: hermes computer-use permissions grant")
+                sys.exit(0 if st.get("accessibility") and st.get("screen_recording") else 1)
+            computer_use_perms.print_help()
+            return
         # No subcommand → show help
         computer_use_parser.print_help()
 

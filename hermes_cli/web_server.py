@@ -8349,6 +8349,7 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
 
 # Register the mcp-install action log so /api/actions/mcp-install/status works.
 _ACTION_LOG_FILES.setdefault("mcp-install", "action-mcp-install.log")
+_ACTION_LOG_FILES.setdefault("computer-use-grant", "action-computer-use-grant.log")
 
 
 # ---------------------------------------------------------------------------
@@ -10669,6 +10670,61 @@ async def run_toolset_post_setup(
             status_code=500, detail=f"Failed to run post-setup: {exc}"
         )
     return {"ok": True, "pid": proc.pid, "name": "tools-post-setup", "key": body.key}
+
+
+# ---------------------------------------------------------------------------
+# Computer Use (cua-driver) — install + macOS permission state
+#
+# Computer Use drives the Mac through cua-driver, whose Accessibility +
+# Screen Recording grants attach to cua-driver's OWN TCC identity
+# (com.trycua.driver / the installed CuaDriver.app) — not the Hermes desktop
+# app or this server. The desktop's Computer Use card reflects that state and
+# triggers a grant via the same `cua-driver permissions grant` flow the CLI
+# uses, so no Hermes-side entitlement is involved.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/tools/computer-use/status")
+async def get_computer_use_status(profile: Optional[str] = None):
+    """Report cua-driver install + macOS permission state for the desktop card.
+
+    See ``tools.computer_use.permissions.permissions_status`` for the payload
+    shape. Read-only and fast (shells ``cua-driver permissions status``).
+    """
+    from tools.computer_use.permissions import permissions_status
+
+    with _profile_scope(profile):
+        return permissions_status()
+
+
+@app.post("/api/tools/computer-use/permissions/grant")
+async def grant_computer_use_permissions(profile: Optional[str] = None):
+    """Spawn ``hermes computer-use permissions grant`` as a background action.
+
+    ``cua-driver permissions grant`` launches CuaDriver via LaunchServices so
+    the macOS TCC dialog is attributed to com.trycua.driver, then waits for
+    the user to approve. The frontend polls ``GET /api/actions/computer-use-
+    grant/status`` for progress and re-reads ``/status`` once it exits.
+    """
+    if sys.platform != "darwin":
+        raise HTTPException(
+            status_code=400,
+            detail="Computer Use permissions are managed on macOS only.",
+        )
+    try:
+        proc = _spawn_hermes_action(
+            _profile_cli_args(profile)
+            + ["computer-use", "permissions", "grant"],
+            "computer-use-grant",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn computer-use permissions grant")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to request permissions: {exc}"
+        )
+    return {"ok": True, "pid": proc.pid, "name": "computer-use-grant"}
 
 
 # ---------------------------------------------------------------------------

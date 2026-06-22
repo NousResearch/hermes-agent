@@ -2591,6 +2591,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
+        # Pending debounce tasks for interrupt mode (HERMES_INTERRUPT_DEBOUNCE_SECONDS > 0).
+        # Each entry is an asyncio.Task that will fire a single interrupt + ack after the
+        # debounce window expires. Only populated when the opt-in env var is set.
+        self._pending_interrupt_tasks: Dict[str, asyncio.Task] = {}
         self._session_run_generation: Dict[str, int] = {}
         # Startup restore gate: while restart-interrupted sessions are being
         # auto-resumed, real inbound messages are queued instead of competing
@@ -4324,35 +4328,108 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
 
+        # Debounce opt-in: read the env var early so we can decide how to store
+        # the pending message. Default 0 means no debounce (upstream behaviour).
+        # Only relevant for interrupt mode with a real (non-sentinel) running agent.
+        _debounce_seconds = 0.0
+        _debounce_active = False
+        if (
+            not steered
+            and effective_mode == "interrupt"
+            and running_agent is not None
+            and running_agent is not _AGENT_PENDING_SENTINEL
+        ):
+            try:
+                _debounce_seconds = float(
+                    os.environ.get("HERMES_INTERRUPT_DEBOUNCE_SECONDS", "0") or "0"
+                )
+            except ValueError:
+                logger.warning(
+                    "Invalid HERMES_INTERRUPT_DEBOUNCE_SECONDS value %r - defaulting to 0 (no debounce)",
+                    os.environ.get("HERMES_INTERRUPT_DEBOUNCE_SECONDS"),
+                )
+                _debounce_seconds = 0.0
+            _debounce_active = _debounce_seconds > 0
+
         # Store the message so it's processed as the next turn after the
-        # current run finishes (or is interrupted).  Skip this for a
-        # successful steer — the text already landed inside the run and
+        # current run finishes (or is interrupted). Skip this for a
+        # successful steer - the text already landed inside the run and
         # must NOT also be replayed as a next-turn user message.
         #
-        # Route through _queue_or_replace_pending_event (the same FIFO
-        # infrastructure used by busy queue-mode and /queue) rather than a
-        # raw merge_pending_message_event(merge_text=True). The raw merge
-        # newline-joins consecutive TEXT follow-ups into a SINGLE pending
-        # turn, destroying message boundaries — so two separate user
-        # messages sent while the agent was busy (interrupt mode, or a
-        # steer that fell back to queue) arrived as one mashed-together
-        # turn (#43066 sub-bug 2). The FIFO path gives each text its own
-        # turn in arrival order while still preserving photo-burst / album
-        # merge semantics for media.
+        # Two storage strategies, chosen before any interrupt fires:
+        #
+        # DEFAULT (debounce off): route through _queue_or_replace_pending_event
+        # (the same FIFO infrastructure used by busy queue-mode and /queue)
+        # rather than raw merge_pending_message_event(merge_text=True). The raw
+        # merge newline-joins consecutive TEXT follow-ups into a SINGLE pending
+        # turn, destroying message boundaries, so two separate user messages
+        # sent while the agent was busy arrived as one mashed-together turn
+        # (#43066 sub-bug 2). The FIFO path gives each text its own turn in
+        # arrival order while still preserving photo-burst / album merge semantics
+        # for media.
+        #
+        # DEBOUNCE ON: write ONLY to the head pending slot via merge_text=True.
+        # The FIFO enqueue must NOT run - the burst should collapse into a single
+        # turn, not produce overflow entries in _queued_events that would replay
+        # as phantom turns after the interrupt.
         if not steered:
-            self._queue_or_replace_pending_event(session_key, event)
+            if _debounce_active:
+                pending_slot = getattr(adapter, "_pending_messages", None)
+                if isinstance(pending_slot, dict):
+                    merge_pending_message_event(
+                        pending_slot,
+                        session_key,
+                        event,
+                        merge_text=True,
+                    )
+                else:
+                    logger.warning(
+                        "Session %s: adapter._pending_messages is not a dict (%s); "
+                        "falling back to FIFO enqueue (debounce merge skipped).",
+                        session_key, type(pending_slot).__name__,
+                    )
+                    self._queue_or_replace_pending_event(session_key, event)
+            else:
+                self._queue_or_replace_pending_event(session_key, event)
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
 
-        # If not in queue/steer mode, interrupt the running agent immediately.
-        # This aborts in-flight tool calls and causes the agent loop to exit
-        # at the next check point.
+        # If not in queue/steer mode, interrupt the running agent.
+        # With HERMES_INTERRUPT_DEBOUNCE_SECONDS=0 (default): interrupt immediately,
+        # preserving the existing upstream behaviour exactly.
+        # With HERMES_INTERRUPT_DEBOUNCE_SECONDS>0 (opt-in): aggregate the burst into
+        # a single interrupt + ack after the debounce window. Each new message in the
+        # window cancels the previous timer and reschedules it.
         if effective_mode == "interrupt" and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            try:
-                running_agent.interrupt(event.text)
-            except Exception:
-                pass  # don't let interrupt failure block the ack
+            if not _debounce_active:
+                # Default upstream path: interrupt immediately.
+                try:
+                    running_agent.interrupt(event.text)
+                except Exception:
+                    pass  # don't let interrupt failure block the ack
+            else:
+                # Opt-in debounce path: (re)schedule a single deferred interrupt.
+                # The pending slot was already merged above via merge_text=True.
+                prev_task = self._pending_interrupt_tasks.get(session_key)
+                if prev_task is not None and not prev_task.done():
+                    prev_task.cancel()
+
+                new_task = asyncio.create_task(
+                    self._debounced_interrupt(session_key, event, _debounce_seconds)
+                )
+                self._pending_interrupt_tasks[session_key] = new_task
+
+                def _log_debounce_exc(t: asyncio.Task, _key: str = session_key) -> None:
+                    if not t.cancelled() and t.exception() is not None:
+                        logger.debug(
+                            "Debounced interrupt task for session %s raised: %s",
+                            _key, t.exception(),
+                        )
+
+                new_task.add_done_callback(_log_debounce_exc)
+                # Return True now - the debounce task will send the ack after the window.
+                return True
 
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
@@ -4475,6 +4552,138 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Failed to send busy-ack: %s", e)
 
         return True
+
+    def _cancel_pending_interrupt(self, session_key: str) -> None:
+        """Cancel and remove any pending debounce-interrupt task for the given session.
+
+        Safe to call even if the dict does not exist yet (partially-constructed runner)
+        or if there is no pending task for this session.
+        """
+        pending = getattr(self, "_pending_interrupt_tasks", None)
+        if not isinstance(pending, dict):
+            return
+        task = pending.pop(session_key, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _debounced_interrupt(
+        self,
+        session_key: str,
+        trigger_event: "MessageEvent",
+        debounce_seconds: float,
+    ) -> None:
+        """Fire a single interrupt + ack after the debounce window expires.
+
+        Called as an asyncio.Task. If another message arrives during the window, the
+        previous task is cancelled (via _cancel_pending_interrupt) and a new one is
+        scheduled, so only the last trigger in the burst actually fires.
+
+        When the window expires:
+        - If the agent is no longer running (session finished or was reset), log and return.
+        - Otherwise call running_agent.interrupt() once, then send one busy-ack (subject
+          to the 30-second cooldown, same as the immediate-interrupt path).
+        """
+        try:
+            await asyncio.sleep(debounce_seconds)
+        except asyncio.CancelledError:
+            return
+
+        running_agent = self._running_agents.get(session_key)
+        if running_agent is None or running_agent is _AGENT_PENDING_SENTINEL:
+            logger.debug(
+                "Debounced interrupt fired for session %s but no agent is running; skipping.",
+                session_key,
+            )
+            return
+
+        # Fire the interrupt.
+        try:
+            running_agent.interrupt("user sent additional messages")
+        except Exception as exc:
+            logger.debug("Debounced interrupt call failed for session %s: %s", session_key, exc)
+
+        # Send one ack if not suppressed and cooldown allows.
+        adapter = self.adapters.get(trigger_event.source.platform)
+        if adapter is None:
+            return
+
+        busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
+        if not busy_ack_enabled:
+            logger.debug("Debounced busy ack suppressed for session %s", session_key)
+            return
+
+        _BUSY_ACK_COOLDOWN = 30
+        now = time.time()
+        last_ack = self._busy_ack_ts.get(session_key, 0)
+        if now - last_ack < _BUSY_ACK_COOLDOWN:
+            return
+
+        # Build status detail using the same pattern as the immediate-interrupt path.
+        from gateway.display_config import resolve_display_setting
+        status_parts: list = []
+        busy_ack_detail_enabled = bool(
+            resolve_display_setting(
+                _load_gateway_config(),
+                _platform_config_key(trigger_event.source.platform),
+                "busy_ack_detail",
+                True,
+            )
+        )
+        if busy_ack_detail_enabled and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                summary = running_agent.get_activity_summary()
+                iteration = summary.get("api_call_count", 0)
+                max_iter = summary.get("max_iterations", 0)
+                current_tool = summary.get("current_tool")
+                start_ts = self._running_agents_ts.get(session_key, 0)
+                if start_ts:
+                    elapsed_min = int((now - start_ts) / 60)
+                    if elapsed_min > 0:
+                        status_parts.append(f"{elapsed_min} min elapsed")
+                if max_iter:
+                    status_parts.append(f"iteration {iteration}/{max_iter}")
+                if current_tool:
+                    status_parts.append(f"running: {current_tool}")
+            except Exception:
+                pass
+
+        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+        message = (
+            f"Interrupting current task{status_detail}. "
+            f"I'll respond to your message shortly."
+        )
+
+        reply_anchor = self._reply_anchor_for_event(trigger_event)
+        thread_meta = self._thread_metadata_for_source(trigger_event.source, reply_anchor)
+        try:
+            await adapter._send_with_retry(
+                chat_id=trigger_event.source.chat_id,
+                content=message,
+                reply_to=(
+                    reply_anchor
+                    if trigger_event.source.platform == Platform.TELEGRAM
+                    and trigger_event.source.chat_type == "dm"
+                    and trigger_event.source.thread_id
+                    else (
+                        None
+                        if trigger_event.source.platform == Platform.TELEGRAM
+                        and trigger_event.source.thread_id
+                        else trigger_event.message_id
+                    )
+                ),
+                metadata=thread_meta,
+            )
+            # Only stamp the cooldown timestamp after a successful send.
+            self._busy_ack_ts[session_key] = now
+        except Exception as exc:
+            logger.debug("Failed to send debounced busy-ack for session %s: %s", session_key, exc)
+        finally:
+            # Remove ourselves from the pending dict only if we are still the current task.
+            # A new task may have replaced us under a race where cancellation arrived
+            # just as we were executing (cancel delivered between sleep and running_agent check).
+            pending = getattr(self, "_pending_interrupt_tasks", {})
+            if pending.get(session_key) is asyncio.current_task():
+                pending.pop(session_key, None)
 
     async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()
@@ -6686,6 +6895,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "mark_resume_pending failed for %s: %s",
                             _sk, _e,
                         )
+                # Cancel all pending debounce-interrupt tasks before interrupting agents.
+                # These tasks are no longer needed once the gateway is stopping.
+                _pending_interrupt = getattr(self, "_pending_interrupt_tasks", {})
+                if _pending_interrupt:
+                    _pi_tasks = list(_pending_interrupt.values())
+                    for _pi_t in _pi_tasks:
+                        if not _pi_t.done():
+                            _pi_t.cancel()
+                    _pending_interrupt.clear()
+                    await asyncio.gather(*_pi_tasks, return_exceptions=True)
+
                 self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
                 )
@@ -13598,6 +13818,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents_ts.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
+        self._cancel_pending_interrupt(session_key)
         # Turn boundary: a running-agent slot was just released.  Persist the
         # new (lower) in-flight count so the dashboard readout stays current
         # between lifecycle transitions.  Preserves gateway_state (see

@@ -774,3 +774,358 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", agent, executor_task=live_task
         ) is True
+
+
+# ---------------------------------------------------------------------------
+# Interrupt debounce opt-in (HERMES_INTERRUPT_DEBOUNCE_SECONDS)
+# ---------------------------------------------------------------------------
+
+def _make_runner_for_debounce():
+    """Extend _make_runner with fields required for debounce tests."""
+    from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+
+    runner = object.__new__(GatewayRunner)
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner._busy_ack_ts = {}
+    runner._pending_interrupt_tasks = {}
+    runner._draining = False
+    runner._busy_text_mode = "interrupt"
+    runner._busy_input_mode = "interrupt"
+    runner.adapters = {}
+    runner.config = MagicMock()
+    runner.config.group_sessions_per_user = True
+    runner.config.thread_sessions_per_user = False
+    runner.session_store = None
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = True
+    runner._is_user_authorized = lambda _source: True
+    runner._queued_events = {}
+    return runner, _AGENT_PENDING_SENTINEL
+
+
+class TestInterruptDebounce:
+    """Tests for HERMES_INTERRUPT_DEBOUNCE_SECONDS opt-in debounce feature."""
+
+    @pytest.mark.asyncio
+    async def test_off_by_default_interrupt_is_immediate(self, monkeypatch):
+        """With HERMES_INTERRUPT_DEBOUNCE_SECONDS=0 (default), interrupt fires immediately."""
+        import asyncio
+        from gateway.run import GatewayRunner
+
+        monkeypatch.delenv("HERMES_INTERRUPT_DEBOUNCE_SECONDS", raising=False)
+
+        runner, _sentinel = _make_runner_for_debounce()
+        adapter = _make_adapter()
+        adapter._send_with_retry = AsyncMock()
+
+        event = _make_event(text="interrupt me now")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {}
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+        runner.adapters[event.source.platform] = adapter
+
+        with (
+            patch("gateway.run._load_gateway_config", return_value={}),
+            patch("gateway.run._platform_config_key", return_value="telegram"),
+            patch("gateway.display_config.resolve_display_setting", return_value=False),
+        ):
+            await GatewayRunner._handle_active_session_busy_message(runner, event, sk)
+
+        # Interrupt must have been called synchronously (no debounce task created).
+        agent.interrupt.assert_called_once()
+        assert sk not in runner._pending_interrupt_tasks
+
+    @pytest.mark.asyncio
+    async def test_off_explicit_zero_interrupt_is_immediate(self, monkeypatch):
+        """With HERMES_INTERRUPT_DEBOUNCE_SECONDS=0 explicitly, behaves same as default."""
+        import asyncio
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_INTERRUPT_DEBOUNCE_SECONDS", "0")
+
+        runner, _sentinel = _make_runner_for_debounce()
+        adapter = _make_adapter()
+        adapter._send_with_retry = AsyncMock()
+
+        event = _make_event(text="still immediate")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {}
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+        runner.adapters[event.source.platform] = adapter
+
+        with (
+            patch("gateway.run._load_gateway_config", return_value={}),
+            patch("gateway.run._platform_config_key", return_value="telegram"),
+            patch("gateway.display_config.resolve_display_setting", return_value=False),
+        ):
+            await GatewayRunner._handle_active_session_busy_message(runner, event, sk)
+
+        agent.interrupt.assert_called_once()
+        assert sk not in runner._pending_interrupt_tasks
+
+    @pytest.mark.asyncio
+    async def test_debounce_on_single_interrupt_and_single_ack(self, monkeypatch):
+        """With debounce>0, a burst of 3 messages produces exactly 1 interrupt and 1 ack."""
+        import asyncio
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_INTERRUPT_DEBOUNCE_SECONDS", "0.05")
+
+        runner, _sentinel = _make_runner_for_debounce()
+        adapter = _make_adapter()
+        adapter._send_with_retry = AsyncMock()
+
+        source = MagicMock()
+        source.platform = MagicMock(value="telegram")
+        source.chat_id = "123"
+        source.chat_type = "private"
+        source.user_id = "u1"
+        source.thread_id = None
+
+        def _make_msg(text):
+            e = MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id="m1",
+            )
+            return e
+
+        sk = build_session_key(source)
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {}
+        agent.interrupt = MagicMock()
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+        runner.adapters[source.platform] = adapter
+
+        with (
+            patch("gateway.run._load_gateway_config", return_value={}),
+            patch("gateway.run._platform_config_key", return_value="telegram"),
+            patch("gateway.display_config.resolve_display_setting", return_value=False),
+            patch("gateway.run._reply_anchor_for_event", return_value=None, create=True),
+            patch.object(
+                GatewayRunner, "_reply_anchor_for_event", return_value=None
+            ),
+            patch.object(
+                GatewayRunner, "_thread_metadata_for_source", return_value={}
+            ),
+        ):
+            for text in ("msg1", "msg2", "msg3"):
+                await GatewayRunner._handle_active_session_busy_message(
+                    runner, _make_msg(text), sk
+                )
+                # Let the event loop tick so tasks can be scheduled.
+                await asyncio.sleep(0)
+
+            # Wait for the debounce window to expire.
+            await asyncio.sleep(0.15)
+
+        # Exactly one interrupt fired.
+        agent.interrupt.assert_called_once()
+        # Exactly one ack sent.
+        assert adapter._send_with_retry.call_count == 1
+        # Pending slot must contain all 3 texts merged, no overflow turns.
+        pending_text = adapter._pending_messages.get(sk, MagicMock()).text
+        assert "msg1" in pending_text
+        assert "msg2" in pending_text
+        assert "msg3" in pending_text
+        # No phantom turns in the FIFO overflow queue.
+        assert not runner._queued_events.get(sk)
+
+    @pytest.mark.asyncio
+    async def test_debounce_on_agent_gone_before_fire(self, monkeypatch):
+        """If agent finishes before debounce window, no interrupt and no ack are sent."""
+        import asyncio
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_INTERRUPT_DEBOUNCE_SECONDS", "0.05")
+
+        runner, _sentinel = _make_runner_for_debounce()
+        adapter = _make_adapter()
+        adapter._send_with_retry = AsyncMock()
+
+        event = _make_event(text="too slow")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {}
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+        runner.adapters[event.source.platform] = adapter
+
+        with (
+            patch("gateway.run._load_gateway_config", return_value={}),
+            patch("gateway.run._platform_config_key", return_value="telegram"),
+            patch("gateway.display_config.resolve_display_setting", return_value=False),
+            patch.object(GatewayRunner, "_reply_anchor_for_event", return_value=None),
+            patch.object(GatewayRunner, "_thread_metadata_for_source", return_value={}),
+        ):
+            await GatewayRunner._handle_active_session_busy_message(runner, event, sk)
+            await asyncio.sleep(0)
+
+            # Simulate agent finishing before the debounce fires.
+            runner._running_agents.pop(sk, None)
+
+            await asyncio.sleep(0.15)
+
+        agent.interrupt.assert_not_called()
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cancel_pending_interrupt_clears_task(self, monkeypatch):
+        """_cancel_pending_interrupt removes and cancels the pending task."""
+        import asyncio
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_INTERRUPT_DEBOUNCE_SECONDS", "10")
+
+        runner, _sentinel = _make_runner_for_debounce()
+        adapter = _make_adapter()
+        adapter._send_with_retry = AsyncMock()
+
+        event = _make_event(text="pending")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {}
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        with (
+            patch("gateway.run._load_gateway_config", return_value={}),
+            patch("gateway.run._platform_config_key", return_value="telegram"),
+            patch("gateway.display_config.resolve_display_setting", return_value=False),
+        ):
+            await GatewayRunner._handle_active_session_busy_message(runner, event, sk)
+            await asyncio.sleep(0)
+
+        assert sk in runner._pending_interrupt_tasks
+        task = runner._pending_interrupt_tasks[sk]
+        assert not task.done()
+
+        GatewayRunner._cancel_pending_interrupt(runner, sk)
+
+        assert sk not in runner._pending_interrupt_tasks
+        # After cancel() the task enters "cancelling" state; it becomes done
+        # only after the event loop processes the CancelledError. Allow one tick.
+        await asyncio.sleep(0)
+        assert task.cancelled() or task.done()
+
+    @pytest.mark.asyncio
+    async def test_debounce_finally_does_not_evict_newer_task(self, monkeypatch):
+        """The finally block in _debounced_interrupt must not evict a newer task.
+
+        Simulates the race condition by directly creating two tasks: after the first
+        completes, the second must still be present in _pending_interrupt_tasks.
+        """
+        import asyncio
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_INTERRUPT_DEBOUNCE_SECONDS", "0.03")
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+
+        runner, _sentinel = _make_runner_for_debounce()
+        adapter = _make_adapter()
+        adapter._send_with_retry = AsyncMock()
+
+        event = _make_event(text="first")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {}
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+        runner.adapters[event.source.platform] = adapter
+
+        with (
+            patch("gateway.run._load_gateway_config", return_value={}),
+            patch("gateway.run._platform_config_key", return_value="telegram"),
+            patch("gateway.display_config.resolve_display_setting", return_value=False),
+            patch.object(GatewayRunner, "_reply_anchor_for_event", return_value=None),
+            patch.object(GatewayRunner, "_thread_metadata_for_source", return_value={}),
+        ):
+            # Directly create first debounce task and register it.
+            first_task = asyncio.create_task(
+                GatewayRunner._debounced_interrupt(runner, sk, event, 0.03)
+            )
+            runner._pending_interrupt_tasks[sk] = first_task
+            await asyncio.sleep(0)
+
+            # Before the first task fires, replace it with a second (simulates new message).
+            first_task.cancel()
+            event2 = _make_event(text="second")
+            second_task = asyncio.create_task(
+                GatewayRunner._debounced_interrupt(runner, sk, event2, 0.03)
+            )
+            runner._pending_interrupt_tasks[sk] = second_task
+            await asyncio.sleep(0)
+
+            assert runner._pending_interrupt_tasks.get(sk) is second_task
+
+            # Wait for the second task to complete.
+            await asyncio.sleep(0.15)
+
+        # Main invariant: agent interrupted exactly once (by the second task).
+        agent.interrupt.assert_called_once()
+        # The second task should have cleaned itself up or left sk absent in the dict;
+        # critically it must NOT be the (cancelled) first_task.
+        remaining = runner._pending_interrupt_tasks.get(sk)
+        assert remaining is not first_task
+
+    @pytest.mark.asyncio
+    async def test_debounce_not_activated_when_demoted_to_queue(self, monkeypatch):
+        """When interrupt mode is demoted to queue (active subagents), debounce must not fire.
+
+        Even with HERMES_INTERRUPT_DEBOUNCE_SECONDS > 0, the demotion sets
+        effective_mode='queue' before the debounce gate runs, so no debounce task
+        is created and no interrupt fires. The message is queued via the normal
+        FIFO path instead.
+        """
+        import asyncio
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_INTERRUPT_DEBOUNCE_SECONDS", "0.05")
+
+        runner, _sentinel = _make_runner_for_debounce()
+        adapter = _make_adapter()
+        adapter._send_with_retry = AsyncMock()
+
+        event = _make_event(text="subagent active, should queue not debounce")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {}
+        agent.interrupt = MagicMock()
+        # Simulate active subagents so the runner demotes interrupt -> queue (#30170).
+        agent._active_children = ["child1"]
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+        runner.adapters[event.source.platform] = adapter
+
+        with (
+            patch("gateway.run._load_gateway_config", return_value={}),
+            patch("gateway.run._platform_config_key", return_value="telegram"),
+            patch("gateway.display_config.resolve_display_setting", return_value=False),
+            # _agent_has_active_subagents must return True for the demotion to happen.
+            patch.object(GatewayRunner, "_agent_has_active_subagents", return_value=True),
+        ):
+            result = await GatewayRunner._handle_active_session_busy_message(runner, event, sk)
+            await asyncio.sleep(0)
+
+        # No debounce task should have been scheduled.
+        assert sk not in runner._pending_interrupt_tasks
+        # No interrupt should have been called (queue mode, not interrupt mode).
+        agent.interrupt.assert_not_called()
+        # Message was stored via FIFO (head pending slot on the adapter).
+        assert sk in adapter._pending_messages

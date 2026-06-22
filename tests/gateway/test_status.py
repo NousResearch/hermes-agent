@@ -359,6 +359,53 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_message"] is None
 
 
+class TestGetProcessStartTime:
+    """Start-time fingerprint backing the PID-reuse guard (#43846 / #50468).
+
+    Must be stable across repeated reads of the same live process and degrade to
+    a cross-platform psutil fallback when /proc is unavailable (macOS/Windows),
+    so the guard isn't a Linux-only no-op.
+    """
+
+    def test_live_process_is_stable_int(self):
+        import subprocess
+        import time
+        p = subprocess.Popen(["sleep", "20"])
+        try:
+            a = status._get_process_start_time(p.pid)
+            time.sleep(0.2)
+            b = status._get_process_start_time(p.pid)
+            assert a is not None and isinstance(a, int)
+            assert a == b  # same process → identical fingerprint
+        finally:
+            p.kill()
+            p.wait()
+
+    def test_dead_pid_returns_none(self):
+        assert status._get_process_start_time(999999999) is None
+
+    def test_psutil_fallback_when_no_proc(self, monkeypatch):
+        """When /proc is missing (macOS/Windows), psutil supplies a stable int."""
+        import subprocess
+        orig_read_text = Path.read_text
+
+        def no_proc(self, *args, **kwargs):
+            if str(self).startswith("/proc/"):
+                raise FileNotFoundError
+            return orig_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", no_proc)
+        p = subprocess.Popen(["sleep", "20"])
+        try:
+            a = status._get_process_start_time(p.pid)
+            b = status._get_process_start_time(p.pid)
+            assert a is not None and isinstance(a, int)
+            assert a == b  # fallback is stable across reads
+        finally:
+            p.kill()
+            p.wait()
+
+
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
         calls = []

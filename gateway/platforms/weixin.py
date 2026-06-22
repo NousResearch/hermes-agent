@@ -1139,6 +1139,7 @@ class WeixinAdapter(BasePlatformAdapter):
     """Native Hermes adapter for Weixin personal accounts."""
 
     supports_code_blocks = True  # Weixin renders fenced code blocks
+    splits_long_messages = True  # send() chunks via _split_text()
 
     MAX_MESSAGE_LENGTH = 2000
 

@@ -20,34 +20,13 @@ from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
-# Default cap before gateway-level truncation of cron output for platform
-# delivery.  Telegram's hard API limit is 4096; the 200-char headroom covers
-# the "full output saved to …" footer appended on truncation.  Override via
-# the HERMES_DELIVERY_MAX_PLATFORM_OUTPUT env var.  Adapters that split long
+# Cap before gateway-level truncation of cron output for non-chunking platform
+# delivery.  Telegram's hard API limit is 4096; the headroom covers the "full
+# output saved to …" footer appended on truncation.  Adapters that split long
 # messages natively (BasePlatformAdapter.splits_long_messages) bypass this
 # entirely — the adapter chunks in its own send() and the full output is
 # preserved.
-_DEFAULT_MAX_PLATFORM_OUTPUT = 4000
-
-
-def _max_platform_output() -> int:
-    """Max chars before gateway-level truncation of cron output.
-
-    ``HERMES_DELIVERY_MAX_PLATFORM_OUTPUT`` env var overrides the default
-    (4000).  Non-int or negative values fall back to the default with a
-    warning.
-    """
-    env = os.getenv("HERMES_DELIVERY_MAX_PLATFORM_OUTPUT")
-    if env is not None:
-        try:
-            return max(0, int(env.strip()))
-        except ValueError:
-            logger.warning(
-                "HERMES_DELIVERY_MAX_PLATFORM_OUTPUT=%r is not an int; "
-                "using default %d",
-                env, _DEFAULT_MAX_PLATFORM_OUTPUT,
-            )
-    return _DEFAULT_MAX_PLATFORM_OUTPUT
+MAX_PLATFORM_OUTPUT = 4000
 
 # Matches strings that are *only* a "silence" narration with optional markdown
 # wrappers. Covers: *(silent)*, _silent_, `silent`, ~silent~, (silent), silent,
@@ -345,28 +324,21 @@ class DeliveryRouter:
         # Guard: handle oversized cron output.
         #
         # Two independent decisions:
-        #   1. AUDIT SAVE — when content exceeds the audit threshold (4000
-        #      chars, the historical default), the full output is always
-        #      written to disk as a recoverable audit trail.  This fires
-        #      regardless of truncation setting or adapter capability.
-        #   2. TRUNCATION — for non-chunking adapters, content above
-        #      max_output is truncated with a footer pointing to the saved
-        #      file.  Chunking-capable adapters (splits_long_messages=True)
-        #      receive the full payload and split natively in their send().
-        #      Setting HERMES_DELIVERY_MAX_PLATFORM_OUTPUT=0 disables
-        #      truncation entirely (the user takes responsibility for platform
-        #      API limits), but the audit save in step 1 still fires.
-        max_output = _max_platform_output()
+        #   1. AUDIT SAVE — when content exceeds MAX_PLATFORM_OUTPUT, the full
+        #      output is always written to disk as a recoverable audit trail.
+        #      This fires regardless of adapter capability (best-effort).
+        #   2. TRUNCATION — for non-chunking adapters, content above the cap is
+        #      truncated with a footer pointing to the saved file.  Chunking-
+        #      capable adapters (splits_long_messages=True) receive the full
+        #      payload and split natively in their send().
         job_id = (metadata or {}).get("job_id", "unknown")
         saved_path: Optional[Path] = None
 
-        # Step 1 — audit save (independent of truncation, best-effort).
-        # The save is a side-effect audit trail, not essential to delivery.
-        # If it fails (full disk, permissions), delivery proceeds — the
-        # content reaches the adapter regardless.  The truncation path's
-        # fallback save below is NOT best-effort: the footer needs a valid
-        # path, so a failure there is a real delivery problem.
-        if len(content) > _DEFAULT_MAX_PLATFORM_OUTPUT:
+        if len(content) > MAX_PLATFORM_OUTPUT:
+            # Step 1 — audit save (best-effort).  The save is a side-effect
+            # audit trail, not essential to delivery.  If it fails (full disk,
+            # permissions), delivery proceeds — the content reaches the adapter
+            # regardless.
             try:
                 saved_path = self._save_full_output(content, job_id)
             except OSError as exc:
@@ -376,9 +348,8 @@ class DeliveryRouter:
                     len(content), job_id, exc,
                 )
 
-        # Step 2 — truncation (only for non-chunking adapters).
-        if max_output > 0 and len(content) > max_output:
-            if adapter and getattr(adapter, "splits_long_messages", False):
+            # Step 2 — truncation (only for non-chunking adapters).
+            if getattr(adapter, "splits_long_messages", False):
                 # Adapter chunks natively — deliver full payload.
                 if saved_path:
                     logger.info(
@@ -387,27 +358,18 @@ class DeliveryRouter:
                         len(content), saved_path,
                     )
             else:
-                # Non-chunking adapter — truncate with footer.
+                # Non-chunking adapter — truncate with footer.  The footer
+                # needs a valid path, so if the best-effort save above failed,
+                # retry it here (a failure now is a real delivery problem).
                 if saved_path is None:
-                    # Content exceeded max_output but not the audit threshold
-                    # (e.g. HERMES_DELIVERY_MAX_PLATFORM_OUTPUT=200).  Save
-                    # anyway since we're about to truncate.
                     saved_path = self._save_full_output(content, job_id)
                 footer = f"\n\n... [truncated, full output saved to {saved_path}]"
-                visible = max(0, max_output - len(footer))
+                visible = max(0, MAX_PLATFORM_OUTPUT - len(footer))
                 logger.info(
                     "Cron output truncated (%d chars) — full output: %s",
                     len(content), saved_path,
                 )
                 content = content[:visible] + footer
-        elif saved_path:
-            # Truncation disabled (max_output=0) but content was large enough
-            # to warrant an audit copy.
-            logger.info(
-                "Cron output delivered untruncated (%d chars, truncation "
-                "disabled) — audit copy saved to %s",
-                len(content), saved_path,
-            )
         
         # Substrate-level anti-loop guard: drop hallucinated "silence narration"
         # (*(silent)*, 🔇, a bare ".", etc.) before it ever reaches the adapter.

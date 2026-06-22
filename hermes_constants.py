@@ -82,7 +82,7 @@ def get_hermes_home() -> Path:
         try:
             fallback_home = _get_platform_default_hermes_home()
             active_path = fallback_home / "active_profile"
-            active = active_path.read_text().strip() if active_path.exists() else ""
+            active = active_path.read_text(encoding="utf-8").strip() if active_path.exists() else ""
         except (UnicodeDecodeError, OSError):
             active = ""
         if active and active != "default":

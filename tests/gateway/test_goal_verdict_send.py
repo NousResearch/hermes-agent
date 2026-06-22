@@ -49,7 +49,11 @@ class _RecordingAdapter:
 
     def __init__(self) -> None:
         self._pending_messages: dict = {}
+        self._post_delivery_callbacks: dict = {}
         self.sends: list[dict] = []
+
+    def register_post_delivery_callback(self, session_key, callback, *, generation=None):
+        self._post_delivery_callbacks[session_key] = callback
 
     async def send(self, chat_id: str, content: str, reply_to=None, metadata=None):
         self.sends.append({"chat_id": chat_id, "content": content, "metadata": metadata})
@@ -70,6 +74,7 @@ def _make_runner_with_adapter(session_id: str = None):
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
     )
     runner.adapters = {}
+    runner.loop = None
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._queued_events = {}
@@ -96,6 +101,15 @@ def _make_runner_with_adapter(session_id: str = None):
     return runner, adapter, session_entry, src
 
 
+async def _fire_deferred_goal_notice(adapter: _RecordingAdapter, session_key: str) -> None:
+    cb = adapter._post_delivery_callbacks.pop(session_key, None)
+    if callable(cb):
+        result = cb()
+        if asyncio.iscoroutine(result):
+            await result
+    await asyncio.sleep(0.05)
+
+
 @pytest.mark.asyncio
 async def test_goal_verdict_done_sent_via_adapter_send(hermes_home):
     """When the judge says done, the '✓ Goal achieved' message must reach
@@ -113,8 +127,7 @@ async def test_goal_verdict_done_sent_via_adapter_send(hermes_home):
             source=src,
             final_response="I shipped the feature.",
         )
-        # fire-and-forget create_task — give the loop a tick
-        await asyncio.sleep(0.05)
+        await _fire_deferred_goal_notice(adapter, session_entry.session_key)
 
     assert len(adapter.sends) == 1, f"expected 1 send, got {len(adapter.sends)}: {adapter.sends}"
     msg = adapter.sends[0]
@@ -142,7 +155,7 @@ async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
             source=src,
             final_response="here's a partial edit",
         )
-        await asyncio.sleep(0.05)
+        await _fire_deferred_goal_notice(adapter, session_entry.session_key)
 
     # Status line sent back
     assert len(adapter.sends) == 1
@@ -170,7 +183,7 @@ async def test_goal_verdict_budget_exhausted_sends_pause(hermes_home):
             source=src,
             final_response="still partial",
         )
-        await asyncio.sleep(0.05)
+        await _fire_deferred_goal_notice(adapter, session_entry.session_key)
 
     assert len(adapter.sends) == 1
     content = adapter.sends[0]["content"]
@@ -219,3 +232,21 @@ async def test_goal_verdict_survives_adapter_without_send(hermes_home):
             final_response="whatever",
         )
         await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_goal_status_post_delivery_callback_schedules_coroutine_without_warning(hermes_home):
+    """Post-delivery goal notices register a sync callback, not a raw coroutine."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+    runner.loop = asyncio.get_running_loop()
+
+    await runner._defer_goal_status_notice_after_delivery(src, "✓ Goal achieved: done")
+
+    cb = adapter._post_delivery_callbacks.pop(session_entry.session_key)
+    assert callable(cb)
+    result = cb()
+    assert result is None
+    await asyncio.sleep(0.05)
+
+    assert len(adapter.sends) == 1
+    assert "Goal achieved" in adapter.sends[0]["content"]

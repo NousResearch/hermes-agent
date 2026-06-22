@@ -10574,9 +10574,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 active = getattr(adapter, "_active_sessions", {}).get(session_key)
                 if active is not None:
                     generation = getattr(active, "_hermes_run_generation", None)
+                def _schedule_deliver() -> None:
+                    try:
+                        safe_schedule_threadsafe(
+                            _deliver(),
+                            self.loop if getattr(self, "loop", None) is not None else asyncio.get_running_loop(),
+                            logger=logger,
+                            log_message="goal continuation: status scheduling failed",
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "goal continuation: status scheduling failed: %s",
+                            exc,
+                            exc_info=True,
+                        )
+
                 adapter.register_post_delivery_callback(
                     session_key,
-                    _deliver,
+                    _schedule_deliver,
                     generation=generation,
                 )
                 return

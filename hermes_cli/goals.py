@@ -357,6 +357,28 @@ def _goal_judge_max_tokens() -> int:
     return DEFAULT_JUDGE_MAX_TOKENS
 
 
+_COMPLETION_NEGATION_RE = re.compile(
+    r"\b(?:not\s+(?:done|complete|completed|finished)|not\s+yet|incomplete|still\s+(?:needs?|need|missing|blocked)|remaining\s+work|to\s+do)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_COMPLETION_RE = re.compile(
+    r"\b(?:goal|task|work|request|it)\s+(?:is\s+)?(?:done|complete|completed|finished)\b"
+    r"|\b(?:i(?:'ve|\s+have)?|we(?:'ve|\s+have)?)\s+(?:completed|finished|done)\b"
+    r"|^\s*(?:done|complete|completed|finished)\s*[.!]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def response_explicitly_completes_goal(response: str) -> bool:
+    """Return True when the assistant itself clearly says the goal is done."""
+    text = (response or "").strip()
+    if not text:
+        return False
+    if _COMPLETION_NEGATION_RE.search(text):
+        return False
+    return bool(_EXPLICIT_COMPLETION_RE.search(text))
+
+
 def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
     """Parse the judge's reply. Fail-open to ``(False, "<reason>", parse_failed)``.
 
@@ -689,6 +711,22 @@ class GoalManager:
         # Count the turn that just finished.
         state.turns_used += 1
         state.last_turn_at = time.time()
+
+        if response_explicitly_completes_goal(last_response):
+            reason = "agent explicitly reported the goal is complete"
+            state.status = "done"
+            state.last_verdict = "done"
+            state.last_reason = reason
+            state.consecutive_parse_failures = 0
+            save_goal(self.session_id, state)
+            return {
+                "status": "done",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "done",
+                "reason": reason,
+                "message": f"✓ Goal achieved: {reason}",
+            }
 
         verdict, reason, parse_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None

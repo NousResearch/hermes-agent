@@ -269,6 +269,38 @@ class TestGoalManager:
         assert mgr.state.status == "done"
         assert mgr.state.turns_used == 1
 
+    def test_evaluate_after_turn_explicit_completion_skips_broken_judge(self, hermes_home):
+        """If the agent says the goal is complete, stop without consulting a broken judge."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-sid-explicit-complete")
+        mgr.set("ship it")
+
+        with patch.object(goals, "judge_goal", side_effect=AssertionError("judge should not run")):
+            decision = mgr.evaluate_after_turn("Goal is complete.")
+
+        assert decision["verdict"] == "done"
+        assert decision["should_continue"] is False
+        assert decision["continuation_prompt"] is None
+        assert mgr.state.status == "done"
+        assert mgr.state.turns_used == 1
+
+    def test_evaluate_after_turn_negated_completion_still_uses_judge(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-sid-negated-complete", default_max_turns=5)
+        mgr.set("ship it")
+
+        with patch.object(goals, "judge_goal", return_value=("continue", "not done", False)) as judge:
+            decision = mgr.evaluate_after_turn("The goal is not complete yet.")
+
+        judge.assert_called_once()
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is True
+        assert mgr.state.status == "active"
+
     def test_evaluate_after_turn_continue_under_budget(self, hermes_home):
         from hermes_cli import goals
         from hermes_cli.goals import GoalManager

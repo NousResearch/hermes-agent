@@ -4489,7 +4489,6 @@ class FeishuAdapter(BasePlatformAdapter):
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
         # Force reply_in_thread=False: prevent replies from landing in topics
         # when reply_to_message_id is set on a topic message.
         reply_in_thread = False
@@ -4738,9 +4737,10 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_get_message_request(message_id: str) -> Any:
         if "GetMessageRequest" in globals():
-            request = GetMessageRequest.builder().message_id(message_id).build()
-            request.add_query("card_msg_content_type", "user_card_content")
-            return request
+            builder = GetMessageRequest.builder().message_id(message_id)
+            if hasattr(builder, "add_query"):
+                builder.add_query("card_msg_content_type", "user_card_content")
+            return builder.build()
         return SimpleNamespace(message_id=message_id)
 
     @staticmethod

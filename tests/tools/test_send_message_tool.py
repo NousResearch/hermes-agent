@@ -1224,6 +1224,58 @@ class TestParseTargetRefE164:
         assert _parse_target_ref("matrix", "+15551234567")[2] is False
 
 
+class TestParseTargetRefWhatsAppJID:
+    """_parse_target_ref accepts native WhatsApp JIDs as explicit targets.
+
+    Regression: group JIDs (``<id>@g.us``) and linked-identity JIDs
+    (``<id>@lid``) matched no branch and fell through to home-channel
+    resolution, so ``send_message(target="whatsapp:<group-jid>")`` silently
+    delivered to the configured home DM instead of the requested group.
+    """
+
+    def test_group_jid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "whatsapp", "120363408391911677@g.us"
+        )
+        assert chat_id == "120363408391911677@g.us"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_user_jid_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref(
+            "whatsapp", "19255551234@s.whatsapp.net"
+        )
+        assert chat_id == "19255551234@s.whatsapp.net"
+        assert is_explicit is True
+
+    def test_lid_jid_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref(
+            "whatsapp", "149606612619433@lid"
+        )
+        assert chat_id == "149606612619433@lid"
+        assert is_explicit is True
+
+    def test_broadcast_and_newsletter_jids_are_explicit(self):
+        assert _parse_target_ref("whatsapp", "status@broadcast")[2] is True
+        assert _parse_target_ref("whatsapp", "120363000000000000@newsletter")[2] is True
+
+    def test_whatsapp_e164_still_explicit_alongside_jids(self):
+        """The pre-existing '+'-prefixed E.164 path must keep working."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
+        assert chat_id == "+15551234567"
+        assert is_explicit is True
+
+    def test_jid_suffix_only_matches_whatsapp(self):
+        """WhatsApp JID suffixes must NOT be treated as explicit elsewhere."""
+        assert _parse_target_ref("telegram", "120363408391911677@g.us")[2] is False
+        assert _parse_target_ref("signal", "149606612619433@lid")[2] is False
+
+    def test_non_jid_whatsapp_target_falls_through(self):
+        """A bare friendly name is not a JID — it must fall through to
+        directory resolution (returns not-explicit so the caller can resolve)."""
+        assert _parse_target_ref("whatsapp", "general")[2] is False
+
+
 class TestParseTargetRefSlack:
     """_parse_target_ref recognizes Slack channel/user IDs as explicit."""
 

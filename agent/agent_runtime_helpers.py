@@ -49,7 +49,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "delegate_task"}
+    {"todo", "session_search", "memory", "clarify", "read_terminal", "delegate_task"}
 )
 
 
@@ -445,6 +445,45 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     return repairs
 
 
+def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
+    """Run :func:`repair_message_sequence` and keep the SessionDB flush
+    cursor consistent with the compacted list (#44837).
+
+    ``repair_message_sequence`` merges/drops messages in place, shrinking
+    the list. ``_last_flushed_db_idx`` (the DB-write cursor) indexes into
+    that list, so after compaction it can point past the new end — the
+    turn-end flush would then skip the assistant/tool chain entirely — or
+    past unflushed messages shifted to lower indexes.
+
+    Repair preserves object identity for surviving messages, so counting
+    the survivors from the previously-flushed prefix gives the exact new
+    cursor even when messages are dropped/merged at indexes *before* the
+    cursor — a plain ``min()`` clamp would silently skip that many
+    unflushed rows. Falls back to the clamp when no prefix snapshot is
+    available.
+
+    Returns the number of repairs made (same as ``repair_message_sequence``).
+    """
+    pre_repair_flushed_ids = None
+    flush_cursor = getattr(agent, "_last_flushed_db_idx", None)
+    if isinstance(flush_cursor, int) and flush_cursor > 0:
+        pre_repair_flushed_ids = {id(m) for m in messages[:flush_cursor]}
+
+    repairs = repair_message_sequence(agent, messages)
+
+    if repairs > 0 and hasattr(agent, "_last_flushed_db_idx"):
+        if pre_repair_flushed_ids is not None:
+            agent._last_flushed_db_idx = sum(
+                1 for m in messages if id(m) in pre_repair_flushed_ids
+            )
+        else:
+            agent._last_flushed_db_idx = min(
+                agent._last_flushed_db_idx, len(messages)
+            )
+
+    return repairs
+
+
 
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
@@ -579,12 +618,33 @@ def recover_with_credential_pool(
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if current_provider and pool_provider and current_provider != pool_provider:
-        _ra().logger.warning(
-            "Credential pool provider mismatch: pool=%s, agent=%s — "
-            "skipping pool mutation to avoid cross-provider contamination",
-            pool_provider, current_provider,
-        )
-        return False, has_retried_429
+        # Custom endpoints use two naming conventions for the SAME provider:
+        # the agent carries the generic ``custom`` label while the pool is
+        # keyed ``custom:<name>`` (see CUSTOM_POOL_PREFIX). A literal string
+        # compare treats them as a mismatch and skips recovery for every
+        # custom-provider user — 401s/429s then burn the full retry cycle
+        # with no rotation or refresh. Accept the pair as matching only when
+        # the agent's CURRENT base_url actually resolves to this pool key,
+        # so a fallback provider (or a different custom endpoint) still
+        # triggers the guard.
+        _custom_match = False
+        if current_provider == "custom" and pool_provider.startswith("custom:"):
+            try:
+                from agent.credential_pool import get_custom_provider_pool_key
+                _agent_base = (getattr(agent, "base_url", "") or "").strip()
+                _custom_match = bool(_agent_base) and (
+                    (get_custom_provider_pool_key(_agent_base) or "").strip().lower()
+                    == pool_provider
+                )
+            except Exception:
+                _custom_match = False
+        if not _custom_match:
+            _ra().logger.warning(
+                "Credential pool provider mismatch: pool=%s, agent=%s — "
+                "skipping pool mutation to avoid cross-provider contamination",
+                pool_provider, current_provider,
+            )
+            return False, has_retried_429
 
     effective_reason = classified_reason
     if effective_reason is None:
@@ -679,15 +739,28 @@ def recover_with_credential_pool(
         # long-running TUI sessions stuck on stale tokens until the user
         # exited and reopened.
         is_entitlement = agent._is_entitlement_failure(error_context, status_code)
+        _auth_haystack = " ".join(
+            str(error_context.get(k) or "").lower()
+            for k in ("message", "reason", "code", "error")
+            if isinstance(error_context, dict)
+        )
+        if (
+            not is_entitlement
+            and status_code == 403
+            and "oauth authentication is currently not allowed for this organization" in _auth_haystack
+        ):
+            is_entitlement = True
+        if (
+            not is_entitlement
+            and status_code == 403
+            and (agent.provider or "") == "anthropic"
+            and getattr(agent, "api_mode", "") == "anthropic_messages"
+        ):
+            is_entitlement = True
         if not is_entitlement and status_code == 403 and (agent.provider or "") == "xai-oauth":
-            _disambiguator_haystack = " ".join(
-                str(error_context.get(k) or "").lower()
-                for k in ("message", "reason", "code", "error")
-                if isinstance(error_context, dict)
-            )
             _is_xai_auth_failure = (
-                "[wke=unauthenticated:" in _disambiguator_haystack
-                or "oauth2 access token could not be validated" in _disambiguator_haystack
+                "[wke=unauthenticated:" in _auth_haystack
+                or "oauth2 access token could not be validated" in _auth_haystack
             )
             if not _is_xai_auth_failure:
                 is_entitlement = True
@@ -808,6 +881,8 @@ def try_recover_primary_transport(
 
 def drop_thinking_only_and_merge_users(
     messages: List[Dict[str, Any]],
+    *,
+    drop_codex_reasoning_items: bool = True,
 ) -> List[Dict[str, Any]]:
     """Drop thinking-only assistant turns; merge any adjacent user messages left behind.
 
@@ -829,7 +904,13 @@ def drop_thinking_only_and_merge_users(
         return messages
 
     # Pass 1: drop thinking-only assistant turns.
-    kept = [m for m in messages if not _ra().AIAgent._is_thinking_only_assistant(m)]
+    kept = [
+        m for m in messages
+        if not _ra().AIAgent._is_thinking_only_assistant(
+            m,
+            drop_codex_reasoning_items=drop_codex_reasoning_items,
+        )
+    ]
     dropped = len(messages) - len(kept)
     if dropped == 0:
         return messages
@@ -1136,12 +1217,23 @@ def dump_api_request_debug(
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         dump_file = agent.logs_dir / f"request_dump_{agent.session_id}_{timestamp}.json"
-        atomic_json_write(dump_file, dump_payload, default=str)
+
+        # Redact secrets before persisting/printing. This dump captures the
+        # full request body (system prompt, tool defs, context-embedded
+        # values), and this path fires unconditionally on API errors — so it
+        # otherwise lands any context-embedded secret in cleartext on disk.
+        # Run the serialized dump through the same scrubber used for logs/tool
+        # output, then hand the resulting payload back to the shared atomic
+        # JSON writer so request dumps keep the same write semantics as before.
+        from agent.redact import redact_sensitive_text
+        _serialized = json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str)
+        _redacted_payload = json.loads(redact_sensitive_text(_serialized, force=True))
+        atomic_json_write(dump_file, _redacted_payload, default=str)
 
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
         if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
-            print(json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str))
+            print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))
 
         return dump_file
     except Exception as dump_error:
@@ -1747,28 +1839,42 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     elif function_name == "memory":
         def _execute(next_args: dict) -> Any:
             target = next_args.get("target", "memory")
+            operations = next_args.get("operations")
             from tools.memory_tool import memory_tool as _memory_tool
             result = _memory_tool(
                 action=next_args.get("action"),
                 target=target,
                 content=next_args.get("content"),
                 old_text=next_args.get("old_text"),
+                operations=operations,
                 store=agent._memory_store,
             )
-            # Bridge: notify external memory provider of built-in memory writes
-            if agent._memory_manager and next_args.get("action") in {"add", "replace"}:
-                try:
-                    agent._memory_manager.on_memory_write(
-                        next_args.get("action", ""),
-                        target,
-                        next_args.get("content", ""),
-                        metadata=agent._build_memory_write_metadata(
-                            task_id=effective_task_id,
-                            tool_call_id=tool_call_id,
-                        ),
+            # Bridge: notify external memory provider of built-in memory writes.
+            # Covers both the single-op shape and each add/replace inside a batch.
+            if agent._memory_manager:
+                if operations:
+                    _mem_ops = [
+                        op for op in operations
+                        if isinstance(op, dict) and op.get("action") in {"add", "replace"}
+                    ]
+                else:
+                    _mem_ops = (
+                        [{"action": next_args.get("action"), "content": next_args.get("content")}]
+                        if next_args.get("action") in {"add", "replace"} else []
                     )
-                except Exception:
-                    pass
+                for _op in _mem_ops:
+                    try:
+                        agent._memory_manager.on_memory_write(
+                            _op.get("action", ""),
+                            target,
+                            _op.get("content", "") or "",
+                            metadata=agent._build_memory_write_metadata(
+                                task_id=effective_task_id,
+                                tool_call_id=tool_call_id,
+                            ),
+                        )
+                    except Exception:
+                        pass
             return _finish_agent_tool(result, next_args)
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
         def _execute(next_args: dict) -> Any:
@@ -1781,6 +1887,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     question=next_args.get("question", ""),
                     choices=next_args.get("choices"),
                     callback=agent.clarify_callback,
+                ),
+                next_args,
+            )
+    elif function_name == "read_terminal":
+        def _execute(next_args: dict) -> Any:
+            from tools.read_terminal_tool import read_terminal_tool as _read_terminal_tool
+            return _finish_agent_tool(
+                _read_terminal_tool(
+                    start_line=next_args.get("start_line"),
+                    count=next_args.get("count"),
+                    callback=getattr(agent, "read_terminal_callback", None),
                 ),
                 next_args,
             )

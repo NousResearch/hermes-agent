@@ -145,6 +145,7 @@ class Platform(Enum):
     TELEGRAM = "telegram"
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
+    WHATSAPP_CLOUD = "whatsapp_cloud"
     SLACK = "slack"
     SIGNAL = "signal"
     MATTERMOST = "mattermost"
@@ -163,6 +164,7 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -416,9 +418,9 @@ class StreamingConfig:
     # if the original preview has been visible for at least this many
     # seconds, so the platform's visible timestamp reflects completion
     # time instead of the preview creation time.  Currently applied to
-    # Telegram only (other platforms ignore the setting).  Default 60s
-    # matches the OpenClaw rollout.  Set to 0 to disable.
-    fresh_final_after_seconds: float = 60.0
+    # Telegram only (other platforms ignore the setting).  Default 0 disables
+    # the fresh-message replacement path; set >0 to opt in.
+    fresh_final_after_seconds: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -445,7 +447,7 @@ class StreamingConfig:
             ),
             cursor=data.get("cursor", DEFAULT_STREAMING_CURSOR),
             fresh_final_after_seconds=_coerce_float(
-                data.get("fresh_final_after_seconds"), 60.0
+                data.get("fresh_final_after_seconds"), 0.0
             ),
         )
 
@@ -462,6 +464,9 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))
     ),
     Platform.WHATSAPP: lambda cfg: True,  # bridge handles auth
+    Platform.WHATSAPP_CLOUD: lambda cfg: bool(
+        cfg.extra.get("phone_number_id") and cfg.extra.get("access_token")
+    ),
     Platform.SIGNAL: lambda cfg: bool(cfg.extra.get("http_url")),
     Platform.EMAIL: lambda cfg: bool(cfg.extra.get("address")),
     Platform.SMS: lambda cfg: bool(os.getenv("TWILIO_ACCOUNT_SID")),
@@ -487,6 +492,13 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.DINGTALK: lambda cfg: bool(
         (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
         and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
+    ),
+    # Relay dials OUT to a connector; it is "connected" once an endpoint URL is
+    # configured (extra["relay_url"] or extra["url"]). The capability descriptor
+    # is negotiated at handshake time, so the URL is the only config-level
+    # signal in the experimental phase. EXPERIMENTAL — may change.
+    Platform.RELAY: lambda cfg: bool(
+        cfg.extra.get("relay_url") or cfg.extra.get("url")
     ),
 }
 
@@ -532,6 +544,13 @@ class GatewayConfig:
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active chat sessions
+
+    # Multi-profile multiplexing (opt-in; default off preserves one-gateway-per-profile).
+    # When True, the default profile's gateway serves inbound messages for every
+    # profile on the host: profiles are stamped into session keys and (in later
+    # phases) per-profile adapters/credentials are resolved. When False, the
+    # gateway behaves exactly as before — single HERMES_HOME, no profile stamping.
+    multiplex_profiles: bool = False
 
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
@@ -638,6 +657,7 @@ class GatewayConfig:
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
+            "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -683,7 +703,12 @@ class GatewayConfig:
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
+        multiplex_profiles = data.get("multiplex_profiles")
         nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
+        if multiplex_profiles is None and isinstance(nested_gateway, dict):
+            # Also honor gateway.multiplex_profiles written by
+            # ``hermes config set gateway.multiplex_profiles true``.
+            multiplex_profiles = nested_gateway.get("multiplex_profiles")
         if "max_concurrent_sessions" in data:
             max_concurrent_raw = data.get("max_concurrent_sessions")
             max_concurrent_key = "max_concurrent_sessions"
@@ -720,6 +745,7 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
+            multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
@@ -784,6 +810,14 @@ def load_gateway_config() -> GatewayConfig:
             with open(config_yaml_path, encoding="utf-8") as f:
                 yaml_cfg = yaml.safe_load(f) or {}
 
+            # Managed scope: overlay administrator-pinned values so the gateway
+            # honors them too. This loader builds its own dict instead of going
+            # through hermes_cli.config.load_config, so without this a managed
+            # session_reset / quick_commands / stt / model would be ignored by
+            # the messaging gateway. Fail-open via the shared helper.
+            from hermes_cli import managed_scope
+            yaml_cfg = managed_scope.apply_managed_overlay(yaml_cfg)
+
             # Map config.yaml keys → GatewayConfig.from_dict() schema.
             # Each key overwrites whatever gateway.json may have set.
             sr = yaml_cfg.get("session_reset")
@@ -810,6 +844,13 @@ def load_gateway_config() -> GatewayConfig:
 
             if "thread_sessions_per_user" in yaml_cfg:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
+
+            # Multiplexing flag: accept both the top-level key and the nested
+            # gateway.multiplex_profiles form (from_dict resolves the nested
+            # fallback, but surface the top-level key here for parity with the
+            # other session-scope flags above).
+            if "multiplex_profiles" in yaml_cfg:
+                gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
 
             gateway_section = yaml_cfg.get("gateway")
             if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:
@@ -1218,17 +1259,30 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(matrix_cfg, dict):
                 if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
                     os.environ["MATRIX_REQUIRE_MENTION"] = str(matrix_cfg["require_mention"]).lower()
+                allowed_users = matrix_cfg.get("allowed_users")
+                if allowed_users is not None and not os.getenv("MATRIX_ALLOWED_USERS"):
+                    if isinstance(allowed_users, list):
+                        allowed_users = ",".join(str(v) for v in allowed_users)
+                    os.environ["MATRIX_ALLOWED_USERS"] = str(allowed_users)
+                allowed_rooms = matrix_cfg.get("allowed_rooms")
+                if allowed_rooms is not None and not os.getenv("MATRIX_ALLOWED_ROOMS"):
+                    if isinstance(allowed_rooms, list):
+                        allowed_rooms = ",".join(str(v) for v in allowed_rooms)
+                    os.environ["MATRIX_ALLOWED_ROOMS"] = str(allowed_rooms)
                 frc = matrix_cfg.get("free_response_rooms")
                 if frc is not None and not os.getenv("MATRIX_FREE_RESPONSE_ROOMS"):
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["MATRIX_FREE_RESPONSE_ROOMS"] = str(frc)
-                # allowed_rooms: if set, bot ONLY responds in these rooms (whitelist)
-                ar = matrix_cfg.get("allowed_rooms")
-                if ar is not None and not os.getenv("MATRIX_ALLOWED_ROOMS"):
-                    if isinstance(ar, list):
-                        ar = ",".join(str(v) for v in ar)
-                    os.environ["MATRIX_ALLOWED_ROOMS"] = str(ar)
+                ignore_patterns = matrix_cfg.get("ignore_user_patterns")
+                if ignore_patterns is not None and not os.getenv("MATRIX_IGNORE_USER_PATTERNS"):
+                    if isinstance(ignore_patterns, list):
+                        ignore_patterns = ",".join(str(v) for v in ignore_patterns)
+                    os.environ["MATRIX_IGNORE_USER_PATTERNS"] = str(ignore_patterns)
+                if "process_notices" in matrix_cfg and not os.getenv("MATRIX_PROCESS_NOTICES"):
+                    os.environ["MATRIX_PROCESS_NOTICES"] = str(matrix_cfg["process_notices"]).lower()
+                if "session_scope" in matrix_cfg and not os.getenv("MATRIX_SESSION_SCOPE"):
+                    os.environ["MATRIX_SESSION_SCOPE"] = str(matrix_cfg["session_scope"]).lower()
                 if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
                     os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
                 if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
@@ -1416,6 +1470,61 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             thread_id=os.getenv("WHATSAPP_HOME_CHANNEL_THREAD_ID") or None,
         )
 
+    # WhatsApp Cloud API (official Business Platform via Meta).
+    # Distinct from the Baileys bridge: pure HTTP graph.facebook.com calls
+    # outbound, public webhook inbound. Both adapters can run in parallel
+    # against different phone numbers.
+    whatsapp_cloud_phone_id = os.getenv("WHATSAPP_CLOUD_PHONE_NUMBER_ID")
+    whatsapp_cloud_token = os.getenv("WHATSAPP_CLOUD_ACCESS_TOKEN")
+    if whatsapp_cloud_phone_id and whatsapp_cloud_token:
+        if Platform.WHATSAPP_CLOUD not in config.platforms:
+            config.platforms[Platform.WHATSAPP_CLOUD] = PlatformConfig()
+        config.platforms[Platform.WHATSAPP_CLOUD].enabled = True
+        config.platforms[Platform.WHATSAPP_CLOUD].extra.update({
+            "phone_number_id": whatsapp_cloud_phone_id,
+            "access_token": whatsapp_cloud_token,
+        })
+        # Optional: app_id / app_secret (signature verification)
+        wa_cloud_app_id = os.getenv("WHATSAPP_CLOUD_APP_ID")
+        if wa_cloud_app_id:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["app_id"] = wa_cloud_app_id
+        wa_cloud_app_secret = os.getenv("WHATSAPP_CLOUD_APP_SECRET")
+        if wa_cloud_app_secret:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["app_secret"] = wa_cloud_app_secret
+        # Optional: WABA id (analytics, future use)
+        wa_cloud_waba_id = os.getenv("WHATSAPP_CLOUD_WABA_ID")
+        if wa_cloud_waba_id:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["waba_id"] = wa_cloud_waba_id
+        # Webhook verify token — Meta hub.verify_token shared secret
+        wa_cloud_verify_token = os.getenv("WHATSAPP_CLOUD_VERIFY_TOKEN")
+        if wa_cloud_verify_token:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["verify_token"] = wa_cloud_verify_token
+        # Webhook server bind config (defaults baked into the adapter)
+        wa_cloud_host = os.getenv("WHATSAPP_CLOUD_WEBHOOK_HOST")
+        if wa_cloud_host:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_host"] = wa_cloud_host
+        wa_cloud_port = os.getenv("WHATSAPP_CLOUD_WEBHOOK_PORT")
+        if wa_cloud_port:
+            try:
+                config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_port"] = int(wa_cloud_port)
+            except ValueError:
+                pass
+        wa_cloud_path = os.getenv("WHATSAPP_CLOUD_WEBHOOK_PATH")
+        if wa_cloud_path:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_path"] = wa_cloud_path
+        # Graph API version override (rarely needed)
+        wa_cloud_api_version = os.getenv("WHATSAPP_CLOUD_API_VERSION")
+        if wa_cloud_api_version:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["api_version"] = wa_cloud_api_version
+    whatsapp_cloud_home = os.getenv("WHATSAPP_CLOUD_HOME_CHANNEL")
+    if whatsapp_cloud_home and Platform.WHATSAPP_CLOUD in config.platforms:
+        config.platforms[Platform.WHATSAPP_CLOUD].home_channel = HomeChannel(
+            platform=Platform.WHATSAPP_CLOUD,
+            chat_id=whatsapp_cloud_home,
+            name=os.getenv("WHATSAPP_CLOUD_HOME_CHANNEL_NAME", "Home"),
+            thread_id=os.getenv("WHATSAPP_CLOUD_HOME_CHANNEL_THREAD_ID") or None,
+        )
+
     # Slack
     slack_token = os.getenv("SLACK_BOT_TOKEN")
     if slack_token:
@@ -1497,8 +1606,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         matrix_password = os.getenv("MATRIX_PASSWORD", "")
         if matrix_password:
             matrix_config.extra["password"] = matrix_password
-        matrix_e2ee = os.getenv("MATRIX_ENCRYPTION", "").lower() in {"true", "1", "yes"}
+        matrix_e2ee_mode = os.getenv("MATRIX_E2EE_MODE", "").strip().lower()
+        matrix_e2ee = (
+            matrix_e2ee_mode in ("required", "require", "optional", "prefer", "preferred")
+            or os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+        )
         matrix_config.extra["encryption"] = matrix_e2ee
+        if matrix_e2ee_mode:
+            matrix_config.extra["e2ee_mode"] = matrix_e2ee_mode
         matrix_device_id = os.getenv("MATRIX_DEVICE_ID", "")
         if matrix_device_id:
             matrix_config.extra["device_id"] = matrix_device_id
@@ -2056,6 +2171,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     )
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)
+
+    # Relay (generic connector-fronted platform, EXPERIMENTAL). Enabled when a
+    # connector relay URL is configured via GATEWAY_RELAY_URL (env) or
+    # gateway.relay_url (config.yaml). The adapter is registered into the
+    # platform_registry at gateway startup (gateway.relay.register_relay_adapter)
+    # and dials OUT to the connector — so, like Telegram/Matrix, it has no public
+    # inbound port and just needs Platform.RELAY present+enabled in
+    # config.platforms for start_gateway()'s connect loop to bring it up. The
+    # connected-checker (Platform.RELAY in _PLATFORM_CONNECTED_CHECKERS) keys on
+    # extra["relay_url"], so mirror the URL into extra here.
+    relay_url_env = os.getenv("GATEWAY_RELAY_URL", "").strip()
+    relay_url_yaml = ""
+    existing_relay = config.platforms.get(Platform.RELAY)
+    if existing_relay is not None:
+        relay_url_yaml = str(existing_relay.extra.get("relay_url") or "").strip()
+    relay_url_val = relay_url_env or relay_url_yaml
+    if relay_url_val:
+        relay_config = _enable_from_env(Platform.RELAY)
+        relay_config.extra["relay_url"] = relay_url_val.rstrip("/")
 
     for platform_config in config.platforms.values():
         platform_config.extra.pop("_enabled_explicit", None)

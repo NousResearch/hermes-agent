@@ -10,11 +10,16 @@ import { useEffect, useMemo, useState } from 'react'
 import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
+import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
+import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
 import { PageLoader } from '@/components/page-loader'
 import { translateNow, useI18n } from '@/i18n'
+import { readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
+import { $currentCwd } from '@/store/session'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -180,15 +185,13 @@ function looksBinaryBytes(bytes: Uint8Array) {
 }
 
 async function readTextPreview(filePath: string) {
-  if (window.hermesDesktop.readFileText) {
-    try {
-      return await window.hermesDesktop.readFileText(filePath)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+  try {
+    return await readDesktopFileText(filePath)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
 
-      if (!message.includes("No handler registered for 'hermes:readFileText'")) {
-        throw error
-      }
+    if (!message.includes("No handler registered for 'hermes:readFileText'")) {
+      throw error
     }
   }
 
@@ -288,7 +291,7 @@ const MARKDOWN_COMPONENTS = {
 
 function MarkdownPreview({ text }: { text: string }) {
   return (
-    <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground">
+    <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
       <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
         {text}
       </Streamdown>
@@ -358,6 +361,38 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
     startLineDrag(event, filePath, inSelection(line) && selection ? selection : { end: line, start: line })
   }
 
+  // ⌘/Ctrl+L with a line selection drops the same `@line:path:start-end` ref the
+  // gutter drag produces — so the keyboard path mirrors dragging the lines into
+  // the composer. Capture-phase + stopPropagation so it beats the terminal's
+  // global ⌘L handler (which would otherwise grab the native text selection).
+  useEffect(() => {
+    if (!selection) {
+      return
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isAddSelectionShortcut(event)) {
+        return
+      }
+
+      const lineEnd = selection.end > selection.start ? selection.end : undefined
+      const ref = droppedFileInlineRef({ line: selection.start, lineEnd, path: filePath }, $currentCwd.get())
+
+      if (!ref) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      requestComposerInsertRefs([ref])
+      requestComposerFocus('main')
+    }
+
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
+  }, [filePath, selection])
+
   return (
     <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-xs leading-relaxed">
       <div className="select-none py-3 text-right text-muted-foreground/55">
@@ -384,7 +419,10 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
           )
         })}
       </div>
-      <div className="relative [&_pre]:m-0 [&_pre]:px-3 [&_pre]:py-3 [&_pre]:bg-transparent!">
+      <div
+        className="relative [&_pre]:m-0 [&_pre]:px-3 [&_pre]:py-3 [&_pre]:bg-transparent!"
+        data-selectable-text="true"
+      >
         {selection && (
           <div
             aria-hidden
@@ -446,7 +484,9 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
       try {
         if (isImage) {
-          const dataUrl = await window.hermesDesktop.readFileDataUrl(filePath)
+          // Prefer bytes the caller already handed us (a pasted/dropped
+          // screenshot) over re-reading a path that may be transient/unreadable.
+          const dataUrl = target.dataUrl || (await readDesktopFileDataUrl(filePath))
 
           if (active) {
             setState({ dataUrl, loading: false })
@@ -484,7 +524,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return () => {
       active = false
     }
-  }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, target.language])
+  }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, target.dataUrl, target.language])
 
   if (state.loading) {
     return <PageLoader label={t.preview.loading} />

@@ -33,6 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,66 @@ logger = logging.getLogger(__name__)
 # teardown indefinitely — the worker threads are daemon, so anything still
 # running past this window dies with the interpreter.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
+
+
+def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool:
+    """Return whether external memory-provider tools should be exposed."""
+    if enabled_toolsets is None:
+        return True
+    if not enabled_toolsets:
+        return False
+    if "memory" in enabled_toolsets:
+        return True
+
+    try:
+        from toolsets import resolve_toolset
+
+        return any("memory" in resolve_toolset(name) for name in enabled_toolsets)
+    except Exception:
+        logger.debug("Failed to resolve enabled toolsets for memory-provider tools", exc_info=True)
+        return False
+
+
+def inject_memory_provider_tools(agent: Any) -> int:
+    """Append external memory-provider tool schemas to an agent tool surface."""
+    memory_manager = getattr(agent, "_memory_manager", None)
+    tools = getattr(agent, "tools", None)
+    if not memory_manager or tools is None:
+        return 0
+
+    existing_tool_names = {
+        tool.get("function", {}).get("name")
+        for tool in tools
+        if isinstance(tool, dict)
+    }
+    if (
+        "memory" not in existing_tool_names
+        and not memory_provider_tools_enabled(getattr(agent, "enabled_toolsets", None))
+    ):
+        return 0
+
+    get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)
+    if not callable(get_schemas):
+        return 0
+
+    valid_tool_names = getattr(agent, "valid_tool_names", None)
+    if valid_tool_names is None:
+        valid_tool_names = set()
+        agent.valid_tool_names = valid_tool_names
+
+    added = 0
+    for schema in get_schemas():
+        if not isinstance(schema, dict):
+            continue
+        tool_name = schema.get("name", "")
+        if not tool_name or tool_name in existing_tool_names:
+            continue
+        tools.append({"type": "function", "function": schema})
+        valid_tool_names.add(tool_name)
+        existing_tool_names.add(tool_name)
+        added += 1
+
+    return added
 
 
 # ---------------------------------------------------------------------------
@@ -370,16 +431,37 @@ class MemoryManager:
 
     # -- Prefetch / recall ---------------------------------------------------
 
+    @staticmethod
+    def _strip_skill_scaffolding(text: str) -> Optional[str]:
+        """Return memory-worthy user text, or None to skip the turn.
+
+        When a user invokes a /skill or /bundle, Hermes expands the turn into
+        a model-facing message that embeds the entire skill body. Feeding that
+        verbatim to memory providers pollutes their stores/embeddings with
+        prompt scaffolding instead of what the user actually asked. We recover
+        just the user's instruction here, once, for every provider — so this
+        is fixed for the whole provider fan-out, not per backend.
+
+        - Non-skill messages pass through unchanged.
+        - Skill turns with a user instruction return that instruction.
+        - Bare skill invocations (no instruction) return None → callers skip
+          the turn, since there is no user content worth remembering.
+        """
+        return extract_user_instruction_from_skill_message(text)
+
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
         """Collect prefetch context from all providers.
 
         Returns merged context text labeled by provider. Empty providers
         are skipped. Failures in one provider don't block others.
         """
+        clean_query = self._strip_skill_scaffolding(query)
+        if not clean_query:
+            return ""
         parts = []
         for provider in self._providers:
             try:
-                result = provider.prefetch(query, session_id=session_id)
+                result = provider.prefetch(clean_query, session_id=session_id)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:
@@ -400,10 +482,14 @@ class MemoryManager:
         if not providers:
             return
 
+        clean_query = self._strip_skill_scaffolding(query)
+        if not clean_query:
+            return
+
         def _run() -> None:
             for provider in providers:
                 try:
-                    provider.queue_prefetch(query, session_id=session_id)
+                    provider.queue_prefetch(clean_query, session_id=session_id)
                 except Exception as e:
                     logger.debug(
                         "Memory provider '%s' queue_prefetch failed (non-fatal): %s",
@@ -454,6 +540,11 @@ class MemoryManager:
         providers = list(self._providers)
         if not providers:
             return
+
+        clean_user_content = self._strip_skill_scaffolding(user_content)
+        if not clean_user_content:
+            return
+        user_content = clean_user_content
 
         def _run() -> None:
             for provider in providers:

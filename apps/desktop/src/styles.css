@@ -5,12 +5,40 @@
 @import '@vscode/codicons/dist/codicon.css';
 @custom-variant dark (&:is(.dark *));
 
+/* Sidebar sections: tall viewports give each its own scroller; compact ones
+   (this variant) flatten everything into one shared scroll. See ChatSidebar. */
+@custom-variant compact (@media (max-height: 768px));
+
 @font-face {
   font-family: 'Collapse';
   font-style: normal;
   font-weight: 700;
   font-display: swap;
   src: url('../../../node_modules/@nous-research/ui/dist/fonts/Collapse-Bold.woff2') format('woff2');
+}
+
+/* JetBrains Mono — bundled terminal font (Apache-2.0) so bold/italic share the
+   regular face's metrics instead of squeezing against a system fallback. */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./fonts/JetBrainsMono-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/JetBrainsMono-Italic.woff2') format('woff2');
 }
 
 @theme inline {
@@ -266,10 +294,14 @@
     --dt-user-bubble: var(--ui-chat-bubble-background);
     --dt-user-bubble-border: var(--ui-stroke-tertiary);
 
-    --dt-font-sans: 'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
+    --dt-font-sans:
+      'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
       'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
-    --dt-font-mono: 'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace,
-      'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+    /* Key caps always use the native UI face — never theme typography overrides. */
+    --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+    --dt-font-mono:
+      'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
+      'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
     --dt-letter-spacing: 0;
@@ -278,8 +310,10 @@
     --radius: 0.75rem;
     --radius-scalar: 0.6;
 
-    /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx). */
-    --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);
+    /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx)
+       plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing. */
+    --status-stack-measured-height: 0px;
+    --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
 
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.75rem;
@@ -385,6 +419,10 @@
   body,
   #root {
     height: 100%;
+    /* App shell, not a document: the window itself never scrolls on either axis
+       (panes own their own scroll). Belt to the auto-scroll axis-lock in the
+       sidebar reorder DnD — nothing can drag the whole shell sideways. */
+    overflow: hidden;
   }
 
   html {
@@ -399,7 +437,6 @@
     font-size: 0.8125rem;
     line-height: var(--dt-line-height, 1.55);
     letter-spacing: var(--dt-letter-spacing, 0);
-    overflow: hidden;
     -webkit-user-select: none;
     user-select: none;
     -webkit-font-smoothing: antialiased;
@@ -643,6 +680,7 @@ textarea,
 [contenteditable]:not([contenteditable='false']),
 [data-slot='aui_user-message-root'],
 [data-slot='aui_assistant-message-content'],
+[data-slot='aui_system-message-root'],
 [data-selectable-text='true'],
 [data-selectable-text='true'] * {
   -webkit-user-select: text;
@@ -817,26 +855,63 @@ canvas {
    content's --message-text-indent). No extra prose indent — a single gutter
    reads cleaner than a ragged tool-vs-reply column. */
 
+/* RTL/bidi chat text (#44150): each block resolves its own base direction from
+   its first strong char (UAX#9 plaintext). text-align:start makes that resolved
+   direction drive alignment too — load-bearing, since the user bubble pins
+   text-left. direction is never set, so chrome/layout/list-indent stay LTR (the
+   issue asks not to flip the whole UI). Covers assistant prose, user lines, and
+   both composers (main + edit share composer-rich-input). */
+[data-slot='aui_assistant-message-content'] .aui-md :where(p, h1, h2, h3, h4, h5, h6, li, blockquote),
+[data-slot='aui_user-inline-text'],
+[data-slot='composer-rich-input'] {
+  unicode-bidi: plaintext;
+  text-align: start;
+}
+
+/* Inline code/KaTeX don't vote on direction and keep their own order: isolate
+   makes bidi treat each as one neutral, so a block that *starts* with `./run.sh`
+   then Arabic still resolves RTL, and the command's neutrals (dots/slashes)
+   aren't reordered by the surrounding RTL run. */
+[data-slot='aui_assistant-message-content'] .aui-md :where(:not(pre) > code),
+[data-slot='aui_user-inline-code'],
+[data-slot='aui_assistant-message-content'] .aui-md .katex {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* Fenced code stays LTR even inside an RTL list item/blockquote — never mirrors. */
+[data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'],
+[data-slot='aui_user-fence'] {
+  direction: ltr;
+  text-align: left;
+}
+
 [data-slot='aui_user-message-root'] {
   top: var(--sticky-human-top);
 }
 
 [data-slot='aui_user-message-root'],
 [data-slot='aui_edit-composer-root'] {
+  --human-msg-line-height: 1.3;
   font-size: var(--conversation-text-font-size);
 }
 
+[data-slot='aui_user-inline-text'] {
+  line-height: var(--human-msg-line-height);
+}
+
+[data-slot='aui_edit-composer-root'] [data-slot='composer-rich-input'] {
+  line-height: var(--human-msg-line-height);
+}
+
 /* Sticky human bubbles clamp to ~2 lines with a soft bottom fade so a long
-   prompt doesn't dominate the viewport. The clamp lifts on focus only (clicking
-   opens the edit composer, which shows the full text) — not on hover, so the
-   bubble doesn't jump as the pointer passes over it. --human-msg-full is the
-   measured content height (set in UserMessage) so it animates to the real
-   height instead of overshooting the cap. */
+   prompt doesn't dominate the viewport. The clamp lifts only in the edit
+   composer; expanding on read-only :focus-within ran on mousedown (before the
+   swap) and fought stick-to-bottom when parked at the bottom. */
 .sticky-human-clamp {
   cursor: pointer;
-  max-height: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
+  max-height: calc(4 * var(--human-msg-line-height) * var(--conversation-text-font-size) + 0.15rem);
   overflow: hidden;
-  transition: max-height 0.08s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .sticky-human-clamp[data-clamped='true'] {
@@ -844,23 +919,16 @@ canvas {
   mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
 
-.composer-human-message:focus-within .sticky-human-clamp {
-  max-height: min(var(--human-msg-full, 24rem), 24rem);
-  overflow-y: auto;
-  -webkit-mask-image: none;
-  mask-image: none;
-}
-
-/* The thread renders items in natural document flow (padding spacers, not
-   transforms) and @tanstack/react-virtual already adjusts scrollTop itself
-   when an off-screen turn is measured and its real height differs from the
-   220px estimate. The browser's native scroll anchoring (overflow-anchor:
-   auto) would adjust scrollTop for that SAME size delta, so the two
-   double-correct and the view lurches — most visibly on Windows mouse wheels,
-   whose coarse notches mount/measure several under-estimated turns per tick.
-   Opt out of native anchoring so only the virtualizer compensates. */
+/* Stick-to-bottom owns scrollTop while following. Once escaped, native anchoring
+   is safe and keeps sticky human edits from shoving the viewport; data-editing
+   enables that path before React swaps in the inline editor. */
 [data-slot='aui_thread-viewport'] {
   overflow-anchor: none;
+}
+
+[data-slot='aui_thread-viewport'][data-following='false'],
+[data-slot='aui_thread-viewport'][data-editing='true'] {
+  overflow-anchor: auto;
 }
 
 [data-slot='aui_thread-content'] {
@@ -914,7 +982,11 @@ canvas {
 
   display: block;
   inline-size: var(--fit-available-space);
-  font-size: clamp(var(--fit-min, 1em), 1em * var(--fit-ratio), var(--fit-max, infinity * 1px) - var(--fit-support-sentinel));
+  font-size: clamp(
+    var(--fit-min, 1em),
+    1em * var(--fit-ratio),
+    var(--fit-max, infinity * 1px) - var(--fit-support-sentinel)
+  );
 }
 
 @container (inline-size > 0) {
@@ -959,8 +1031,32 @@ canvas {
   color: var(--ui-text-tertiary) !important;
 }
 
-[data-slot='composer-root']:focus-within [data-slot='composer-surface'] > [aria-hidden='true'] {
-  background: var(--ui-chat-bubble-background) !important;
+/* ── Composer fill — ONE var painted by the surface AND anything docked to it
+   (slash·@ popover, `?` help). State ladder sets the var; consumers just paint
+   `background: var(--composer-fill)`, so every state matches by construction.
+   The :has() rule is last on purpose: while a completion drawer is open it
+   beats focus/scroll and forces an OPAQUE fill (both mix endpoints solid) —
+   translucent glass can never match across the two layers because they sample
+   different backdrops. */
+:root {
+  /* Fallback for drawers outside the main composer (e.g. edit-message). */
+  --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
+}
+
+[data-slot='composer-root'] {
+  --composer-fill: color-mix(in srgb, var(--dt-card) 72%, transparent);
+}
+
+[data-slot='composer-root'][data-thread-scrolled-up] {
+  --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
+}
+
+[data-slot='composer-root']:has([data-slot='composer-surface']:focus-within) {
+  --composer-fill: var(--ui-chat-bubble-background);
+}
+
+[data-slot='composer-root']:has([data-slot='composer-completion-drawer']) {
+  --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading
@@ -1062,6 +1158,10 @@ canvas {
   margin-block-end: 0 !important;
 }
 
+[data-slot='aui_assistant-message-content'] .aui-md .aui-md-table thead {
+  border-bottom-color: var(--dt-border) !important;
+}
+
 /* Tool / thinking blocks are scaffolding around the model's reply, so we
    keep them transparent and fade them slightly. The reading column (prose)
    stays at full strength; scaffolding lifts back to full opacity on
@@ -1078,6 +1178,12 @@ canvas {
 
 [data-slot='aui_assistant-message-content']
   > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']):is(:hover, :focus-within) {
+  opacity: 1;
+}
+
+/* A generated image is the deliverable, not scaffolding — keep it at full
+   strength instead of dimming it until hover. */
+[data-slot='aui_assistant-message-content'] > [data-slot='tool-block']:has([data-slot='aui_generated-image']) {
   opacity: 1;
 }
 
@@ -1163,6 +1269,62 @@ canvas {
   }
 }
 
+/* Floating "jump to bottom" control (see scroll-to-bottom-button.tsx).
+   Directional scale: it contracts toward 1 as it arrives (from 1.1) and keeps
+   contracting to 0.9 as it leaves — always shrinking in the direction of
+   travel, so the motion reads as a soft settle / recede rather than a pop. The
+   X half-offset stays baked into every transform so `left-1/2` centering holds
+   through the animation. */
+.thread-jump-button {
+  opacity: 0;
+  transform: translateX(-50%) translateY(0.3rem) scale(0.9);
+}
+
+.thread-jump-button[data-state='in'] {
+  animation: thread-jump-in 200ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.thread-jump-button[data-state='out'] {
+  animation: thread-jump-out 180ms ease-in forwards;
+}
+
+@keyframes thread-jump-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(0.3rem) scale(1.1);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes thread-jump-out {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(0.3rem) scale(0.9);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-jump-button[data-state='in'],
+  .thread-jump-button[data-state='out'] {
+    animation: none;
+    transition: opacity 120ms linear;
+  }
+
+  .thread-jump-button[data-state='in'] {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
 @keyframes code-card-stream-glow {
   from {
     border-color: color-mix(in srgb, var(--dt-ring) 18%, var(--ui-stroke-tertiary));
@@ -1183,43 +1345,4 @@ canvas {
   [data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'][data-streaming='true'] {
     animation: none;
   }
-}
-
-/* ── Keybind panel / edit overlay: small key chips ──────────────────────────
-   A quiet `kbd`-style chip shared by the shortcuts panel and the on-screen
-   editor so both read as the same control. No animation, no glow. */
-.kbd-cap {
-  display: inline-grid;
-  place-items: center;
-  min-width: 1.5rem;
-  height: 1.4rem;
-  padding: 0 0.4rem;
-  border-radius: 0.375rem;
-  font-family: var(--dt-font-mono, ui-monospace, monospace);
-  font-size: 0.72rem;
-  font-weight: 500;
-  line-height: 1;
-  color: color-mix(in srgb, var(--dt-foreground) 82%, transparent);
-  background: color-mix(in srgb, var(--ui-bg-elevated) 70%, transparent);
-  border: 1px solid var(--ui-stroke-secondary);
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ui-stroke-tertiary) 50%, transparent);
-}
-
-/* Unbound slot: a hollow dashed chip inviting a binding. */
-.kbd-cap--ghost {
-  color: color-mix(in srgb, var(--dt-foreground) 42%, transparent);
-  background: none;
-  border-style: dashed;
-  border-color: var(--ui-stroke-tertiary);
-  box-shadow: none;
-  font-style: italic;
-}
-
-/* Waiting for a keypress: solid accent, no motion. */
-.kbd-capturing {
-  color: var(--theme-primary);
-  border-color: color-mix(in srgb, var(--theme-primary) 55%, var(--ui-stroke-secondary)) !important;
-  border-style: solid;
-  background: color-mix(in srgb, var(--theme-primary) 9%, var(--ui-bg-elevated));
-  box-shadow: none;
 }

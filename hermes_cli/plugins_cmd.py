@@ -135,32 +135,114 @@ def _sanitize_plugin_name(
     return target
 
 
-def _resolve_git_url(identifier: str) -> str:
-    """Turn an identifier into a cloneable Git URL.
+_GITHUB_BROWSER_SEGMENTS = {
+    "actions",
+    "blob",
+    "commit",
+    "commits",
+    "issues",
+    "pull",
+    "pulls",
+    "releases",
+    "tree",
+    "wiki",
+}
+
+
+def _resolve_git_url(identifier: str) -> tuple[str, Optional[str]]:
+    """Turn an identifier into a cloneable Git URL and optional subdirectory.
+
+    Returns ``(git_url, subdir)`` where ``subdir`` is the path within the
+    cloned repository that contains the plugin (``None`` when the plugin lives
+    at the repo root).
 
     Accepted formats:
     - Full URL: https://github.com/owner/repo.git
     - Full URL: git@github.com:owner/repo.git
     - Full URL: ssh://git@github.com/owner/repo.git
+    - Browser URL: https://github.com/owner/repo/tree/main/path
+      →  (https://github.com/owner/repo.git, "path")
     - Shorthand: owner/repo  →  https://github.com/owner/repo.git
+    - Shorthand w/ subdir: owner/repo/path/to/plugin
+      →  (https://github.com/owner/repo.git, "path/to/plugin")
+    - Full URL w/ subdir (``.git`` boundary):
+      https://github.com/owner/repo.git/path/to/plugin
+      →  (https://github.com/owner/repo.git, "path/to/plugin")
+    - Any URL w/ explicit subdir fragment (works for every scheme, incl.
+      ``file://`` and ssh): <url>#path/to/plugin
+      →  (<url>, "path/to/plugin")
 
     NOTE: ``http://`` and ``file://`` schemes are accepted but will trigger a
     security warning at install time.
     """
-    # Already a URL
+    # Already a URL.
     if identifier.startswith(("https://", "http://", "git@", "ssh://", "file://")):
-        return identifier
+        if identifier.startswith("https://github.com/"):
+            path = identifier[len("https://github.com/") :]
+            path = path.split("?", 1)[0].split("#", 1)[0].strip("/")
+            parts = path.split("/")
+            if len(parts) >= 3 and all(parts[:2]) and parts[2] in _GITHUB_BROWSER_SEGMENTS:
+                repo = parts[1].removesuffix(".git")
+                subdir = None
+                if parts[2] == "tree" and len(parts) >= 5:
+                    subdir = "/".join(p for p in parts[4:] if p).strip("/") or None
+                return f"https://github.com/{parts[0]}/{repo}.git", subdir
 
-    # owner/repo shorthand
-    parts = identifier.strip("/").split("/")
-    if len(parts) == 2:
-        owner, repo = parts
-        return f"https://github.com/{owner}/{repo}.git"
+        # Explicit ``#subdir`` fragment — unambiguous for any scheme.
+        if "#" in identifier:
+            git_url, _, frag = identifier.partition("#")
+            return git_url, (frag.strip("/") or None)
+        # Natural ``.git/`` boundary (GitHub-style URLs).
+        marker = ".git/"
+        idx = identifier.find(marker)
+        if idx != -1:
+            git_url = identifier[: idx + len(".git")]
+            subdir = identifier[idx + len(marker) :].strip("/")
+            return git_url, (subdir or None)
+        return identifier, None
+
+    # owner/repo[/subdir...] shorthand
+    parts = [p for p in identifier.strip("/").split("/") if p]
+    if len(parts) >= 2:
+        owner, repo = parts[0], parts[1]
+        subdir = "/".join(parts[2:]).strip("/")
+        git_url = f"https://github.com/{owner}/{repo}.git"
+        return git_url, (subdir or None)
 
     raise ValueError(
         f"Invalid plugin identifier: '{identifier}'. "
-        "Use a Git URL or owner/repo shorthand."
+        "Use a Git URL or 'owner/repo' shorthand (optionally with a subdirectory: "
+        "'owner/repo/path/to/plugin')."
     )
+
+
+def _resolve_subdir_within(clone_root: Path, subdir: str) -> Path:
+    """Resolve ``subdir`` inside ``clone_root``, rejecting path traversal.
+
+    Guards against ``..`` segments, absolute paths, and symlinks that would
+    escape the cloned repository. Returns the resolved directory path.
+    Raises ``PluginOperationError`` if the path escapes the clone, doesn't
+    exist, or is not a directory.
+    """
+    clone_root = clone_root.resolve()
+    candidate = (clone_root / subdir).resolve()
+
+    # The resolved candidate must stay within the clone root.
+    if candidate != clone_root and clone_root not in candidate.parents:
+        raise PluginOperationError(
+            f"Plugin subdirectory '{subdir}' escapes the repository.",
+        )
+
+    if not candidate.exists():
+        raise PluginOperationError(
+            f"Plugin subdirectory '{subdir}' does not exist in the repository.",
+        )
+    if not candidate.is_dir():
+        raise PluginOperationError(
+            f"Plugin subdirectory '{subdir}' is not a directory.",
+        )
+
+    return candidate
 
 
 def _repo_name_from_url(url: str) -> str:
@@ -372,14 +454,14 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
     import tempfile
 
     try:
-        git_url = _resolve_git_url(identifier)
+        git_url, subdir = _resolve_git_url(identifier)
     except ValueError as e:
         raise PluginOperationError(str(e)) from e
 
     plugins_dir = _plugins_dir()
 
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_target = Path(tmp) / "plugin"
+        tmp_clone = Path(tmp) / "plugin"
 
         git_exe = _resolve_git_executable()
         if not git_exe:
@@ -387,7 +469,7 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
 
         try:
             result = subprocess.run(
-                [git_exe, "clone", "--depth", "1", git_url, str(tmp_target)],
+                [git_exe, "clone", "--depth", "1", git_url, str(tmp_clone)],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -405,8 +487,16 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
             err = (result.stderr or result.stdout or "").strip()
             raise PluginOperationError(f"Git clone failed:\n{err}")
 
+        # Resolve the directory within the clone that holds the plugin.
+        if subdir:
+            tmp_target = _resolve_subdir_within(tmp_clone, subdir)
+        else:
+            tmp_target = tmp_clone
+
         manifest = _read_manifest(tmp_target)
-        plugin_name = manifest.get("name") or _repo_name_from_url(git_url)
+        plugin_name = manifest.get("name") or (
+            subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url)
+        )
 
         try:
             target = _sanitize_plugin_name(plugin_name, plugins_dir)
@@ -471,7 +561,7 @@ def cmd_install(
     console = Console()
 
     try:
-        git_url = _resolve_git_url(identifier)
+        git_url, _subdir = _resolve_git_url(identifier)
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
@@ -482,7 +572,10 @@ def cmd_install(
             "Consider using https:// or git@ for production installs.",
         )
 
-    console.print(f"[dim]Cloning {git_url}...[/dim]")
+    if _subdir:
+        console.print(f"[dim]Cloning {git_url} (subdir: {_subdir})...[/dim]")
+    else:
+        console.print(f"[dim]Cloning {git_url}...[/dim]")
 
     try:
         target, installed_manifest, installed_name = _install_plugin_core(
@@ -1473,7 +1566,7 @@ def dashboard_install_plugin(
     """Non-interactive install for the web dashboard. Returns a JSON-serializable dict."""
     warnings: list[str] = []
     try:
-        git_url = _resolve_git_url(identifier)
+        git_url, _subdir = _resolve_git_url(identifier)
         if git_url.startswith(("http://", "file://")):
             warnings.append(
                 "Insecure URL scheme; prefer https:// or git@ for production installs.",

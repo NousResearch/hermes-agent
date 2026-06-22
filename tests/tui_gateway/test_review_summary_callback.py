@@ -120,3 +120,48 @@ def test_review_summary_callback_survives_agent_without_attribute(server, monkey
     # LockedAgent's __slots__ blocks background_review_callback assignment.
     server._init_session("sid-x", "key-x", LockedAgent(), [], cols=80)
     # If we got here, _init_session swallowed the AttributeError gracefully.
+
+
+def test_init_session_sets_memory_notifications_from_config(server, monkeypatch):
+    """_init_session must apply display.memory_notifications to the agent so
+    the TUI/desktop honors the same off/on/verbose toggle as the messaging
+    gateway and CLI. Without this the review always behaved as 'on'."""
+    monkeypatch.setattr(server, "_SlashWorker", lambda *a, **kw: object())
+    monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_session_info", lambda agent, session=None: {"model": "m"})
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_load_memory_notifications", lambda: "verbose")
+
+    class FakeAgent:
+        model = "fake/model"
+        background_review_callback = None
+        memory_notifications = "on"
+
+    agent = FakeAgent()
+    server._init_session("sid-mn", "key-mn", agent, [], cols=80)
+
+    assert agent.memory_notifications == "verbose"
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (None, "on"),       # unset → default on
+        ("on", "on"),
+        ("off", "off"),
+        ("verbose", "verbose"),
+        ("VERBOSE", "verbose"),  # case-normalized
+        (True, "on"),       # bool back-compat
+        (False, "off"),
+    ],
+)
+def test_load_memory_notifications_normalization(server, monkeypatch, raw, expected):
+    """_load_memory_notifications mirrors the gateway's bool→str normalization
+    and defaults to 'on' when the key is absent."""
+    display = {} if raw is None else {"memory_notifications": raw}
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": display})
+    assert server._load_memory_notifications() == expected
+

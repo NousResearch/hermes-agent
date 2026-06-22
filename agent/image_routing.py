@@ -212,13 +212,9 @@ def _supports_vision_override(
     for p in dict.fromkeys(filter(None, (provider, config_provider))):
         entry_raw = providers_cfg.get(p)
         entry: Dict[str, Any] = entry_raw if isinstance(entry_raw, dict) else {}
-        models_raw = entry.get("models")
-        models_cfg: Dict[str, Any] = models_raw if isinstance(models_raw, dict) else {}
-        per_model_raw = models_cfg.get(model)
-        per_model: Dict[str, Any] = per_model_raw if isinstance(per_model_raw, dict) else {}
-        coerced = _coerce_capability_bool(per_model.get("supports_vision"))
-        if coerced is not None:
-            return coerced
+        configured = _scan_configured_models_for_vision(entry.get("models"), model)
+        if configured is not None:
+            return configured
 
     # 2b. Legacy list-style custom_providers. Entries are dicts with a
     # "name" key and a nested "models" dict. Match by provider name (which
@@ -240,13 +236,9 @@ def _supports_vision_override(
             entry_name = str(entry_raw.get("name") or "").strip()
             if entry_name not in candidate_names:
                 continue
-            models_raw = entry_raw.get("models")
-            models_cfg = models_raw if isinstance(models_raw, dict) else {}
-            per_model_raw = models_cfg.get(model)
-            per_model = per_model_raw if isinstance(per_model_raw, dict) else {}
-            coerced = _coerce_capability_bool(per_model.get("supports_vision"))
-            if coerced is not None:
-                return coerced
+            configured = _scan_configured_models_for_vision(entry_raw.get("models"), model)
+            if configured is not None:
+                return configured
 
     return None
 
@@ -313,6 +305,136 @@ def _lookup_supports_vision(
     return bool(caps.supports_vision)
 
 
+def _model_slug_matches(entry: Dict[str, Any], model: str) -> bool:
+    """Best-effort match for model entries in user config."""
+    wanted = str(model or "").strip()
+    if not wanted:
+        return False
+    candidates = [
+        entry.get("id"),
+        entry.get("model"),
+        entry.get("name"),
+        entry.get("slug"),
+    ]
+    return any(str(c or "").strip() == wanted for c in candidates)
+
+
+def _entry_declares_image_input(entry: Dict[str, Any]) -> Optional[bool]:
+    """Read per-model image input support from config metadata.
+
+    Supports both the user's compact shape:
+      {"id": "gpt-5.5", "input": ["text", "image"]}
+
+    and models.dev-style metadata:
+      {"modalities": {"input": ["text", "image"]}}
+    """
+    if not isinstance(entry, dict):
+        return None
+
+    raw_input = entry.get("input")
+    if raw_input is None:
+        modalities = entry.get("modalities")
+        if isinstance(modalities, dict):
+            raw_input = modalities.get("input")
+
+    if raw_input is None:
+        return None
+    if isinstance(raw_input, str):
+        values = {raw_input.lower()}
+    elif isinstance(raw_input, (list, tuple, set)):
+        values = {str(v).lower() for v in raw_input}
+    else:
+        return None
+
+    if "image" in values or "vision" in values:
+        return True
+    if values and all(v not in {"image", "vision"} for v in values):
+        return False
+    return None
+
+
+def _lookup_configured_model_supports_vision(
+    provider: str,
+    model: str,
+    cfg: Optional[Dict[str, Any]],
+) -> Optional[bool]:
+    """Resolve vision support from user-defined provider metadata.
+
+    This covers custom OpenAI-compatible providers whose models are not in
+    models.dev yet. We only trust explicit per-model metadata; absent metadata
+    returns None so the normal safe fallback remains text mode.
+    """
+    if not isinstance(cfg, dict) or not provider or not model:
+        return None
+
+    provider_keys = {str(provider).strip().lower()}
+
+    providers = cfg.get("providers")
+    if isinstance(providers, dict):
+        provider_cfg = providers.get(provider)
+        if provider_cfg is None:
+            for key, value in providers.items():
+                if str(key).strip().lower() in provider_keys:
+                    provider_cfg = value
+                    break
+        if isinstance(provider_cfg, dict):
+            result = _scan_configured_models_for_vision(provider_cfg.get("models"), model)
+            if result is not None:
+                return result
+
+    custom_providers = cfg.get("custom_providers")
+    if isinstance(custom_providers, list):
+        for cp in custom_providers:
+            if not isinstance(cp, dict):
+                continue
+            names = {
+                str(cp.get("provider") or "").strip().lower(),
+                str(cp.get("slug") or "").strip().lower(),
+                str(cp.get("name") or "").strip().lower(),
+            }
+            if provider_keys.isdisjoint(names):
+                continue
+            result = _scan_configured_models_for_vision(cp.get("models"), model)
+            if result is not None:
+                return result
+
+    return None
+
+
+def _scan_configured_models_for_vision(models: Any, model: str) -> Optional[bool]:
+    if isinstance(models, dict):
+        # Supports either {"gpt-5.5": {...}} or {"gpt-5.5": ["text", "image"]}.
+        per_model = models.get(model)
+        if isinstance(per_model, dict):
+            explicit = _coerce_capability_bool(per_model.get("supports_vision"))
+            if explicit is not None:
+                return explicit
+            return _entry_declares_image_input({"id": model, **per_model})
+        if per_model is not None:
+            return _entry_declares_image_input({"id": model, "input": per_model})
+        for key, value in models.items():
+            entry = {"id": key, **value} if isinstance(value, dict) else {"id": key, "input": value}
+            if not _model_slug_matches(entry, model):
+                continue
+            explicit = _coerce_capability_bool(entry.get("supports_vision"))
+            if explicit is not None:
+                return explicit
+            return _entry_declares_image_input(entry)
+        return None
+
+    if isinstance(models, list):
+        for entry in models:
+            if isinstance(entry, str):
+                continue
+            if not isinstance(entry, dict) or not _model_slug_matches(entry, model):
+                continue
+            explicit = _coerce_capability_bool(entry.get("supports_vision"))
+            if explicit is not None:
+                return explicit
+            return _entry_declares_image_input(entry)
+    return None
+
+
 def decide_image_input_mode(
     provider: str,
     model: str,
@@ -342,6 +464,12 @@ def decide_image_input_mode(
 
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
+        return "native"
+    if supports is False:
+        return "text"
+
+    configured_supports = _lookup_configured_model_supports_vision(provider, model, cfg)
+    if configured_supports is True:
         return "native"
     return "text"
 

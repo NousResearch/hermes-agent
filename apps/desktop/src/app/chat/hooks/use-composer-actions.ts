@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 
-import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
+import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
+import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
@@ -33,7 +34,7 @@ function blobExtension(blob: Blob): string {
   return (mime && BLOB_MIME_EXTENSION[mime]) || '.png'
 }
 
-function isImagePath(filePath: string): boolean {
+export function isImagePath(filePath: string): boolean {
   return IMAGE_EXTENSION_PATTERN.test(filePath)
 }
 
@@ -181,6 +182,35 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
   return result
 }
 
+/**
+ * Split dropped entries by origin. OS/Finder drops carry a native `File`
+ * handle; in-app drags (project tree, gutter line refs) are path-only.
+ *
+ * The distinction is load-bearing: an in-app path is workspace-relative and
+ * resolves on the gateway as-is, so it stays an inline `@file:`/`@line:` ref.
+ * An OS drop is an absolute path on *this* machine — the gateway can't read it
+ * in remote mode, and an image needs its bytes uploaded to get vision either
+ * way. So OS drops must go through the attachment/upload pipeline rather than
+ * leaking a local path into the prompt text.
+ */
+export function partitionDroppedFiles(candidates: DroppedFile[]): {
+  osDrops: DroppedFile[]
+  inAppRefs: DroppedFile[]
+} {
+  const osDrops: DroppedFile[] = []
+  const inAppRefs: DroppedFile[] = []
+
+  for (const candidate of candidates) {
+    if (candidate.file) {
+      osDrops.push(candidate)
+    } else {
+      inAppRefs.push(candidate)
+    }
+  }
+
+  return { osDrops, inAppRefs }
+}
+
 interface ComposerActionsOptions {
   activeSessionId: string | null
   currentCwd: string
@@ -253,6 +283,26 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
           path
         })
       }
+    },
+    [currentCwd]
+  )
+
+  const insertContextPathInlineRef = useCallback(
+    (path: string, isDirectory = false) => {
+      if (!path) {
+        return false
+      }
+
+      const ref = droppedFileInlineRef({ isDirectory, path }, currentCwd)
+
+      if (!ref) {
+        return false
+      }
+
+      requestComposerInsertRefs([ref])
+      requestComposerFocus('main')
+
+      return true
     },
     [currentCwd]
   )
@@ -517,6 +567,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     attachDroppedItems,
     attachImageBlob,
     attachImagePath,
+    insertContextPathInlineRef,
     pasteClipboardImage,
     pickContextPaths,
     pickImages,

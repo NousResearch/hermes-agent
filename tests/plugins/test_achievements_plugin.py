@@ -376,3 +376,34 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
         "partial scans must not record unlock timestamps — a later session "
         "could change whether the badge deserves to be unlocked yet"
     )
+
+
+def test_full_scans_persist_lifetime_aggregate_monotonically(plugin_api):
+    """Lifetime achievement progress must not regress when old sessions are pruned.
+
+    A full scan with high historical totals should seed state.json. A later full
+    scan over fewer remaining sessions should still evaluate achievements using
+    the higher persisted aggregate.
+    """
+    plugin_api.save_state({"unlocks": {}})
+
+    high_scan = {
+        "sessions": [{"session_id": "old", "title": "old", "tool_call_count": 5000}],
+        "aggregate": {"session_count": 500, "total_tool_calls": 5000, "max_tool_calls_in_session": 200},
+        "scan_meta": {"mode": "full"},
+    }
+    high = plugin_api._compute_from_scan(high_scan, is_partial=False)
+
+    assert high["aggregate"]["total_tool_calls"] == 5000
+    assert plugin_api.load_state()["lifetime_aggregate"]["total_tool_calls"] == 5000
+
+    low_scan = {
+        "sessions": [{"session_id": "new", "title": "new", "tool_call_count": 1}],
+        "aggregate": {"session_count": 1, "total_tool_calls": 1, "max_tool_calls_in_session": 1},
+        "scan_meta": {"mode": "full"},
+    }
+    low = plugin_api._compute_from_scan(low_scan, is_partial=False)
+
+    assert low["aggregate"]["total_tool_calls"] == 5000
+    assert low["aggregate"]["session_count"] == 500
+    assert plugin_api.load_state()["lifetime_aggregate"]["total_tool_calls"] == 5000

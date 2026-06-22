@@ -763,6 +763,28 @@ def evaluate_definition(definition: Dict[str, Any], aggregate: Dict[str, Any]) -
     return evaluate_boolean(definition, aggregate)
 
 
+def _merge_lifetime_aggregate(state: Dict[str, Any], scanned: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist achievement aggregate counters monotonically.
+
+    Session rows are operational history and can be pruned. Achievement
+    progress is lifetime state, so numeric aggregate counters should never
+    decrease just because old sessions disappeared from state.db.
+    """
+    persisted = state.setdefault("lifetime_aggregate", {})
+    merged: Dict[str, Any] = {}
+    for key in set(persisted) | set(scanned):
+        old = persisted.get(key)
+        new = scanned.get(key)
+        if isinstance(old, (int, float)) or isinstance(new, (int, float)):
+            merged[key] = max(int(old or 0), int(new or 0))
+        elif new is not None:
+            merged[key] = new
+        else:
+            merged[key] = old
+    state["lifetime_aggregate"] = dict(merged)
+    return merged
+
+
 def evidence_for(definition: Dict[str, Any], sessions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not sessions:
         return None
@@ -794,8 +816,11 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
     """
     aggregate = scan.get("aggregate", {})
     state = load_state() if not is_partial else {"unlocks": {}}
+    if not is_partial:
+        aggregate = _merge_lifetime_aggregate(state, aggregate)
     unlocks = state.setdefault("unlocks", {})
     now = int(time.time())
+
     evaluated = []
     for definition in ACHIEVEMENTS:
         result = evaluate_definition(definition, aggregate)
@@ -1059,3 +1084,4 @@ async def reset_state():
     except Exception:
         pass
     return {"ok": True}
+

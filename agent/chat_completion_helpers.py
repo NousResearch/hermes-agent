@@ -1197,6 +1197,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_api_mode = "bedrock_converse"
 
         old_model = agent.model
+        fallback_reasoning = None
+        fallback_reasoning_effort = str(
+            fb.get("reasoning_effort") or fb.get("reasoning") or fb.get("effort") or ""
+        ).strip()
+        if fallback_reasoning_effort:
+            from hermes_constants import parse_reasoning_effort
+
+            fallback_reasoning = parse_reasoning_effort(fallback_reasoning_effort)
+            if fallback_reasoning is None:
+                logger.warning(
+                    "Ignoring unknown fallback reasoning_effort %r for %s/%s",
+                    fallback_reasoning_effort,
+                    fb_provider,
+                    fb_model,
+                )
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -1206,6 +1221,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.provider = fb_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
+        if fallback_reasoning is not None:
+            agent.reasoning_config = fallback_reasoning
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True

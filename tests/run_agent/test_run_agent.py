@@ -5693,6 +5693,27 @@ class TestFallbackAnthropicProvider:
         assert agent.api_mode == "chat_completions"
         assert agent.client is mock_client
 
+    def test_fallback_entry_can_override_reasoning_effort(self, agent):
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        agent._fallback_activated = False
+        agent._fallback_model = {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4",
+            "reasoning_effort": "medium",
+        }
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://openrouter.ai/api/v1"
+        mock_client.api_key = "sk-or-test"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
+
 
 def test_aiagent_uses_copilot_acp_client():
     with (

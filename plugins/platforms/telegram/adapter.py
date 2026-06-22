@@ -79,7 +79,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
-    SUPPORTED_DOCUMENT_TYPES,
+    resolve_document_type_policy,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
     _TEXT_INJECT_EXTENSIONS,
     utf16_len,
@@ -5855,7 +5855,13 @@ class TelegramAdapter(BasePlatformAdapter):
             data = bytes(await file_obj.download_as_bytearray())
             if not filename:
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
-            cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
+            cached = cache_media_bytes(
+                data,
+                filename=filename,
+                mime_type=mime,
+                default_kind=kind,
+                document_type_config=self.config.extra,
+            )
         except Exception as exc:
             logger.warning("[Telegram] Failed to cache observed group media: %s", exc, exc_info=True)
             return
@@ -5903,7 +5909,13 @@ class TelegramAdapter(BasePlatformAdapter):
             data = bytes(await file_obj.download_as_bytearray())
             if not filename:
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
-            cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
+            cached = cache_media_bytes(
+                data,
+                filename=filename,
+                mime_type=mime,
+                default_kind=kind,
+                document_type_config=self.config.extra,
+            )
         except Exception as exc:
             logger.warning("[Telegram] Failed to cache replied-to media: %s", exc, exc_info=True)
             return
@@ -6451,11 +6463,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 # uppercase like "IMAGE/PNG").
                 doc_mime = (doc.mime_type or "").lower()
 
+                document_types, removed_document_types, allow_unknown_documents = resolve_document_type_policy(self.config.extra)
+
                 # If no extension from filename, reverse-lookup from MIME type
                 if not ext and doc_mime:
                     ext = _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, "")
                     if not ext:
-                        mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                        mime_to_ext = {v: k for k, v in document_types.items()}
                         ext = mime_to_ext.get(doc_mime, "")
 
                 # Check file size early so image documents cannot bypass the
@@ -6530,15 +6544,26 @@ class TelegramAdapter(BasePlatformAdapter):
                 # ext-in-SUPPORTED_IMAGE_DOCUMENT_TYPES branch would be dead
                 # code — the extension sets are identical.
 
-                # Download and cache. Any file type is accepted — authorization
-                # to message the agent is the gate, not the file extension.
-                # Known types keep their precise MIME; unknown types are tagged
-                # application/octet-stream so the agent reaches for terminal tools.
+                in_allowlist = ext in document_types
+                if ext in removed_document_types or (not allow_unknown_documents and not in_allowlist):
+                    supported_list = ", ".join(sorted(document_types.keys()))
+                    event.text = (
+                        f"Unsupported document type: {ext or doc_mime or 'unknown'}. "
+                        f"Supported document types: {supported_list}."
+                    )
+                    logger.info("[Telegram] Unsupported document type: %s (%s)", original_filename, ext or doc_mime)
+                    await self.handle_message(event)
+                    return
+
+                # Download and cache. Unknown file types are accepted by default
+                # and surfaced to the agent as cached local paths; known types
+                # keep their configured MIME. Operators can opt into strict
+                # allowlist behavior with document_types.allow_unknown: false.
                 file_obj = await doc.get_file()
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
                 cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext or '.bin'}")
-                mime_type = SUPPORTED_DOCUMENT_TYPES.get(ext) or doc.mime_type or "application/octet-stream"
+                mime_type = document_types.get(ext) or doc.mime_type or "application/octet-stream"
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
                 logger.info("[Telegram] Cached user document at %s (%s)", cached_path, mime_type)

@@ -44,7 +44,7 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
-    SUPPORTED_DOCUMENT_TYPES,
+    resolve_document_type_policy,
     SUPPORTED_VIDEO_TYPES,
     _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy,
@@ -2692,19 +2692,28 @@ class SlackAdapter(BasePlatformAdapter):
                         _, ext = os.path.splitext(original_filename)
                         ext = ext.lower()
 
+                    document_types, removed_document_types, allow_unknown_documents = resolve_document_type_policy(self.config.extra)
+
                     # Fallback: reverse-lookup from MIME type
                     if not ext and mimetype:
                         mime_to_ext = {
-                            v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()
+                            v: k for k, v in document_types.items()
                         }
                         ext = mime_to_ext.get(mimetype, "")
 
-                    # Any file type is accepted — authorization to message the
-                    # agent is the gate, not the file extension. Known types keep
-                    # their precise MIME; unknown types fall back to the source
-                    # mimetype or octet-stream so the agent reaches for terminal
-                    # tools.
-                    in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
+                    in_allowlist = ext in document_types
+                    if ext in removed_document_types or (not allow_unknown_documents and not in_allowlist):
+                        logger.warning(
+                            "[Slack] Unsupported document type, skipping: %s (%s)",
+                            original_filename,
+                            ext or mimetype,
+                        )
+                        continue
+
+                    # Unknown file types are accepted by default and surfaced to
+                    # the agent as cached local paths; known types keep their
+                    # configured MIME. Operators can opt into strict allowlist
+                    # behavior with document_types.allow_unknown: false.
 
                     # Check file size (Slack limit: 20 MB for bots)
                     file_size = f.get("size", 0)
@@ -2723,7 +2732,7 @@ class SlackAdapter(BasePlatformAdapter):
                         raw_bytes, original_filename or f"document{ext or '.bin'}"
                     )
                     if in_allowlist:
-                        doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                        doc_mime = document_types[ext]
                     else:
                         doc_mime = mimetype or "application/octet-stream"
                     media_urls.append(cached_path)

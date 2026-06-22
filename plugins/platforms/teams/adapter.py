@@ -908,7 +908,12 @@ class TeamsAdapter(BasePlatformAdapter):
                 filename = att_name or (f"document.{file_type}" if file_type else "document")
                 try:
                     data = await self._fetch_attachment_bytes(download_url)
-                    cached = cache_media_bytes(data, filename=filename, mime_type="")
+                    cached = cache_media_bytes(
+                        data,
+                        filename=filename,
+                        mime_type="",
+                        document_type_config=self.config.extra,
+                    )
                     if cached:
                         media_urls.append(cached.path)
                         media_types.append(cached.media_type)
@@ -938,7 +943,10 @@ class TeamsAdapter(BasePlatformAdapter):
                 try:
                     data = await self._fetch_attachment_bytes(content_url)
                     cached = cache_media_bytes(
-                        data, filename=att_name, mime_type=content_type
+                        data,
+                        filename=att_name,
+                        mime_type=content_type,
+                        document_type_config=self.config.extra,
                     )
                     if cached:
                         media_urls.append(cached.path)

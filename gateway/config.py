@@ -546,6 +546,10 @@ class GatewayConfig:
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
+    # Shared document attachment allowlist overrides. Shape:
+    # gateway.document_types: {add: {".foo": "application/x-foo"}, remove: [".bar"]}.
+    document_types: Dict[str, Any] = field(default_factory=dict)
+
     # Session store pruning: drop SessionEntry records older than this many
     # days from the in-memory dict and sessions.json.  Keeps the store from
     # growing unbounded in gateways serving many chats/threads/users over
@@ -656,6 +660,7 @@ class GatewayConfig:
             "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "document_types": self.document_types,
             "session_store_max_age_days": self.session_store_max_age_days,
         }
     
@@ -701,6 +706,11 @@ class GatewayConfig:
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         multiplex_profiles = data.get("multiplex_profiles")
         nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
+        document_types = nested_gateway.get("document_types") if isinstance(nested_gateway, dict) else None
+        if "document_types" in data:
+            document_types = data.get("document_types")
+        if not isinstance(document_types, dict):
+            document_types = {}
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
@@ -745,6 +755,7 @@ class GatewayConfig:
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            document_types=document_types,
             session_store_max_age_days=session_store_max_age_days,
         )
 
@@ -856,6 +867,10 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
 
             gateway_section = yaml_cfg.get("gateway")
+            if isinstance(gateway_section, dict) and "document_types" in gateway_section:
+                gw_data["document_types"] = gateway_section["document_types"]
+            if "document_types" in yaml_cfg:
+                gw_data["document_types"] = yaml_cfg["document_types"]
             if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:
                 gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
 
@@ -1023,6 +1038,8 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "document_types" in platform_cfg:
+                    bridged["document_types"] = platform_cfg["document_types"]
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue
@@ -1140,11 +1157,22 @@ def load_gateway_config() -> GatewayConfig:
 
     # Override with environment variables
     _apply_env_overrides(config)
+    _propagate_document_type_config(config)
     
     # --- Validate loaded values ---
     _validate_gateway_config(config)
 
     return config
+
+
+def _propagate_document_type_config(config: "GatewayConfig") -> None:
+    """Attach shared gateway.document_types config to every platform extra dict."""
+    if not config.document_types:
+        return
+    for pconfig in config.platforms.values():
+        if not isinstance(pconfig.extra, dict):
+            pconfig.extra = {}
+        pconfig.extra.setdefault("_global_document_types", config.document_types)
 
 
 def _validate_gateway_config(config: "GatewayConfig") -> None:

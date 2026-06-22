@@ -2493,12 +2493,23 @@ DEFAULT_CONFIG = {
         # adapter. ``0`` disables the cap. Default 128 MiB.
         "max_inbound_media_bytes": 134217728,
 
+        # Inbound document attachment allowlist overrides. Built-in safe
+        # defaults live in gateway/platforms/base.py; this config lets operators
+        # add or remove extensions without editing Python code. Platform blocks
+        # may also define document_types to override this shared setting.
+        # Example:
+        #   add: {".epub": "application/epub+zip", ".foo": "text/plain"}
+        #   remove: [".doc"]
+        "document_types": {
+            "add": {},
+            "remove": [],
+        },
+
         # When false (default), any file path the agent emits is delivered
         # as a native attachment as long as it isn't under the credential /
         # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
-        # auth.json, etc.). This matches the symmetry of inbound delivery
-        # — we accept any document type the user uploads, and the agent
-        # can hand back any file that isn't a credential.
+        # auth.json, etc.). This is the outbound delivery policy; inbound
+        # uploads are still governed by the document_types allowlist above.
         #
         # When true, fall back to the older allowlist+recency-window
         # behavior: files must live under the Hermes cache, under

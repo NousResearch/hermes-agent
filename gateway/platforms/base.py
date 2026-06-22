@@ -9,6 +9,7 @@ import asyncio
 import inspect
 import ipaddress
 import logging
+import mimetypes
 import os
 import random
 import re
@@ -1248,6 +1249,176 @@ SUPPORTED_DOCUMENT_TYPES = {
 }
 
 
+def _normalize_document_extension(ext: Any) -> str:
+    """Return a safe, lowercase extension (including leading dot) or ''."""
+    ext = str(ext or "").strip().lower()
+    if not ext:
+        return ""
+    if not ext.startswith("."):
+        ext = f".{ext}"
+    if ext == "." or any(ch.isspace() for ch in ext) or "/" in ext or "\\" in ext:
+        return ""
+    return ext
+
+
+def _normalize_document_mime(ext: str, mime: Any) -> str:
+    """Return configured MIME, or a safe guess/fallback for extension-only config."""
+    if isinstance(mime, str) and mime.strip():
+        return mime.strip().lower()
+    guessed, _encoding = mimetypes.guess_type(f"file{ext}")
+    return guessed or "application/octet-stream"
+
+
+def _iter_document_type_additions(raw: Any):
+    if not raw:
+        return
+    if isinstance(raw, dict):
+        add = raw.get("add")
+        if add is not None:
+            yield from _iter_document_type_additions(add)
+            return
+        for ext, mime in raw.items():
+            if ext == "remove":
+                continue
+            yield ext, mime
+        return
+    if isinstance(raw, (list, tuple, set)):
+        for item in raw:
+            if isinstance(item, dict):
+                if "extension" in item or "ext" in item:
+                    yield item.get("extension", item.get("ext")), item.get("mime", item.get("mime_type"))
+                elif len(item) == 1:
+                    yield from item.items()
+            elif isinstance(item, str):
+                if "=" in item:
+                    ext, mime = item.split("=", 1)
+                elif ":" in item:
+                    ext, mime = item.split(":", 1)
+                else:
+                    ext, mime = item, None
+                yield ext, mime
+        return
+    if isinstance(raw, str):
+        for item in re.split(r"[\n,]+", raw):
+            item = item.strip()
+            if item:
+                yield from _iter_document_type_additions([item])
+
+
+def _iter_document_type_removals(raw: Any):
+    if not raw:
+        return
+    if isinstance(raw, dict):
+        remove = raw.get("remove")
+        if remove is not None:
+            yield from _iter_document_type_removals(remove)
+        return
+    if isinstance(raw, (list, tuple, set)):
+        for item in raw:
+            yield item
+        return
+    if isinstance(raw, str):
+        for item in re.split(r"[\n,]+", raw):
+            item = item.strip()
+            if item:
+                yield item
+
+
+def _coerce_document_type_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _document_types_allow_unknown(raw_config: Any, default: bool) -> bool:
+    if not isinstance(raw_config, dict):
+        return default
+    if "allow_unknown" in raw_config:
+        return _coerce_document_type_bool(raw_config.get("allow_unknown"), default)
+    if "allow_unknown_document_types" in raw_config:
+        return _coerce_document_type_bool(raw_config.get("allow_unknown_document_types"), default)
+    if "strict" in raw_config:
+        return not _coerce_document_type_bool(raw_config.get("strict"), not default)
+    return default
+
+
+def _apply_document_type_config(
+    document_types: dict[str, str],
+    raw_config: Any,
+    removed: Optional[set[str]] = None,
+) -> None:
+    if not raw_config:
+        return
+    for ext, mime in _iter_document_type_additions(raw_config) or []:
+        normalized_ext = _normalize_document_extension(ext)
+        if normalized_ext:
+            document_types[normalized_ext] = _normalize_document_mime(normalized_ext, mime)
+            if removed is not None:
+                removed.discard(normalized_ext)
+    for ext in _iter_document_type_removals(raw_config) or []:
+        normalized_ext = _normalize_document_extension(ext)
+        if normalized_ext:
+            document_types.pop(normalized_ext, None)
+            if removed is not None:
+                removed.add(normalized_ext)
+
+
+def resolve_document_type_policy(
+    config_extra: Optional[dict[str, Any]] = None,
+) -> tuple[dict[str, str], set[str], bool]:
+    """Return effective document types, explicit removals, and unknown-file policy.
+
+    Defaults come from ``SUPPORTED_DOCUMENT_TYPES``. Operators can add/remove
+    extensions and optionally set ``allow_unknown: false`` (or ``strict: true``)
+    to reject files outside the configured allowlist. Unknown files remain
+    accepted by default to preserve the gateway's broad attachment handling;
+    explicit ``remove`` entries are always rejected.
+    """
+    effective = dict(SUPPORTED_DOCUMENT_TYPES)
+    removed: set[str] = set()
+    allow_unknown = True
+    if isinstance(config_extra, dict):
+        for raw_config in (
+            config_extra.get("_global_document_types"),
+            config_extra.get("document_types"),
+        ):
+            allow_unknown = _document_types_allow_unknown(raw_config, allow_unknown)
+            _apply_document_type_config(effective, raw_config, removed)
+    return effective, removed, allow_unknown
+
+
+def resolve_document_types(config_extra: Optional[dict[str, Any]] = None) -> dict[str, str]:
+    """Return the effective known document MIME map after config overrides.
+
+    ```yaml
+    gateway:
+      document_types:
+        add:
+          .epub: application/epub+zip
+        remove: [.doc]
+
+    telegram:
+      document_types:
+        add:
+          .foo: text/plain
+    ```
+
+    ``gateway.config.load_gateway_config`` injects shared
+    ``gateway.document_types`` into each platform's ``extra`` as
+    ``_global_document_types``. Platform-local ``document_types`` are applied
+    after the global config so a platform can override the shared policy.
+    """
+    return resolve_document_type_policy(config_extra)[0]
+
+
 # ---------------------------------------------------------------------------
 # Text-injection extension allowlist
 #
@@ -1450,7 +1621,7 @@ class CachedMedia:
         return f"[{self.kind} '{self.display_name}' saved at: {self.path}]"
 
 
-def _resolve_media_ext(filename: str, mime_type: str) -> str:
+def _resolve_media_ext(filename: str, mime_type: str, document_types: Optional[dict[str, str]] = None) -> str:
     """Best-effort file extension from filename, then MIME fallback."""
     if filename:
         ext = os.path.splitext(filename)[1].lower()
@@ -1459,10 +1630,11 @@ def _resolve_media_ext(filename: str, mime_type: str) -> str:
     mime = (mime_type or "").lower()
     if not mime:
         return ""
+    document_types = document_types or resolve_document_types()
     for table in (
         SUPPORTED_IMAGE_DOCUMENT_TYPES,
         SUPPORTED_VIDEO_TYPES,
-        SUPPORTED_DOCUMENT_TYPES,
+        document_types,
     ):
         for ext, m in table.items():
             if m == mime:
@@ -1476,6 +1648,8 @@ def cache_media_bytes(
     filename: str = "",
     mime_type: str = "",
     default_kind: Optional[str] = None,
+    document_types: Optional[dict[str, str]] = None,
+    document_type_config: Optional[dict[str, Any]] = None,
 ) -> Optional[CachedMedia]:
     """Classify and cache raw attachment bytes; return a CachedMedia or None.
 
@@ -1488,7 +1662,13 @@ def cache_media_bytes(
     """
     from tools.credential_files import to_agent_visible_cache_path
 
-    ext = _resolve_media_ext(filename, mime_type)
+    if document_type_config is not None:
+        document_types, removed_document_types, allow_unknown_documents = resolve_document_type_policy(document_type_config)
+    else:
+        document_types = document_types or resolve_document_types()
+        removed_document_types = set()
+        allow_unknown_documents = True
+    ext = _resolve_media_ext(filename, mime_type, document_types)
     mime = (mime_type or "").lower()
     display = re.sub(r"[^\w.\- ]", "_", filename) if filename else (ext.lstrip(".") or "file")
 
@@ -1521,16 +1701,17 @@ def cache_media_bytes(
         return CachedMedia(to_agent_visible_cache_path(path), out_mime, "audio", display)
 
     # Any other file type is cached and surfaced to the agent as a local path
-    # so it can be inspected with terminal / read_file / etc. Authorization to
-    # talk to the agent is the gate that matters — once a user is allowed to
-    # message it, the file-extension allowlist must not silently drop their
-    # uploads. Known extensions keep their precise MIME; everything else is
-    # tagged application/octet-stream (or the caller-supplied MIME) so the
-    # agent knows it's an arbitrary file and reaches for terminal tools.
+    # so it can be inspected with terminal / read_file / etc. Known extensions
+    # keep their configured MIME; unknown extensions remain accepted by default
+    # unless document_types.allow_unknown is false. Explicit remove entries are
+    # always rejected.
+    if ext in removed_document_types or (not allow_unknown_documents and ext not in document_types):
+        return None
+
     fallback_name = filename or (f"document{ext}" if ext else "document.bin")
     path = cache_document_from_bytes(data, fallback_name)
-    if ext in SUPPORTED_DOCUMENT_TYPES:
-        out_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+    if ext in document_types:
+        out_mime = document_types[ext]
     else:
         out_mime = mime if mime else "application/octet-stream"
     return CachedMedia(to_agent_visible_cache_path(path), out_mime, "document", display or fallback_name)

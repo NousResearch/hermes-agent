@@ -278,6 +278,24 @@ class TestIncomingDocumentHandling:
         assert event.message_type == MessageType.DOCUMENT
 
     @pytest.mark.asyncio
+    async def test_configured_custom_document_type_cached(self, adapter):
+        """A document extension added in config should be accepted without allow_any."""
+        adapter.config.extra["document_types"] = {
+            "add": {".epub": "application/epub+zip"}
+        }
+
+        with _mock_aiohttp_download(b"PK\x03\x04 fake epub"):
+            msg = make_message([
+                make_attachment(filename="book.epub", content_type="application/epub+zip")
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["application/epub+zip"]
+        assert event.message_type == MessageType.DOCUMENT
+
+    @pytest.mark.asyncio
     async def test_download_error_handled(self, adapter):
         """If the HTTP download raises, the handler should not crash."""
         resp = AsyncMock()

@@ -1573,6 +1573,31 @@ For separate natural mid-turn assistant updates without progressive token editin
 The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`.
 :::
 
+## Gateway Document Attachment Types
+
+Messaging platforms use a conservative built-in allowlist for inbound document uploads. You can extend or shrink it without editing Hermes source code:
+
+```yaml
+gateway:
+  document_types:
+    add:
+      .epub: application/epub+zip
+      .foo: text/plain
+    remove:
+      - .doc
+```
+
+Platform-specific settings apply after the shared `gateway.document_types` block, so a channel can override the global policy:
+
+```yaml
+telegram:
+  document_types:
+    add:
+      .invoice: application/pdf
+```
+
+Use `add` for extensions that should be accepted and cached as documents. Use `remove` to disable a built-in extension. This is narrower and safer than Discord's `allow_any_attachment`, which bypasses the allowlist entirely.
+
 ## Group Chat Session Isolation
 
 Limit how many chat sessions can actively be open across CLI, TUI/dashboard,

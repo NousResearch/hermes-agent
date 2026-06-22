@@ -134,7 +134,7 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
-    SUPPORTED_DOCUMENT_TYPES,
+    resolve_document_types,
     cache_document_from_bytes,
     cache_image_from_url,
     cache_audio_from_bytes,
@@ -170,7 +170,6 @@ _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incor
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _AUDIO_EXTENSIONS = {".ogg", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".opus", ".webm"}
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".3gp"}
-_DOCUMENT_MIME_TO_EXT = {mime: ext for ext, mime in SUPPORTED_DOCUMENT_TYPES.items()}
 _FEISHU_IMAGE_UPLOAD_TYPE = "message"
 _FEISHU_FILE_UPLOAD_TYPE = "stream"
 _FEISHU_OPUS_UPLOAD_EXTENSIONS = {".ogg", ".opus"}
@@ -3303,10 +3302,11 @@ class FeishuAdapter(BasePlatformAdapter):
         cached_path = cache_document_from_bytes(body, filename)
         return cached_path, filename
 
-    @staticmethod
-    def _guess_remote_extension(url: str, *, default: str) -> str:
+    def _guess_remote_extension(self, url: str, *, default: str) -> str:
         ext = Path((url or "").split("?", 1)[0]).suffix.lower()
-        return ext if ext in (_IMAGE_EXTENSIONS | _AUDIO_EXTENSIONS | _VIDEO_EXTENSIONS | set(SUPPORTED_DOCUMENT_TYPES)) else default
+        document_types = resolve_document_types(self.config.extra)
+        allowed = _IMAGE_EXTENSIONS | _AUDIO_EXTENSIONS | _VIDEO_EXTENSIONS | set(document_types)
+        return ext if ext in allowed else default
 
     @staticmethod
     def _derive_remote_filename(file_url: str, *, content_type: str, default_name: str, default_ext: str) -> str:
@@ -3798,8 +3798,11 @@ class FeishuAdapter(BasePlatformAdapter):
                     logger.info("[Feishu] Cached message video resource at %s", cached_path)
                     return cached_path, media_type
 
-                if not Path(filename).suffix and media_type in _DOCUMENT_MIME_TO_EXT:
-                    filename = f"{filename}{_DOCUMENT_MIME_TO_EXT[media_type]}"
+                document_mime_to_ext = {
+                    mime: ext for ext, mime in resolve_document_types(self.config.extra).items()
+                }
+                if not Path(filename).suffix and media_type in document_mime_to_ext:
+                    filename = f"{filename}{document_mime_to_ext[media_type]}"
                 cached_path = cache_document_from_bytes(raw_bytes, filename)
                 logger.info("[Feishu] Cached message document resource at %s", cached_path)
                 return cached_path, (media_type or self._guess_document_media_type(filename))
@@ -3846,10 +3849,10 @@ class FeishuAdapter(BasePlatformAdapter):
         normalized = (content_type or "").split(";", 1)[0].strip().lower()
         return normalized or default
 
-    @staticmethod
-    def _guess_document_media_type(filename: str) -> str:
+    def _guess_document_media_type(self, filename: str) -> str:
         ext = Path(filename or "").suffix.lower()
-        return SUPPORTED_DOCUMENT_TYPES.get(ext, mimetypes.guess_type(filename or "")[0] or "application/octet-stream")
+        document_types = resolve_document_types(self.config.extra)
+        return document_types.get(ext, mimetypes.guess_type(filename or "")[0] or "application/octet-stream")
 
     @staticmethod
     def _display_name_from_cached_path(path: str) -> str:

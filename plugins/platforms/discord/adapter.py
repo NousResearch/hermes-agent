@@ -115,7 +115,7 @@ from gateway.platforms.base import (
     cache_audio_from_url,
     cache_audio_from_bytes,
     cache_document_from_bytes,
-    SUPPORTED_DOCUMENT_TYPES,
+    resolve_document_type_policy,
     _TEXT_INJECT_EXTENSIONS,
     validate_inbound_media_size,
 )
@@ -4141,12 +4141,11 @@ class DiscordAdapter(BasePlatformAdapter):
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
     def _discord_allow_any_attachment(self) -> bool:
-        """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
+        """Return whether Discord attachments bypass strict document-type policy.
 
-        When True, any uploaded file is cached to disk and surfaced to the
-        agent as a local path so it can be inspected via terminal / read_file
-        / ffprobe / etc. Default False preserves the historical behaviour of
-        dropping unsupported types with a warning log.
+        When True, Discord accepts files even if `document_types.allow_unknown`
+        is disabled. The default remains False; the gateway-level default is to
+        accept unknown attachment types unless operators opt into strict mode.
         """
         configured = self.config.extra.get("allow_any_attachment")
         if configured is not None:
@@ -5392,14 +5391,23 @@ class DiscordAdapter(BasePlatformAdapter):
                 if att.filename:
                     _, ext = os.path.splitext(att.filename)
                     ext = ext.lower()
+                document_types, removed_document_types, allow_unknown_documents = resolve_document_type_policy(self.config.extra)
+                allow_unknown_documents = allow_unknown_documents or self._discord_allow_any_attachment()
                 if not ext and content_type:
-                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                    mime_to_ext = {v: k for k, v in document_types.items()}
                     ext = mime_to_ext.get(content_type, "")
-                in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
-                # Any file type is accepted — authorization to message the agent
-                # is the gate, not the file extension. Known types keep their
-                # precise MIME; unknown types fall back to the source content_type
-                # or octet-stream so the agent reaches for terminal tools.
+                in_allowlist = ext in document_types
+                if ext in removed_document_types or (not allow_unknown_documents and not in_allowlist):
+                    logger.warning(
+                        "[Discord] Unsupported document type, skipping: %s (%s)",
+                        att.filename,
+                        ext or content_type,
+                    )
+                    continue
+                # Unknown file types are accepted by default and surfaced to the
+                # agent as cached local paths; known types keep their configured
+                # MIME. Operators can opt into strict allowlist behavior with
+                # document_types.allow_unknown: false.
                 max_doc_bytes = self._discord_max_attachment_bytes()
                 if max_doc_bytes and att.size and att.size > max_doc_bytes:
                     logger.warning(
@@ -5413,7 +5421,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             raw_bytes, att.filename or f"document{ext or '.bin'}"
                         )
                         if in_allowlist:
-                            doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                            doc_mime = document_types[ext]
                         else:
                             # Untyped file. Use the source content_type if
                             # discord gave us one, otherwise fall back to

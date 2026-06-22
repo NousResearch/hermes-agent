@@ -111,6 +111,7 @@ ROLE_ASSIGNEE_ALIASES: dict[str, str] = {
     "researcher": "brennan",
     "builder": "stark",
     "steward": "pepper",
+    "studio": "taylor",
 }
 
 
@@ -5510,11 +5511,38 @@ _REVIEW_REQUIRED_RECEIPT_KEYS = (
     "commands",
     "diff_path",
     "artifacts",
+    "output_image",
+    "output_images",
+    "image_path",
+    "image_paths",
     "risk_class",
     "review_type",
     "review_kind",
     "requested_verdict",
     "decisions",
+)
+_REVIEW_REQUIRED_VISUAL_OUTPUT_KEYS = frozenset(
+    {
+        "artifact",
+        "artifacts",
+        "output_image",
+        "output_images",
+        "image",
+        "images",
+        "image_path",
+        "image_paths",
+        "preview_image",
+        "preview_images",
+        "contact_sheet",
+        "contact_sheets",
+    }
+)
+_REVIEW_REQUIRED_VISUAL_OUTPUT_RE = re.compile(
+    r"\b(?:ai[-\s]?influencer|comfyui|instantid|identity[-\s]?control|"
+    r"one[-\s]?image|generated\s+image|output\s+image|image\s+(?:smoke|output|artifact|packet|review)|"
+    r"visual\s+(?:qa|review|handoff)|contact\s+sheet|avatar|face\s+family|"
+    r"synthetic\s+(?:brand|reference|image))\b",
+    re.IGNORECASE,
 )
 _REVIEW_REQUIRED_NEGATED_RED_GATE_PATTERNS = (
     re.compile(
@@ -5846,11 +5874,59 @@ def _review_required_has_code_change_receipts(metadata: dict[str, Any]) -> bool:
     return code_receipt_present and test_receipt_present
 
 
+def _review_required_visual_text_fragments(value: Any) -> list[str]:
+    if value in (None, "", [], {}):
+        return []
+    if isinstance(value, dict):
+        fragments: list[str] = []
+        for key, nested in value.items():
+            fragments.append(str(key))
+            fragments.extend(_review_required_visual_text_fragments(nested))
+        return fragments
+    if isinstance(value, (list, tuple, set)):
+        fragments = []
+        for nested in value:
+            fragments.extend(_review_required_visual_text_fragments(nested))
+        return fragments
+    return [str(value)]
+
+
+def _review_required_has_visual_artifact_hint(metadata: dict[str, Any]) -> bool:
+    for item in _review_required_nested_dicts(metadata):
+        for key, value in item.items():
+            normalized_key = str(key).strip().lower()
+            if normalized_key in _REVIEW_REQUIRED_VISUAL_OUTPUT_KEYS and _metadata_list(value):
+                return True
+            if normalized_key.endswith(("_image", "_images", "_image_path", "_image_paths")) and _metadata_list(value):
+                return True
+    return False
+
+
+def _review_required_has_visual_output_review(
+    metadata: dict[str, Any],
+    reason: str,
+    *,
+    source_title: Optional[str] = None,
+    source_body: Optional[str] = None,
+) -> bool:
+    if not _review_required_has_visual_artifact_hint(metadata):
+        return False
+    text = "\n".join(
+        fragment
+        for fragment in [reason or "", source_title or "", source_body or ""]
+        + _review_required_visual_text_fragments(metadata)
+        if fragment
+    )
+    return bool(_REVIEW_REQUIRED_VISUAL_OUTPUT_RE.search(text))
+
+
 def _review_required_route(
     metadata: dict[str, Any],
     reason: str,
     comment_metadata: Optional[dict[str, Any]] = None,
     source_assignee: Optional[str] = None,
+    source_title: Optional[str] = None,
+    source_body: Optional[str] = None,
 ) -> _ReviewRequiredRoute:
     comment_metadata = comment_metadata or {}
     effective_metadata = {**comment_metadata, **metadata}
@@ -5869,6 +5945,19 @@ def _review_required_route(
     explicit = _review_required_owner_from_text(reason)
     if explicit:
         return _ReviewRequiredRoute(_canonical_assignee(explicit) or explicit, "explicit-reason")
+    if (
+        not _review_required_has_code_change_receipts(effective_metadata)
+        and _review_required_has_visual_output_review(
+            effective_metadata,
+            reason,
+            source_title=source_title,
+            source_body=source_body,
+        )
+    ):
+        return _ReviewRequiredRoute(
+            _canonical_assignee("studio") or "taylor",
+            "visual-output-review",
+        )
     if (
         _canonical_assignee(source_assignee) in {"builder", "stark"}
         and _review_required_has_code_change_receipts(effective_metadata)
@@ -5949,6 +6038,8 @@ def _create_review_required_successor(
         reason,
         comment_metadata,
         source_assignee=row["task_assignee"],
+        source_title=row["task_title"],
+        source_body=row["task_body"],
     )
     title = f"Review required: {row['task_title'] or source_id}"
     if route.triage:

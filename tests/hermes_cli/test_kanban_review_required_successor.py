@@ -147,6 +147,63 @@ def test_review_required_missing_owner_routes_to_default_triage_not_researcher_g
         assert "Selected reviewer assignee: default (router-triage)" in successor["body"]
 
 
+def test_ai_influencer_visual_output_without_owner_routes_to_taylor_not_default_triage(
+    kanban_home: Path,
+) -> None:
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Build real identity-control workflow for American cheer/gymnast Nia reset",
+            body=(
+                "AI Influencer / Nia ComfyUI InstantID identity-control smoke: "
+                "review the one generated image before accepting the reset."
+            ),
+            assignee="builder",
+            tenant="molly-v2-working-system",
+        )
+        _block_review_required(
+            conn,
+            source,
+            reason=(
+                "review-required: one-image InstantID smoke completed on Jarvis; "
+                "output is adult blonde/light-brown collegiate fitness lane but "
+                "soft/low-res, needs human decision before accepting identity reset."
+            ),
+            metadata={
+                "output_image": "/Volumes/Jarvis/Molly/content/ai-influencer/03-generations/nia.png",
+                "artifacts": [
+                    "/Volumes/Jarvis/Molly/content/ai-influencer/03-generations/nia.png"
+                ],
+                "accepted_scope": "identity-control path smoke only, not final avatar",
+            },
+        )
+
+        result = kb.scan_liveness(conn)
+
+        assert result.created_review_required_successors == [source]
+        successor = _only_successor(conn, source)
+        assert successor["title"] == "Review required: Build real identity-control workflow for American cheer/gymnast Nia reset"
+        assert successor["assignee"] == "taylor"
+        assert successor["status"] == "ready"
+        assert "No explicit review owner was inferable" not in successor["body"]
+        assert "Selected reviewer assignee: taylor (visual-output-review)" in successor["body"]
+
+
+def test_explicit_studio_review_owner_canonicalizes_to_taylor(
+    kanban_home: Path,
+) -> None:
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="Studio-routed image review", assignee="builder")
+        _block_review_required(conn, source, metadata={"review_assignee": "studio"})
+
+        result = kb.scan_liveness(conn)
+
+        assert result.created_review_required_successors == [source]
+        successor = _only_successor(conn, source)
+        assert successor["assignee"] == "taylor"
+        assert "Selected reviewer assignee: taylor (explicit-metadata)" in successor["body"]
+
+
 def test_review_required_successor_creation_is_idempotent(kanban_home: Path) -> None:
     with kb.connect() as conn:
         source = kb.create_task(conn, title="Idempotent review", assignee="builder")

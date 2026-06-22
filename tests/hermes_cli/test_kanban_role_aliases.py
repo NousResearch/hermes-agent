@@ -28,11 +28,13 @@ def test_create_task_canonicalizes_legacy_role_assignee_aliases(kanban_home: Pat
         researcher_id = kb.create_task(conn, title="research lane", assignee="researcher")
         builder_id = kb.create_task(conn, title="build lane", assignee="builder")
         steward_id = kb.create_task(conn, title="steward lane", assignee="steward")
+        studio_id = kb.create_task(conn, title="studio lane", assignee="studio")
 
         assert kb.get_task(conn, operator_id).assignee == "winston"
         assert kb.get_task(conn, researcher_id).assignee == "brennan"
         assert kb.get_task(conn, builder_id).assignee == "stark"
         assert kb.get_task(conn, steward_id).assignee == "pepper"
+        assert kb.get_task(conn, studio_id).assignee == "taylor"
 
 
 def test_create_task_canonicalizes_legacy_role_assignee_aliases_even_when_legacy_profile_exists(

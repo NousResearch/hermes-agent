@@ -684,8 +684,7 @@ def write_artifacts(out_dir: Path, *, context: str, manifest: Dict[str, Any], re
 
 def post_or_update_summary_comment(ref: PullRequestRef, body: str) -> Dict[str, Any]:
     """Create or update the persistent PR summary comment identified by marker."""
-    current_user = run_gh_json(["api", "user", "--jq", ".login"], timeout=60)
-    current_login = str(current_user or "")
+    current_login = run_gh(["api", "user", "--jq", ".login"], timeout=60).strip()
     comments = run_gh_paginated_json([
         "api",
         f"repos/{ref.full_name}/issues/{ref.number}/comments",

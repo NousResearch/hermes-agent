@@ -278,10 +278,14 @@ def test_post_or_update_summary_comment_updates_existing_without_duplicate(monke
     ref = core.PullRequestRef("owner", "repo", 7)
     body = f"{core.SUMMARY_COMMENT_MARKER}\n## Hermes PR Review\nnew"
 
-    def fake_run_gh_json(args, timeout=120):
+    def fake_run_gh(args, input_text=None, timeout=120):
         calls.append(args)
         if args == ["api", "user", "--jq", ".login"]:
-            return "hermes-bot"
+            return "hermes-bot\n"
+        raise AssertionError(f"unexpected gh call: {args}")
+
+    def fake_run_gh_json(args, timeout=120):
+        calls.append(args)
         if args[:2] == ["api", "repos/owner/repo/issues/comments/123"]:
             return {"id": 123, "body": body, "html_url": "new-url"}
         raise AssertionError(f"unexpected gh api call: {args}")
@@ -299,6 +303,7 @@ def test_post_or_update_summary_comment_updates_existing_without_duplicate(monke
             ]
         raise AssertionError(f"unexpected paginated gh api call: {args}")
 
+    monkeypatch.setattr(core, "run_gh", fake_run_gh)
     monkeypatch.setattr(core, "run_gh_json", fake_run_gh_json)
     monkeypatch.setattr(core, "run_gh_paginated_json", fake_run_gh_paginated_json)
 
@@ -314,10 +319,14 @@ def test_post_or_update_summary_comment_ignores_marker_from_other_author(monkeyp
     ref = core.PullRequestRef("owner", "repo", 7)
     body = f"{core.SUMMARY_COMMENT_MARKER}\n## Hermes PR Review\nnew"
 
-    def fake_run_gh_json(args, timeout=120):
+    def fake_run_gh(args, input_text=None, timeout=120):
         calls.append(args)
         if args == ["api", "user", "--jq", ".login"]:
-            return "hermes-bot"
+            return "hermes-bot\n"
+        raise AssertionError(f"unexpected gh call: {args}")
+
+    def fake_run_gh_json(args, timeout=120):
+        calls.append(args)
         if args[:2] == ["api", "repos/owner/repo/issues/7/comments"] and "POST" in args:
             return {"id": 456, "body": body, "html_url": "created-url"}
         raise AssertionError(f"unexpected gh api call: {args}")
@@ -335,6 +344,7 @@ def test_post_or_update_summary_comment_ignores_marker_from_other_author(monkeyp
             ]
         raise AssertionError(f"unexpected paginated gh api call: {args}")
 
+    monkeypatch.setattr(core, "run_gh", fake_run_gh)
     monkeypatch.setattr(core, "run_gh_json", fake_run_gh_json)
     monkeypatch.setattr(core, "run_gh_paginated_json", fake_run_gh_paginated_json)
 

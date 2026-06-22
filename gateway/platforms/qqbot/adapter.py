@@ -1378,7 +1378,13 @@ class QQAdapter(BasePlatformAdapter):
                     if group_openid not in self._group_context_cache:
                         self._group_context_cache[group_openid] = []
                     self._group_context_cache[group_openid].append(msg_line)
-                    self._group_context_cache[group_openid] = self._group_context_cache[group_openid][-50:]
+                    history_limit = 100
+                    if isinstance(group_cfg, dict) and "historyLimit" in group_cfg:
+                        try:
+                            history_limit = int(group_cfg["historyLimit"])
+                        except (ValueError, TypeError):
+                            pass
+                    self._group_context_cache[group_openid] = self._group_context_cache[group_openid][-history_limit:]
                     return
 
         # Fetch and attach context for mention events

@@ -86,6 +86,28 @@ class TestPreflightDeferral:
 
         assert compressor.should_defer_preflight_to_real_usage(93_000) is False
 
+    def test_defers_immediately_after_compaction_with_stale_real_prompt(self, compressor):
+        """#36718: right after a compaction, last_real_prompt_tokens still holds
+        the stale pre-compression value (above threshold). The awaiting flag
+        must force deferral so preflight doesn't fire a SECOND compaction before
+        real post-compaction usage arrives."""
+        compressor.threshold_tokens = 85_000
+        # Stale pre-compression value — would hit the `>= threshold => False`
+        # short-circuit and defeat deferral without the flag guard.
+        compressor.last_real_prompt_tokens = 120_000
+        compressor.awaiting_real_usage_after_compression = True
+        assert compressor.should_defer_preflight_to_real_usage(95_000) is True
+
+    def test_resumes_normal_deferral_after_flag_cleared(self, compressor):
+        """Once update_from_response() clears the flag, the normal baseline/
+        growth deferral logic governs again (no permanent deferral)."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 120_000
+        compressor.awaiting_real_usage_after_compression = False
+        # Stale-high real prompt with the flag cleared => the >= threshold
+        # short-circuit applies => no deferral.
+        assert compressor.should_defer_preflight_to_real_usage(95_000) is False
+
 
 
 class TestCompress:

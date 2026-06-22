@@ -878,6 +878,18 @@ class ContextCompressor(ContextEngine):
         """
         if rough_tokens < self.threshold_tokens:
             return False
+        # Immediately after a compaction the post-compression path sets
+        # ``awaiting_real_usage_after_compression`` and parks
+        # ``last_prompt_tokens = -1``, but ``last_real_prompt_tokens`` still
+        # holds the STALE pre-compression value (above threshold — that's why
+        # compaction fired).  Without this guard that stale value defeats the
+        # ``last_real_prompt_tokens >= threshold_tokens`` check below, so
+        # preflight fires a SECOND compaction before the provider has reported
+        # real token usage for the now-shorter conversation.  Defer for exactly
+        # one turn; update_from_response() clears the flag when real usage
+        # arrives.  (#36718)
+        if self.awaiting_real_usage_after_compression:
+            return True
         if self.last_real_prompt_tokens <= 0:
             return False
         if self.last_real_prompt_tokens >= self.threshold_tokens:

@@ -1581,9 +1581,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     agent = None
 
     # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
-    os.environ["HERMES_CRON_SESSION"] = "1"
+    # Set as a task/thread-isolated ContextVar (NOT process-global os.environ).
+    # The gateway ticks the cron scheduler IN-PROCESS, so a process-global flag
+    # would latch ON at the first cron tick, never clear, and poison every
+    # later interactive turn's send_message origin resolution (it would read
+    # cron=True and fall back to the home channel). The ContextVar is set here
+    # BEFORE the per-job ``copy_context()`` below (so the main agent run + its
+    # tool calls inherit it) and reset in the ``finally``. Cron-spawned
+    # subagents run in a bare ThreadPoolExecutor that does NOT inherit
+    # contextvars, so the marker is additionally captured-and-rebound at the
+    # delegate boundary (tools/delegate_tool.py) to keep cron approval gating.
+    from gateway.session_context import set_cron_session, clear_cron_session
+    _cron_session_token = set_cron_session()
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
     # don't clobber each other's targets (os.environ is process-global).
@@ -2044,6 +2053,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
+        clear_cron_session(_cron_session_token)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:

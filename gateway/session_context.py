@@ -67,6 +67,17 @@ _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_P
 _CRON_AUTO_DELIVER_CHAT_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
+# Cron-session marker — set per-job in run_job() (and re-bound across the
+# delegate-task boundary for cron-spawned subagents). Task/thread-isolated so a
+# cron job's marker can NEVER bleed into a concurrent interactive gateway turn
+# in the same process (the in-gateway cron tick shares the gateway process).
+# Previously this was a process-global os.environ flag that latched ON at the
+# first cron tick and was never cleared, poisoning send_message origin
+# resolution for every later interactive turn (it read cron=True and fell back
+# to the home channel). It also gates cron approval auto-mode, so the
+# delegate-boundary rebind is required to keep cron subagents deny-gated.
+_CRON_SESSION: ContextVar = ContextVar("HERMES_CRON_SESSION", default=_UNSET)
+
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
     "HERMES_SESSION_CHAT_ID": _SESSION_CHAT_ID,
@@ -80,6 +91,7 @@ _VAR_MAP = {
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
+    "HERMES_CRON_SESSION": _CRON_SESSION,
 }
 
 
@@ -263,3 +275,50 @@ def get_send_origin() -> tuple:
         _v(_SEND_ORIGIN_CHAT_ID),
         _v(_SEND_ORIGIN_THREAD_ID),
     )
+
+
+def set_cron_session():
+    """Mark the current context (a cron job's run, or a cron-spawned subagent)
+    as a cron session. Returns a reset token; pass it to ``clear_cron_session``
+    in a ``finally``. Contextvar-only — never touches os.environ (writing the
+    process-global env is exactly the latch bug this replaces).
+
+    The set is nestable via ``var.reset(token)`` so a cron subagent that re-binds
+    the marker and then clears it restores the parent's value, not blank.
+    """
+    return _CRON_SESSION.set("1")
+
+
+def clear_cron_session(token) -> None:
+    """Restore the cron-session marker to its prior value. ``token`` is the
+    value returned by ``set_cron_session``; ``None`` is a safe no-op (used when
+    the marker was not bound — e.g. an interactive parent spawning a child).
+    """
+    if token is None:
+        return
+    try:
+        _CRON_SESSION.reset(token)
+    except Exception:
+        # Token from a different context (shouldn't happen — same-thread
+        # set+clear). Restore the _UNSET sentinel (NOT "") so get_session_env
+        # still falls through to os.environ — setting "" would pin the
+        # ContextVar to a non-_UNSET value and silently defeat the I5
+        # os.environ back-compat fallback for CLI/standalone/test callers.
+        _CRON_SESSION.set(_UNSET)
+
+
+def is_cron_session() -> bool:
+    """True when the current context is a cron job's run (or a cron-spawned
+    subagent that re-bound the marker). Reads the ContextVar first, falling back
+    to ``os.environ`` for CLI / standalone-scheduler / test compatibility (same
+    resolution order as ``get_session_env``).
+
+    This is the single context-aware reader that replaces the raw
+    ``env_var_enabled("HERMES_CRON_SESSION")`` calls in approval + send_message.
+    Because it goes through ``get_session_env`` (ContextVar -> os.environ ->
+    default), a cron job's marker is isolated to its own task/thread lineage and
+    can never be read by a concurrent interactive gateway turn.
+    """
+    from utils import is_truthy_value
+
+    return is_truthy_value(get_session_env("HERMES_CRON_SESSION", ""), default=False)

@@ -1338,6 +1338,18 @@ def _build_child_agent(
         # Routing-only thread id for the child's bare sends (kept separate from
         # the blackbox attribution fields, which don't carry a thread).
         child._send_origin_thread_id = _gse("HERMES_SESSION_THREAD_ID", "") or _so_thread or ""
+        # Cron-session marker capture (B1): cron jobs can spawn subagents, but
+        # the child runs in a bare ThreadPoolExecutor that does NOT inherit
+        # contextvars — so without an explicit rebind a cron subagent would read
+        # cron=False and LOSE its approval deny-gating (auto-approving dangerous
+        # commands / execute_code). Capture cron-ness HERE, in the parent thread
+        # that still holds the cron ContextVar, and re-bind it in the child-run
+        # wrapper (_run_with_thread_capture). Mirrors the send-origin rebind.
+        try:
+            from gateway.session_context import is_cron_session as _ics
+            child._is_cron_child = _ics()
+        except Exception:
+            child._is_cron_child = False
     except Exception as _bb_exc:
         logger.debug("blackbox subagent attribution skipped: %s", _bb_exc)
 
@@ -1523,6 +1535,41 @@ def _clear_child_send_origin(tokens):
         clear_send_origin(tokens)
     except Exception as exc:
         logger.debug("send-origin clear skipped: %s", exc)
+
+
+def _bind_child_cron_session(child):
+    """Re-bind the cron-session marker for a cron-spawned subagent run (B1).
+
+    A cron job runs the agent with the ``HERMES_CRON_SESSION`` ContextVar set,
+    but its subagents run in a bare ThreadPoolExecutor that does NOT inherit
+    contextvars — so without this rebind the child would read cron=False and
+    lose its approval deny-gating (auto-approving dangerous commands /
+    execute_code that cron-mode would deny). Cron-ness was captured on the child
+    at spawn (``_is_cron_child``) in the parent thread that held the ContextVar.
+
+    Returns a reset token for the ``finally`` clear, or ``None`` when the parent
+    was not a cron session (an interactive parent's child must NOT be marked
+    cron). Never raises.
+    """
+    try:
+        if getattr(child, "_is_cron_child", False):
+            from gateway.session_context import set_cron_session
+            return set_cron_session()
+    except Exception as exc:
+        logger.debug("cron-session bind skipped: %s", exc)
+    return None
+
+
+def _clear_child_cron_session(token):
+    """Restore the cron-session marker after a child run. No-op when not bound.
+    Never raises."""
+    if token is None:
+        return
+    try:
+        from gateway.session_context import clear_cron_session
+        clear_cron_session(token)
+    except Exception as exc:
+        logger.debug("cron-session clear skipped: %s", exc)
 
 
 def _run_single_child(
@@ -1719,6 +1766,10 @@ def _run_single_child(
             # for approval/skills/TTS. Cleared in finally (nestable: a grandchild
             # restores the child's origin, not blank).
             _origin_tokens = _bind_child_send_origin(child)
+            # Re-bind the cron-session marker (B1) so a cron job's subagent keeps
+            # its approval deny-gating — contextvars don't cross the executor
+            # boundary, so we set it explicitly from the spawn-time capture.
+            _cron_token = _bind_child_cron_session(child)
             try:
                 return child.run_conversation(
                     user_message=goal,
@@ -1726,6 +1777,7 @@ def _run_single_child(
                 )
             finally:
                 _clear_child_send_origin(_origin_tokens)
+                _clear_child_cron_session(_cron_token)
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:

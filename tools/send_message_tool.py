@@ -172,8 +172,8 @@ def _has_messaging_origin() -> bool:
       4. else -> False.
     """
     try:
-        from utils import env_var_enabled
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        from gateway.session_context import is_cron_session
+        if is_cron_session():
             return False
         from tools.approval import _get_session_platform
         if _get_session_platform():
@@ -273,8 +273,8 @@ def _warn_unexpected_home_fallback(platform_name):
     raises, logs NO message body or secrets. Silent on cron (expected home).
     """
     try:
-        from utils import env_var_enabled
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        from gateway.session_context import is_cron_session
+        if is_cron_session():
             return  # cron legitimately homes; not a tripwire case
         from tools.approval import get_current_session_key, _get_session_platform
         session_key = get_current_session_key("") or ""

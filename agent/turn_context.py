@@ -47,8 +47,14 @@ def _compression_made_progress(
     context window.  See issue #39548 for an observed case: 220 → 220
     messages, ~288k → ~183k tokens on a 1M-context model still triggered
     auto-reset.
+
+    The token reduction must be *material* (>5%) to count as progress — the
+    same floor the overflow-handler retry path uses (conversation_loop.py,
+    #39550) — so a sub-5% wobble doesn't keep the multi-pass loop spinning.
     """
-    return new_len < orig_len or new_tokens < orig_tokens
+    if new_len < orig_len:
+        return True
+    return orig_tokens > 0 and new_tokens < orig_tokens * 0.95
 
 
 @dataclass

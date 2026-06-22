@@ -7,8 +7,9 @@ estimated request token count without removing any rows — and surfaces a
 spurious ``Context length exceeded`` failure followed by an auto-reset of
 an otherwise healthy session.
 
-These tests pin the contract of ``_compression_made_progress``: either a
-row-count reduction OR a token-count reduction counts as progress.
+These tests pin the contract of ``_compression_made_progress``: a
+row-count reduction OR a *material* (>5%) token-count reduction counts as
+progress.
 """
 
 from __future__ import annotations
@@ -64,3 +65,22 @@ class TestCompressionMadeProgress:
         assert _compression_made_progress(
             orig_len=10, new_len=5, orig_tokens=1000, new_tokens=1100
         ) is True
+
+    def test_sub_5pct_token_drop_is_not_progress(self):
+        """A token reduction below the 5% material floor does NOT count as
+        progress — matching the overflow-handler retry path (#39550) so a
+        marginal wobble can't keep the multi-pass loop spinning."""
+        # 1000 -> 970 is a 3% drop, below the 5% floor.
+        assert _compression_made_progress(
+            orig_len=10, new_len=10, orig_tokens=1000, new_tokens=970
+        ) is False
+        # 1000 -> 940 is a 6% drop, above the floor.
+        assert _compression_made_progress(
+            orig_len=10, new_len=10, orig_tokens=1000, new_tokens=940
+        ) is True
+
+    def test_zero_orig_tokens_is_not_progress(self):
+        """Degenerate estimate (0 tokens) must not be read as a token win."""
+        assert _compression_made_progress(
+            orig_len=10, new_len=10, orig_tokens=0, new_tokens=0
+        ) is False

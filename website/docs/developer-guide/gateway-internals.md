@@ -21,7 +21,8 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 | `gateway/mirror.py` | Cross-session message mirroring for `send_message` |
 | `gateway/status.py` | Token lock management for profile-scoped gateway instances |
 | `gateway/builtin_hooks/` | Extension point for always-registered hooks (none shipped) |
-| `gateway/platforms/` | Platform adapters (one per messaging platform) |
+| `gateway/platforms/` | Shared platform base types and legacy direct adapters (`base.py`, etc.) |
+| `plugins/platforms/` | Per-platform messaging adapters (Telegram, Discord, Slack, …) |
 
 ## Architecture Overview
 

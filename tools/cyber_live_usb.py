@@ -9,10 +9,10 @@ Actions:
   build       — Build a bootable ISO (requires root, exact operator approval,
                 and debootstrap on host)
   write       — Write an ISO to a USB drive (requires root, exact operator
-                approval, and verified removable Linux block-device metadata)
+                approval, and verified whole removable Linux /dev disk metadata)
   provision   — Inject config into an already-written USB (requires root,
-                exact operator approval, and verified removable Linux
-                block-device metadata)
+                exact operator approval, and verified whole removable Linux
+                /dev disk metadata)
   list_usb    — List removable block devices (safe, no root needed)
   status      — Show ISO build status / available ISOs
 
@@ -167,14 +167,43 @@ def _removable_block_device_error(device: str, reason: str) -> dict:
     }
 
 
+def _linux_block_device_type(canonical_device: str) -> str | None:
+    """Return Linux lsblk TYPE metadata for a canonical block device, or None.
+
+    The direct live-usb scripts fail closed unless ``lsblk -dn -o TYPE --``
+    reports ``disk``. The agent-side guard mirrors that check before shelling
+    out to destructive scripts so partitions, mapper/LVM devices, and other
+    non-whole-disk targets are rejected even before script resolution.
+    """
+    if not shutil.which("lsblk"):
+        return None
+    try:
+        result = subprocess.run(
+            ["lsblk", "-dn", "-o", "TYPE", "--", canonical_device],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        block_type = line.strip()
+        if block_type:
+            return block_type
+    return None
+
+
 def _require_verifiably_removable_block_device(device: str) -> str | dict:
-    """Return canonical ``/dev/<block_name>`` if Linux removable flag is ``1``.
+    """Return canonical ``/dev/<block_name>`` for a whole removable disk.
 
     Call this only after ``Path(device).is_block_device()`` succeeds. The guard
-    intentionally treats unresolvable targets, non-/dev aliases, and missing or
-    unreadable sysfs metadata as unsafe rather than guessing from device names
-    or transport strings. Returning a stable canonical /dev path avoids passing
-    a user-writable alias/symlink to destructive shell scripts.
+    intentionally treats unresolvable targets, non-/dev aliases, non-disk Linux
+    block types, and missing or unreadable sysfs metadata as unsafe rather than
+    guessing from device names or transport strings. Returning a stable
+    canonical /dev path avoids passing a user-writable alias/symlink to
+    destructive shell scripts.
     """
     try:
         resolved_device = Path(device).resolve(strict=True)
@@ -189,6 +218,14 @@ def _require_verifiably_removable_block_device(device: str) -> str | dict:
         return _removable_block_device_error(device, "could not resolve target block device")
 
     canonical_device = Path("/dev") / block_name
+
+    block_type = _linux_block_device_type(str(canonical_device))
+    if block_type != "disk":
+        type_detail = block_type if block_type else "missing or unreadable"
+        return _removable_block_device_error(
+            device,
+            f"target is not a whole disk (Linux block type is not disk: {type_detail})",
+        )
 
     for sysfs_root in _REMOVABLE_SYSFS_ROOTS:
         removable_flag = sysfs_root / block_name / "removable"
@@ -278,7 +315,7 @@ def _list_usb(args: dict = None, **_kw: Any) -> dict:
     return {
         "removable_devices": removable,
         "all_block_devices": devices,
-        "note": "Only 'removable' devices are suitable USB targets.",
+        "note": "Only whole 'removable' /dev disk devices are suitable USB targets.",
     }
 
 
@@ -299,7 +336,7 @@ def _status(args: dict = None, **_kw: Any) -> dict:
         for cmd in ["debootstrap", "mksquashfs", "xorriso", "dd", "lsblk", "pv", "parted"]
     }
     missing_build = [k for k, v in deps.items() if not v and k in ("debootstrap", "mksquashfs", "xorriso")]
-    missing_write = [k for k, v in deps.items() if not v and k in ("dd",)]
+    missing_write = [k for k, v in deps.items() if not v and k in ("dd", "lsblk")]
     build_dependencies_ready = len(missing_build) == 0
     write_dependencies_ready = len(missing_write) == 0
     root_available = _running_as_root()
@@ -323,12 +360,12 @@ def _status(args: dict = None, **_kw: Any) -> dict:
                 "do not authorize ISO creation."
             ),
             "write": (
-                "write requires root plus exact operator approval plus verifiable removable "
-                "Linux block-device metadata and a canonical /dev target."
+                "write requires root plus exact operator approval plus verifiable whole "
+                "removable /dev disk metadata and a canonical /dev target."
             ),
             "provision": (
-                "provision requires root plus exact operator approval plus verifiable removable "
-                "Linux block-device metadata and a canonical /dev target."
+                "provision requires root plus exact operator approval plus verifiable whole "
+                "removable /dev disk metadata and a canonical /dev target."
             ),
             "safe_actions": ["status", "list_usb"],
         },
@@ -499,7 +536,7 @@ SCHEMA = {
             "interactive shell / headless scan) when plugged into any PC. "
             "list_usb and status are safe; build requires root plus operator "
             "approval; write and provision require root, operator approval, "
-            "and verifiable Linux removable block-device metadata."
+            "and verifiable whole removable Linux /dev disk metadata."
         ),
         "parameters": {
             "type": "object",
@@ -518,7 +555,7 @@ SCHEMA = {
                 "headless_scan": {"type": "boolean", "description": "Enable auto-scan on boot (build)."},
                 "verbose":       {"type": "boolean", "description": "Verbose build output."},
                 # write
-                "device":        {"type": "string", "description": "Target block device (write/provision), e.g. /dev/sdb; must resolve to a /dev block device with verifiable removable metadata."},
+                "device":        {"type": "string", "description": "Target block device (write/provision), e.g. /dev/sdb; must resolve to a whole removable /dev disk with verifiable Linux block metadata."},
                 "iso":           {"type": "string", "description": "ISO path to write (write)."},
                 "verify":        {"type": "boolean", "description": "SHA-256 verify after write."},
                 # provision

@@ -177,7 +177,7 @@ Exact spacing and icons may vary by terminal skin.
 
 `status` and `list_usb` are read-only and do not need root or an approval token. The high-consequence actions `build`, `write`, and `provision` require both root and an operator-controlled approval token before any build script, block-device check, or USB-writing command runs.
 
-AgentCyber `write` and `provision` tool calls also require the target to be verifiably removable via Linux block-device metadata; edge-case media that cannot be verified should be handled manually outside unattended tool control.
+AgentCyber `write` and `provision` tool calls also require the target to be a verifiably whole removable `/dev` disk via Linux block-device metadata; edge-case media that cannot be verified should be handled manually outside unattended tool control.
 
 The direct `live-usb/write_usb.sh` and `live-usb/provision.sh` scripts enforce the same removable-media boundary before destructive work: the operator-supplied path must resolve to a canonical whole-disk `/dev/...` device and Linux must report `removable = 1`. Root/sudo alone is not sufficient for non-removable, partition, mapper, symlink-only, or unverifiable targets.
 

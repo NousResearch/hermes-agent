@@ -32,7 +32,7 @@ def test_readme_live_usb_section_documents_agent_tool_gates() -> None:
         "exact operator approval",
         "hermes_agentcyber_live_usb_approval",
         "operator_approval",
-        "removable linux block-device metadata",
+        "whole removable `/dev` disk metadata",
         "canonical",
         "/dev/",
     ):

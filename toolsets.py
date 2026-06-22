@@ -345,7 +345,7 @@ TOOLSETS = {
         "description": (
             "Live USB builder/provisioner: status/list are safe; "
             "build/write/provision require root + exact operator approval, "
-            "and write/provision require verified removable Linux block-device metadata."
+            "and write/provision require verified whole removable Linux /dev disk metadata."
         ),
         "tools": ["live_usb"],
         "includes": [],

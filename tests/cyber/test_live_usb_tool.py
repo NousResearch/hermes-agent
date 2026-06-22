@@ -118,8 +118,28 @@ class TestLiveUsbTool:
         assert gates["safe_actions"] == ["status", "list_usb"]
         assert "root plus exact operator approval" in gates["build"]
         assert "root plus exact operator approval" in gates["write"]
-        assert "verifiable removable Linux block-device metadata" in gates["write"]
+        assert "verifiable whole removable /dev disk metadata" in gates["write"]
         assert "dependency checks alone" in gates["build"]
+
+    def test_status_write_dependencies_include_lsblk_for_target_metadata(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def fake_which(cmd: str) -> str | None:
+            if cmd == "lsblk":
+                return None
+            return f"/usr/bin/{cmd}"
+
+        monkeypatch.setenv(live_usb._APPROVAL_ENV_VAR, "approved-live-usb-lane")
+        monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.setattr(live_usb.shutil, "which", fake_which)
+
+        out = json.loads(_handle({"action": "status"}))
+
+        assert out["build_dependencies_ready"] is True
+        assert out["write_dependencies_ready"] is False
+        assert out["can_write"] is False
+        assert "lsblk" in out["missing_for_write"]
 
     def test_status_lists_available_isos(self) -> None:
         out = json.loads(_handle({"action": "status"}))
@@ -410,6 +430,7 @@ class TestLiveUsbTool:
             raise AssertionError(f"unexpected resolve path: {path}")
 
         monkeypatch.setattr(live_usb, "_REMOVABLE_SYSFS_ROOTS", (sysfs_root,))
+        monkeypatch.setattr(live_usb, "_linux_block_device_type", lambda _device: "disk")
         monkeypatch.setattr(live_usb.Path, "resolve", fake_resolve)
         monkeypatch.setattr(live_usb.Path, "is_block_device", lambda path: str(path) == "/dev/sdz")
 
@@ -438,6 +459,48 @@ class TestLiveUsbTool:
     @pytest.mark.parametrize(
         ("action", "payload"),
         [
+            ("write", {"action": "write", "device": "/dev/sdz1", "iso": "/tmp/hermes.iso"}),
+            ("provision", {"action": "provision", "device": "/dev/sdz1"}),
+        ],
+    )
+    @pytest.mark.parametrize("linux_type", ["part", "lvm"])
+    def test_approved_non_disk_target_fails_before_script_and_run(
+        self,
+        action: str,
+        payload: dict[str, object],
+        linux_type: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def fake_read_text(*_args: Any, **_kw: Any) -> str:
+            pytest.fail(f"{action} must reject non-disk targets before checking removable flags")
+
+        monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
+        monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.setattr(live_usb.Path, "is_block_device", lambda _path: True)
+        monkeypatch.setattr(live_usb.Path, "resolve", lambda path, strict=False: path)
+        monkeypatch.setattr(live_usb.Path, "read_text", fake_read_text)
+        monkeypatch.setattr(live_usb, "_linux_block_device_type", lambda _device: linux_type)
+        monkeypatch.setattr(
+            live_usb,
+            "_script",
+            lambda *_args, **_kw: pytest.fail(f"{action} must fail before resolving scripts"),
+        )
+        monkeypatch.setattr(
+            live_usb,
+            "_run",
+            lambda *_args, **_kw: pytest.fail(f"{action} must fail before running scripts"),
+        )
+
+        out = json.loads(_handle({**payload, "operator_approval": "approved-live-usb-lane"}))
+
+        assert out == {
+            "error": "Target block device is not verifiably removable: /dev/sdz1",
+            "reason": f"target is not a whole disk (Linux block type is not disk: {linux_type})",
+        }
+
+    @pytest.mark.parametrize(
+        ("action", "payload"),
+        [
             ("write", {"action": "write", "device": "/dev/sdz", "iso": "/tmp/hermes.iso"}),
             ("provision", {"action": "provision", "device": "/dev/sdz"}),
         ],
@@ -454,6 +517,7 @@ class TestLiveUsbTool:
 
         monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
         monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.setattr(live_usb, "_linux_block_device_type", lambda _device: "disk")
         monkeypatch.setattr(live_usb.Path, "is_block_device", lambda _path: True)
         monkeypatch.setattr(live_usb.Path, "resolve", lambda path, strict=False: path)
         monkeypatch.setattr(live_usb.Path, "read_text", fake_read_text)
@@ -496,6 +560,7 @@ class TestLiveUsbTool:
 
         monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
         monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.setattr(live_usb, "_linux_block_device_type", lambda _device: "disk")
         monkeypatch.setattr(live_usb.Path, "is_block_device", lambda _path: True)
         monkeypatch.setattr(live_usb.Path, "resolve", lambda path, strict=False: path)
         monkeypatch.setattr(live_usb.Path, "read_text", fake_read_text)
@@ -648,6 +713,7 @@ class TestLiveUsbTool:
         monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
         monkeypatch.setattr(live_usb, "_REMOVABLE_SYSFS_ROOTS", (sysfs_root,))
         monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.setattr(live_usb, "_linux_block_device_type", lambda _device: "disk")
         monkeypatch.setattr(
             live_usb.Path,
             "is_block_device",

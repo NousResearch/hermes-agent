@@ -4,6 +4,8 @@
 import errno
 import json
 import logging
+import platform
+import re
 import os
 import threading
 from pathlib import Path
@@ -19,6 +21,25 @@ from tools import file_state
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+_IS_WINDOWS = platform.system() == "Windows"
+
+
+def _msys_to_windows_path(path: str) -> str:
+    """Translate MSYS path to native Windows form.
+
+    ``/c/Users/x`` becomes ``C:\\Users\\x``.  Idempotent and no-op on
+    non-Windows or non-MSYS paths.  Used by ``_resolve_path_for_task``
+    so file tools work when the agent passes Git Bash paths.
+    """
+    if not _IS_WINDOWS or not path:
+        return path
+    m = re.match(r"^/([a-zA-Z])(/.*)?$", path)
+    if not m:
+        return path
+    drive = m.group(1).upper()
+    tail = (m.group(2) or "").replace("/", "\\")
+    return f"{drive}:{tail or chr(92)}"
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
@@ -307,7 +328,15 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
+
+    On Windows (Git Bash), translates MSYS-style paths like
+    ``/c/Users/x/file`` to ``C:\\Users\\x\\file`` before resolution.
     """
+    # On Windows with Git Bash, /c/Users/... is an MSYS-style path that
+    # Python's Path() resolves incorrectly on native Windows - it becomes
+    # \\c\\Users under the cwd instead of C:\\Users.  Translate first.
+    if _IS_WINDOWS:
+        filepath = _msys_to_windows_path(filepath)
     p = Path(_expand_tilde(filepath))
     if p.is_absolute():
         return p.resolve()

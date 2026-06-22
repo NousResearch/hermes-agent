@@ -10,9 +10,11 @@ import codecs
 import json
 import logging
 import os
+import re
 import select
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -359,7 +361,8 @@ class BaseEnvironment(ABC):
         # Restore configured cwd after login shell profile scripts, which may
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
-        _quoted_cwd = shlex.quote(self.cwd)
+        _cwd_for_bash = self._windows_to_msys_path(self.cwd)
+        _quoted_cwd = shlex.quote(_cwd_for_bash)
         # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
         # ``C:/Users/...``-shaped paths without glob-splitting the colon or
         # tripping on drive letters.  On POSIX this is a no-op (no colons /
@@ -404,6 +407,26 @@ class BaseEnvironment(ABC):
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _windows_to_msys_path(cwd: str) -> str:
+        """Convert a Windows native path to Git Bash / MSYS form for ``cd``.
+
+        ``C:\\Users\\x`` → ``/c/Users/x``.  No-op on non-Windows hosts or
+        paths that are already in MSYS format.
+
+        ``_msys_to_windows_path`` (in ``local.py``) handles the reverse
+        translation for ``os.path.isdir`` / ``subprocess.Popen(cwd=...)``.
+        This helper closes the gap for the bash-script side.
+        """
+        if sys.platform != "win32" or not cwd:
+            return cwd
+        m = re.match(r'^([a-zA-Z]):[\\/](.*)$', cwd)
+        if not m:
+            return cwd
+        drive = m.group(1).lower()
+        rest = m.group(2).replace('\\', '/')
+        return f"/{drive}/{rest}"
+
+    @staticmethod
     def _quote_cwd_for_cd(cwd: str) -> str:
         """Quote a ``cd`` target while preserving ``~`` expansion."""
         if cwd == "~":
@@ -441,7 +464,8 @@ class BaseEnvironment(ABC):
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.
-        quoted_cwd = self._quote_cwd_for_cd(cwd)
+        _cwd_for_bash = self._windows_to_msys_path(cwd)
+        quoted_cwd = self._quote_cwd_for_cd(_cwd_for_bash)
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
         parts.append(f"builtin cd -- {quoted_cwd} || exit 126")
 

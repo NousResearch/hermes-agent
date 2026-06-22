@@ -221,7 +221,7 @@ def _build_record(
     ts_end = now
     tool_calls = list(state.get("tool_calls") or [])
 
-    cost_usd, cost_status = compute_turn_cost(
+    cost_usd, cost_status, cost_perclass = compute_turn_cost(
         model,
         provider,
         kwargs.get("base_url") or usage.get("base_url"),
@@ -279,6 +279,10 @@ def _build_record(
         comp_calls_json=_comp_calls_json(usage),
         cost_usd=cost_usd,
         cost_status=cost_status,
+        cost_uncached_usd=cost_perclass.get("uncached"),
+        cost_cache_read_usd=cost_perclass.get("cache_read"),
+        cost_cache_write_usd=cost_perclass.get("cache_write"),
+        cost_output_usd=cost_perclass.get("output"),
         interrupted=bool(interrupted),
         user_text=str(user_message or "") if store_text else "",
         final_text=str(final_response or "") if store_text else "",

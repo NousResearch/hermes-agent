@@ -24,20 +24,38 @@ def _int_value(value: Any) -> int:
         return 0
 
 
+_PERCLASS_NONE: dict[str, float | None] = {
+    "uncached": None, "cache_read": None, "cache_write": None, "output": None,
+}
+
+
 def compute_turn_cost(
     model: str,
     provider: Optional[str],
     base_url: Optional[str],
     calls: list[dict],
-) -> tuple[float | None, str]:
-    """Price each provider call and return reconciled turn cost/status."""
+) -> tuple[float | None, str, dict[str, float | None]]:
+    """Price each provider call and return reconciled turn cost/status/split.
+
+    Returns ``(total_usd, status, perclass)`` where ``perclass`` is a dict
+    ``{uncached, cache_read, cache_write, output}`` of floats summing to
+    ``total_usd`` for a cleanly-priced turn. For ``partial`` and ``unknown``
+    turns the split is deliberately withheld (all None, SPEC-C D-9): a partial
+    total omits the unknown call(s), so a four-part split that summed to it
+    would present a known-calls-only figure as the whole truth.
+    """
     if not calls:
-        return 0.0, "included"
+        return 0.0, "included", dict(_PERCLASS_NONE)
 
     known_total = Decimal("0")
     known_count = 0
     unknown_count = 0
     known_statuses: list[str] = []
+    # per-class accumulators (engine vocab: input == uncached/fresh input)
+    acc_input = Decimal("0")
+    acc_output = Decimal("0")
+    acc_cache_read = Decimal("0")
+    acc_cache_write = Decimal("0")
 
     for call in calls:
         try:
@@ -67,11 +85,25 @@ def compute_turn_cost(
         known_total += Decimal(str(amount))
         known_count += 1
         known_statuses.append("estimated" if status == "actual" else status)
+        # accumulate the per-class parts (Decimal("0") for an included/zero-cost
+        # result; the `or Decimal("0")` guards the genuine None an unknown-route
+        # early-return would produce — those calls don't reach here anyway).
+        acc_input += result.cost_input_usd or Decimal("0")
+        acc_output += result.cost_output_usd or Decimal("0")
+        acc_cache_read += result.cost_cache_read_usd or Decimal("0")
+        acc_cache_write += result.cost_cache_write_usd or Decimal("0")
 
     if unknown_count and known_count:
-        return float(known_total), "partial"
+        # partial: total is known-calls-only; withhold the split (D-9).
+        return float(known_total), "partial", dict(_PERCLASS_NONE)
     if unknown_count:
-        return None, "unknown"
+        return None, "unknown", dict(_PERCLASS_NONE)
 
     worst = max(known_statuses or ["included"], key=lambda s: _STATUS_RANK.get(s, 3))
-    return float(known_total), worst
+    perclass: dict[str, float | None] = {
+        "uncached": float(acc_input),
+        "cache_read": float(acc_cache_read),
+        "cache_write": float(acc_cache_write),
+        "output": float(acc_output),
+    }
+    return float(known_total), worst, perclass

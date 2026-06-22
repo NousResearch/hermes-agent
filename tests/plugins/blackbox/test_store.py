@@ -362,3 +362,86 @@ def test_schema_migration_adds_columns_to_preexisting_table(tmp_path, monkeypatc
     # Idempotent: connecting again must not raise (columns already present).
     with store._connect() as conn:
         conn.execute("SELECT last_cache_read FROM turns").fetchall()
+
+
+# ---------------------------------------------------------------------------
+# SPEC-C Phase 3 — per-class cost columns persist + migrate (additive, NULL-safe)
+# ---------------------------------------------------------------------------
+def test_perclass_cost_columns_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    rec = make_record(
+        "turn-perclass",
+        cost_usd=1.50,
+        cost_status="estimated",
+        cost_uncached_usd=0.50,
+        cost_cache_read_usd=0.30,
+        cost_cache_write_usd=0.20,
+        cost_output_usd=0.50,
+    )
+    store.insert_turn(rec)
+    row = store.get_turn("turn-perclass")
+    assert row is not None
+    assert row["cost_uncached_usd"] == 0.50
+    assert row["cost_cache_read_usd"] == 0.30
+    assert row["cost_cache_write_usd"] == 0.20
+    assert row["cost_output_usd"] == 0.50
+    # the four parts reconcile to the stored total
+    parts = (row["cost_uncached_usd"] + row["cost_cache_read_usd"]
+             + row["cost_cache_write_usd"] + row["cost_output_usd"])
+    assert abs(parts - row["cost_usd"]) < 1e-9
+
+
+def test_perclass_none_persists_as_sql_null(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # a partial turn carries a real total but NO split (D-9) → NULL, not 0.
+    store.insert_turn(make_record("turn-partial", cost_usd=2.0, cost_status="partial"))
+    row = store.get_turn("turn-partial")
+    assert row["cost_usd"] == 2.0
+    assert row["cost_uncached_usd"] is None
+    assert row["cost_cache_read_usd"] is None
+    assert row["cost_cache_write_usd"] is None
+    assert row["cost_output_usd"] is None
+
+
+def test_migration_adds_perclass_columns_to_old_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import sqlite3
+    db = tmp_path / "blackbox" / "turns.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    # Prove a fresh DB has the four perclass columns, then simulate an OLDER db
+    # missing exactly those columns and prove the guarded ALTER adds them.
+    c0 = store._connect(); c0.close()
+    c1 = store._connect()
+    cols = {r[1] for r in c1.execute("PRAGMA table_info(turns)").fetchall()}
+    c1.close()
+    for col in ("cost_uncached_usd", "cost_cache_read_usd",
+                "cost_cache_write_usd", "cost_output_usd"):
+        assert col in cols, f"{col} not present after schema ensure"
+    # Now simulate an OLDER db missing exactly the perclass columns and prove
+    # the guarded ALTER adds them. Drop+recreate isn't available, so rebuild a
+    # turns table without them, then re-open via _connect (runs the migration).
+    conn = sqlite3.connect(str(db))
+    conn.execute("DROP TABLE turns")
+    # full schema minus the 4 perclass columns
+    conn.execute(
+        """
+        CREATE TABLE turns (
+            turn_id TEXT PRIMARY KEY, parent_turn_id TEXT, is_subagent INT,
+            ts_start REAL, ts_end REAL, profile TEXT, provider TEXT, model TEXT,
+            platform TEXT, chat_id TEXT, chat_name TEXT, api_calls INT, tools TEXT,
+            input_tokens INT, output_tokens INT, cache_read INT, cache_write INT,
+            reasoning INT, context_used INT, context_length INT,
+            last_cache_read INT, last_cache_write INT, last_uncached INT,
+            comp_calls_json TEXT, cost_usd REAL, cost_status TEXT,
+            interrupted INT, alerted INT DEFAULT 0, user_text TEXT, final_text TEXT
+        )
+        """)
+    conn.commit(); conn.close()
+    c2 = store._connect()  # runs _ensure_schema → guarded ALTERs
+    cols2 = {r[1] for r in c2.execute("PRAGMA table_info(turns)").fetchall()}
+    c2.close()
+    for col in ("cost_uncached_usd", "cost_cache_read_usd",
+                "cost_cache_write_usd", "cost_output_usd"):
+        assert col in cols2, f"{col} not migrated into the old-shape DB"
+    # idempotent: a further open must not raise
+    store._connect().close()

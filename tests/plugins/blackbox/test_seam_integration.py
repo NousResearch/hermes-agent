@@ -67,7 +67,7 @@ def test_real_seam_core_to_store(temp_home, monkeypatch):
         "enabled": True, "cost_alert_threshold_usd": 999.0,  # high → no alert send attempt
         "store_text": True, "record_subagents": True,
     })
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (1.26, "estimated"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (1.26, "estimated", {"uncached": 0.5, "cache_read": 0.5, "cache_write": 0.13, "output": 0.13}))
     # Point the hook's lazy store import at the freshly-reloaded real store.
     monkeypatch.setattr(bb, "store", store, raising=False)
     monkeypatch.setitem(sys.modules, "plugins.blackbox.store", store)
@@ -120,7 +120,7 @@ def test_real_seam_tool_args_results_dig_in(temp_home, monkeypatch):
         "enabled": True, "cost_alert_threshold_usd": 999.0,
         "store_text": True, "record_subagents": True,
     })
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (1.26, "estimated"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (1.26, "estimated", {"uncached": 0.5, "cache_read": 0.5, "cache_write": 0.13, "output": 0.13}))
     monkeypatch.setattr(bb, "store", store, raising=False)
     monkeypatch.setitem(sys.modules, "plugins.blackbox.store", store)
     monkeypatch.setattr(bb, "_turn_id", lambda: "turn_digin")
@@ -162,7 +162,7 @@ def test_real_seam_store_text_false_skips_tool_calls(temp_home, monkeypatch):
         "enabled": True, "cost_alert_threshold_usd": 999.0,
         "store_text": False, "record_subagents": True,
     })
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (1.26, "estimated"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (1.26, "estimated", {"uncached": 0.5, "cache_read": 0.5, "cache_write": 0.13, "output": 0.13}))
     monkeypatch.setattr(bb, "store", store, raising=False)
     monkeypatch.setitem(sys.modules, "plugins.blackbox.store", store)
     monkeypatch.setattr(bb, "_turn_id", lambda: "turn_notext")

@@ -68,6 +68,13 @@ class TurnRecord:
     comp_calls_json: Optional[str] = None
     cost_usd: Optional[float] = None
     cost_status: str = "unknown"                   # estimated|included|unknown|partial
+    # Per-class cost breakdown (SPEC-C). Sum to cost_usd for a cleanly-priced
+    # turn; all None for partial/unknown (the split is withheld, D-9). Persisted
+    # as REAL columns so tokens.ace can show WHY a turn cost what it did.
+    cost_uncached_usd: Optional[float] = None
+    cost_cache_read_usd: Optional[float] = None
+    cost_cache_write_usd: Optional[float] = None
+    cost_output_usd: Optional[float] = None
     interrupted: bool = False
     alerted: bool = False
     user_text: str = ""

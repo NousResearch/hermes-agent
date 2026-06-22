@@ -130,6 +130,18 @@ class CostResult:
     fetched_at: Optional[datetime] = None
     pricing_version: Optional[str] = None
     notes: tuple[str, ...] = ()
+    # Per-class cost breakdown (SPEC-C). The engine already computes each class
+    # term below; these expose the parts so consumers (blackbox telemetry →
+    # tokens.ace) can show WHY a turn cost what it did without a second pricing
+    # system. They sum to ``amount_usd`` for a priced turn; all None when the
+    # turn is unknown/unpriceable. ``cost_input_usd`` is the fresh-input class
+    # (a.k.a. "uncached"). Cache-write-at-input-rate (OpenAI family, no separate
+    # cache-write fee) is attributed to ``cost_cache_write_usd`` — it is the
+    # real cost of those cache-write tokens.
+    cost_input_usd: Optional[Decimal] = None
+    cost_output_usd: Optional[Decimal] = None
+    cost_cache_read_usd: Optional[Decimal] = None
+    cost_cache_write_usd: Optional[Decimal] = None
 
 
 _UTC_NOW = lambda: datetime.now(timezone.utc)
@@ -983,20 +995,37 @@ def estimate_usage_cost(
                 "cache-write priced at input rate (no separate cache-write rate published)"
             )
 
+    cost_input = _ZERO
+    cost_output = _ZERO
+    cost_cache_read = _ZERO
+    cost_cache_write = _ZERO
     if entry.input_cost_per_million is not None:
-        amount += Decimal(usage.input_tokens) * entry.input_cost_per_million / _ONE_MILLION
+        cost_input = Decimal(usage.input_tokens) * entry.input_cost_per_million / _ONE_MILLION
+        amount += cost_input
     if entry.output_cost_per_million is not None:
-        amount += Decimal(usage.output_tokens) * entry.output_cost_per_million / _ONE_MILLION
+        cost_output = Decimal(usage.output_tokens) * entry.output_cost_per_million / _ONE_MILLION
+        amount += cost_output
     if entry.cache_read_cost_per_million is not None:
-        amount += Decimal(usage.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_MILLION
+        cost_cache_read = Decimal(usage.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_MILLION
+        amount += cost_cache_read
     if entry.cache_write_cost_per_million is not None:
-        amount += Decimal(usage.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_MILLION
+        cost_cache_write = Decimal(usage.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_MILLION
+        amount += cost_cache_write
     elif usage.cache_write_tokens and entry.input_cost_per_million is not None:
         # Fallback: no published cache-write rate → bill at the input rate
         # (see the cache-write guard above). Correct for OpenAI-family routes.
-        amount += Decimal(usage.cache_write_tokens) * entry.input_cost_per_million / _ONE_MILLION
+        # Attributed to the cache-write class (it IS the cost of cache-write
+        # tokens), not folded into input.
+        cost_cache_write = Decimal(usage.cache_write_tokens) * entry.input_cost_per_million / _ONE_MILLION
+        amount += cost_cache_write
     if entry.request_cost is not None and usage.request_count:
-        amount += Decimal(usage.request_count) * entry.request_cost
+        # Per-request structural charge. Fold into the input/uncached class so
+        # the four-class breakdown still sums exactly to amount_usd. (All fleet
+        # routes have request_cost=None today; SPEC-C's backfill NULL-splits any
+        # route that doesn't, since aggregate pricing can't reconstruct N calls.)
+        req_amount = Decimal(usage.request_count) * entry.request_cost
+        cost_input += req_amount
+        amount += req_amount
 
     status: CostStatus = "estimated"
     label = f"~${amount:.2f}"
@@ -1015,6 +1044,10 @@ def estimate_usage_cost(
         fetched_at=entry.fetched_at,
         pricing_version=entry.pricing_version,
         notes=tuple(notes),
+        cost_input_usd=cost_input,
+        cost_output_usd=cost_output,
+        cost_cache_read_usd=cost_cache_read,
+        cost_cache_write_usd=cost_cache_write,
     )
 
 

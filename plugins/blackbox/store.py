@@ -80,6 +80,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             comp_calls_json TEXT,
             cost_usd REAL,
             cost_status TEXT,
+            cost_uncached_usd REAL,
+            cost_cache_read_usd REAL,
+            cost_cache_write_usd REAL,
+            cost_output_usd REAL,
             interrupted INT,
             alerted INT DEFAULT 0,
             user_text TEXT,
@@ -145,6 +149,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE turns ADD COLUMN comp_calls_json TEXT")
         except sqlite3.OperationalError:
             pass
+    # Per-class cost columns (SPEC-C). REAL, nullable. Same guarded additive
+    # pattern so a DB created before these existed gains them on next open, and
+    # a partially-migrated / concurrently-written DB never raises.
+    for _col in (
+        "cost_uncached_usd", "cost_cache_read_usd",
+        "cost_cache_write_usd", "cost_output_usd",
+    ):
+        if _col not in _existing:
+            try:
+                conn.execute(f"ALTER TABLE turns ADD COLUMN {_col} REAL")
+            except sqlite3.OperationalError:
+                pass
     conn.commit()
 
 
@@ -221,9 +237,12 @@ def insert_turn(record: TurnRecord) -> None:
                     comp_skills_tokens, comp_framing_tokens,
                     comp_skills_count,
                     comp_calls_json,
-                    cost_usd, cost_status, interrupted, alerted, user_text,
+                    cost_usd, cost_status,
+                    cost_uncached_usd, cost_cache_read_usd,
+                    cost_cache_write_usd, cost_output_usd,
+                    interrupted, alerted, user_text,
                     final_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.turn_id,
@@ -262,6 +281,10 @@ def insert_turn(record: TurnRecord) -> None:
                     record.comp_calls_json,
                     _cost_float(record.cost_usd),
                     record.cost_status or "unknown",
+                    _cost_float(record.cost_uncached_usd),
+                    _cost_float(record.cost_cache_read_usd),
+                    _cost_float(record.cost_cache_write_usd),
+                    _cost_float(record.cost_output_usd),
                     _bool_int(record.interrupted),
                     _bool_int(record.alerted),
                     scrub_and_truncate(record.user_text),

@@ -124,7 +124,7 @@ def test_full_turn_lifecycle_through_loader(home, monkeypatch):
     # module object than ``plugins.blackbox``. Patch the instance the loader
     # actually wired the hooks from, or the patches no-op.
     bb = sys.modules["hermes_plugins.blackbox"]
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (1.26, "estimated"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (1.26, "estimated", {"uncached":0.5,"cache_read":0.5,"cache_write":0.13,"output":0.13}))
     monkeypatch.setattr(bb, "_turn_id", lambda: "turn_e2e")
 
     # Drive the lifecycle entirely through the manager's hook dispatch — the

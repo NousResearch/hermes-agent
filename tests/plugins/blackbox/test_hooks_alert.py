@@ -14,9 +14,17 @@ from plugins.blackbox.record import TurnRecord
 
 
 class CostResult:
-    def __init__(self, amount_usd, status):
+    def __init__(self, amount_usd, status, *, cost_input_usd=None,
+                 cost_output_usd=None, cost_cache_read_usd=None,
+                 cost_cache_write_usd=None):
         self.amount_usd = amount_usd
         self.status = status
+        # SPEC-C per-class breakdown — default None so this stub matches the
+        # real CostResult contract compute_turn_cost now reads.
+        self.cost_input_usd = cost_input_usd
+        self.cost_output_usd = cost_output_usd
+        self.cost_cache_read_usd = cost_cache_read_usd
+        self.cost_cache_write_usd = cost_cache_write_usd
 
 
 def test_cost_partial_when_one_call_unknown(monkeypatch):
@@ -30,7 +38,7 @@ def test_cost_partial_when_one_call_unknown(monkeypatch):
 
     monkeypatch.setattr(cost, "estimate_usage_cost", fake_estimate)
 
-    amount, status = cost.compute_turn_cost(
+    amount, status, _perclass = cost.compute_turn_cost(
         "model",
         "provider",
         "https://example.invalid",
@@ -52,7 +60,7 @@ def test_cost_all_included(monkeypatch):
         lambda *args, **kwargs: CostResult(Decimal("0"), "included"),
     )
 
-    amount, status = cost.compute_turn_cost(
+    amount, status, _perclass = cost.compute_turn_cost(
         "model",
         "provider",
         "",
@@ -87,7 +95,7 @@ def test_cost_actual_maps_to_estimated(monkeypatch):
         cost, "estimate_usage_cost",
         lambda *a, **k: CostResult(Decimal("0.50"), "actual"),
     )
-    amount, status = cost.compute_turn_cost("m", "p", "", [{"input_tokens": 1}])
+    amount, status, _perclass = cost.compute_turn_cost("m", "p", "", [{"input_tokens": 1}])
     assert amount == 0.5
     assert status == "estimated"
 
@@ -198,7 +206,7 @@ def blackbox(monkeypatch):
     bb._sessions.clear()
     monkeypatch.setattr(bb, "_profile_name", lambda: "Aegis")
     monkeypatch.setattr(bb, "_turn_id", lambda: "turn_test")
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *args, **kwargs: (0.0, "included"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (0.0, "included", {"uncached":0.0,"cache_read":0.0,"cache_write":0.0,"output":0.0}))
 
     store = types.SimpleNamespace(
         records=[],
@@ -241,7 +249,7 @@ def _usage():
 def test_hook_below_threshold_records_no_alert(blackbox, monkeypatch):
     bb, store, sent = blackbox
     monkeypatch.setattr(bb, "_config", lambda: {"enabled": True, "cost_alert_threshold_usd": 1.0})
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *args, **kwargs: (0.99, "estimated"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (0.99, "estimated", {"uncached":0.0,"cache_read":0.0,"cache_write":0.0,"output":0.0}))
 
     bb._on_session_start(session_id="s1")
     bb._on_post_tool_call(tool_name="exec", session_id="s1")
@@ -256,7 +264,7 @@ def test_hook_below_threshold_records_no_alert(blackbox, monkeypatch):
 def test_hook_at_threshold_marks_and_sends_once(blackbox, monkeypatch):
     bb, store, sent = blackbox
     monkeypatch.setattr(bb, "_config", lambda: {"enabled": True, "cost_alert_threshold_usd": 1.0})
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *args, **kwargs: (1.0, "estimated"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (1.0, "estimated", {"uncached":0.0,"cache_read":0.0,"cache_write":0.0,"output":0.0}))
 
     bb._on_session_end(session_id="s1", model="m", platform="discord", provider="p", turn_usage=_usage())
 
@@ -267,7 +275,7 @@ def test_hook_at_threshold_marks_and_sends_once(blackbox, monkeypatch):
 def test_hook_interrupted_records_no_alert(blackbox, monkeypatch):
     bb, store, sent = blackbox
     monkeypatch.setattr(bb, "_config", lambda: {"enabled": True, "cost_alert_threshold_usd": 1.0})
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *args, **kwargs: (2.0, "estimated"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (2.0, "estimated", {"uncached":0.0,"cache_read":0.0,"cache_write":0.0,"output":0.0}))
 
     bb._on_session_end(
         session_id="s1",
@@ -291,7 +299,7 @@ def test_hook_always_card_sends_regardless_of_cost(blackbox, monkeypatch):
         "_config",
         lambda: {"enabled": True, "cost_alert_threshold_usd": 1.0, "always_card": True},
     )
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *args, **kwargs: (0.01, "estimated"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (0.01, "estimated", {"uncached":0.0,"cache_read":0.0,"cache_write":0.0,"output":0.0}))
 
     bb._on_session_end(session_id="s1", model="m", platform="discord", provider="p", turn_usage=_usage())
 
@@ -319,7 +327,7 @@ def test_hook_alerts_disabled_records_but_does_not_push(blackbox, monkeypatch):
         "_config",
         lambda: {"enabled": True, "alerts_enabled": False, "cost_alert_threshold_usd": 1.0},
     )
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *args, **kwargs: (5.0, "estimated"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (5.0, "estimated", {"uncached":0.0,"cache_read":0.0,"cache_write":0.0,"output":0.0}))
 
     bb._on_session_end(session_id="s1", model="m", platform="discord", provider="p", turn_usage=_usage())
 
@@ -337,7 +345,7 @@ def test_hook_alerts_disabled_ignores_always_card(blackbox, monkeypatch):
         "_config",
         lambda: {"enabled": True, "alerts_enabled": False, "always_card": True, "cost_alert_threshold_usd": 1.0},
     )
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *args, **kwargs: (0.01, "estimated"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (0.01, "estimated", {"uncached":0.0,"cache_read":0.0,"cache_write":0.0,"output":0.0}))
 
     bb._on_session_end(session_id="s1", model="m", platform="discord", provider="p", turn_usage=_usage())
 
@@ -350,7 +358,7 @@ def test_hook_chat_fields_from_kwargs_populate_record(blackbox, monkeypatch):
     so the session line is not an empty 'Discord <#>'."""
     bb, store, sent = blackbox
     monkeypatch.setattr(bb, "_config", lambda: {"enabled": True, "alerts_enabled": True, "cost_alert_threshold_usd": 1.0})
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *args, **kwargs: (0.1, "estimated"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (0.1, "estimated", {"uncached":0.0,"cache_read":0.0,"cache_write":0.0,"output":0.0}))
 
     # turn_usage._usage() carries no chat fields here; pass them as kwargs.
     usage = {k: v for k, v in _usage().items() if k not in ("chat_id", "chat_name")}
@@ -370,7 +378,7 @@ def test_hook_runs_retention_sweep_with_configured_days(blackbox, monkeypatch):
     configured retention_days (default 30 when unset)."""
     bb, store, sent = blackbox
     monkeypatch.setattr(bb, "_config", lambda: {"enabled": True, "cost_alert_threshold_usd": 1.0, "retention_days": 14})
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *args, **kwargs: (0.1, "estimated"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (0.1, "estimated", {"uncached":0.0,"cache_read":0.0,"cache_write":0.0,"output":0.0}))
 
     bb._on_session_end(session_id="s1", model="m", platform="discord", provider="p", turn_usage=_usage())
 
@@ -386,7 +394,7 @@ def test_hook_sweep_failure_does_not_block_recording(blackbox, monkeypatch):
 
     store.sweep = _boom
     monkeypatch.setattr(bb, "_config", lambda: {"enabled": True, "cost_alert_threshold_usd": 1.0})
-    monkeypatch.setattr(bb, "compute_turn_cost", lambda *args, **kwargs: (0.1, "estimated"))
+    monkeypatch.setattr(bb, "compute_turn_cost", lambda *a, **k: (0.1, "estimated", {"uncached":0.0,"cache_read":0.0,"cache_write":0.0,"output":0.0}))
 
     bb._on_session_end(session_id="s1", model="m", platform="discord", provider="p", turn_usage=_usage())
 

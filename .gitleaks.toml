@@ -21,4 +21,5 @@ stopwords = [
   "1234567890",  # test-key-1234567890 (AIAgent constructor stub) / test-k...7890
   "2mno",        # gsk_ab...2mno / sk-ant...2mno (redaction fixtures)
   "mnop",        # sk-or-...mnop (key-masking fixture)
+  "cdef",        # ghp_01...cdef (blackbox redaction-test fixture, test_seam_integration.py)
 ]

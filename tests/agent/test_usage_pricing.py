@@ -553,3 +553,89 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
     assert float(result.amount_usd) == 3.48
+
+
+# ---------------------------------------------------------------------------
+# SPEC-C — per-class cost breakdown on CostResult (tokens.ace priciest hover).
+# The engine already computes each class term then sums; these assert it now
+# ALSO exposes the four parts, that they reconcile to amount_usd, and that the
+# OpenAI-family cache-write-at-input-rate path attributes to cache_write.
+# ---------------------------------------------------------------------------
+def test_cost_result_exposes_per_class_breakdown_summing_to_total():
+    usage = CanonicalUsage(
+        input_tokens=0,
+        output_tokens=130_000,
+        cache_read_tokens=109_700_000,
+        cache_write_tokens=646_000,
+    )
+    r = estimate_usage_cost("claude-opus-4-8", usage, provider="claude-api-proxy")
+    assert r.status == "estimated"
+    # the four new per-class fields exist and are non-None on a priced turn
+    assert r.cost_input_usd is not None
+    assert r.cost_output_usd is not None
+    assert r.cost_cache_read_usd is not None
+    assert r.cost_cache_write_usd is not None
+    # they reconcile EXACTLY to the total (Decimal arithmetic, same terms)
+    parts = (r.cost_input_usd + r.cost_output_usd
+             + r.cost_cache_read_usd + r.cost_cache_write_usd)
+    assert parts == r.amount_usd
+    # and each equals tokens × the published rate
+    from agent.usage_pricing import get_pricing_entry
+    e = get_pricing_entry("claude-opus-4-8", provider="claude-api-proxy")
+    assert r.cost_cache_read_usd == (
+        __import__("decimal").Decimal(109_700_000) * e.cache_read_cost_per_million
+        / __import__("decimal").Decimal(1_000_000))
+
+
+def test_per_class_unknown_route_leaves_all_four_none():
+    usage = CanonicalUsage(input_tokens=1000, output_tokens=500)
+    r = estimate_usage_cost("totally-unknown-model-xyz", usage, provider="mystery")
+    assert r.status == "unknown"
+    assert r.amount_usd is None
+    assert r.cost_input_usd is None
+    assert r.cost_output_usd is None
+    assert r.cost_cache_read_usd is None
+    assert r.cost_cache_write_usd is None
+
+
+def test_per_class_pricing_is_linear_under_aggregation():
+    # INV-7: price(A) + price(B) == price(A+B). The backfill (one aggregate
+    # call) reproduces the live per-call sum ONLY if this holds.
+    A = CanonicalUsage(input_tokens=1000, output_tokens=500,
+                       cache_read_tokens=2_000_000, cache_write_tokens=10_000)
+    B = CanonicalUsage(input_tokens=3000, output_tokens=20_000,
+                       cache_read_tokens=500_000, cache_write_tokens=0)
+    AB = CanonicalUsage(input_tokens=4000, output_tokens=20_500,
+                        cache_read_tokens=2_500_000, cache_write_tokens=10_000)
+    ra = estimate_usage_cost("claude-opus-4-8", A, provider="claude-api-proxy")
+    rb = estimate_usage_cost("claude-opus-4-8", B, provider="claude-api-proxy")
+    rab = estimate_usage_cost("claude-opus-4-8", AB, provider="claude-api-proxy")
+    assert ra.amount_usd + rb.amount_usd == rab.amount_usd
+    # per-class is linear too
+    assert ra.cost_cache_read_usd + rb.cost_cache_read_usd == rab.cost_cache_read_usd
+    assert ra.cost_output_usd + rb.cost_output_usd == rab.cost_output_usd
+
+
+def test_cache_write_at_input_rate_attributes_to_cache_write_not_uncached():
+    # INV-6: an OpenAI-family route with no separate cache-write rate bills
+    # cache-write at the INPUT rate — that $ belongs to cost_cache_write_usd,
+    # and cost_input_usd reflects only the real input_tokens.
+    from agent.usage_pricing import get_pricing_entry
+    e = get_pricing_entry("gpt-5.5", provider="openrouter")
+    if e is None or e.input_cost_per_million is None:
+        import pytest
+        pytest.skip("gpt-5.5 openrouter pricing unavailable in this env")
+    # only proceed if this route truly has no separate cache-write rate
+    if e.cache_write_cost_per_million is not None:
+        import pytest
+        pytest.skip("route publishes a separate cache-write rate; INV-6 path N/A")
+    usage = CanonicalUsage(input_tokens=1000, output_tokens=0,
+                           cache_read_tokens=0, cache_write_tokens=2000)
+    r = estimate_usage_cost("gpt-5.5", usage, provider="openrouter")
+    from decimal import Decimal
+    expect_cw = Decimal(2000) * e.input_cost_per_million / Decimal(1_000_000)
+    expect_in = Decimal(1000) * e.input_cost_per_million / Decimal(1_000_000)
+    assert r.cost_cache_write_usd == expect_cw
+    assert r.cost_input_usd == expect_in
+    # the cache-write $ must NOT be folded into uncached/input
+    assert r.cost_input_usd != r.cost_cache_write_usd or 1000 == 2000

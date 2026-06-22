@@ -304,3 +304,54 @@ def test_view_empty_allowlists_allow_with_explicit_allow_all(monkeypatch):
     monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
     view = ExecApprovalView(session_key="s", allowed_user_ids=set())
     assert view._check_auth(_interaction(99999)) is True
+
+
+# ── pairing-approved users authorize component clicks (#50627) ─────────────
+# Regression: the v0.17 bundled-plugin migration dropped pairing from the
+# component-auth path, so users paired via `hermes pairing approve` (but not in
+# DISCORD_ALLOWED_USERS) could send messages yet were rejected at approval
+# buttons. The adapter attaches `_hermes_component_pairing_check` to the bot
+# client; the helper consults it as a fallback, mirroring the gateway message
+# path where the pairing store is always checked.
+
+
+def _interaction_with_pairing(user_id, paired_ids):
+    base = _interaction(user_id)
+    paired = {str(p) for p in paired_ids}
+    base.client = SimpleNamespace(
+        _hermes_component_pairing_check=lambda uid: str(uid) in paired
+    )
+    return base
+
+
+def test_component_pairing_approved_user_authorized_without_allowlist():
+    interaction = _interaction_with_pairing(55555, {"55555"})
+    assert _component_check_auth(interaction, set(), set()) is True
+
+
+def test_component_pairing_not_approved_user_rejected():
+    interaction = _interaction_with_pairing(55555, {"77777"})
+    assert _component_check_auth(interaction, set(), set()) is False
+
+
+def test_component_no_client_pairing_check_skipped():
+    # No client on the interaction → allowlist-only behavior, unchanged.
+    interaction = _interaction(55555)
+    assert _component_check_auth(interaction, set(), set()) is False
+
+
+def test_component_pairing_check_failure_is_swallowed():
+    interaction = _interaction(55555)
+
+    def _boom(_uid):
+        raise RuntimeError("pairing store down")
+
+    interaction.client = SimpleNamespace(_hermes_component_pairing_check=_boom)
+    # A raising pairing check must fail closed, not crash the auth path.
+    assert _component_check_auth(interaction, set(), set()) is False
+
+
+def test_component_allowlist_still_wins_over_pairing():
+    # Allowlisted user with no pairing hook is still authorized (no regression).
+    interaction = _interaction(11111)
+    assert _component_check_auth(interaction, {"11111"}, set()) is True

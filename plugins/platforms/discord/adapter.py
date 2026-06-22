@@ -972,6 +972,22 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             adapter_self = self  # capture for closure
 
+            # Expose a pairing-approval check on the bot client so component
+            # views (button clicks) can authorize pairing-approved users,
+            # mirroring the gateway message path where the pairing store is
+            # always consulted. gateway_runner is wired up later by
+            # gateway/run.py, so resolve it lazily at click time. Fixes #50627.
+            def _component_pairing_check(user_id: str) -> bool:
+                runner = adapter_self.gateway_runner
+                store = getattr(runner, "pairing_store", None) if runner else None
+                if store is None:
+                    return False
+                try:
+                    return bool(store.is_approved("discord", str(user_id)))
+                except Exception:
+                    return False
+            self._client._hermes_component_pairing_check = _component_pairing_check
+
             # Register event handlers
             @self._client.event
             async def on_ready():
@@ -5742,6 +5758,32 @@ def _component_check_auth(
             return False
         if user_role_ids & role_set:
             return True
+
+    # Pairing-approved users are authorized for component (button) clicks too,
+    # mirroring the gateway message path, where the pairing store is always
+    # checked regardless of allowlists (see gateway/authz_mixin). The adapter
+    # attaches this checker to the bot client at startup; when it's absent
+    # (e.g. a unit-test interaction with no client) the check is simply skipped,
+    # preserving prior allowlist-only behavior. Without it, a user paired via
+    # `hermes pairing approve` but not in DISCORD_ALLOWED_USERS is rejected at
+    # approval buttons even though their text messages are accepted (#50627,
+    # regression from the v0.17 bundled-plugin migration).
+    pairing_check = getattr(
+        getattr(interaction, "client", None),
+        "_hermes_component_pairing_check",
+        None,
+    )
+    if callable(pairing_check):
+        try:
+            uid2 = str(getattr(user, "id", "") or "")
+        except Exception:
+            uid2 = ""
+        if uid2:
+            try:
+                if pairing_check(uid2):
+                    return True
+            except Exception:
+                pass
 
     return False
 

@@ -279,6 +279,7 @@ class TestNoOpCompressionSkipsRotation:
         compressor._last_compress_aborted = False
         compressor._last_summary_error = None
         compressor._last_aux_model_failure_model = None
+        compressor._last_compression_savings_pct = 0.0
         compressor.compress.return_value = list(messages)
         agent.context_compressor = compressor
 

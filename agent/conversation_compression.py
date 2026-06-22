@@ -485,7 +485,11 @@ def compress_context(
     # If compress() returned messages unchanged without setting
     # _last_compress_aborted (e.g. compress_start >= compress_end),
     # there is nothing to rotate — skip session rotation entirely.
-    if len(compressed) >= _pre_msg_count:
+    # Guard on both length (no reduction) AND savings_pct == 0 so that
+    # a legitimate compression that happens to produce the same message
+    # count (e.g. summary replaces many messages 1:1) is not blocked.
+    _savings_pct = getattr(agent.context_compressor, "_last_compression_savings_pct", 100.0)
+    if len(compressed) >= _pre_msg_count and _savings_pct == 0.0:
         _existing_sp = getattr(agent, "_cached_system_prompt", None)
         if not _existing_sp:
             _existing_sp = agent._build_system_prompt(system_message)

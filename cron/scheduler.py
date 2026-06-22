@@ -135,12 +135,45 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     return disabled
 
 
+def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]:
+    """Layer enabled MCP servers onto a per-job ``enabled_toolsets`` allowlist.
+
+    A per-job list scopes the *native* toolsets, but on its own it silently
+    drops every MCP server: ``discover_mcp_tools()`` registers the tools into
+    the global registry, yet ``get_tool_definitions(enabled_toolsets=...)``
+    only keeps toolsets named in the list. The agent then rejects every
+    ``mcp_*`` call with "Unknown tool". This restores parity with
+    ``_get_platform_tools`` MCP semantics:
+
+      * ``no_mcp`` sentinel present  -> no MCP servers (sentinel stripped)
+      * one or more MCP server names already listed -> treat as an allowlist,
+        add nothing further (the user named exactly the servers they want)
+      * otherwise -> union in every globally-enabled MCP server
+    """
+    result = [t for t in per_job if t != "no_mcp"]
+    if "no_mcp" in per_job:
+        return result
+    # lazy import: avoid heavy hermes_cli import at cron module load (matches
+    # _resolve_cron_enabled_toolsets' fallback) and share one MCP-membership
+    # computation with the gateway/CLI platform resolver.
+    from hermes_cli.tools_config import enabled_mcp_server_names
+    enabled_mcp = enabled_mcp_server_names(cfg)
+    if set(result) & enabled_mcp:
+        return result
+    for name in sorted(enabled_mcp):
+        if name not in result:
+            result.append(name)
+    return result
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
     Precedence:
     1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update).
-       Keeps the agent's job-scoped toolset override intact — #6130.
+       Keeps the agent's job-scoped toolset override intact — #6130. Enabled
+       MCP servers are layered on per ``_merge_mcp_into_per_job_toolsets`` so a
+       native-toolset allowlist does not silently strip MCP tools.
     2. Per-platform ``hermes tools`` config for the ``cron`` platform.
        Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``)
        so users can gate cron toolsets globally without recreating every job.
@@ -154,7 +187,7 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """
     per_job = job.get("enabled_toolsets")
     if per_job:
-        return per_job
+        return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
         return sorted(_get_platform_tools(cfg or {}, "cron"))
@@ -283,9 +316,17 @@ def _get_hermes_home() -> Path:
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
-    """Resolve cron lock paths at call time so profile/env changes are honored."""
-    hermes_home = _get_hermes_home()
-    lock_dir = hermes_home / "cron"
+    """Resolve cron lock paths at call time so profile/env changes are honored.
+
+    Anchored on the DEFAULT ROOT home (not the active profile), matching the
+    jobs store in cron.jobs (which uses get_default_hermes_root). The tick lock
+    is storage-coordination — it must live next to the single jobs.json so that
+    tickers running under different profiles share one lock and can't
+    double-fire the relocated store (#32091). Execution context (.env,
+    config.yaml, scripts) stays profile-aware via _get_hermes_home().
+    """
+    from hermes_constants import get_default_hermes_root
+    lock_dir = (_hermes_home or get_default_hermes_root()) / "cron"
     return lock_dir, lock_dir / ".tick.lock"
 
 

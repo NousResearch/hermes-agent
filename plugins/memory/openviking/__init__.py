@@ -1678,6 +1678,19 @@ def _run_create_profile_setup(
 class OpenVikingMemoryProvider(MemoryProvider):
     """Full bidirectional memory via OpenViking context database."""
 
+    def backup_paths(self) -> List[str]:
+        """OpenViking's ovcli config lives at ~/.openviking/ovcli.conf by
+        default (or OPENVIKING_CLI_CONFIG_FILE). Capture the resolved file so
+        endpoint/api-key survive a backup/import cycle."""
+        try:
+            cfg = _resolve_ovcli_config_path()
+            # The home-scoped guard in the backup walk drops anything outside
+            # the user's home; an env override pointing elsewhere is skipped
+            # there rather than here.
+            return [str(cfg)]
+        except Exception:
+            return []
+
     def __init__(self):
         self._client: Optional[_VikingClient] = None
         self._endpoint = ""

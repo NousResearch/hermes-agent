@@ -7,6 +7,12 @@ import { translateNow, type Translations, useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
+  bubbleAttachmentRefsForRow,
+  collectInlineOsImageAttachments,
+  normalizeInlineRefWireForm,
+  stripInlineImageRefs
+} from '@/lib/composer-submit'
+import {
   optimisticAttachmentRef,
   parseCommandDispatch,
   parseSlashCommand,
@@ -547,9 +553,17 @@ export function usePromptActions({
 
   const submitPromptText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
-      const visibleText = rawText.trim()
+      const visibleText = normalizeInlineRefWireForm(rawText.trim())
       const usingComposerAttachments = !options?.attachments
-      const attachments = options?.attachments ?? $composerAttachments.get()
+      const baseAttachments = options?.attachments ?? $composerAttachments.get()
+
+      const knownPaths = new Set(baseAttachments.map(a => a.path).filter(Boolean))
+      const extraImageAttachments = collectInlineOsImageAttachments(visibleText, baseAttachments)
+      const attachments =
+        extraImageAttachments.length > 0 ? [...baseAttachments, ...extraImageAttachments] : baseAttachments
+
+      const computeWireText = (atts: ComposerAttachment[], userText: string): string =>
+        buildContextText(atts, userText)
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
@@ -561,14 +575,14 @@ export function usePromptActions({
       // a (remote-mode 403-prone) /api/media fetch — see optimisticAttachmentRef.
       let attachmentRefs = attachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
 
-      const buildContextText = (atts: ComposerAttachment[]): string => {
+      const buildContextText = (atts: ComposerAttachment[], userText: string): string => {
         const contextRefs = atts
           .map(a => a.refText)
           .filter(Boolean)
           .join('\n')
 
         return (
-          [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
+          [contextRefs, terminalContextBlocks, userText].filter(Boolean).join('\n\n') ||
           (atts.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
         )
       }
@@ -585,12 +599,19 @@ export function usePromptActions({
 
       const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
-      const buildUserMessage = (): ChatMessage => ({
-        id: optimisticId,
-        role: 'user',
-        parts: [textPart(visibleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
-        attachmentRefs
-      })
+      const buildUserMessage = (partsText?: string, refs?: string[]): ChatMessage => {
+        const refsForRow = bubbleAttachmentRefsForRow(refs ?? attachmentRefs, partsText ?? visibleText)
+        const body =
+          partsText ??
+          (visibleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))
+
+        return {
+          id: optimisticId,
+          role: 'user',
+          parts: [textPart(body)],
+          attachmentRefs: refsForRow
+        }
+      }
 
       const releaseBusy = () => {
         setMutableRef(busyRef, false)
@@ -600,34 +621,42 @@ export function usePromptActions({
 
       // Idempotent optimistic insert — re-running with the resolved sessionId
       // after createBackendSessionForSend just overwrites with the same id.
-      const seedOptimistic = (sid: string) =>
+      const seedOptimistic = (sid: string, partsText?: string) =>
         updateSessionState(
           sid,
-          state => ({
-            ...state,
-            messages: state.messages.some(m => m.id === optimisticId)
-              ? state.messages
-              : [...state.messages, buildUserMessage()],
-            busy: true,
-            awaitingResponse: true,
-            pendingBranchGroup: null,
-            sawAssistantPayload: false,
-            // Fresh submit = new turn — clear any leftover interrupt flag, else
-            // mutateStream/completeAssistantMessage drop every delta of this turn
-            // (what made drained-after-interrupt sends go silent).
-            interrupted: false
-          }),
+          state => {
+            const preview = partsText ?? computeWireText(attachments, visibleText)
+            const seeded = buildUserMessage(preview)
+
+            return {
+              ...state,
+              messages: state.messages.some(m => m.id === optimisticId)
+                ? state.messages.map(message => (message.id === optimisticId ? seeded : message))
+                : [...state.messages, seeded],
+              busy: true,
+              awaitingResponse: true,
+              pendingBranchGroup: null,
+              sawAssistantPayload: false,
+              // Fresh submit = new turn — clear any leftover interrupt flag, else
+              // mutateStream/completeAssistantMessage drop every delta of this turn
+              // (what made drained-after-interrupt sends go silent).
+              interrupted: false
+            }
+          },
           selectedStoredSessionIdRef.current
         )
 
-      // After sync rewrites refs, refresh the optimistic message in place so the
-      // transcript shows the resolved @file: ref rather than the local path.
-      const rewriteOptimistic = (sid: string) =>
+      // Rewrite the optimistic message + prompt text with the synced refs so the
+      // gateway receives @file: paths that resolve in its workspace.
+      // (Images keep their inline base64 preview — see optimisticAttachmentRef.)
+      const rewriteOptimistic = (sid: string, partsText: string, refs: string[]) =>
         updateSessionState(
           sid,
           state => ({
             ...state,
-            messages: state.messages.map(message => (message.id === optimisticId ? buildUserMessage() : message))
+            messages: state.messages.map(message =>
+              message.id === optimisticId ? buildUserMessage(partsText, refs) : message
+            )
           }),
           selectedStoredSessionIdRef.current
         )
@@ -662,7 +691,7 @@ export function usePromptActions({
       if (sessionId) {
         seedOptimistic(sessionId)
       } else {
-        setMessages(current => [...current, buildUserMessage()])
+        setMessages(current => [...current, buildUserMessage(computeWireText(attachments, visibleText))])
       }
 
       if (!sessionId) {
@@ -692,12 +721,15 @@ export function usePromptActions({
           updateComposerAttachments: usingComposerAttachments
         })
 
-        // Rewrite the optimistic message + prompt text with the synced refs so
-        // the gateway receives @file: paths that resolve in its workspace.
-        // (Images keep their inline base64 preview — see optimisticAttachmentRef.)
+        const attachedImagePaths = new Set(
+          syncedAttachments.filter(a => a.kind === 'image' && a.path).map(a => a.path as string)
+        )
+        const strippedVisibleText = stripInlineImageRefs(visibleText, attachedImagePaths)
+
+        // Rewrite the optimistic bubble with the same string sent to the gateway.
         attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
-        rewriteOptimistic(sessionId)
-        const text = buildContextText(syncedAttachments)
+        const text = buildContextText(syncedAttachments, strippedVisibleText)
+        rewriteOptimistic(sessionId, text, attachmentRefs)
 
         // On sleep/wake the gateway's in-memory session may have been cleared
         // while the desktop app still holds the old session ID. Detect this,

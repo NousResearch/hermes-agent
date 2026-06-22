@@ -1,5 +1,5 @@
 """
-蓝信 (Lanxin / Hygon IM) platform adapter for Hermes Agent.
+蓝信 (Lanxin) platform adapter for Hermes Agent.
 
 Handles incoming messages via HTTP callback (AES-256-CBC encrypted, HMAC-SHA256
 signed) and sends replies through the Lanxin Open Platform REST API.

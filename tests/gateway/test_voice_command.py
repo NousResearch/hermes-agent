@@ -1209,6 +1209,93 @@ class TestDiscordVoiceChannelMethods:
         result = await adapter.play_in_voice_channel(111, "/tmp/test.ogg")
         assert result is False
 
+    def test_voice_timeout_zero_disables_auto_leave(self):
+        adapter = self._make_adapter()
+        adapter._voice_timeout_seconds = 0
+        existing_task = MagicMock()
+        adapter._voice_timeout_tasks[111] = existing_task
+
+        adapter._reset_voice_timeout(111)
+
+        existing_task.cancel.assert_called_once()
+        assert adapter._voice_timeout_tasks == {}
+
+    def test_discord_voice_timeout_config_loaded(self):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        from gateway.config import PlatformConfig
+
+        with patch("hermes_cli.config.read_raw_config", return_value={
+            "discord": {
+                "voice_channel_inactivity_timeout_seconds": 0,
+                "voice_playback_timeout_seconds": 240,
+            }
+        }):
+            adapter = DiscordAdapter(PlatformConfig(enabled=True, token="x"))
+
+        assert adapter._voice_timeout_seconds == 0
+        assert adapter._playback_timeout_seconds == 240
+
+    @pytest.mark.asyncio
+    async def test_playback_timeout_scales_with_audio_duration(self):
+        adapter = self._make_adapter()
+        adapter._playback_timeout_seconds = 120
+        adapter._probe_audio_duration_seconds = MagicMock(return_value=180.5)
+
+        timeout = await adapter._playback_timeout_for_audio("/tmp/long.mp3")
+
+        assert timeout == pytest.approx(210.5)
+
+    @pytest.mark.asyncio
+    async def test_playback_timeout_uses_floor_when_duration_unknown(self):
+        adapter = self._make_adapter()
+        adapter._playback_timeout_seconds = 240
+        adapter._probe_audio_duration_seconds = MagicMock(return_value=None)
+
+        timeout = await adapter._playback_timeout_for_audio("/tmp/unknown.mp3")
+
+        assert timeout == pytest.approx(240.0)
+
+    @pytest.mark.asyncio
+    async def test_play_in_voice_channel_uses_duration_aware_timeout(self):
+        adapter = self._make_adapter()
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.is_playing.return_value = False
+        adapter._voice_clients[111] = mock_vc
+        adapter._playback_timeout_for_audio = AsyncMock(return_value=211.0)
+        adapter._cancel_voice_timeout = MagicMock()
+        adapter._reset_voice_timeout = MagicMock()
+
+        def _play(_source, after):
+            after(None)
+        mock_vc.play.side_effect = _play
+
+        with patch("plugins.platforms.discord.adapter.discord") as mock_discord:
+            mock_discord.FFmpegPCMAudio.return_value = MagicMock()
+            mock_discord.PCMVolumeTransformer.return_value = MagicMock()
+            result = await adapter.play_in_voice_channel(111, "/tmp/long.mp3")
+
+        assert result is True
+        adapter._playback_timeout_for_audio.assert_awaited_once_with("/tmp/long.mp3")
+        adapter._cancel_voice_timeout.assert_called_once_with(111)
+        adapter._reset_voice_timeout.assert_called_once_with(111)
+
+    @pytest.mark.asyncio
+    async def test_play_in_voice_channel_rearms_timeout_when_probe_fails(self):
+        adapter = self._make_adapter()
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        adapter._voice_clients[111] = mock_vc
+        adapter._playback_timeout_for_audio = AsyncMock(side_effect=RuntimeError("probe failed"))
+        adapter._cancel_voice_timeout = MagicMock()
+        adapter._reset_voice_timeout = MagicMock()
+
+        with pytest.raises(RuntimeError, match="probe failed"):
+            await adapter.play_in_voice_channel(111, "/tmp/bad.mp3")
+
+        adapter._cancel_voice_timeout.assert_called_once_with(111)
+        adapter._reset_voice_timeout.assert_called_once_with(111)
+
     def test_is_allowed_user_empty_list(self):
         adapter = self._make_adapter()
         assert adapter._is_allowed_user("42") is True
@@ -2036,8 +2123,8 @@ class TestPlaybackTimeout:
         source = inspect.getsource(DiscordAdapter.play_in_voice_channel)
         assert "wait_for" in source, \
             "play_in_voice_channel must use asyncio.wait_for for timeout"
-        assert "PLAYBACK_TIMEOUT" in source, \
-            "play_in_voice_channel must reference PLAYBACK_TIMEOUT constant"
+        assert "_playback_timeout_for_audio" in source, \
+            "play_in_voice_channel must use duration-aware playback timeout helper"
 
     def test_playback_timeout_constant_exists(self):
         """PLAYBACK_TIMEOUT constant is defined on DiscordAdapter."""

@@ -1,13 +1,16 @@
 # Bug: Desktop composer locks on "Starting Hermes…" after sleep/wake (stale cached backend)
 
-- **Status:** Diagnosed — fix on branch `fix/desktop-sleep-wake-reconnect-stale-backend`
+- **Status:** Diagnosed; upstream `main` has a first-pass revalidate recovery,
+  and this branch hardens it with atomic `getConnection(..., { revalidate: true })`
+  revalidation plus a two-miss remote rebuild threshold.
 - **Severity:** High (user is fully locked out of an active session; only an app restart recovers)
 - **Component:** `apps/desktop` (Electron main + renderer gateway boot/reconnect)
 - **Primarily affects:** Remote / `global-remote` mode backends
 - **Workaround:** Quit and reopen the desktop app
 
-> This document is the pre-fix write-up for review. The fix lands in a **separate
-> commit** so the diagnosis can be reviewed independently of the change.
+> This document preserves the original diagnosis for review. Upstream now includes
+> a simpler revalidate IPC; this branch keeps the recovery behavior but reduces
+> reconnect races and false-positive remote rebuilds.
 
 ---
 
@@ -198,17 +201,19 @@ red-team:
 - **Relaunch-diff lens — confirms (0.95):** the only state a full relaunch resets
   that an in-app reconnect cannot is the module-level `connectionPromise` cache.
 
-## 8. Planned fix (summary; lands in the next commit)
+## 8. Implemented hardening
 
-**Revalidate-on-reconnect.** Add an opt-in liveness check so a reconnect cannot
-re-dial a dead cached backend:
+**Revalidate-on-reconnect.** Keep an opt-in liveness check so a reconnect cannot
+re-dial a dead cached backend, but make the check part of `getConnection()` rather
+than a separate preflight IPC:
 
 - The renderer's **backoff-paced** reconnect (`use-gateway-boot.ts` only) calls
   `getConnection(profile, { revalidate: true })`.
 - On a cache hit with `revalidate`, `startHermes()` fast-probes the **public**
-  `/api/status` (token-free `fetchPublicJson`, ~2.5s). If it fails, drop the cache
-  via `resetHermesConnection()` and rebuild, so the renderer's existing loop gets
-  a fresh, reachable descriptor — no app restart required.
+  `/api/status` (token-free `fetchPublicJson`, ~2.5s). If two consecutive
+  backoff-scoped probes fail for a `mode === 'remote'` primary backend, it drops
+  the cache via `resetHermesConnection()` and rebuilds, so the renderer's existing
+  loop gets a fresh, reachable descriptor — no app restart required.
 
 Red-team-driven guard rails (to avoid regressions):
 

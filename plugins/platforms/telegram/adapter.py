@@ -3951,6 +3951,32 @@ class TelegramAdapter(BasePlatformAdapter):
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
 
+        logger.info(
+            "[TG_CALLBACK_HANDLER_ENTER] data=%s chat_id=%s message_id=%s pid=%s",
+            data,
+            query_chat_id,
+            getattr(query_message, "message_id", None),
+            os.getpid(),
+        )
+        logger.info(
+            "[TG_CALLBACK_ROUTE_CHECK] data=%s chat_id=%s message_id=%s pid=%s",
+            data,
+            query_chat_id,
+            getattr(query_message, "message_id", None),
+            os.getpid(),
+        )
+
+        if data.startswith(("w:", "s:", "m:", "mr:")):
+            await self._handle_nwe_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
+
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
@@ -6900,7 +6926,102 @@ class TelegramAdapter(BasePlatformAdapter):
 # hermes_cli/{setup,gateway}.py, and the _send_telegram dispatch in
 # tools/send_message_tool.py).  Telegram uses the generic token connected
 # check, so no is_connected override is needed.
-# ──────────────────────────────────────────────────────────────────────────
+        return None
+
+    async def _handle_nwe_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        query_message = getattr(query, "message", None)
+        chat_id = query_chat_id or getattr(getattr(query_message, "chat", None), "id", None)
+        message_id = getattr(query_message, "message_id", None)
+
+        if data.startswith("w:"):
+            logger.info("[NWE_WATER_ROUTE_MATCH] data=%s chat_id=%s message_id=%s", data, chat_id, message_id)
+        elif data.startswith("s:"):
+            logger.info("[NWE_SUPP_ROUTE_SEEN] data=%s message_id=%s", data, message_id)
+        elif data.startswith("m:"):
+            logger.info("[NWE_MEAL_ROUTE_SEEN] data=%s message_id=%s", data, message_id)
+        elif data.startswith("mr:"):
+            logger.info("[NWE_MEAL_RESOLUTION_ROUTE_SEEN] data=%s message_id=%s", data, message_id)
+
+        ack_text = None
+        if data.startswith("w:"):
+            ack_text = "💧 Água"
+        elif data.startswith("s:"):
+            ack_text = "💊 Suplementos"
+        elif data.startswith(("m:", "mr:")):
+            ack_text = "🍽️ Refeição"
+
+        logger.info("[NWE_CALLBACK_BEFORE_ANSWER] data=%s chat_id=%s message_id=%s", data, chat_id, message_id)
+        try:
+            await query.answer(text=ack_text)
+            logger.info("[NWE_CALLBACK_AFTER_ANSWER] data=%s chat_id=%s message_id=%s", data, chat_id, message_id)
+        except Exception as exc:
+            logger.warning("[TG_ANSWER_CALLBACK_ERROR] data=%s error=%s", data, exc, exc_info=True)
+
+        logger.info("[NWE_CALLBACK_BEFORE_PROCESS] data=%s chat_id=%s message_id=%s", data, chat_id, message_id)
+        result = await self._run_nwe_callback(
+            chat_id=str(chat_id),
+            message_id=str(message_id),
+            callback_data=data,
+        )
+        logger.info("[NWE_CALLBACK_AFTER_PROCESS] data=%s ok=%s duplicate=%s", data, result.get("ok"), result.get("duplicate"))
+
+        confirmation_text = result.get("confirmation_text") or result.get("answer_text")
+        if confirmation_text:
+            await self._bot.send_message(
+                chat_id=chat_id,
+                text=confirmation_text,
+                message_thread_id=query_thread_id,
+            )
+
+    async def _run_nwe_callback(self, *, chat_id: str, message_id: str, callback_data: str) -> dict:
+        hermes_home = _Path(os.environ.get("HERMES_HOME") or _Path.home() / ".hermes")
+        handle_script = hermes_home / "scripts" / "reminders" / "wellness_v2" / "handle_poc_callback.py"
+
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(handle_script),
+            str(chat_id),
+            str(message_id),
+            str(callback_data),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_b, stderr_b = await proc.communicate()
+        stdout = stdout_b.decode("utf-8", errors="replace").strip()
+        stderr = stderr_b.decode("utf-8", errors="replace").strip()
+
+        logger.info(
+            "[NWE_SCRIPT_RESULT] returncode=%s stdout_len=%s stderr_len=%s stdout_prefix=%r stderr_prefix=%r",
+            proc.returncode,
+            len(stdout),
+            len(stderr),
+            stdout[:500],
+            stderr[:500],
+        )
+
+        if stderr:
+            logger.warning("[NWE_SCRIPT_STDERR] %s", stderr[:1000])
+
+        try:
+            result = json.loads(stdout) if stdout else {}
+        except Exception:
+            logger.exception("[NWE_SCRIPT_JSON_ERROR] stdout=%r", stdout[:1000])
+            result = {"ok": False, "error": "invalid_json", "raw_stdout": stdout[:1000]}
+
+        if proc.returncode != 0:
+            result.setdefault("ok", False)
+            result.setdefault("error", f"nwe_script_returncode_{proc.returncode}")
+
+        return result
 
 
 def _resolve_notifications_mode() -> str:

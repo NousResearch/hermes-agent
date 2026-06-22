@@ -12178,6 +12178,13 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     return api_field
 
 
+# Plugin sources whose Python backend (dashboard manifest `api` file) must NEVER
+# be auto-imported by the dashboard web server — only bundled plugins may. Shared
+# by the discovery-time scrub and the mount-time refuse guards so a typo in one
+# site cannot silently disable a security gate (GHSA-5qr3-c538-wm9j / #43719).
+_NON_BUNDLED_PLUGIN_SOURCES = frozenset({"user", "project"})
+
+
 def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
@@ -12254,7 +12261,7 @@ def _discover_dashboard_plugins() -> list:
                 raw_api = data.get("api")
                 dashboard_dir = child / "dashboard"
                 safe_api = _safe_plugin_api_relpath(raw_api, dashboard_dir=dashboard_dir)
-                if source in {"user", "project"} and safe_api:
+                if source in _NON_BUNDLED_PLUGIN_SOURCES and safe_api:
                     _log.warning(
                         "Plugin %s: refusing dashboard backend api=%s "
                         "(only bundled plugins may auto-import Python "
@@ -12683,19 +12690,27 @@ def _mount_plugin_api_routes():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
-        if plugin.get("source") == "user":
+        source = plugin.get("source")
+        if source in _NON_BUNDLED_PLUGIN_SOURCES:
+            # Backend Python auto-import is reserved for bundled plugins; user
+            # and project plugins extend the dashboard with static UI assets
+            # only (GHSA-5qr3-c538-wm9j / #43719). Defence-in-depth: discovery
+            # already nulls _api_file for these sources, but re-refusing here —
+            # at the actual importlib call site — keeps the import primitive
+            # contained even if a future caller or a tampered cache entry slips
+            # a non-bundled plugin through with an _api_file set.
+            _reason = {
+                "user": (
+                    "user-installed plugins may not auto-import Python code"
+                ),
+                "project": (
+                    "project plugins may not auto-import Python code; backend "
+                    "auto-import is reserved for bundled plugins"
+                ),
+            }.get(source, "only bundled plugins may auto-import Python code")
             _log.warning(
-                "Plugin %s: ignoring backend api=%s (user-installed "
-                "plugins may not auto-import Python code)",
-                plugin["name"], api_file_name,
-            )
-            continue
-        if plugin.get("source") == "project":
-            _log.warning(
-                "Plugin %s: ignoring backend api=%s (project plugins may "
-                "not auto-import Python code; backend auto-import is "
-                "reserved for bundled plugins)",
-                plugin["name"], api_file_name,
+                "Plugin %s: ignoring backend api=%s (%s)",
+                plugin["name"], api_file_name, _reason,
             )
             continue
         dashboard_dir = Path(plugin["_dir"])

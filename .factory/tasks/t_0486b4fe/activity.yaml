@@ -1,0 +1,49 @@
+schema: hermes-factory-activity/v1
+task:
+  id: t_0486b4fe
+  title: Bootstrap Hermes Agent baseline smoke script for factory platform work
+  board: default
+agent:
+  profile: dev-backend-2
+  role: backend
+  model: gpt-5.5
+timeline:
+  started_at: '2026-06-22T13:30:00Z'
+  completed_at: '2026-06-22T13:51:41Z'
+summary:
+  - Added a root smoke.sh baseline entrypoint for Hermes Agent factory work.
+  - Added a pytest regression covering credential-free execution of bash smoke.sh.
+rationale:
+  - decision: Make smoke.sh self-contained and conservative instead of requiring init.sh or networked services.
+    why: Origin main lacks the factory init/smoke spine, and the prerequisite for blocked platform work is a fast baseline that clean worktrees can run before code changes.
+    rejected_alternative: Start the dashboard server and browse core routes from smoke.sh.
+    why_rejected: That path depends on additional factory init artifacts and optional browser tooling, making it too heavy for the minimal prerequisite gate.
+files_touched:
+  - path: smoke.sh
+    change: added conservative repository/tooling smoke entrypoint
+  - path: tests/test_smoke_entrypoint.py
+    change: added regression that runs bash smoke.sh with a minimal credential-free environment
+  - path: .factory/tasks/t_0486b4fe/activity.yaml
+    change: recorded task activity and verification evidence
+verification:
+  - command: bash smoke.sh
+    exit_code: 0
+    output_summary: pyproject validated as hermes-agent; default config validated; temp state.db PRAGMA quick_check returned ok; smoke passed.
+  - command: PYTHONPATH=. /Users/sanbox-user/.hermes/hermes-agent/.venv/bin/python -m pytest tests/test_smoke_entrypoint.py -q
+    exit_code: 0
+    output_summary: 1 passed in 0.43s.
+  - command: scripts/run_tests.sh tests/test_smoke_entrypoint.py -- -q
+    exit_code: 1
+    output_summary: Existing runner picked /Users/sanbox-user/.hermes/hermes-agent/venv/bin/python, which has no pytest installed; direct pytest was used with the repo dev venv instead.
+acceptance_criteria:
+  - criterion: A clean worktree can run bash smoke.sh successfully.
+    status: met
+    evidence: bash smoke.sh exited 0 from the task worktree.
+  - criterion: No credential access is attempted.
+    status: met
+    evidence: smoke.sh invokes Python under env -i with only PATH, HOME, TMPDIR, HERMES_HOME, PYTHONPATH, and PYTHONDONTWRITEBYTECODE.
+  - criterion: t_f5242992 remains blocked until independently validated.
+    status: met
+    evidence: This task only changed the Hermes Agent worktree and did not unblock or modify t_f5242992.
+prior_attempts: []
+follow_ups: []

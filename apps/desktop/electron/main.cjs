@@ -44,6 +44,15 @@ const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-e
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { readLiveUpdateMarker } = require('./update-marker.cjs')
+const {
+  resolveUnpackedRelease,
+  decideRelaunchOutcome,
+  sandboxPreflight,
+  sandboxFallbackFromEnv,
+  collectRelaunchArgs,
+  collectRelaunchEnv,
+  buildRelaunchScript
+} = require('./update-relaunch.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
@@ -2110,6 +2119,114 @@ async function applyUpdatesPosixInApp() {
       error: rebuilt.error || 'rebuild-failed'
     })
     return { ok: false, backendUpdated: true, error: 'desktop rebuild failed' }
+  }
+
+  // Linux in-app update terminal state (#45205). `hermes desktop --build-only`
+  // rebuilds the unpacked app in place under apps/desktop/release/<plat>-unpacked.
+  // We can only HONESTLY relaunch into the new GUI when the *running* binary IS
+  // that rebuilt one — i.e. execPath lives under release/<plat>-unpacked. The
+  // outcome is decided by three signals (see update-relaunch.cjs):
+  //
+  //   underUnpacked + sandboxOk  → 'relaunch': detached watcher re-execs us in
+  //       place (mirrors the macOS handoff). Without it the update succeeds but
+  //       the app never restarts and the overlay hangs on "applying" forever.
+  //   !underUnpacked             → 'guiSkew': the running shell is an AppImage/
+  //       .deb/.rpm/dev/unresolved binary we did NOT replace. Claiming "loads
+  //       next launch" is a lie (GUI/backend skew, #37541) — surface an
+  //       explicit closeable terminal state telling the user the GUI package
+  //       was NOT changed and must be updated/reinstalled.
+  //   underUnpacked + !sandboxOk → 'manual': we'd be relaunching the rebuilt
+  //       binary, but a fresh rebuild can leave chrome-sandbox without
+  //       root:root + setuid (mode 4755) and Electron then refuses to launch
+  //       ("quit and never came back"). DO NOT quit into a dead app — keep the
+  //       working window and surface the closeable manual-restart state.
+  if (!IS_MAC) {
+    const unpackedDir = resolveUnpackedRelease(process.execPath, updateRoot, process.platform)
+    const underUnpacked = unpackedDir !== null
+
+    const preflight = underUnpacked
+      ? sandboxPreflight(unpackedDir, p => fs.statSync(p))
+      : { ok: false, reason: 'not-under-unpacked', path: null }
+    const sandboxFallback = sandboxFallbackFromEnv(process.env, process.argv.slice(1))
+    const sandboxOk = preflight.ok || sandboxFallback
+    if (underUnpacked && !preflight.ok) {
+      rememberLog(
+        `[updates] sandbox preflight: not launchable (${preflight.reason}) at ${preflight.path}; ` +
+          `fallback=${sandboxFallback ? 'env/--no-sandbox' : 'none'}`
+      )
+    }
+
+    const outcome = decideRelaunchOutcome({ underUnpacked, sandboxOk })
+
+    if (outcome === 'relaunch') {
+      emitUpdateProgress({ stage: 'restart', message: 'Restarting Hermes…', percent: 100 })
+      // Preserve launch context across the re-exec: replay the original args
+      // (filtered of Electron internals) and the env/cwd that define which
+      // backend/profile/root this instance talks to. Without this the
+      // relaunched instance comes up with default context instead of the user's.
+      const relaunchArgs = collectRelaunchArgs(process.argv.slice(1))
+      const relaunchEnv = collectRelaunchEnv(process.env)
+      const relaunchScript = buildRelaunchScript({
+        pid: process.pid,
+        execPath: process.execPath,
+        args: relaunchArgs,
+        env: relaunchEnv,
+        cwd: process.cwd()
+      })
+      const scriptPath = path.join(app.getPath('temp'), `hermes-desktop-update-${Date.now()}.sh`)
+      try {
+        fs.writeFileSync(scriptPath, relaunchScript, { mode: 0o755 })
+        const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
+        child.unref()
+        rememberLog(
+          `[updates] launched linux relaunch: ${scriptPath} -> ${process.execPath} ` +
+            `(args=${relaunchArgs.length}, env=${Object.keys(relaunchEnv).length})`
+        )
+        setTimeout(() => app.quit(), UPDATE_HANDOFF_DWELL_MS)
+        return { ok: true, handedOff: true }
+      } catch (err) {
+        rememberLog(`[updates] linux relaunch failed: ${err.message}; falling back to manual restart`)
+        return {
+          ok: true,
+          backendUpdated: true,
+          guiUpdated: false,
+          manualRestart: true,
+          message: 'Backend updated. Quit and reopen Hermes to load the new version.'
+        }
+      }
+    }
+
+    if (outcome === 'guiSkew') {
+      emitUpdateProgress({
+        stage: 'guiSkew',
+        message:
+          'Backend updated, but the desktop app package was not changed. ' +
+          'Update or reinstall the Hermes desktop app to match.',
+        percent: 100
+      })
+      rememberLog(
+        `[updates] gui/backend skew: execPath ${process.execPath} not under release/*-unpacked; ` +
+          'backend updated, GUI package unchanged (AppImage/.deb/.rpm/dev/unresolved)'
+      )
+      return { ok: true, backendUpdated: true, guiUpdated: false, guiSkew: true }
+    }
+
+    // outcome === 'manual': we're the rebuilt binary, but its sandbox helper is
+    // not launchable and no fallback applies. Keep this working window alive.
+    rememberLog(
+      `[updates] sandbox not launchable (${preflight.reason}); skipping auto-relaunch, ` +
+        'returning manual-restart so the user keeps a working window'
+    )
+    return {
+      ok: true,
+      backendUpdated: true,
+      guiUpdated: false,
+      manualRestart: true,
+      sandboxBlocked: true,
+      message:
+        'Backend updated. The rebuilt app can’t relaunch automatically ' +
+        '(sandbox helper needs root). Quit and reopen Hermes to finish.'
+    }
   }
 
   const rebuiltApp = [

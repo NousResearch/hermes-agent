@@ -4714,7 +4714,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
             view = ExecApprovalView(
                 session_key=session_key,
-                allowed_user_ids=self._allowed_user_ids,
+                allowed_user_ids=_merge_component_allowed_user_ids(
+                    self._allowed_user_ids, metadata
+                ),
                 allowed_role_ids=self._allowed_role_ids,
             )
 
@@ -4754,7 +4756,9 @@ class DiscordAdapter(BasePlatformAdapter):
             view = SlashConfirmView(
                 session_key=session_key,
                 confirm_id=confirm_id,
-                allowed_user_ids=self._allowed_user_ids,
+                allowed_user_ids=_merge_component_allowed_user_ids(
+                    self._allowed_user_ids, metadata
+                ),
                 allowed_role_ids=self._allowed_role_ids,
             )
 
@@ -4861,7 +4865,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 view = ClarifyChoiceView(
                     choices=clean_choices,
                     clarify_id=clarify_id,
-                    allowed_user_ids=self._allowed_user_ids,
+                    allowed_user_ids=_merge_component_allowed_user_ids(
+                        self._allowed_user_ids, metadata
+                    ),
                     allowed_role_ids=self._allowed_role_ids,
                 )
             else:
@@ -4906,7 +4912,9 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             view = UpdatePromptView(
                 session_key=session_key,
-                allowed_user_ids=self._allowed_user_ids,
+                allowed_user_ids=_merge_component_allowed_user_ids(
+                    self._allowed_user_ids, metadata
+                ),
                 allowed_role_ids=self._allowed_role_ids,
             )
             msg = await channel.send(embed=embed, view=view)
@@ -4967,7 +4975,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 current_provider=current_provider,
                 session_key=session_key,
                 on_model_selected=on_model_selected,
-                allowed_user_ids=self._allowed_user_ids,
+                allowed_user_ids=_merge_component_allowed_user_ids(
+                    self._allowed_user_ids, metadata
+                ),
                 allowed_role_ids=self._allowed_role_ids,
             )
 
@@ -5739,6 +5749,20 @@ def _component_check_auth(
             return True
 
     return False
+
+
+def _merge_component_allowed_user_ids(
+    allowed_user_ids: Optional[set],
+    metadata: Optional[Dict[str, Any]] = None,
+) -> set[str]:
+    """Merge static component allowlists with the originating requester."""
+    merged = {
+        str(uid).strip() for uid in (allowed_user_ids or set()) if str(uid).strip()
+    }
+    requester_user_id = str((metadata or {}).get("requester_user_id") or "").strip()
+    if requester_user_id:
+        merged.add(requester_user_id)
+    return merged
 
 
 def _define_discord_view_classes() -> None:

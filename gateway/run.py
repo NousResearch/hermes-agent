@@ -12011,6 +12011,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         adapter = self.adapters.get(source.platform)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        if getattr(source, "user_id", None):
+            metadata = dict(metadata or {})
+            metadata["requester_user_id"] = str(source.user_id)
 
         used_buttons = False
         if adapter is not None:
@@ -15747,13 +15750,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # false positives from MagicMock auto-attribute creation in tests.
                 if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
                     try:
+                        _approval_metadata = dict(_status_thread_metadata or {})
+                        if getattr(source, "user_id", None):
+                            _approval_metadata["requester_user_id"] = str(source.user_id)
                         _approval_fut = safe_schedule_threadsafe(
                             _status_adapter.send_exec_approval(
                                 chat_id=_status_chat_id,
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata=_approval_metadata or None,
                             ),
                             _loop_for_step,
                             logger=logger,

@@ -153,6 +153,32 @@ async def test_gate_on_pending_confirm_registered(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_button_path_passes_requester_user_id_in_metadata():
+    """Button-capable adapters must receive the originating requester id."""
+    runner = _make_runner()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    runner._session_key_for_source = lambda src: build_session_key(src)
+    runner.adapters[Platform.TELEGRAM].send_slash_confirm = AsyncMock(
+        return_value=SimpleNamespace(success=True)
+    )
+
+    execute = AsyncMock(return_value="should not run yet")
+
+    result = await runner._maybe_confirm_destructive_slash(
+        event=_make_event("/new"),
+        command="new",
+        title="/new",
+        detail="Discards history.",
+        execute=execute,
+    )
+
+    execute.assert_not_awaited()
+    assert result is None
+    kwargs = runner.adapters[Platform.TELEGRAM].send_slash_confirm.await_args.kwargs
+    assert kwargs["metadata"] == {"requester_user_id": "u1"}
+
+
+@pytest.mark.asyncio
 async def test_resolve_once_runs_execute_and_returns_result():
     """Resolving the pending confirm with 'once' runs the destructive
     action and returns its output."""

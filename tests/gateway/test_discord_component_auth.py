@@ -13,6 +13,7 @@ handling, and fail-closed behavior so the parity cannot regress.
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -20,12 +21,14 @@ import pytest
 # importing the production module.
 from plugins.platforms.discord.adapter import (  # noqa: E402
     ClarifyChoiceView,
+    DiscordAdapter,
     ExecApprovalView,
     ModelPickerView,
     SlashConfirmView,
     UpdatePromptView,
     _component_check_auth,
 )
+from gateway.config import PlatformConfig  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -58,6 +61,14 @@ def _interaction(user_id, role_ids=None, *, drop_user=False, drop_roles=False):
     if not drop_roles:
         user_kwargs["roles"] = [SimpleNamespace(id=r) for r in (role_ids or [])]
     return SimpleNamespace(user=SimpleNamespace(**user_kwargs))
+
+
+def _make_adapter(*, allowed_users=None, allowed_roles=None):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra={}))
+    adapter._client = MagicMock()
+    adapter._allowed_user_ids = set(allowed_users or [])
+    adapter._allowed_role_ids = set(allowed_roles or [])
+    return adapter
 
 
 # ── no policy configured -> deny unless allow-all is explicit ──────────────
@@ -114,6 +125,54 @@ def test_component_check_global_allowlist_without_match_rejects(monkeypatch):
 def test_component_check_wildcard_user_allowlist_passes():
     interaction = _interaction(99999)
     assert _component_check_auth(interaction, {"*"}, set()) is True
+
+
+@pytest.mark.asyncio
+async def test_send_exec_approval_allows_originating_requester_without_global_allowlist():
+    adapter = _make_adapter()
+    channel = MagicMock()
+    sent_msg = MagicMock()
+    sent_msg.id = 123
+    channel.send = AsyncMock(return_value=sent_msg)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    result = await adapter.send_exec_approval(
+        chat_id="9001",
+        command="rm -rf /tmp/demo",
+        session_key="sess-1",
+        metadata={"requester_user_id": "42"},
+    )
+
+    assert result.success is True
+    view = channel.send.call_args.kwargs["view"]
+    assert isinstance(view, ExecApprovalView)
+    assert view._check_auth(_interaction(42)) is True
+    assert view._check_auth(_interaction(99)) is False
+
+
+@pytest.mark.asyncio
+async def test_send_slash_confirm_allows_originating_requester_without_global_allowlist():
+    adapter = _make_adapter()
+    channel = MagicMock()
+    sent_msg = MagicMock()
+    sent_msg.id = 456
+    channel.send = AsyncMock(return_value=sent_msg)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    result = await adapter.send_slash_confirm(
+        chat_id="9001",
+        title="Confirm",
+        message="Apply the change?",
+        session_key="sess-2",
+        confirm_id="confirm-1",
+        metadata={"requester_user_id": "42"},
+    )
+
+    assert result.success is True
+    view = channel.send.call_args.kwargs["view"]
+    assert isinstance(view, SlashConfirmView)
+    assert view._check_auth(_interaction(42)) is True
+    assert view._check_auth(_interaction(99)) is False
 
 
 # ── role allowlist OR semantics ────────────────────────────────────────────

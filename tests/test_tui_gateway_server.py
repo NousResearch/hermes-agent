@@ -3029,6 +3029,8 @@ def test_complete_slash_details_args():
 
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    emits = []
+    monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
     agent = types.SimpleNamespace(reasoning_config=None)
     server._sessions["sid"] = _session(agent=agent)
 
@@ -3041,6 +3043,23 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     )
     assert resp_effort["result"]["value"] == "low"
     assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+
+    emits.clear()
+    resp_off = server.handle_request(
+        {
+            "id": "1b",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "none"},
+        }
+    )
+    assert resp_off["result"]["value"] == "none"
+    assert agent.reasoning_config == {"enabled": False}
+    assert any(
+        event[0] == "session.info"
+        and event[1] == "sid"
+        and event[2].get("reasoning_effort") == "none"
+        for event in emits
+    )
 
     resp_show = server.handle_request(
         {

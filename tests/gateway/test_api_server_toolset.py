@@ -124,3 +124,28 @@ class TestApiServerAdapterToolset:
             call_kwargs = mock_agent_cls.call_args
             toolsets = call_kwargs.kwargs.get("enabled_toolsets")
             assert sorted(toolsets) == ["terminal", "web"]
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_connect_triggers_mcp_discovery(self):
+        """connect() kicks off MCP discovery so REST/API sessions get MCP tools.
+
+        Regression for #50248: API sessions had no MCP tools because the
+        api_server adapter never loaded configured MCP servers, unlike the
+        TUI/gateway/ACP/CLI entrypoints which all run MCP discovery at startup.
+        The adapter must call start_background_mcp_discovery() from connect()
+        (idempotent + non-blocking)."""
+        import asyncio
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+        # Empty API key makes connect() return early AFTER the MCP discovery
+        # kickoff, so no real web server binds during the test.
+        adapter._api_key = ""
+        with patch("hermes_cli.mcp_startup.start_background_mcp_discovery") as mock_disc:
+            result = asyncio.run(adapter.connect())
+
+        assert result is False
+        mock_disc.assert_called_once()
+        assert mock_disc.call_args.kwargs.get("logger") is not None
+        assert "mcp" in mock_disc.call_args.kwargs.get("thread_name", "")

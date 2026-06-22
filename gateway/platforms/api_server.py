@@ -4370,6 +4370,26 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.warning("[%s] aiohttp not installed", self.name)
             return False
 
+        # Load configured MCP servers so REST/API sessions expose MCP tools,
+        # matching the TUI/gateway/ACP/CLI entrypoints which all kick off MCP
+        # discovery at startup (#50248). Without this, an API server started
+        # outside the full gateway-run path (e.g. as a standalone service)
+        # never connects MCP servers, so sessions created via POST
+        # /api/sessions and /v1/chat/completions get no MCP tools even when
+        # the mcp toolset is enabled. start_background_mcp_discovery is
+        # idempotent per-process and runs in a daemon thread, so it never
+        # blocks the asyncio loop and is a no-op when MCP discovery already
+        # ran (e.g. via gateway run) or no MCP servers are configured.
+        try:
+            from hermes_cli.mcp_startup import start_background_mcp_discovery
+            start_background_mcp_discovery(
+                logger=logger, thread_name=f"{self.name}-mcp-discovery"
+            )
+        except Exception:
+            logger.debug(
+                "[%s] MCP discovery kickoff failed", self.name, exc_info=True
+            )
+
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)

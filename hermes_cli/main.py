@@ -12095,8 +12095,17 @@ def cmd_dashboard(args):
         _setup_logging_gui(mode="gui")
     except Exception:
         pass
+    logger.info(
+        "Dashboard startup: begin host=%s port=%s skip_build=%s no_open=%s isolated=%s",
+        getattr(args, "host", None),
+        getattr(args, "port", None),
+        getattr(args, "skip_build", False),
+        getattr(args, "no_open", False),
+        getattr(args, "isolated", False),
+    )
 
     try:
+        logger.info("Dashboard startup: checking web UI dependencies")
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
     except ImportError as e:
@@ -12109,20 +12118,25 @@ def cmd_dashboard(args):
         )
         print(f"Import error: {e}")
         sys.exit(1)
+    logger.info("Dashboard startup: web UI dependencies available")
 
     # Seed bundled skills on first dashboard launch so the desktop GUI's
     # skills picker / agent skill discovery sees the bundled library.
     # cmd_chat does this in its own pre-dispatch block; the dashboard
     # backend is the desktop's primary entrypoint and needs the same.
+    logger.info("Dashboard startup: syncing bundled skills")
     _sync_bundled_skills_quietly()
+    logger.info("Dashboard startup: bundled skills synced")
 
     if _headless_backend:
         # Don't build the SPA, and tell mount_spa() (read at web_server import
         # below) to disable it even if a stray dist exists. Set it first.
         os.environ["HERMES_SERVE_HEADLESS"] = "1"
     elif "HERMES_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
+        logger.info("Dashboard startup: building web UI")
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)
+        logger.info("Dashboard startup: web UI build complete")
     elif getattr(args, "skip_build", False):
         # --build-mode skip trusts the caller to have pre-built the web UI.
         # Verify the dist actually exists; otherwise the server will start
@@ -12155,6 +12169,7 @@ def cmd_dashboard(args):
         # pass here and still 404 there.
         os.environ["HERMES_WEB_DIST"] = str(_dist_root)
         print(f"→ Using web dist from HERMES_WEB_DIST: {_dist_root}")
+        logger.info("Dashboard startup: using prebuilt web UI dist at %s", _dist_root)
 
     # Discover and load plugins so any DashboardAuthProvider plugin
     # (e.g. plugins/dashboard_auth/nous) registers BEFORE start_server's
@@ -12165,11 +12180,14 @@ def cmd_dashboard(args):
     # providers (image_gen, web, dashboard_auth, …).
     try:
         from hermes_cli.plugins import discover_plugins
+        logger.info("Dashboard startup: discovering plugins")
         discover_plugins()
+        logger.info("Dashboard startup: plugin discovery complete")
     except Exception as exc:
         # Discovery failures must not block dashboard startup outright —
         # log and proceed; the gate's fail-closed branch will surface
         # the missing-provider state if it matters.
+        logger.warning("Dashboard startup: plugin discovery failed", exc_info=True)
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
 
     # Desktop chat uses the dashboard's in-process /api/ws gateway, which builds
@@ -12182,10 +12200,12 @@ def cmd_dashboard(args):
     try:
         from hermes_cli.mcp_startup import start_background_mcp_discovery
 
+        logger.info("Dashboard startup: scheduling background MCP discovery")
         start_background_mcp_discovery(
             logger=logger,
             thread_name="dashboard-mcp-discovery",
         )
+        logger.info("Dashboard startup: background MCP discovery scheduled")
     except Exception:
         logger.debug(
             "Background MCP tool discovery failed at dashboard startup",
@@ -12199,11 +12219,19 @@ def cmd_dashboard(args):
     # instead of hard-failing inside start_server. Non-interactive callers
     # (Docker/s6, CI, --no-open pipelines) fall through to start_server's
     # fail-closed SystemExit unchanged.
+    logger.info("Dashboard startup: checking interactive auth setup")
     _maybe_setup_dashboard_auth_interactively(args)
+    logger.info("Dashboard startup: interactive auth setup check complete")
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
     # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.
+    logger.info(
+        "Dashboard startup: entering start_server host=%s port=%s open_browser=%s",
+        args.host,
+        args.port,
+        not args.no_open,
+    )
     start_server(
         host=args.host,
         port=args.port,

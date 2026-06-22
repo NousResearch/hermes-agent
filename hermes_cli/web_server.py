@@ -17201,16 +17201,24 @@ def start_server(
     async def _serve():
         # Split startup from main_loop so we can read the bound port
         # after the socket is live (ephemeral port discovery).
+        _log.info("Dashboard server startup: loading uvicorn config")
         if not config.loaded:
             config.load()
         server.lifespan = config.lifespan_class(config)
         with server.capture_signals():
+            _log.info("Dashboard server startup: awaiting uvicorn startup")
             await server.startup()
+            _log.info(
+                "Dashboard server startup: uvicorn startup returned should_exit=%s started=%s",
+                server.should_exit,
+                server.started,
+            )
             if server.should_exit:
                 return
 
             actual_port = _read_bound_port(server, fallback=port)
             app.state.bound_port = actual_port
+            _log.info("Dashboard server startup: bound port resolved as %s", actual_port)
 
             _write_dashboard_ready_file(actual_port)
             # Port-discovery sentinel parsed by the desktop spawn. `serve` is a

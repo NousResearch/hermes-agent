@@ -2359,6 +2359,32 @@ class TestProviderEntryApiKeyEnvAlias:
         assert normalized is not None
         assert "extra_body" in _VALID_CUSTOM_PROVIDER_FIELDS
         assert normalized["extra_body"] == entry["extra_body"]
+
+    def test_api_base_alias_resolves_to_base_url(self):
+        """``api_base`` is a common alias used by OpenAI SDK and LiteLLM
+        configs.  The normalizer must accept it as a URL source so imports
+        from those tools work without manual rewriting."""
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "vendor",
+            "api_base": "https://api.vendor.example.com/v1",
+        }
+        normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
+        assert normalized is not None
+        assert normalized.get("base_url") == "https://api.vendor.example.com/v1"
+
+    def test_api_base_is_in_known_keys(self):
+        """_KNOWN_KEYS must include api_base so it is not rejected as an
+        unrecognized field during normalization."""
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "vendor",
+            "api_base": "https://api.vendor.example.com/v1",
+            "api_key": "sk-test",
+        }
+        normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
+        assert normalized is not None
+
 # =============================================================================
 # Tencent TokenHub — API-key provider runtime resolution
 # =============================================================================

@@ -43,17 +43,55 @@ Audience and market:
 Channels to use:
 ${input.channels.map((channel) => `- ${channel}`).join("\n")}
 
-Return the answer in Markdown with these sections:
-1. Growth diagnosis
-2. 30-day target math
-3. Weekly campaign plan
-4. Reel/content experiments
-5. Website conversion copy
-6. WhatsApp/email campaign copy
-7. Founder LinkedIn posts
-8. Metrics to track
-9. Decision rules
-10. Next 7 days action list
+Return ONLY valid JSON. Do not wrap it in markdown. Do not include commentary before or after JSON.
+
+Use this exact structure:
+{
+  "summary": {
+    "positioning": "one sharp campaign positioning sentence",
+    "primaryGoal": "revenue goal",
+    "unitTarget": "estimated units/orders needed",
+    "coreInsight": "most important customer insight",
+    "primaryChannel": "highest leverage channel",
+    "risk": "biggest risk to watch"
+  },
+  "diagnosis": [
+    {"label": "What is working", "detail": "specific diagnosis"},
+    {"label": "What is broken", "detail": "specific diagnosis"},
+    {"label": "Growth lever", "detail": "specific diagnosis"}
+  ],
+  "weeklyPlan": [
+    {
+      "week": "Week 1",
+      "theme": "theme name",
+      "target": "weekly target",
+      "objective": "plain-English objective",
+      "experiments": [
+        {
+          "type": "Reel / WhatsApp / Website / Offer / LinkedIn",
+          "title": "short title",
+          "why": "why this experiment matters",
+          "action": "what founder should do",
+          "cta": "exact CTA",
+          "metric": "main metric",
+          "decisionRule": "what to do based on result"
+        }
+      ]
+    }
+  ],
+  "contentAssets": {
+    "reels": [{"title": "title", "hook": "hook", "script": "short script", "cta": "cta"}],
+    "whatsapp": [{"title": "title", "message": "message"}],
+    "website": [{"title": "title", "copy": "copy"}],
+    "linkedin": [{"title": "title", "post": "post"}]
+  },
+  "metrics": [
+    {"name": "metric", "why": "why it matters", "target": "target"}
+  ],
+  "nextActions": [
+    "specific action for the next 7 days"
+  ]
+}
 
 Be specific, practical, revenue-focused, and suitable for a founder with limited time and budget.
 `.trim();
@@ -98,10 +136,20 @@ async function callAnthropic(input) {
     throw new Error("Anthropic returned an empty response");
   }
 
-  return text;
+  const cleaned = text
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch (error) {
+    throw new Error(`AI returned invalid JSON: ${error.message}`);
+  }
 }
 
-async function saveCampaign(input, planText) {
+async function saveCampaign(input, plan) {
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const table = process.env.SUPABASE_CAMPAIGNS_TABLE || "campaigns";
@@ -126,7 +174,7 @@ async function saveCampaign(input, planText) {
       channels: input.channels,
       delivery_area: input.deliveryArea,
       content_capacity: input.contentCapacity,
-      plan_text: planText,
+      plan_text: JSON.stringify(plan, null, 2),
       input_payload: input,
     }),
   });

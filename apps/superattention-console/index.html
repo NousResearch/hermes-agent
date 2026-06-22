@@ -24,68 +24,66 @@
           <span class="brand-spark"></span>
           <div>
             <strong>superattention.ai</strong>
-            <small>Attention to revenue engine</small>
+            <small>AI growth system for early brands</small>
           </div>
         </div>
         <div class="nav-pills">
-          <button class="pill active" data-jump="dashboard">Dashboard</button>
-          <button class="pill" data-jump="generator">Generator</button>
-          <button class="pill" data-jump="campaign">Campaign</button>
-          <button class="pill" data-jump="studio">Studio</button>
+          <button class="pill active" data-jump="setup">Setup</button>
+          <button class="pill" data-jump="command">Command Center</button>
+          <button class="pill" data-jump="content">Content</button>
           <button class="pill" data-jump="tracker">Tracker</button>
         </div>
       </nav>
 
-      <section id="dashboard" class="hero panel">
+      <section id="setup" class="hero panel product-hero">
         <div class="hero-copy">
-          <div class="eyebrow">AI growth system for early D2C brands</div>
-          <h1>Turn attention into revenue.</h1>
+          <div class="eyebrow">From attention to revenue</div>
+          <h1>Build this week’s growth system.</h1>
           <p>
-            Fire every growth engine from Instagram Reels to website
-            conversion, WhatsApp campaigns, founder-led LinkedIn, offers, and
-            weekly learning loops.
+            Enter a real product, audience, and revenue goal. superattention.ai
+            turns it into a focused growth command center, not a document dump.
           </p>
           <div class="hero-actions">
-            <button class="primary-action" data-jump="campaign">
-              View 30-day growth plan
+            <button class="primary-action" data-jump="generator">
+              Create growth plan
             </button>
-            <button class="ghost-action" data-jump="studio">
-              Open content studio
+            <button class="ghost-action" id="loadSample" type="button">
+              Load pickle example
             </button>
           </div>
         </div>
 
-        <div class="growth-card">
+        <div class="growth-card empty-card" id="heroCard">
           <div class="card-header">
-            <span id="heroBrandName">The Pickle Romance</span>
-            <strong id="heroProductName">Aam Romantics</strong>
+            <span id="heroBrandName">No brand selected</span>
+            <strong id="heroProductName">Create a plan</strong>
           </div>
           <div class="revenue-ring">
             <svg viewBox="0 0 160 160" aria-label="Revenue progress">
               <circle class="ring-bg" cx="80" cy="80" r="68"></circle>
-              <circle class="ring-progress" cx="80" cy="80" r="68"></circle>
+              <circle class="ring-progress idle" cx="80" cy="80" r="68"></circle>
             </svg>
             <div class="ring-copy">
-              <span>Target</span>
-              <strong id="heroRevenueTarget">₹50K</strong>
-              <small id="heroOrderTarget">84 combos</small>
+              <span>Goal</span>
+              <strong id="heroRevenueTarget">--</strong>
+              <small id="heroOrderTarget">Add goal + price</small>
             </div>
           </div>
           <div class="metric-grid">
             <div>
-              <span>Stock</span>
-              <strong>150</strong>
-              <small>combos</small>
-            </div>
-            <div>
               <span>Price</span>
-              <strong id="heroPrice">₹599</strong>
-              <small>launch</small>
+              <strong id="heroPrice">--</strong>
+              <small>per unit</small>
             </div>
             <div>
-              <span>Weekly</span>
-              <strong>21</strong>
-              <small>orders</small>
+              <span>Channel</span>
+              <strong id="heroChannel">--</strong>
+              <small>primary</small>
+            </div>
+            <div>
+              <span>Status</span>
+              <strong id="heroStatus">Draft</strong>
+              <small>not generated</small>
             </div>
           </div>
         </div>
@@ -95,179 +93,169 @@
         <article>
           <span>01</span>
           <strong>Attention</strong>
-          <p>Reels, LinkedIn, UGC, founder story, product moments.</p>
+          <p>Choose the moments and channels that create demand.</p>
         </article>
         <article>
           <span>02</span>
-          <strong>Demand</strong>
-          <p>Offers, proof, objections, WhatsApp intent capture.</p>
+          <strong>Conversion</strong>
+          <p>Turn interest into WhatsApp, website, or store orders.</p>
         </article>
         <article>
           <span>03</span>
-          <strong>Conversion</strong>
-          <p>Website copy, CTA, product listing, order scripts.</p>
+          <strong>Retention</strong>
+          <p>Push repeat orders, referrals, reviews, and community loops.</p>
         </article>
         <article>
           <span>04</span>
           <strong>Learning</strong>
-          <p>Track what worked and sharpen next week's growth loop.</p>
+          <p>Track signals and decide what to double down on next.</p>
         </article>
       </section>
 
       <section id="generator" class="section generator panel">
         <div class="section-title">
           <span>Production V1</span>
-          <h2>Generate a fresh growth plan</h2>
+          <h2>Campaign setup</h2>
           <p>
-            Enter any D2C product, offer, and revenue goal. In production,
-            superattention.ai calls Anthropic securely and saves the campaign to
-            Supabase.
+            Nothing is hardcoded. Start with any product, from Aam ka Achar to a
+            restaurant lunch offer.
           </p>
         </div>
 
-        <div class="generator-layout">
+        <div class="generator-layout clean-generator">
           <form class="generator-form" id="generatorForm">
             <label>
               Brand name
-              <input name="brandName" value="The Pickle Romance" required />
+              <input name="brandName" placeholder="e.g. The Pickle Romance" required />
             </label>
             <label>
               Category
-              <input name="category" value="Homemade Indian pickles" required />
+              <input name="category" placeholder="e.g. Homemade Indian pickles" required />
             </label>
             <label>
               Product
-              <input name="product" value="Aam Romantics Combo" required />
+              <input name="product" placeholder="e.g. Teekhi Hari Mirch" required />
             </label>
             <label>
               Price
-              <input name="price" value="Rs. 599" required />
+              <input name="price" placeholder="e.g. Rs. 300" required />
             </label>
             <label class="wide">
               Offer
               <input
                 name="offer"
-                value="3 x 200g jars: Aam ka Achar, Aam ka Chunda, Hing ka Achar"
+                placeholder="e.g. 400g non-oily Teekhi Hari Mirch jar"
                 required
               />
             </label>
             <label class="wide">
               Target customer
-              <textarea name="audience" required>Working mothers in Faridabad, age 30-40, who like pickles but hesitate because market pickles feel too oily.</textarea>
+              <textarea
+                name="audience"
+                placeholder="Who exactly should buy this and what hesitation do they have?"
+                required
+              ></textarea>
             </label>
             <label>
               Current monthly revenue
-              <input name="currentRevenue" value="Under Rs. 1 lakh" required />
+              <input name="currentRevenue" placeholder="e.g. Rs. 10,000" required />
             </label>
             <label>
               Revenue goal
-              <input name="revenueGoal" value="Rs. 50,000 in 30 days" required />
+              <input name="revenueGoal" placeholder="e.g. Rs. 50,000 in 30 days" required />
             </label>
             <label>
               Order channel
-              <input name="orderChannel" value="WhatsApp with UPI before delivery" required />
+              <input name="orderChannel" placeholder="e.g. WhatsApp + UPI" required />
             </label>
             <label>
               Delivery area
-              <input name="deliveryArea" value="Faridabad and Delhi NCR" required />
+              <input name="deliveryArea" placeholder="e.g. Faridabad + Delhi NCR" required />
             </label>
             <label>
               Content capacity
-              <input name="contentCapacity" value="4-5 Reels per week" required />
+              <input name="contentCapacity" placeholder="e.g. 4 Reels per week" required />
             </label>
             <label>
               Brand tone
-              <input name="brandTone" value="Homemade, nostalgic, playful, trustworthy" required />
+              <input name="brandTone" placeholder="e.g. bold, homemade, witty" required />
             </label>
 
             <fieldset class="channel-field wide">
               <legend>Growth engines</legend>
               <label><input type="checkbox" name="channels" value="Instagram Reels" checked /> Instagram Reels</label>
-              <label><input type="checkbox" name="channels" value="Website conversion" checked /> Website conversion</label>
+              <label><input type="checkbox" name="channels" value="Website conversion" /> Website conversion</label>
               <label><input type="checkbox" name="channels" value="WhatsApp campaign" checked /> WhatsApp campaign</label>
               <label><input type="checkbox" name="channels" value="Email campaign" /> Email campaign</label>
-              <label><input type="checkbox" name="channels" value="Founder LinkedIn" checked /> Founder LinkedIn</label>
+              <label><input type="checkbox" name="channels" value="Founder LinkedIn" /> Founder LinkedIn</label>
             </fieldset>
 
             <button class="primary-action wide" type="submit">
-              Generate with AI
+              Generate growth system
             </button>
           </form>
 
-          <div class="generated-panel">
-            <div class="builder-header">
-              <span>Live output</span>
-              <strong id="generationStatus">Ready</strong>
-            </div>
-            <div class="plan-summary-grid" id="planSummaryGrid">
-              <div>
-                <span>Brand</span>
-                <strong>The Pickle Romance</strong>
-              </div>
-              <div>
-                <span>Product</span>
-                <strong>Aam Romantics Combo</strong>
-              </div>
-              <div>
-                <span>Goal</span>
-                <strong>Rs. 50,000 in 30 days</strong>
-              </div>
-            </div>
-            <div class="plan-tabs" id="planTabs"></div>
-            <div class="generated-output empty" id="generatedOutput">
-              <h3>Ready to generate</h3>
-              <p>
-                Fill the form and click Generate with AI. The plan will appear
-                as focused sections instead of one long Markdown file.
-              </p>
-            </div>
-            <button class="copy-btn" id="copyGenerated" type="button">
-              Copy generated plan
-            </button>
-          </div>
+          <aside class="operator-panel">
+            <span>Operator brief</span>
+            <h3 id="briefTitle">Waiting for inputs</h3>
+            <p id="briefCopy">
+              Add a product and revenue goal. The command center will unlock
+              after AI generation.
+            </p>
+            <div class="brief-stack" id="briefStack"></div>
+          </aside>
         </div>
       </section>
 
-      <section id="campaign" class="section">
+      <section id="command" class="section">
         <div class="section-title">
-          <span>30-day command plan</span>
-          <h2><span id="campaignProductName">Aam Romantics</span> campaign</h2>
+          <span>Command Center</span>
+          <h2 id="campaignProductName">No active campaign</h2>
           <p id="campaignSummary">
-            A weekly execution map to sell ₹50,000 through Instagram, website,
-            WhatsApp, and local trust.
+            Generate a plan to see diagnosis, weekly sprints, experiments, and
+            next actions.
           </p>
         </div>
-        <div class="timeline" id="timeline"></div>
+        <div id="commandCenter" class="command-empty">
+          <h3>No plan generated yet</h3>
+          <p>
+            This area will become your weekly growth operating room after you
+            click Generate growth system.
+          </p>
+        </div>
       </section>
 
-      <section id="studio" class="section studio-grid">
+      <section id="content" class="section studio-grid">
         <div class="section-title sticky-title">
-          <span>Content studio</span>
-          <h2>Ready-to-use growth assets</h2>
+          <span>Content Studio</span>
+          <h2>Assets to execute</h2>
           <p>
-            Copy hooks, Reel scripts, WhatsApp CTAs, website copy, and founder
-            LinkedIn posts from one console.
+            Reels, WhatsApp, website, and LinkedIn assets appear here after a
+            plan is generated.
           </p>
           <div class="tab-list" id="assetTabs"></div>
         </div>
         <div class="asset-stage">
-          <div class="asset-card" id="assetCard"></div>
+          <div class="asset-card empty-state" id="assetCard">
+            <h3>No assets yet</h3>
+            <p>Generate a growth system to unlock copy-ready content.</p>
+          </div>
           <div class="reel-builder panel">
             <div class="builder-header">
               <span>V2 preview</span>
               <strong>Asset-to-Reel Builder</strong>
             </div>
             <div class="upload-grid">
-              <div class="upload-slot">Jar photo</div>
-              <div class="upload-slot">Meal shot</div>
-              <div class="upload-slot">Packing clip</div>
-              <div class="upload-slot">Logo</div>
+              <div class="upload-slot">Product photo</div>
+              <div class="upload-slot">Food/use case</div>
+              <div class="upload-slot">Founder clip</div>
+              <div class="upload-slot">Review proof</div>
             </div>
             <ol class="scene-list">
-              <li>Detect product and food context</li>
-              <li>Choose a sales angle</li>
-              <li>Generate storyboard and text overlays</li>
-              <li>Export ready-to-post Reel draft</li>
+              <li>Upload real brand assets</li>
+              <li>Pick the strongest sales angle</li>
+              <li>Generate storyboard and overlays</li>
+              <li>Export a Reel draft</li>
             </ol>
           </div>
         </div>
@@ -275,30 +263,30 @@
 
       <section id="tracker" class="section tracker panel">
         <div class="section-title">
-          <span>Growth tracker</span>
-          <h2>Manual inputs, smart next actions</h2>
+          <span>Growth Tracker</span>
+          <h2>Signals to decisions</h2>
           <p>
-            V1 tracks results manually. V2 can connect channels and update the
-            learning loop automatically.
+            Add results manually. superattention.ai turns the numbers into next
+            actions.
           </p>
         </div>
         <div class="tracker-layout">
           <form class="tracker-form" id="trackerForm">
             <label>
-              Reel views
-              <input type="number" name="views" value="4200" min="0" />
+              Views / reach
+              <input type="number" name="views" value="0" min="0" />
             </label>
             <label>
-              WhatsApp inquiries
-              <input type="number" name="inquiries" value="38" min="0" />
+              Inquiries
+              <input type="number" name="inquiries" value="0" min="0" />
             </label>
             <label>
               Orders
-              <input type="number" name="orders" value="14" min="0" />
+              <input type="number" name="orders" value="0" min="0" />
             </label>
             <label>
               Revenue
-              <input type="number" name="revenue" value="8386" min="0" />
+              <input type="number" name="revenue" value="0" min="0" />
             </label>
           </form>
           <div class="insight-card" id="insightCard"></div>

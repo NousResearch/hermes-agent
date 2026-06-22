@@ -764,6 +764,7 @@ class TestAddRotatingHandler:
                 logger.removeHandler(h)
                 h.close()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits are not enforced on Windows")
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-open.log"
         logger = logging.getLogger("_test_rotating_managed_open")
@@ -788,6 +789,7 @@ class TestAddRotatingHandler:
                 logger.removeHandler(h)
                 h.close()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits are not enforced on Windows")
     def test_managed_mode_rollover_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-rollover.log"
         logger = logging.getLogger("_test_rotating_managed_rollover")
@@ -974,16 +976,53 @@ class TestExternalRotationRecovery:
         finally:
             handler.close()
 
+    def test_rollover_does_not_rename_active_log_file(self, tmp_path, monkeypatch):
+        """Handler-driven rollover uses copy-truncate for the active log file.
+
+        On Windows, renaming an open active log can fail when another Hermes
+        process also has the file open. Simulate that lock by making active-file
+        rename fail. The handler should still rotate successfully because it
+        only renames numbered backups, then copies and truncates the active log.
+        """
+        log_path = tmp_path / "gateway.log"
+        rotated = tmp_path / "gateway.log.1"
+        active_rename_attempts = []
+        real_rename = os.rename
+
+        def guarded_rename(src, dst):
+            if Path(src) == log_path:
+                active_rename_attempts.append((src, dst))
+                raise OSError("active log is locked")
+            return real_rename(src, dst)
+
+        monkeypatch.setattr(hermes_logging.os, "rename", guarded_rename)
+        handler = hermes_logging._ManagedRotatingFileHandler(
+            str(log_path), maxBytes=1, backupCount=2, encoding="utf-8",
+        )
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        try:
+            self._emit(handler, "first record")
+            self._emit(handler, "second record")
+
+            assert not active_rename_attempts
+            assert log_path.exists()
+            assert rotated.exists()
+            assert "second record" in log_path.read_text()
+            assert "first record" in rotated.read_text()
+        finally:
+            handler.close()
+
     def test_gateway_log_attached_after_external_rotation_then_re_setup(
         self, hermes_home,
     ):
-        """End-to-end Allen-reproduction: gateway.log gets externally rotated,
+        """End-to-end reproduction: gateway.log gets externally rotated,
         ``setup_logging(mode='gateway')`` is re-called, the handler keeps
         working.
 
-        Reproduces Allen's symptom (gateway.log frozen mid-write, all gateway
-        records leaking to agent.log) when something external rotates the
-        file between setup_logging() calls.
+        Reproduces the symptom where a handler's stale file descriptor keeps
+        writing to the rotated backup instead of recreating the expected live
+        log file.
         """
         hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
         gw_path = hermes_home / "logs" / "gateway.log"
@@ -1010,8 +1049,7 @@ class TestExternalRotationRecovery:
             except Exception: pass
 
         # The new record must reach the live gateway.log, not the rotated
-        # backup.  Allen's logs had everything past the rotation point
-        # going into agent.log only, never gateway.log.
+        # backup.
         assert gw_path.exists(), "gateway.log was never recreated"
         assert "AFTER rotation" in gw_path.read_text()
         assert "AFTER rotation" not in rotated.read_text()

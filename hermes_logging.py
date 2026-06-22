@@ -30,6 +30,7 @@ Session context:
 import io
 import logging
 import os
+import shutil
 import sys
 import threading
 from pathlib import Path
@@ -389,28 +390,53 @@ def setup_verbose_logging() -> None:
 # ---------------------------------------------------------------------------
 
 class _ManagedRotatingFileHandler(RotatingFileHandler):
-    """RotatingFileHandler that ensures group-writable perms in managed mode
-    AND survives external rotation.
+    """RotatingFileHandler that ensures group-writable perms in managed mode,
+    survives external rotation, AND rotates safely on Windows under
+    multi-process file locks.
 
-    Two responsibilities:
+    Three responsibilities:
 
-    1.  In managed mode (NixOS), the stateDir uses setgid (2770) so new files
-        inherit the hermes group. However, both ``_open()`` (initial creation)
-        and ``doRollover()`` create files via ``open()``, which uses the
-        process umask — typically 0022, producing 0644. This subclass applies
-        ``chmod 0660`` after both operations so the gateway and interactive
-        users can share log files.
+    1.  **Managed-mode perms (NixOS)** — the stateDir uses setgid (2770) so
+        new files inherit the hermes group. However, both ``_open()`` (initial
+        creation) and ``doRollover()`` create files via ``open()``, which uses
+        the process umask — typically 0022, producing 0644. This subclass
+        applies ``chmod 0660`` after both operations so the gateway and
+        interactive users can share log files.
 
-    2.  ``RotatingFileHandler`` keeps an open file descriptor.  If anything
-        rotates the file *externally* (``logrotate``, manual ``mv``,
-        another process rotating under us, a transient unlink), our fd
-        keeps pointing at the renamed/unlinked inode and every subsequent
-        write goes to ``gateway.log.1`` instead of ``gateway.log`` — silent
-        log loss for the file every operator expects to read.  Before each
-        emit we ``stat`` ``baseFilename`` and compare it against the open
-        stream's inode; on mismatch we reopen.  This is the same pattern
-        as stdlib ``WatchedFileHandler.reopenIfNeeded()``, adapted for
-        rotating handlers.
+    2.  **External rotation detection** — ``RotatingFileHandler`` keeps an
+        open file descriptor.  If anything rotates the file *externally*
+        (``logrotate``, manual ``mv``, another process rotating under us, a
+        transient unlink), our fd keeps pointing at the renamed/unlinked
+        inode and every subsequent write goes to ``gateway.log.1`` instead
+        of ``gateway.log`` — silent log loss for the file every operator
+        expects to read.  Before each emit we ``stat`` ``baseFilename`` and
+        compare it against the open stream's inode; on mismatch we reopen.
+        Same pattern as stdlib ``WatchedFileHandler.reopenIfNeeded()``,
+        adapted for rotating handlers.
+
+    3.  **Windows-safe rotation** — stdlib ``RotatingFileHandler.doRollover``
+        rotates by calling ``os.rename(baseFilename, dfn)``.  On Windows that
+        ``rename`` fails with ``OSError`` whenever ANY other process holds
+        the file open (Python's default ``open()`` doesn't pass
+        ``FILE_SHARE_DELETE``).  Hermes runs the gateway as one persistent
+        process and spawns CLI subprocesses that all open ``agent.log`` in
+        append mode — so the moment the file crossed ``maxBytes``, the next
+        rotate attempt deterministically failed.  Worse, the stdlib closes
+        its stream BEFORE attempting the rename, so a failed rename leaves
+        the handler with ``self.stream = None``; the next ``emit()`` reopens,
+        but the very next message re-triggers ``shouldRollover`` →
+        ``doRollover`` → fails again, every line is dropped, and the file
+        stays stuck at the rotation boundary forever.
+
+        ``doRollover`` below uses **copy-truncate** semantics (the same
+        strategy ``logrotate --copytruncate`` uses): copy the file, then
+        truncate the original in place.  ``shutil.copy2`` and
+        ``open(..., "r+b") + truncate(0)`` both succeed regardless of how
+        many other processes have the file open in append mode, because
+        neither operation requires the exclusive rename-style lock.  No
+        rename of the active file is needed.  Active inode is preserved,
+        so the external-rotation detector above does NOT misfire after our
+        own rotation.
     """
 
     def __init__(self, *args, **kwargs):
@@ -500,11 +526,89 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
-        super().doRollover()
+        """Copy-truncate rotation (see class docstring, responsibility 3).
+
+        Mirrors the stdlib ``RotatingFileHandler.doRollover`` behaviour
+        (numbered backups up to ``self.backupCount``, oldest deleted first)
+        but never renames the active file — so it succeeds even when other
+        processes hold it open in append mode (Windows file locks).
+        """
+        # Flush + close our own stream so the copy reads a consistent file
+        # and the truncate that follows is observed by every other writer.
+        if self.stream is not None:
+            try:
+                self.stream.close()
+            except Exception:
+                pass
+            self.stream = None  # type: ignore[assignment]
+
+        # Shift existing backups: .N-1 → .N, …, .1 → .2.  Backups aren't
+        # held open by anything, so ordinary rename works here.  We tolerate
+        # rename failures on individual backups — the active rotation below
+        # is what really matters.
+        if self.backupCount > 0:
+            for i in range(self.backupCount - 1, 0, -1):
+                sfn = self.rotation_filename(f"{self.baseFilename}.{i}")
+                dfn = self.rotation_filename(f"{self.baseFilename}.{i + 1}")
+                if os.path.exists(sfn):
+                    if os.path.exists(dfn):
+                        try:
+                            os.remove(dfn)
+                        except OSError:
+                            continue
+                    try:
+                        os.rename(sfn, dfn)
+                    except OSError:
+                        pass
+
+            dfn = self.rotation_filename(f"{self.baseFilename}.1")
+            if os.path.exists(dfn):
+                try:
+                    os.remove(dfn)
+                except OSError:
+                    pass
+
+            # Copy-truncate the active file.
+            try:
+                shutil.copy2(self.baseFilename, dfn)
+            except OSError as exc:
+                _emit_rollover_stderr("backup copy failed", exc)
+
+            try:
+                with open(self.baseFilename, "r+b") as fh:
+                    fh.truncate(0)
+            except OSError as exc:
+                # Truncation failure leaves the file at its current size; the
+                # handler will still recover (stream reopens below) but the
+                # file may exceed ``maxBytes`` until next rotation succeeds.
+                _emit_rollover_stderr("truncate failed", exc)
+
+        # Reopen the stream so subsequent emit()s have a valid file handle.
+        if not self.delay:
+            self.stream = self._open()
         self._chmod_if_managed()
-        # Our own rollover writes a new baseFilename; refresh the snapshot
-        # so the next emit doesn't mistake it for external rotation.
+        # Our own rollover preserves the active inode (truncate-in-place);
+        # refresh the snapshot so the external-rotation detector at
+        # ``_reopen_if_externally_rotated`` doesn't see a phantom change on
+        # the next emit (mtime/size changed but dev/ino did not).
         self._record_stream_stat()
+
+
+def _emit_rollover_stderr(label: str, exc: BaseException) -> None:
+    """Surface a copy-truncate rotation failure to stderr.
+
+    Routing the message back through ``logging`` would land in the very
+    handler we're trying to recover — so we write directly to stderr.
+    Best-effort; if stderr is closed (daemonized gateway with no console)
+    the message is dropped and the handler still recovers on the next emit.
+    """
+    try:
+        sys.stderr.write(
+            f"[hermes_logging] log rollover: {label}: "
+            f"{type(exc).__name__}: {exc}\n"
+        )
+    except Exception:
+        pass
 
 
 def _add_rotating_handler(

@@ -629,6 +629,15 @@ class TestSkillManageDispatcher:
         assert "bundled" in result["error"].lower()
         assert (tmp_path / "bundled" / "SKILL.md").exists()
 
+    def test_evaluate_is_not_a_model_visible_skill_manage_action(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(action="evaluate", name="test-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Unknown action 'evaluate'" in result["error"]
+
 
 class TestSecurityScanGate:
     """_security_scan_skill is gated by skills.guard_agent_created config flag."""
@@ -1114,7 +1123,10 @@ class TestDeleteSkillRmtreeGuard:
         skills = tmp_path / "skills"
         skills.mkdir()
         evil = skills / "evil-skill"
-        evil.symlink_to(victim, target_is_directory=True)
+        try:
+            evil.symlink_to(victim, target_is_directory=True)
+        except OSError:
+            pytest.skip("Symlinks require elevated privileges on this Windows runner")
         try:
             with patch("tools.skill_manager_tool.SKILLS_DIR", skills), \
                  patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \

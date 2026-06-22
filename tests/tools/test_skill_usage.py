@@ -139,6 +139,49 @@ def test_bump_patch_increments_and_timestamps(skills_home):
     assert rec["last_patched_at"] is not None
 
 
+def test_get_record_backfills_evaluation_fields(skills_home):
+    from tools.skill_usage import get_record, save_usage
+    save_usage({"legacy": {"use_count": 5}})  # old-format record
+    rec = get_record("legacy")
+    assert rec["success_count"] == 0
+    assert rec["failure_count"] == 0
+    assert rec["last_evaluated_at"] is None
+    assert rec["last_evaluation"] is None
+
+
+def test_record_evaluation_pass_increments_success_only(skills_home):
+    from tools.skill_usage import get_record, record_evaluation
+    record_evaluation("my-skill", passed=True, summary="pytest passed")
+    rec = get_record("my-skill")
+    assert rec["success_count"] == 1
+    assert rec["failure_count"] == 0
+    assert rec["last_evaluated_at"] is not None
+    assert rec["last_evaluation"] == "pytest passed"
+
+
+def test_record_evaluation_fail_increments_failure_only(skills_home):
+    from tools.skill_usage import get_record, record_evaluation
+    record_evaluation("my-skill", passed=False, summary="user rejected output")
+    rec = get_record("my-skill")
+    assert rec["success_count"] == 0
+    assert rec["failure_count"] == 1
+    assert rec["last_evaluation"] == "user rejected output"
+
+
+def test_record_evaluation_caps_summary(skills_home):
+    from tools.skill_usage import MAX_EVALUATION_SUMMARY_CHARS, get_record, record_evaluation
+    record_evaluation("my-skill", passed=True, summary="x" * 1000)
+    summary = get_record("my-skill")["last_evaluation"]
+    assert len(summary) == MAX_EVALUATION_SUMMARY_CHARS
+    assert summary.endswith("…")
+
+
+def test_record_evaluation_does_not_mark_agent_created(skills_home):
+    from tools.skill_usage import get_record, record_evaluation
+    record_evaluation("my-skill", passed=True, summary="measured improvement")
+    assert get_record("my-skill").get("created_by") != "agent"
+
+
 def test_bump_on_empty_name_is_noop(skills_home):
     from tools.skill_usage import bump_view, load_usage
     bump_view("")

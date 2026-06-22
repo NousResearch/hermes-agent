@@ -12,7 +12,7 @@ These tests confirm that:
   3. Mixed media lists (voice + audio) split correctly.
 """
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -186,3 +186,90 @@ def test_telegram_media_type_detection_audio_vs_voice():
     assert MessageType.VOICE.value == "voice"
     # Sanity: they are distinct
     assert MessageType.AUDIO != MessageType.VOICE
+
+
+# ---------------------------------------------------------------------------
+# 5. Voice reply to a PENDING CLARIFY resolves it with the raw transcript
+#    (#50925 — voice answers to clarify prompts were silently dropped)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_voice_reply_resolves_pending_clarify_with_transcript():
+    """A voice answer to an open clarify resolves it with the RAW transcript."""
+    from gateway.run import GatewayRunner
+    from gateway.session import build_session_key
+    from tools import clarify_gateway as cm
+
+    with cm._lock:
+        cm._entries.clear()
+        cm._session_index.clear()
+
+    runner = _make_runner(stt_enabled=True)
+    runner.session_store = None
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="1", chat_type="dm", user_id="user1",
+    )
+    session_key = build_session_key(source)
+    cm.register("cid-voice", session_key, "Which option?", choices=None)
+
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/voice.ogg"],
+        media_types=["audio/ogg"],
+        internal=True,
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "the blue one", "provider": "whisper"},
+    ) as mock_transcribe:
+        result = await GatewayRunner._handle_message(runner, event)
+
+    mock_transcribe.assert_called_once_with("/tmp/voice.ogg")
+    # Acknowledged with an empty string so adapters don't double-post.
+    assert result == ""
+    # Resolves with the RAW transcript — not a wrapped "voice message ..." note.
+    assert cm.wait_for_response("cid-voice", timeout=0.01) == "the blue one"
+
+
+@pytest.mark.asyncio
+async def test_voice_reply_failed_transcription_keeps_clarify_pending():
+    """If STT yields no usable text, the clarify stays pending and the user is nudged to text."""
+    from gateway.run import GatewayRunner
+    from gateway.session import build_session_key
+    from tools import clarify_gateway as cm
+
+    with cm._lock:
+        cm._entries.clear()
+        cm._session_index.clear()
+
+    runner = _make_runner(stt_enabled=True)
+    runner.session_store = None
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="1", chat_type="dm", user_id="user1",
+    )
+    session_key = build_session_key(source)
+    cm.register("cid-voice-fail", session_key, "Which option?", choices=None)
+
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/voice.ogg"],
+        media_types=["audio/ogg"],
+        internal=True,
+    )
+
+    # No usable transcript -> the clarify must NOT resolve with garbage.
+    with patch.object(
+        runner, "_enrich_message_with_transcription",
+        new=AsyncMock(return_value=("", [])),
+    ):
+        result = await GatewayRunner._handle_message(runner, event)
+
+    assert "text" in result.lower()
+    assert cm.get_pending_for_session(session_key) is not None

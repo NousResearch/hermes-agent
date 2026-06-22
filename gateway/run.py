@@ -7466,6 +7466,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _pending_clarify = None
         if _pending_clarify is not None:
             _raw_clarify_reply = (event.text or "").strip()
+            _attempted_voice_clarify = False
+            if not _raw_clarify_reply:
+                _media_urls = getattr(event, "media_urls", None) or []
+                _media_types = getattr(event, "media_types", None) or []
+                _audio_paths = []
+                for _i, _path in enumerate(_media_urls):
+                    _mtype = _media_types[_i] if _i < len(_media_types) else ""
+                    _is_voice = (
+                        getattr(event, "message_type", None) == MessageType.VOICE
+                        or (
+                            _mtype.startswith("audio/")
+                            and getattr(event, "message_type", None)
+                            not in {MessageType.AUDIO, MessageType.DOCUMENT}
+                        )
+                    )
+                    if _is_voice:
+                        _audio_paths.append(_path)
+                if _audio_paths:
+                    _attempted_voice_clarify = True
+                    # Call _enrich_message_with_transcription directly rather than
+                    # the canonical _prepare_inbound_message_text: the clarify
+                    # answer must be the RAW transcript, not the agent-facing
+                    # "voice message" wrapper that method emits, and we must avoid
+                    # its native-image-buffer side effect for a reply we only read
+                    # as text.
+                    try:
+                        _enriched, _transcripts = await self._enrich_message_with_transcription(
+                            "", _audio_paths,
+                        )
+                        # Clarify needs the answer itself, not the agent-facing
+                        # wrapper text.  Keep wrappers only as fallback if STT
+                        # could not produce a clean transcript.
+                        _raw_clarify_reply = "\n".join(
+                            tx.strip() for tx in _transcripts if tx and tx.strip()
+                        ).strip() or (_enriched or "").strip()
+                        if _transcripts:
+                            _echo_adapter = self.adapters.get(source.platform)
+                            _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                            if _echo_adapter:
+                                for _tx in _transcripts:
+                                    try:
+                                        await _echo_adapter.send(
+                                            source.chat_id,
+                                            f'🎙️ "{_tx}"',
+                                            metadata=_echo_meta,
+                                        )
+                                    except Exception as _echo_exc:
+                                        logger.debug(
+                                            "Clarify voice echo failed (non-fatal): %s",
+                                            _echo_exc,
+                                        )
+                    except Exception as _trans_exc:
+                        logger.warning(
+                            "Clarify voice transcription failed: %s", _trans_exc,
+                        )
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks
@@ -7483,6 +7538,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # the agent's response don't double-post.  The agent
                     # itself will produce the next user-facing message.
                     return ""
+            if not _raw_clarify_reply and not (event.text or "").strip().startswith("/"):
+                logger.info(
+                    "Ignoring non-text clarify response for session=%s id=%s "
+                    "(voice_attempted=%s); keeping clarify pending",
+                    _quick_key,
+                    _pending_clarify.clarify_id,
+                    _attempted_voice_clarify,
+                )
+                if _attempted_voice_clarify:
+                    return (
+                        "I couldn't transcribe that voice reply for the pending "
+                        "question. Please answer in text, or send a shorter voice "
+                        "message."
+                    )
+                return (
+                    "I'm still waiting for an answer to the question above. "
+                    "Please reply in text to continue."
+                )
 
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are

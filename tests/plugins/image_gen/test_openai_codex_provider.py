@@ -94,71 +94,66 @@ class TestAvailability:
 
 
 class TestGenerate:
-    def test_returns_auth_error_without_codex_token(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
+    # The Codex backend cannot execute the image_generation tool (issue
+    # #49008): every request is rejected with an opaque HTTP 400. generate()
+    # must therefore short-circuit with a clear unsupported error and never
+    # touch the network.
+
+    def test_returns_unsupported_with_token(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
         result = provider.generate("a cat")
         assert result["success"] is False
-        assert result["error_type"] == "auth_required"
+        assert result["error_type"] == "unsupported"
 
-    def test_returns_invalid_argument_for_empty_prompt(self, provider, monkeypatch):
+    def test_unsupported_takes_precedence_over_missing_token(self, provider, monkeypatch):
+        # The real blocker is that Codex cannot do image_generation at all,
+        # so the unsupported error wins even when no token is present.
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
+        result = provider.generate("a cat")
+        assert result["error_type"] == "unsupported"
+
+    def test_unsupported_takes_precedence_over_empty_prompt(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
         result = provider.generate("   ")
-        assert result["success"] is False
-        assert result["error_type"] == "invalid_argument"
+        assert result["error_type"] == "unsupported"
 
-    def test_generate_uses_codex_stream_path(self, provider, monkeypatch, tmp_path):
+    def test_generate_never_calls_network(self, provider, monkeypatch):
+        # The gate must fire before any request is built/sent.
+        def _boom(*a, **kw):
+            raise AssertionError("_collect_image_b64 must not be called")
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: _b64_png())
-
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _boom)
         result = provider.generate("a cat", aspect_ratio="landscape")
+        assert result["success"] is False
+        assert result["error_type"] == "unsupported"
 
-        assert result["success"] is True
-        assert result["model"] == "gpt-image-2-medium"
-        assert result["provider"] == "openai-codex"
-        assert result["quality"] == "medium"
-
-        saved = Path(result["image"])
-        assert saved.exists()
-        assert saved.parent == tmp_path / "cache" / "images"
-        # Filename prefix differs from the API-key plugin so cache audits can
-        # tell the two backends apart.
-        assert saved.name.startswith("openai_codex_")
-
-    def test_codex_stream_request_shape(self, provider, monkeypatch):
+    def test_unsupported_message_is_actionable(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        result = provider.generate("a cat")
+        err = result["error"].lower()
+        # Names the limitation and at least one working backend to switch to.
+        assert "codex" in err
+        assert "image_gen.provider" in err
+        assert "openai" in err
 
-        captured = {}
-
-        def _collect(token, *, prompt, size, quality):
-            captured.update(codex_plugin._build_responses_payload(
-                prompt=prompt,
-                size=size,
-                quality=quality,
-            ))
-            return _b64_png()
-
-        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
-
-        result = provider.generate("a cat", aspect_ratio="portrait")
-        assert result["success"] is True
-
+    def test_build_responses_payload_shape(self):
+        # The request-builder helper is retained (request shape is unchanged
+        # if the Codex surface ever gains image_generation support); verify it
+        # directly rather than through generate(), which is now gated.
+        captured = codex_plugin._build_responses_payload(
+            prompt="a cat", size="1024x1536", quality="medium",
+        )
         assert captured["model"] == "gpt-5.5"
         assert captured["store"] is False
         assert captured["input"][0]["type"] == "message"
         assert captured["input"][0]["role"] == "user"
         assert captured["input"][0]["content"][0]["type"] == "input_text"
         assert captured["tool_choice"]["type"] == "allowed_tools"
-        assert captured["tool_choice"]["mode"] == "required"
-        assert captured["tool_choice"]["tools"] == [{"type": "image_generation"}]
-
         tool = captured["tools"][0]
         assert tool["type"] == "image_generation"
         assert tool["model"] == "gpt-image-2"
         assert tool["quality"] == "medium"
         assert tool["size"] == "1024x1536"
-        assert tool["output_format"] == "png"
-        assert tool["background"] == "opaque"
-        assert tool["partial_images"] == 1
 
     def test_partial_image_event_used_when_done_missing(self):
         """If output_item.done is missing, partial_image_b64 is accepted."""
@@ -176,7 +171,6 @@ class TestGenerate:
                     'data: {"item": {"type": "image_generation_call", "result": "abc"}}',
                     "",
                 ])
-
         events = list(codex_plugin._iter_sse_json(_Response()))
         assert events == [{
             "type": "response.output_item.done",
@@ -197,28 +191,6 @@ class TestGenerate:
             },
         }
         assert codex_plugin._extract_image_b64(payload) == _b64_png()
-
-    def test_empty_response_returns_error(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: None)
-
-        result = provider.generate("a cat")
-        assert result["success"] is False
-        assert result["error_type"] == "empty_response"
-
-    def test_stream_exception_returns_api_error(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-
-        def _boom(*args, **kwargs):
-            raise RuntimeError("cloudflare 403")
-
-        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _boom)
-
-        result = provider.generate("a cat")
-        assert result["success"] is False
-        assert result["error_type"] == "api_error"
-        assert "cloudflare 403" in result["error"]
-
 
 # ── Plugin entry point ──────────────────────────────────────────────────────
 

@@ -80,6 +80,23 @@ _CODEX_INSTRUCTIONS = (
     "using the image_generation tool when provided."
 )
 
+# The Codex/ChatGPT backend (chatgpt.com/backend-api/codex/responses) does
+# not support the image_generation built-in tool: its model-capabilities
+# endpoint reports experimental_supported_tools == [] and every
+# image_generation request is rejected with HTTP 400 (Tool choice
+# 'image_generation' not found in 'tools' parameter).
+# Rather than firing a request that is guaranteed to fail with a confusing
+# raw HTTP 400, the provider surfaces a clear, actionable unsupported error
+# and points users at an image-capable backend. See issue #49008.
+_CODEX_IMAGE_GEN_SUPPORTED = False
+_CODEX_UNSUPPORTED_MESSAGE = (
+    "Image generation is not available through Codex/ChatGPT OAuth: the "
+    "Codex backend does not support the image_generation tool (it rejects "
+    "the request with HTTP 400). Switch image_gen.provider to an "
+    "image-capable backend such as openai (OPENAI_API_KEY), fal, or xai."
+)
+
+
 
 # ---------------------------------------------------------------------------
 # Config + auth helpers
@@ -346,6 +363,19 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
     ) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
+
+        # The Codex backend cannot execute the image_generation tool at all
+        # (see module note + issue #49008). Short-circuit with a clear,
+        # actionable error instead of issuing a request the backend always
+        # rejects with an opaque HTTP 400.
+        if not _CODEX_IMAGE_GEN_SUPPORTED:
+            return error_response(
+                error=_CODEX_UNSUPPORTED_MESSAGE,
+                error_type="unsupported",
+                provider="openai-codex",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         # Image-to-image / editing is not supported on the Codex OAuth path.
         # Surface a clear, actionable error instead of silently ignoring the

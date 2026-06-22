@@ -30,7 +30,7 @@ def test_memory_query_router_detects_project_continuity_query():
     assert decision.token_budget == 1200
     assert decision.search_limit == 6
     assert decision.should_search is True
-    assert decision.target_types == ("project_state", "candidate", "raw_event", "episode")
+    assert decision.target_types == ("project_state", "open_loop", "candidate", "raw_event", "episode")
     assert decision.temporal_intent.mode == "recent_or_active"
     assert decision.needs_source_verification is True
 
@@ -780,11 +780,11 @@ def test_packet_composer_prefers_promoted_canonical_item_over_promoted_candidate
 def test_packet_composer_exposes_candidate_decision_and_reason_without_active_belief(tmp_path):
     store, index = _store_and_index(tmp_path)
     candidate = CandidateMemory(
-        id="cand_rejected_procedure",
+        id="cand_pending_procedure",
         type="procedure_ref",
         claim="when changing memory providers, load the hermes-agent skill first.",
-        gate_decision=GateDecision.REJECTED,
-        decision_reason="Procedure candidates require skill authoring/review; not promoted as semantic memory.",
+        gate_decision=GateDecision.PENDING,
+        decision_reason="Procedure candidates require skill authoring/review before promotion.",
         promotion_reason="skill_candidate: procedure should become a skill",
         source_refs=["event_proc"],
     )
@@ -794,12 +794,12 @@ def test_packet_composer_exposes_candidate_decision_and_reason_without_active_be
     item = packet.items[0]
 
     assert item["type"] == "candidate"
-    assert item["status"] == "rejected"
+    assert item["status"] == "pending"
     assert item["candidate_memory_type"] == "procedure_ref"
-    assert item["candidate_decision"] == "rejected"
-    assert "not promoted as semantic memory" in item["decision_reason"]
+    assert item["candidate_decision"] == "pending"
+    assert "skill authoring/review" in item["decision_reason"]
     rendered = MemoryPacketComposer.render(packet)
-    assert "candidate_decision: rejected" in rendered
+    assert "candidate_decision: pending" in rendered
     assert "decision_reason:" in rendered
 
 
@@ -856,3 +856,51 @@ def test_prefetch_does_not_persist_full_sensitive_query_by_default(tmp_path):
     logs = provider.index.retrieval_logs()
     assert "hunter2" not in json.dumps(logs)
     assert logs[-1]["query_hash"]
+
+
+def test_memory_query_router_suppresses_polite_and_generic_continuation_false_positives():
+    router = MemoryQueryRouter()
+
+    assert router.route("thanks!").route == "no_memory_needed"
+    assert router.route("ok thanks").route == "no_memory_needed"
+    assert router.route("hello there").route == "no_memory_needed"
+    assert router.route("continue writing").route != "project_continuity"
+    assert router.route("next step in solving this math problem").route != "project_continuity"
+    assert router.route("where did we leave off?").route == "project_continuity"
+
+
+def test_packet_composer_excludes_rejected_candidates_by_default(tmp_path):
+    store, index = _store_and_index(tmp_path)
+    candidate = CandidateMemory(
+        id="cand_rejected_zebra",
+        type="fact",
+        claim="rejected unique zebra should never guide decisions",
+        gate_decision=GateDecision.REJECTED,
+        decision_reason="bad evidence",
+    )
+    store.append_candidate(candidate)
+    index.index_candidate(candidate)
+
+    rendered = MemoryPacketComposer.render(MemoryPacketComposer(index).compose("everything about rejected unique zebra"))
+
+    assert "cand_rejected_zebra" not in rendered
+    assert "rejected unique zebra" not in rendered
+
+
+def test_rendered_packet_stays_within_declared_token_budget(tmp_path):
+    store, index = _store_and_index(tmp_path)
+    long = "Memory v2 " + ("x " * 2500)
+    index.index_record(
+        id="project:long-memory-v2",
+        type="project_state",
+        title="Memory v2",
+        body=long,
+        summary=long,
+        status="active",
+        source_refs=[],
+    )
+
+    packet = MemoryPacketComposer(index).compose("where did we leave off on Memory v2?")
+    rendered = MemoryPacketComposer.render(packet)
+
+    assert (len(rendered) + 3) // 4 <= packet.token_budget

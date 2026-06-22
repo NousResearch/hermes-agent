@@ -165,3 +165,52 @@ def _passing_report() -> EvalReport:
 
 def _check_by_name(scorecard: dict, name: str) -> dict:
     return next(check for check in scorecard["checks"] if check["name"] == name)
+
+
+def test_scorecard_fails_when_average_passes_but_one_row_fails():
+    good_rows = [
+        EvalScoreRow(
+            baseline="memory_v2",
+            query_id=f"q_good_{index}",
+            route="preference_recall",
+            source_recall=1.0,
+            text_contains=1.0,
+            suppression=1.0,
+            retrieved_count=1,
+            token_estimate=10,
+            latency_ms=1.0,
+            retrieved_source_refs=["event"],
+        )
+        for index in range(19)
+    ]
+    bad = EvalScoreRow(
+        baseline="memory_v2",
+        query_id="q_bad",
+        route="preference_recall",
+        source_recall=0.0,
+        text_contains=1.0,
+        suppression=1.0,
+        retrieved_count=1,
+        token_estimate=10,
+        latency_ms=1.0,
+        retrieved_source_refs=["wrong"],
+    )
+    report = EvalReport(
+        dataset="average_can_hide_failure",
+        rows=[bad, *good_rows],
+        summary={
+            "memory_v2": {
+                "query_count": 20,
+                "source_recall_avg": 0.95,
+                "text_contains_avg": 1.0,
+                "suppression_avg": 1.0,
+                "token_estimate_total": 200,
+                "latency_ms_avg": 1.0,
+            }
+        },
+    )
+
+    scorecard = build_acceptance_scorecard(report)
+
+    assert scorecard["passed"] is False
+    assert _check_by_name(scorecard, "source_correctness")["failed_rows"][0]["query_id"] == "q_bad"

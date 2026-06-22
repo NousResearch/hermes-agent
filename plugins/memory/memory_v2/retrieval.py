@@ -52,10 +52,8 @@ class MemoryQueryRouter:
         "where did we leave",
         "where we left",
         "what were we doing",
-        "continue",
         "pick back up",
         "left off",
-        "next step",
         "memory v2",
         "memory_v2",
     )
@@ -137,12 +135,19 @@ class MemoryQueryRouter:
         "ok",
         "okay",
         "k",
+        "ok thanks",
+        "okay thanks",
+        "thanks",
+        "thank you",
+        "hello there",
+        "hi there",
     }
 
     def route(self, query: str) -> RoutingDecision:
         query_text = str(query or "").strip()
         lowered = query_text.lower()
-        if not query_text or lowered in self.NO_MEMORY_EXACT or self._is_simple_arithmetic(lowered):
+        normalized = self._normalize_no_memory_text(lowered)
+        if not query_text or normalized in self.NO_MEMORY_EXACT or self._is_simple_arithmetic(lowered):
             return self._decision("no_memory_needed", "high", "", 0, 0, should_search=False)
 
         temporal = self._temporal_intent(lowered)
@@ -203,9 +208,18 @@ class MemoryQueryRouter:
             scores["preference_recall"] += 2
         if "on file" in lowered and any(term in lowered for term in ("my", "user", "voice", "style")):
             scores["preference_recall"] += 1
-        if any(term in lowered for term in ("where did we leave", "left off", "next step", "next steps")):
+        if any(term in lowered for term in ("where did we leave", "left off")):
+            scores["project_continuity"] += 2
+        if any(term in lowered for term in ("next step", "next steps", "continue")) and any(
+            anchor in lowered for anchor in ("last time", "left off", "where did we leave", "project", "memory v2", "we were working", "work on")
+        ):
             scores["project_continuity"] += 2
         return scores
+
+    @staticmethod
+    def _normalize_no_memory_text(text: str) -> str:
+        normalized = re.sub(r"[^a-z0-9 ]+", " ", str(text or "").lower())
+        return re.sub(r"\s+", " ", normalized).strip()
 
     @staticmethod
     def _score_contains(text: str, patterns: Sequence[str]) -> int:
@@ -250,15 +264,15 @@ class MemoryQueryRouter:
     @staticmethod
     def _target_types(route: str) -> Tuple[str, ...]:
         return {
-            "project_continuity": ("project_state", "candidate", "raw_event", "episode"),
+            "project_continuity": ("project_state", "open_loop", "candidate", "raw_event", "episode"),
             "preference_recall": ("preference", "candidate", "raw_event"),
             "procedure_lookup": ("procedure_ref", "candidate", "project_state", "raw_event"),
             "environment_fact": ("environment", "fact", "candidate", "raw_event"),
             "past_conversation_exact": ("raw_event", "episode"),
-            "deep_recall": ("raw_event", "episode", "project_state", "preference", "fact", "environment", "candidate"),
+            "deep_recall": ("raw_event", "episode", "project_state", "open_loop", "preference", "fact", "environment", "candidate"),
             "contradiction_check": ("preference", "fact", "project_state", "environment", "candidate", "raw_event"),
             "research_recall": ("fact", "project_state", "raw_event", "episode", "candidate"),
-            "current_task": ("project_state", "preference", "fact", "environment", "candidate", "raw_event"),
+            "current_task": ("project_state", "open_loop", "preference", "fact", "environment", "candidate", "raw_event"),
         }.get(route, ())
 
     @staticmethod
@@ -389,6 +403,7 @@ class MemoryPacketComposer:
         items = self._bounded_items(ranked, decision.token_budget)
         if decision.route == "project_continuity" and items:
             self.index.log_retrieval(query, route=decision.route, retrieved_ids=[str(item.get("id") or "") for item in items])
+        items = self._fit_items_to_render_budget(items, decision)
         warnings = self._warnings(items)
         sections = self._compose_sections(items, decision)
         return MemoryPacket(
@@ -418,7 +433,13 @@ class MemoryPacketComposer:
         }
         if packet.warnings:
             payload["warnings"] = packet.warnings
-        return yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+        rendered = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+        if packet.token_budget > 0 and MemoryPacketComposer._estimate_tokens(rendered) > packet.token_budget:
+            compact_payload = dict(payload)
+            compact_payload["items"] = [MemoryPacketComposer._hard_truncate_item(item, 180) for item in packet.items]
+            compact_payload["sections"] = packet.sections
+            rendered = yaml.safe_dump(compact_payload, sort_keys=False, allow_unicode=True)
+        return rendered
 
     @staticmethod
     def _retrieval_plan(decision: RoutingDecision) -> Dict[str, Any]:
@@ -460,7 +481,9 @@ class MemoryPacketComposer:
                 sections["current_beliefs"].append(compact)
             elif item_type in {"raw_event", "episode"}:
                 sections["recent_evidence"].append(compact)
-            elif item_type == "candidate":
+            elif item_type == "candidate" and status == "pending":
+                sections["pending_or_candidate_updates"].append(compact)
+            elif item_type == "open_loop" and status in {"open", "blocked", "snoozed"}:
                 sections["pending_or_candidate_updates"].append(compact)
             for source in item.get("source_metadata") or []:
                 if not (decision.needs_source_verification or decision.route == "project_continuity"):
@@ -582,9 +605,11 @@ class MemoryPacketComposer:
     @staticmethod
     def _filter_for_decision(results: List[Dict[str, Any]], decision: RoutingDecision) -> List[Dict[str, Any]]:
         allowed = set(decision.target_types)
+        disallowed_statuses = {"rejected", "archived_only"}
+        filtered = [item for item in results if str(item.get("status") or "") not in disallowed_statuses]
         if not allowed:
-            return results
-        return [item for item in results if str(item.get("type") or "") in allowed]
+            return filtered
+        return [item for item in filtered if str(item.get("type") or "") in allowed]
 
     @staticmethod
     def _filter_for_temporal_intent(results: List[Dict[str, Any]], temporal_intent: TemporalIntent) -> List[Dict[str, Any]]:
@@ -669,7 +694,7 @@ class MemoryPacketComposer:
     @staticmethod
     def _type_priority(route: str, memory_type: str) -> int:
         if route == "project_continuity":
-            priority = {"project_state": 0, "candidate": 1, "raw_event": 2, "episode": 3}
+            priority = {"project_state": 0, "open_loop": 1, "candidate": 2, "raw_event": 3, "episode": 4}
         elif route == "preference_recall":
             priority = {"preference": 0, "candidate": 1, "raw_event": 2}
         elif route == "past_conversation_exact":
@@ -687,8 +712,9 @@ class MemoryPacketComposer:
         return {
             "active": 0,
             "uncertain": 1,
-            "pending": 2,
-            "promoted": 3,
+            "open": 2,
+            "pending": 3,
+            "promoted": 4,
             "archived_only": 4,
             "archived": 5,
             "superseded": 6,
@@ -707,6 +733,54 @@ class MemoryPacketComposer:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.timestamp()
+
+
+    def _fit_items_to_render_budget(self, items: List[Dict[str, Any]], decision: RoutingDecision) -> List[Dict[str, Any]]:
+        if decision.token_budget <= 0 or not items:
+            return [] if decision.token_budget <= 0 else items
+        fitted = list(items)
+        while fitted:
+            trial = MemoryPacket(
+                route=decision.route,
+                confidence=decision.confidence,
+                token_budget=decision.token_budget,
+                items=fitted,
+                warnings=self._warnings(fitted),
+                sections=self._compose_sections(fitted, decision),
+                retrieval_plan=self._retrieval_plan(decision),
+            )
+            if self._estimate_tokens(self.render(trial)) <= decision.token_budget:
+                return fitted
+            if len(fitted) == 1:
+                compact = [self._hard_truncate_item(fitted[0], 120)]
+                compact_trial = MemoryPacket(
+                    route=decision.route,
+                    confidence=decision.confidence,
+                    token_budget=decision.token_budget,
+                    items=compact,
+                    warnings=self._warnings(compact),
+                    sections=self._compose_sections(compact, decision),
+                    retrieval_plan=self._retrieval_plan(decision),
+                )
+                return compact if self._estimate_tokens(self.render(compact_trial)) <= decision.token_budget else []
+            fitted = fitted[:-1]
+        return []
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        return (len(str(text or "")) + 3) // 4
+
+    @staticmethod
+    def _hard_truncate_item(item: Dict[str, Any], max_chars: int) -> Dict[str, Any]:
+        compact: Dict[str, Any] = {}
+        for key, value in item.items():
+            if isinstance(value, str):
+                compact[key] = MemoryPacketComposer._truncate(value, max_chars)
+            elif isinstance(value, dict):
+                compact[key] = {subkey: MemoryPacketComposer._truncate(subvalue, max_chars) if isinstance(subvalue, str) else subvalue for subkey, subvalue in value.items()}
+            else:
+                compact[key] = value
+        return compact
 
     def _bounded_items(self, results: List[Dict[str, Any]], token_budget: int) -> List[Dict[str, Any]]:
         if token_budget <= 0:

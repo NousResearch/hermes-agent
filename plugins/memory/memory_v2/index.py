@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
+from .redaction import redact_text, redacted_query_for_log, redacted_query_hash_input
 from .schemas import (
     CandidateMemory,
     GateDecision,
@@ -324,6 +325,7 @@ class MemoryV2Index:
         )
 
     def index_raw_event(self, event: Dict[str, Any]) -> bool:
+        event = {key: redact_text(value) if isinstance(value, str) else value for key, value in dict(event).items()}
         event_id = str(event.get("id") or "").strip()
         if not event_id:
             return False
@@ -347,6 +349,26 @@ class MemoryV2Index:
             file_path="inbox/raw_events.jsonl",
         )
         return True
+
+
+    def index_open_loop(self, loop: Dict[str, Any], *, file_path: str | Path = "") -> None:
+        loop_id = str(loop.get("id") or "").strip()
+        if not loop_id:
+            return
+        text = redact_text(str(loop.get("text") or ""))
+        self.index_record(
+            id=loop_id,
+            type="open_loop",
+            title=loop_id,
+            body=text,
+            summary=text,
+            status=str(loop.get("status") or "open"),
+            created_at=str(loop.get("created_at") or ""),
+            updated_at=str(loop.get("updated_at") or ""),
+            source_refs=[str(ref) for ref in loop.get("source_refs") or []],
+            tags=["open_loop", str(loop.get("status") or "open")],
+            file_path=str(file_path or "working/open_loops.yaml"),
+        )
 
     def index_record(
         self,
@@ -680,7 +702,7 @@ class MemoryV2Index:
             conn.execute("DELETE FROM memories")
             conn.execute("DELETE FROM memories_fts")
             conn.execute("DELETE FROM source_refs")
-        counts = {"project_cards": 0, "candidates": 0, "raw_events": 0, "source_refs": 0, "memory_items": 0}
+        counts = {"project_cards": 0, "candidates": 0, "raw_events": 0, "source_refs": 0, "memory_items": 0, "open_loops": 0}
         for source in store.list_source_refs():
             self.index_source_ref(source)
             counts["source_refs"] += 1
@@ -693,6 +715,9 @@ class MemoryV2Index:
         for candidate in store.list_candidates():
             self.index_candidate(candidate)
             counts["candidates"] += 1
+        for loop in store.list_open_loops():
+            self.index_open_loop(loop, file_path=store.open_loops_path)
+            counts["open_loops"] += 1
         for event in store.read_raw_events():
             if self.index_raw_event(event):
                 counts["raw_events"] += 1
@@ -700,8 +725,8 @@ class MemoryV2Index:
 
     def log_retrieval(self, query: str, *, route: str = "", retrieved_ids: Optional[List[str]] = None) -> None:
         query_text = str(query or "")
-        query_hash = hashlib.sha256(query_text.encode("utf-8")).hexdigest()
-        query_for_log = self._redacted_query_for_log(query_text)
+        query_hash = hashlib.sha256(redacted_query_hash_input(query_text).encode("utf-8")).hexdigest()
+        query_for_log = redacted_query_for_log(query_text)
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO retrieval_log (query, query_hash, route, retrieved_ids, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -802,10 +827,12 @@ class MemoryV2Index:
         terms = MemoryV2Index._fts_terms(query)
         if not terms:
             return []
-        strict = " AND ".join(f'"{term}"' for term in terms)
         relaxed_terms = [term for term in terms if term not in MemoryV2Index._STOPWORDS]
+        if not relaxed_terms:
+            return []
+        strict = " AND ".join(f'"{term}"' for term in terms)
         if len(relaxed_terms) < 2:
-            return [strict]
+            return [strict] if terms == relaxed_terms else []
         relaxed_and = " AND ".join(f'"{term}"' for term in relaxed_terms)
         relaxed_or = " OR ".join(f'"{term}"' for term in relaxed_terms)
         queries = [strict]

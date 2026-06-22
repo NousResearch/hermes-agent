@@ -136,7 +136,7 @@ def run_dogfood_scenario_tests(
 
         status = tool(provider, "memory_v2_status")
         check("provider_initialized_in_dogfood_profile", status["success"] and status["initialized"], status)
-        check("provider_base_dir_is_profile_local", str(target_home / "memory_v2") == status["base_dir"], status["base_dir"])
+        check("provider_base_dir_is_profile_local", target_home / "memory_v2" == provider.base_dir, {"display": status["base_dir"], "actual": str(provider.base_dir)})
         check(
             "default_profile_memory_v2_store_unchanged",
             _tree_signature(default_home / "memory_v2") == default_memory_v2_signature,

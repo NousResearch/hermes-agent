@@ -21,6 +21,7 @@ from agent.memory_provider import MemoryProvider
 from .consolidation import RuleBasedConsolidator
 from .daily_consolidation import run_daily_consolidation_report
 from .index import MemoryV2Index
+from .redaction import redact_data, redact_text
 from .retrieval import MemoryPacketComposer
 from .schemas import CandidateMemory, GateDecision, MemoryItem, WorkingMemory, utc_now_iso
 from .store import MemoryV2Store
@@ -400,39 +401,7 @@ class MemoryV2Provider(MemoryProvider):
 
     @staticmethod
     def _redact_sensitive_text(text: str) -> str:
-        redacted = text
-        redacted = re.sub(
-            r"(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
-            "[REDACTED PRIVATE KEY]",
-            redacted,
-        )
-        patterns = [
-            r"(?i)(password\s*(?:is|=|:)\s*)\S+",
-            r"(?i)(password\s+)\S+",
-            r"(?i)(passwd\s*(?:is|=|:)\s*)\S+",
-            r"(?i)(passwd\s+)\S+",
-            r"(?i)(token\s*(?:is|=|:)\s*)\S+",
-            r"(?i)(token\s+)\S+",
-            r"(?i)(secret\s*(?:is|=|:)\s*)\S+",
-            r"(?i)(secret\s+)\S+",
-            r"(?i)(client\s+secret\s*(?:is|=|:)\s*)\S+",
-            r"(?i)(client\s+secret\s+)\S+",
-            r"(?i)(credential\s*(?:is|=|:)\s*)\S+",
-            r"(?i)(credential\s+)\S+",
-            r"(?i)(private\s+key\s*(?:is|=|:)\s*)\S+",
-            r"(?i)(private\s+key\s+)\S+",
-            r"(?i)([A-Z0-9_]*PRIVATE[_-]?KEY\s*=\s*)\S+",
-            r"(?i)([A-Z0-9_]*PRIVATE[_-]?KEY\s+)\S+",
-            r"(?i)(api[_ -]?key\s*(?:is|=|:)\s*)\S+",
-            r"(?i)(api[_ -]?key\s+)\S+",
-            r"(?i)(authorization\s*:\s*bearer\s+)\S+",
-            r"(?i)(bearer\s+)\S+",
-            r"(?i)([A-Z0-9_]*API[_-]?KEY\s*=\s*)\S+",
-            r"(?i)([A-Z0-9_]*API[_-]?KEY\s+)\S+",
-        ]
-        for pattern in patterns:
-            redacted = re.sub(pattern, lambda match: f"{match.group(1)}[REDACTED]", redacted)
-        return redacted
+        return redact_text(text)
 
     def _candidate_from_turn(self, user_text: str, *, event_id: str) -> Optional[CandidateMemory]:
         decision = RuleBasedWriteGate().classify(user_text)
@@ -924,12 +893,21 @@ class MemoryV2Provider(MemoryProvider):
         rejected_candidate: CandidateMemory | None = None
         for candidate in candidates:
             if candidate.id == candidate_id:
-                rejected_candidate = self._candidate_with_decision(candidate, GateDecision.REJECTED, reason)
-                updated.append(rejected_candidate)
+                if candidate.gate_decision == GateDecision.REJECTED:
+                    rejected_candidate = candidate
+                    updated.append(candidate)
+                else:
+                    rejected_candidate = self._candidate_with_decision(candidate, GateDecision.REJECTED, reason)
+                    updated.append(rejected_candidate)
             else:
                 updated.append(candidate)
         if rejected_candidate is None:
             return {"success": False, "error": f"candidate not found: {candidate_id}"}
+        already_rejected = rejected_candidate.gate_decision == GateDecision.REJECTED and any(
+            candidate.id == candidate_id and candidate.gate_decision == GateDecision.REJECTED for candidate in candidates
+        )
+        if already_rejected:
+            return {"success": True, "already_rejected": True, "candidate": rejected_candidate.to_dict()}
         self.store.rewrite_candidates(updated)
         self.store.append_rejected_candidate(rejected_candidate)
         self.index.index_candidate(rejected_candidate)
@@ -946,6 +924,18 @@ class MemoryV2Provider(MemoryProvider):
             return {"success": False, "error": f"candidate not found: {candidate_id}"}
         if target.proposed_destination.strip().lower() == "skills" or str(getattr(target.type, "value", target.type)) == "procedure_ref":
             return {"success": False, "error": "procedure/skills candidates require skill authoring or manual rejection, not semantic promotion"}
+        if target.gate_decision != GateDecision.PENDING:
+            return {"success": False, "error": f"candidate is already {target.gate_decision.value}; only pending candidates can be promoted", "candidate": target.to_dict()}
+        if force:
+            force_reason = str(args.get("force_reason") or "").strip()
+            if not force_reason:
+                return {"success": False, "error": "force_reason is required when force=true"}
+            valid_refs = [source_id for source_id in target.source_refs if self._source_payload(source_id) is not None]
+            if valid_refs != list(target.source_refs):
+                data = target.to_dict()
+                data["source_refs"] = valid_refs
+                data["confidence"] = min(float(data.get("confidence") or 0.0), 0.5)
+                target = CandidateMemory.from_dict(data)
         if not force:
             if not target.source_refs:
                 return {"success": False, "error": "candidate source_refs are required for manual promotion"}
@@ -955,9 +945,11 @@ class MemoryV2Provider(MemoryProvider):
         promoted_ids: List[str] = []
         consolidator = RuleBasedConsolidator()
         if consolidator._is_open_loop_candidate(target):
-            loop = self.store.upsert_open_loop(
+            existing_loop = next((loop for loop in self.store.list_open_loops() if loop.get("candidate_id") == target.id), None)
+            loop = existing_loop or self.store.upsert_open_loop(
                 {"text": target.claim, "source_refs": target.source_refs, "session_id": self._session_id, "candidate_id": target.id}
             )
+            self.index.index_open_loop(loop, file_path=self.store.open_loops_path)
             updated_target = self._candidate_with_decision(
                 target, GateDecision.ARCHIVED_ONLY, f"Manually routed to working/open_loops.yaml as {loop['id']}."
             )
@@ -1060,7 +1052,17 @@ class MemoryV2Provider(MemoryProvider):
             return source.to_dict()
         for event in self.store.read_raw_events():
             if str(event.get("id") or "") == str(source_id):
-                return {"id": str(source_id), "type": "raw_event", "uri": f"raw_event:{source_id}", "event": event}
+                safe_event = redact_data(event)
+                quote = str(safe_event.get("user_content") or safe_event.get("content") or safe_event.get("assistant_content") or "")
+                if len(quote) > 500:
+                    quote = quote[:497].rstrip() + "..."
+                return {
+                    "id": str(source_id),
+                    "type": "raw_event",
+                    "uri": f"raw_event:{source_id}",
+                    "quote": quote,
+                    "observed_at": str(safe_event.get("created_at") or ""),
+                }
         return None
 
     def _status_payload(self) -> Dict[str, Any]:
@@ -1071,7 +1073,7 @@ class MemoryV2Provider(MemoryProvider):
             "initialized": self._initialized,
             "session_id": self._session_id,
             "platform": self._platform,
-            "base_dir": str(base),
+            "base_dir": base.name,
             "counts": {
                 "raw_events": self.store.count_raw_events(),
                 "pending_candidates": self.store.count_pending_candidates(),

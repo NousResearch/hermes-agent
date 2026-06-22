@@ -69,7 +69,7 @@ def build_acceptance_scorecard(report: EvalReport | dict[str, Any]) -> dict[str,
                 metric="source_recall",
                 actual=float(target_summary.get("source_recall_avg", 0.0)),
                 threshold=SOURCE_CORRECTNESS_MIN,
-                passed=float(target_summary.get("source_recall_avg", 0.0)) >= SOURCE_CORRECTNESS_MIN,
+                passed=False,
                 failed_rows=_row_failures(
                     target_rows,
                     metric="source_recall",
@@ -86,7 +86,7 @@ def build_acceptance_scorecard(report: EvalReport | dict[str, Any]) -> dict[str,
                 metric="suppression",
                 actual=float(target_summary.get("suppression_avg", 0.0)),
                 threshold=SUPPRESSION_MIN,
-                passed=float(target_summary.get("suppression_avg", 0.0)) >= SUPPRESSION_MIN,
+                passed=False,
                 failed_rows=_row_failures(
                     target_rows,
                     metric="suppression",
@@ -96,6 +96,11 @@ def build_acceptance_scorecard(report: EvalReport | dict[str, Any]) -> dict[str,
                 description="Irrelevant-memory suppression should keep false positives under 10%.",
             )
         )
+        for check in checks[-2:]:
+            if check["name"] == "source_correctness":
+                check["passed"] = float(target_summary.get("source_recall_avg", 0.0)) >= SOURCE_CORRECTNESS_MIN and not check["failed_rows"]
+            elif check["name"] == "irrelevant_suppression":
+                check["passed"] = float(target_summary.get("suppression_avg", 0.0)) >= SUPPRESSION_MIN and not check["failed_rows"]
         checks.append(_token_budget_check(target_rows, target_baseline))
 
     if "memory_v2" in summary and "raw_fts" in summary:

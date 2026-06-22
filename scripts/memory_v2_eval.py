@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -28,7 +29,14 @@ def main(argv: list[str] | None = None) -> int:
         workdir.mkdir(parents=True, exist_ok=True)
         reports = []
         for dataset_path in args.dataset:
-            dataset = load_eval_dataset(dataset_path)
+            try:
+                dataset = load_eval_dataset(dataset_path)
+            except FileNotFoundError:
+                print(f"error: dataset not found: {dataset_path}", file=sys.stderr)
+                return 2
+            except Exception as exc:
+                print(f"error: failed to load dataset {dataset_path}: {exc}", file=sys.stderr)
+                return 2
             report = run_eval(dataset, baselines=_build_baselines(baseline_names, workdir / dataset.name))
             reports.append(report.to_dict())
 

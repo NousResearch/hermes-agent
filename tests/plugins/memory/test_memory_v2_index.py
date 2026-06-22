@@ -157,7 +157,7 @@ def test_rebuild_from_store_indexes_project_cards_candidates_and_events(tmp_path
 
     counts = index.rebuild_from_store(store)
 
-    assert counts == {"project_cards": 1, "candidates": 1, "raw_events": 1, "source_refs": 1, "memory_items": 0}
+    assert counts == {"project_cards": 1, "candidates": 1, "raw_events": 1, "source_refs": 1, "memory_items": 0, "open_loops": 0}
     assert index.count_memories() == 3
     source = store.list_source_refs()[0]
     indexed_source = index.source_ref(source.id)
@@ -188,7 +188,7 @@ def test_rebuild_from_store_indexes_memory_items_with_structured_fields(tmp_path
     counts = index.rebuild_from_store(store)
     results = index.search("response style direct no BS", route="preference_recall", limit=5)
 
-    assert counts == {"project_cards": 0, "candidates": 0, "raw_events": 0, "source_refs": 0, "memory_items": 1}
+    assert counts == {"project_cards": 0, "candidates": 0, "raw_events": 0, "source_refs": 0, "memory_items": 1, "open_loops": 0}
     assert len(results) == 1
     result = results[0]
     assert result["id"] == "pref_response_style"
@@ -265,7 +265,7 @@ def test_rebuild_from_store_indexes_source_refs_for_packet_expansion(tmp_path):
 
     counts = index.rebuild_from_store(store)
 
-    assert counts == {"project_cards": 1, "candidates": 0, "raw_events": 0, "source_refs": 1, "memory_items": 0}
+    assert counts == {"project_cards": 1, "candidates": 0, "raw_events": 0, "source_refs": 1, "memory_items": 0, "open_loops": 0}
     assert index.source_ref("source_memory_v2_thread") == source.to_dict()
     result = index.search("source backed memory packets", route="project_continuity", limit=5)[0]
     assert result["id"] == "project:hermes-memory-v2"
@@ -498,3 +498,32 @@ def test_rebuild_from_store_skips_raw_events_missing_ids(tmp_path):
 
     assert counts["raw_events"] == 0
     assert index.count_memories() == 0
+
+
+def test_rebuild_from_store_indexes_open_loops_and_stopword_queries_do_not_match(tmp_path):
+    store = _store(tmp_path)
+    store.upsert_open_loop({"id": "loop_dragonfruit", "text": "finish dragonfruit migration", "source_refs": ["event_loop"]})
+    index = MemoryV2Index(store.base_dir / "indexes" / "memory.sqlite")
+    index.initialize()
+
+    counts = index.rebuild_from_store(store)
+
+    assert counts["open_loops"] == 1
+    assert index.search("dragonfruit migration", limit=5)[0]["id"] == "loop_dragonfruit"
+    assert index.search("the and or", limit=5) == []
+
+
+def test_retrieval_log_redacts_query_and_hashes_redacted_sentinel(tmp_path):
+    import hashlib
+
+    store = _store(tmp_path)
+    index = MemoryV2Index(store.base_dir / "indexes" / "memory.sqlite")
+    index.initialize()
+
+    query = "Authorization:\nBearer fakebearertoken123456789"
+    index.log_retrieval(query, route="current_task", retrieved_ids=[])
+    log = index.retrieval_logs()[0]
+
+    assert log["query"] == "[REDACTED sensitive query]"
+    assert log["query_hash"] != hashlib.sha256(query.encode("utf-8")).hexdigest()
+    assert log["query_hash"] == hashlib.sha256(b"[REDACTED sensitive query]").hexdigest()

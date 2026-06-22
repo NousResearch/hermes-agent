@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from .redaction import redact_data, redact_text
 from .schemas import CandidateMemory, CoreMemoryRecord, GateDecision, MemoryItem, ProjectCard, SourceRef, ValidationError, WorkingMemory, normalize_project_id, utc_now_iso
 
 
@@ -134,7 +135,7 @@ class MemoryV2Store:
         """
         if not isinstance(event, dict):
             raise ValidationError("raw event must be a JSON object")
-        payload = dict(event)
+        payload = redact_data(dict(event))
         payload.setdefault("id", f"event_{uuid.uuid4().hex}")
         payload.setdefault("created_at", utc_now_iso())
         self._append_jsonl(self.raw_events_path, payload)
@@ -301,7 +302,7 @@ class MemoryV2Store:
         payload.setdefault("status", "open")
         payload.setdefault("created_at", utc_now_iso())
         payload["updated_at"] = utc_now_iso()
-        payload["text"] = str(payload.get("text") or "").strip()
+        payload["text"] = redact_text(str(payload.get("text") or "").strip())
         payload["source_refs"] = [str(ref) for ref in payload.get("source_refs") or []]
         payload["session_id"] = str(payload.get("session_id") or "")
         if not payload["text"]:
@@ -389,6 +390,7 @@ class MemoryV2Store:
             source_type = "message"
             title = f"Raw turn evidence from session {session_id}" if session_id else "Raw turn evidence"
             quote = str(event.get("user_content") or event.get("content") or event.get("assistant_content") or "").strip()
+        quote = redact_text(quote)
         if len(quote) > 500:
             quote = quote[:497].rstrip() + "..."
         return SourceRef(

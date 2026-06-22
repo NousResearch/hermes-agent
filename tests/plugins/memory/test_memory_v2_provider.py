@@ -129,7 +129,8 @@ def test_status_tool_reports_initialized_profile_scoped_paths(tmp_path):
     assert result["success"] is True
     assert result["provider"] == "memory_v2"
     assert result["session_id"] == "session-1"
-    assert Path(result["base_dir"]) == tmp_path / "memory_v2"
+    assert result["base_dir"] == "memory_v2"
+    assert str(tmp_path) not in result["base_dir"]
     assert result["counts"]["pending_candidates"] == 0
     assert result["counts"]["raw_events"] == 0
     assert result["counts"]["indexed_memories"] == 0
@@ -821,12 +822,15 @@ def test_manual_promote_refuses_missing_or_dangling_sources_unless_forced(tmp_pa
 
     no_source = json.loads(provider.handle_tool_call("memory_v2_promote", {"candidate_id": "cand_no_source"}))
     dangling = json.loads(provider.handle_tool_call("memory_v2_promote", {"candidate_id": "cand_dangling"}))
-    forced = json.loads(provider.handle_tool_call("memory_v2_promote", {"candidate_id": "cand_dangling", "force": True}))
+    no_reason = json.loads(provider.handle_tool_call("memory_v2_promote", {"candidate_id": "cand_dangling", "force": True}))
+    forced = json.loads(provider.handle_tool_call("memory_v2_promote", {"candidate_id": "cand_dangling", "force": True, "force_reason": "manual audit override"}))
 
     assert no_source["success"] is False
     assert "source_refs" in no_source["error"]
     assert dangling["success"] is False
     assert "dangling" in dangling["error"]
+    assert no_reason["success"] is False
+    assert "force_reason" in no_reason["error"]
     assert forced["success"] is True
     assert forced["promoted"] == 1
 
@@ -875,3 +879,77 @@ def test_prefetch_redacts_natural_language_credential_formats_in_retrieval_log(t
     logs_json = json.dumps(provider.index.retrieval_logs())
     for leaked in ("tok_123", "hunter2", "bearer_123"):
         assert leaked not in logs_json
+
+
+def test_memory_v2_redacts_secret_edge_cases_everywhere(tmp_path):
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="test")
+    secret_text = (
+        "Remember that DB_URL=postgresql://alice:pw123@db.example/prod and "
+        "OpenAI key is sk-proj-FAKEFAKEFAKEFAKE and Authorization:\n"
+        "Bearer fakebearertoken123456789 and AWS_SECRET_ACCESS_KEY=fakeSecretAccessKey123456"
+    )
+
+    provider.sync_turn(secret_text, "queued")
+    provider.prefetch(secret_text)
+
+    dump = json.dumps(
+        {
+            "raw": provider.store.read_raw_events(),
+            "sources": [source.to_dict() for source in provider.store.list_source_refs()],
+            "candidates": [candidate.to_dict() for candidate in provider.store.list_candidates()],
+            "logs": provider.index.retrieval_logs(),
+        }
+    )
+    for leaked in ("fakeDatabasePassword123", "sk-proj", "fakebearertoken", "fakeSecretAccessKey"):
+        assert leaked not in dump
+    assert "[REDACTED" in dump
+
+
+def test_show_source_returns_bounded_quote_not_full_raw_event(tmp_path):
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="test")
+    event = provider.store.append_raw_event(
+        {
+            "id": "event_secret",
+            "type": "tool",
+            "content": "Authorization:\nBearer fakebearertoken123456789 " + ("private text " * 80),
+            "assistant_content": "internal assistant detail",
+        }
+    )
+
+    shown = json.loads(provider.handle_tool_call("memory_v2_show_source", {"id": event["id"]}))
+    dumped = json.dumps(shown)
+
+    assert "event" not in shown["sources"][0]
+    assert "fakebearertoken" not in dumped
+    assert "assistant_content" not in dumped
+    assert len(dumped) < 1600
+
+
+def test_manual_reject_and_promote_are_idempotent_for_candidate_lifecycle(tmp_path):
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="test")
+    provider.sync_turn("Remember to follow up on the dragonfruit migration.", "queued")
+    candidate_id = provider.store.list_candidates()[0].id
+
+    first_reject = json.loads(provider.handle_tool_call("memory_v2_reject", {"candidate_id": candidate_id, "reason": "bad"}))
+    second_reject = json.loads(provider.handle_tool_call("memory_v2_reject", {"candidate_id": candidate_id, "reason": "bad again"}))
+
+    assert first_reject["success"] is True
+    assert second_reject["success"] is True
+    assert second_reject["already_rejected"] is True
+    assert provider.store.count_rejected_candidates() == 1
+    assert json.loads(provider.handle_tool_call("memory_v2_promote", {"candidate_id": candidate_id}))["success"] is False
+
+
+def test_force_promote_requires_reason_and_does_not_bypass_pending_state(tmp_path):
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="test")
+    provider.sync_turn("Remember that Alex prefers careful source grounded memory.", "queued")
+    candidate_id = provider.store.list_candidates()[0].id
+
+    no_reason = json.loads(provider.handle_tool_call("memory_v2_promote", {"candidate_id": candidate_id, "force": True}))
+
+    assert no_reason["success"] is False
+    assert "force_reason" in no_reason["error"]

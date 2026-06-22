@@ -35,7 +35,7 @@ def run_eval(dataset: EvalDataset, *, baselines: list[MemoryEvalBaseline]) -> Ev
                 EvalScoreRow(
                     baseline=result.baseline,
                     query_id=query.id,
-                    route=query.route,
+                    route=result.route or query.route,
                     source_recall=source_recall,
                     text_contains=text_contains,
                     suppression=suppression,

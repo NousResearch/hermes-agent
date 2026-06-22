@@ -1201,6 +1201,18 @@ custom_providers:
     api_mode: anthropic_messages  # for Anthropic-compatible proxies
 ```
 
+**Custom request headers for `anthropic_messages` endpoints.** Some Anthropic-compatible gateways require extra request headers (project/tenant routing, WAF tokens, etc.). Set `ANTHROPIC_CUSTOM_HEADERS` and Hermes attaches them to every request to the Anthropic-wire client. Use one `Name: Value` pair per line; values take precedence over Hermes' own defaults:
+
+```bash
+# Single header
+export ANTHROPIC_CUSTOM_HEADERS="x-project: my-project"
+
+# Multiple headers (newline-separated)
+export ANTHROPIC_CUSTOM_HEADERS=$'x-project: my-project\nx-team: infra'
+```
+
+This mirrors Claude Code's `ANTHROPIC_CUSTOM_HEADERS` convention and applies to `custom` (and other) models running on the `anthropic_messages` (and Bedrock) wire format. The OpenAI-wire equivalent is `model.default_headers` in `config.yaml`.
+
 Some OpenAI-compatible endpoints need provider-specific request body fields. Add an `extra_body` map to the matching custom provider and Hermes will merge it into each chat-completions request for that endpoint:
 
 ```yaml

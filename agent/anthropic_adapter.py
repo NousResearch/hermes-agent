@@ -698,7 +698,50 @@ def _build_anthropic_client_with_bearer_hook(
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    _apply_anthropic_custom_headers(kwargs)
     return _anthropic_sdk.Anthropic(**kwargs)
+
+
+def _parse_anthropic_custom_headers(raw: Optional[str]) -> Dict[str, str]:
+    """Parse the ``ANTHROPIC_CUSTOM_HEADERS`` env var into a header dict.
+
+    Mirrors Claude Code's convention: one ``Name: Value`` pair per line
+    (newline-separated), with surrounding whitespace trimmed. Lines without a
+    ``:`` separator or with an empty name are ignored. Returns an empty dict
+    when unset/blank so callers can merge unconditionally.
+
+        ANTHROPIC_CUSTOM_HEADERS="x-project: my-project"
+        ANTHROPIC_CUSTOM_HEADERS=$'x-project: my-project\\nx-team: infra'
+    """
+    if not raw:
+        return {}
+    headers: Dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        name, _, value = line.partition(":")
+        name = name.strip()
+        if name:
+            headers[name] = value.strip()
+    return headers
+
+
+def _apply_anthropic_custom_headers(kwargs: dict) -> None:
+    """Merge ``ANTHROPIC_CUSTOM_HEADERS`` env headers onto client ``kwargs``.
+
+    User-supplied headers take precedence over the SDK/provider defaults
+    already in ``kwargs["default_headers"]`` (e.g. ``anthropic-beta``),
+    matching the OpenAI-wire ``model.default_headers`` behaviour. This lets
+    ``custom`` models on the ``anthropic_messages`` wire format attach headers
+    a gateway requires (e.g. ``x-project``). No-op when the env var is unset.
+    """
+    custom = _parse_anthropic_custom_headers(os.environ.get("ANTHROPIC_CUSTOM_HEADERS"))
+    if not custom:
+        return
+    merged = dict(kwargs.get("default_headers") or {})
+    merged.update(custom)
+    kwargs["default_headers"] = merged
 
 
 def build_anthropic_client(
@@ -827,6 +870,7 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    _apply_anthropic_custom_headers(kwargs)
     return _anthropic_sdk.Anthropic(**kwargs)
 
 

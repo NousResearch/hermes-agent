@@ -154,6 +154,43 @@ class TestBuildAnthropicClient:
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "context-1m-2025-08-07" in betas
 
+    def test_custom_headers_env_merged_for_custom_anthropic_endpoint(self, monkeypatch):
+        """ANTHROPIC_CUSTOM_HEADERS injects headers for anthropic_messages models.
+
+        A custom model behind a gateway needs e.g. `x-project`; the env var
+        merges onto the SDK default_headers without dropping the betas.
+        """
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "x-project: my-project")
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["default_headers"]["x-project"] == "my-project"
+            # Betas must survive the merge.
+            assert (
+                kwargs["default_headers"]["anthropic-beta"]
+                == "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+            )
+
+    def test_custom_headers_env_supports_multiple_and_overrides(self, monkeypatch):
+        monkeypatch.setenv(
+            "ANTHROPIC_CUSTOM_HEADERS",
+            "x-project: proj\nx-team: infra",
+        )
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["default_headers"]["x-project"] == "proj"
+            assert kwargs["default_headers"]["x-team"] == "infra"
+
+    def test_custom_headers_env_absent_is_noop(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS", raising=False)
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["default_headers"] == {
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+            }
+
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(

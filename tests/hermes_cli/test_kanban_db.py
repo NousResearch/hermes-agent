@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -4043,10 +4044,171 @@ def test_collect_index_drift_rows_dedupes_repeated_index():
 
 
 def test_collect_index_drift_rows_handles_non_string_rows():
-    """Robustness: rows may contain None or non-strings from a buggy
-    connection — the parser must skip them rather than crashing."""
-    rows = [(None,), (b"binary",), ("wrong # of entries in index idx_x",)]
-    assert kb._collect_index_drift_rows(rows) == ["idx_x"]
+    """Robustness: rows may contain None, non-strings, empty tuples,
+    or just plain garbage from a buggy connection — the parser must
+    skip them rather than crashing. Coverage pins every defensive
+    branch in the parser's input filter (``if not row``, ``isinstance
+    check``, ``regex search``, dedupe) so a future refactor cannot
+    silently remove the defensive layer."""
+    rows = [
+        (None,),                                 # non-string value
+        (b"binary",),                            # bytes value
+        ("wrong # of entries in index idx_a",),  # legit first hit
+        (),                                      # empty tuple — falsy row
+        ("wrong # of entries in index idx_a",),  # repeat — dedupes
+        ("wrong # of entries in index idx_b",),  # legit second hit
+        ("unrelated integrity message",),        # no regex match
+    ]
+    assert kb._collect_index_drift_rows(rows) == ["idx_a", "idx_b"]
+
+
+def test_index_drift_row_re_rejects_injection_shaped_names():
+    """Injection defense: ``_INDEX_DRIFT_ROW_RE`` must NOT capture SQL
+    statements as the ``<name>`` group.
+
+    The regex anchors the name capture to ``[A-Za-z_][\\w]*`` (a strict
+    SQLite identifier). Payloads that try to escape the index position
+    — comment terminators, statement separators, whitespace tricks —
+    must either fail to match at all (no ``<name>`` reaches the
+    REINDEX layer) or capture ONLY the safe identifier prefix (the
+    trailing injection content is silently dropped by the regex's
+    anchored capture group).
+
+    This pins the parser-layer defense so a future regex relaxation
+    cannot silently re-open the injection surface against the kanban
+    DB. Anything the regex DOES capture must round-trip through
+    ``[A-Za-z_][\\w]*`` — that is the contract.
+    """
+    injection_payloads = [
+        # Classic SQL-injection strings in the index-name position.
+        # The regex must NOT capture the whole statement — only an
+        # identifier-shaped prefix (or nothing).
+        "wrong # of entries in index ; DROP TABLE tasks;--",
+        "wrong # of entries in index idx_x; DELETE FROM tasks WHERE 1=1;--",
+        # Whitespace + control chars inside the name — the identifier
+        # pattern stops at the first non-word character.
+        "wrong # of entries in index idx_x\x00malicious",
+        # Quote escapes — the regex must not include them in the name.
+        "wrong # of entries in index idx_x'; --",
+        # Newline statement injection — the regex captures only the
+        # safe prefix on the first line.
+        "wrong # of entries in index idx_x\nDROP TABLE tasks",
+    ]
+    for payload in injection_payloads:
+        # Pin #1: the parser returns only safe identifiers — even when
+        # the raw integrity_check row is hostile, what flows into
+        # ``REINDEX <name>`` must be a clean SQLite identifier.
+        parsed = kb._collect_index_drift_rows([(payload,)])
+        for name in parsed:
+            assert re.fullmatch(r"[A-Za-z_][\w]*", name), (
+                f"parser surfaced unsafe name {name!r} from payload "
+                f"{payload!r}"
+            )
+        # Pin #2: if the regex does match, the captured name must be
+        # a strict identifier (anchored at [A-Za-z_], word-chars only).
+        match = kb._INDEX_DRIFT_ROW_RE.search(payload)
+        if match is not None:
+            captured = match.group("name")
+            assert re.fullmatch(r"[A-Za-z_][\w]*", captured), (
+                f"regex captured non-identifier name {captured!r} "
+                f"from payload {payload!r}"
+            )
+            # Pin #3: the captured name must NOT contain any of the
+            # injection marker characters that appear in the payload.
+            for marker in (";", "'", "\x00", "\n", " ", "\t"):
+                assert marker not in captured, (
+                    f"regex capture leaked injection marker "
+                    f"{marker!r} into name {captured!r} from "
+                    f"payload {payload!r}"
+                )
+
+
+def test_try_repair_index_drift_refuses_suspicious_index_name(
+    tmp_path, monkeypatch, caplog
+):
+    """Defense in depth: the ``_try_repair_index_drift`` helper must
+    re-validate the captured name against the strict identifier
+    pattern before issuing ``REINDEX`` and refuse to repair anything
+    if the name is not a safe identifier.
+
+    The parser regex is the primary defense — this test pins the
+    second-layer guard inside the helper itself by monkeypatching the
+    parser to return a deliberately unsafe name. Without this second
+    guard, a future regex change that loosens the capture group would
+    open a code-injection path against ``REINDEX <name>``.
+
+    Pin: no REINDEX is issued, the helper returns ``(False, [])``,
+    and a WARNING is logged naming the suspicious name.
+    """
+    import logging
+
+    db_path = tmp_path / "suspicious.db"
+    kb.init_db(db_path=db_path)
+
+    reindex_calls: list[str] = []
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                return _FakeCursor([(
+                    "wrong # of entries in index idx_x",
+                )])
+            if normalized.startswith("reindex "):
+                reindex_calls.append(sql)
+            return _FakeCursor([])
+
+        def close(self):
+            pass
+
+    # Simulate a future regression where the parser regex was loosened
+    # and now returns a name that is NOT a safe identifier. The helper
+    # must catch this and refuse the REINDEX.
+    monkeypatch.setattr(
+        kb,
+        "_collect_index_drift_rows",
+        lambda rows: ["idx_x; DROP TABLE tasks;--"],
+    )
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        ok, names = kb._try_repair_index_drift(db_path)
+
+    assert reindex_calls == [], (
+        f"helper must NOT REINDEX a suspicious index name; "
+        f"got {reindex_calls!r}"
+    )
+    # Helper returns (False, drifted) on suspicious name — caller falls
+    # through to the backup-and-raise path. The drifted list is the
+    # input that triggered the refusal (so the operator can see what
+    # the parser surfaced), but ok=False is the load-bearing signal.
+    assert ok is False
+    assert names == ["idx_x; DROP TABLE tasks;--"], (
+        "helper must surface the suspicious name in the drifted list "
+        "for operator visibility; got {names!r}"
+    )
+    # Audit log line: operator can see why the repair was refused.
+    refusal_warnings = [
+        r for r in caplog.records
+        if "refusing to REINDEX suspicious index name" in r.getMessage()
+    ]
+    assert refusal_warnings, (
+        "expected a WARNING log line naming the suspicious index; "
+        f"got {[r.getMessage() for r in caplog.records]!r}"
+    )
 
 
 def test_try_repair_index_drift_no_op_on_healthy_db(tmp_path):
@@ -4379,6 +4541,295 @@ def test_init_db_partial_repair_failure_includes_attempt_in_error(tmp_path, monk
     assert "REINDEX attempted" in str(excinfo.value)
     assert "idx_events_run" in str(excinfo.value)
     assert reindexed == ["REINDEX idx_events_run"]
+
+
+def test_try_repair_index_drift_propagates_connect_operational_error(
+    tmp_path, monkeypatch
+):
+    """``OperationalError`` from ``_sqlite_connect`` (lock/busy) must
+    propagate raw — the caller wants to see the real lock failure, not
+    a corrupt-DB error."""
+    db_path = tmp_path / "locked.db"
+    kb.init_db(db_path=db_path)
+
+    def _locked_connect(p):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(kb, "_sqlite_connect", _locked_connect)
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        kb._try_repair_index_drift(db_path)
+
+
+def test_try_repair_index_drift_returns_false_on_connect_database_error(
+    tmp_path, monkeypatch
+):
+    """A ``DatabaseError`` (page-level corruption, malformed headers)
+    from ``_sqlite_connect`` is unrecoverable — the helper must return
+    ``(False, [])`` so the caller can fall through to backup-and-raise.
+    """
+    db_path = tmp_path / "bad-connect.db"
+    kb.init_db(db_path=db_path)
+
+    def _bad_connect(p):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr(kb, "_sqlite_connect", _bad_connect)
+
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is False
+    assert names == []
+
+
+def test_try_repair_index_drift_propagates_first_integrity_operational_error(
+    tmp_path, monkeypatch
+):
+    """``OperationalError`` raised mid-probe (lock acquired between
+    connect and first ``PRAGMA integrity_check``) must propagate —
+    surfacing the lock state to the caller rather than masking it as
+    corruption."""
+    db_path = tmp_path / "probe-locked.db"
+    kb.init_db(db_path=db_path)
+
+    class _FakeCursor:
+        def fetchall(self):
+            raise sqlite3.OperationalError("database is locked")
+
+        def fetchone(self):
+            return None
+
+    class _FakeConn:
+        def execute(self, sql, *args, **kwargs):
+            return _FakeCursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn())
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        kb._try_repair_index_drift(db_path)
+
+
+def test_try_repair_index_drift_returns_false_on_first_integrity_database_error(
+    tmp_path, monkeypatch
+):
+    """A ``DatabaseError`` raised mid-probe on the first
+    ``PRAGMA integrity_check`` indicates the DB is unreadable — return
+    ``(False, [])`` so the caller falls through to backup-and-raise."""
+    db_path = tmp_path / "probe-bad.db"
+    kb.init_db(db_path=db_path)
+
+    class _FakeCursor:
+        def fetchall(self):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        def fetchone(self):
+            return None
+
+    class _FakeConn:
+        def execute(self, sql, *args, **kwargs):
+            return _FakeCursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn())
+
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is False
+    assert names == []
+
+
+def test_try_repair_index_drift_returns_false_on_reindex_database_error(
+    tmp_path, monkeypatch, caplog
+):
+    """If ``REINDEX`` itself raises ``DatabaseError`` (e.g. the index
+    is so badly corrupted that REINDEX cannot rebuild it), the helper
+    must surface ``(False, drifted)`` with a WARNING audit line so the
+    operator sees what was attempted."""
+    import logging
+
+    db_path = tmp_path / "reindex-fail.db"
+    kb.init_db(db_path=db_path)
+
+    class _FakeCursor:
+        def __init__(self, rows=None, exc=None):
+            self._rows = rows or []
+            self._exc = exc
+
+        def fetchall(self):
+            if self._exc is not None:
+                raise self._exc
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                return _FakeCursor(rows=[
+                    ("wrong # of entries in index idx_events_run",),
+                ])
+            if normalized.startswith("reindex "):
+                raise sqlite3.DatabaseError("reindex failed: bad b-tree")
+            return _FakeCursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        ok, names = kb._try_repair_index_drift(db_path)
+
+    assert ok is False
+    assert names == ["idx_events_run"]
+    reindex_warnings = [
+        r for r in caplog.records
+        if "REINDEX" in r.getMessage() and "failed" in r.getMessage()
+    ]
+    assert reindex_warnings, (
+        "expected a WARNING log line about the REINDEX failure; "
+        f"got {[r.getMessage() for r in caplog.records]!r}"
+    )
+
+
+def test_try_repair_index_drift_propagates_post_integrity_operational_error(
+    tmp_path, monkeypatch
+):
+    """``OperationalError`` raised during the post-repair
+    ``PRAGMA integrity_check`` (lock acquired mid-repair) must
+    propagate — the caller still wants to see the lock state."""
+    db_path = tmp_path / "post-lock.db"
+    kb.init_db(db_path=db_path)
+
+    state = {"integrity_calls": 0}
+
+    class _FakeCursor:
+        def __init__(self, rows=None, exc=None):
+            self._rows = rows or []
+            self._exc = exc
+
+        def fetchall(self):
+            if self._exc is not None:
+                raise self._exc
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                state["integrity_calls"] += 1
+                if state["integrity_calls"] == 1:
+                    return _FakeCursor(rows=[
+                        ("wrong # of entries in index idx_events_run",),
+                    ])
+                # Second call (post-repair) — lock acquired mid-flight.
+                return _FakeCursor(exc=sqlite3.OperationalError("database is locked"))
+            return _FakeCursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn())
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        kb._try_repair_index_drift(db_path)
+
+
+def test_try_repair_index_drift_returns_false_on_post_integrity_database_error(
+    tmp_path, monkeypatch
+):
+    """A ``DatabaseError`` on the post-repair ``PRAGMA
+    integrity_check`` (repair succeeded but the DB is STILL broken)
+    must return ``(False, repaired)`` so the caller knows which
+    indexes were touched."""
+    db_path = tmp_path / "still-broken.db"
+    kb.init_db(db_path=db_path)
+
+    reindexed: list[str] = []
+    state = {"integrity_calls": 0}
+
+    class _FakeCursor:
+        def __init__(self, rows=None, exc=None):
+            self._rows = rows or []
+            self._exc = exc
+
+        def fetchall(self):
+            if self._exc is not None:
+                raise self._exc
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                state["integrity_calls"] += 1
+                if state["integrity_calls"] == 1:
+                    # First call: recoverable drift, REINDEX proceeds.
+                    return _FakeCursor(rows=[
+                        ("wrong # of entries in index idx_events_run",),
+                    ])
+                # Second call (post-repair): DB still broken.
+                return _FakeCursor(exc=sqlite3.DatabaseError("still broken"))
+            if normalized.startswith("reindex "):
+                reindexed.append(sql)
+            return _FakeCursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is False
+    assert reindexed == ["REINDEX idx_events_run"]
+    assert names == ["idx_events_run"]
+
+
+def test_try_repair_index_drift_swallows_close_exception(tmp_path, monkeypatch):
+    """A ``probe.close()`` that raises (e.g. connection was already
+    closed by an upstream call) must NOT propagate — the repair
+    verdict is what the caller cares about, and close-time errors
+    have no recovery semantics."""
+    db_path = tmp_path / "close-fail.db"
+    kb.init_db(db_path=db_path)
+
+    class _FakeCursor:
+        def fetchall(self):
+            return [("ok",)]
+
+        def fetchone(self):
+            return ("ok",)
+
+    class _FakeConn:
+        def execute(self, sql, *args, **kwargs):
+            return _FakeCursor()
+
+        def close(self):
+            raise RuntimeError("already closed")
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn())
+
+    # Must NOT raise — the close failure is swallowed.
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is True
+    assert names == []
 
 
 # ---------------------------------------------------------------------------

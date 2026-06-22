@@ -25,19 +25,19 @@ from unittest.mock import patch
 
 
 class TestInstallCuaDriverUpgrade:
-    def test_upgrade_on_non_macos_is_silent_noop(self):
+    def test_upgrade_on_unsupported_platform_is_silent_noop(self):
         from hermes_cli import tools_config
 
         with patch.object(tools_config, "_print_warning") as warn, \
-             patch("platform.system", return_value="Linux"):
+             patch("platform.system", return_value="FreeBSD"):
             assert tools_config.install_cua_driver(upgrade=True) is False
             warn.assert_not_called()
 
-    def test_non_upgrade_on_non_macos_warns(self):
+    def test_non_upgrade_on_unsupported_platform_warns(self):
         from hermes_cli import tools_config
 
         with patch.object(tools_config, "_print_warning") as warn, \
-             patch("platform.system", return_value="Linux"):
+             patch("platform.system", return_value="FreeBSD"):
             assert tools_config.install_cua_driver(upgrade=False) is False
             warn.assert_called()
 

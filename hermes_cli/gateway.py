@@ -49,6 +49,11 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
+# Some macOS launchd sessions default user agents to only 256 open files.
+# Browser-heavy gateway jobs and long-polling platform adapters need more headroom.
+LAUNCHD_SOFT_MAX_FILES = 4096
+LAUNCHD_HARD_MAX_FILES = 8192
+
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -3475,6 +3480,18 @@ def generate_launchd_plist() -> str:
     
     <key>KeepAlive</key>
     <true/>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{LAUNCHD_SOFT_MAX_FILES}</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{LAUNCHD_HARD_MAX_FILES}</integer>
+    </dict>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>

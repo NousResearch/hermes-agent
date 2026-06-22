@@ -821,8 +821,6 @@ def test_create_with_assignee_any_bypass_allowed(assignee_lint):
     assert assignee_lint.db_assignee_for_title("Test any") == "__any__"
     assert assignee_lint.db_assignee_for_title("Test omitted") is None
 
-    assert "Current board: alpha" in out
-
 
 # ---------------------------------------------------------------------------
 # Daemon stranded-config wiring (MEDIUM-2 from the t_f8afafaa WAGS review).

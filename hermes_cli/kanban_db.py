@@ -7112,6 +7112,8 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            stranded_timeout_seconds=stranded_timeout_seconds,
+            stranded_action=stranded_action,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -7128,6 +7130,8 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            stranded_timeout_seconds=stranded_timeout_seconds,
+            stranded_action=stranded_action,
         )
 
 
@@ -7144,6 +7148,8 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    stranded_timeout_seconds: int = DEFAULT_STRANDED_TIMEOUT_SECONDS,
+    stranded_action: str = DEFAULT_STRANDED_ACTION,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 

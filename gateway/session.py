@@ -119,6 +119,7 @@ class SessionSource:
     # None => the gateway's active/default profile. Drives both session-key
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
+    guest_query_id: Optional[str] = None  # Telegram Bot API Guest Mode reply token (ephemeral)
     
     @property
     def description(self) -> str:
@@ -161,9 +162,11 @@ class SessionSource:
         if self.parent_chat_id:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
-            d["message_id"] = self.message_id
+            d["message_id"] = str(self.message_id)
         if self.profile:
             d["profile"] = self.profile
+        if self.guest_query_id:
+            d["guest_query_id"] = self.guest_query_id
         return d
 
     @classmethod
@@ -183,6 +186,7 @@ class SessionSource:
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
             profile=data.get("profile"),
+            guest_query_id=data.get("guest_query_id"),
         )
     
 

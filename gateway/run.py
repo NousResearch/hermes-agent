@@ -12094,13 +12094,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         reply_to_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
-        return self._thread_metadata_for_target(
+        metadata = self._thread_metadata_for_target(
             getattr(source, "platform", None),
             getattr(source, "chat_id", None),
             getattr(source, "thread_id", None),
             chat_type=getattr(source, "chat_type", None),
             reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
         )
+        guest_query_id = getattr(source, "guest_query_id", None)
+        if guest_query_id:
+            if metadata is None:
+                metadata = {}
+            metadata["telegram_guest_query_id"] = str(guest_query_id)
+        return metadata
+
+    @staticmethod
+    def _streaming_allowed_for_source(source, streaming_enabled: bool) -> bool:
+        """Whether token/interim streaming may be used for this reply.
+
+        Telegram Guest Mode (Bot API 10) replies go out via ``answerGuestQuery``,
+        which delivers a single, non-editable message and consumes a single-use
+        ``guest_query_id`` token. Streaming edits or interim messages would burn
+        the token on the first chunk — or fall back to ``sendMessage`` in a chat
+        the guest bot isn't a member of (silently dropped) — so guest replies
+        must always be sent as one consolidated final message.
+        """
+        if getattr(source, "guest_query_id", None):
+            return False
+        return streaming_enabled
 
     def _thread_metadata_for_target(
         self,
@@ -14163,6 +14184,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _plat_streaming is None
             else bool(_plat_streaming)
         )
+        # Guest Mode replies are one-shot (answerGuestQuery): never stream them,
+        # or the single-use guest_query_id token is consumed before the final
+        # answer. See _streaming_allowed_for_source for the full rationale.
+        _streaming_enabled = self._streaming_allowed_for_source(source, _streaming_enabled)
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
 
@@ -15328,8 +15353,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
+            # Guest Mode replies are one-shot (answerGuestQuery) and must not be
+            # streamed or sent as interim messages — see
+            # _streaming_allowed_for_source. This fixes private-chat guest
+            # replies, which were streaming-only and so never reached the final
+            # consolidated send that carries the guest_query_id token.
+            _is_guest_reply = bool(getattr(source, "guest_query_id", None))
+            _streaming_enabled = self._streaming_allowed_for_source(source, _streaming_enabled)
             _want_stream_deltas = _streaming_enabled
-            _want_interim_messages = interim_assistant_messages_enabled
+            _want_interim_messages = interim_assistant_messages_enabled and not _is_guest_reply
             _want_interim_consumer = _want_interim_messages
             if _want_stream_deltas or _want_interim_consumer:
                 try:

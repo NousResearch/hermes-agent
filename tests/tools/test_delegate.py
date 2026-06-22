@@ -1230,6 +1230,34 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             _resolve_delegation_credentials(cfg, parent)
         self.assertIn("no API key", str(ctx.exception))
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_provider_resolution_honors_explicit_api_mode(self, mock_resolve):
+        """delegation.api_mode must override provider runtime defaults too.
+
+        Regression: Copilot resolves claude-sonnet-4.6 with a runtime default
+        that routes through the Responses API, but that model is chat-only on
+        the Copilot endpoint. Users must be able to force chat_completions for
+        provider-based delegation, not only for direct base_url delegation.
+        """
+        mock_resolve.return_value = {
+            "provider": "copilot",
+            "model": "claude-sonnet-4.6",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-key",
+            "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "claude-sonnet-4.6",
+            "provider": "copilot",
+            "api_mode": "chat_completions",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["api_mode"], "chat_completions")
+        self.assertEqual(creds["provider"], "copilot")
+
     def test_missing_config_keys_inherit_parent(self):
         """When config dict has no model/provider keys at all, inherits parent."""
         parent = _make_mock_parent(depth=0)

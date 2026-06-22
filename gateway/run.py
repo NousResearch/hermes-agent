@@ -8003,6 +8003,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "profile":
             return await self._handle_profile_command(event)
 
+        if canonical == "persona":
+            return await self._handle_persona_command(event)
+
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
 
@@ -8366,6 +8369,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if self._should_send_telegram_lobby_reminder(source):
                 return self._telegram_topic_root_lobby_message()
             return None
+
+        active_personas = getattr(self, "_active_personas", None)
+        active_persona = (
+            active_personas.get(_quick_key)
+            if isinstance(active_personas, dict)
+            else None
+        )
+        if active_persona and not command:
+            return await self._run_persona_prompt(active_persona, event.text or "")
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there

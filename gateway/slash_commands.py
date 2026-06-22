@@ -243,6 +243,133 @@ class GatewaySlashCommandsMixin:
 
         return "\n".join(lines)
 
+    def _persona_catalog(self) -> dict[str, dict[str, str]]:
+        return {
+            "eng": {"role": "PRs and coding", "tools": "github"},
+            "kb": {"role": "Company KB", "tools": "rag-company"},
+            "personal": {"role": "Personal vault", "tools": "rag-personal"},
+            "pm": {"role": "Linear and ClickUp project management", "tools": "linear, clickup"},
+            "data": {"role": "Bioinformatics / MLE", "tools": "rag-company"},
+            "finance": {"role": "Budget / runway", "tools": "lean toolsets"},
+            "legal": {"role": "Contracts / IRB", "tools": "lean toolsets"},
+            "ops": {"role": "Reports / docs", "tools": "lean toolsets + doc-write queue"},
+        }
+
+    def _active_persona_map(self) -> dict[str, str]:
+        personas = getattr(self, "_active_personas", None)
+        if not isinstance(personas, dict):
+            personas = {}
+            self._active_personas = personas
+        return personas
+
+    def _format_persona_list(self, *, active: str | None = None) -> str:
+        lines = ["Donna personas:"]
+        for name, meta in self._persona_catalog().items():
+            marker = " (active)" if active == name else ""
+            lines.append(f"`{name}`{marker} — {meta['role']} [{meta['tools']}]")
+        lines.extend([
+            "",
+            "Use `/persona <name>` to switch this chat.",
+            "Use `/persona cos` to return to the default Donna gateway.",
+            "Use `/persona <name> <prompt>` to run one specialist request now.",
+        ])
+        return "\n".join(lines)
+
+    async def _handle_persona_command(self, event: MessageEvent) -> str:
+        """Handle /persona — switch or route to a Donna specialist profile."""
+        args = event.get_command_args().strip()
+        session_key = self._session_key_for_source(event.source)
+        personas = self._active_persona_map()
+        active = personas.get(session_key)
+
+        if not args or args == "status":
+            if active:
+                return (
+                    f"Active persona for this chat: `{active}`.\n"
+                    "Use `/persona cos` to return to the default Donna gateway, "
+                    "or `/persona list` to see available personas."
+                )
+            return (
+                "Active persona for this chat: `cos` (default Donna gateway).\n"
+                "Use `/persona list` to see available personas."
+            )
+
+        parts = args.split(maxsplit=1)
+        target = parts[0].strip().lower()
+        prompt = parts[1].strip() if len(parts) > 1 else ""
+
+        if target in {"list", "ls"}:
+            return self._format_persona_list(active=active)
+
+        if target in {"cos", "default", "off", "clear", "reset"}:
+            personas.pop(session_key, None)
+            return "Switched this chat back to `cos` (default Donna gateway)."
+
+        catalog = self._persona_catalog()
+        if target not in catalog:
+            return (
+                f"Unknown persona `{target}`.\n\n"
+                + self._format_persona_list(active=active)
+            )
+
+        if prompt:
+            return await self._run_persona_prompt(target, prompt)
+
+        personas[session_key] = target
+        return (
+            f"Switched this chat to `{target}` — {catalog[target]['role']}.\n"
+            "Future non-command messages in this chat will run via "
+            f"`hermes -p {target}`. Use `/persona cos` to return to Donna."
+        )
+
+    async def _run_persona_prompt(self, persona: str, prompt: str) -> str:
+        catalog = self._persona_catalog()
+        if persona not in catalog:
+            return f"Unknown persona `{persona}`."
+        if not prompt.strip():
+            return f"Usage: `/persona {persona} <prompt>`"
+
+        try:
+            from tools.environments.local import _sanitize_subprocess_env
+            env = _sanitize_subprocess_env(os.environ.copy())
+        except Exception:
+            env = os.environ.copy()
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "hermes",
+                "-p",
+                persona,
+                "-m",
+                prompt,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=int(os.environ.get("PERSONA_ROUTE_TIMEOUT", "600")),
+            )
+        except asyncio.TimeoutError:
+            return f"`{persona}` timed out while handling that request."
+        except FileNotFoundError:
+            return "`hermes` was not found on the gateway PATH."
+        except Exception as exc:
+            return f"`{persona}` failed to start: {exc}"
+
+        output = (stdout or b"").decode(errors="replace").strip()
+        err = (stderr or b"").decode(errors="replace").strip()
+        text = output or err
+        try:
+            from agent.redact import redact_sensitive_text
+            text = redact_sensitive_text(text)
+        except Exception:
+            pass
+        if proc.returncode != 0:
+            detail = text if text else f"exit code {proc.returncode}"
+            return f"`{persona}` failed: {detail}"
+        return text if text else f"`{persona}` completed with no output."
+
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
         """Handle /whoami — show the user's slash command access on this scope.
 

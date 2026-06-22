@@ -86,3 +86,73 @@ async def test_help_keeps_non_telegram_slash_command_mentions_unchanged(monkeypa
     )
 
     assert "`/Linear`" in result
+
+
+@pytest.mark.asyncio
+async def test_persona_command_lists_donna_personas():
+    runner = _make_runner()
+    runner._session_key_for_source = lambda _source: "telegram:c1:u1"
+
+    result = await runner._handle_persona_command(
+        _make_event("/persona list", Platform.TELEGRAM)
+    )
+
+    assert "Donna personas:" in result
+    assert "`pm`" in result
+    assert "Linear and ClickUp" in result
+    assert "`eng`" in result
+    assert "Use `/persona <name>`" in result
+
+
+@pytest.mark.asyncio
+async def test_persona_command_switches_and_clears_chat_persona():
+    runner = _make_runner()
+    runner._session_key_for_source = lambda _source: "telegram:c1:u1"
+
+    switched = await runner._handle_persona_command(
+        _make_event("/persona pm", Platform.TELEGRAM)
+    )
+    assert "Switched this chat to `pm`" in switched
+    assert runner._active_personas["telegram:c1:u1"] == "pm"
+
+    status = await runner._handle_persona_command(
+        _make_event("/persona", Platform.TELEGRAM)
+    )
+    assert "Active persona for this chat: `pm`" in status
+
+    cleared = await runner._handle_persona_command(
+        _make_event("/persona cos", Platform.TELEGRAM)
+    )
+    assert "default Donna gateway" in cleared
+    assert "telegram:c1:u1" not in runner._active_personas
+
+
+@pytest.mark.asyncio
+async def test_persona_command_one_shot_prompt_uses_specialist(monkeypatch):
+    runner = _make_runner()
+    runner._session_key_for_source = lambda _source: "telegram:c1:u1"
+    calls = []
+
+    async def fake_run(persona, prompt):
+        calls.append((persona, prompt))
+        return "specialist result"
+
+    runner._run_persona_prompt = fake_run
+
+    result = await runner._handle_persona_command(
+        _make_event("/persona pm Show tomorrow's tasks", Platform.TELEGRAM)
+    )
+
+    assert result == "specialist result"
+    assert calls == [("pm", "Show tomorrow's tasks")]
+    assert not getattr(runner, "_active_personas", {})
+
+
+def test_persona_is_known_gateway_command():
+    from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
+
+    cmd = resolve_command("persona")
+    assert "persona" in GATEWAY_KNOWN_COMMANDS
+    assert cmd is not None
+    assert cmd.name == "persona"
+    assert cmd.gateway_only is True

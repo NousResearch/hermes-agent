@@ -4335,9 +4335,11 @@ def resolve_vision_provider_client(
         #   4. Stop
         main_provider = _read_main_provider()
         main_model = _read_main_model()
+        main_provider_attempted_for_vision = False
         if main_provider and main_provider not in {"auto", ""}:
             vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
             if main_provider == "nous":
+                main_provider_attempted_for_vision = True
                 sync_client, default_model = _resolve_strict_vision_backend(
                     main_provider, vision_model
                 )
@@ -4378,6 +4380,7 @@ def resolve_vision_provider_client(
                     main_provider,
                 )
             else:
+                main_provider_attempted_for_vision = True
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
                     api_mode=resolved_api_mode,
@@ -4391,9 +4394,11 @@ def resolve_vision_provider_client(
                         main_provider, rpc_client, rpc_model or vision_model)
 
         # Fall back through aggregators (uses their dedicated vision model,
-        # not the user's main model) when main provider has no client.
+        # not the user's main model) when main provider has no client. If the
+        # main provider was only skipped because its configured chat model is
+        # text-only, still try its strict vision backend here (#50426).
         for candidate in _VISION_AUTO_PROVIDER_ORDER:
-            if candidate == main_provider:
+            if candidate == main_provider and main_provider_attempted_for_vision:
                 continue  # already tried above
             sync_client, default_model = _resolve_strict_vision_backend(candidate)
             if sync_client is not None:

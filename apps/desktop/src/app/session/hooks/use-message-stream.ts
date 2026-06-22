@@ -1,6 +1,8 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
+import { translateNow } from '@/i18n'
 import {
   appendAssistantTextPart,
   appendReasoningPart,
@@ -11,12 +13,25 @@ import {
   type GatewayEventPayload,
   reasoningPart,
   renderMediaTags,
+  textPart,
   upsertToolPart
 } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
+import { playCompletionSound } from '@/lib/completion-sound'
+import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
+import {
+  dedupeGeneratedImageEchoesInParts,
+  generatedImageEchoSources,
+  stripGeneratedImageEchoes
+} from '@/lib/generated-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { parseTodos } from '@/lib/todos'
 import { setClarifyRequest } from '@/store/clarify'
+import { setSessionCompacting } from '@/store/compaction'
+import { refreshBackgroundProcesses } from '@/store/composer-status'
+import { $gateway } from '@/store/gateway'
+import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
@@ -33,7 +48,9 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
+import { setSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -49,6 +66,7 @@ interface MessageStreamOptions {
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   refreshSessions: () => Promise<void>
+  sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
@@ -59,6 +77,59 @@ interface MessageStreamOptions {
 interface QueuedStreamDeltas {
   assistant: string
   reasoning: string
+}
+
+type SessionRuntimeStatePatch = Partial<
+  Pick<
+    ClientSessionState,
+    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+  >
+>
+
+function sessionInfoStatePatch(payload: GatewayEventPayload | undefined): SessionRuntimeStatePatch {
+  const patch: SessionRuntimeStatePatch = {}
+
+  if (typeof payload?.model === 'string') {
+    patch.model = payload.model || ''
+  }
+
+  if (typeof payload?.provider === 'string') {
+    patch.provider = payload.provider || ''
+  }
+
+  if (typeof payload?.cwd === 'string') {
+    patch.cwd = payload.cwd
+  }
+
+  if (typeof payload?.branch === 'string') {
+    patch.branch = payload.branch
+  }
+
+  if (typeof payload?.personality === 'string') {
+    patch.personality = normalizePersonalityValue(payload.personality)
+  }
+
+  if (typeof payload?.reasoning_effort === 'string') {
+    patch.reasoningEffort = payload.reasoning_effort
+  }
+
+  if (typeof payload?.service_tier === 'string') {
+    patch.serviceTier = payload.service_tier
+  }
+
+  if (typeof payload?.fast === 'boolean') {
+    patch.fast = payload.fast
+  }
+
+  if (typeof payload?.yolo === 'boolean') {
+    patch.yolo = payload.yolo
+  }
+
+  return patch
+}
+
+function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boolean {
+  return Object.keys(patch).length > 0
 }
 
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
@@ -189,8 +260,14 @@ export function useMessageStream({
   queryClient,
   refreshHermesConfig,
   refreshSessions,
+  sessionStateByRuntimeIdRef,
   updateSessionState
 }: MessageStreamOptions) {
+  const sessionInterrupted = useCallback(
+    (sessionId: string) => sessionStateByRuntimeIdRef.current.get(sessionId)?.interrupted ?? false,
+    [sessionStateByRuntimeIdRef]
+  )
+
   // Patch the in-flight assistant message (or seed it). Centralises the
   // streamId/groupId bookkeeping every event callback would otherwise repeat.
   const mutateStream = useCallback(
@@ -259,6 +336,8 @@ export function useMessageStream({
   const flushHandleRef = useRef<number | null>(null)
   const lastFlushAtRef = useRef<number>(0)
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
+  // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
+  const compactedTurnRef = useRef<Set<string>>(new Set())
 
   const flushQueuedDeltas = useCallback(
     (sessionId?: string) => {
@@ -277,7 +356,7 @@ export function useMessageStream({
         if (queued.assistant) {
           mutateStream(
             id,
-            parts => appendAssistantTextPart(parts, queued.assistant),
+            parts => dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(parts, queued.assistant)),
             () => [assistantTextPart(queued.assistant)]
           )
         }
@@ -414,6 +493,20 @@ export function useMessageStream({
       // a tool part can't jump ahead of the text that preceded it.
       flushQueuedDeltas(sessionId)
 
+      if (sessionInterrupted(sessionId)) {
+        return
+      }
+
+      // The composer status stack owns todo display now (no inline panel) —
+      // mirror every todo state the tool reports into its session store.
+      if (payload?.name === 'todo') {
+        const todos = parseTodos(payload.todos) ?? parseTodos(payload.result) ?? parseTodos(payload.args)
+
+        if (todos) {
+          setSessionTodos(sessionId, todos)
+        }
+      }
+
       if (!nativeSubagentSessionsRef.current.has(sessionId)) {
         for (const subagentPayload of delegateTaskPayloads(payload, phase, sourceEventType)) {
           upsertSubagent(
@@ -427,12 +520,12 @@ export function useMessageStream({
 
       mutateStream(
         sessionId,
-        parts => upsertToolPart(parts, payload, phase),
+        parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase)),
         () => upsertToolPart([], payload, phase),
         { pending: m => phase !== 'complete' || (m.pending ?? false) }
       )
     },
-    [flushQueuedDeltas, mutateStream]
+    [flushQueuedDeltas, mutateStream, sessionInterrupted]
   )
 
   const completeAssistantMessage = useCallback(
@@ -460,9 +553,11 @@ export function useMessageStream({
         const finalText = renderMediaTags(text).trim()
         const completionError = completionErrorText(finalText)
         const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
-        const dedupeReference = normalize(finalText)
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
+          const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
+          const dedupeReference = normalize(visibleFinalText)
+
           const kept = parts.filter(part => {
             if (part.type === 'text') {
               return false
@@ -477,7 +572,7 @@ export function useMessageStream({
             return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
           })
 
-          return finalText ? [...kept, assistantTextPart(finalText)] : kept
+          return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
         }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>
@@ -548,19 +643,26 @@ export function useMessageStream({
       })
 
       void refreshSessions().catch(() => undefined)
+      // Sync the freshly-titled row to other windows (e.g. main, when the turn
+      // ran in the pop-out).
+      broadcastSessionsChanged()
+
+      if (compactedTurnRef.current.delete(sessionId)) {
+        shouldHydrate = false
+      }
 
       if (shouldHydrate) {
         void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
       }
 
-      if (document.hidden && sessionId === activeSessionIdRef.current) {
-        void window.hermesDesktop?.notify({
-          title: 'Hermes finished',
-          body: text.slice(0, 140) || 'The response is ready.'
-        })
-      }
+      dispatchNativeNotification({
+        body: text.slice(0, 140) || translateNow('notifications.native.turnDoneBody'),
+        kind: 'turnDone',
+        sessionId,
+        title: translateNow('notifications.native.turnDoneTitle')
+      })
     },
-    [activeSessionIdRef, hydrateFromStoredSession, refreshSessions, updateSessionState]
+    [hydrateFromStoredSession, refreshSessions, updateSessionState]
   )
 
   const failAssistantMessage = useCallback(
@@ -613,6 +715,11 @@ export function useMessageStream({
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
+
+      if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
+        return
+      }
+
       const sessionId = explicitSid || activeSessionIdRef.current
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
@@ -622,13 +729,13 @@ export function useMessageStream({
         // Apply session-scoped fields when the event targets the active
         // session, OR when it's a global broadcast and we have no session.
         const apply = explicitSid ? isActiveEvent : !activeSessionIdRef.current
+        const statePatch = sessionInfoStatePatch(payload)
+        const hasStatePatch = hasSessionInfoStatePatch(statePatch)
         const modelChanged = typeof payload?.model === 'string'
         const providerChanged = typeof payload?.provider === 'string'
         const runningChanged = typeof payload?.running === 'boolean'
 
         if (apply) {
-          const runtimeInfo: { branch?: string; cwd?: string } = {}
-
           if (modelChanged) {
             setCurrentModel(payload!.model || '')
           }
@@ -639,20 +746,10 @@ export function useMessageStream({
 
           if (typeof payload?.cwd === 'string') {
             setCurrentCwd(payload.cwd)
-            runtimeInfo.cwd = payload.cwd
           }
 
           if (typeof payload?.branch === 'string') {
             setCurrentBranch(payload.branch)
-            runtimeInfo.branch = payload.branch
-          }
-
-          if (sessionId && (runtimeInfo.cwd !== undefined || runtimeInfo.branch !== undefined)) {
-            updateSessionState(sessionId, state => ({
-              ...state,
-              branch: runtimeInfo.branch ?? state.branch,
-              cwd: runtimeInfo.cwd ?? state.cwd
-            }))
           }
 
           if (typeof payload?.personality === 'string') {
@@ -674,7 +771,18 @@ export function useMessageStream({
           if (typeof payload?.yolo === 'boolean') {
             setYoloActive(payload.yolo)
           }
+        }
 
+        if (sessionId && hasStatePatch) {
+          updateSessionState(sessionId, state => ({
+            ...state,
+            ...statePatch,
+            branch: statePatch.branch ?? state.branch,
+            cwd: statePatch.cwd ?? state.cwd
+          }))
+        }
+
+        if (apply) {
           if (runningChanged && sessionId) {
             updateSessionState(sessionId, state => {
               const busy = Boolean(payload!.running)
@@ -729,6 +837,8 @@ export function useMessageStream({
 
         flushQueuedDeltas(sessionId)
         clearSessionSubagents(sessionId)
+        setSessionCompacting(sessionId, false)
+        compactedTurnRef.current.delete(sessionId)
         nativeSubagentSessionsRef.current.delete(sessionId)
 
         if (isActiveEvent) {
@@ -774,12 +884,11 @@ export function useMessageStream({
         // session so a background turn finishing can't wipe the active chat's
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
+        setSessionCompacting(sessionId, false)
 
         flushQueuedDeltas(sessionId)
 
-        if (isActiveEvent) {
-          triggerHaptic('streamDone')
-        }
+        playCompletionSound()
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(sessionId, finalText)
@@ -807,13 +916,19 @@ export function useMessageStream({
           // the sidebar indicator clears as soon as it's answered, not only at
           // message.complete.
           updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
+
+          // terminal/process tool calls are the only things that spawn or reap
+          // background processes — sync the composer status stack right after.
+          if (!sessionInterrupted(sessionId) && (payload?.name === 'terminal' || payload?.name === 'process')) {
+            void refreshBackgroundProcesses(sessionId)
+          }
         }
 
         if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {
           recordToolDiff(payload.tool_id || payload.name || '', payload.inline_diff)
         }
       } else if (SUBAGENT_EVENT_TYPES.has(event.type)) {
-        if (sessionId && payload) {
+        if (sessionId && payload && !sessionInterrupted(sessionId)) {
           if (!nativeSubagentSessionsRef.current.has(sessionId)) {
             pruneDelegateFallbackSubagents(sessionId)
           }
@@ -856,6 +971,13 @@ export function useMessageStream({
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
+
+          dispatchNativeNotification({
+            body: question,
+            kind: 'input',
+            sessionId,
+            title: translateNow('notifications.native.inputTitle')
+          })
         }
       } else if (event.type === 'approval.request') {
         // Dangerous-command / execute_code approval. The Python side is blocked
@@ -864,15 +986,31 @@ export function useMessageStream({
         // Park it per-session (like clarify) so a *background* profile's turn can
         // raise it and wait — the sidebar flags "needs input" and the inline bar
         // surfaces once the user focuses that chat.
+        const command = typeof payload?.command === 'string' ? payload.command : ''
+        const description = typeof payload?.description === 'string' ? payload.description : 'dangerous command'
+
         setApprovalRequest({
-          command: typeof payload?.command === 'string' ? payload.command : '',
-          description: typeof payload?.description === 'string' ? payload.description : 'dangerous command',
+          // false only when a tirith warning forbids it; backend omits the field otherwise.
+          allowPermanent: payload?.allow_permanent !== false,
+          command,
+          description,
           sessionId: sessionId ?? null
         })
 
         if (sessionId) {
           updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
         }
+
+        dispatchNativeNotification({
+          actions: [
+            { id: 'approve', text: translateNow('notifications.native.approveAction') },
+            { id: 'reject', text: translateNow('notifications.native.rejectAction') }
+          ],
+          body: command || description,
+          kind: 'approval',
+          sessionId,
+          title: translateNow('notifications.native.approvalTitle')
+        })
       } else if (event.type === 'sudo.request') {
         // Sudo password capture (tools/terminal_tool.py). Blocked on
         // sudo.respond {request_id, password}.
@@ -884,6 +1022,13 @@ export function useMessageStream({
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
+
+          dispatchNativeNotification({
+            body: translateNow('notifications.native.inputBody'),
+            kind: 'input',
+            sessionId,
+            title: translateNow('notifications.native.inputTitle')
+          })
         }
       } else if (event.type === 'secret.request') {
         // Skill credential capture (tools/skills_tool.py). Blocked on
@@ -891,16 +1036,76 @@ export function useMessageStream({
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
         if (requestId) {
+          const envVar = typeof payload?.env_var === 'string' ? payload.env_var : ''
+          const promptText = typeof payload?.prompt === 'string' ? payload.prompt : ''
+
           setSecretRequest({
             requestId,
-            envVar: typeof payload?.env_var === 'string' ? payload.env_var : '',
-            prompt: typeof payload?.prompt === 'string' ? payload.prompt : '',
+            envVar,
+            prompt: promptText,
             sessionId: sessionId ?? null
           })
 
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
+
+          dispatchNativeNotification({
+            body: promptText || envVar || translateNow('notifications.native.inputBody'),
+            kind: 'input',
+            sessionId,
+            title: translateNow('notifications.native.inputTitle')
+          })
+        }
+      } else if (event.type === 'terminal.read.request') {
+        // read_terminal tool: serialize the renderer's xterm buffer and answer
+        // immediately (Python blocks on the respond). Empty text = no live pane.
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const start = typeof payload?.start === 'number' ? payload.start : undefined
+          const count = typeof payload?.count === 'number' ? payload.count : undefined
+          const result = readActiveTerminal({ start, count })
+
+          void $gateway.get()?.request('terminal.read.respond', {
+            request_id: requestId,
+            text: result ? JSON.stringify(result) : ''
+          })
+        }
+      } else if (event.type === 'status.update') {
+        if (sessionId && payload?.kind === 'compacting') {
+          setSessionCompacting(sessionId, true)
+          compactedTurnRef.current.add(sessionId)
+        } else if (sessionId && payload?.kind === 'process') {
+          // The gateway's notification poller announces background process
+          // completions / watch matches here — re-sync the status stack.
+          void refreshBackgroundProcesses(sessionId)
+        }
+      } else if (event.type === 'review.summary') {
+        // Self-improvement background review saved something to memory/skills
+        // and emitted a persistent summary (Python formats it as
+        // "💾 Self-improvement review: …"). The CLI prints this via
+        // prompt_toolkit and the Ink TUI renders it as a system line; the
+        // desktop has neither, so without this handler the skill/memory
+        // change happens silently. Surface it as a persistent system message
+        // in the transcript so the user is always informed — it must not be a
+        // transient toast that can be missed.
+        const text = coerceGatewayText(payload?.text).trim()
+
+        if (text && sessionId) {
+          flushQueuedDeltas(sessionId)
+          updateSessionState(sessionId, state => ({
+            ...state,
+            messages: [
+              ...state.messages,
+              {
+                id: `review-summary-${Date.now()}`,
+                role: 'system',
+                parts: [textPart(text)],
+                timestamp: Math.floor(Date.now() / 1000)
+              }
+            ]
+          }))
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
@@ -911,12 +1116,26 @@ export function useMessageStream({
         // the failed turn (same intent as the message.complete clear).
         if (sessionId) {
           clearAllPrompts(sessionId)
+          setSessionCompacting(sessionId, false)
+          compactedTurnRef.current.delete(sessionId)
         }
+
+        dispatchNativeNotification({
+          body: errorMessage,
+          kind: 'turnError',
+          sessionId,
+          title: translateNow('notifications.native.turnErrorTitle')
+        })
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)
-        } else if (isActiveEvent) {
+        } else {
+          // Toast globally, not just when the failing thread is focused: a
+          // turn-ending error (e.g. out of funds) blocks every thread, so the
+          // inline error alone is too easy to miss. The stable id collapses the
+          // same error from multiple blocked threads into one toast.
           notify({
+            id: `gateway-error:${errorMessage}`,
             kind: 'error',
             title: 'Hermes error',
             message: errorMessage
@@ -942,6 +1161,7 @@ export function useMessageStream({
       flushQueuedDeltas,
       queryClient,
       refreshHermesConfig,
+      sessionInterrupted,
       updateSessionState,
       upsertToolCall
     ]

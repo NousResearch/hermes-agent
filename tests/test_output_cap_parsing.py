@@ -25,3 +25,40 @@ class TestParseOpenRouterOutputCap:
         msg = ("maximum context length is 1000 tokens "
                "(900 of text input, 200 of tool input, 0 in the output)")
         assert parse_available_output_tokens_from_error(msg) is None
+
+
+class TestParseCharBasedOutputCap:
+    """LM Studio / llama.cpp report context in tokens but prompt in characters.
+
+    These servers send a hard 400 even on a trivial prompt when the default
+    output cap equals the context window (#42741): the request asks for the
+    whole window as output, leaving zero room for input.
+    """
+
+    def test_char_based_output_cap_format(self):
+        msg = ("This model's maximum context length is 65536 tokens. However, "
+               "you requested 65536 output tokens and your prompt contains "
+               "77409 characters (more than 0 characters, which is the upper "
+               "bound for 0 input tokens). Please reduce the length of the "
+               "input prompt or the number of requested output tokens.")
+        # est input = ceil(77409 / 3) = 25803; available = 65536 - 25803 = 39733
+        assert parse_available_output_tokens_from_error(msg) == 39733
+
+    def test_char_based_leaves_room_for_input(self):
+        # The whole point: the retried output cap + the estimated input must
+        # fit inside the reported context window.
+        ctx = 65536
+        chars = 77409
+        available = parse_available_output_tokens_from_error(
+            f"maximum context length is {ctx} tokens. However, you requested "
+            f"{ctx} output tokens and your prompt contains {chars} characters."
+        )
+        assert available is not None
+        assert available + (chars + 2) // 3 <= ctx
+
+    def test_char_based_no_room_returns_none(self):
+        # Prompt larger than the window (in tokens) -> not an output-cap fix;
+        # let the prompt-too-long / compression path handle it.
+        msg = ("maximum context length is 1000 tokens. However, you requested "
+               "1000 output tokens and your prompt contains 9000 characters.")
+        assert parse_available_output_tokens_from_error(msg) is None

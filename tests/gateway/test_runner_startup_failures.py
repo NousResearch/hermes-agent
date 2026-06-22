@@ -353,8 +353,17 @@ async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_p
         "gateway.status.release_all_scoped_locks",
         lambda **kwargs: 0,
     )
-    monkeypatch.setattr("gateway.status.terminate_pid", lambda pid, force=False: calls.append((pid, force)))
-    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    # force-kill reaps the process: terminate_pid(force=True) flips it dead,
+    # and the post-kill re-poll via _pid_exists then sees it gone so the
+    # replacement proceeds.
+    def _mock_terminate_pid(pid, force=False):
+        calls.append((pid, force))
+        if force:
+            _pid_state["alive"] = False
+    monkeypatch.setattr("gateway.status.terminate_pid", _mock_terminate_pid)
+    monkeypatch.setattr(
+        "gateway.status._pid_exists", lambda pid: _pid_state["alive"]
+    )
     monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
     monkeypatch.setattr("gateway.run.os.kill", lambda pid, sig: None)
     monkeypatch.setattr("time.sleep", lambda _: None)
@@ -369,6 +378,65 @@ async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_p
 
     assert ok is True
     assert calls == [(42, False), (42, True)]
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
+    monkeypatch, tmp_path
+):
+    """Regression for #19471 (duplicate-gateway half).
+
+    If SIGKILL fails to reap the old gateway, --replace must NOT clear the PID
+    file / scoped locks and start a fresh instance — that leaves two live
+    gateways fighting over the same token. It should abort instead.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    calls = []
+    removed_pid = False
+    released_locks = False
+
+    class _RunnerShouldNotStart:
+        def __init__(self, config):
+            raise AssertionError("replacement must not start while old PID is alive")
+
+    def _mock_remove_pid_file():
+        nonlocal removed_pid
+        removed_pid = True
+
+    def _mock_release_all_scoped_locks(**kwargs):
+        nonlocal released_locks
+        released_locks = True
+        return 0
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
+    monkeypatch.setattr("gateway.status.remove_pid_file", _mock_remove_pid_file)
+    monkeypatch.setattr(
+        "gateway.status.release_all_scoped_locks",
+        _mock_release_all_scoped_locks,
+    )
+    monkeypatch.setattr(
+        "gateway.status.terminate_pid",
+        lambda pid, force=False: calls.append((pid, force)),
+    )
+    # _pid_exists never goes False — the force-kill did not take.
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
+    monkeypatch.setattr("gateway.run.os.kill", lambda pid, sig: None)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerShouldNotStart)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
+
+    assert ok is False
+    assert calls == [(42, False), (42, True)]
+    assert removed_pid is False
+    assert released_locks is False
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,8 @@ import type { CronJob } from '@/types/hermes'
 import { jobState, jobTitle, STATE_DOT } from '../../cron/job-state'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
+import { SidebarLoadMoreRow } from './load-more-row'
+
 const INACTIVE_STATES = new Set(['completed', 'disabled', 'error', 'paused'])
 
 // Recent runs shown in the inline quick-peek — enough to glance at history
@@ -24,6 +26,11 @@ const PEEK_RUN_LIMIT = 5
 // open peek so a freshly-fired run shows up within a few seconds.
 const PEEK_POLL_INTERVAL_MS = 8000
 
+// Keep the section compact: show a few jobs up front, reveal more in larger
+// steps on demand (mirrors the messaging sections in the sidebar).
+const INITIAL_VISIBLE_JOBS = 3
+const LOAD_MORE_STEP = 10
+
 const relativeFmt = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
 
 // Localized "in 5 min" / "2 hr ago" without hand-rolled strings — picks the
@@ -33,17 +40,25 @@ function relativeTime(targetMs: number, nowMs: number): string {
   const abs = Math.abs(diff)
   const sign = diff < 0 ? -1 : 1
 
-  if (abs < 60_000) {return relativeFmt.format(sign * Math.round(abs / 1000), 'second')}
+  if (abs < 60_000) {
+    return relativeFmt.format(sign * Math.round(abs / 1000), 'second')
+  }
 
-  if (abs < 3_600_000) {return relativeFmt.format(sign * Math.round(abs / 60_000), 'minute')}
+  if (abs < 3_600_000) {
+    return relativeFmt.format(sign * Math.round(abs / 60_000), 'minute')
+  }
 
-  if (abs < 86_400_000) {return relativeFmt.format(sign * Math.round(abs / 3_600_000), 'hour')}
+  if (abs < 86_400_000) {
+    return relativeFmt.format(sign * Math.round(abs / 3_600_000), 'hour')
+  }
 
   return relativeFmt.format(sign * Math.round(abs / 86_400_000), 'day')
 }
 
 function nextRunMs(job: CronJob): null | number {
-  if (!job.next_run_at) {return null}
+  if (!job.next_run_at) {
+    return null
+  }
 
   const ms = Date.parse(job.next_run_at)
 
@@ -54,7 +69,9 @@ function nextRunMs(job: CronJob): null | number {
 // the timestamp is what tells them apart. Compact (no year, no seconds) for the
 // narrow sidebar.
 function formatRunTime(seconds?: null | number): string {
-  if (!seconds) {return '—'}
+  if (!seconds) {
+    return '—'
+  }
 
   const date = new Date(seconds * 1000)
 
@@ -90,11 +107,15 @@ export function SidebarCronJobsSection({
   const [nowMs, setNowMs] = useState(() => Date.now())
   // Single-open inline peek so the section stays scannable.
   const [peekJobId, setPeekJobId] = useState<null | string>(null)
+  // Rows revealed so far; starts compact, grows in steps via "load more".
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_JOBS)
 
   // One clock for the whole section (rows are pure) so the countdowns tick
   // without re-rendering the rest of the sidebar. Only runs while expanded.
   useEffect(() => {
-    if (!open) {return}
+    if (!open) {
+      return
+    }
 
     const id = window.setInterval(() => setNowMs(Date.now()), 1000)
 
@@ -108,17 +129,25 @@ export function SidebarCronJobsSection({
       const an = nextRunMs(a)
       const bn = nextRunMs(b)
 
-      if (an !== null && bn !== null && an !== bn) {return an - bn}
+      if (an !== null && bn !== null && an !== bn) {
+        return an - bn
+      }
 
-      if (an === null && bn !== null) {return 1}
+      if (an === null && bn !== null) {
+        return 1
+      }
 
-      if (an !== null && bn === null) {return -1}
+      if (an !== null && bn === null) {
+        return -1
+      }
 
       return jobTitle(a).localeCompare(jobTitle(b))
     })
   }, [jobs])
 
-  const shown = sorted.slice(0, max)
+  const cap = Math.min(visibleCount, max)
+  const shown = sorted.slice(0, cap)
+  const hiddenCount = Math.min(sorted.length, max) - shown.length
   // When capped, signal "50+" rather than implying the list is complete.
   const countLabel = jobs.length > max ? `${max}+` : String(jobs.length)
 
@@ -139,7 +168,7 @@ export function SidebarCronJobsSection({
         </button>
       </div>
       {open && (
-        <SidebarGroupContent className="flex max-h-72 shrink-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75">
+        <SidebarGroupContent className="flex max-h-72 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
           {shown.map(job => (
             <CronJobSidebarRow
               expanded={peekJobId === job.id}
@@ -152,6 +181,12 @@ export function SidebarCronJobsSection({
               onTrigger={() => onTriggerJob(job.id)}
             />
           ))}
+          {hiddenCount > 0 && (
+            <SidebarLoadMoreRow
+              onClick={() => setVisibleCount(count => count + LOAD_MORE_STEP)}
+              step={Math.min(LOAD_MORE_STEP, hiddenCount)}
+            />
+          )}
         </SidebarGroupContent>
       )}
     </SidebarGroup>
@@ -181,11 +216,7 @@ function CronJobSidebarRow({
   const next = nextRunMs(job)
   const label = jobTitle(job)
 
-  const meta = INACTIVE_STATES.has(state)
-    ? (c.states[state] ?? state)
-    : next !== null
-      ? relativeTime(next, nowMs)
-      : '—'
+  const meta = INACTIVE_STATES.has(state) ? (c.states[state] ?? state) : next !== null ? relativeTime(next, nowMs) : '—'
 
   return (
     <div>
@@ -257,13 +288,7 @@ function CronJobSidebarRow({
   )
 }
 
-function CronJobSidebarRuns({
-  jobId,
-  onOpenRun
-}: {
-  jobId: string
-  onOpenRun: (sessionId: string) => void
-}) {
+function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (sessionId: string) => void }) {
   const { t } = useI18n()
   const c = t.cron
   const selectedSessionId = useStore($selectedStoredSessionId)
@@ -275,16 +300,22 @@ function CronJobSidebarRuns({
     const load = () =>
       getCronJobRuns(jobId, PEEK_RUN_LIMIT)
         .then(result => {
-          if (!cancelled) {setRuns(result)}
+          if (!cancelled) {
+            setRuns(result)
+          }
         })
         .catch(() => {
-          if (!cancelled) {setRuns(prev => prev ?? [])}
+          if (!cancelled) {
+            setRuns(prev => prev ?? [])
+          }
         })
 
     void load()
 
     const intervalId = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {void load()}
+      if (document.visibilityState === 'visible') {
+        void load()
+      }
     }, PEEK_POLL_INTERVAL_MS)
 
     return () => {

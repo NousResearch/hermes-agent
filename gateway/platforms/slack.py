@@ -45,10 +45,12 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    SUPPORTED_VIDEO_TYPES,
     is_host_excluded_by_no_proxy,
     resolve_proxy_url,
     safe_url_for_log,
     cache_document_from_bytes,
+    cache_video_from_bytes,
 )
 
 
@@ -317,6 +319,12 @@ class SlackAdapter(BasePlatformAdapter):
     """
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
+    supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
+    # Slack blocks typed native slash commands inside threads ("/approve is
+    # not supported in threads. Sorry!").  The adapter rewrites a leading
+    # "!" to "/" for known commands (see _handle_slack_message), so "!" is
+    # the prefix that works everywhere — instruction text must show it.
+    typed_command_prefix = "!"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
@@ -874,7 +882,7 @@ class SlackAdapter(BasePlatformAdapter):
             # doesn't log noisy 404 "unhandled request" warnings.
             @self._app.event("file_shared")
             async def handle_file_shared(event, say):
-                pass
+                await self._handle_slack_file_shared(event)
 
             @self._app.event("file_created")
             async def handle_file_created(event, say):
@@ -882,6 +890,18 @@ class SlackAdapter(BasePlatformAdapter):
 
             @self._app.event("file_change")
             async def handle_file_change(event, say):
+                pass
+
+            # Reactions are useful lightweight acknowledgements in Slack, but
+            # Hermes does not currently need to route them into the agent loop.
+            # Ack the events explicitly so high-traffic channels do not fill
+            # gateway.error.log with Slack Bolt "Unhandled request" warnings.
+            @self._app.event("reaction_added")
+            async def handle_reaction_added(event, say):
+                pass
+
+            @self._app.event("reaction_removed")
+            async def handle_reaction_removed(event, say):
                 pass
 
             @self._app.event("assistant_thread_started")
@@ -942,6 +962,59 @@ class SlackAdapter(BasePlatformAdapter):
                 "hermes_confirm_cancel",
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
+
+            # Register plugin-provided Block Kit action handlers.
+            #
+            # Plugins call ``ctx.register_slack_action_handler(action_id, cb)``
+            # at register() time; the manager queues them and the adapter
+            # wires them into AsyncApp here so slack_bolt's matcher knows
+            # about them before Socket Mode starts dispatching events.
+            #
+            # Each callback is wrapped so a misbehaving plugin can't take
+            # down the gateway: any exception inside the plugin handler is
+            # caught and logged, and slack_bolt still sees a clean ack.
+            try:
+                from hermes_cli.plugins import get_plugin_manager
+                _plugin_handlers = get_plugin_manager().get_slack_action_handlers()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    "[Slack] Could not load plugin action handlers: %s", e,
+                )
+                _plugin_handlers = []
+
+            # Closure factory — keeps the wrapper's signature limited to
+            # ``(ack, body, action)``. slack_bolt inspects listener
+            # signatures via ``inspect.signature`` and passes ``None`` for
+            # any parameter name it doesn't recognise, so capturing loop
+            # vars as default args (``_cb=_cb`` etc.) silently clobbers
+            # them at dispatch time.
+            def _make_wrapper(cb, plugin_name):
+                async def _wrapped(ack, body, action):
+                    try:
+                        await cb(ack, body, action)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.error(
+                            "[Slack] Plugin '%s' action handler raised: %s",
+                            plugin_name, exc, exc_info=True,
+                        )
+                        # Best-effort ack so Slack doesn't retry the click.
+                        try:
+                            await ack()
+                        except Exception:
+                            pass
+                return _wrapped
+
+            for _action_id, _cb, _plugin_name in _plugin_handlers:
+                self._app.action(_action_id)(_make_wrapper(_cb, _plugin_name))
+                logger.debug(
+                    "[Slack] Registered plugin action handler %s (from %s)",
+                    _action_id, _plugin_name,
+                )
+            if _plugin_handlers:
+                logger.info(
+                    "[Slack] Wired %d plugin action handler(s)",
+                    len(_plugin_handlers),
+                )
 
             # Bring up the handler and watchdog atomically. ``_running`` only
             # flips to True after the handler is alive so the watchdog loop
@@ -2102,6 +2175,84 @@ class SlackAdapter(BasePlatformAdapter):
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
 
+    async def _handle_slack_file_shared(self, event: dict) -> None:
+        """Fallback for Slack file shares that do not arrive as message.files.
+
+        Slack documents ``file_shared`` as a file-ID-only event; callers must
+        fetch ``files.info`` to get the file object. Keep this intentionally
+        narrow: normal image/audio/document uploads already arrive on the
+        message event, but some video shares have only been observed through
+        this lifecycle event.
+        """
+        channel_id = event.get("channel_id") or event.get("channel") or ""
+        file_id = event.get("file_id") or (event.get("file") or {}).get("id") or ""
+        if not channel_id or not file_id:
+            return
+
+        team_id = event.get("team_id") or event.get("team") or ""
+        try:
+            client = self._team_clients.get(team_id) if team_id else None
+            info_resp = await (client or self._get_client(channel_id)).files_info(
+                file=file_id
+            )
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            detail = self._describe_slack_api_error(response, file_obj={"id": file_id})
+            logger.warning("[Slack] files.info error for file_shared %s: %s", file_id, detail or exc)
+            return
+
+        if not info_resp.get("ok"):
+            detail = self._describe_slack_api_error(info_resp, file_obj={"id": file_id})
+            logger.warning(
+                "[Slack] files.info failed for file_shared %s: %s",
+                file_id,
+                detail or info_resp.get("error"),
+            )
+            return
+
+        file_obj = info_resp.get("file") or {}
+        if not str(file_obj.get("mimetype", "")).startswith("video/"):
+            return
+
+        share = None
+        for bucket in (file_obj.get("shares") or {}).values():
+            if not isinstance(bucket, dict):
+                continue
+            channel_shares = bucket.get(channel_id)
+            if channel_shares:
+                share = channel_shares[0]
+                break
+            if share is None:
+                for shares in bucket.values():
+                    if shares:
+                        share = shares[0]
+                        break
+        share = share or {}
+        ts = share.get("ts") or event.get("event_ts") or ""
+        thread_ts = share.get("thread_ts") or ""
+
+        # Give Slack's normal message.file_share event a chance to arrive first.
+        # If it does, _handle_slack_message records the same share ts and this
+        # fallback skips instead of duplicating the user turn.
+        await asyncio.sleep(0.75)
+        if ts and self._dedup.is_duplicate(ts):
+            return
+
+        fallback_event = {
+            "type": "message",
+            "subtype": "file_share",
+            "text": "",
+            "user": event.get("user_id") or file_obj.get("user", ""),
+            "channel": channel_id,
+            "channel_type": "im" if channel_id.startswith("D") else "channel",
+            "team": team_id,
+            "ts": "",  # already recorded above; avoid tripping our own dedup guard
+            "files": [file_obj],
+        }
+        if thread_ts and thread_ts != ts:
+            fallback_event["thread_ts"] = thread_ts
+        await self._handle_slack_message(fallback_event)
+
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
@@ -2290,7 +2441,38 @@ class SlackAdapter(BasePlatformAdapter):
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
         else:
-            thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
+            # Channel message session scoping.
+            #
+            # Three cases:
+            #   (a) genuine thread reply   → scope session per thread
+            #   (b) top-level, reply_in_thread=true (the default)  →
+            #       legacy behaviour: each top-level message becomes its
+            #       own thread, so the UX still "replies in a thread"
+            #       and sessions are keyed per thread root
+            #   (c) top-level, reply_in_thread=false → scope one session
+            #       across the whole channel so context accumulates across
+            #       messages (#15421 bug 1)
+            event_thread_ts_raw = event.get("thread_ts")
+            # Align with ``is_thread_reply`` below — a ``thread_ts ==
+            # ts`` payload (some thread-root shapes) is not a real reply
+            # and must not prevent the shared-session path from taking
+            # effect.  Matching the same invariant here keeps the two
+            # branches in sync even if Slack introduces new payload
+            # variants (Copilot on #15464).
+            if event_thread_ts_raw and event_thread_ts_raw != ts:
+                thread_ts = event_thread_ts_raw
+            elif self.config.extra.get("reply_in_thread", True):
+                # Legacy default: treat ts as a synthetic thread root so
+                # this top-level message gets its own session.
+                thread_ts = ts
+            else:
+                # reply_in_thread=false: no thread key → session manager
+                # groups by (platform, channel_id, None) and the channel
+                # shares one conversation.  reply_to_message_id at the
+                # outbound side is already gated on ``thread_ts != ts``
+                # so None here produces a non-threaded reply without
+                # further changes.
+                thread_ts = None
 
         # In channels, respond if:
         #   0. Channel is in free_response_channels, OR require_mention is
@@ -2470,6 +2652,36 @@ class SlackAdapter(BasePlatformAdapter):
                             e,
                             exc_info=True,
                         )
+            elif mimetype.startswith("video/") and url:
+                try:
+                    original_filename = f.get("name", "")
+                    _, ext = os.path.splitext(original_filename)
+                    ext = ext.lower()
+                    if ext not in SUPPORTED_VIDEO_TYPES:
+                        mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
+                        ext = mime_to_ext.get(
+                            mimetype.split(";", 1)[0].lower(), ".mp4"
+                        )
+
+                    raw_bytes = await self._download_slack_file_bytes(
+                        url, team_id=team_id
+                    )
+                    cached_path = cache_video_from_bytes(raw_bytes, ext=ext)
+                    media_urls.append(cached_path)
+                    media_types.append(SUPPORTED_VIDEO_TYPES.get(ext, mimetype))
+                    logger.debug("[Slack] Cached user video: %s", cached_path)
+                except Exception as e:  # pragma: no cover - defensive logging
+                    detail = self._describe_slack_download_failure(e, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning(
+                            "[Slack] Failed to cache video from %s: %s",
+                            url,
+                            e,
+                            exc_info=True,
+                        )
             elif url:
                 # Try to handle as a document attachment
                 try:
@@ -2564,6 +2776,8 @@ class SlackAdapter(BasePlatformAdapter):
         if msg_type != MessageType.COMMAND and media_types:
             if any(m.startswith("image/") for m in media_types):
                 msg_type = MessageType.PHOTO
+            elif any(m.startswith("video/") for m in media_types):
+                msg_type = MessageType.VIDEO
             elif any(m.startswith("audio/") for m in media_types):
                 msg_type = MessageType.VOICE
             else:
@@ -2660,19 +2874,26 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:2900] + "..." if len(command) > 2900 else command
             thread_ts = self._resolve_thread_ts(None, metadata)
+
+            # Slack hard-caps a section block's text at 3000 chars; an
+            # oversized block fails the whole send with ``invalid_blocks``
+            # and the gateway falls back to the plain-text prompt (no
+            # buttons).  execute_code approvals embed the entire script in
+            # ``command``, so budget the preview against the fixed parts
+            # instead of a flat truncation that overflows once the header +
+            # reason are added.
+            header = ":warning: *Command Approval Required*\n"
+            reason = f"Reason: {description[:500]}"
+            budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
+            cmd_preview = command[:budget] + "..." if len(command) > budget else command
 
             blocks = [
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": (
-                            f":warning: *Command Approval Required*\n"
-                            f"```{cmd_preview}```\n"
-                            f"Reason: {description}"
-                        ),
+                        "text": f"{header}```{cmd_preview}```\n{reason}",
                     },
                 },
                 {
@@ -2740,8 +2961,13 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            body = message[:2900] + "..." if len(message) > 2900 else message
             thread_ts = self._resolve_thread_ts(None, metadata)
+            # Same 3000-char section-block cap as send_exec_approval: budget
+            # the body against the rendered title so the wrapper never pushes
+            # the block over the limit (overflow → invalid_blocks → no buttons).
+            _title = (title or "Confirm")[:150]
+            budget = 3000 - len(f"*{_title}*\n\n") - len("...")
+            body = message[:budget] + "..." if len(message) > budget else message
             # Encode session_key and confirm_id into the button value so the
             # callback handler can resolve without extra bookkeeping.
             value = f"{session_key}|{confirm_id}"
@@ -2751,7 +2977,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*{title or 'Confirm'}*\n\n{body}",
+                        "text": f"*{_title}*\n\n{body}",
                     },
                 },
                 {

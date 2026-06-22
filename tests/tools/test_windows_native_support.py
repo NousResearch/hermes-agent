@@ -841,13 +841,15 @@ class TestLocalEnvironmentWindowsTempDir:
 
 
 class TestLocalEnvironmentPathInjectionGated:
-    """The /usr/bin PATH injection in _make_run_env must be POSIX-only."""
+    """Sane PATH completion must stay POSIX-only."""
 
-    def test_source_gates_path_injection(self):
-        root = Path(__file__).resolve().parents[2]
-        source = (root / "tools" / "environments" / "local.py").read_text(encoding="utf-8")
-        # The fix wraps the injection in `if not _IS_WINDOWS`.
-        assert 'not _IS_WINDOWS and "/usr/bin" not in existing_path.split(":")' in source
+    def test_windows_path_is_left_unchanged(self, monkeypatch):
+        from tools.environments import local as local_mod
+        from tools.environments.local import _append_missing_sane_path_entries
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        path = r"C:\Windows\System32;C:\Program Files\Git\bin"
+        assert _append_missing_sane_path_entries(path) == path
 
 
 # ---------------------------------------------------------------------------

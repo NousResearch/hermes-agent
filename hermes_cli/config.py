@@ -2381,6 +2381,17 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
+        # Mirror each cron delivery into the TARGET chat's gateway session
+        # transcript (as an assistant turn), so a user reply in that chat sees
+        # the cron output in context instead of "what is Task #2?" amnesia.
+        # Default False preserves the historical isolation guarantee (cron
+        # deliveries live only in the cron job's own session). Per-job
+        # `attach_to_session` overrides this for a single job. Rides the same
+        # gateway.mirror.mirror_to_session path interactive send_message uses;
+        # alternation- and cache-safe (appended at a turn boundary, never
+        # mid-loop, never mutates the cached system prompt). When the target
+        # chat has no session yet (cold start) the mirror is a silent no-op.
+        "mirror_delivery": False,
         # Maximum number of due jobs to run in parallel per tick.
         # null/0 = unbounded (limited only by thread count).
         # 1 = serial (pre-v0.9 behaviour).

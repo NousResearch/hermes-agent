@@ -7694,3 +7694,55 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         assert session["agent"].model == "claude-sonnet-4.6"
     finally:
         server._sessions.clear()
+
+
+# ---------------------------------------------------------------------------
+# Shell hooks registration in TUI gateway (Issue #15)
+# ---------------------------------------------------------------------------
+
+def test_ensure_shell_hooks_calls_register_from_config(monkeypatch, tmp_path):
+    """_ensure_shell_hooks registers shell hooks once so Code Island etc. work."""
+    server._shell_hooks_registered = False
+
+    calls = []
+    fake_cfg = {"hooks": {"on_session_start": [{"command": "echo hello"}]}}
+
+    def fake_register(cfg, *, accept_hooks=False):
+        calls.append({"cfg": cfg, "accept_hooks": accept_hooks})
+        return []
+
+    import agent.shell_hooks as _sh_mod
+    import hermes_cli.config as _cfg_mod
+    monkeypatch.setattr(_sh_mod, "register_from_config", fake_register)
+    monkeypatch.setattr(_cfg_mod, "load_config", lambda: fake_cfg)
+
+    try:
+        server._ensure_shell_hooks()
+        assert len(calls) == 1
+        assert calls[0]["cfg"] is fake_cfg
+        assert calls[0]["accept_hooks"] is False
+
+        server._ensure_shell_hooks()
+        assert len(calls) == 1, "should not register twice"
+    finally:
+        server._shell_hooks_registered = False
+
+
+def test_ensure_shell_hooks_resilient_to_import_error(monkeypatch):
+    """Registration failure must not crash the agent build."""
+    server._shell_hooks_registered = False
+
+    import agent.shell_hooks as _sh_mod
+    import hermes_cli.config as _cfg_mod
+
+    def _boom(cfg, *, accept_hooks=False):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(_sh_mod, "register_from_config", _boom)
+    monkeypatch.setattr(_cfg_mod, "load_config", lambda: {})
+
+    try:
+        server._ensure_shell_hooks()
+        assert server._shell_hooks_registered is True, "flag set even on error"
+    finally:
+        server._shell_hooks_registered = False

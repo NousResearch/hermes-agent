@@ -537,3 +537,32 @@ class TestEmergencyCleanupRunsReaper:
         assert reaper_called, (
             "Reaper must run on exit even with no active sessions"
         )
+
+
+def test_cleanup_single_session_refuses_kill_when_identity_check_fails(tmp_path, monkeypatch):
+    """_cleanup_single_browser_session must not SIGTERM a daemon PID when
+    _verify_reapable_browser_daemon returns False (recycled or planted PID)."""
+    import tools.browser_tool as bt
+
+    session_name = "h_test999"
+    socket_dir = tmp_path / f"agent-browser-{session_name}"
+    socket_dir.mkdir()
+    pid_file = socket_dir / f"{session_name}.pid"
+    pid_file.write_text("54321")
+
+    monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
+
+    bt._active_sessions["task-abc"] = {
+        "session_name": session_name,
+        "task_id": "task-abc",
+    }
+
+    kills = []
+
+    with patch("tools.browser_tool._verify_reapable_browser_daemon", return_value=False), \
+         patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+               side_effect=lambda pid: kills.append(pid)):
+        bt._cleanup_single_browser_session("task-abc")
+
+    assert kills == [], "must not terminate PID when identity check fails"
+    assert not socket_dir.exists(), "socket dir should still be cleaned up"

@@ -1,0 +1,10 @@
+=== pull_down_onto.sh  2026-06-22T10:26:18Z ===
+TARGET_REF=04a1d9efd76db1c5860bd5b928da95e37babb8b7 -> 04a1d9efd76db1c5860bd5b928da95e37babb8b7
+  (= 04a1d9efd feat(desktop): PR-style file diffs in chat (#50731))
+resolution patches from #50111 @ 7b27f172c
+open PRs: 40  =  39 code PRs  +  1 manifest/#50111 (excluded from apply)
+✓ ASSERT worktree HEAD == TARGET_REF
+apply onto 04a1d9efd76db1c5860bd5b928da95e37babb8b7: clean=39 resolved=0 failed=0 (applied=39/39) ->
+compile-fail=0
+
+RESULT: PASS — 39/39 code PRs pull down onto 04a1d9efd76db1c5860bd5b928da95e37babb8b7 (39 clean + 0 resolved), tree compiles

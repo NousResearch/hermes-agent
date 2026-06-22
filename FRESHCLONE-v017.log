@@ -1,0 +1,10 @@
+=== pull_down_onto.sh  2026-06-22T10:26:00Z ===
+TARGET_REF=2bd1977d8fad185c9b4be47884f7e87f1add0ce3 -> 2bd1977d8fad185c9b4be47884f7e87f1add0ce3
+  (= 2bd1977d8 chore: release v0.17.0 (2026.6.19))
+resolution patches from #50111 @ 7b27f172c
+open PRs: 40  =  39 code PRs  +  1 manifest/#50111 (excluded from apply)
+✓ ASSERT worktree HEAD == TARGET_REF
+apply onto 2bd1977d8fad185c9b4be47884f7e87f1add0ce3: clean=30 resolved=9 failed=0 (applied=39/39) ->
+compile-fail=0
+
+RESULT: PASS — 39/39 code PRs pull down onto 2bd1977d8fad185c9b4be47884f7e87f1add0ce3 (30 clean + 9 resolved), tree compiles

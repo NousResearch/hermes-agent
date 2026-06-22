@@ -4152,6 +4152,55 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
     return failed_servers
 
 
+def _toolset_unavailable_reason(ts_key: str) -> Optional[str]:
+    """Return a short reason when an enabled toolset cannot register tools.
+
+    ``hermes tools list`` historically answered only the config question
+    (enabled/disabled). Runtime schemas are additionally gated by each tool's
+    ``check_fn``. This helper bridges that distinction so users can see cases
+    like ``computer_use`` being configured on Windows while its macOS backend is
+    unavailable on the current platform.
+    """
+    try:
+        from tools.registry import discover_builtin_tools, registry
+
+        # ``hermes tools list`` can run before model_tools imports tool modules.
+        # Populate the registry so check_fn-backed availability is meaningful.
+        discover_builtin_tools()
+        if registry.is_toolset_available(ts_key):
+            return None
+        requirements = registry.get_toolset_requirements().get(ts_key) or {}
+    except Exception:
+        return None
+
+    if ts_key == "computer_use":
+        if sys.platform != "darwin":
+            return (
+                f"enabled but unavailable on this platform ({sys.platform}); "
+                "cua-driver is macOS-only. Use browser/vision/terminal/file "
+                "for Windows/Linux tasks, or run Hermes on macOS for computer_use."
+            )
+        return (
+            "enabled but unavailable; cua-driver is not installed. "
+            "Run `hermes computer-use status` or `hermes computer-use install`."
+        )
+
+    env_vars = requirements.get("env_vars") or []
+    if env_vars:
+        return "enabled but unavailable; missing or invalid requirement(s): " + ", ".join(env_vars)
+    return "enabled but unavailable; runtime requirements check failed."
+
+
+def _toolset_status_label(ts_key: str, enabled_toolsets: set) -> tuple[str, Optional[str]]:
+    """Return (colored status label, optional detail) for a toolset row."""
+    if ts_key not in enabled_toolsets:
+        return color("✗ disabled", Colors.RED), None
+    reason = _toolset_unavailable_reason(ts_key)
+    if reason:
+        return color("⚠ enabled but unavailable", Colors.YELLOW), reason
+    return color("✓ enabled", Colors.GREEN), None
+
+
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
     effective_all = _get_effective_configurable_toolsets()
@@ -4165,9 +4214,10 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
     for ts_key, label, _ in effective:
         if ts_key not in builtin_keys:
             continue
-        status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
-                  else color("✗ disabled", Colors.RED))
+        status, detail = _toolset_status_label(ts_key, enabled_toolsets)
         print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+        if detail:
+            print(color(f"      ↳ {detail}", Colors.YELLOW))
 
     # Plugin toolsets
     plugin_entries = [(k, l) for k, l, _ in effective if k not in builtin_keys]
@@ -4175,9 +4225,10 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
         print()
         print(f"Plugin toolsets ({platform}):")
         for ts_key, label in plugin_entries:
-            status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
-                      else color("✗ disabled", Colors.RED))
+            status, detail = _toolset_status_label(ts_key, enabled_toolsets)
             print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+            if detail:
+                print(color(f"      ↳ {detail}", Colors.YELLOW))
 
     if mcp_servers:
         print()

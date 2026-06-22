@@ -752,6 +752,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'developer-guide/tools-runtime',
             'developer-guide/browser-supervisor',
+            'developer-guide/desktop-control-routing',
             'developer-guide/acp-internals',
             'developer-guide/cron-internals',
             'developer-guide/trajectory-format',

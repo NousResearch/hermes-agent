@@ -1,0 +1,10 @@
+{
+  "name": "hermes-gossip-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hermes Agent sidecar for @massalabs/gossip-sdk",
+  "dependencies": {
+    "@massalabs/gossip-sdk": "file:../../../../../gossip/gossip-sdk"
+  }
+}

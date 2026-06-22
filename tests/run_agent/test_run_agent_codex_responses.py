@@ -1774,6 +1774,106 @@ def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
 
+def test_dump_api_request_debug_redacts_authorization_header(monkeypatch, tmp_path):
+    """Authorization header must be redacted in debug dumps."""
+    import json
+    from agent.agent_runtime_helpers import _redact_sensitive_dump_fields
+
+    agent = _build_agent(monkeypatch)
+    agent.base_url = "http://127.0.0.1:9208/v1"
+    agent.logs_dir = tmp_path
+
+    kwargs_with_token = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "headers": {"Authorization": "Bearer sk-real-key-12345"},
+    }
+
+    dump_file = agent._dump_api_request_debug(kwargs_with_token, reason="preflight")
+    payload = json.loads(dump_file.read_text())
+
+    # The explicit Authorization header inside the body must be redacted
+    assert payload["request"]["body"]["headers"]["Authorization"] == "[REDACTED]"
+    assert "sk-real-key" not in json.dumps(payload)
+
+
+def test_dump_api_request_debug_redacts_nested_access_token(monkeypatch, tmp_path):
+    """Nested access_token fields must be redacted recursively."""
+    import json
+
+    agent = _build_agent(monkeypatch)
+    agent.base_url = "http://127.0.0.1:9208/v1"
+    agent.logs_dir = tmp_path
+
+    kwargs = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "auth": {"access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", "token_type": "bearer"},
+    }
+
+    dump_file = agent._dump_api_request_debug(kwargs, reason="preflight")
+    payload = json.loads(dump_file.read_text())
+
+    assert payload["request"]["body"]["auth"]["access_token"] == "[REDACTED]"
+    assert payload["request"]["body"]["auth"]["token_type"] == "bearer"  # not a secret key
+    assert "eyJhbGci" not in json.dumps(payload)
+
+
+def test_dump_api_request_debug_preserves_normal_fields(monkeypatch, tmp_path):
+    """Non-sensitive fields like model and messages must be preserved."""
+    import json
+
+    agent = _build_agent(monkeypatch)
+    agent.base_url = "http://127.0.0.1:9208/v1"
+    agent.logs_dir = tmp_path
+
+    kwargs = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hello world"}],
+        "temperature": 0.7,
+    }
+
+    dump_file = agent._dump_api_request_debug(kwargs, reason="preflight")
+    payload = json.loads(dump_file.read_text())
+
+    assert payload["request"]["body"]["model"] == "gpt-4o"
+    assert payload["request"]["body"]["temperature"] == 0.7
+    assert "hello world" in json.dumps(payload)
+
+
+def test_redact_sensitive_dump_fields_standalone():
+    """Unit test for the standalone redaction helper."""
+    from agent.agent_runtime_helpers import _redact_sensitive_dump_fields
+
+    payload = {
+        "timestamp": "2026-06-22T12:00:00",
+        "request": {
+            "headers": {
+                "Authorization": "Bearer secret123",
+                "Content-Type": "application/json",
+            },
+            "body": {
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}],
+                "access_token": "leaked-token",
+                "nested": {"api_key": "sk-abc123", "normal": "keep-me"},
+            },
+        },
+    }
+
+    result = _redact_sensitive_dump_fields(payload)
+
+    assert result["request"]["headers"]["Authorization"] == "[REDACTED]"
+    assert result["request"]["headers"]["Content-Type"] == "application/json"
+    assert result["request"]["body"]["access_token"] == "[REDACTED]"
+    assert result["request"]["body"]["nested"]["api_key"] == "[REDACTED]"
+    assert result["request"]["body"]["nested"]["normal"] == "keep-me"
+    assert result["request"]["body"]["model"] == "gpt-4o"
+    assert result["timestamp"] == "2026-06-22T12:00:00"
+    assert "secret123" not in str(result)
+    assert "sk-abc123" not in str(result)
+
+
 def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
     """Debug dumps should show /responses URL when in codex_responses mode."""
     import json

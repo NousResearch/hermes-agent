@@ -33,6 +33,46 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
+
+# Keys to redact in request debug dumps (case-insensitive match).
+_REDACTED_DUMP_KEYS: frozenset = frozenset({
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "api_key",
+    "api-key",
+    "access_token",
+    "refresh_token",
+    "agent_key",
+    "id_token",
+    "bearer",
+    "token",
+    "password",
+    "secret",
+    "private_key",
+})
+
+
+def _redact_sensitive_dump_fields(obj: Any, _path: str = "") -> Any:
+    """Recursively walk *obj* and replace any value whose key name matches a
+    sensitive pattern with ``"[REDACTED]"``.
+
+    Works on nested dicts, lists, and primitive values.  Non-sensitive fields
+    are preserved unchanged.
+    """
+    if isinstance(obj, dict):
+        result: dict = {}
+        for k, v in obj.items():
+            if isinstance(k, str) and k.lower() in _REDACTED_DUMP_KEYS:
+                result[k] = "[REDACTED]"
+            else:
+                result[k] = _redact_sensitive_dump_fields(v, f"{_path}.{k}")
+        return result
+    if isinstance(obj, list):
+        return [_redact_sensitive_dump_fields(item, f"{_path}[{i}]")
+                for i, item in enumerate(obj)]
+    return obj
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
@@ -1133,6 +1173,11 @@ def dump_api_request_debug(
                     _ra().logger.debug("Could not extract error response details: %s", e)
 
             dump_payload["error"] = error_info
+
+        # Redact sensitive fields before writing — prevents raw tokens from
+        # leaking into on-disk request dump files even when the request body
+        # or error response contains nested sensitive keys.
+        dump_payload = _redact_sensitive_dump_fields(dump_payload)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         dump_file = agent.logs_dir / f"request_dump_{agent.session_id}_{timestamp}.json"

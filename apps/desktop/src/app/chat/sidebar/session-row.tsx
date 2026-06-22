@@ -12,7 +12,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session'
+import { $attentionSessionIds, sessionPinId } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
@@ -83,6 +83,7 @@ export function SidebarSessionRow({
 
   return (
     <SessionContextMenu
+      folderKey={sessionPinId(session)}
       onArchive={onArchive}
       onDelete={onDelete}
       onPin={onPin}
@@ -214,6 +215,7 @@ export function SidebarSessionRow({
             </span>
           )}
           <SessionActionsMenu
+            folderKey={sessionPinId(session)}
             onArchive={onArchive}
             onDelete={onDelete}
             onPin={onPin}

@@ -329,6 +329,48 @@ class TestCheckWebApiKey:
 
 
 # ---------------------------------------------------------------------------
+# Split routing: search_backend=searxng + extract_backend=firecrawl
+# (the production config shipped 2026-06-20 — local SearxNG for search,
+# Firecrawl kept for extract since SearxNG is search-only. Pins the contract
+# so a future config refactor can't silently re-route search back to the
+# paid backend or break the search/extract split.)
+# ---------------------------------------------------------------------------
+
+
+class TestSplitSearxngSearchFirecrawlExtract:
+    """Production config: SearXNG for search, Firecrawl for extract."""
+
+    _PROD_CONFIG = {"search_backend": "searxng", "extract_backend": "firecrawl"}
+
+    def test_search_backend_searxng_resolves_to_searxng(self, monkeypatch):
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: dict(self._PROD_CONFIG))
+        monkeypatch.setenv("SEARXNG_URL", "http://127.0.0.1:8888")
+        assert web_tools._get_search_backend() == "searxng"
+
+    def test_extract_backend_stays_firecrawl(self, monkeypatch):
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: dict(self._PROD_CONFIG))
+        monkeypatch.setenv("SEARXNG_URL", "http://127.0.0.1:8888")
+        # _is_backend_available("firecrawl") delegates to check_firecrawl_api_key
+        monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: True)
+        assert web_tools._get_extract_backend() == "firecrawl"
+
+    def test_search_backend_searxng_without_url_falls_back_to_shared(self, monkeypatch):
+        """If SEARXNG_URL is unset the search_backend override is not 'available',
+        so selection falls through to the shared _get_backend() (web.backend)."""
+        from tools import web_tools
+        monkeypatch.setattr(
+            web_tools,
+            "_load_web_config",
+            lambda: {"search_backend": "searxng", "backend": "firecrawl"},
+        )
+        monkeypatch.delenv("SEARXNG_URL", raising=False)
+        monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: True)
+        assert web_tools._get_search_backend() == "firecrawl"
+
+
+# ---------------------------------------------------------------------------
 # searxng-only: web_extract returns a clear error
 # ---------------------------------------------------------------------------
 

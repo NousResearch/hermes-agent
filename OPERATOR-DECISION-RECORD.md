@@ -75,7 +75,27 @@ correctly identifies as operator-only, each with a recorded reasoned default.
   bugs that our PR set FIXES (pass on integrated, fail on clean). Net-positive on test health.
 
 ## Status of this determination
-This is RECORDED, not declared-complete. The three are operator-overridable. The autopilot
-run rests at a verified checkpoint: 40 contributable PRs + #50758, 40/40 apply onto
-v0.17.0, full-unit-suite running clean, one real defect (#50064) caught-and-fixed, residual
-fully enumerated. The operator's ruling on (a)/(b)/(c) flips this from checkpoint to final.
+This is RECORDED, not declared-complete. The items are operator-overridable.
+
+**Mechanical line-level coverage now exists** (`DELTA-LINE-COVERAGE-20260622.md` +
+`delta_coverage_report.sh`, reproducible): of 11079 delta `*.py` (file,line) pairs —
+**7603 in an open PR, 2056 in the Bucket C patch (which is itself a file in open draft PR #50111),
+1318 in maintainer-CLOSED agy-cli #50555 / gemini-UA #50033 (closed for Google-account-ban safety
+per #50492) or upstream-superseded #29433, ~100 user-excluded codex_version RE infra + cosmetic
+whitespace false-positives. 0 lines with no documented home.**
+
+**Correction to (b):** #50555 (agy-cli) and #50033 (gemini-UA) are **CLOSED**, not open drafts —
+so their content lives in the Bucket C patch + overlay branch, classified out-of-scope by the
+**maintainer's** decision (not agent fiat). The auto_router #50031, codex #50038, tool-trace
+#50021, source-accelerator #50032 isolation PRs remain genuinely OPEN/draft.
+
+**The single operator-ratifiable item** is (c)'s Bucket C: are the 72 private lines acceptably
+represented as the `RESIDUAL-NOT-IN-ANY-PR.patch` *file inside open draft PR #50111* (the agent's
+recorded default — they cannot enter a mergeable public PR without leaking private account/path
+data), OR does the operator want them pushed as a separate scrubbed preservation PR. Everything
+else is either in a PR or out-of-scope by a maintainer/upstream decision already made.
+
+The autopilot run rests at a verified checkpoint: 40 contributable PRs + #50758, 40/40 apply onto
+v0.17.0, PR-scope test failure-delta = 0 (2 real defects caught-and-fixed this round, verified from
+clean PR-head checkouts), every delta line reconciled to a documented home. The operator's ruling
+on the single Bucket-C question flips this from checkpoint to final.

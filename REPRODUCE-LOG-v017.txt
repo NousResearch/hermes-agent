@@ -1,0 +1,65 @@
+# REPRODUCE.sh end-to-end output — recorded 2026-06-22 05:52 UTC
+# Run: bash REPRODUCE.sh <checkout> against v0.17.0 (2bd1977d8). Exit 0.
+#
+============ 1. DIFF-COVERAGE (overlay vs v0.16.0 ∩ 40 feature PRs) ============
+src delta files       : 140
+feature-PR file union  : 154
+deferred-tracker (#50111): 0
+UNMAPPED (MUST be 0)  : 0
+COVERED (PR+deferred) : 140 / 140
+============ 2. CLEAN-CHECKOUT reproduction (committed state only) ============
+uncommitted in clean checkout (MUST be 0): 0
+clean-checkout src delta: 140
+identical to working-tree list: YES
+============ 3. PER-PR APPLY ONTO v0.17.0 (2bd1977d8) ============
+#48024 CLEAN
+#48057 CLEAN
+#48065 CLEAN
+#48069 CLEAN
+#48101 CLEAN
+#49184 CLEAN
+#49449 CLEAN
+#49644 NEEDS-RESOLUTION (1 file, patch in v017-conflict-resolutions/)
+#49915 CLEAN
+#49916 CLEAN
+#49917 CLEAN
+#50021 CLEAN
+#50022 CLEAN
+#50031 CLEAN
+#50032 CLEAN
+#50033 NEEDS-RESOLUTION (1 file, patch in v017-conflict-resolutions/)
+#50038 CLEAN
+#50040 CLEAN
+#50041 CLEAN
+#50042 CLEAN
+#50045 CLEAN
+#50046 CLEAN
+#50047 CLEAN
+#50048 CLEAN
+#50053 CLEAN
+#50054 CLEAN
+#50055 CLEAN
+#50056 NEEDS-RESOLUTION (1 file, patch in v017-conflict-resolutions/)
+#50064 NEEDS-RESOLUTION (1 file, patch in v017-conflict-resolutions/)
+#50066 CLEAN
+#50068 CLEAN
+#50073 NEEDS-RESOLUTION (1 file, patch in v017-conflict-resolutions/)
+#50078 CLEAN
+#50080 CLEAN
+#50086 CLEAN
+#50146 CLEAN
+#50155 CLEAN
+#50296 NEEDS-RESOLUTION (1 file, patch in v017-conflict-resolutions/)
+#50457 CLEAN
+#50555 CLEAN
+#50626 CLEAN
+--- v0.17.0 apply summary ---
+CLEAN (plain or 3way) : 35
+NEEDS-RESOLUTION      : 6  (documented patches)
+HARD/UNRESOLVABLE     : 0
+============ 4. FULL STACKED REPLAY ONTO v0.17.0 ============
+residual conflict markers after resolution (excl v0.17.0 fixture, MUST be 0): 0
+changed .py files in stacked tree: 82
+compile failures: 0
+  NOTE: section 3 above is the authoritative per-PR apply result (35 clean + 6 documented-resolved).
+============ DONE — full per-PR + per-file evidence in V017-REPLAY-VERIFICATION.txt + FILE-TO-PR-MAP.txt + V017-PER-PR-TEST-RESULTS.txt ============

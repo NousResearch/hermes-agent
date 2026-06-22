@@ -1160,6 +1160,22 @@ class GatewaySlashCommandsMixin:
                         if not result.success:
                             return t("gateway.model.error_prefix", error=result.error_message)
 
+                        try:
+                            from hermes_cli.context_switch_guard import (
+                                enrich_model_switch_warnings_for_gateway,
+                            )
+
+                            enrich_model_switch_warnings_for_gateway(
+                                result,
+                                _self,
+                                session_key=_session_key,
+                                source=event.source,
+                                custom_providers=custom_provs,
+                                load_gateway_config=_load_gateway_config,
+                            )
+                        except Exception as exc:
+                            logger.debug("preflight-compression switch warning failed: %s", exc)
+
                         # Update cached agent in-place
                         cached_entry = None
                         _cache_lock = getattr(_self, "_agent_cache_lock", None)
@@ -1177,7 +1193,25 @@ class GatewaySlashCommandsMixin:
                                     api_mode=result.api_mode,
                                 )
                             except Exception as exc:
-                                logger.warning("Picker model switch failed for cached agent: %s", exc)
+                                # The in-place swap rolled the agent back to the
+                                # OLD working model/client and re-raised.  Abort
+                                # the rest of the commit: do NOT persist the
+                                # failed model to the DB, do NOT set a session
+                                # override pointing at the broken model, and do
+                                # NOT evict the working cached agent.  Otherwise
+                                # the next message rebuilds a dead agent from the
+                                # broken override and the conversation is lost
+                                # (#50163).  A failed switch must be a no-op.
+                                logger.warning(
+                                    "Picker model switch failed for cached agent: %s", exc
+                                )
+                                return t(
+                                    "gateway.model.error_prefix",
+                                    error=(
+                                        f"Model switch to {result.new_model} failed ({exc}); "
+                                        f"staying on {_cur_model}."
+                                    ),
+                                )
 
                         # Persist the new model to the session DB so the
                         # dashboard shows the updated model (#34850).
@@ -1279,6 +1313,8 @@ class GatewaySlashCommandsMixin:
                             if mi.has_cost_data():
                                 lines.append(t("gateway.model.cost_label", cost=mi.format_cost()))
                             lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
+                        if result.warning_message:
+                            lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
                         if persist_global:
                             lines.append(t("gateway.model.saved_global"))
                         else:
@@ -1345,6 +1381,22 @@ class GatewaySlashCommandsMixin:
         if not result.success:
             return t("gateway.model.error_prefix", error=result.error_message)
 
+        try:
+            from hermes_cli.context_switch_guard import (
+                enrich_model_switch_warnings_for_gateway,
+            )
+
+            enrich_model_switch_warnings_for_gateway(
+                result,
+                self,
+                session_key=session_key,
+                source=source,
+                custom_providers=custom_provs,
+                load_gateway_config=_load_gateway_config,
+            )
+        except Exception as exc:
+            logger.debug("preflight-compression switch warning failed: %s", exc)
+
         async def _finish_switch() -> str:
             """Apply the resolved switch (agent, session, config) and build the reply."""
             # If there's a cached agent, update it in-place
@@ -1365,7 +1417,20 @@ class GatewaySlashCommandsMixin:
                         api_mode=result.api_mode,
                     )
                 except Exception as exc:
+                    # In-place swap rolled the agent back to the OLD working
+                    # model/client and re-raised.  Abort the commit: skip DB
+                    # persist, session override, cache eviction, and config
+                    # write so a failed switch is a no-op rather than a dead
+                    # conversation (#50163).  Without this early return the
+                    # next message rebuilds a broken agent from the override.
                     logger.warning("In-place model switch failed for cached agent: %s", exc)
+                    return t(
+                        "gateway.model.error_prefix",
+                        error=(
+                            f"Model switch to {result.new_model} failed ({exc}); "
+                            f"staying on {current_model}."
+                        ),
+                    )
 
             # Persist the new model to the session DB so the dashboard
             # shows the updated model (#34850).

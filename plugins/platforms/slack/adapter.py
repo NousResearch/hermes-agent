@@ -34,7 +34,7 @@ except ImportError:
 import sys
 from pathlib import Path as _Path
 
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
@@ -46,6 +46,7 @@ from gateway.platforms.base import (
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_VIDEO_TYPES,
+    _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy,
     resolve_proxy_url,
     safe_url_for_log,
@@ -2698,8 +2699,12 @@ class SlackAdapter(BasePlatformAdapter):
                         }
                         ext = mime_to_ext.get(mimetype, "")
 
-                    if ext not in SUPPORTED_DOCUMENT_TYPES:
-                        continue  # Skip unsupported file types silently
+                    # Any file type is accepted — authorization to message the
+                    # agent is the gate, not the file extension. Known types keep
+                    # their precise MIME; unknown types fall back to the source
+                    # mimetype or octet-stream so the agent reaches for terminal
+                    # tools.
+                    in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
 
                     # Check file size (Slack limit: 20 MB for bots)
                     file_size = f.get("size", 0)
@@ -2715,36 +2720,28 @@ class SlackAdapter(BasePlatformAdapter):
                         url, team_id=team_id
                     )
                     cached_path = cache_document_from_bytes(
-                        raw_bytes, original_filename or f"document{ext}"
+                        raw_bytes, original_filename or f"document{ext or '.bin'}"
                     )
-                    doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                    if in_allowlist:
+                        doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                    else:
+                        doc_mime = mimetype or "application/octet-stream"
                     media_urls.append(cached_path)
                     media_types.append(doc_mime)
-                    logger.debug("[Slack] Cached user document: %s", cached_path)
+                    logger.debug("[Slack] Cached user document: %s (%s)", cached_path, doc_mime)
 
                     # Inject small text-ish files directly into the prompt so
-                    # snippets like JSON/YAML/configs are actually visible to the agent.
+                    # snippets like JSON/YAML/configs are actually visible to the
+                    # agent. Gate on a text-like extension/MIME — NOT a blind
+                    # UTF-8 decode, since binary formats (PDF/zip/docx) can have
+                    # decodable ASCII headers. Binary files are surfaced as a
+                    # cached path only (run.py emits a path-pointing note).
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
-                    TEXT_INJECT_EXTENSIONS = {
-                        ".md",
-                        ".txt",
-                        ".csv",
-                        ".log",
-                        ".json",
-                        ".xml",
-                        ".yaml",
-                        ".yml",
-                        ".toml",
-                        ".ini",
-                        ".cfg",
-                    }
-                    if (
-                        ext in TEXT_INJECT_EXTENSIONS
-                        and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES
-                    ):
+                    _is_text = ext in _TEXT_INJECT_EXTENSIONS or (mimetype or "").startswith("text/")
+                    if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                         try:
                             text_content = raw_bytes.decode("utf-8")
-                            display_name = original_filename or f"document{ext}"
+                            display_name = original_filename or f"document{ext or '.txt'}"
                             display_name = re.sub(r"[^\w.\- ]", "_", display_name)
                             injection = f"[Content of {display_name}]:\n{text_content}"
                             if text:

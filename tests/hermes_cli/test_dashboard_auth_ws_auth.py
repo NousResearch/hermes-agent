@@ -398,6 +398,62 @@ class TestWsRequestIsAllowedGated:
         ws.headers = {"host": "evil.example.com"}
         assert web_server._ws_request_is_allowed(ws) is False
 
+    # -- security: empty / missing peer must fail closed in loopback mode --
+    # Regression for the fail-open default-allow where
+    # ``ws.client is None`` or ``ws.client.host == ""`` was treated as
+    # "allowed" on a loopback-bound dashboard with auth disabled. ASGI
+    # servers behind a misconfigured proxy or a unix-socket transport can
+    # deliver either shape, so both must be rejected explicitly.
+
+    def test_empty_client_host_rejected_in_loopback_mode(self, loopback_app):
+        """An empty ws.client.host must be rejected on a loopback bind."""
+        ws = _fake_ws(query={}, client_host="")
+        ws.headers = {"host": "127.0.0.1:8080"}
+        assert web_server._ws_client_is_allowed(ws) is False
+        assert web_server._ws_request_is_allowed(ws) is False
+
+    def test_missing_client_object_rejected_in_loopback_mode(self, loopback_app):
+        """ws.client is None must be rejected on a loopback bind."""
+        ws = _fake_ws(query={}, client_host="")
+        ws.client = None  # ASGI servers can omit the client tuple entirely
+        ws.headers = {"host": "127.0.0.1:8080"}
+        assert web_server._ws_client_is_allowed(ws) is False
+        assert web_server._ws_request_is_allowed(ws) is False
+
+    def test_empty_client_host_reason_is_block(self, loopback_app):
+        """_ws_client_reason must return a block reason for an empty peer,
+        not ``None`` (which the dispatcher treats as ``allowed``)."""
+        ws = _fake_ws(query={}, client_host="")
+        ws.headers = {"host": "127.0.0.1:8080"}
+        reason = web_server._ws_client_reason(ws)
+        assert reason is not None
+        assert "missing_or_empty_peer" in reason
+
+    def test_empty_client_host_still_allowed_in_insecure_public_mode(
+        self, insecure_public_app
+    ):
+        """The empty-peer fail-closed guard must only apply to loopback
+        binds. With an explicit ``--host 0.0.0.0 --insecure`` opt-in, the
+        loopback-only peer restriction does not run at all, so the empty
+        peer case bypasses the new guard the same way a legitimate LAN
+        peer does. Without this, the fix would regress the public-bind
+        path the dashboard relies on."""
+        ws = _fake_ws(query={}, client_host="")
+        ws.headers = {
+            "host": "192.168.0.222:9120",
+            "origin": "http://192.168.0.222:9120",
+        }
+        assert web_server._ws_client_is_allowed(ws) is True
+
+    def test_empty_client_host_still_allowed_in_gated_mode(self, gated_app):
+        """The empty-peer fail-closed guard must not apply when the OAuth
+        gate is active (``auth_required=True``). Gated mode rewrites
+        ``ws.client.host`` via ``proxy_headers=True``, and the ticket is
+        the auth, so peer-IP is irrelevant on that path."""
+        ws = _fake_ws(query={}, client_host="")
+        ws.headers = {"host": "dashboard.example.com"}
+        assert web_server._ws_client_is_allowed(ws) is True
+
 
 class TestWsHostOriginGuardOrigins:
     """The WS Origin guard must let the packaged desktop shell connect.

@@ -151,22 +151,65 @@ def resolve_cron_scheduler() -> "CronScheduler":
         return InProcessCronScheduler()
 
 
+def _resolve_tick_interval(default: int) -> int:
+    """Resolve the cron polling interval from env/config with a safe default.
+
+    Resolution order:
+      1. ``HERMES_CRON_INTERVAL`` environment variable (seconds, integer >= 5)
+      2. ``cron.tick_interval_seconds`` in config.yaml
+      3. ``default`` argument (caller-supplied, normally the CLI/gateway default)
+
+    Values below 5 are clamped to 5 to prevent runaway tight loops.
+    Invalid values are logged and ignored.
+    """
+    import os
+    import logging
+
+    _log = logging.getLogger("cron.scheduler_provider")
+
+    env_val = os.getenv("HERMES_CRON_INTERVAL", "").strip()
+    if env_val:
+        try:
+            return max(5, int(env_val))
+        except (ValueError, TypeError):
+            _log.warning("Invalid HERMES_CRON_INTERVAL=%r; using config/default", env_val)
+
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        cfg_val = (cfg.get("cron") or {}).get("tick_interval_seconds")
+        if cfg_val is not None:
+            return max(5, int(cfg_val))
+    except Exception:
+        pass
+
+    return default
+
+
 class InProcessCronScheduler(CronScheduler):
-    """Default provider: the historical in-process 60s ticker.
+    """Default provider: the historical in-process ticker.
 
     ``start()`` blocks in the tick loop until ``stop_event`` is set, identical
     to the pre-refactor ``_start_cron_ticker`` core loop. The caller runs it in
     a daemon thread.
+
+    Default polling interval is 15 seconds (was 60 s). Override via the
+    ``HERMES_CRON_INTERVAL`` env var or ``cron.tick_interval_seconds`` in
+    config.yaml. A shorter interval reduces the window in which a gateway
+    restart after ``advance_next_run`` but before job completion can cause a
+    missed fire — the next restart re-evaluates sooner.
     """
 
     @property
     def name(self) -> str:
         return "builtin"
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+    def start(self, stop_event, *, adapters=None, loop=None, interval=15):
         import logging
         from cron.scheduler import tick as cron_tick
         from cron.jobs import record_ticker_heartbeat
+
+        interval = _resolve_tick_interval(interval)
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)

@@ -521,3 +521,77 @@ def test_cron_status_reports_stalled_when_no_heartbeat(tmp_path, monkeypatch, ca
     out = capsys.readouterr().out
     assert "STALLED" in out
     assert "will fire automatically" not in out
+
+
+# ── _resolve_tick_interval ─────────────────────────────────────────────────────
+
+
+class TestResolveTickInterval:
+    """Unit tests for _resolve_tick_interval() and the 15 s default."""
+
+    def test_env_var_takes_priority_over_default(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_INTERVAL", "30")
+        from cron.scheduler_provider import _resolve_tick_interval
+        assert _resolve_tick_interval(60) == 30
+
+    def test_env_var_takes_priority_over_config(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_INTERVAL", "20")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"tick_interval_seconds": 90}},
+            raising=False,
+        )
+        from cron.scheduler_provider import _resolve_tick_interval
+        assert _resolve_tick_interval(60) == 20
+
+    def test_env_var_clamped_to_min_5(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_INTERVAL", "1")
+        from cron.scheduler_provider import _resolve_tick_interval
+        assert _resolve_tick_interval(60) == 5
+
+    def test_invalid_env_var_falls_through_to_config(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_INTERVAL", "not-a-number")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"tick_interval_seconds": 45}},
+            raising=False,
+        )
+        from cron.scheduler_provider import _resolve_tick_interval
+        assert _resolve_tick_interval(60) == 45
+
+    def test_config_fallback_used_when_no_env_var(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_INTERVAL", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"tick_interval_seconds": 45}},
+            raising=False,
+        )
+        from cron.scheduler_provider import _resolve_tick_interval
+        assert _resolve_tick_interval(60) == 45
+
+    def test_config_value_clamped_to_min_5(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_INTERVAL", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"cron": {"tick_interval_seconds": 2}},
+            raising=False,
+        )
+        from cron.scheduler_provider import _resolve_tick_interval
+        assert _resolve_tick_interval(60) == 5
+
+    def test_default_returned_when_no_env_or_config(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_INTERVAL", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {},
+            raising=False,
+        )
+        from cron.scheduler_provider import _resolve_tick_interval
+        assert _resolve_tick_interval(60) == 60
+
+    def test_builtin_default_is_15_not_60(self):
+        """InProcessCronScheduler.start() default interval is 15 s (halved crash window)."""
+        import inspect
+        from cron.scheduler_provider import InProcessCronScheduler
+        sig = inspect.signature(InProcessCronScheduler.start)
+        assert sig.parameters["interval"].default == 15

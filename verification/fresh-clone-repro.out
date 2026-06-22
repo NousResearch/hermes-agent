@@ -54,7 +54,7 @@ index 971e48d52..27392bb05 100644
              "x-activity-request-id": str(uuid.uuid4()),
          }
 -        # NOTE (Phase A9 fix, 2026-06-04): we deliberately do NOT inject
--        # X-Goog-User-Project="antigravity-core-2026" or the Ext binary flag
+-        # X-Goog-User-Project="REDACTED-PROJECT" or the Ext binary flag
 -        # here. Those are Google-internal Antigravity dev project headers; on
 -        # external accounts they trigger 400 USER_PROJECT_DENIED. Upstream
 -        # main does not send them. Let cloudcode-pa use the OAuth-bound

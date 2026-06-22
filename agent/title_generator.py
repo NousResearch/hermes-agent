@@ -109,6 +109,20 @@ def generate_title(
         return None
 
 
+def _set_generated_title(session_db, session_id: str, title: str) -> str:
+    """Persist a generated title, suffixing on collisions when supported."""
+    try:
+        session_db.set_session_title(session_id, title)
+        return title
+    except ValueError:
+        if not hasattr(session_db, "get_next_title_in_lineage"):
+            raise
+        unique_title = session_db.get_next_title_in_lineage(title)
+        session_db.set_session_title(session_id, unique_title)
+        return unique_title
+
+
+
 def auto_title_session(
     session_db,
     session_id: str,
@@ -144,11 +158,11 @@ def auto_title_session(
         return
 
     try:
-        session_db.set_session_title(session_id, title)
-        logger.debug("Auto-generated session title: %s", title)
+        applied_title = _set_generated_title(session_db, session_id, title)
+        logger.debug("Auto-generated session title: %s", applied_title)
         if title_callback is not None:
             try:
-                title_callback(title)
+                title_callback(applied_title)
             except Exception:
                 logger.debug("Auto-title callback failed", exc_info=True)
     except Exception as e:

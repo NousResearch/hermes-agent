@@ -822,7 +822,10 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 return _model_metadata_cache
 
     try:
-        response = requests.get(OPENROUTER_MODELS_URL, timeout=10, verify=_resolve_requests_verify())
+        # Tuple (connect, read) — flat timeout=10 means urllib3 can block 10s per
+        # retry stage through proxies that 403 CONNECT, ballooning to minutes
+        # (#46620). 5s connect / 10s read fails fast on unreachable hosts.
+        response = requests.get(OPENROUTER_MODELS_URL, timeout=(5, 10), verify=_resolve_requests_verify())
         response.raise_for_status()
         data = response.json()
 
@@ -900,7 +903,7 @@ def fetch_endpoint_model_metadata(
                 response = requests.get(
                     server_url.rstrip("/") + "/api/v1/models",
                     headers=headers,
-                    timeout=10,
+                    timeout=(5, 10),
                     verify=_resolve_requests_verify(),
                 )
                 response.raise_for_status()
@@ -948,7 +951,7 @@ def fetch_endpoint_model_metadata(
     for candidate in candidates:
         url = candidate.rstrip("/") + "/models"
         try:
-            response = requests.get(url, headers=headers, timeout=10, verify=_resolve_requests_verify())
+            response = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
             response.raise_for_status()
             payload = response.json()
             cache: Dict[str, Dict[str, Any]] = {}
@@ -1715,7 +1718,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
         }
-        resp = requests.get(url, headers=headers, timeout=10, verify=_resolve_requests_verify())
+        resp = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
         if resp.status_code != 200:
             return None
         data = resp.json()
@@ -1782,7 +1785,7 @@ def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
         resp = requests.get(
             "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
             headers={"Authorization": f"Bearer {access_token}"},
-            timeout=10,
+            timeout=(5, 10),
             verify=_resolve_requests_verify(),
         )
         if resp.status_code != 200:

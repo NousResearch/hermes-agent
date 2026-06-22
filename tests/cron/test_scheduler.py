@@ -1394,6 +1394,52 @@ class TestRunJobSessionPersistence:
         assert error is None
         assert final_response == "all good"
 
+    def test_run_job_delivers_max_iteration_fallback_summary(self, tmp_path):
+        """Cron should deliver a usable max-iteration fallback summary.
+
+        A cron run can exhaust the iteration budget, get a final text summary
+        from the no-tools fallback call, and still have ``completed=False`` in
+        the generic agent result. That should not make cron raise the report
+        text as a RuntimeError.
+        """
+        job = {
+            "id": "summary-job",
+            "name": "summary",
+            "prompt": "finish the report",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "final fallback report",
+                "completed": False,
+                "failed": False,
+                "turn_exit_reason": "max_iterations_reached(60/60)",
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "final fallback report"
+        assert "final fallback report" in output
+        assert "(FAILED)" not in output
+
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.

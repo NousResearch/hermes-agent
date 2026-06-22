@@ -373,9 +373,15 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
 # api.kimi.com/coding (Anthropic Messages wire) which Kimi's own docs
 # describe as having no image_in capability. Vision lives on the separate
 # Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
+#
+# deepseek: DeepSeek's chat API (api.deepseek.com/v1) returns HTTP 401 on
+# vision requests for all current models (deepseek-chat, deepseek-reasoner).
+# The provider has no vision-capable endpoint, so auto-detection must skip it
+# and fall through to the aggregator chain.  See #50712.
 _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
     "kimi-coding",
     "kimi-coding-cn",
+    "deepseek",
 })
 
 # OpenRouter app attribution headers (base — always sent).

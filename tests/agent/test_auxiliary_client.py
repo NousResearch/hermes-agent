@@ -3080,6 +3080,45 @@ class TestVisionAutoSkipsKimiCoding:
         assert provider == "openrouter"
         assert client is fake_or_client
 
+    def test_deepseek_skipped_falls_through_to_openrouter(self, monkeypatch):
+        """deepseek as main + vision auto → OpenRouter (not deepseek).
+
+        DeepSeek's chat API returns HTTP 401 on vision requests (#50712).
+        """
+        fake_or_client = MagicMock(name="openrouter_client")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider", lambda: "deepseek",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model", lambda: "deepseek-chat",
+        )
+        rpc_mock = MagicMock(side_effect=AssertionError(
+            "resolve_provider_client should NOT be called for deepseek "
+            "on the vision auto path"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client", rpc_mock,
+        )
+
+        def fake_strict(provider, model=None):
+            if provider == "openrouter":
+                return fake_or_client, "google/gemini-3-flash-preview"
+            if provider == "nous":
+                return None, None
+            raise AssertionError(
+                f"strict vision backend should not be called for {provider!r} "
+                "when main provider is deepseek"
+            )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_strict_vision_backend",
+            fake_strict,
+        )
+
+        provider, client, model = resolve_vision_provider_client()
+        assert provider == "openrouter"
+        assert client is fake_or_client
+        assert model == "google/gemini-3-flash-preview"
+
     def test_explicit_override_to_kimi_coding_still_honored(self, monkeypatch):
         """When a user *explicitly* requests kimi-coding for vision (e.g.
         they know what they're doing, or are running a future build that
@@ -3108,6 +3147,7 @@ class TestVisionAutoSkipsKimiCoding:
         assert _PROVIDERS_WITHOUT_VISION == frozenset({
             "kimi-coding",
             "kimi-coding-cn",
+            "deepseek",
         })
 
 

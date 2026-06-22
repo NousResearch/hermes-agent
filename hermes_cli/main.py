@@ -10981,6 +10981,147 @@ def _dashboard_listening(host: str, port: int) -> bool:
         return False
 
 
+def _maybe_setup_dashboard_auth_interactively(args) -> None:
+    """Offer to configure dashboard auth when a non-loopback bind has none.
+
+    Called from ``cmd_dashboard`` just before ``start_server``. The auth
+    gate engages on every non-loopback bind (``--insecure`` is a no-op since
+    the June 2026 hardening), and ``start_server`` fails closed when no
+    ``DashboardAuthProvider`` is registered. Rather than greet an interactive
+    operator with that hard error, prompt them to set up the bundled
+    username/password provider on the spot — or point them at
+    ``hermes dashboard register`` for OAuth.
+
+    No-ops (so the existing fail-closed ``SystemExit`` remains the backstop)
+    when:
+      * the bind is loopback (gate never engages), or
+      * a provider is already registered, or
+      * stdin/stdout isn't a TTY (Docker/s6, CI, piped ``--no-open`` runs).
+    """
+    host = getattr(args, "host", "127.0.0.1") or "127.0.0.1"
+
+    try:
+        from hermes_cli.web_server import should_require_auth
+        if not should_require_auth(host):
+            return  # loopback bind — gate never engages
+    except Exception:
+        return  # if we can't tell, defer to start_server's own gate
+
+    try:
+        from hermes_cli.dashboard_auth import list_providers
+        if list_providers():
+            return  # a provider is already configured/registered
+    except Exception:
+        return
+
+    # Only prompt an interactive operator. Non-TTY callers fall through to
+    # start_server's fail-closed SystemExit (with the corrected fix hint).
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+
+    print()
+    print(
+        f"⚠ The dashboard is binding to a non-loopback address ({host}) and "
+        f"needs an auth provider."
+    )
+    print(
+        "  Non-loopback binds always require authentication "
+        "(--insecure no longer bypasses this)."
+    )
+    print()
+    print("  How do you want to authenticate the dashboard?")
+    print("    [1] Username & password (quickest; for a trusted LAN / VPN)")
+    print("    [2] OAuth via Nous Portal (run `hermes dashboard register`)")
+    print("    [3] Cancel")
+    print()
+
+    try:
+        choice = input("  Choice [1]: ").strip() or "1"
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Cancelled.")
+        sys.exit(1)
+
+    if choice == "2":
+        print()
+        print(
+            "  Run this on the host where the dashboard lives, then start "
+            "the dashboard again:\n"
+            "    hermes dashboard register\n"
+            "  It provisions a Nous Portal OAuth client and writes "
+            "HERMES_DASHBOARD_OAUTH_CLIENT_ID into ~/.hermes/.env for you.\n"
+            "  Docs: https://hermes-agent.nousresearch.com/docs/"
+            "user-guide/features/web-dashboard#authentication-gated-mode"
+        )
+        sys.exit(0)
+
+    if choice not in ("1",):
+        print("  Cancelled.")
+        sys.exit(1)
+
+    # ── Username/password setup ──────────────────────────────────────────
+    import getpass
+    import secrets
+
+    print()
+    try:
+        username = input("  Username [admin]: ").strip() or "admin"
+        password = getpass.getpass("  Password: ")
+        confirm = getpass.getpass("  Confirm password: ")
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Cancelled.")
+        sys.exit(1)
+
+    if not password:
+        print("  ✗ Empty password — aborting.")
+        sys.exit(1)
+    if password != confirm:
+        print("  ✗ Passwords don't match — aborting.")
+        sys.exit(1)
+
+    try:
+        from plugins.dashboard_auth.basic import hash_password
+    except Exception as exc:
+        print(f"  ✗ Could not load the password provider: {exc}")
+        sys.exit(1)
+
+    password_hash = hash_password(password)
+    # A stable token-signing secret so sessions survive a dashboard restart.
+    secret = secrets.token_urlsafe(32)
+
+    try:
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        dash = cfg.setdefault("dashboard", {})
+        basic = dash.setdefault("basic_auth", {})
+        basic["username"] = username
+        basic["password_hash"] = password_hash
+        # Never persist plaintext: clear any stale plaintext password key.
+        basic["password"] = ""
+        if not str(basic.get("secret", "") or "").strip():
+            basic["secret"] = secret
+        save_config(cfg)
+    except Exception as exc:
+        print(f"  ✗ Failed to write config.yaml: {exc}")
+        sys.exit(1)
+
+    # Re-run plugin discovery so the basic provider registers from the
+    # just-written config before start_server's gate check runs.
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins(force=True)
+    except Exception as exc:
+        print(f"  ⚠ Plugin re-discovery failed ({exc}); the gate may still "
+              "fail closed. Set the password again or restart the dashboard.")
+
+    print()
+    print(f"  ✓ Username/password auth configured (user: {username}).")
+    print("    Saved to config.yaml under dashboard.basic_auth.")
+    print("    Sign in at the dashboard with these credentials.")
+    print()
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     # --status: report running dashboards and exit, no deps needed.
@@ -11171,6 +11312,13 @@ def cmd_dashboard(args):
         )
 
     from hermes_cli.web_server import start_server
+
+    # Interactive auth setup: if this bind will engage the auth gate but no
+    # provider is registered yet, offer to configure one here (TTY only)
+    # instead of hard-failing inside start_server. Non-interactive callers
+    # (Docker/s6, CI, --no-open pipelines) fall through to start_server's
+    # fail-closed SystemExit unchanged.
+    _maybe_setup_dashboard_auth_interactively(args)
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on

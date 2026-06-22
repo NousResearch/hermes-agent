@@ -12867,7 +12867,7 @@ def start_server(
 
             _fix_hint = (
                 "Configure an auth provider before exposing the dashboard:\n"
-                "  • Password: set dashboard_auth.basic.username + "
+                "  • Password: set dashboard.basic_auth.username + "
                 "password_hash in config.yaml\n"
                 "    (hash with: python -c \"from "
                 "plugins.dashboard_auth.basic import hash_password; "

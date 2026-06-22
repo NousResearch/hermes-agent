@@ -39,7 +39,7 @@ import uuid
 import textwrap
 from collections import deque
 from urllib.parse import unquote, urlparse
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -1134,6 +1134,23 @@ def _finalize_single_query(cli) -> None:
         _run_cleanup(notify_session_finalize=False)
     finally:
         cli._release_active_session()
+
+
+def _run_quiet_single_query_conversation(agent, *, user_message, conversation_history):
+    """Run the quiet one-shot agent loop without letting internal prints hit stdout.
+
+    ``hermes chat -Q -q`` is consumed by automation wrappers that expect stdout
+    to contain only the final assistant answer. Tool renderers, approval hooks,
+    or lower-level status helpers may still write to stdout while the agent loop
+    runs. In quiet one-shot mode those incidental writes are diagnostics, so
+    route them to stderr and print the final response exactly once after this
+    helper returns.
+    """
+    with redirect_stdout(sys.stderr):
+        return agent.run_conversation(
+            user_message=user_message,
+            conversation_history=conversation_history,
+        )
 
 
 def _reset_terminal_input_modes_on_exit() -> None:
@@ -15084,7 +15101,8 @@ def main(
                         cli.agent.stream_delta_callback = None
                         cli.agent.tool_gen_callback = None
                         try:
-                            result = cli.agent.run_conversation(
+                            result = _run_quiet_single_query_conversation(
+                                cli.agent,
                                 user_message=effective_query,
                                 conversation_history=cli.conversation_history,
                             )

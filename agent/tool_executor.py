@@ -29,7 +29,6 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
-from agent.memory_write_bridge import collect_memory_write_notifications
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -1047,27 +1046,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     operations=operations,
                     store=agent._memory_store,
                 )
-                # Bridge: notify external memory providers of successful built-in
-                # memory writes. Covers the single-op shape and each mutating op
-                # inside a successful batch.
+                # Mirror successful built-in memory writes to external
+                # providers. All gating/op-expansion lives behind the manager
+                # interface (MemoryManager.notify_memory_tool_write).
                 if agent._memory_manager:
-                    _mem_ops = collect_memory_write_notifications(result, next_args)
-                    for _op in _mem_ops:
-                        try:
-                            metadata = agent._build_memory_write_metadata(
-                                task_id=effective_task_id,
-                                tool_call_id=getattr(tool_call, "id", None),
-                            )
-                            if _op.get("old_text"):
-                                metadata["old_text"] = _op["old_text"]
-                            agent._memory_manager.on_memory_write(
-                                _op.get("action", ""),
-                                _op.get("target", target),
-                                _op.get("content", "") or "",
-                                metadata=metadata,
-                            )
-                        except Exception:
-                            pass
+                    agent._memory_manager.notify_memory_tool_write(
+                        result,
+                        next_args,
+                        build_metadata=lambda: agent._build_memory_write_metadata(
+                            task_id=effective_task_id,
+                            tool_call_id=getattr(tool_call, "id", None),
+                        ),
+                    )
                 return result
             function_result, function_args = _run_agent_tool_execution_middleware(
                 agent,

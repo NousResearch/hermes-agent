@@ -23,6 +23,7 @@ from agent.codex_responses_adapter import _normalize_codex_response
 import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
+from agent.memory_manager import MemoryManager
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 
@@ -2097,8 +2098,8 @@ class TestExecuteToolCalls:
         messages = []
         calls = []
 
-        class FakeMemoryManager:
-            def has_tool(self, name):
+        class FakeMemoryManager(MemoryManager):
+            def has_tool(self, tool_name):
                 return False
 
             def on_memory_write(self, action, target, content, metadata=None):
@@ -2839,8 +2840,8 @@ class TestConcurrentToolExecution:
         )
         calls = []
 
-        class FakeMemoryManager:
-            def has_tool(self, name):
+        class FakeMemoryManager(MemoryManager):
+            def has_tool(self, tool_name):
                 return False
 
             def on_memory_write(self, action, target, content, metadata=None):
@@ -2869,10 +2870,15 @@ class TestConcurrentToolExecution:
             "hermes_cli.plugins.get_pre_tool_call_block_message",
             lambda *args, **kwargs: None,
         )
-        manager = SimpleNamespace(
-            has_tool=lambda name: False,
-            on_memory_write=MagicMock(side_effect=AssertionError("should not notify")),
-        )
+        notify = MagicMock(side_effect=AssertionError("should not notify"))
+
+        class FakeMemoryManager(MemoryManager):
+            def has_tool(self, tool_name):
+                return False
+
+            on_memory_write = notify
+
+        manager = FakeMemoryManager()
         agent._memory_manager = manager
         agent._memory_store = object()
 
@@ -2887,7 +2893,7 @@ class TestConcurrentToolExecution:
                 tool_call_id="mem-1",
             )
 
-        manager.on_memory_write.assert_not_called()
+        notify.assert_not_called()
 
     def test_concurrent_blocked_write_skips_checkpoint(self, agent, monkeypatch):
         """Concurrent path: blocked write_file should not trigger checkpoint."""

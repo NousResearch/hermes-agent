@@ -128,11 +128,18 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # "Can not decode content-encoding: br" — see #12511 / #15744.
     # Do not install discord.py[voice] until upstream allows PyNaCl >= 1.6.2;
     # the voice extra currently pins PyNaCl < 1.6 and triggers Dependabot.
-    "platform.discord": ("discord.py==2.7.1", "brotlicffi==1.2.0.1"),
+    # discord.py uses aiohttp transitively; without an explicit audited pin
+    # here, a first-use Discord lazy install can leave an older vulnerable
+    # aiohttp in place while `hermes update` considers platform.discord
+    # satisfied (Codex PR #6). Keep in sync with the [messaging] extra.
+    "platform.discord": ("discord.py==2.7.1", "brotlicffi==1.2.0.1", "aiohttp==3.14.1"),
     "platform.slack": (
         "slack-bolt==1.27.0",
         "slack-sdk==3.40.1",
-        "aiohttp==3.13.4",  # CVE-2026-34513/34518/34519/34520/34525
+        # Keep in sync with the [slack] extra in pyproject.toml. The lazy
+        # install path must pick up the same audited aiohttp pin so first-use
+        # Slack installs don't leave a vulnerable aiohttp behind (Codex PR #6).
+        "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",
@@ -152,9 +159,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
-    "terminal.modal": ("modal==1.3.4",),
+    # Both Modal and Vercel terminal backends pull cbor2 transitively; pin
+    # the audited version here so `hermes update` refreshes the vulnerable
+    # transitive package on existing installs (Codex PR #6).
+    "terminal.modal": ("modal==1.3.4", "cbor2==6.1.2"),
     "terminal.daytona": ("daytona==0.155.0",),
-    "terminal.vercel": ("vercel==0.5.7",),
+    "terminal.vercel": ("vercel==0.5.7", "cbor2==6.1.2"),
 
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": (
@@ -168,9 +178,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ACP adapter (VS Code / Zed / JetBrains integration)
     "tool.acp": ("agent-client-protocol==0.9.0",),
     # Dashboard (`hermes dashboard`)
+    # FastAPI pulls starlette transitively; pin the audited version here
+    # so a first-use dashboard lazy install doesn't leave a vulnerable
+    # starlette behind while the dashboard feature is considered satisfied
+    # (Codex PR #6).
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
+        "starlette==1.3.1",
     ),
 }
 

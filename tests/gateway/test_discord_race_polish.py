@@ -2,7 +2,7 @@
 double-invoke channel.connect() on the same guild."""
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -61,15 +61,19 @@ async def test_concurrent_joins_do_not_double_connect():
     channel.connect = lambda: slow_connect(channel)
 
     from plugins.platforms.discord import adapter as discord_mod
-    with patch.object(discord_mod, "VoiceReceiver",
-                      MagicMock(return_value=MagicMock(start=lambda: None))):
-        with patch.object(discord_mod.asyncio, "ensure_future",
-                          lambda _c: asyncio.create_task(asyncio.sleep(0))):
-            t1 = asyncio.create_task(adapter.join_voice_channel(channel))
-            t2 = asyncio.create_task(adapter.join_voice_channel(channel))
-            await asyncio.sleep(0.05)
-            release.set()
-            r1, r2 = await asyncio.gather(t1, t2)
+    # Ensure the PyNaCl guard inside join_voice_channel is a no-op for this
+    # test (the test venv may not have nacl). Use patch.dict so the mock
+    # doesn't leak into other test files in the same pytest session.
+    with patch.dict("sys.modules", {"nacl": MagicMock()}):
+        with patch.object(discord_mod, "VoiceReceiver",
+                          MagicMock(return_value=MagicMock(start=lambda: None))):
+            with patch.object(discord_mod.asyncio, "ensure_future",
+                              lambda _c: asyncio.create_task(asyncio.sleep(0))):
+                t1 = asyncio.create_task(adapter.join_voice_channel(channel))
+                t2 = asyncio.create_task(adapter.join_voice_channel(channel))
+                await asyncio.sleep(0.05)
+                release.set()
+                r1, r2 = await asyncio.gather(t1, t2)
 
     assert connect_count[0] == 1, (
         f"expected 1 channel.connect() call, got {connect_count[0]} — "
@@ -77,3 +81,55 @@ async def test_concurrent_joins_do_not_double_connect():
     )
     assert r1 is True and r2 is True
     assert 42 in adapter._voice_clients
+
+
+# ---------------------------------------------------------------------------
+# PyNaCl availability guard (Codex PR #10)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_join_voice_returns_false_when_pynacl_missing():
+    """When PyNaCl is not installed, join_voice_channel must fail fast with
+    a logged warning instead of crashing inside channel.connect() with an
+    opaque missing-module error. The `voice` extra no longer ships PyNaCl
+    (vulnerable pin), so this guard is the user-facing safety net."""
+    import builtins
+
+    adapter = _make_adapter()
+
+    real_import = builtins.__import__
+
+    def _block_nacl(name, *args, **kwargs):
+        if name == "nacl":
+            raise ImportError("simulated missing PyNaCl (test)")
+        return real_import(name, *args, **kwargs)
+
+    channel = MagicMock()
+    channel.guild.id = 123
+
+    with patch("builtins.__import__", side_effect=_block_nacl):
+        result = await adapter.join_voice_channel(channel)
+
+    assert result is False
+    # channel.connect() must NOT have been called — the guard fires before it.
+    channel.connect.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_join_voice_proceeds_when_pynacl_available():
+    """When PyNaCl IS importable, join_voice_channel proceeds normally
+    (the guard is a no-op). Pins the happy path so the guard above is
+    confirmed to be the regression boundary."""
+    adapter = _make_adapter()
+
+    channel = MagicMock()
+    channel.guild.id = 456
+    channel.connect = AsyncMock(return_value=MagicMock())
+
+    # Ensure the PyNaCl guard is a no-op; patch.dict prevents sys.modules
+    # leakage into other test files.
+    with patch.dict("sys.modules", {"nacl": MagicMock()}):
+        result = await adapter.join_voice_channel(channel)
+
+    assert result is True
+    channel.connect.assert_awaited_once()

@@ -1380,30 +1380,31 @@ def register(ctx):
         args_hint="rebuild|status",
     )
 
-    # ── Hook: pre_tool_call — block find/read_file/recall if graph not searched ──
-    _gated_tools = frozenset({"find", "read_file", "session_search"})
-    _graph_searched_turn: dict[str, bool] = {}  # turn_id → searched
+    # ── Hook: pre_tool_call — block search_files/session_search if graph not searched ──
+    # search_files: prevents the model from bypassing skill discovery by
+    #   going straight to filesystem search (e.g. "find project files").
+    # session_search: prevents stale/incorrect conclusions from other sessions
+    #   from being carried over. read_file is intentionally excluded — it's the
+    #   execution step after a skill has been loaded and should not be gated.
+    # Session-level gating (one unlock per session, not per turn): once
+    # skill_graph_search is called, gated tools stay unlocked for the rest of
+    # the session. The outer closure (register()) runs once per agent init,
+    # so this flag naturally resets on session restart.
+    _gated_tools = frozenset({"search_files", "session_search"})
+    _graph_searched: bool = False  # session-level
 
     def _on_pre_tool_call(tool_name: str, args: dict | None = None, **kw: Any) -> dict | str | None:
-        nonlocal _graph_searched_turn
-        turn_id = kw.get("turn_id", "")
-        if not turn_id:
-            return None
-
-        # Turn boundary: reset flag for new turns
-        if turn_id not in _graph_searched_turn:
-            _graph_searched_turn.clear()
-            _graph_searched_turn[turn_id] = False
+        nonlocal _graph_searched
 
         # If this IS skill_graph_search, mark it and allow
         if tool_name == "skill_graph_search":
-            _graph_searched_turn[turn_id] = True
+            _graph_searched = True
             return None
 
-        # Check gating: skill-graph mode + restricted tool + not yet searched
+        # Check gating: restricted tool + not yet searched this session
         if (
             tool_name in _gated_tools
-            and not _graph_searched_turn.get(turn_id, False)
+            and not _graph_searched
         ):
             return {"action": "block", "message":
                 f"Tool '{tool_name}' is blocked until you call "

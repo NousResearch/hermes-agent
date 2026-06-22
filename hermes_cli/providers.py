@@ -47,7 +47,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "openrouter": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
-        extra_env_vars=("OPENAI_API_KEY",),
         base_url_env_var="OPENROUTER_BASE_URL",
     ),
     "nous": HermesOverlay(
@@ -76,11 +75,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="https://portal.qwen.ai/v1",
         base_url_env_var="HERMES_QWEN_BASE_URL",
-    ),
-    "google-gemini-cli": HermesOverlay(
-        transport="openai_chat",
-        auth_type="oauth_external",
-        base_url_override="cloudcode-pa://google",
     ),
     "lmstudio": HermesOverlay(
         transport="openai_chat",
@@ -311,11 +305,6 @@ ALIASES: Dict[str, str] = {
     "alibaba-coding": "alibaba-coding-plan",
     "alibaba_coding_plan": "alibaba-coding-plan",
 
-    # google-gemini-cli (OAuth + Code Assist)
-    "gemini-cli": "google-gemini-cli",
-    "gemini-oauth": "google-gemini-cli",
-
-
     # huggingface
     "hf": "huggingface",
     "hugging-face": "huggingface",
@@ -493,8 +482,46 @@ def get_label(provider_id: str) -> str:
 
 def is_aggregator(provider: str) -> bool:
     """Return True when the provider is a multi-model aggregator."""
-    pdef = get_provider(provider)
+    provider_norm = normalize_provider(provider or "")
+    if provider_norm.startswith("custom:"):
+        return True
+    pdef = get_provider(provider_norm)
     return pdef.is_aggregator if pdef else False
+
+
+# Flat-namespace resellers (e.g. opencode-go, opencode-zen) are flagged
+# ``is_aggregator=True`` because their live ``/v1/models`` returns bare model
+# IDs ("deepseek-v4-flash") rather than ``vendor/model`` routing slugs — the
+# model-switch resolver relies on that flag to search their flat catalog
+# (see model_switch.py step d). But they are NOT routing aggregators: every
+# model they list is a first-party model served under their own subscription,
+# not a passthrough route to another provider's endpoint. The picker dedup
+# (build_models_payload) must treat them differently from true routers like
+# OpenRouter — a reseller's first-party "minimax-m3" must never be stripped
+# just because a user's custom proxy also happens to serve a same-named model.
+_FLAT_NAMESPACE_RESELLERS: frozenset[str] = frozenset({
+    # Use normalized provider IDs: normalize_provider("opencode-zen") -> "opencode".
+    "opencode-go",
+    "opencode",
+})
+
+
+def is_routing_aggregator(provider: str) -> bool:
+    """Return True only for TRUE routing aggregators (e.g. OpenRouter, named
+    ``custom:*`` proxies) — those that route bare/vendor-slugged model names
+    to *other* providers' endpoints.
+
+    Distinct from :func:`is_aggregator`, which also reports True for
+    flat-namespace resellers (opencode-go/zen) whose catalog is entirely
+    first-party. Use this gate when the question is "would selecting this
+    model silently re-route the call away from the user's intended provider?"
+    — i.e. the picker dedup. Resellers answer no: their listed models are
+    their own, so their rows must not be deduped against user proxies.
+    """
+    provider_norm = normalize_provider(provider or "")
+    if provider_norm in _FLAT_NAMESPACE_RESELLERS:
+        return False
+    return is_aggregator(provider_norm)
 
 
 def determine_api_mode(provider: str, base_url: str = "") -> str:
@@ -677,6 +704,20 @@ def resolve_provider_full(
         ProviderDef if found, else None.
     """
     canonical = normalize_provider(name)
+    raw = name.strip().lower()
+
+    # 0. User-defined config providers win over the built-in alias table.
+    #    A user who declares ``providers.<name>`` in config.yaml has stated
+    #    explicit intent for that name — it must not be hijacked by a legacy
+    #    vendor alias (e.g. bare "openai" → "openrouter"). Resolve the raw
+    #    name against user config FIRST so a configured ``providers.openai``
+    #    (pointing at api.openai.com) beats the alias that would otherwise
+    #    silently route to OpenRouter. Only the raw (pre-alias) name is tried
+    #    here; canonical/alias resolution still happens below.
+    if user_providers:
+        user_pdef = resolve_user_provider(raw, user_providers)
+        if user_pdef is not None:
+            return user_pdef
 
     # 1. Built-in (models.dev + overlays)
     pdef = get_provider(canonical)
@@ -690,7 +731,7 @@ def resolve_provider_full(
         if user_pdef is not None:
             return user_pdef
         # Try original name (in case alias didn't match)
-        user_pdef = resolve_user_provider(name.strip().lower(), user_providers)
+        user_pdef = resolve_user_provider(raw, user_providers)
         if user_pdef is not None:
             return user_pdef
 

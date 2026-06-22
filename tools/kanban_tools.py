@@ -33,7 +33,9 @@ import logging
 import os
 from typing import Any, Optional
 
+from agent.redact import redact_sensitive_text
 from tools.registry import registry, tool_error
+from hermes_cli.config import cfg_get, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -486,6 +488,17 @@ def _handle_complete(args: dict, **kw) -> str:
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")
+    if summary:
+        summary = redact_sensitive_text(str(summary), force=True)
+    if result:
+        result = redact_sensitive_text(str(result), force=True)
+    if metadata is not None and isinstance(metadata, dict):
+        meta_json = json.dumps(metadata)
+        meta_json = redact_sensitive_text(meta_json, force=True)
+        try:
+            metadata = json.loads(meta_json)
+        except json.JSONDecodeError:
+            pass
     created_cards = args.get("created_cards")
     artifacts = args.get("artifacts")
     if created_cards is not None:
@@ -608,6 +621,7 @@ def _handle_block(args: dict, **kw) -> str:
     reason = args.get("reason")
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")
+    reason = redact_sensitive_text(str(reason), force=True)
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -695,6 +709,7 @@ def _handle_comment(args: dict, **kw) -> str:
     body = args.get("body")
     if not body or not str(body).strip():
         return tool_error("body is required")
+    body = redact_sensitive_text(str(body), force=True)
     # Author is intentionally derived from the worker's own runtime
     # identity, NOT from caller-supplied args. Comments are injected
     # into the next worker's system prompt by ``build_worker_context``
@@ -743,8 +758,18 @@ def _handle_create(args: dict, **kw) -> str:
     # CLI / dashboard paths and on legacy hosts that don't set the env.
     session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
     priority = args.get("priority")
-    workspace_kind = args.get("workspace_kind") or "scratch"
+    # Resolve workspace. If the caller passed one explicitly, honor it.
+    # Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)
+    # inherits its own running task's workspace, so a worker editing a
+    # dir:/worktree project that spawns a follow-up child keeps the child
+    # in that project instead of a throwaway scratch dir. Orchestrators
+    # (kanban toolset, no HERMES_KANBAN_TASK) and CLI/dashboard callers
+    # fall back to scratch as before. Explicit None path stays None.
+    workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
+    _inherit_workspace = workspace_kind is None and workspace_path is None
+    if workspace_kind is None:
+        workspace_kind = "scratch"
     triage, bool_error = _parse_bool_arg(args, "triage")
     if bool_error:
         return tool_error(bool_error)
@@ -759,6 +784,10 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"skills must be a list of skill names, got {type(skills).__name__}"
         )
+    goal_mode, goal_bool_error = _parse_bool_arg(args, "goal_mode")
+    if goal_bool_error:
+        return tool_error(goal_bool_error)
+    goal_max_turns = args.get("goal_max_turns")
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):
@@ -769,6 +798,15 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # Inherit the spawning worker's own task workspace when the
+            # caller didn't specify one (see resolution note above).
+            if _inherit_workspace:
+                _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+                if _self_tid:
+                    _self_task = kb.get_task(conn, _self_tid)
+                    if _self_task is not None and _self_task.workspace_kind:
+                        workspace_kind = _self_task.workspace_kind
+                        workspace_path = _self_task.workspace_path
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -786,14 +824,20 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                goal_mode=goal_mode,
+                goal_max_turns=(
+                    int(goal_max_turns) if goal_max_turns is not None else None
+                ),
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
             )
             new_task = kb.get_task(conn, new_tid)
+            subscribed = _maybe_auto_subscribe(conn, new_tid)
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                subscribed=subscribed,
             )
         finally:
             conn.close()
@@ -802,6 +846,102 @@ def _handle_create(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_create failed")
         return tool_error(f"kanban_create: {e}")
+
+
+def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
+    """Auto-subscribe the calling session to task completion / block events.
+
+    Returns True if a subscription row was written, False otherwise (no
+    session context, config gate disabled, or best-effort failure). The
+    caller surfaces this in the ``subscribed`` field of the kanban_create
+    response so an orchestrator can decide whether to fall back to an
+    explicit ``kanban_notify-subscribe`` or to polling.
+
+    Gated by ``kanban.auto_subscribe_on_create`` in config.yaml (default
+    True). Disable to mirror pre-feature behaviour, e.g. when the
+    originating user/chat opted out via the per-platform notification
+    toggle (see ``hermes dashboard``).
+
+    Subscription paths:
+
+    - **Gateway** (telegram/discord/slack/etc): ``HERMES_SESSION_PLATFORM``
+      and ``HERMES_SESSION_CHAT_ID`` are set in ContextVars by the
+      messaging gateway before agent dispatch. The notification poller
+      already keys off these, so we just register a row.
+
+    - **TUI** (herm desktop / herm TUI): the platform/chat_id ContextVars
+      are intentionally cleared (TUI is a single-channel local UI, not
+      a multi-tenant chat surface), but the agent subprocess inherits
+      ``HERMES_SESSION_KEY`` from the parent session. We subscribe with
+      ``platform="tui"`` and ``chat_id=<key>``; the TUI notification
+      poller (``tui_gateway/server.py``) reads ``kanban_notify_subs``
+      for these rows and posts the completion message into the running
+      session.
+
+    - **CLI / cron / test / unattached**: no persistent delivery channel,
+      no-op.
+
+    Failure mode: any exception inside the function is logged at WARNING
+    with the offending exception + diagnostic env vars and swallowed.
+    We never want a notification bookkeeping failure to fail the
+    kanban_create that the agent is mid-conversation about.
+    """
+    try:
+        cfg = load_config()
+        if not cfg_get(cfg, "kanban", "auto_subscribe_on_create", default=True):
+            return False
+    except Exception:
+        # If config can't load we still default to True — this is the
+        # user-friendly behaviour that mirrors the pre-gate implementation.
+        pass
+
+    platform = ""
+    chat_id = ""
+    try:
+        from gateway.session_context import get_session_env
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+        if not platform or not chat_id:
+            # TUI / desktop fallback: platform/chat_id ContextVars are
+            # cleared for TUI sessions, but the parent process exports
+            # HERMES_SESSION_KEY into the subprocess env. Treat that
+            # as a "tui" subscription so the TUI notification poller
+            # (tui_gateway/server.py) can pick it up.
+            #
+            # HERMES_SESSION_ID is intentionally NOT a fallback here:
+            # it is set by ACP / the agent subprocess for telemetry
+            # regardless of whether the parent is a TUI or a CLI, so
+            # treating it as a notification target would auto-subscribe
+            # every CLI invocation, which is exactly the over-eager
+            # behaviour that got #19718 reverted upstream. The TUI
+            # poller keys on HERMES_SESSION_KEY.
+            session_key = (
+                get_session_env("HERMES_SESSION_KEY", "")
+                or os.environ.get("HERMES_SESSION_KEY", "")
+            )
+            if not session_key:
+                return False  # CLI / cron / test — no persistent channel
+            platform = "tui"
+            chat_id = session_key
+        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
+        user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+        notifier_profile = os.environ.get("HERMES_PROFILE")
+
+        # Lazy-import to keep the module-level dependency light
+        from hermes_cli import kanban_db as _kb
+        _kb.add_notify_sub(
+            conn, task_id=task_id,
+            platform=platform, chat_id=chat_id,
+            thread_id=thread_id, user_id=user_id,
+            notifier_profile=notifier_profile,
+        )
+        return True
+    except Exception as _exc:
+        logger.warning(
+            "_maybe_auto_subscribe failed: %r (platform=%r key_set=%r)",
+            _exc, platform, bool(chat_id),
+        )
+        return False
 
 
 def _handle_unblock(args: dict, **kw) -> str:
@@ -1242,12 +1382,35 @@ KANBAN_CREATE_SCHEMA = {
                 "items": {"type": "string"},
                 "description": (
                     "Skill names to force-load into the dispatched "
-                    "worker (in addition to the built-in kanban-worker "
-                    "skill). Use this to pin a task to a specialist "
+                    "worker. The kanban lifecycle is already injected "
+                    "automatically; use this to pin a task to a specialist "
                     "context — e.g. ['translation'] for a translation "
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "goal_mode": {
+                "type": "boolean",
+                "description": (
+                    "Run the dispatched worker in a goal loop. When true, "
+                    "after each turn an auxiliary judge checks the worker's "
+                    "response against this card's title/body; if the work "
+                    "isn't done and budget remains, the worker keeps going "
+                    "in the same session until the judge agrees it's "
+                    "complete (or the goal-turn budget is exhausted, which "
+                    "blocks the task for human review). Use this for "
+                    "open-ended cards where one shot rarely finishes the "
+                    "work. Defaults to false (classic single-shot worker)."
+                ),
+            },
+            "goal_max_turns": {
+                "type": "integer",
+                "description": (
+                    "Turn budget for goal_mode workers. Caps how many "
+                    "continuation turns the worker may take before the task "
+                    "is blocked for review. Ignored unless goal_mode is "
+                    "true. Defaults to the goal-engine default (20)."
                 ),
             },
             "board": _board_schema_prop(),

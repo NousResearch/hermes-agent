@@ -25,6 +25,209 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
+    """Map a Codex app-server ``item/started`` notification to a Hermes
+    tool-progress event ``(tool_name, preview, args)``.
+
+    The Codex app-server runtime processes ``item/started`` notifications for
+    command execution, file changes, and MCP/dynamic tool calls, but never
+    surfaced them as Hermes tool-progress events — so gateways (Telegram, etc.)
+    showed no verbose "running X" breadcrumbs on this route while every other
+    provider did (#38835). Returns None for items that aren't tool-shaped.
+    """
+    if not isinstance(note, dict) or note.get("method") != "item/started":
+        return None
+    params = note.get("params") or {}
+    item = params.get("item") or {}
+    if not isinstance(item, dict):
+        return None
+
+    item_type = item.get("type") or ""
+    if item_type == "commandExecution":
+        command = item.get("command") or ""
+        return "exec_command", command, {"command": command, "cwd": item.get("cwd") or ""}
+
+    if item_type == "fileChange":
+        changes = item.get("changes") or []
+        preview = "file changes"
+        if isinstance(changes, list) and changes:
+            paths = [
+                str(change.get("path"))
+                for change in changes
+                if isinstance(change, dict) and change.get("path")
+            ]
+            if paths:
+                preview = ", ".join(paths[:3])
+                if len(paths) > 3:
+                    preview += f", +{len(paths) - 3} more"
+        return "apply_patch", preview, {"changes": changes}
+
+    if item_type == "mcpToolCall":
+        server = item.get("server") or "mcp"
+        tool = item.get("tool") or "unknown"
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        return f"mcp.{server}.{tool}", tool, args
+
+    if item_type == "dynamicToolCall":
+        tool = item.get("tool") or "unknown"
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        return tool, tool, args
+
+    return None
+
+
+def _coerce_usage_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(value, 0)
+    if isinstance(value, float):
+        return max(int(value), 0)
+    if isinstance(value, str):
+        try:
+            return max(int(value), 0)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
+    """Translate Codex app-server token usage into Hermes accounting.
+
+    Codex app-server reports usage via thread/tokenUsage/updated as:
+    inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens,
+    totalTokens.
+
+    Hermes' canonical prompt bucket includes uncached input + cached input.
+    The Codex app-server protocol does not currently expose cache-write tokens,
+    so that bucket remains zero on this runtime.
+
+    Even when Codex omits usage for a turn, Hermes should still count that turn
+    as one API call for session/status accounting.
+    """
+    agent.session_api_calls += 1
+
+    usage = getattr(turn, "token_usage_last", None)
+    if not isinstance(usage, dict) or not usage:
+        if agent._session_db and agent.session_id:
+            try:
+                if not agent._session_db_created:
+                    agent._ensure_db_session()
+                agent._session_db.update_token_counts(
+                    agent.session_id,
+                    model=agent.model,
+                    api_call_count=1,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Codex app-server api-call persistence failed (session=%s): %s",
+                    agent.session_id, exc,
+                )
+        return {}
+
+    from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+
+    input_tokens = _coerce_usage_int(usage.get("inputTokens"))
+    cache_read_tokens = _coerce_usage_int(usage.get("cachedInputTokens"))
+    output_tokens = _coerce_usage_int(usage.get("outputTokens"))
+    reasoning_tokens = _coerce_usage_int(usage.get("reasoningOutputTokens"))
+    reported_total = _coerce_usage_int(usage.get("totalTokens"))
+
+    canonical_usage = CanonicalUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=0,
+        reasoning_tokens=reasoning_tokens,
+        raw_usage=usage,
+    )
+    prompt_tokens = canonical_usage.prompt_tokens
+    completion_tokens = canonical_usage.output_tokens
+    total_tokens = reported_total or canonical_usage.total_tokens
+    usage_dict = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "input_tokens": canonical_usage.input_tokens,
+        "output_tokens": canonical_usage.output_tokens,
+        "cache_read_tokens": canonical_usage.cache_read_tokens,
+        "cache_write_tokens": canonical_usage.cache_write_tokens,
+        "reasoning_tokens": canonical_usage.reasoning_tokens,
+    }
+
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is not None:
+        try:
+            compressor.update_from_response(usage_dict)
+            context_window = getattr(turn, "model_context_window", None)
+            if isinstance(context_window, int) and context_window > 0:
+                compressor.context_length = context_window
+        except Exception:
+            logger.debug("codex app-server usage update failed", exc_info=True)
+
+    agent.session_prompt_tokens += prompt_tokens
+    agent.session_completion_tokens += completion_tokens
+    agent.session_total_tokens += total_tokens
+    agent.session_input_tokens += canonical_usage.input_tokens
+    agent.session_output_tokens += canonical_usage.output_tokens
+    agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
+    agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
+    agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+
+    cost_result = estimate_usage_cost(
+        agent.model,
+        canonical_usage,
+        provider=agent.provider,
+        base_url=agent.base_url,
+        api_key=getattr(agent, "api_key", ""),
+    )
+    if cost_result.amount_usd is not None:
+        agent.session_estimated_cost_usd += float(cost_result.amount_usd)
+    agent.session_cost_status = cost_result.status
+    agent.session_cost_source = cost_result.source
+
+    if agent._session_db and agent.session_id:
+        try:
+            if not agent._session_db_created:
+                agent._ensure_db_session()
+            agent._session_db.update_token_counts(
+                agent.session_id,
+                input_tokens=canonical_usage.input_tokens,
+                output_tokens=canonical_usage.output_tokens,
+                cache_read_tokens=canonical_usage.cache_read_tokens,
+                cache_write_tokens=canonical_usage.cache_write_tokens,
+                reasoning_tokens=canonical_usage.reasoning_tokens,
+                estimated_cost_usd=float(cost_result.amount_usd)
+                if cost_result.amount_usd is not None else None,
+                cost_status=cost_result.status,
+                cost_source=cost_result.source,
+                billing_provider=agent.provider,
+                billing_base_url=agent.base_url,
+                billing_mode="subscription_included"
+                if cost_result.status == "included" else None,
+                model=agent.model,
+                api_call_count=1,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Codex app-server token persistence failed (session=%s, tokens=%d): %s",
+                agent.session_id, total_tokens, exc,
+            )
+
+    return {
+        **usage_dict,
+        "last_prompt_tokens": prompt_tokens,
+        "estimated_cost_usd": float(cost_result.amount_usd)
+        if cost_result.amount_usd is not None else None,
+        "cost_status": cost_result.status,
+        "cost_source": cost_result.source,
+    }
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -47,7 +250,9 @@ def run_codex_app_server_turn(
     # Spawned on first turn, reused across turns, closed at AIAgent
     # shutdown (see _cleanup hook).
     if not hasattr(agent, "_codex_session") or agent._codex_session is None:
-        cwd = getattr(agent, "session_cwd", None) or os.getcwd()
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        cwd = getattr(agent, "session_cwd", None) or str(resolve_agent_cwd())
         # Approval callback: defer to Hermes' standard prompt flow if a
         # CLI thread has installed one. Gateway / cron contexts get the
         # codex-side fail-closed default.
@@ -56,9 +261,27 @@ def run_codex_app_server_turn(
             approval_callback = _get_approval_callback()
         except Exception:
             approval_callback = None
+
+        def _on_codex_event(note: dict) -> None:
+            # Bridge Codex app-server item/started notifications to Hermes
+            # tool-progress so gateways show verbose "running X" breadcrumbs
+            # on this route too (#38835).
+            progress_callback = getattr(agent, "tool_progress_callback", None)
+            if progress_callback is None:
+                return
+            mapped = _codex_note_to_tool_progress(note)
+            if mapped is None:
+                return
+            tool_name, preview, args = mapped
+            try:
+                progress_callback("tool.started", tool_name, preview, args)
+            except Exception:
+                logger.debug("codex tool-progress callback raised", exc_info=True)
+
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            on_event=_on_codex_event,
         )
 
     # NOTE: the user message is ALREADY appended to messages by the
@@ -120,6 +343,8 @@ def run_codex_app_server_turn(
     agent._iters_since_skill = (
         getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     )
+    usage_result = _record_codex_app_server_usage(agent, turn)
+    api_calls = 1
 
     # Now check the skill nudge AFTER iters were incremented — same
     # pattern the chat_completions path uses (line ~15432).
@@ -140,6 +365,7 @@ def run_codex_app_server_turn(
                 original_user_message=original_user_message,
                 final_response=turn.final_text,
                 interrupted=False,
+                messages=messages,
             )
         except Exception:
             logger.debug("external memory sync raised", exc_info=True)
@@ -164,12 +390,13 @@ def run_codex_app_server_turn(
     return {
         "final_response": turn.final_text,
         "messages": messages,
-        "api_calls": 1,  # one app-server "turn" maps to one logical API call
+        "api_calls": api_calls,
         "completed": not turn.interrupted and turn.error is None,
         "partial": turn.interrupted or turn.error is not None,
         "error": turn.error,
         "codex_thread_id": turn.thread_id,
         "codex_turn_id": turn.turn_id,
+        **usage_result,
     }
 
 

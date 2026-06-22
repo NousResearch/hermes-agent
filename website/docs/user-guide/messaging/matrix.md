@@ -19,12 +19,37 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a DM. |
 | **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. |
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
-| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. |
+| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. |
+| **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
+| **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
+| **Thinking and tool activity** | Matrix uses threaded, editable thinking/tool-activity panes when gateway progress is enabled, so updates do not flood the main room timeline. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
 
 :::tip
 The bot automatically joins rooms when invited. Just invite the bot's Matrix user to any room and it will join and start responding.
 :::
+
+## Capability Matrix
+
+This table is backed by the Matrix adapter capability declaration and Matrix test
+coverage. E2EE is mode-based because deployments choose whether encrypted rooms
+are disabled, opportunistic, or required.
+
+| Capability | Matrix |
+|------------|--------|
+| text | yes |
+| threads | yes |
+| reactions | yes |
+| approvals | yes |
+| model picker | yes |
+| thinking panes | yes |
+| images | yes |
+| multiple images | yes |
+| files | yes |
+| voice/audio | yes |
+| video | yes |
+| E2EE | off / optional / required |
+| diagnostics | yes |
 
 ### Session Model in Matrix
 
@@ -59,8 +84,17 @@ You can configure mention and auto-threading behavior via environment variables 
 ```yaml
 matrix:
   require_mention: true           # Require @mention in rooms (default: true)
+  allowed_users:                  # Matrix users allowed to trigger agent turns
+    - "@alice:matrix.org"
+  allowed_rooms:                  # Matrix rooms allowed to trigger agent turns
+    - "!abc123:matrix.org"
   free_response_rooms:            # Rooms exempt from mention requirement
     - "!abc123:matrix.org"
+  ignore_user_patterns:           # Bridge/appservice ghost users to ignore
+    - "^@telegram_"
+    - "^@whatsapp_"
+  process_notices: false          # Ignore m.notice by default
+  session_scope: room             # auto|room|thread; room is recommended for project rooms
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
 ```
@@ -69,19 +103,59 @@ Or via environment variables:
 
 ```bash
 MATRIX_REQUIRE_MENTION=true
+MATRIX_ALLOWED_USERS=@alice:matrix.org
+MATRIX_ALLOWED_ROOMS=!abc123:matrix.org
 MATRIX_FREE_RESPONSE_ROOMS=!abc123:matrix.org,!def456:matrix.org
+MATRIX_IGNORE_USER_PATTERNS='^@telegram_,^@whatsapp_'
+MATRIX_PROCESS_NOTICES=false
+MATRIX_SESSION_SCOPE=room       # recommended for stable project-room context
 MATRIX_AUTO_THREAD=true
 MATRIX_DM_MENTION_THREADS=false
 MATRIX_REACTIONS=true          # default: true — emoji reactions during processing
+MATRIX_ALLOW_ROOM_MENTIONS=false
 ```
 
 :::tip Disabling reactions
 `MATRIX_REACTIONS=false` turns off the processing-lifecycle emoji reactions (👀/✅/❌) the bot posts on inbound messages. Useful for rooms where reaction events are noisy or aren't supported by all participating clients.
 :::
 
+:::tip Room-wide mentions
+Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@alice:example.org`. Room-wide `@room` notifications are disabled by default; set `MATRIX_ALLOW_ROOM_MENTIONS=true` only in rooms where the bot is allowed to notify everyone.
+:::
+
 :::note
 If you are upgrading from a version that did not have `MATRIX_REQUIRE_MENTION`, the bot previously responded to all messages in rooms. To preserve that behavior, set `MATRIX_REQUIRE_MENTION=false`.
 :::
+
+### Project Room Isolation
+
+If you use the same Matrix bot in multiple project rooms, configure stable
+room-scoped sessions:
+
+```bash
+MATRIX_SESSION_SCOPE=room
+MATRIX_AUTO_THREAD=false
+```
+
+`MATRIX_SESSION_SCOPE` accepts:
+
+| Scope | Behavior |
+|-------|----------|
+| `auto` | Backward-compatible default. Existing `MATRIX_AUTO_THREAD` behavior controls synthetic threads. |
+| `room` | Unthreaded room messages stay in one stable room session. Real Matrix threads still use their thread root. |
+| `thread` | Unthreaded room messages synthesize a thread/session from the triggering event ID. |
+
+Hermes now includes the current Matrix room name, room ID, topic, message ID,
+and a Matrix room-boundary note in the agent prompt. `/status` also shows the
+current Matrix room/session scope, and `/resume` will not silently resume a
+named session from another Matrix room unless you explicitly use
+`/resume --cross-room <session name>`.
+
+`MATRIX_SESSION_SCOPE=room` controls the room/thread lane. The existing
+`group_sessions_per_user` setting still controls whether users inside that room
+share the lane. With `group_sessions_per_user: true` (default), Alice and Bob get
+separate Project B sessions. With `group_sessions_per_user: false`, the room has
+one shared Project B transcript.
 
 This guide walks you through the full setup process — from creating your bot account to sending your first message.
 
@@ -195,6 +269,9 @@ MATRIX_ACCESS_TOKEN=***
 # Security: restrict who can interact with the bot
 MATRIX_ALLOWED_USERS=@alice:matrix.example.org
 
+# Optional: restrict which rooms can trigger the bot
+MATRIX_ALLOWED_ROOMS=!abc123:matrix.example.org
+
 # Multiple allowed users (comma-separated)
 # MATRIX_ALLOWED_USERS=@alice:matrix.example.org,@bob:matrix.example.org
 ```
@@ -210,6 +287,45 @@ MATRIX_PASSWORD=***
 # Security
 MATRIX_ALLOWED_USERS=@alice:matrix.example.org
 ```
+
+## Private Deployment Hardening
+
+For private Matrix deployments, set both user and room allowlists. If
+`MATRIX_ALLOWED_USERS` is unset, any sender who can reach the bot in a joined
+room can trigger an agent turn. If `MATRIX_ALLOWED_ROOMS` is unset, any room the
+bot joins can trigger an agent turn. A locked-down deployment should set both:
+
+```bash
+MATRIX_ALLOWED_USERS=@alice:matrix.example.org,@bob:matrix.example.org
+MATRIX_ALLOWED_ROOMS=!ops:matrix.example.org,!dmroom:matrix.example.org
+```
+
+Bridge and appservice deployments need extra loop protection. Hermes always
+ignores its own events, Matrix appservice-style users whose localpart starts
+with `_`, duplicate event IDs, old startup events, edit replacement events, and
+`m.notice` events by default. Add deployment-specific bridge ghost patterns when
+your bridge uses a different naming convention:
+
+```bash
+MATRIX_IGNORE_USER_PATTERNS='^@telegram_,^@slack_,^@whatsapp_'
+```
+
+Only enable notices when a trusted human workflow really sends `m.notice`:
+
+```bash
+MATRIX_PROCESS_NOTICES=true
+```
+
+Outbound whole-room notifications are disabled by default. Keep
+`MATRIX_ALLOW_ROOM_MENTIONS=false` unless the bot is explicitly allowed to wake
+the whole room with `@room`.
+
+Diagnostics and debug payloads redact Matrix access tokens, recovery keys,
+device identifiers, and message bodies. Media downloads are limited to Matrix
+`mxc://` content URIs and rejected when they exceed `MATRIX_MAX_MEDIA_BYTES`.
+Treat federated rooms and untrusted homeservers as untrusted input: keep room
+allowlists tight, prefer DMs or private rooms for tool-heavy work, and avoid
+authorizing bridge ghosts or appservice puppets as allowed users.
 
 Optional behavior settings in `~/.hermes/config.yaml`:
 
@@ -267,8 +383,20 @@ sudo dnf install libolm-devel
 Add to your `~/.hermes/.env`:
 
 ```bash
-MATRIX_ENCRYPTION=true
+MATRIX_E2EE_MODE=required
 ```
+
+`MATRIX_E2EE_MODE` accepts:
+
+| Mode | Behavior |
+|------|----------|
+| `off` | Do not initialize Matrix E2EE. |
+| `optional` | Try E2EE when dependencies are available, but keep unencrypted rooms working if crypto cannot initialize. |
+| `required` | Fail closed if E2EE dependencies or crypto setup are not available. |
+
+Optional mode may fall back to non-E2EE operation when crypto setup is unavailable. Required mode fails closed instead of silently downgrading.
+
+For backwards compatibility, `MATRIX_ENCRYPTION=true` still enables required E2EE behavior.
 
 When E2EE is enabled, Hermes:
 
@@ -276,6 +404,65 @@ When E2EE is enabled, Hermes:
 - Uploads device keys on first connection
 - Decrypts incoming messages and encrypts outgoing messages automatically
 - Auto-joins encrypted rooms when invited
+
+### Matrix Tools and Controls
+
+In Matrix conversations, Hermes exposes Matrix-specific tools to the agent:
+
+- `matrix_send_reaction`
+- `matrix_redact_message`
+- `matrix_create_room`
+- `matrix_invite_user`
+- `matrix_fetch_history`
+- `matrix_set_presence`
+
+These tools are scoped to Matrix contexts and are not available in non-Matrix toolsets. Admin-style tools are disabled by default: redaction requires `MATRIX_TOOLS_ALLOW_REDACTION=true`, invites require `MATRIX_TOOLS_ALLOW_INVITES=true`, and room creation requires `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true`. Public room creation also requires `MATRIX_ALLOW_PUBLIC_ROOMS=true`.
+Matrix tools are limited to the current Matrix room by default. Explicit
+cross-room targets require `MATRIX_TOOLS_ALLOW_CROSS_ROOM=true`; redaction and
+invite-like cross-room actions additionally require
+`MATRIX_TOOLS_ALLOW_CROSS_ROOM_DESTRUCTIVE=true`. If `MATRIX_ALLOWED_ROOMS` is
+set, Matrix tools may only target those rooms.
+
+Reaction controls use:
+
+- ✅ approve once
+- ♾️ approve always
+- ❌ deny
+- number reactions for `/model` choices
+
+Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
+
+### Media Limits
+
+Hermes uploads and downloads Matrix images, files, audio, and video through Matrix media APIs. Multiple generated images are sent as one ordered logical batch, preserving captions and thread context across the batch.
+
+By default, Matrix media over 100 MB is rejected before upload/download. Override with:
+
+```bash
+MATRIX_MAX_MEDIA_BYTES=104857600
+```
+
+Inbound media must use Matrix `mxc://` content URIs. Hermes rejects arbitrary
+HTTP(S) media URLs in Matrix events to avoid turning a federated room into an
+unrestricted downloader.
+
+## Synapse Integration Tests
+
+Hermes includes an opt-in Synapse harness for local validation:
+
+```bash
+docker compose -f tests/e2e/matrix_synapse_gateway/docker-compose.yml up -d
+HERMES_MATRIX_SYNAPSE_INTEGRATION=1 \
+  scripts/run_tests.sh -m "integration and matrix_synapse" \
+  tests/e2e/matrix_synapse_gateway/test_gateway.py
+docker compose -f tests/e2e/matrix_synapse_gateway/docker-compose.yml down -v
+```
+
+The harness creates temporary users through Synapse shared-secret registration
+and covers private-room send/receive, named-room invite/join, media
+upload/download, bot response delivery, and startup old-event filtering. E2EE
+smoke coverage is separately marked with `matrix_e2ee` so it can stay opt-in on
+developer machines.
 
 ### Cross-Signing Verification (Recommended)
 
@@ -288,6 +475,11 @@ MATRIX_RECOVERY_KEY=EsT... your recovery key here
 **Where to find it:** In Element, go to **Settings** → **Security & Privacy** → **Encryption** → your recovery key (also called the "Security Key"). This is the key you were asked to save when you first set up cross-signing.
 
 On each startup, if `MATRIX_RECOVERY_KEY` is set, Hermes imports cross-signing keys from the homeserver's secure secret storage and signs the current device. This is idempotent and safe to leave enabled permanently.
+
+If Hermes bootstraps a new Matrix recovery key, it never logs the raw key. Set
+`MATRIX_RECOVERY_KEY_OUTPUT_FILE=/secure/path/matrix-recovery-key.txt` before
+startup to write a generated key once with file mode `0600`; the file is not
+overwritten if it already exists.
 
 :::warning[Deleting the crypto store]
 If you delete `~/.hermes/platforms/matrix/store/crypto.db`, the bot loses its encryption identity. Simply restarting with the same device ID will **not** fully recover — the homeserver still holds one-time keys signed with the old identity key, and peers cannot establish new Olm sessions.
@@ -336,6 +528,7 @@ You can designate a "home room" where the bot sends proactive messages (such as 
 ### Using the Slash Command
 
 Type `/sethome` in any Matrix room where the bot is present. That room becomes the home room.
+If your Matrix client intercepts slash commands, type `!sethome` instead.
 
 ### Manual Configuration
 
@@ -377,13 +570,36 @@ See also: [admin/user slash command split](../../reference/slash-commands.md#per
 To find a Room ID: in Element, go to the room → **Settings** → **Advanced** → the **Internal room ID** is shown there (starts with `!`).
 :::
 
+## Commands in Matrix
+
+Hermes supports the same gateway commands in Matrix that it supports on other
+messaging platforms, including `/commands`, `/model`, `/stop`, `/queue`,
+`/steer`, `/goal`, `/subgoal`, `/background`, `/bg`, `/btw`, `/tasks`, and
+`/yolo`.
+
+Some Matrix clients reserve leading `/` for local client commands and may not
+send unknown slash commands to the room. In that case, use `!` as a Matrix-safe
+alias:
+
+```text
+!commands
+!model
+!model gpt-5.5 --provider openrouter
+!queue continue with the next task
+!stop
+```
+
+Hermes only normalizes `!command` when the command is known to the gateway, a
+registered plugin command, or an installed skill command. Ordinary exclamations
+such as `!important` remain normal chat messages.
+
 ## Troubleshooting
 
 ### Bot is not responding to messages
 
-**Cause**: The bot hasn't joined the room, or `MATRIX_ALLOWED_USERS` doesn't include your User ID.
+**Cause**: The bot hasn't joined the room, `MATRIX_ALLOWED_USERS` doesn't include your User ID, `MATRIX_ALLOWED_ROOMS` doesn't include the room, or a room message did not mention the bot.
 
-**Fix**: Invite the bot to the room — it auto-joins on invite. Verify your User ID is in `MATRIX_ALLOWED_USERS` (use the full `@user:server` format). Restart the gateway.
+**Fix**: Invite the bot to the room — it auto-joins on invite. Verify your User ID is in `MATRIX_ALLOWED_USERS` (use the full `@user:server` format) and the room ID is in `MATRIX_ALLOWED_ROOMS` if that allowlist is configured. In rooms, mention the bot or add the room to `MATRIX_FREE_RESPONSE_ROOMS`. Restart the gateway.
 
 ### Bot joins rooms but silently drops every message (clock skew)
 
@@ -660,6 +876,21 @@ Session continuity is maintained via the `X-Hermes-Session-Id` header. The host'
 **Limitations (v1):** Tool progress messages from the remote agent are not relayed back — the user sees the streamed final response only, not individual tool calls. Dangerous command approval prompts are handled on the host side, not relayed to the Matrix user. These can be addressed in future updates.
 :::
 
+### Bot connects and sends, but ignores inbound messages
+
+**Cause**: Matrix event handlers only fire when sync payloads are dispatched through
+mautrix's `handle_sync()` machinery. A raw `client.sync()` poll that never calls
+`handle_sync()` can leave the adapter connected (send works) while inbound
+messages never reach `_on_room_message`.
+
+**Fix**: Hermes uses an explicit sync loop that calls `client.handle_sync()` on
+both the initial sync and every incremental sync response. This matches the
+diagnosis in upstream issue #7914 and closed PR #37807, but keeps Hermes's own
+background maintenance tasks (joined-room tracking, invite handling, E2EE key
+share) instead of delegating the full lifecycle to `client.start()`. If inbound
+messages still fail after a gateway restart, verify handlers are registered before
+the first sync and check logs for `sync event dispatch error`.
+
 ### Sync issues / bot falls behind
 
 **Cause**: Long-running tool executions can delay the sync loop, or the homeserver is slow.
@@ -678,10 +909,22 @@ Session continuity is maintained via the `X-Hermes-Session-Id` header. The host'
 
 **Fix**: Add your User ID to `MATRIX_ALLOWED_USERS` in `~/.hermes/.env` and restart the gateway. Use the full `@user:server` format.
 
+### Bot ignores an entire room
+
+**Cause**: `MATRIX_ALLOWED_ROOMS` is set and the current room ID is not listed, or the room requires a mention and the message did not mention the bot.
+
+**Fix**: Add the room ID to `MATRIX_ALLOWED_ROOMS`, or remove the room allowlist if this is a personal deployment. To find a Room ID in Element, open room settings and check **Advanced**.
+
+### Bridge messages loop or echo
+
+**Cause**: A bridge/appservice puppet is relaying bot output back as a new user message, or a bridge uses non-standard ghost user IDs.
+
+**Fix**: Keep bridge ghosts out of `MATRIX_ALLOWED_USERS`, add a matching `MATRIX_IGNORE_USER_PATTERNS` entry, and leave `MATRIX_PROCESS_NOTICES=false` unless notices are part of a trusted workflow.
+
 ## Security
 
 :::warning
-Always set `MATRIX_ALLOWED_USERS` to restrict who can interact with the bot. Without it, the gateway denies all users by default as a safety measure. Only add User IDs of people you trust — authorized users have full access to the agent's capabilities, including tool use and system access.
+Always set `MATRIX_ALLOWED_USERS` and, for shared/private deployments, `MATRIX_ALLOWED_ROOMS`. Without them, anyone who can message the bot in a joined room may trigger the agent. Only authorize people and rooms you trust — authorized users have full access to the agent's capabilities, including tool use and system access.
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).

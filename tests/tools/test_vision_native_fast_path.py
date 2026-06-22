@@ -139,6 +139,44 @@ class TestVisionAnalyzeNative:
         assert isinstance(result, dict)
         assert result.get("_multimodal") is True
 
+    def test_oversized_image_resized_under_embed_cap(self, tmp_path):
+        """Regression for the wedged-session incident (May 2026).
+
+        A vision tool-result image is baked into conversation history and
+        re-sent on every subsequent turn.  Anthropic rejects any single
+        base64 image over 5 MB with a 400, and immutable history means the
+        bad bytes can't be cleared by retrying — the session is permanently
+        wedged.  The native fast path must proactively resize down to the
+        embed cap (well under 5 MB) BEFORE embedding, not just at the 20 MB
+        hard ceiling.  Skips if Pillow isn't available (resize is a no-op).
+        """
+        pytest = __import__("pytest")
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed — proactive resize is a no-op")
+
+        from tools.vision_tools import _EMBED_TARGET_BYTES
+
+        # Noisy PNG that base64-encodes to well over 5 MB (won't compress much).
+        big = tmp_path / "big.png"
+        Image.effect_noise((2600, 2600), 80).convert("RGB").save(big, format="PNG")
+        assert big.stat().st_size * 4 // 3 > 5 * 1024 * 1024, "test image not big enough"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(big), "describe")
+        )
+        assert isinstance(result, dict) and result.get("_multimodal") is True
+        url = next(
+            p["image_url"]["url"]
+            for p in result["content"]
+            if p.get("type") == "image_url"
+        )
+        assert len(url) <= _EMBED_TARGET_BYTES, (
+            f"embedded image {len(url) / 1024 / 1024:.1f} MB exceeds embed cap "
+            f"{_EMBED_TARGET_BYTES / 1024 / 1024:.0f} MB — would wedge sessions on Anthropic"
+        )
+
 
 # ─── _handle_vision_analyze fast-path gating ─────────────────────────────────
 

@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
 from typing import TYPE_CHECKING, Dict, List, Optional
 
@@ -121,6 +122,53 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+_OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
+
+
+def _canonical_github_remote(url: str | None) -> str:
+    """Return ``host/owner/repo`` for common GitHub remote URL forms."""
+    if not url:
+        return ""
+    value = url.strip()
+    if value.startswith("git@github.com:"):
+        value = "github.com/" + value[len("git@github.com:"):]
+    elif value.startswith("ssh://git@github.com/"):
+        value = "github.com/" + value[len("ssh://git@github.com/"):]
+    else:
+        parsed = urlparse(value)
+        if parsed.netloc and parsed.path:
+            value = f"{parsed.netloc}{parsed.path}"
+    value = value.strip().rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    return value.lower()
+
+
+def _is_ssh_remote(url: str | None) -> bool:
+    if not url:
+        return False
+    value = url.strip().lower()
+    return value.startswith("git@") or value.startswith("ssh://")
+
+
+def _is_official_ssh_remote(url: str | None) -> bool:
+    return _is_ssh_remote(url) and _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL
+
+
+def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(cwd),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip()
 
 
 def _check_via_rev(local_rev: str) -> Optional[int]:
@@ -146,14 +194,47 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
+    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
+    if _is_official_ssh_remote(origin_url):
+        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+        return _check_via_rev(head_rev) if head_rev else None
+
+    # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
+    # clone the history stops at a single commit, so a plain `git fetch` would
+    # unshallow the repo (dragging in the whole history) and
+    # `rev-list --count HEAD..origin/main` would report a huge bogus "behind"
+    # number (e.g. "12492 commits behind"). Detect shallow up front: fetch with
+    # --depth 1 to preserve the boundary and compare tip SHAs instead of
+    # counting. Full clones (developers, Docker dev images) keep the exact
+    # count path unchanged. Mirrors the desktop fix in apps/desktop/electron/main.cjs.
+    shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
+    is_shallow = shallow == "true"
+
     try:
+        fetch_args = ["git", "fetch", "origin"]
+        if is_shallow:
+            fetch_args += ["--depth", "1"]
+        fetch_args.append("--quiet")
         subprocess.run(
-            ["git", "fetch", "origin", "--quiet"],
+            fetch_args,
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
+
+    if is_shallow:
+        # No history to count across the shallow boundary. `origin/main` may not
+        # be a tracking ref in a `clone --depth 1`, so prefer FETCH_HEAD (just
+        # updated by the fetch above) and fall back to origin/main.
+        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+        target_rev = (
+            _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
+            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir)
+        )
+        if not head_rev or not target_rev:
+            return None
+        return 0 if head_rev == target_rev else UPDATE_AVAILABLE_NO_COUNT
 
     try:
         result = subprocess.run(
@@ -224,6 +305,25 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+
+    # Docker images have no working tree to count commits against — the
+    # published image excludes `.git` (see .dockerignore) and sets no
+    # HERMES_REVISION (that's nix-only). Without this guard the checks below
+    # fall through to `check_via_pypi()`, whose PyPI-version mismatch flag (1)
+    # then gets rendered by the CLI banner and the TUI badge as a phantom
+    # "1 commit behind" — even though no git repo or commit math is involved,
+    # and `hermes update` correctly refuses to run in-place inside the
+    # container anyway. The dashboard's REST `/api/hermes/update/check`
+    # endpoint already short-circuits docker the same way (web_server.py);
+    # mirror that here so the banner/TUI surfaces agree. Returning None makes
+    # both the Rich banner (build_welcome_banner) and the Ink badge
+    # (branding.tsx, guarded on `typeof === 'number' && > 0`) show nothing.
+    try:
+        from hermes_cli.config import detect_install_method
+        if detect_install_method() == "docker":
+            return None
+    except Exception:
+        pass
 
     # Read cache — invalidate if the embedded rev OR installed version has
     # changed since the last check. The version guard matters for pip installs:
@@ -503,6 +603,18 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     enabled_toolsets = enabled_toolsets or []
 
     _, unavailable_toolsets = check_tool_availability(quiet=True)
+    # The availability check walks the GLOBAL toolset registry, so it includes
+    # toolsets that aren't part of this agent's platform set at all (e.g.
+    # `discord`, `feishu_doc` on a CLI session). Those must never surface in the
+    # banner's "Available Tools" — they aren't exposed to the agent. Restrict to
+    # toolsets actually enabled for this agent; a toolset that's enabled but
+    # currently has unmet deps legitimately shows as disabled/lazy below.
+    _enabled_ts = {str(t) for t in enabled_toolsets}
+    if _enabled_ts:
+        unavailable_toolsets = [
+            item for item in unavailable_toolsets
+            if str(item.get("id", item.get("name", ""))) in _enabled_ts
+        ]
     disabled_tools = set()
     # Tools whose toolset has a check_fn are lazy-initialized (e.g. honcho,
     # homeassistant) — they show as unavailable at banner time because the
@@ -621,10 +733,26 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         right_lines.append("")
         right_lines.append(f"[bold {accent}]MCP Servers[/]")
         for srv in mcp_status:
+            status = srv.get("status")
             if srv["connected"]:
                 right_lines.append(
                     f"[dim {dim}]{srv['name']}[/] [{text}]({srv['transport']})[/] "
                     f"[dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
+                )
+            elif srv.get("disabled") or status == "disabled":
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[dim {dim}]— disabled[/]"
+                )
+            elif status == "connecting":
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[yellow]— connecting[/]"
+                )
+            elif status == "configured":
+                right_lines.append(
+                    f"[dim {dim}]{srv['name']}[/] [dim]({srv['transport']})[/] "
+                    f"[dim {dim}]— configured[/]"
                 )
             else:
                 right_lines.append(
@@ -634,10 +762,21 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     right_lines.append("")
     right_lines.append(f"[bold {accent}]Available Skills[/]")
-    skills_by_category = get_available_skills()
-    total_skills = sum(len(s) for s in skills_by_category.values())
+    # The skills catalog is only reachable when the `skills` toolset is enabled
+    # (it exposes skill_view / skill_manage). When it's disabled — e.g. a Blank
+    # Slate install — the agent literally cannot load any skill, so advertising
+    # the on-disk catalog here is misleading. Reflect the real state instead.
+    _skills_enabled = (not _enabled_ts) or ("skills" in _enabled_ts)
+    if _skills_enabled:
+        skills_by_category = get_available_skills()
+        total_skills = sum(len(s) for s in skills_by_category.values())
+    else:
+        skills_by_category = {}
+        total_skills = 0
 
-    if skills_by_category:
+    if not _skills_enabled:
+        right_lines.append(f"[dim {dim}]Skills toolset disabled[/]")
+    elif skills_by_category:
         for category in sorted(skills_by_category.keys()):
             skill_names = sorted(skills_by_category[category])
             if len(skill_names) > 8:

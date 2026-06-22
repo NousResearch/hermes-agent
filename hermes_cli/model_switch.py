@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
 
 from hermes_cli.providers import (
+    ProviderDef,
     custom_provider_slug,
     determine_api_mode,
     get_label,
@@ -44,6 +45,23 @@ from agent.models_dev import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _bare_custom_provider_def(current_base_url: str) -> Optional[ProviderDef]:
+    """ProviderDef for a direct ``model.provider: custom`` endpoint."""
+    base_url = str(current_base_url or "").strip()
+    if not base_url:
+        return None
+    return ProviderDef(
+        id="custom",
+        name="Custom endpoint",
+        transport="openai_chat",
+        api_key_env_vars=(),
+        base_url=base_url,
+        is_aggregator=False,
+        auth_type="api_key",
+        source="model-config",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -281,33 +299,45 @@ class ModelSwitchResult:
 # Flag parsing
 # ---------------------------------------------------------------------------
 
-def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool]:
-    """Parse --provider, --global, and --refresh flags from /model command args.
+def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
+    """Parse --provider, --global, --session, and --refresh flags from /model command args.
 
-    Returns (model_input, explicit_provider, is_global, force_refresh).
+    Returns ``(model_input, explicit_provider, is_global, force_refresh, is_session)``.
+
+    ``is_global`` and ``is_session`` are independent flag presences; the
+    *effective* persistence decision is resolved by
+    :func:`resolve_persist_behavior` so the config-gated default
+    (``model.persist_switch_by_default``) is applied in one place.
 
     Examples::
 
-        "sonnet"                         -> ("sonnet", "", False, False)
-        "sonnet --global"                -> ("sonnet", "", True, False)
-        "sonnet --provider anthropic"    -> ("sonnet", "anthropic", False, False)
-        "--provider my-ollama"           -> ("", "my-ollama", False, False)
-        "--refresh"                      -> ("", "", False, True)
-        "sonnet --provider anthropic --global" -> ("sonnet", "anthropic", True, False)
+        "sonnet"                         -> ("sonnet", "", False, False, False)
+        "sonnet --global"                -> ("sonnet", "", True, False, False)
+        "sonnet --session"               -> ("sonnet", "", False, False, True)
+        "sonnet --provider anthropic"    -> ("sonnet", "anthropic", False, False, False)
+        "--provider my-ollama"           -> ("", "my-ollama", False, False, False)
+        "--refresh"                      -> ("", "", False, True, False)
+        "sonnet --provider anthropic --global" -> ("sonnet", "anthropic", True, False, False)
     """
     is_global = False
     explicit_provider = ""
     force_refresh = False
+    is_session = False
 
     # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
     # A single Unicode dash before a flag keyword becomes "--"
     import re as _re
-    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|refresh)', r'--\1', raw_args)
+    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh)', r'--\1', raw_args)
 
     # Extract --global
     if "--global" in raw_args:
         is_global = True
         raw_args = raw_args.replace("--global", "").strip()
+
+    # Extract --session (explicit session-only; overrides the persist default)
+    if "--session" in raw_args:
+        is_session = True
+        raw_args = raw_args.replace("--session", "").strip()
 
     # Extract --refresh (bust the model picker disk cache before listing)
     if "--refresh" in raw_args:
@@ -327,7 +357,37 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool]:
             i += 1
 
     model_input = " ".join(filtered).strip()
-    return (model_input, explicit_provider, is_global, force_refresh)
+    return (model_input, explicit_provider, is_global, force_refresh, is_session)
+
+
+def resolve_persist_behavior(is_global: bool, is_session: bool) -> bool:
+    """Decide whether a ``/model`` switch should persist to ``config.yaml``.
+
+    Resolution order:
+
+    1. ``--session`` explicitly opts out → ``False`` (this session only).
+    2. ``--global`` explicitly opts in → ``True``.
+    3. Otherwise defer to ``model.persist_switch_by_default`` in
+       ``config.yaml`` (defaults to ``True``, so a plain ``/model <name>``
+       survives across sessions — the behavior users expect).
+
+    The config read is defensive: on a fresh install ``model`` may be a
+    flat string rather than a dict, in which case the built-in default
+    (``True``) applies.
+    """
+    if is_session:
+        return False
+    if is_global:
+        return True
+    try:
+        from hermes_cli.config import load_config
+
+        model_cfg = load_config().get("model")
+        if isinstance(model_cfg, dict):
+            return bool(model_cfg.get("persist_switch_by_default", True))
+    except Exception:
+        pass
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +736,8 @@ def switch_model(
             user_providers,
             custom_providers,
         )
+        if pdef is None and explicit_provider.strip().lower() == "custom":
+            pdef = _bare_custom_provider_def(current_base_url)
         if pdef is None:
             _switch_err = (
                 f"Unknown provider '{explicit_provider}'. "
@@ -699,6 +761,48 @@ def switch_model(
             )
 
         target_provider = pdef.id
+
+        # Guard against silent aggregator hops. A vendor name like bare
+        # "openai" is an alias that resolves to an aggregator ("openrouter").
+        # If the user explicitly asked for that vendor but the aggregator it
+        # routes to has no credentials, do NOT silently switch them onto an
+        # unauthed endpoint (the classic HTTP 401 "Missing Authentication
+        # header"). Point them at the real direct provider instead.
+        from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
+        from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
+        _explicit_norm = explicit_provider.strip().lower()
+        _alias_target = _PROVIDER_ALIAS_TABLE.get(_explicit_norm)
+        if (
+            _alias_target
+            and _alias_target == target_provider
+            and target_provider != _explicit_norm
+            and target_provider in _AGG_PROVIDERS
+        ):
+            _authed = get_authenticated_provider_slugs(
+                current_provider=current_provider,
+                user_providers=user_providers,
+                custom_providers=custom_providers,
+            )
+            if target_provider not in _authed:
+                _suggestions = [
+                    s for s in _authed
+                    if s.startswith(_explicit_norm) and s != _explicit_norm
+                ]
+                _hint = (
+                    f" Did you mean: {', '.join(_suggestions)}?"
+                    if _suggestions else ""
+                )
+                return ModelSwitchResult(
+                    success=False,
+                    target_provider=target_provider,
+                    provider_label=pdef.name,
+                    is_global=is_global,
+                    error_message=(
+                        f"Provider '{_explicit_norm}' is an alias that routes "
+                        f"through {get_label(target_provider)}, which "
+                        f"has no credentials configured.{_hint}"
+                    ),
+                )
 
         # If no model specified, try auto-detect from endpoint
         if not new_model:
@@ -839,6 +943,8 @@ def switch_model(
 
     provider_changed = target_provider != current_provider
     provider_label = get_label(target_provider)
+    if target_provider == "custom" and current_base_url:
+        provider_label = "Custom endpoint"
     if target_provider.startswith("custom:"):
         custom_pdef = resolve_provider_full(
             target_provider,
@@ -854,25 +960,66 @@ def switch_model(
     api_mode = ""
 
     if provider_changed or explicit_provider:
-        try:
-            runtime = resolve_runtime_provider(
-                requested=target_provider,
-                target_model=new_model,
-            )
-            api_key = runtime.get("api_key", "")
-            base_url = runtime.get("base_url", "")
-            api_mode = runtime.get("api_mode", "")
-        except Exception as e:
-            return ModelSwitchResult(
-                success=False,
-                target_provider=target_provider,
-                provider_label=provider_label,
-                is_global=is_global,
-                error_message=(
-                    f"Could not resolve credentials for provider "
-                    f"'{provider_label}': {e}"
-                ),
-            )
+        import os
+        # User-config providers (providers.<name> in config.yaml) carry their
+        # own base_url + transport + key reference. resolve_runtime_provider()
+        # resolves by provider NAME and doesn't know user-config slugs (e.g. a
+        # block named "openai"), so it would re-resolve from scratch and fail
+        # or hop to an aggregator. Use the pdef's endpoint directly instead.
+        _user_pdef = None
+        if explicit_provider and user_providers:
+            from hermes_cli.providers import resolve_user_provider as _ruser
+            _user_pdef = _ruser(explicit_provider.strip().lower(), user_providers)
+            if _user_pdef is None:
+                _user_pdef = _ruser(target_provider, user_providers)
+        if _user_pdef is not None and _user_pdef.base_url:
+            _ucfg = (user_providers or {}).get(explicit_provider.strip().lower()) \
+                or (user_providers or {}).get(target_provider) or {}
+            _ukey = str(_ucfg.get("api_key", "") or "").strip()
+            if _ukey.startswith("${") and _ukey.endswith("}"):
+                _ukey = os.environ.get(_ukey[2:-1], "").strip()
+            if not _ukey:
+                _kenv = str(_ucfg.get("key_env", "") or "").strip()
+                if _kenv:
+                    _ukey = os.environ.get(_kenv, "").strip()
+            try:
+                runtime = resolve_runtime_provider(
+                    requested=target_provider,
+                    explicit_api_key=_ukey or None,
+                    explicit_base_url=_user_pdef.base_url,
+                    target_model=new_model,
+                )
+                api_key = runtime.get("api_key", "") or _ukey
+                base_url = runtime.get("base_url", "") or _user_pdef.base_url
+                api_mode = runtime.get("api_mode", "")
+            except Exception:
+                api_key = _ukey
+                base_url = _user_pdef.base_url
+                api_mode = ""
+        elif target_provider == "custom" and current_base_url:
+            api_key = current_api_key
+            base_url = current_base_url
+            api_mode = determine_api_mode(target_provider, base_url)
+        else:
+            try:
+                runtime = resolve_runtime_provider(
+                    requested=target_provider,
+                    target_model=new_model,
+                )
+                api_key = runtime.get("api_key", "")
+                base_url = runtime.get("base_url", "")
+                api_mode = runtime.get("api_mode", "")
+            except Exception as e:
+                return ModelSwitchResult(
+                    success=False,
+                    target_provider=target_provider,
+                    provider_label=provider_label,
+                    is_global=is_global,
+                    error_message=(
+                        f"Could not resolve credentials for provider "
+                        f"'{provider_label}': {e}"
+                    ),
+                )
     else:
         try:
             runtime = resolve_runtime_provider(
@@ -1038,13 +1185,71 @@ def switch_model(
 # Authenticated providers listing (for /model no-args display)
 # ---------------------------------------------------------------------------
 
+# Process-level guard so the picker prewarm thread is spawned at most once per
+# process — mirrors run_agent's _openrouter_prewarm_done. Without a guard a
+# long-lived process (or repeated triggers) would leak one OS thread per call.
+import threading as _threading  # noqa: E402
+
+_picker_prewarm_done = _threading.Event()
+
+
+def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
+    """Warm the provider-models disk cache in a background daemon thread.
+
+    The no-args ``/model`` picker calls ``list_authenticated_providers()``,
+    which fetches each authenticated provider's live ``/v1/models`` list on a
+    cold/stale cache. Those fetches are independent HTTP round-trips but run
+    serially, so the first ``/model`` open in a session (or any open after the
+    1h cache TTL expires) blocks ~1-2s on the user's critical path.
+
+    This pre-warms that exact path off-thread during idle session time: it
+    runs ``list_authenticated_providers()`` once, which populates
+    ``provider_models_cache.json`` for every authed provider. By the time the
+    user types ``/model``, the picker hits the warm disk cache and renders in
+    ~100ms.
+
+    Fire-and-forget. Process-level Event guard ensures it runs at most once.
+    Fully exception-isolated — a slow or offline provider can never affect the
+    session. Returns the spawned thread (for tests) or None if already warmed.
+    """
+    if _picker_prewarm_done.is_set():
+        return None
+    _picker_prewarm_done.set()
+
+    def _warm() -> None:
+        try:
+            from hermes_cli.inventory import load_picker_context
+
+            ctx = load_picker_context()
+            # Calling this is what populates cached_provider_model_ids() ->
+            # provider_models_cache.json for each authed provider. We discard
+            # the result; the side effect (warm disk cache) is the point.
+            list_authenticated_providers(
+                current_provider=ctx.current_provider,
+                current_base_url=ctx.current_base_url,
+                current_model=ctx.current_model,
+                user_providers=ctx.user_providers,
+                custom_providers=ctx.custom_providers,
+            )
+        except Exception:
+            # Best-effort warmup — never surface errors into the session.
+            logger.debug("picker cache prewarm failed", exc_info=True)
+
+    t = _threading.Thread(target=_warm, daemon=True, name="picker-cache-prewarm")
+    t.start()
+    return t
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
-    max_models: int = 8,
+    *,
+    force_fresh_nous_tier: bool = False,
+    max_models: int | None = None,
     current_model: str = "",
+    refresh: bool = False,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1062,6 +1267,15 @@ def list_authenticated_providers(
       - source: str — "built-in", "models.dev", "user-config"
 
     Only includes providers that have API keys set or are user-defined endpoints.
+    ``force_fresh_nous_tier`` bypasses the short Nous tier cache for explicit
+    account-sensitive flows. UI picker opens should leave it false so they do
+    not block on fresh Portal/account checks every time.
+
+    ``refresh`` busts the per-provider model-id disk cache
+    (``provider_models_cache.json``) up front so every row re-fetches its
+    live catalog. Use for an explicit user-triggered "refresh models" action
+    (e.g. the desktop picker's refresh control); leave false for normal picker
+    opens so they stay snappy on the 1h cache.
     """
     import os
     from agent.models_dev import (
@@ -1073,8 +1287,20 @@ def list_authenticated_providers(
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
-        get_curated_nous_model_ids,
+        clear_provider_models_cache, get_curated_nous_model_ids,
     )
+
+    # Explicit refresh: drop every provider's cached model-id list so the
+    # cached_provider_model_ids() calls below all re-fetch live. Without this
+    # a stale 1h cache can fall back to the curated static list when its live
+    # fetch later fails, silently dropping live-only models (e.g. OpenCode
+    # Zen's free tier) the user had seen before.
+    if refresh:
+        try:
+            clear_provider_models_cache()
+        except Exception:
+            pass
+
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
@@ -1195,7 +1421,24 @@ def list_authenticated_providers(
         curated["lmstudio"] = live
 
     # --- 1. Check Hermes-mapped providers ---
+    from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
+    from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
+        # Skip vendor names that are merely aliases routing through an
+        # aggregator (e.g. bare "openai" → "openrouter"). These are NOT
+        # directly-routable providers: emitting them as their own picker
+        # row produces a phantom entry that, when selected, resolves via
+        # resolve_provider_full() to the aggregator (OpenRouter) — silently
+        # switching a user off their real provider onto an endpoint they
+        # may have no key for (HTTP 401). The user's real provider (e.g.
+        # openai-api, or a providers.openai config row) covers this vendor.
+        _alias_target = _PROVIDER_ALIAS_TABLE.get(hermes_id)
+        if (
+            _alias_target
+            and _alias_target != hermes_id
+            and _alias_target in _AGG_PROVIDERS
+        ):
+            continue
         # Skip aliases that map to the same models.dev provider (e.g.
         # kimi-coding and kimi-coding-cn both → kimi-for-coding).
         # The first one with valid credentials wins (#10526).
@@ -1243,7 +1486,7 @@ def list_authenticated_providers(
             if hermes_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_id, model_ids)
         total = len(model_ids)
-        top = model_ids[:max_models]
+        top = model_ids[:max_models] if max_models is not None else model_ids
 
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
@@ -1359,6 +1602,43 @@ def list_authenticated_providers(
                 model_ids = _ids if _ids else (curated.get(hermes_slug, []) or curated.get(pid, []))
             except Exception:
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+        elif hermes_slug == "nous":
+            # Nous serves a large live /v1/models catalog (vendor-prefixed
+            # models from many providers, returned alphabetically). The
+            # `hermes model` picker deliberately shows ONLY the curated agentic
+            # list — augmented with the Portal's free/paid recommendations so
+            # newly-launched models surface without a CLI release — in curated
+            # order. Mirror that exactly (see _model_flow_nous in main.py) so
+            # the GUI picker matches the CLI. Was: falling through to
+            # cached_provider_model_ids, which dumped the full alphabetical
+            # catalog; then: curated-only, which dropped the 4 Portal
+            # recommendations (e.g. stepfun/step-3.7-flash:free).
+            model_ids = curated.get("nous", [])
+            try:
+                from hermes_cli.models import (
+                    get_pricing_for_provider as _nous_pricing,
+                    check_nous_free_tier as _nous_free,
+                    union_with_portal_free_recommendations as _union_free,
+                    union_with_portal_paid_recommendations as _union_paid,
+                )
+                from hermes_cli.auth import get_provider_auth_state as _nous_state
+
+                _pricing = _nous_pricing("nous") or {}
+                _portal = ""
+                try:
+                    _st = _nous_state("nous") or {}
+                    _portal = _st.get("portal_base_url", "") or ""
+                except Exception:
+                    _portal = ""
+                if _nous_free(force_fresh=force_fresh_nous_tier):
+                    model_ids, _ = _union_free(model_ids, _pricing, _portal)
+                else:
+                    model_ids, _ = _union_paid(model_ids, _pricing, _portal)
+            except Exception:
+                # Portal recommendation fetch failed — fall back to the
+                # curated list alone (still correct, just may lag newly
+                # launched models, exactly like an offline CLI run).
+                pass
         else:
             # Unified pathway — see Section 1 rationale. Fall back to the
             # curated dict (with models.dev merge for preferred providers)
@@ -1369,7 +1649,7 @@ def list_authenticated_providers(
                 if hermes_slug in _MODELS_DEV_PREFERRED:
                     model_ids = _merge_with_models_dev(hermes_slug, model_ids)
         total = len(model_ids)
-        top = model_ids[:max_models]
+        top = model_ids[:max_models] if max_models is not None else model_ids
 
         results.append({
             "slug": hermes_slug,
@@ -1444,7 +1724,7 @@ def list_authenticated_providers(
             if not _cp_model_ids:
                 _cp_model_ids = curated.get(_cp.slug, [])
         _cp_total = len(_cp_model_ids)
-        _cp_top = _cp_model_ids[:max_models]
+        _cp_top = _cp_model_ids[:max_models] if max_models is not None else _cp_model_ids
 
         results.append({
             "slug": _cp.slug,
@@ -1515,10 +1795,15 @@ def list_authenticated_providers(
                     if fb:
                         models_list = list(fb)
 
-            # Prefer the endpoint's live /models list when credentials are
-            # available, unless the provider explicitly opts out via
-            # discover_models: false (e.g. dedicated endpoints that expose
-            # the entire aggregator catalog via /models).
+            # Prefer the endpoint's live /models list when discoverable,
+            # unless the provider explicitly opts out via discover_models: false.
+            # Policy mirrors Section 4's should_probe logic:
+            # - With an api_key: always probe (user opted into the endpoint).
+            # - Without an api_key but with explicit models: skip — the user
+            #   is narrowing a public endpoint to a specific subset.
+            # - Without an api_key AND no explicit models: probe anyway so
+            #   bare-endpoint providers (local llama.cpp / Ollama servers)
+            #   still show their full model catalog.
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
@@ -1526,7 +1811,11 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
-            if api_url and api_key and discover:
+            has_explicit_models = bool(models_list)
+            should_probe = bool(api_url) and discover and (
+                bool(api_key) or not has_explicit_models
+            )
+            if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
@@ -1553,6 +1842,43 @@ def list_authenticated_providers(
             )
             if _pair[0] and _pair[1]:
                 _section3_emitted_pairs.add(_pair)
+
+    # --- 3b. Active bare custom endpoint from model config ---
+    # A config can still use the direct one-off form:
+    #   model.provider: custom
+    #   model.base_url: https://some-openai-compatible/v1
+    # In that shape there is no named providers:/custom_providers row for the
+    # picker to render, but the gateway only passes this current model slice to
+    # list_authenticated_providers(). Surface the active endpoint explicitly so
+    # /model does not look like it ignored config.yaml.
+    _current_provider_norm = str(current_provider or "").strip().lower()
+    if (
+        _current_provider_norm == "custom"
+        and current_base_url
+        and "custom" not in seen_slugs
+        and not any(
+            isinstance(_cp, dict)
+            and str(
+                _cp.get("base_url", "")
+                or _cp.get("url", "")
+                or _cp.get("api", "")
+            ).strip().rstrip("/").lower()
+            == str(current_base_url).strip().rstrip("/").lower()
+            for _cp in (custom_providers or [])
+        )
+    ):
+        _models = [current_model] if current_model else []
+        results.append({
+            "slug": "custom",
+            "name": "Custom endpoint",
+            "is_current": True,
+            "is_user_defined": True,
+            "models": _models[:max_models] if max_models is not None else _models,
+            "total_models": len(_models),
+            "source": "model-config",
+            "api_url": str(current_base_url).strip().rstrip("/"),
+        })
+        seen_slugs.add("custom")
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
@@ -1601,6 +1927,13 @@ def list_authenticated_providers(
                 else (f"env:{key_env}" if key_env else "")
             )
 
+            # Read discover_models from the entry (same semantics as
+            # section 3: true by default, set false to keep the explicit
+            # ``models:`` list instead of replacing it with live /models).
+            discover = entry.get("discover_models", True)
+            if isinstance(discover, str):
+                discover = discover.lower() not in {"false", "no", "0"}
+
             group_key = (api_url, credential_identity, api_mode)
             if group_key not in groups:
                 # Strip per-model suffix so "Ollama — GLM 5.1" becomes
@@ -1621,9 +1954,15 @@ def list_authenticated_providers(
                     "api_url": api_url,
                     "api_key": api_key,
                     "models": [],
+                    "discover_models": discover,
                 }
-            elif api_key and not groups[group_key].get("api_key"):
-                groups[group_key]["api_key"] = api_key
+            else:
+                if api_key and not groups[group_key].get("api_key"):
+                    groups[group_key]["api_key"] = api_key
+                # If any entry in this group opts out of discovery,
+                # honour that for the whole grouped row.
+                if not discover:
+                    groups[group_key]["discover_models"] = False
 
             # The singular ``model:`` field only holds the currently
             # active model. Hermes's own writer (main.py::_save_custom_provider)
@@ -1712,7 +2051,16 @@ def list_authenticated_providers(
             # - Without an api_key AND no explicit models, fall through to
             #   live discovery so bare-endpoint custom providers (local
             #   llama.cpp / Ollama servers) still appear populated.
-            should_probe = bool(api_url) and (bool(api_key) or not grp["models"])
+            # - When discover_models: false is set, skip live discovery and
+            #   keep the explicit ``models:`` list regardless of whether an
+            #   api_key is present. This supports endpoints that expose a
+            #   full aggregator catalog via /models but only serve a subset
+            #   (parity with section 3's user ``providers:`` behaviour).
+            should_probe = (
+                bool(api_url)
+                and (bool(api_key) or not grp["models"])
+                and grp.get("discover_models", True)
+            )
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models
@@ -1752,7 +2100,7 @@ def list_picker_providers(
     current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
-    max_models: int = 8,
+    max_models: int | None = None,
     current_model: str = "",
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
@@ -1795,7 +2143,7 @@ def list_picker_providers(
             except Exception:
                 live_ids = list(p.get("models", []))
             p = dict(p)
-            p["models"] = live_ids[:max_models]
+            p["models"] = live_ids[:max_models] if max_models is not None else live_ids
             p["total_models"] = len(live_ids)
 
         has_models = bool(p.get("models"))

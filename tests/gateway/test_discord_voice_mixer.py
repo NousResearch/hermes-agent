@@ -51,6 +51,11 @@ class TestVoiceMixerCore:
         # discord.py sends raw PCM when is_opus() is False.
         assert vm.VoiceMixer().is_opus() is False
 
+    def test_isinstance_audio_source(self):
+        # VoiceMixer must pass discord.py's isinstance guard in VoiceClient.play().
+        import discord
+        assert isinstance(vm.VoiceMixer(), discord.AudioSource)
+
     def test_ambient_loops_and_is_quiet(self):
         mx = vm.VoiceMixer(ambient_gain=0.2)
         amb = vm.synth_ambient_pcm(seconds=0.5)

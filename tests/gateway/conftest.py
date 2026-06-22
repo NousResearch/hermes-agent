@@ -110,6 +110,11 @@ def _ensure_discord_mock() -> None:
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.Interaction = object
     discord_mod.Message = type("Message", (), {})
+    discord_mod.AudioSource = type("AudioSource", (), {
+        "read": lambda self: b"",
+        "is_opus": lambda self: False,
+        "cleanup": lambda self: None,
+    })
 
     # Embed: accept the kwargs production code / tests use
     # (title, description, color). MagicMock auto-attributes work too,

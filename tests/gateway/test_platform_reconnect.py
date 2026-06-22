@@ -150,6 +150,22 @@ class TestStartupPlatformIsolation:
         with pytest.raises(TimeoutError, match="telegram connect timed out"):
             await runner._connect_adapter_with_timeout(adapter, Platform.TELEGRAM)
 
+    @pytest.mark.asyncio
+    async def test_adapter_connect_timeout_can_extend_global_timeout(self, monkeypatch):
+        """Slow-starting adapters can request a longer startup window."""
+        runner = _make_runner()
+        adapter = StubAdapter()
+        adapter.connect_timeout_seconds = 0.1
+
+        async def slow_success():
+            await asyncio.sleep(0.01)
+            return True
+
+        adapter.connect = slow_success
+        monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "0.001")
+
+        assert await runner._connect_adapter_with_timeout(adapter, Platform.TELEGRAM) is True
+
 
 class TestStartupFailureQueuing:
     """Verify that failed platforms are queued during startup."""
@@ -491,6 +507,43 @@ class TestPlatformReconnectWatcher:
         mock_create.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_watcher_wakes_when_runtime_failure_queued_while_idle(self):
+        """A runtime crash should not wait for the idle sleep window."""
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        platform_config = PlatformConfig(enabled=True, token="test")
+        adapter = StubAdapter(succeed=True)
+        real_sleep = asyncio.sleep
+        queued = False
+
+        async def fake_sleep(_seconds):
+            nonlocal queued
+            # call 1: initial watcher startup delay.
+            # call 2: first idle tick after observing an empty queue.
+            if not queued and fake_sleep.calls == 1:
+                runner._failed_platforms[Platform.TELEGRAM] = {
+                    "config": platform_config,
+                    "attempts": 0,
+                    "next_retry": time.monotonic() - 1,
+                }
+                queued = True
+            fake_sleep.calls += 1
+            if fake_sleep.calls > 2 and not runner._failed_platforms:
+                runner._running = False
+            await real_sleep(0)
+
+        fake_sleep.calls = 0
+
+        with patch.object(runner, "_create_adapter", return_value=adapter) as mock_create:
+            with patch("gateway.run.build_channel_directory", create=True):
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+        mock_create.assert_called_once_with(Platform.TELEGRAM, platform_config)
+        assert Platform.TELEGRAM not in runner._failed_platforms
+        assert runner.adapters[Platform.TELEGRAM] is adapter
+
+    @pytest.mark.asyncio
     async def test_adapter_create_returns_none(self):
         """If _create_adapter returns None, remove from queue (missing deps)."""
         runner = _make_runner()
@@ -543,6 +596,24 @@ class TestRuntimeDisconnectQueuing:
 
         assert Platform.TELEGRAM in runner._failed_platforms
         assert runner._failed_platforms[Platform.TELEGRAM]["attempts"] == 0
+
+    @pytest.mark.asyncio
+    async def test_retryable_runtime_error_reconnects_immediately(self):
+        """Runtime crashes should not wait for the startup retry delay."""
+        runner = _make_runner()
+        runner.stop = AsyncMock()
+
+        adapter = StubAdapter(succeed=True)
+        adapter._set_fatal_error("sidecar_crashed", "bridge exited", retryable=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        before = time.monotonic()
+        await runner._handle_adapter_fatal_error(adapter)
+        after = time.monotonic()
+
+        info = runner._failed_platforms[Platform.TELEGRAM]
+        assert info["attempts"] == 0
+        assert before <= info["next_retry"] <= after
 
     @pytest.mark.asyncio
     async def test_nonretryable_runtime_error_not_queued(self):
@@ -765,4 +836,3 @@ class TestPlatformSlashCommand:
         runner = _make_runner()
         out = await runner._handle_platform_command(self._make_event("/platform"))
         assert "Gateway platforms" in out
-

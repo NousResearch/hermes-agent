@@ -93,9 +93,12 @@ _PHOTON_RETRYABLE_PATTERNS = (
     "upstream connect error",
     "upstream unavailable",
     "connection dropped",
+    "catchupevents",
+    "deadline exceeded",
     "reset reason: overflow",
     "upstream_overflow",
     "upstream_unavailable",
+    "upstream_transient",
 )
 _PHOTON_PERMANENT_ERROR_PATTERNS = (
     "auth_failed",
@@ -103,6 +106,8 @@ _PHOTON_PERMANENT_ERROR_PATTERNS = (
     "invalid credentials",
     "permission_denied",
     "permission denied",
+    "target_not_allowed",
+    "target not allowed",
 )
 
 # Minimum seconds between typing-indicator calls for the same chat.
@@ -147,6 +152,13 @@ class PhotonSidecarError(RuntimeError):
 def _coerce_port(value: Any, default: int) -> int:
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return default
 
@@ -257,6 +269,19 @@ class PhotonAdapter(BasePlatformAdapter):
         self._autostart_sidecar = str(
             os.getenv("PHOTON_SIDECAR_AUTOSTART", "true")
         ).lower() not in ("0", "false", "no")
+        self._sidecar_health_interval = max(
+            0.0,
+            _coerce_float(
+                os.getenv("PHOTON_SIDECAR_HEALTH_INTERVAL_SECONDS"), 30.0
+            ),
+        )
+        self._sidecar_start_timeout = max(
+            5.0,
+            _coerce_float(
+                os.getenv("PHOTON_SIDECAR_START_TIMEOUT_SECONDS"), 55.0
+            ),
+        )
+        self.connect_timeout_seconds = self._sidecar_start_timeout + 5.0
         self._node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node") or "node"
 
         # With markdown on, format_message preserves fences and the sidecar's
@@ -267,6 +292,7 @@ class PhotonAdapter(BasePlatformAdapter):
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._sidecar_supervisor_task: Optional[asyncio.Task] = None
         self._inbound_task: Optional[asyncio.Task] = None
+        self._sidecar_health_task: Optional[asyncio.Task] = None
         self._inbound_running = False
         self._http_client: Optional["httpx.AsyncClient"] = None
         # Lightweight in-memory dedup. The gRPC stream is at-least-once, so we
@@ -402,6 +428,9 @@ class PhotonAdapter(BasePlatformAdapter):
         self._inbound_task = asyncio.get_event_loop().create_task(
             self._inbound_loop()
         )
+        self._sidecar_health_task = asyncio.get_event_loop().create_task(
+            self._monitor_sidecar_health()
+        )
 
         self._mark_connected()
         logger.info(
@@ -412,6 +441,17 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._inbound_running = False
+        if self._sidecar_health_task is not None:
+            task = self._sidecar_health_task
+            self._sidecar_health_task = None
+            task.cancel()
+            if task is not asyncio.current_task():
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
         if self._inbound_task is not None:
             self._inbound_task.cancel()
             try:
@@ -471,6 +511,47 @@ class PhotonAdapter(BasePlatformAdapter):
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
+
+    async def _monitor_sidecar_health(self) -> None:
+        """Promote a degraded upstream Photon stream into gateway reconnect.
+
+        The sidecar can keep its local HTTP server alive while spectrum-ts is
+        repeatedly failing to maintain the upstream message stream. Polling
+        ``/healthz`` keeps that state from being a silent inbound outage.
+        """
+        while self._inbound_running:
+            await asyncio.sleep(self._sidecar_health_interval)
+            if not self._inbound_running:
+                break
+            try:
+                data = await self._sidecar_call("/healthz", {})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("[photon] sidecar health check failed: %s", exc)
+                continue
+            stream = data.get("stream") if isinstance(data, dict) else None
+            if not isinstance(stream, dict) or stream.get("ok") is not False:
+                continue
+            state = str(stream.get("state") or "unknown")
+            degraded_for_ms = stream.get("degradedForMs")
+            last_issue = str(stream.get("lastIssue") or "unknown stream issue")
+            message = (
+                "Photon upstream stream degraded"
+                f" (state={state}, degradedForMs={degraded_for_ms}): "
+                f"{last_issue}"
+            )
+            logger.error("[photon] %s", message)
+            self._set_fatal_error(
+                "UPSTREAM_STREAM_DEGRADED",
+                message,
+                retryable=True,
+            )
+            try:
+                await self._notify_fatal_error()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("[photon] fatal-error notification failed: %s", exc)
+            break
 
     async def _on_inbound_line(self, line: str) -> None:
         try:
@@ -849,8 +930,10 @@ class PhotonAdapter(BasePlatformAdapter):
             self._supervise_sidecar(self._sidecar_proc)
         )
 
-        # Wait for /healthz to come up — give it up to 15s on cold start.
-        deadline = time.time() + 15.0
+        # Wait for /healthz to come up. Spectrum startup can be slow after
+        # upstream auth/stream turbulence; connect_timeout_seconds tells the
+        # gateway to give this adapter enough room before queueing reconnect.
+        deadline = time.time() + self._sidecar_start_timeout
         last_err: Optional[Exception] = None
         async with httpx.AsyncClient(timeout=2.0) as client:
             while time.time() < deadline:
@@ -870,7 +953,8 @@ class PhotonAdapter(BasePlatformAdapter):
                     last_err = e
                 await asyncio.sleep(0.2)
         raise RuntimeError(
-            f"Photon sidecar did not become ready within 15s: {last_err}"
+            "Photon sidecar did not become ready within "
+            f"{self._sidecar_start_timeout:.1f}s: {last_err}"
         )
 
     async def _supervise_sidecar(self, proc: subprocess.Popen) -> None:
@@ -1353,7 +1437,18 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             data = await self._sidecar_call("/send", body)
         except PhotonSidecarError as e:
-            return SendResult(success=False, error=str(e), retryable=e.retryable)
+            return SendResult(
+                success=False,
+                error=str(e),
+                retryable=e.retryable,
+                error_kind=(
+                    "transient"
+                    if e.retryable
+                    else "forbidden"
+                    if e.code == "target_not_allowed"
+                    else "unknown"
+                ),
+            )
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
@@ -1404,7 +1499,18 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             data = await self._sidecar_call("/send-attachment", body)
         except PhotonSidecarError as e:
-            return SendResult(success=False, error=str(e), retryable=e.retryable)
+            return SendResult(
+                success=False,
+                error=str(e),
+                retryable=e.retryable,
+                error_kind=(
+                    "transient"
+                    if e.retryable
+                    else "forbidden"
+                    if e.code == "target_not_allowed"
+                    else "unknown"
+                ),
+            )
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
@@ -1424,25 +1530,32 @@ class PhotonAdapter(BasePlatformAdapter):
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, json=body, headers=headers)
         if resp.status_code != 200:
+            error_text = resp.text[:200]
+            code = None
+            retryable = False
             try:
                 data = resp.json() or {}
+                if isinstance(data, dict):
+                    error_text = str(data.get("error") or error_text)
+                    code = data.get("code")
+                    retryable = bool(data.get("retryable"))
             except Exception:
-                data = {}
-            if isinstance(data, dict) and data.get("error"):
-                raise PhotonSidecarError(
-                    path,
-                    resp.status_code,
-                    str(data.get("error")),
-                    code=data.get("code"),
-                    retryable=bool(data.get("retryable")),
-                )
-            raise RuntimeError(
-                f"Photon sidecar {path} returned {resp.status_code}: {resp.text[:200]}"
+                pass
+            raise PhotonSidecarError(
+                path,
+                resp.status_code,
+                error_text,
+                code=code,
+                retryable=retryable,
             )
         data = resp.json() or {}
         if not data.get("ok"):
-            raise RuntimeError(
-                f"Photon sidecar {path} reported error: {data.get('error')}"
+            raise PhotonSidecarError(
+                path,
+                resp.status_code,
+                str(data.get("error") or "sidecar reported failure"),
+                code=data.get("code"),
+                retryable=bool(data.get("retryable")),
             )
         return data
 
@@ -1571,6 +1684,65 @@ async def _standalone_send(
         }
     base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
     headers = {"X-Hermes-Sidecar-Token": token}
+
+    def _standalone_retryable_error(text: str) -> bool:
+        return any(
+            pat in (text or "").lower() for pat in _PHOTON_RETRYABLE_PATTERNS
+        )
+
+    def _standalone_exception_text(exc: Exception) -> str:
+        return str(exc) or exc.__class__.__name__
+
+    async def _post_with_retry(
+        client: "httpx.AsyncClient",
+        path: str,
+        body: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        last_error = ""
+        for attempt in range(1, 4):
+            retryable = False
+            try:
+                resp = await client.post(f"{base}{path}", json=body, headers=headers)
+                if resp.status_code != 200:
+                    try:
+                        data = resp.json() or {}
+                    except Exception:
+                        data = {}
+                    last_error = str(
+                        data.get("error")
+                        or f"sidecar returned {resp.status_code}: {resp.text[:200]}"
+                    )
+                    retryable = bool(data.get("retryable")) or _standalone_retryable_error(
+                        last_error
+                    )
+                else:
+                    data = resp.json() or {}
+                    if data.get("ok"):
+                        return data
+                    last_error = str(data.get("error") or "sidecar reported failure")
+                    retryable = bool(data.get("retryable")) or _standalone_retryable_error(
+                        last_error
+                    )
+            except Exception as exc:
+                last_error = (
+                    "Photon standalone send failed: "
+                    f"{_standalone_exception_text(exc)}"
+                )
+                retryable = _standalone_retryable_error(last_error)
+
+            if attempt >= 3 or not retryable:
+                break
+            delay = 5 * attempt
+            logger.warning(
+                "[photon] standalone send failed (attempt %d/3, retrying in %ds): %s",
+                attempt,
+                delay,
+                last_error,
+            )
+            await asyncio.sleep(delay)
+
+        return {"error": last_error or "sidecar reported failure"}
+
     last_message_id: Optional[str] = None
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1582,14 +1754,9 @@ async def _standalone_send(
                 }
                 if _markdown_enabled():
                     send_body["format"] = "markdown"
-                resp = await client.post(
-                    f"{base}/send", json=send_body, headers=headers,
-                )
-                if resp.status_code != 200:
-                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
-                data = resp.json() or {}
-                if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
+                data = await _post_with_retry(client, "/send", send_body)
+                if data.get("error"):
+                    return data
                 last_message_id = data.get("messageId")
 
             # 2. Each attachment as a separate /send-attachment call.
@@ -1610,14 +1777,9 @@ async def _standalone_send(
                 }
                 if guessed:
                     att_body["mimeType"] = guessed
-                resp = await client.post(
-                    f"{base}/send-attachment", json=att_body, headers=headers,
-                )
-                if resp.status_code != 200:
-                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
-                data = resp.json() or {}
-                if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
+                data = await _post_with_retry(client, "/send-attachment", att_body)
+                if data.get("error"):
+                    return data
                 last_message_id = data.get("messageId") or last_message_id
 
         return {"success": True, "message_id": last_message_id}

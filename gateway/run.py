@@ -3033,6 +3033,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _connect_adapter_with_timeout(self, adapter, platform) -> bool:
         """Connect an adapter without allowing one platform to block others."""
         timeout = self._platform_connect_timeout_secs()
+        adapter_timeout = getattr(adapter, "connect_timeout_seconds", None)
+        if timeout > 0 and adapter_timeout is not None:
+            try:
+                timeout = max(timeout, float(adapter_timeout))
+            except (TypeError, ValueError):
+                pass
         if timeout <= 0:
             return await adapter.connect()
         try:
@@ -3494,7 +3500,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._failed_platforms[adapter.platform] = {
                     "config": platform_config,
                     "attempts": 0,
-                    "next_retry": time.monotonic() + 30,
+                    "next_retry": time.monotonic(),
                 }
                 logger.info(
                     "%s queued for background reconnection",
@@ -6361,8 +6367,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for _ in range(30):
                     if not self._running:
                         return
+                    if self._failed_platforms:
+                        break
                     await asyncio.sleep(1)
-                continue
+                if not self._failed_platforms:
+                    continue
 
             now = time.monotonic()
             for platform in list(self._failed_platforms.keys()):

@@ -80,6 +80,110 @@ const E164_RE = /^\+\d{6,}$/;
 const MAX_KNOWN_SPACES = 2048;
 const MAX_KNOWN_MESSAGES = 1024;
 const MAX_REACTION_HANDLES = 512;
+const STREAM_DEGRADED_RESTART_MS =
+  Number(process.env.PHOTON_STREAM_DEGRADED_RESTART_MS) || 90 * 1000;
+const STREAM_INTERRUPTED_DEGRADE_COUNT =
+  Number(process.env.PHOTON_STREAM_INTERRUPTED_DEGRADE_COUNT) || 3;
+
+const streamHealth = {
+  state: "starting",
+  degradedSince: null,
+  lastHealthyAt: null,
+  lastIssueAt: null,
+  lastIssue: null,
+  issueCount: 0,
+};
+let streamRestartTimer = null;
+
+function streamHealthSnapshot() {
+  const now = Date.now();
+  const degradedForMs =
+    streamHealth.degradedSince === null ? 0 : now - streamHealth.degradedSince;
+  return {
+    ok: streamHealth.state !== "degraded",
+    state: streamHealth.state,
+    degradedForMs,
+    restartAfterMs: STREAM_DEGRADED_RESTART_MS,
+    lastHealthyAt: streamHealth.lastHealthyAt,
+    lastIssueAt: streamHealth.lastIssueAt,
+    lastIssue: streamHealth.lastIssue,
+    issueCount: streamHealth.issueCount,
+  };
+}
+
+function markStreamHealthy() {
+  streamHealth.state = "healthy";
+  streamHealth.degradedSince = null;
+  streamHealth.lastHealthyAt = new Date().toISOString();
+  streamHealth.issueCount = 0;
+  if (streamRestartTimer) {
+    clearTimeout(streamRestartTimer);
+    streamRestartTimer = null;
+  }
+}
+
+function scheduleStreamRestart() {
+  if (STREAM_DEGRADED_RESTART_MS <= 0 || streamRestartTimer) return;
+  streamRestartTimer = setTimeout(() => {
+    streamRestartTimer = null;
+    if (streamHealth.state !== "degraded" || streamHealth.degradedSince === null) {
+      return;
+    }
+    const degradedForMs = Date.now() - streamHealth.degradedSince;
+    if (degradedForMs < STREAM_DEGRADED_RESTART_MS) {
+      scheduleStreamRestart();
+      return;
+    }
+    console.error(
+      `photon-sidecar: upstream stream degraded for ${degradedForMs}ms; ` +
+        "exiting so Hermes can restart the Photon adapter"
+    );
+    process.exit(75);
+  }, STREAM_DEGRADED_RESTART_MS + 1000);
+  streamRestartTimer.unref();
+}
+
+function markStreamRecovering(reason) {
+  const now = Date.now();
+  if (streamHealth.state !== "recovering") {
+    streamHealth.issueCount = 0;
+  }
+  streamHealth.state = "recovering";
+  streamHealth.lastIssueAt = new Date(now).toISOString();
+  streamHealth.lastIssue = reason;
+  streamHealth.issueCount += 1;
+  if (streamHealth.issueCount >= STREAM_INTERRUPTED_DEGRADE_COUNT) {
+    markStreamDegraded(reason);
+  }
+}
+
+function markStreamDegraded(reason) {
+  const now = Date.now();
+  if (streamHealth.state !== "degraded") {
+    streamHealth.degradedSince = now;
+  }
+  streamHealth.state = "degraded";
+  streamHealth.lastIssueAt = new Date(now).toISOString();
+  streamHealth.lastIssue = reason;
+  streamHealth.issueCount += 1;
+  scheduleStreamRestart();
+}
+
+const originalConsoleError = console.error.bind(console);
+console.error = (...args) => {
+  const text = args
+    .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
+    .join(" ");
+  if (text.includes("[spectrum.stream]")) {
+    const reason = text.split("\n", 1)[0];
+    if (text.includes("persistently failing")) {
+      markStreamDegraded(reason);
+    } else if (text.includes("stream interrupted")) {
+      markStreamRecovering(reason);
+    }
+  }
+  originalConsoleError(...args);
+};
 
 if (!projectId || !projectSecret || !sharedToken) {
   console.error(
@@ -353,6 +457,7 @@ async function normalizeEvent(space, message) {
     try {
       for await (const [space, message] of app.messages) {
         backoff = 1000; // healthy traffic — reset
+        markStreamHealthy();
         // Only forward inbound messages (ignore our own outbound echoes).
         if (message && message.direction && message.direction !== "inbound") {
           continue;
@@ -364,11 +469,14 @@ async function normalizeEvent(space, message) {
         await deliver(JSON.stringify(event));
       }
       console.error("photon-sidecar: inbound stream ended — re-subscribing");
+      markStreamRecovering("inbound stream ended");
     } catch (e) {
+      const reason = e && e.message ? e.message : String(e);
       console.error(
         "photon-sidecar: inbound stream errored — restarting: " +
-          (e && e.message ? e.message : String(e))
+          reason
       );
+      markStreamRecovering(reason);
     }
     await new Promise((r) =>
       setTimeout(r, backoff + Math.random() * backoff * 0.2)
@@ -419,8 +527,20 @@ function badRequest(res, msg) {
 function classifyHandlerError(e) {
   const text = e && e.stack ? e.stack : String(e);
   const lowered = text.toLowerCase();
+  if (lowered.includes("target not allowed for this project")) {
+    return {
+      error: "target not allowed for this Photon project",
+      code: "target_not_allowed",
+      retryable: false,
+    };
+  }
   if (
     lowered.includes("invalid credentials") ||
+    lowered.includes("status code 401") ||
+    lowered.includes(" 401") ||
+    lowered.includes("unauthenticated") ||
+    lowered.includes("tokenexpired") ||
+    lowered.includes("token expired") ||
     lowered.includes("authentication failed") ||
     lowered.includes("permission_denied") ||
     lowered.includes("grpccode: 7") ||
@@ -434,19 +554,24 @@ function classifyHandlerError(e) {
   }
   if (lowered.includes("reset reason: overflow")) {
     return {
-      error: "photon upstream overflow",
-      code: "upstream_overflow",
+      error: "Photon upstream connection dropped; retrying may succeed",
+      code: "upstream_transient",
       retryable: true,
     };
   }
   if (
     lowered.includes("connection dropped") ||
+    lowered.includes("catchupevents") ||
+    lowered.includes("service unavailable") ||
     lowered.includes("upstream connect error") ||
-    lowered.includes("unavailable")
+    lowered.includes("unavailable") ||
+    lowered.includes("deadline exceeded") ||
+    lowered.includes("reset reason") ||
+    lowered.includes("overflow")
   ) {
     return {
-      error: "photon upstream unavailable",
-      code: "upstream_unavailable",
+      error: "Photon upstream connection dropped; retrying may succeed",
+      code: "upstream_transient",
       retryable: true,
     };
   }
@@ -513,12 +638,26 @@ async function resolveSpace(spaceId) {
   const phoneTarget = phoneTargetFromSpaceId(spaceId);
   let space = null;
 
+  // Photon represents DM chat ids as `any;-;+1...`. Those ids are already
+  // opaque Spectrum space ids, so after a sidecar restart prefer `space.get(id)`
+  // before falling back to `space.create(phone)`. Creating from the phone first
+  // can be rejected as "Target not allowed for this project" even though
+  // replying to the existing inbound DM space is allowed.
+  if (DM_CHAT_GUID_RE.test(spaceId)) {
+    try {
+      space = await im.space.get(spaceId);
+    } catch (e) {
+      console.error(
+        "photon-sidecar: DM space.get failed: " +
+          (e && e.stack ? e.stack : String(e))
+      );
+    }
+  }
+
   // A bare E.164 phone number addresses a DM, so callers can pass just
-  // "+1..." (e.g. PHOTON_HOME_CHANNEL for cron delivery) instead of an opaque
-  // inbound space id. Photon also represents DM chat ids as `any;-;+1...`;
-  // normalize those through the same path. `space.create` accepts the raw
-  // phone string directly.
-  if (phoneTarget) {
+  // "+1..." (e.g. PHOTON_HOME_CHANNEL for cron delivery). Existing DM chat ids
+  // only fall back here if `space.get(id)` failed.
+  if (!space && phoneTarget) {
     try {
       space = await im.space.create(phoneTarget);
     } catch (e) {
@@ -571,7 +710,7 @@ const server = http.createServer(async (req, res) => {
   }
   try {
     if (req.url === "/healthz") {
-      return ok(res, {});
+      return ok(res, { stream: streamHealthSnapshot() });
     }
     if (req.url === "/shutdown") {
       ok(res, {});

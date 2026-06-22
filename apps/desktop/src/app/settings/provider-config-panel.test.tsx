@@ -16,76 +16,84 @@ vi.mock('@/store/notifications', () => ({
   notifyError: vi.fn()
 }))
 
-function hindsightSchema(overrides: Partial<MemoryProviderConfig['fields'][number]>[] = []): MemoryProviderConfig {
-  const fields: MemoryProviderConfig['fields'] = [
-    {
-      key: 'mode',
-      label: 'Mode',
-      kind: 'select',
-      value: 'cloud',
-      description: 'How Hermes connects to Hindsight.',
-      placeholder: '',
-      is_set: true,
-      options: [
-        { value: 'cloud', label: 'Cloud', description: 'Hindsight Cloud API (lightweight, just needs an API key)' },
-        { value: 'local_external', label: 'Local External', description: 'Connect to an existing Hindsight instance' }
-      ]
-    },
-    {
-      key: 'api_key',
-      label: 'API key',
-      kind: 'secret',
-      value: '',
-      description: 'Used to authenticate with the Hindsight API.',
-      placeholder: 'Enter Hindsight API key',
-      is_set: false,
-      options: []
-    },
-    {
-      key: 'api_url',
-      label: 'API URL',
-      kind: 'text',
-      value: 'https://api.hindsight.vectorize.io',
-      description: '',
-      placeholder: '',
-      is_set: true,
-      options: []
-    },
-    {
-      key: 'bank_id',
-      label: 'Bank ID',
-      kind: 'text',
-      value: 'hermes',
-      description: '',
-      placeholder: '',
-      is_set: true,
-      options: []
-    },
-    {
-      key: 'recall_budget',
-      label: 'Recall budget',
-      kind: 'select',
-      value: 'mid',
-      description: '',
-      placeholder: '',
-      is_set: true,
-      options: [
-        { value: 'low', label: 'low', description: '' },
-        { value: 'mid', label: 'mid', description: '' },
-        { value: 'high', label: 'high', description: '' }
-      ]
-    }
-  ]
-
+function honchoSchema(): MemoryProviderConfig {
   return {
-    name: 'hindsight',
-    label: 'Hindsight',
-    fields: fields.map((field, index) => ({ ...field, ...overrides[index] }))
+    name: 'honcho',
+    label: 'Honcho',
+    docs_url: 'https://docs.honcho.dev/v3/guides/integrations/hermes',
+    fields: [
+      {
+        key: 'apiKey',
+        label: 'API key',
+        kind: 'secret',
+        value: '',
+        description: 'Authenticate with Honcho Cloud.',
+        placeholder: 'Enter Honcho API key',
+        is_set: false,
+        inline: true,
+        group: 'Connection',
+        options: []
+      },
+      {
+        key: 'baseUrl',
+        label: 'Base URL',
+        kind: 'text',
+        value: '',
+        description: 'Self-hosted Honcho URL.',
+        placeholder: 'https://… (self-hosted)',
+        is_set: false,
+        inline: true,
+        group: 'Connection',
+        options: []
+      },
+      {
+        key: 'environment',
+        label: 'Environment',
+        kind: 'select',
+        value: 'production',
+        description: 'Honcho environment.',
+        placeholder: '',
+        is_set: true,
+        inline: true,
+        group: 'Connection',
+        options: [
+          { value: 'production', label: 'Production', description: '' },
+          { value: 'demo', label: 'Demo', description: '' },
+          { value: 'local', label: 'Local', description: '' }
+        ]
+      },
+      {
+        key: 'workspace',
+        label: 'Workspace',
+        kind: 'text',
+        value: 'myws',
+        description: 'Honcho workspace ID.',
+        placeholder: 'hermes',
+        is_set: true,
+        inline: true,
+        group: 'Connection',
+        options: []
+      },
+      // Non-inline field: must NOT render in the compact panel and must NOT be
+      // submitted when the panel saves.
+      {
+        key: 'writeFrequency',
+        label: 'Write frequency',
+        kind: 'text',
+        value: 'async',
+        description: '',
+        placeholder: '',
+        is_set: true,
+        inline: false,
+        group: 'Message writing',
+        options: []
+      }
+    ]
   }
 }
 
 beforeEach(() => {
-  getMemoryProviderConfig.mockResolvedValue(hindsightSchema())
+  getMemoryProviderConfig.mockResolvedValue(honchoSchema())
   saveMemoryProviderConfig.mockResolvedValue({ ok: true })
 })
 
@@ -94,54 +102,67 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderPanel(provider = 'hindsight') {
+async function renderPanel(provider = 'honcho') {
   const { ProviderConfigPanel } = await import('./provider-config-panel')
 
   return render(<ProviderConfigPanel provider={provider} />)
 }
 
 describe('ProviderConfigPanel', () => {
-  it('renders the declared provider fields generically', async () => {
+  it('renders the declared inline fields generically', async () => {
     await renderPanel()
 
-    expect(await screen.findByDisplayValue('https://api.hindsight.vectorize.io')).toBeTruthy()
-    expect(screen.getByDisplayValue('hermes')).toBeTruthy()
-    expect(screen.getByText('Cloud')).toBeTruthy()
-    expect(screen.getAllByText('Hindsight Cloud API (lightweight, just needs an API key)').length).toBeGreaterThan(0)
-    expect(screen.getByText('mid')).toBeTruthy()
+    expect(await screen.findByDisplayValue('myws')).toBeTruthy()
+    expect(screen.getByPlaceholderText('https://… (self-hosted)')).toBeTruthy()
+    expect(screen.getByText('Production')).toBeTruthy()
+    expect(screen.getByText('Self-hosted Honcho URL.')).toBeTruthy()
+  })
+
+  it('hides fields that are not marked inline', async () => {
+    await renderPanel()
+
+    await screen.findByDisplayValue('myws')
+    expect(screen.queryByDisplayValue('async')).toBeNull()
+    expect(screen.queryByText('Write frequency')).toBeNull()
   })
 
   it('collapses and expands the fields', async () => {
     await renderPanel()
 
-    expect(await screen.findByLabelText('API URL')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /Hindsight settings/ }))
-    expect(screen.queryByLabelText('API URL')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /Hindsight settings/ }))
-    expect(await screen.findByLabelText('API URL')).toBeTruthy()
+    expect(await screen.findByDisplayValue('myws')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Honcho settings/ }))
+    expect(screen.queryByDisplayValue('myws')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Honcho settings/ }))
+    expect(await screen.findByDisplayValue('myws')).toBeTruthy()
   })
 
-  it('saves edited values without requiring a secret replacement', async () => {
+  it('saves only inline values, with a blank secret', async () => {
     await renderPanel()
 
-    const apiUrl = await screen.findByLabelText('API URL')
-    fireEvent.change(apiUrl, { target: { value: 'http://localhost:8888' } })
-    fireEvent.change(screen.getByLabelText('Bank ID'), { target: { value: 'ben-bank' } })
+    const baseUrl = await screen.findByPlaceholderText('https://… (self-hosted)')
+    fireEvent.change(baseUrl, { target: { value: 'http://localhost:8000' } })
+    fireEvent.change(screen.getByDisplayValue('myws'), { target: { value: 'ben-bank' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() =>
-      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('hindsight', {
-        mode: 'cloud',
-        api_key: '',
-        api_url: 'http://localhost:8888',
-        bank_id: 'ben-bank',
-        recall_budget: 'mid'
+      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', {
+        apiKey: '',
+        baseUrl: 'http://localhost:8000',
+        environment: 'production',
+        workspace: 'ben-bank'
       })
     )
   })
 
+  it('offers a full-config trigger when modal-only fields exist', async () => {
+    await renderPanel()
+
+    await screen.findByDisplayValue('myws')
+    expect(screen.getByRole('button', { name: /Full config/ })).toBeTruthy()
+  })
+
   it('renders nothing for a provider with no declared config surface', async () => {
-    getMemoryProviderConfig.mockResolvedValue({ name: 'builtin', label: 'builtin', fields: [] })
+    getMemoryProviderConfig.mockResolvedValue({ name: 'builtin', label: 'builtin', docs_url: '', fields: [] })
 
     const { container } = await renderPanel('builtin')
 

@@ -12,6 +12,13 @@ describe('settings helpers', () => {
     expect(options).toContain('hindsight')
   })
 
+  it('offers Honcho, ordered ahead of Hindsight', () => {
+    const options = enumOptionsFor('memory.provider', '', {}) ?? []
+
+    expect(options).toContain('honcho')
+    expect(options.indexOf('honcho')).toBeLessThan(options.indexOf('hindsight'))
+  })
+
   describe('defineFieldCopy', () => {
     it('flattens nested field copy paths', () => {
       const copy = defineFieldCopy({

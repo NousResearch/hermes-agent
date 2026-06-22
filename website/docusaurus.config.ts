@@ -78,6 +78,34 @@ const config: Config = {
             from: '/guides/automation-templates',
             to: '/guides/automation-blueprints',
           },
+          {
+            from: '/reference/commands',
+            to: '/reference/cli-commands',
+          },
+          {
+            from: '/reference/configuration',
+            to: '/user-guide/configuration',
+          },
+          {
+            from: '/reference/tools',
+            to: '/reference/tools-reference',
+          },
+          {
+            from: '/developer-guide',
+            to: '/developer-guide/architecture',
+          },
+          {
+            from: '/features/skills',
+            to: '/user-guide/features/skills',
+          },
+          {
+            from: '/quickstart',
+            to: '/getting-started/quickstart',
+          },
+          {
+            from: '/messaging-platforms/telegram',
+            to: '/user-guide/messaging/telegram',
+          },
         ],
       },
     ],

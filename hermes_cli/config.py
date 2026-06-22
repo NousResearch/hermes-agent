@@ -831,6 +831,26 @@ DEFAULT_CONFIG = {
         # budget routinely interrupted legitimate work on /restart. Raise
         # further in config.yaml if you run very-long-reasoning models.
         "restart_drain_timeout": 180,
+        # F2 restart-loop circuit-breaker tuning (gateway). These bridge to the
+        # HERMES_RESTART_* env vars at gateway startup (gateway/run.py); set them
+        # here in config.yaml — config is authoritative and wins over a pre-set
+        # env var (same precedence as every agent.* knob; see PR #18413). All
+        # three are clamped at read time, so an out-of-range value is corrected
+        # rather than rejected.
+        #
+        # How many auto-resume RELAPSES (a session that resumed this boot and
+        # got drain-marked again) within restart_loop_window_secs before the
+        # breaker suspends the session and alerts once. Clamped to [1, 100].
+        "restart_loop_threshold": 3,
+        # Sliding window (seconds) over which restart_loop_threshold relapses
+        # are counted. Clamped to [1, 86400].
+        "restart_loop_window_secs": 300,
+        # Freshness backstop (seconds) for an F2 restart-initiator breadcrumb:
+        # a breadcrumb older than this is ignored. This is only a janitor — the
+        # boot_id check is the primary cross-boot guard — so the floor is
+        # generous (clamped to [60, 86400]) to never self-discard an in-turn
+        # write→gate latency.
+        "restart_initiated_ttl_secs": 600,
         # Max app-level retry attempts for API errors (connection drops,
         # provider timeouts, 5xx, etc.) before the agent surfaces the
         # failure.  The OpenAI SDK already does its own low-level retries

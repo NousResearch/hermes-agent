@@ -548,6 +548,40 @@ def _restart_initiated_ttl_secs() -> float:
     return max(60.0, min(value, 86400.0))
 
 
+# Map of agent.* config keys → the HERMES_* env var the gateway reads them
+# through. config.yaml is the authoritative, documented surface and
+# UNCONDITIONALLY wins over a pre-set env var (PR #18413 — a stale .env must
+# never shadow current config). Bridged at gateway startup (the module-level
+# block below) via _bridge_agent_config_to_env so the mapping is single-sourced
+# and unit-testable. New agent timeout/threshold knobs go here, not inline.
+_AGENT_CONFIG_ENV_BRIDGE: dict[str, str] = {
+    "max_turns": "HERMES_MAX_ITERATIONS",
+    "gateway_timeout": "HERMES_AGENT_TIMEOUT",
+    "gateway_timeout_warning": "HERMES_AGENT_TIMEOUT_WARNING",
+    "gateway_notify_interval": "HERMES_AGENT_NOTIFY_INTERVAL",
+    "restart_drain_timeout": "HERMES_RESTART_DRAIN_TIMEOUT",
+    "gateway_auto_continue_freshness": "HERMES_AUTO_CONTINUE_FRESHNESS",
+    "restart_loop_threshold": "HERMES_RESTART_LOOP_THRESHOLD",
+    "restart_loop_window_secs": "HERMES_RESTART_LOOP_WINDOW_SECS",
+    "restart_initiated_ttl_secs": "HERMES_RESTART_INITIATED_TTL_SECS",
+}
+
+
+def _bridge_agent_config_to_env(agent_cfg: Any) -> None:
+    """Bridge agent.* config values into their HERMES_* env vars (config wins).
+
+    config.yaml is authoritative: a present config key OVERWRITES any pre-set
+    env var (PR #18413). A key absent from config leaves the env var untouched,
+    so an operator env survives until config is set. Single-sourced via
+    _AGENT_CONFIG_ENV_BRIDGE; no-op on a non-dict.
+    """
+    if not isinstance(agent_cfg, dict):
+        return
+    for _cfg_key, _env_var in _AGENT_CONFIG_ENV_BRIDGE.items():
+        if _cfg_key in agent_cfg:
+            os.environ[_env_var] = str(agent_cfg[_cfg_key])
+
+
 # Inspection verbs that READ the safe-restart script without EXECUTING it — a
 # `terminal` command starting with one of these mentions the path but does not
 # initiate a restart, so it must NOT trip the F2 self-loop detector (C1).
@@ -593,12 +627,22 @@ def _command_invokes_safe_restart(cmd: str) -> bool:
     return False
 
 
-# F2 restart-initiator breadcrumb (per-session, per-boot files) — see spec
-# 2026-06-22_f2-initiator-detection-authoritative-breadcrumb.md. The
-# safe-restart skill's safe-restart.py drops one file per restart it initiates;
-# the gateway's clean-turn gate consumes it to know "this turn initiated a
-# restart" independent of the command string (robust to alias/wrapper/rename
-# that the C1 heuristic misses). Shared contract with the script — keep in sync.
+# ─── F2 BREADCRUMB CONTRACT (shared with safe-restart.py — keep byte-identical) ───
+# The restart-initiator breadcrumb is a cross-repo file contract between this
+# gateway (consumer) and the safe-gateway-restart skill's safe-restart.py
+# (producer, in the hermes-home repo). The two cannot share a Python module (the
+# skill is pure-stdlib standalone), so this block is the SINGLE documented source
+# of truth and each repo has its own always-on conformance test against these
+# frozen facts (gateway: test_gateway_breadcrumb_contract_matches_frozen; skill:
+# the mirror in test_watcher.py):
+#   • directory:  $HERMES_HOME/.restart_initiated/        (_RESTART_INITIATED_DIRNAME)
+#   • filename:   sha256(session_key.encode("utf-8")).hexdigest()[:8]   (per-session)
+#   • file JSON:  {"session_key": str, "ts": float, "boot_id": str}
+#   • boot_id:    "{pid}:{psutil_create_time}", produced by the gateway ONLY
+#                 (gateway/status.py:_compute_boot_id, persisted in gateway_state.json);
+#                 the script copies the string verbatim, never recomputes it.
+# A change to any of these MUST land in both repos together or a conformance test
+# reddens. Full mechanism: spec 2026-06-22_f2-initiator-detection-authoritative-breadcrumb.md.
 _RESTART_INITIATED_DIRNAME = ".restart_initiated"
 
 
@@ -1334,30 +1378,7 @@ if _config_path.exists():
         # .env entries (e.g. HERMES_MAX_ITERATIONS=60 written by an old
         # `hermes setup` run) silently shadow the user's current config.
         # See PR #18413 / the 60-vs-500 max_turns incident.
-        _agent_cfg = _cfg.get("agent", {})
-        if _agent_cfg and isinstance(_agent_cfg, dict):
-            if "max_turns" in _agent_cfg:
-                os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
-            if "gateway_timeout" in _agent_cfg:
-                os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
-            if "gateway_timeout_warning" in _agent_cfg:
-                os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
-            if "gateway_notify_interval" in _agent_cfg:
-                os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
-            if "restart_drain_timeout" in _agent_cfg:
-                os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
-            if "gateway_auto_continue_freshness" in _agent_cfg:
-                os.environ["HERMES_AUTO_CONTINUE_FRESHNESS"] = str(
-                    _agent_cfg["gateway_auto_continue_freshness"]
-                )
-            if "restart_loop_threshold" in _agent_cfg:
-                os.environ["HERMES_RESTART_LOOP_THRESHOLD"] = str(
-                    _agent_cfg["restart_loop_threshold"]
-                )
-            if "restart_loop_window_secs" in _agent_cfg:
-                os.environ["HERMES_RESTART_LOOP_WINDOW_SECS"] = str(
-                    _agent_cfg["restart_loop_window_secs"]
-                )
+        _bridge_agent_config_to_env(_cfg.get("agent", {}))
         _display_cfg = _cfg.get("display", {})
         if _display_cfg and isinstance(_display_cfg, dict):
             if "busy_input_mode" in _display_cfg:

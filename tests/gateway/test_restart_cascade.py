@@ -1019,3 +1019,160 @@ def test_sweep_degraded_boot_reaps_all(tmp_path, monkeypatch):
     _write_breadcrumb(runner, sk, boot_id=f"{_os.getpid()}:")
     removed = runner._sweep_restart_initiated_breadcrumbs()
     assert removed == 1
+
+
+# ───────── F2 BACKLOG CLEANUP (spec 2026-06-22_f2-breadcrumb-backlog-cleanup) ─────────
+#
+# Item 3 (config consistency), Item 2 (contract conformance), Item 1 covered in
+# the skill's test_watcher.py. Phase 4 = no-regression source-guard.
+
+from gateway.run import (
+    _AGENT_CONFIG_ENV_BRIDGE,
+    _bridge_agent_config_to_env,
+)
+
+
+# ---- Phase 1: Item 3 — restart_* config family consistency ----
+
+def test_restart_initiated_ttl_in_bridge_map():
+    """The new knob is wired into the single-sourced bridge map (so the startup
+    block bridges it without a bespoke if-branch)."""
+    assert _AGENT_CONFIG_ENV_BRIDGE["restart_initiated_ttl_secs"] == "HERMES_RESTART_INITIATED_TTL_SECS"
+    # the already-shipped siblings stay mapped (no accidental drop in the refactor)
+    assert _AGENT_CONFIG_ENV_BRIDGE["restart_loop_threshold"] == "HERMES_RESTART_LOOP_THRESHOLD"
+    assert _AGENT_CONFIG_ENV_BRIDGE["restart_loop_window_secs"] == "HERMES_RESTART_LOOP_WINDOW_SECS"
+
+
+def test_restart_initiated_ttl_bridged_from_config(monkeypatch):
+    """The new agent.restart_initiated_ttl_secs config key is bridged to its env
+    var by _bridge_agent_config_to_env (the single-sourced startup bridge)."""
+    monkeypatch.delenv("HERMES_RESTART_INITIATED_TTL_SECS", raising=False)
+    _bridge_agent_config_to_env({"restart_initiated_ttl_secs": 240})
+    assert _os.environ["HERMES_RESTART_INITIATED_TTL_SECS"] == "240"
+
+
+def test_restart_family_defaults_match_live_helper_fallbacks(monkeypatch):
+    """I-2 (pinned to the LIVE helper, not a literal): the DEFAULT_CONFIG agent
+    values equal what each helper returns with NO env set — so surfacing them in
+    config changed no effective value, and a future helper-fallback edit can't
+    drift silently past a test comparing two stale literals."""
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    for var in ("HERMES_RESTART_LOOP_THRESHOLD", "HERMES_RESTART_LOOP_WINDOW_SECS",
+                "HERMES_RESTART_INITIATED_TTL_SECS"):
+        monkeypatch.delenv(var, raising=False)
+    agent = DEFAULT_CONFIG["agent"]
+    assert agent["restart_loop_threshold"] == _restart_loop_threshold()
+    assert agent["restart_loop_window_secs"] == _restart_loop_window_secs()
+    assert agent["restart_initiated_ttl_secs"] == _restart_initiated_ttl_secs()
+
+
+def test_config_wins_over_preset_env_for_ttl(monkeypatch):
+    """I-3 (precedence, corrected from ground-truth): config UNCONDITIONALLY wins
+    over a pre-set env var (PR #18413). Proven for the new TTL knob AND a shipped
+    sibling, so the new one matches established semantics."""
+    monkeypatch.setenv("HERMES_RESTART_INITIATED_TTL_SECS", "900")
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "9")
+    _bridge_agent_config_to_env(
+        {"restart_initiated_ttl_secs": 120, "restart_loop_threshold": 3}
+    )
+    assert _os.environ["HERMES_RESTART_INITIATED_TTL_SECS"] == "120"  # config wins
+    assert _os.environ["HERMES_RESTART_LOOP_THRESHOLD"] == "3"  # sibling-consistent
+
+
+def test_bridge_absent_key_leaves_env_untouched(monkeypatch):
+    """A key absent from config does NOT clobber a pre-set env var (config-when-
+    present, else env) — the documented precedence."""
+    monkeypatch.setenv("HERMES_RESTART_INITIATED_TTL_SECS", "777")
+    _bridge_agent_config_to_env({"max_turns": 50})  # no ttl key
+    assert _os.environ["HERMES_RESTART_INITIATED_TTL_SECS"] == "777"
+
+
+def test_ttl_config_clamps_both_bounds_and_malformed(monkeypatch):
+    """Pass-1 R-3: exercise BOTH clamp bounds + malformed, not just the floor."""
+    # floor
+    monkeypatch.setenv("HERMES_RESTART_INITIATED_TTL_SECS", "5")
+    assert _restart_initiated_ttl_secs() == 60.0
+    # ceiling
+    monkeypatch.setenv("HERMES_RESTART_INITIATED_TTL_SECS", "999999")
+    assert _restart_initiated_ttl_secs() == 86400.0
+    # malformed → default
+    monkeypatch.setenv("HERMES_RESTART_INITIATED_TTL_SECS", "abc")
+    assert _restart_initiated_ttl_secs() == 600.0
+
+
+def test_bridge_noop_on_non_dict():
+    """Defensive: a non-dict agent config (malformed yaml) is a no-op, not a crash."""
+    _bridge_agent_config_to_env(None)
+    _bridge_agent_config_to_env("not a dict")
+    _bridge_agent_config_to_env(["list"])
+
+
+# ---- Phase 2: Item 2 — frozen-contract conformance (gateway side, always-on) ----
+
+# The single source of truth for the cross-repo F2 breadcrumb contract. The skill
+# (safe-restart.py, hermes-home) has a mirror test asserting the same literals.
+_FROZEN_BREADCRUMB_DIRNAME = ".restart_initiated"
+_FROZEN_BREADCRUMB_JSON_KEYS = {"session_key", "ts", "boot_id"}
+# Representative key vector (Pass-1 C-2: one sample != byte-equality).
+_CONTRACT_KEY_VECTOR = [
+    "",
+    "agent:main:discord:group:123",
+    "x" * 4096,
+    "agent:main:test:weird/slash:1",
+    "ünïçödé:キー:1",
+]
+
+
+def _frozen_filename(session_key: str) -> str:
+    import hashlib
+    return hashlib.sha256((session_key or "").encode("utf-8")).hexdigest()[:8]
+
+
+def test_gateway_breadcrumb_contract_matches_frozen():
+    """Always-on (fork CI, never skips): the gateway's breadcrumb constants match
+    the frozen contract literals over a key vector. The skill's mirror test asserts
+    the same literals in hermes-home CI, so drift in EITHER repo reddens its own
+    suite without needing the other checked out."""
+    from gateway.run import _RESTART_INITIATED_DIRNAME, _restart_initiated_filename
+
+    assert _RESTART_INITIATED_DIRNAME == _FROZEN_BREADCRUMB_DIRNAME
+    for key in _CONTRACT_KEY_VECTOR:
+        assert _restart_initiated_filename(key) == _frozen_filename(key), key
+    # the consumer reads exactly these JSON keys (from the gate's data.get calls)
+    import inspect
+    from gateway.run import GatewayRunner
+    consume_src = inspect.getsource(GatewayRunner._consume_restart_initiated_breadcrumb)
+    for jk in _FROZEN_BREADCRUMB_JSON_KEYS:
+        assert f'"{jk}"' in consume_src or f"'{jk}'" in consume_src, jk
+
+
+def test_breadcrumb_contract_block_documented_in_source():
+    """The # F2 BREADCRUMB CONTRACT block is the single documented source of truth;
+    its presence is grep-guarded so it can't be silently deleted."""
+    import inspect
+    import gateway.run as gr
+    assert "F2 BREADCRUMB CONTRACT" in inspect.getsource(gr)
+
+
+# ---- Phase 4: I-1 — no-regression source guard for the shipped #80 path ----
+
+def test_shipped_breadcrumb_bodies_unchanged():
+    """I-1 teeth: the load-bearing lines of the four shipped #80 functions are
+    present in source, so this hygiene PR provably didn't edit detection logic."""
+    import inspect
+    import gateway.run as gr
+    import gateway.status as gs
+
+    run_src = inspect.getsource(gr)
+    # gate: always-consume (no short-circuit) + OR
+    assert "breadcrumb = self._consume_restart_initiated_breadcrumb(session_key)" in run_src
+    assert "initiated_restart = flag or breadcrumb" in run_src
+    # consume: boot gate + degraded fail-safe + always-unlink
+    assert "current_boot.endswith(\":\")" in run_src
+    assert "path.unlink()" in run_src
+    # sweep: current-boot keep
+    assert "_sweep_restart_initiated_breadcrumbs" in run_src
+    # producer: boot_id refreshed every write
+    status_src = inspect.getsource(gs)
+    assert 'payload["boot_id"] = current_record["boot_id"]' in status_src

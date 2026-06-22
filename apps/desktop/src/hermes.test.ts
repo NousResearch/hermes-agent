@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import { getCodexUsage, getSessionMessages, listAllProfileSessions, listSessions, setApiRequestProfile } from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -55,6 +55,18 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
+    })
+  })
+
+  it('routes Codex usage through the active profile backend', async () => {
+    api.mockResolvedValue({ available: false, details: [], provider: 'openai-codex', windows: [] })
+    setApiRequestProfile('acewill-dev')
+
+    await getCodexUsage()
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/codex/usage',
+      profile: 'acewill-dev'
     })
   })
 })

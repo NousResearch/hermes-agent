@@ -9,6 +9,7 @@ OOO_SUBCOMMAND_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("run", "Execute a Seed/workflow"),
     ("evaluate", "Run three-stage verification"),
     ("status", "Show session/job status"),
+    ("job", "Wait for or fetch job results"),
     ("pm", "Run a PM/PRD interview"),
     ("qa", "Run a quality verdict"),
     ("unstuck", "Use lateral thinking personas"),
@@ -29,7 +30,7 @@ OOO_SUBCOMMAND_DEFINITIONS: tuple[tuple[str, str], ...] = (
 OOO_SUBCOMMANDS: tuple[str, ...] = tuple(name for name, _ in OOO_SUBCOMMAND_DEFINITIONS)
 OOO_SUBCOMMAND_DESCRIPTIONS: dict[str, str] = dict(OOO_SUBCOMMAND_DEFINITIONS)
 
-# Accepted by the native router for typed text, but intentionally not exposed as
-# a Discord slash-picker child. `/ooo status --job <id>` is the public picker path.
-OOO_ROUTER_ONLY_SUBCOMMANDS: tuple[str, ...] = ("job",)
+# Accepted by the native router for typed text but not exposed in older builds.
+# Keep the tuple for compatibility with imports that expect the symbol.
+OOO_ROUTER_ONLY_SUBCOMMANDS: tuple[str, ...] = ()
 OOO_NATIVE_COMMANDS: tuple[str, ...] = OOO_SUBCOMMANDS + OOO_ROUTER_ONLY_SUBCOMMANDS

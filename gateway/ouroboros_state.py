@@ -52,6 +52,12 @@ class OooRecentState:
     last_execution_id: str | None = None
     last_lineage_id: str | None = None
     last_seed_id: str | None = None
+    last_seed_path: str | None = None
+    last_seed_content: str | None = None
+    last_id_kind: str | None = None
+    last_start_idempotency_key: str | None = None
+    last_start_tool: str | None = None
+    last_start_args_fingerprint: str | None = None
     updated_at: str | None = None
 
 

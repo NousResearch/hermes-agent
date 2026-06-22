@@ -70,6 +70,7 @@ def test_subcommands_include_registered_discord_commands_and_router_job():
         "run",
         "evaluate",
         "status",
+        "job",
         "pm",
         "qa",
         "unstuck",
@@ -189,7 +190,9 @@ def test_interview_answer_uses_recent_interview_session(tmp_path):
             45.0,
         )
     ]
-    assert response.state_updates == {"last_session_id": "iv-2", "interview_session_id": "iv-2"}
+    assert response.state_updates is not None
+    assert response.state_updates["last_session_id"] == "iv-2"
+    assert response.state_updates["interview_session_id"] == "iv-2"
 
 
 def test_pm_start_and_generate_route_and_store_pm_session(tmp_path):
@@ -230,6 +233,56 @@ def test_seed_uses_recent_interview_session_and_force_flag(tmp_path):
     ]
     assert response.used_tool == "ouroboros_generate_seed"
     assert store.load(scope).last_seed_id == "seed-1"
+
+
+def test_seed_prefers_most_recent_pm_session_and_uses_pm_generate(tmp_path):
+    fake = FakeMcpCaller({"ouroboros_pm_interview": {"success": True, "seed_id": "pm-seed"}})
+    ctx, store, scope = _native_ctx(tmp_path, fake)
+    store.update(
+        scope,
+        interview_session_id="old-iv",
+        pm_session_id="pm-new",
+        last_session_id="pm-new",
+        last_id_kind="session",
+    )
+
+    response = _run("seed", ctx)
+
+    assert fake.calls == [
+        ("ouroboros_pm_interview", {"session_id": "pm-new", "action": "generate"}, 45.0)
+    ]
+    assert response.used_tool == "ouroboros_pm_interview"
+    assert store.load(scope).last_seed_id == "pm-seed"
+
+
+def test_run_uses_recent_seed_artifact_before_session_fallback(tmp_path):
+    fake = FakeMcpCaller(
+        {
+            "ouroboros_generate_seed": {
+                "success": True,
+                "seed_id": "seed-1",
+                "seed_content": "goal: build\nacceptance_criteria: []",
+            },
+            "ouroboros_start_execute_seed": {"success": True, "job_id": "job-1"},
+        }
+    )
+    ctx, store, scope = _native_ctx(tmp_path, fake)
+    store.update(scope, interview_session_id="iv-1", last_session_id="iv-1")
+
+    _run("seed", ctx)
+    response = _run("run", ctx)
+
+    assert fake.calls[-1] == (
+        "ouroboros_start_execute_seed",
+        {
+            "seed_content": "goal: build\nacceptance_criteria: []",
+            "cwd": "/repo",
+            "idempotency_key": "idem-1",
+        },
+        45.0,
+    )
+    assert response.used_tool == "ouroboros_start_execute_seed"
+    assert store.load(scope).last_seed_content == "goal: build\nacceptance_criteria: []"
 
 
 def test_run_uses_start_execute_seed_passes_idempotency_and_stores_job(tmp_path):
@@ -288,6 +341,54 @@ def test_evaluate_positional_and_flag_paths_use_start_evaluate(tmp_path):
     assert flagged.used_tool == "ouroboros_start_evaluate"
 
 
+def test_evaluate_accepts_multi_word_artifact_without_shell_quoting(tmp_path):
+    fake = FakeMcpCaller({"ouroboros_start_evaluate": {"success": True, "job_id": "eval-job"}})
+    ctx, _store, _scope = _native_ctx(tmp_path, fake)
+
+    positional = _run("evaluate sess-1 build output with spaces --consensus", ctx)
+    flagged = _run("evaluate --session sess-2 --artifact report with spaces", ctx)
+
+    assert fake.calls == [
+        (
+            "ouroboros_start_evaluate",
+            {
+                "session_id": "sess-1",
+                "artifact": "build output with spaces",
+                "trigger_consensus": True,
+                "working_dir": "/repo",
+            },
+            45.0,
+        ),
+        (
+            "ouroboros_start_evaluate",
+            {
+                "session_id": "sess-2",
+                "artifact": "report with spaces",
+                "working_dir": "/repo",
+            },
+            45.0,
+        ),
+    ]
+    assert positional.used_tool == "ouroboros_start_evaluate"
+    assert flagged.used_tool == "ouroboros_start_evaluate"
+
+
+def test_bool_flags_consume_explicit_false_token(tmp_path):
+    fake = FakeMcpCaller({"ouroboros_start_execute_seed": {"success": True, "job_id": "job-1"}})
+    ctx, _store, _scope = _native_ctx(tmp_path, fake)
+
+    response = _run("run --seed-path seed.yaml --skip-qa false", ctx)
+
+    assert response.used_tool == "ouroboros_start_execute_seed"
+    assert fake.calls == [
+        (
+            "ouroboros_start_execute_seed",
+            {"seed_path": "seed.yaml", "cwd": "/repo", "idempotency_key": "idem-1"},
+            45.0,
+        )
+    ]
+
+
 def test_qa_uses_default_quality_bar_when_omitted(tmp_path):
     fake = FakeMcpCaller({"ouroboros_qa": {"success": True, "score": 0.9}})
     ctx, _store, _scope = _native_ctx(tmp_path, fake)
@@ -343,6 +444,37 @@ def test_status_and_job_commands_route_with_recent_job_fallback(tmp_path):
     assert status.used_tool == "ouroboros_job_status"
     assert "최근" in recent.text or "recent" in recent.text.lower()
     assert result.used_tool == "ouroboros_job_result"
+
+
+def test_status_action_result_routes_to_job_result(tmp_path):
+    fake = FakeMcpCaller({"ouroboros_job_result": {"success": True, "job_id": "job-1"}})
+    ctx, _store, _scope = _native_ctx(tmp_path, fake)
+
+    response = _run("status --job job-1 --action result", ctx)
+
+    assert fake.calls == [("ouroboros_job_result", {"job_id": "job-1"}, 45.0)]
+    assert response.used_tool == "ouroboros_job_result"
+
+
+def test_bare_status_uses_most_recent_id_kind(tmp_path):
+    fake = FakeMcpCaller(
+        {
+            "ouroboros_job_status": {"success": True, "job_id": "old-job"},
+            "ouroboros_session_status": {"success": True, "session_id": "new-session"},
+        }
+    )
+    ctx, store, scope = _native_ctx(tmp_path, fake)
+    store.update(
+        scope,
+        last_job_id="old-job",
+        last_session_id="new-session",
+        last_id_kind="session",
+    )
+
+    response = _run("status", ctx)
+
+    assert fake.calls == [("ouroboros_session_status", {"session_id": "new-session"}, 45.0)]
+    assert response.used_tool == "ouroboros_session_status"
 
 
 def test_job_wait_status_session_and_unstuck_routes(tmp_path):
@@ -450,6 +582,21 @@ def test_evolve_ralph_and_auto_route_to_start_tools(tmp_path):
     assert store.load(scope).auto_session_id == "auto-1"
     assert store.load(scope).last_job_id == "auto-job"
     assert "/ooo status --job auto-job" in auto.text
+
+
+def test_repeated_start_interaction_is_deduped_by_recent_idempotency_key(tmp_path):
+    fake = FakeMcpCaller({"ouroboros_start_auto": {"success": True, "job_id": "auto-job"}})
+    ctx, _store, _scope = _native_ctx(tmp_path, fake)
+
+    first = _run("auto build once", ctx)
+    second = _run("auto build once", ctx)
+
+    assert fake.calls == [
+        ("ouroboros_start_auto", {"goal": "build once", "cwd": "/repo"}, 45.0)
+    ]
+    assert first.used_tool == "ouroboros_start_auto"
+    assert second.used_tool == "ouroboros_start_auto"
+    assert "중복" in second.text or "duplicate" in second.text.lower()
 
 
 def test_evolve_max_generations_is_usage_error_and_does_not_call_mcp(tmp_path):

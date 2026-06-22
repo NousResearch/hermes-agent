@@ -91,6 +91,10 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
+    # These tests mock aiohttp and assert document handling, not DNS/SSRF
+    # classification. Some WSL/VPN/NAT64 resolvers map cdn.discordapp.com to
+    # private-looking addresses, so keep URL-safety coverage in its own tests.
+    monkeypatch.setattr(discord_platform, "is_safe_url", lambda _url: True)
 
 
 @pytest.fixture

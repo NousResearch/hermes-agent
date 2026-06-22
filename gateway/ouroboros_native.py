@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import json
 import re
 import shlex
 from typing import Any, Callable
@@ -42,7 +43,17 @@ _BOOLEAN_FLAGS = frozenset(
         "trigger_consensus",
     }
 )
+_BOOLEAN_LITERALS = frozenset({"true", "false", "yes", "no", "1", "0", "on", "off"})
 _STOP_GATED_COMMANDS = frozenset({"setup", "config", "update", "publish"})
+_START_TOOL_NAMES = frozenset(
+    {
+        "ouroboros_start_execute_seed",
+        "ouroboros_start_evaluate",
+        "ouroboros_start_evolve_step",
+        "ouroboros_start_ralph",
+        "ouroboros_start_auto",
+    }
+)
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _SAFE_PAYLOAD_SUMMARY_KEYS = (
     "question",
@@ -178,7 +189,18 @@ def _split_flags(tokens: list[str], bool_flags: set[str] | frozenset[str] = _BOO
 
             key = _normalize_flag_name(token)
             next_value = tokens[index + 1] if index + 1 < len(tokens) else None
-            if key in bool_flags or next_value is None or next_value.startswith("--"):
+            if key in bool_flags:
+                if (
+                    next_value is not None
+                    and not next_value.startswith("--")
+                    and next_value.strip().lower() in _BOOLEAN_LITERALS
+                ):
+                    flags[key] = next_value
+                    index += 2
+                else:
+                    flags[key] = True
+                    index += 1
+            elif next_value is None or next_value.startswith("--"):
                 flags[key] = True
                 index += 1
             else:
@@ -246,10 +268,10 @@ def _help_response() -> OooNativeResponse:
     text = (
         "네이티브 /ooo 라우터입니다.\n"
         "주요 사용: `/ooo interview <요구사항>`, `/ooo run --seed-path seed.yaml`, "
-        "`/ooo status --job <job_id>`, `/ooo status --session <session_id>`.\n"
-        f"지원 명령: {commands}. 라우터 전용: job."
+        "`/ooo job wait <job_id>`, `/ooo job result <job_id>`.\n"
+        f"지원 명령: {commands}."
     )
-    return OooNativeResponse(text=_shorten(text), payload={"commands": list(OOO_SUBCOMMANDS), "router_only": ["job"]})
+    return OooNativeResponse(text=_shorten(text), payload={"commands": list(OOO_SUBCOMMANDS)})
 
 
 def _static_response(command: str) -> OooNativeResponse:
@@ -369,6 +391,34 @@ def _payload_summary_parts(payload: dict[str, Any]) -> list[str]:
     return parts
 
 
+def _first_string_from_payload(payload: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    for wrapper_key in ("result", "structuredContent", "content"):
+        wrapped = payload.get(wrapper_key)
+        if isinstance(wrapped, dict):
+            nested = _first_string_from_payload(wrapped, *keys)
+            if nested:
+                return nested
+    return None
+
+
+def _last_id_kind_from_updates(updates: dict[str, str]) -> str | None:
+    if updates.get("last_job_id"):
+        return "job"
+    if updates.get("last_session_id"):
+        return "session"
+    if updates.get("last_execution_id"):
+        return "execution"
+    if updates.get("last_lineage_id"):
+        return "lineage"
+    if updates.get("last_seed_id"):
+        return "seed"
+    return None
+
+
 def _state_updates_for_tool(tool_name: str, payload: dict[str, Any]) -> dict[str, str]:
     updates = dict(extract_ids(payload))
     session_id = updates.get("last_session_id")
@@ -376,6 +426,14 @@ def _state_updates_for_tool(tool_name: str, payload: dict[str, Any]) -> dict[str
         updates["interview_session_id"] = session_id
     elif tool_name == "ouroboros_pm_interview" and session_id:
         updates["pm_session_id"] = session_id
+    seed_path = _first_string_from_payload(payload, "seed_path")
+    if seed_path:
+        updates["last_seed_path"] = seed_path
+    seed_content = _first_string_from_payload(payload, "seed_content")
+    if seed_content:
+        updates["last_seed_content"] = seed_content
+    if kind := _last_id_kind_from_updates(updates):
+        updates["last_id_kind"] = kind
     return updates
 
 
@@ -383,8 +441,13 @@ def _save_state_updates(
     ctx: OooNativeContext,
     tool_name: str,
     payload: dict[str, Any],
+    args: dict[str, Any] | None = None,
 ) -> tuple[dict[str, str], str | None]:
     updates = _state_updates_for_tool(tool_name, payload)
+    if ctx.idempotency_key and tool_name in _START_TOOL_NAMES and updates.get("last_job_id"):
+        updates["last_start_idempotency_key"] = ctx.idempotency_key
+        updates["last_start_tool"] = tool_name
+        updates["last_start_args_fingerprint"] = _start_args_fingerprint(args or {})
     if not updates or ctx.state_store is None or ctx.state_context is None:
         return updates, None
     try:
@@ -427,7 +490,10 @@ def _format_tool_response(
         parts.append(fallback_note)
     job_id = ids.get("job_id")
     if job_id and tool_name.startswith("ouroboros_start_"):
-        parts.append(f"다음: `/ooo status --job {job_id}`")
+        parts.append(
+            f"다음: `/ooo status --job {job_id}`, `/ooo job wait {job_id}`, "
+            f"`/ooo job result {job_id}`"
+        )
     if command_name == "qa" and "quality_bar" in args:
         parts.append(f"Quality bar: {args['quality_bar']}")
     text = "; ".join(parts) + _state_note_suffix(state_note)
@@ -437,6 +503,44 @@ def _format_tool_response(
         used_tool=tool_name,
         state_updates=state_updates or None,
     )
+
+
+def _duplicate_start_response(
+    command_name: str,
+    tool_name: str,
+    args: dict[str, Any],
+    ctx: OooNativeContext,
+) -> OooNativeResponse | None:
+    if not ctx.idempotency_key or tool_name not in _START_TOOL_NAMES:
+        return None
+    if ctx.state_store is None or ctx.state_context is None:
+        return None
+    try:
+        recent = ctx.state_store.load(ctx.state_context)
+    except Exception:
+        return None
+    if recent.last_start_idempotency_key != ctx.idempotency_key:
+        return None
+    if recent.last_start_tool != tool_name or not recent.last_job_id:
+        return None
+    if recent.last_start_args_fingerprint != _start_args_fingerprint(args):
+        return None
+    payload = {"success": True, "job_id": recent.last_job_id, "deduplicated": True}
+    text = (
+        f"중복 Discord interaction으로 새 {command_name} job을 시작하지 않았습니다; "
+        f"기존 job_id={recent.last_job_id}. 다음: `/ooo job wait {recent.last_job_id}` "
+        f"또는 `/ooo job result {recent.last_job_id}`"
+    )
+    return OooNativeResponse(
+        text=_shorten(text),
+        payload=payload,
+        used_tool=tool_name,
+        state_updates={"last_job_id": recent.last_job_id},
+    )
+
+
+def _start_args_fingerprint(args: dict[str, Any]) -> str:
+    return json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
 
 
 async def _call_tool(
@@ -449,6 +553,9 @@ async def _call_tool(
     state_note: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT,
 ) -> OooNativeResponse:
+    duplicate_response = _duplicate_start_response(command_name, tool_name, args, ctx)
+    if duplicate_response is not None:
+        return duplicate_response
     caller = _mcp_caller(ctx)
     try:
         raw_payload = await asyncio.to_thread(caller, tool_name, args, timeout)
@@ -477,7 +584,7 @@ async def _call_tool(
             state_note=state_note,
         )
 
-    state_updates, save_note = _save_state_updates(ctx, tool_name, payload)
+    state_updates, save_note = _save_state_updates(ctx, tool_name, payload, args)
     merged_note = "; ".join(note for note in (state_note, save_note) if note) or None
     return _format_tool_response(
         command_name=command_name,
@@ -579,7 +686,8 @@ async def _handle_pm(command: OooCommand, ctx: OooNativeContext, recent: OooRece
 
 async def _handle_seed(command: OooCommand, ctx: OooNativeContext, recent: OooRecentState, state_note: str | None) -> OooNativeResponse:
     flags, _positionals = _split_flags(command.tokens)
-    session_id = _flag_value(flags, "session", "session_id") or recent.interview_session_id or recent.pm_session_id
+    explicit_session_id = _flag_value(flags, "session", "session_id")
+    session_id = explicit_session_id or recent.last_session_id or recent.interview_session_id or recent.pm_session_id
     if missing := _require_value(session_id, "/ooo seed --session <session_id> [--force] (또는 최근 interview/pm 세션 필요)"):
         return missing
     args: dict[str, Any] = {"session_id": str(session_id)}
@@ -591,6 +699,15 @@ async def _handle_seed(command: OooCommand, ctx: OooNativeContext, recent: OooRe
         if error:
             return _usage(error)
         args["ambiguity_score"] = value
+    if not explicit_session_id and session_id == recent.pm_session_id:
+        args["action"] = "generate"
+        return await _call_tool(
+            command_name="seed",
+            tool_name="ouroboros_pm_interview",
+            args=args,
+            ctx=ctx,
+            state_note=state_note,
+        )
     return await _call_tool(
         command_name="seed",
         tool_name="ouroboros_generate_seed",
@@ -607,6 +724,10 @@ async def _handle_run(command: OooCommand, ctx: OooNativeContext, recent: OooRec
     seed_content = _flag_value(flags, "seed", "seed_content")
     if not seed_path and not seed_content and positionals:
         seed_path = positionals[0]
+    if not seed_path and not seed_content and recent.last_seed_content:
+        seed_content = recent.last_seed_content
+    if not seed_path and not seed_content and recent.last_seed_path:
+        seed_path = recent.last_seed_path
     if seed_path:
         args["seed_path"] = str(seed_path)
     if seed_content:
@@ -648,8 +769,10 @@ async def _handle_evaluate(command: OooCommand, ctx: OooNativeContext, recent: O
     if not session_id and positionals:
         session_id = positionals[0]
         positionals = positionals[1:]
-    if not artifact and positionals:
-        artifact = positionals[0]
+    if artifact and positionals:
+        artifact = _join_positionals([str(artifact), *positionals])
+    elif not artifact and positionals:
+        artifact = _join_positionals(positionals)
     if not session_id and recent.last_session_id and artifact:
         session_id = recent.last_session_id
     if missing := _require_value(session_id, "/ooo evaluate <session_id> <artifact> [--consensus]"):
@@ -700,6 +823,7 @@ async def _handle_qa(command: OooCommand, ctx: OooNativeContext, _recent: OooRec
 async def _handle_status(command: OooCommand, ctx: OooNativeContext, recent: OooRecentState, state_note: str | None) -> OooNativeResponse:
     flags, positionals = _split_flags(command.tokens)
     fallback_note = None
+    action = str(_flag_value(flags, "action") or "status").lower().replace("_", "-")
     job_id = _flag_value(flags, "job", "job_id")
     session_id = _flag_value(flags, "session", "session_id")
     if not job_id and not session_id and positionals:
@@ -710,13 +834,28 @@ async def _handle_status(command: OooCommand, ctx: OooNativeContext, recent: Ooo
         else:
             session_id = positionals[0]
     if not job_id and not session_id:
-        if recent.last_job_id:
+        if recent.last_id_kind == "session" and recent.last_session_id:
+            session_id = recent.last_session_id
+            fallback_note = "최근 session_id를 사용했습니다."
+        elif recent.last_id_kind == "job" and recent.last_job_id:
+            job_id = recent.last_job_id
+            fallback_note = "최근 job_id를 사용했습니다."
+        elif recent.last_job_id:
             job_id = recent.last_job_id
             fallback_note = "최근 job_id를 사용했습니다."
         elif recent.last_session_id:
             session_id = recent.last_session_id
             fallback_note = "최근 session_id를 사용했습니다."
     if job_id:
+        if action in {"wait", "result"}:
+            return await _handle_job(
+                OooCommand(name="job", args_text=command.args_text, tokens=[action, str(job_id)]),
+                ctx,
+                recent,
+                state_note,
+            )
+        if action != "status":
+            return _usage("/ooo status --job <job_id> [--action status|wait|result]")
         return await _call_tool(
             command_name="status",
             tool_name="ouroboros_job_status",
@@ -861,6 +1000,8 @@ async def _handle_auto(command: OooCommand, ctx: OooNativeContext, _recent: OooR
     flags, positionals = _split_flags(command.tokens)
     args: dict[str, Any] = {}
     goal = _flag_value(flags, "goal") or _join_positionals(positionals)
+    if _flag_value(flags, "goal") and positionals:
+        goal = _join_positionals([str(_flag_value(flags, "goal")), *positionals])
     if goal:
         args["goal"] = str(goal)
     _add_cwd(args, ctx)

@@ -27,6 +27,7 @@ class StubConnector:
         self._descriptor = descriptor
         self._inbound: Optional[InboundHandler] = None
         self._interrupt_inbound: Optional[Any] = None
+        self._passthrough: Optional[Any] = None
         self.connected = False
         self.sent: List[Dict[str, Any]] = []
         self.interrupts: List[Dict[str, Any]] = []
@@ -57,6 +58,12 @@ class StubConnector:
         bridge here so connector→gateway interrupt_inbound frames route to it."""
         self._interrupt_inbound = handler
 
+    def set_passthrough_handler(self, handler: Any) -> None:
+        """Mirror the real WS transport: the adapter registers its passthrough
+        bridge here so connector→gateway passthrough_forward frames route to it
+        (Phase 5 §5.1)."""
+        self._passthrough = handler
+
     async def send_outbound(self, action: Dict[str, Any]) -> Dict[str, Any]:
         self.sent.append(action)
         if action.get("op") == "send":
@@ -85,3 +92,9 @@ class StubConnector:
         if self._interrupt_inbound is None:
             raise RuntimeError("no interrupt_inbound handler registered (call adapter.connect first)")
         await self._interrupt_inbound(session_key, chat_id)
+
+    async def push_passthrough(self, forward: Any, buffer_id: Optional[str] = None) -> None:
+        """Simulate the connector forwarding a passthrough request over the WS (§5.1)."""
+        if self._passthrough is None:
+            raise RuntimeError("no passthrough handler registered (call adapter.connect first)")
+        await self._passthrough(forward, buffer_id)

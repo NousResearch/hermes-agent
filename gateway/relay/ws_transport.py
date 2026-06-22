@@ -33,6 +33,7 @@ import asyncio
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from gateway.platforms.base import MessageEvent, MessageType
@@ -125,6 +126,54 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         message_id=raw.get("message_id"),
         reply_to_message_id=raw.get("reply_to_message_id"),
         media_urls=raw.get("media_urls") or [],
+    )
+
+
+@dataclass
+class PassthroughForward:
+    """A connector-forwarded passthrough-plane request (Phase 5 §5.1).
+
+    The connector answered the provider's latency-critical ACK at its edge, then
+    forwarded the real (already-sanitized) request to this gateway over the WS.
+    ``body`` is the exact decoded bytes the connector forwarded (the wire carries
+    it base64-encoded for byte parity). ``headers`` preserve arrival order.
+    """
+
+    platform: str
+    bot_id: str
+    method: str
+    path: str
+    headers: list[tuple[str, str]]
+    body: bytes
+
+
+def _passthrough_from_wire(raw: Dict[str, Any]) -> PassthroughForward:
+    """Rebuild a PassthroughForward from the connector's wire frame.
+
+    Mirrors the connector's ``PassthroughForward`` (relay/protocol.ts): the body
+    is base64-decoded back to the exact bytes the connector forwarded, so the
+    gateway re-processes byte-identical content (the connector is the trust
+    boundary; it already verified at the edge).
+    """
+    import base64
+
+    body_b64 = raw.get("bodyB64", "") or ""
+    try:
+        body = base64.b64decode(body_b64)
+    except Exception:  # noqa: BLE001 - a malformed body must not crash the reader
+        body = b""
+    headers_raw = raw.get("headers", []) or []
+    headers: list[tuple[str, str]] = []
+    for pair in headers_raw:
+        if isinstance(pair, (list, tuple)) and len(pair) == 2:
+            headers.append((str(pair[0]), str(pair[1])))
+    return PassthroughForward(
+        platform=str(raw.get("platform", "")),
+        bot_id=str(raw.get("botId", "")),
+        method=str(raw.get("method", "")),
+        path=str(raw.get("path", "")),
+        headers=headers,
+        body=body,
     )
 
 
@@ -318,6 +367,16 @@ class WebSocketRelayTransport:
             handler = getattr(self, "_interrupt_inbound_handler", None)
             if handler is not None:
                 await handler(frame.get("session_key", ""), frame.get("chat_id", ""))
+        elif ftype == "passthrough_forward":
+            # Phase 5 §5.1: a forwarded passthrough-plane request (Discord
+            # interaction, Twilio, …) the connector already edge-ACKed. It rides
+            # the SAME outbound WS as inbound messages so a hosted gateway needs
+            # no public inbound port. Dispatch to the adapter's handler; the
+            # bufferId (when present, §5.3 buffered flip) is passed for ack.
+            handler = getattr(self, "_passthrough_handler", None)
+            if handler is not None:
+                fwd = _passthrough_from_wire(frame.get("forward", {}))
+                await handler(fwd, frame.get("bufferId"))
         else:
             # hello/outbound/interrupt are gateway->connector; ignore if echoed.
             pass
@@ -325,3 +384,12 @@ class WebSocketRelayTransport:
     def set_interrupt_inbound_handler(self, handler: Any) -> None:
         """Register the callback for connector->gateway interrupt_inbound frames."""
         self._interrupt_inbound_handler = handler
+
+    def set_passthrough_handler(self, handler: Any) -> None:
+        """Register the callback for connector->gateway passthrough_forward frames.
+
+        Mirrors set_interrupt_inbound_handler: the runner/adapter wires this so a
+        forwarded passthrough request (Phase 5 §5.1) reaches the adapter over the
+        same outbound WS the gateway already holds. ``handler(forward, buffer_id)``.
+        """
+        self._passthrough_handler = handler

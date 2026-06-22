@@ -127,11 +127,41 @@ def make_tool_progress_cb(
 
     Emits ``ToolCallStart`` for ``tool.started`` events and tracks IDs in a FIFO
     queue per tool name so duplicate/parallel same-name calls still complete
-    against the correct ACP tool call.  Other event types (``tool.completed``,
-    ``reasoning.available``) are silently ignored.
+    against the correct ACP tool call.  ``tool.completed`` events pop the
+    oldest pending ID and emit a matching ``ToolCallUpdate`` so the ACP card
+    transitions out of "running" state without depending on the derived
+    step_callback path.  Other event types (``reasoning.available``) are
+    silently ignored.
     """
 
     def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
+        if event_type == "tool.completed":
+            if not name:
+                return
+            queue = tool_call_ids.get(name)
+            if not queue:
+                # No pending start for this name — likely the step callback
+                # already drained the queue, or the callback was attached
+                # after the tool started. Nothing to do.
+                return
+            tc_id = queue.popleft()
+            if not queue:
+                tool_call_ids.pop(name, None)
+            meta = tool_call_meta.pop(tc_id, {})
+            result = kwargs.get("result")
+            update = build_tool_complete(
+                tc_id,
+                name,
+                result=str(result) if result is not None else None,
+                function_args=meta.get("args"),
+                snapshot=meta.get("snapshot"),
+            )
+            _send_update(conn, session_id, loop, update)
+            if name == "todo":
+                plan_update = _build_plan_update_from_todo_result(result)
+                if plan_update is not None:
+                    _send_update(conn, session_id, loop, plan_update)
+            return
         # Only emit ACP ToolCallStart for tool.started; ignore other event types
         if event_type != "tool.started":
             return

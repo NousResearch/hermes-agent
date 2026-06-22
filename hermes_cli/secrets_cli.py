@@ -30,6 +30,7 @@ from hermes_cli.config import (
     save_env_value,
 )
 from hermes_cli.secret_prompt import masked_secret_prompt
+from utils import is_truthy_value
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +294,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     cfg = load_config()
     bw_cfg = (cfg.get("secrets") or {}).get("bitwarden") or {}
 
-    enabled = bool(bw_cfg.get("enabled"))
+    enabled = is_truthy_value(bw_cfg.get("enabled"))
     token_env = bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN")
     project_id = bw_cfg.get("project_id", "")
     server_url = str(bw_cfg.get("server_url", "") or "").strip()

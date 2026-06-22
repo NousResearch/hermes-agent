@@ -720,7 +720,7 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
         return False
     mt = gw.get("message_timestamps")
     if isinstance(mt, dict):
-        return bool(mt.get("enabled", False))
+        return is_truthy_value(mt.get("enabled"), default=False)
     # Allow a bare ``message_timestamps: true`` shorthand.
     return bool(mt)
 

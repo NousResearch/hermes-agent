@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, Iterable, Optional
+from utils import is_truthy_value
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
@@ -70,7 +71,7 @@ def resolve_footer_config(
     global_cfg = cfg.get("runtime_footer")
     if isinstance(global_cfg, dict):
         if "enabled" in global_cfg:
-            resolved["enabled"] = bool(global_cfg.get("enabled"))
+            resolved["enabled"] = is_truthy_value(global_cfg.get("enabled"))
         if isinstance(global_cfg.get("fields"), list) and global_cfg["fields"]:
             resolved["fields"] = [str(f) for f in global_cfg["fields"]]
 
@@ -81,7 +82,7 @@ def resolve_footer_config(
             plat_footer = plat_cfg.get("runtime_footer")
             if isinstance(plat_footer, dict):
                 if "enabled" in plat_footer:
-                    resolved["enabled"] = bool(plat_footer.get("enabled"))
+                    resolved["enabled"] = is_truthy_value(plat_footer.get("enabled"))
                 if isinstance(plat_footer.get("fields"), list) and plat_footer["fields"]:
                     resolved["fields"] = [str(f) for f in plat_footer["fields"]]
 

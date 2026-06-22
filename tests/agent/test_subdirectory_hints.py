@@ -252,6 +252,17 @@ class TestSubdirectoryHintTracker:
 class TestPermissionErrorHandling:
     """Regression tests for PermissionError in filesystem checks (ref #6214)."""
 
+    def test_check_tool_call_survives_expanduser_runtime_error(self, project):
+        """check_tool_call should not crash when Path.expanduser cannot resolve HOME."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        with patch.object(
+            Path,
+            "expanduser",
+            side_effect=RuntimeError("Could not determine home directory."),
+        ):
+            result = tracker.check_tool_call("read_file", {"path": "~/backend/src/main.py"})
+        assert result is None
+
     def test_is_valid_subdir_permission_error(self, tmp_path):
         """_is_valid_subdir should return False when is_dir() raises PermissionError."""
         tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))

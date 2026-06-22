@@ -120,9 +120,9 @@ The primary v1 workflow focuses on:
 - `workspace_file_read`
 - `workspace_diff`
 
-The server intentionally does **not** register or expose conversation messaging, `file_patch`, `file_write`, `terminal_run`, cron, deploy, Git push/merge, broad shell access, or agent-loop execution tools on the public v1 surface.
+The private Profile Router may register direct action tools (`file_patch`, `file_write`, `terminal_run`) for a trusted gateway hop, but those raw direct tools are **not** the public product surface. Public exposure, when enabled by a production gateway policy, must use only the explicit workspace-scoped wrapper names `workspace_file_patch`, `workspace_file_write`, and `workspace_terminal_run`; the gateway and private node still enforce profile/root/context/tool policy, no-shell terminal execution, secret-path denial, bounded output, and `llm_calls=0`.
 
-In short: v1 does not expose conversation messaging, terminal, cron, deploy, or write tools.
+In short: v1 still does not expose conversation messaging, cron, deploy, Git push/merge, broad shell access, or agent-loop execution tools. Write/patch/terminal are available only through explicit production wrappers and private-node policy.
 
 ## Remote VPS shape for ChatGPT
 
@@ -286,25 +286,28 @@ Audit entries must not log raw bearer tokens, Authorization headers, secrets, ra
 
 ## Disabled/non-public surfaces
 
-Direct/internal wrappers may exist for focused tests or future phases, but they are not registered by the public v1 profile-router server:
+Direct/private wrappers may exist for a trusted public gateway to call after its own policy checks, but raw direct tool names remain private-node-only and must not be registered as public gateway tools:
 
 - `file_patch`
 - `file_write`
 - `terminal_run`
 
-Recommended v1 workflow: ChatGPT reads profile/workspace context, files, and diffs; then proposes patches for Hermes or the user to apply manually.
+The production public gateway surface, when action tools are enabled, uses only:
 
-`terminal_run` is not exposed in v1. If terminal scaffolding exists internally, it remains disabled from public registration and must not be reachable without explicit future policy/review.
+- `workspace_file_patch`
+- `workspace_file_write`
+- `workspace_terminal_run`
+
+These wrappers require an opaque `workspace_id`, fresh server-side context, profile/root/tool policy, no-shell terminal execution, bounded output, redacted audit, and `llm_calls=0`. Profiles without safe roots or without explicit action policy remain metadata/context-only and fail closed.
 
 ## Out of scope for v1
 
-- OAuth/OIDC as the default setup path
-- SaaS/product connector architecture
+- OAuth/OIDC on the private P1 node as the default setup path (the public P2 gateway owns ChatGPT OAuth)
+- SaaS/product connector architecture inside the private node
 - mandatory Mac broker or SSH routing
 - first-class broker outbound routing
-- write/patch public tools
-- terminal public tools
 - messaging, cron creation, deploy, Git push/merge
+- raw direct action-tool publication to public clients
 - model-consuming Hermes agent/tool execution
 
 Mac broker, SSH routing, and OAuth/OIDC may remain future/advanced options if a self-hosted operator needs them, but v1 should stay simple: localhost HTTP + bearer token + user-managed tunnel/reverse proxy when needed.

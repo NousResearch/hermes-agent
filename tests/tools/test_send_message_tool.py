@@ -19,11 +19,35 @@ _HAS_TELEGRAM = pytest.importorskip("telegram", reason="python-telegram-bot not 
 @pytest.fixture(autouse=True)
 def _reset_signal_scheduler():
     """Drop the process-wide attachment scheduler so each test gets a
-    fresh token bucket."""
+    fresh token bucket.
+
+    Also clears the Discord forum-probe cache
+    (``_DISCORD_CHANNEL_TYPE_PROBE_CACHE``) — a process-global dict that
+    memoizes channel-type probes in production. Without this reset, a test that
+    probes a channel id (e.g. ``test_probe_result_is_memoized`` caching
+    ``"ch1"``) leaks that entry into a later test reusing the same id
+    (``test_directory_lookup_exception_falls_through_to_probe``), which then
+    short-circuits the probe and fails its ``mock_session.get`` assertion —
+    a flaky failure that only appears under cross-file / randomized ordering.
+    """
     from gateway.platforms.signal_rate_limit import _reset_scheduler
+
+    def _clear_discord_probe_cache():
+        try:
+            from plugins.platforms.discord import adapter as _discord_adapter
+            _discord_adapter._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
+        except ImportError:
+            # Discord plugin not installed in this test env — nothing to reset.
+            # Deliberately narrow: an AttributeError (e.g. the cache attr is
+            # renamed) must surface, not silently stop resetting and let the
+            # flaky ordering bug back in.
+            pass
+
     _reset_scheduler()
+    _clear_discord_probe_cache()
     yield
     _reset_scheduler()
+    _clear_discord_probe_cache()
 
 from gateway.config import Platform
 from tools.send_message_tool import (

@@ -16,21 +16,24 @@
   <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Español-orange?style=for-the-badge" alt="Español"></a>
 </p>
 
-**FalconPM is a Growth Product Manager AI Agent for D2C brands, built as a fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent).**
+**superattention.ai is an AI growth system for early D2C brands, built as a fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent).**
 
 The V1 demo helps **The Pickle Romance** plan a 30-day July campaign to sell Rs. 50,000 of the **Aam Romantics Combo** using Instagram Reels, Instagram Shopping, a one-page website, and WhatsApp ordering.
 
-This fork keeps Hermes' self-improving agent runtime and adds a focused Growth PM layer:
+This fork keeps Hermes' self-improving agent runtime and adds a focused growth layer:
 
 - FalconPM agent instructions in `AGENTS.md`
 - Growth PM personality in `SOUL.md`
 - The Pickle Romance context in `MEMORY.md`
 - a D2C weekly growth experiment planner skill
 - a complete demo prompt and sample output
+- a frontend demo in `apps/superattention-console`
 
 See `examples/falconpm/the-pickle-romance-demo.md` for the first working demo.
 
 See `docs/the-pickle-romance/aam-romantics-30-day-campaign.md` for the practical 30-day campaign artifact.
+
+See `apps/superattention-console` for the V1 Growth Console frontend.
 
 ---
 

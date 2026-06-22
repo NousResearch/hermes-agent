@@ -514,3 +514,127 @@ def test_a_mig_source_untouched(pg_clean, tmp_path):
     assert after.st_mtime == before.st_mtime
     assert after.st_size == before.st_size
 
+
+# ---------------------------------------------------------------------------
+# b-series: pg_trgm GIN-indexed search
+# ---------------------------------------------------------------------------
+
+
+def test_b1_trgm_migration_applies(pg_clean, tmp_path):
+    """b1 — pg_trgm migrations (v17 + v18) run and record their versions.
+
+    Uses _pg_session_db which calls init_postgres_schema, triggering
+    apply_postgres_migrations. The postgres:16 testcontainers image ships
+    pg_trgm compiled in but not pre-extended; v17 installs it, v18 builds
+    the GIN indexes.
+
+    This test does NOT pre-check the catalog before running — it proves the
+    migration installs the extension. It skips only if the migration failed to
+    install pg_trgm (e.g. a stripped container image without the contrib
+    module).
+    """
+    from hermes_state_postgres import _probe_pg_trgm
+
+    pg, restore = _pg_session_db(pg_clean)
+    try:
+        trgm_ok = _probe_pg_trgm(pg._conn)
+    finally:
+        pg.close()
+        restore()
+
+    if not trgm_ok:
+        pytest.skip("pg_trgm migration did not install extension (stripped image?)")
+
+    with psycopg.connect(pg_clean, autocommit=True) as conn:
+        # Both v17 (EXTENSION) and v18 (indexes) must be recorded.
+        for version in (17, 18):
+            row = conn.execute(
+                "SELECT 1 FROM schema_version WHERE version = %s", (version,)
+            ).fetchone()
+            assert row is not None, f"schema_version missing v{version} after migration"
+
+        # All three GIN indexes must exist.
+        for idx_name in (
+            "idx_messages_content_trgm",
+            "idx_messages_tool_name_trgm",
+            "idx_messages_tool_calls_trgm",
+        ):
+            row = conn.execute(
+                "SELECT 1 FROM pg_indexes WHERE indexname = %s", (idx_name,)
+            ).fetchone()
+            assert row is not None, f"GIN index {idx_name!r} not found after migration"
+
+
+def test_b2_search_with_trgm(pg_clean, tmp_path):
+    """b2 — search_messages returns correct results when GIN indexes are present.
+
+    Verifies the full result-row contract (all 10 required keys) and that all
+    three indexed columns (content, tool_name, tool_calls) are matched.
+    Skips if the GIN indexes were not created (b1 covers that failure case).
+    """
+    import time as _time
+
+    # Skip if GIN indexes are absent (pg_trgm not available in this image).
+    with psycopg.connect(pg_clean, autocommit=True) as probe:
+        idx_row = probe.execute(
+            "SELECT 1 FROM pg_indexes WHERE indexname = 'idx_messages_content_trgm'"
+        ).fetchone()
+    if idx_row is None:
+        # Trigger migrations first via _pg_session_db, then re-check.
+        pg_check, restore_check = _pg_session_db(pg_clean)
+        try:
+            with psycopg.connect(pg_clean, autocommit=True) as probe2:
+                idx_row = probe2.execute(
+                    "SELECT 1 FROM pg_indexes"
+                    " WHERE indexname = 'idx_messages_content_trgm'"
+                ).fetchone()
+        finally:
+            pg_check.close()
+            restore_check()
+    if idx_row is None:
+        pytest.skip("GIN index not present — pg_trgm migration did not apply")
+
+    pg, restore = _pg_session_db(pg_clean)
+    try:
+        pg.create_session(session_id="s1", source="cli")
+        rows = [
+            # (role, content, tool_name, tool_calls)
+            ("user",      "deploy the docker container",  None,         None),
+            ("assistant", "running kubernetes apply",     "bash",       None),
+            ("user",      "check the docker logs",        None,         None),
+            ("user",      "totally unrelated message",    None,         None),
+            # match via tool_name column
+            ("assistant", "result of tool call",          "docker_ps",  None),
+            # match via tool_calls column
+            ("assistant", "tool call details",            None,         '{"name":"docker_build"}'),
+        ]
+        for role, content, tool_name, tool_calls in rows:
+            pg._execute_write(
+                lambda c, r=role, ct=content, tn=tool_name, tc=tool_calls: c.execute(
+                    "INSERT INTO messages"
+                    " (session_id, role, content, tool_name, tool_calls, timestamp, active)"
+                    " VALUES (?, ?, ?, ?, ?, ?, 1)",
+                    ("s1", r, ct, tn, tc, _time.time()),
+                )
+            )
+
+        results = pg.search_messages("docker")
+
+        # Every result must carry all 10 contract keys.
+        required_keys = {
+            "id", "session_id", "role", "snippet", "timestamp",
+            "tool_name", "source", "model", "session_started", "context",
+        }
+        for r in results:
+            missing = required_keys - set(r.keys())
+            assert not missing, f"Result missing keys: {missing}"
+
+        # 4 matches: content×2, tool_name×1, tool_calls×1.
+        assert len(results) == 4, (
+            f"Expected 4 docker matches, got {len(results)}: "
+            f"{[r.get('snippet', '')[:60] for r in results]}"
+        )
+    finally:
+        pg.close()
+        restore()
+

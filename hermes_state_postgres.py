@@ -42,8 +42,9 @@ logger = logging.getLogger(__name__)
 #     IDENTITY PRIMARY KEY (server-assigned monotonic id; migration may also
 #     supply explicit ids, hence BY DEFAULT not ALWAYS).
 #   * REAL                               -> DOUBLE PRECISION
-#   * No FTS5 virtual tables (PostgreSQL has no fts5; search uses a degraded
-#     ILIKE path instead).
+#   * No FTS5 virtual tables (PostgreSQL has no fts5; search uses ILIKE,
+#     accelerated by pg_trgm GIN indexes when pg_trgm is installed — see
+#     _PG_ONLY_MIGRATIONS / apply_postgres_migrations).
 # The integer/boolean flag columns (observed, active, archived, rewind_count)
 # stay INTEGER to match how SessionDB writes and filters them (``active = 1``).
 
@@ -143,11 +144,173 @@ class StateDatabaseConfig:
     database_url: Optional[str] = None
 
 
-def init_postgres_schema(conn: Any, schema_version: int) -> None:
-    """Create the PostgreSQL schema if absent and record the schema version.
+# ---------------------------------------------------------------------------
+# Postgres-only migrations (version > upstream SCHEMA_VERSION=16)
+# ---------------------------------------------------------------------------
+#
+# These migrations extend the Postgres schema beyond what the upstream SQLite
+# path knows about. Version numbers > 16 are Postgres-local and will never
+# conflict with the SQLite migration path.
+#
+# schema_version is append-only: one row per applied migration. Every read
+# uses MAX(version) (see postgres_schema_version) so ordering is unambiguous.
 
-    Idempotent: every DDL statement is ``IF NOT EXISTS``, and the version row is
-    only inserted when the table is empty. Safe to call on every connect.
+
+@dataclass(frozen=True)
+class PostgresMigration:
+    """A single Postgres-only schema migration step.
+
+    ``version``: Postgres-local version number (may exceed the upstream
+        SCHEMA_VERSION=16; values > 16 are invisible to the SQLite path).
+    ``sql``: DDL to execute. Each ``;``-separated statement runs independently
+        in autocommit mode via the raw psycopg connection (not the adapter),
+        so SQLite-compat translation is bypassed. Do NOT embed ``;`` inside
+        dollar-quoted (``$$``) blocks or single-quoted literals — the split
+        is naive.
+    ``optional``: If ``True``, any exception is logged at WARNING and the
+        migration is skipped without recording the version (enabling retry on
+        next connect). If ``False``, the exception propagates.
+    """
+
+    version: int
+    sql: str
+    optional: bool = False
+
+
+_PG_ONLY_MIGRATIONS: List[PostgresMigration] = [
+    # v17 — Install pg_trgm extension (required: failure retries next connect).
+    # On Adam's Azure Flexible Server pg_trgm is already installed, so this is
+    # a fast no-op. Non-optional so unexpected failure surfaces in logs.
+    PostgresMigration(
+        version=17,
+        optional=False,
+        sql="CREATE EXTENSION IF NOT EXISTS pg_trgm",
+    ),
+    # v18 — GIN trigram indexes on the three searched columns. optional=True
+    # because index builds can fail transiently (lock, OOM, disk full); ILIKE
+    # still works without them (just slower). IF NOT EXISTS makes this
+    # idempotent so pre-created indexes on large production tables are skipped.
+    PostgresMigration(
+        version=18,
+        optional=True,
+        sql=(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_content_trgm"
+            "    ON messages USING GIN (content gin_trgm_ops);\n"
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_tool_name_trgm"
+            "    ON messages USING GIN (tool_name gin_trgm_ops);\n"
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_tool_calls_trgm"
+            "    ON messages USING GIN (tool_calls gin_trgm_ops)"
+        ),
+    ),
+]
+
+
+def plan_postgres_migrations(current_version: int) -> List[PostgresMigration]:
+    """Return pending Postgres-only migrations (version > *current_version*).
+
+    *current_version* is sourced from ``schema_version`` ``MAX(version)`` —
+    NOT from the upstream ``SCHEMA_VERSION`` constant, which governs only the
+    SQLite/shared schema.
+    """
+    return [m for m in _PG_ONLY_MIGRATIONS if m.version > current_version]
+
+
+def _probe_pg_trgm(conn: Any) -> bool:
+    """Return ``True`` if pg_trgm is installed in the current database.
+
+    TEST UTILITY — not called from the production path. Uses a catalog probe
+    rather than ``try/except`` on DDL to avoid putting the psycopg connection
+    into an aborted-transaction state.
+    """
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM pg_catalog.pg_extension WHERE extname = 'pg_trgm'"
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
+def _apply_single_migration(conn: Any, migration: PostgresMigration) -> None:
+    """Execute one migration's SQL and record the version.
+
+    Executes against ``conn._conn`` (raw psycopg), NOT the ``_PostgresCursor``
+    adapter, so migration DDL is not subject to SQLite-compat translation
+    (``?`` → ``%s``, strict-mode checks, etc.).
+
+    ``CREATE INDEX CONCURRENTLY`` requires the connection to be in autocommit
+    mode. ``connect_postgres`` always opens with ``autocommit=True``, so each
+    statement commits immediately — this is correct and required for
+    CONCURRENTLY.
+
+    The version INSERT runs last. If a prior statement fails the version is not
+    recorded, so the migration retries on the next connect.
+    """
+    raw = conn._conn  # raw psycopg connection — bypass adapter translation
+    for statement in migration.sql.split(";"):
+        statement = statement.strip()
+        if not statement:
+            continue
+        if "INDEX" in statement.upper():
+            logger.info(
+                "pg-only migration v%d: creating GIN index (may take a while"
+                " on large tables): %.80s…",
+                migration.version,
+                statement,
+            )
+        raw.execute(statement)
+    # Append-only version record. ON CONFLICT DO NOTHING makes a concurrent
+    # second runner safe (both see version N, both try to insert — second wins
+    # the race but the INSERT is a harmless no-op).
+    raw.execute(
+        "INSERT INTO schema_version (version) VALUES (%s) ON CONFLICT DO NOTHING",
+        (migration.version,),
+    )
+
+
+def apply_postgres_migrations(conn: Any) -> None:
+    """Apply any pending Postgres-only migrations.
+
+    Called by :func:`init_postgres_schema` on every connect. Reads
+    ``MAX(version)`` from ``schema_version`` and applies only migrations with
+    version > current. Idempotent: safe to call repeatedly.
+
+    Concurrent-connect race: safe. ``CREATE EXTENSION IF NOT EXISTS`` and
+    ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` are idempotent; the version
+    ``INSERT … ON CONFLICT DO NOTHING`` absorbs the duplicate.
+
+    Optional migrations (``optional=True``) log a WARNING on failure without
+    recording the version, enabling retry on next connect. Non-optional
+    migrations propagate the exception.
+    """
+    current = postgres_schema_version(conn)
+    pending = plan_postgres_migrations(current)
+    if not pending:
+        return
+    for migration in pending:
+        if migration.optional:
+            try:
+                _apply_single_migration(conn, migration)
+                logger.info("pg-only migration v%d applied", migration.version)
+            except Exception as exc:
+                logger.warning(
+                    "pg-only migration v%d skipped (optional): %s",
+                    migration.version,
+                    exc,
+                )
+        else:
+            _apply_single_migration(conn, migration)
+            logger.info("pg-only migration v%d applied", migration.version)
+
+
+def init_postgres_schema(conn: Any, schema_version: int) -> None:
+    """Create the PostgreSQL schema if absent, record the base schema version,
+    and apply any pending Postgres-only migrations.
+
+    Idempotent: every DDL statement uses ``IF NOT EXISTS``, and the base
+    version row is only inserted when the table is empty. Postgres-only
+    migrations (version > 16) are applied after the base schema is
+    established; they use ``MAX(version)`` to determine what is pending.
     """
     cur = conn.cursor()
     cur.executescript(SCHEMA_SQL_POSTGRES)
@@ -155,6 +318,9 @@ def init_postgres_schema(conn: Any, schema_version: int) -> None:
     if existing is None:
         cur.execute("INSERT INTO schema_version (version) VALUES (?)", (schema_version,))
     conn.commit()
+    # Apply Postgres-only migrations (e.g. pg_trgm GIN indexes). Version
+    # numbers > 16 are invisible to the SQLite path and never conflict.
+    apply_postgres_migrations(conn)
 
 
 def postgres_schema_version(conn: Any) -> int:
@@ -521,13 +687,19 @@ def acquire_compression_lock_sql(conn: Any, session_id: str, holder: str,
 
 
 # ---------------------------------------------------------------------------
-# Degraded search (no FTS5 on PostgreSQL)
+# ILIKE search for the PostgreSQL backend (GIN-accelerated)
 # ---------------------------------------------------------------------------
 #
-# PostgreSQL has no SQLite FTS5 equivalent, and building a tsvector/GIN index is
-# out of scope for this backend. Search therefore degrades to a portable,
-# case-insensitive substring (ILIKE) scan over the same text columns the FTS
-# index covered. The result-row contract matches the SQLite search_messages
+# PostgreSQL has no SQLite FTS5 equivalent. Search uses case-insensitive
+# ILIKE over the same text columns the FTS5 index covers (content, tool_name,
+# tool_calls). When pg_trgm is installed and the GIN indexes created by
+# migrations v17/v18 are present, PostgreSQL uses them automatically —
+# no query-syntax change needed. Without the indexes the query falls back
+# to a sequential scan (slower but functionally identical).
+# Queries shorter than 3 characters bypass the trigram index (fundamental
+# trigram minimum); those fall back to seq scan as well.
+#
+# The result-row contract matches the SQLite search_messages
 # path exactly (id/session_id/role/snippet/timestamp/tool_name/source/model/
 # session_started + a bounded before/anchor/after ``context`` window, with the
 # full ``content`` removed), so callers are backend-agnostic.
@@ -581,7 +753,8 @@ def search_messages_postgres(
     sort: Optional[str] = None,
     include_inactive: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Degraded substring search for the PostgreSQL backend.
+    """ILIKE substring search for the PostgreSQL backend, GIN-accelerated when
+    pg_trgm is installed (migrations v17/v18).
 
     Intentionally uses portable ILIKE semantics rather than emulating FTS5
     query syntax (boolean operators, prefix ``*``, phrase quoting). Matches the

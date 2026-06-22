@@ -149,14 +149,19 @@ def _extract_diff(
     if not result.stdout.strip() and not new_files:
         return None, None, []
 
+    # 清理旧的审查报告，避免用上次的 diff 评分
+    safe_name = "".join(c for c in project_name if c.isalnum() or c in "_-")
+    md_path = Path(f"/tmp/codex_review_{safe_name}.md")
+    patch_path = Path(f"/tmp/codex_full_diff_{safe_name}.patch")
+    try:
+        md_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
     subprocess.run(
         ["python3", REVIEW_SCRIPT, project_dir],
         capture_output=True, timeout=15,
     )
-
-    safe_name = "".join(c for c in project_name if c.isalnum() or c in "_-")
-    md_path = Path(f"/tmp/codex_review_{safe_name}.md")
-    patch_path = Path(f"/tmp/codex_full_diff_{safe_name}.patch")
 
     diff_result = subprocess.run(
         ["git", "-C", project_dir, "diff"],

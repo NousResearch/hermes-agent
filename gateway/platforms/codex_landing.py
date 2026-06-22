@@ -31,13 +31,11 @@ async def post_result(
     """
     parts = [result_msg]
 
+    # 只展示文件路径，不贴原始 diff（避免飞书消息刷屏）
     if md_path and md_path.is_file():
-        parts.append("\n--- 审查报告 ---\n")
-        parts.append(md_path.read_text(encoding="utf-8"))
-
+        parts.append(f"\n📄 审查报告: {md_path}")
     if patch_path and patch_path.is_file():
-        parts.append("\n--- Diff Patch ---\n")
-        parts.append(patch_path.read_text(encoding="utf-8"))
+        parts.append(f"📄 完整 diff: {patch_path}")
 
     final_text = "\n".join(parts)
 

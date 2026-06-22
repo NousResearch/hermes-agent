@@ -12826,6 +12826,166 @@ def _maybe_open_browser(
     threading.Thread(target=_open, daemon=True).start()
 
 
+# ── i18n Auto-Translate ────────────────────────────────────────────────
+
+class I18nTranslateRequest(BaseModel):
+    locale: str  # e.g. "zh", "ja", "fr"
+    model: Optional[str] = None  # override model, uses current config if omitted
+    dry_run: bool = False  # if True, return translations without saving
+
+
+def _read_ts_translations(filepath: Path) -> dict:
+    """Parse a TypeScript translations object into a flat {key: value} dict."""
+    if not filepath.exists():
+        return {}
+    import re
+    text = filepath.read_text(encoding="utf-8")
+    # Crude parser: extract "key": "value" pairs at all nesting levels
+    result = {}
+    stack: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            continue
+        # Track nesting
+        if stripped.endswith("},") or stripped == "}":
+            if stack:
+                stack.pop()
+            continue
+        m = re.match(r'^(\w+)\s*:\s*\{?\s*$', stripped)
+        if m:
+            stack.append(m.group(1))
+            continue
+        m = re.match(r'^(\w+)\s*:\s*"(.+)"\s*,?\s*$', stripped)
+        if m:
+            key_path = ".".join(stack + [m.group(1)])
+            val = m.group(2)
+            result[key_path] = val
+    return result
+
+
+@app.post("/api/i18n/translate")
+async def i18n_translate(req: I18nTranslateRequest):
+    """Translate missing dashboard strings to the target locale using Hermes."""
+    if not req.locale or req.locale == "en":
+        raise HTTPException(status_code=400, detail="Target locale must be non-English (e.g. zh, ja, fr)")
+    
+    en_path = WEB_DIST.parent / "src" / "i18n" / "en.ts"
+    target_path = WEB_DIST.parent / "src" / "i18n" / f"{req.locale}.ts"
+    
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail=f"Locale file not found: {req.locale}.ts")
+
+    en_keys = _read_ts_translations(en_path)
+    target_keys = _read_ts_translations(target_path)
+
+    missing = {k: v for k, v in en_keys.items() if k not in target_keys}
+    if not missing:
+        return {"translated": 0, "missing": 0, "translations": {}, "message": "No missing keys"}
+
+    # Build translation prompt — send via stdin to avoid shell escaping issues
+    lines = []
+    for key, en_val in sorted(missing.items()):
+        display_val = en_val if len(en_val) < 200 else en_val[:197] + "..."
+        lines.append(f'  "{key}": "{display_val}"')
+    
+    prompt = (
+        f"Translate the following English UI strings to {_locale_display_name(req.locale)}.\n"
+        f"These are for the Hermes Agent dashboard web UI.\n"
+        f"Return ONLY a JSON object with the same keys and translated values.\n"
+        f"Do NOT include any explanation, markdown, or extra text.\n\n"
+        f"{chr(10).join(lines)}"
+    )
+
+    cmd = ["hermes", "chat", "-q", "-Q"]
+    if req.model:
+        cmd.extend(["-m", req.model])
+
+    try:
+        import subprocess
+        result = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=PROJECT_ROOT,
+            env={**os.environ, "NO_COLOR": "1"},
+        )
+        output = result.stdout.strip()
+        if result.returncode != 0:
+            err = result.stderr[:500] or "unknown error"
+            raise HTTPException(status_code=500, detail=f"Hermes failed: {err}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Translation timed out")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="hermes CLI not found in PATH")
+
+    # Parse JSON from output
+    import json as _json
+    try:
+        # Find JSON block in output (may be wrapped in markdown)
+        json_start = output.find("{")
+        json_end = output.rfind("}") + 1
+        if json_start >= 0 and json_end > json_start:
+            translations = _json.loads(output[json_start:json_end])
+        else:
+            translations = _json.loads(output)
+    except _json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail=f"Failed to parse translation output: {output[:500]}")
+
+    if not isinstance(translations, dict):
+        raise HTTPException(status_code=500, detail="Model did not return a JSON object")
+
+    # Optionally save to file
+    if not req.dry_run and translations:
+        _apply_translations(target_path, translations)
+
+    return {
+        "translated": len(translations),
+        "missing": len(missing),
+        "translations": translations,
+    }
+
+
+def _locale_display_name(locale: str) -> str:
+    names = {
+        "zh": "Simplified Chinese (简体中文)",
+        "zh-hant": "Traditional Chinese (繁體中文)",
+        "ja": "Japanese (日本語)",
+        "de": "German (Deutsch)",
+        "es": "Spanish (Español)",
+        "fr": "French (Français)",
+        "tr": "Turkish (Türkçe)",
+        "uk": "Ukrainian (Українська)",
+        "af": "Afrikaans",
+        "ko": "Korean (한국어)",
+        "it": "Italian (Italiano)",
+        "ga": "Irish (Gaeilge)",
+        "pt": "Portuguese (Português)",
+        "ru": "Russian (Русский)",
+        "hu": "Hungarian (Magyar)",
+    }
+    return names.get(locale, locale)
+
+
+def _apply_translations(filepath: Path, translations: dict):
+    """Write translated key-value pairs back to the locale .ts file."""
+    import re
+    content = filepath.read_text(encoding="utf-8")
+    for key_path, value in translations.items():
+        parts = key_path.split(".")
+        # Build regex to find and replace the value for this key
+        # Simple approach: find the key and replace its value
+        escaped_key = re.escape(parts[-1])
+        # Find "key": "old_value" and replace with "key": "new_value"
+        pattern = rf'({escaped_key}\s*:\s*)".*?"'
+        escaped_value = value.replace("\\", "\\\\").replace('"', '\\"')
+        replacement = rf'\1"{escaped_value}"'
+        content = re.sub(pattern, replacement, content)
+    filepath.write_text(content, encoding="utf-8")
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,

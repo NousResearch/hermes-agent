@@ -1161,6 +1161,13 @@ export const api = {
     fetchJSON<SkillHubScan>(
       `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
+
+  /** Auto-translate missing dashboard UI strings to a target locale. */
+  i18nTranslate: (body: { locale: string; model?: string; dry_run?: boolean }) =>
+    fetchJSON<I18nTranslateResponse>("/api/i18n/translate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
@@ -2247,4 +2254,11 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+export interface I18nTranslateResponse {
+  translated: number;
+  missing: number;
+  translations: Record<string, string>;
+  message?: string;
 }

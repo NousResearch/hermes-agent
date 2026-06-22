@@ -9,6 +9,7 @@ import { useI18n } from "@/i18n/context";
 import { LOCALE_META } from "@/i18n";
 import type { Locale } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { AutoTranslateWidget } from "@/components/AutoTranslateWidget";
 
 /**
  * Language picker — shows the current language's endonym, opens a dropdown
@@ -100,6 +101,9 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
               setLocale={setLocale}
               setOpen={setOpen}
             />
+            <div className="border-t border-border pt-1">
+              <AutoTranslateWidget />
+            </div>
           </div>
         </BottomSheet>
       )}
@@ -127,6 +131,9 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
               setLocale={setLocale}
               setOpen={setOpen}
             />
+            <div className="border-t border-border pt-1">
+              <AutoTranslateWidget />
+            </div>
           </div>
         );
         return dropUp ? createPortal(dropdown, document.body) : dropdown;

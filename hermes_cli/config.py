@@ -4063,9 +4063,9 @@ def _normalize_custom_provider_entry(
     if "api_key_env" in entry and "key_env" not in entry:
         entry["key_env"] = entry["api_key_env"]
     _KNOWN_KEYS = {
-        "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
-        "api_mode", "transport", "model", "default_model", "models",
-        "context_length", "rate_limit_delay",
+        "name", "api", "url", "base_url", "api_base", "api_key", "key_env",
+        "api_key_env", "api_mode", "transport", "model", "default_model",
+        "models", "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body",
     }
@@ -4087,7 +4087,7 @@ def _normalize_custom_provider_entry(
     from urllib.parse import urlparse
 
     base_url = ""
-    for url_key in ("base_url", "url", "api"):
+    for url_key in ("base_url", "api_base", "url", "api"):
         raw_url = entry.get(url_key)
         if isinstance(raw_url, str) and raw_url.strip():
             candidate = raw_url.strip()

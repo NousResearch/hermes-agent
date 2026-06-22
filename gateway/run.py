@@ -8688,8 +8688,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         guessed, _ = _mimetypes.guess_type(path)
                         if guessed:
                             mtype = guessed
-                if not mtype.startswith(("application/", "text/")):
-                    continue
+                        else:
+                            mtype = "application/octet-stream"
+                # Any accepted file gets a path-pointing context note — we accept
+                # all file types now, so a non-text/non-application MIME (font/*,
+                # model/*, etc.) must still tell the agent the file exists.
 
                 basename = os.path.basename(path)
                 parts = basename.split("_", 2)

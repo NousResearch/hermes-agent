@@ -81,6 +81,7 @@ from gateway.platforms.base import (
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
+    _TEXT_INJECT_EXTENSIONS,
     utf16_len,
 )
 from plugins.platforms.telegram.telegram_network import (
@@ -6526,33 +6527,30 @@ class TelegramAdapter(BasePlatformAdapter):
                 # ext-in-SUPPORTED_IMAGE_DOCUMENT_TYPES branch would be dead
                 # code — the extension sets are identical.
 
-                # Check if supported
-                if ext not in SUPPORTED_DOCUMENT_TYPES:
-                    supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
-                    event.text = (
-                        f"Unsupported document type '{ext or 'unknown'}'. "
-                        f"Supported types: {supported_list}"
-                    )
-                    logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
-                    await self.handle_message(event)
-                    return
-
-                # Download and cache
+                # Download and cache. Any file type is accepted — authorization
+                # to message the agent is the gate, not the file extension.
+                # Known types keep their precise MIME; unknown types are tagged
+                # application/octet-stream so the agent reaches for terminal tools.
                 file_obj = await doc.get_file()
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
-                cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
-                mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
+                cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext or '.bin'}")
+                mime_type = SUPPORTED_DOCUMENT_TYPES.get(ext) or doc.mime_type or "application/octet-stream"
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
-                logger.info("[Telegram] Cached user document at %s", cached_path)
+                logger.info("[Telegram] Cached user document at %s (%s)", cached_path, mime_type)
 
-                # For text files, inject content into event.text (capped at 100 KB)
+                # For text-readable files, inject content into event.text (capped
+                # at 100 KB). Gate on a text-like extension/MIME — NOT a blind
+                # UTF-8 decode, since binary formats (PDF/zip/docx) can have
+                # decodable ASCII headers. Binary files are surfaced as a cached
+                # path only (run.py emits a path-pointing context note).
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
-                if ext in {".md", ".txt"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                _is_text = ext in _TEXT_INJECT_EXTENSIONS or (doc_mime or "").startswith("text/")
+                if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                     try:
                         text_content = raw_bytes.decode("utf-8")
-                        display_name = original_filename or f"document{ext}"
+                        display_name = original_filename or f"document{ext or '.txt'}"
                         display_name = re.sub(r'[^\w.\- ]', '_', display_name)
                         injection = f"[Content of {display_name}]:\n{text_content}"
                         if event.text:
@@ -6560,10 +6558,9 @@ class TelegramAdapter(BasePlatformAdapter):
                         else:
                             event.text = injection
                     except UnicodeDecodeError:
-                        logger.warning(
-                            "[Telegram] Could not decode text file as UTF-8, skipping content injection",
-                            exc_info=True,
-                        )
+                        # Binary file — agent has the cached path and can use
+                        # terminal/read_file against it. No inline injection.
+                        pass
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)

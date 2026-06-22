@@ -116,6 +116,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+    _TEXT_INJECT_EXTENSIONS,
     validate_inbound_media_size,
 )
 from tools.url_safety import is_safe_url
@@ -5288,8 +5289,9 @@ class DiscordAdapter(BasePlatformAdapter):
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif all_attachments:
-            _allow_any = self._discord_allow_any_attachment()
-            # Check attachment types
+            # Check attachment types. Any non-media attachment is treated as a
+            # DOCUMENT regardless of extension — authorization to message the
+            # agent is the gate, not the file type.
             for att in all_attachments:
                 if att.content_type:
                     if att.content_type.startswith("image/"):
@@ -5302,14 +5304,9 @@ class DiscordAdapter(BasePlatformAdapter):
                         else:
                             msg_type = MessageType.AUDIO
                     else:
-                        doc_ext = ""
-                        if att.filename:
-                            _, doc_ext = os.path.splitext(att.filename)
-                            doc_ext = doc_ext.lower()
-                        if doc_ext in SUPPORTED_DOCUMENT_TYPES or _allow_any:
-                            msg_type = MessageType.DOCUMENT
+                        msg_type = MessageType.DOCUMENT
                     break
-                elif _allow_any:
+                else:
                     # No content_type at all (rare — discord usually fills it
                     # in). Treat as a document so downstream pipelines surface
                     # the path to the agent.
@@ -5398,71 +5395,79 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not ext and content_type:
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(content_type, "")
-                allow_any_attachment = self._discord_allow_any_attachment()
                 in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
-                if not in_allowlist and not allow_any_attachment:
+                # Any file type is accepted — authorization to message the agent
+                # is the gate, not the file extension. Known types keep their
+                # precise MIME; unknown types fall back to the source content_type
+                # or octet-stream so the agent reaches for terminal tools.
+                max_doc_bytes = self._discord_max_attachment_bytes()
+                if max_doc_bytes and att.size and att.size > max_doc_bytes:
                     logger.warning(
-                        "[Discord] Unsupported document type '%s' (%s), skipping",
-                        ext or "unknown", content_type,
+                        "[Discord] Document too large (%s bytes > cap %s), skipping: %s",
+                        att.size, max_doc_bytes, att.filename,
                     )
                 else:
-                    max_doc_bytes = self._discord_max_attachment_bytes()
-                    if max_doc_bytes and att.size and att.size > max_doc_bytes:
-                        logger.warning(
-                            "[Discord] Document too large (%s bytes > cap %s), skipping: %s",
-                            att.size, max_doc_bytes, att.filename,
+                    try:
+                        raw_bytes = await self._cache_discord_document(att, ext)
+                        cached_path = cache_document_from_bytes(
+                            raw_bytes, att.filename or f"document{ext or '.bin'}"
                         )
-                    else:
-                        try:
-                            raw_bytes = await self._cache_discord_document(att, ext)
-                            cached_path = cache_document_from_bytes(
-                                raw_bytes, att.filename or f"document{ext or '.bin'}"
+                        if in_allowlist:
+                            doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                        else:
+                            # Untyped file. Use the source content_type if
+                            # discord gave us one, otherwise fall back to
+                            # octet-stream so the agent knows it's binary and
+                            # reaches for terminal tools.
+                            doc_mime = (
+                                content_type
+                                if content_type and content_type != "unknown"
+                                else "application/octet-stream"
                             )
-                            if in_allowlist:
-                                doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
-                            else:
-                                # allow_any_attachment path: untyped file. Use the
-                                # source content_type if discord gave us one,
-                                # otherwise fall back to octet-stream so the agent
-                                # knows it's binary and reaches for terminal tools.
-                                doc_mime = (
-                                    content_type
-                                    if content_type and content_type != "unknown"
-                                    else "application/octet-stream"
-                                )
-                            media_urls.append(cached_path)
-                            media_types.append(doc_mime)
-                            logger.info(
-                                "[Discord] Cached user %s: %s",
-                                "document" if in_allowlist else "attachment",
-                                cached_path,
-                            )
-                            # Inject text content for plain-text documents (capped at 100 KB)
-                            MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            if in_allowlist and ext in {".md", ".txt", ".log"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
-                                try:
-                                    text_content = raw_bytes.decode("utf-8")
-                                    display_name = att.filename or f"document{ext}"
-                                    display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-                                    injection = f"[Content of {display_name}]:\n{text_content}"
-                                    if pending_text_injection:
-                                        pending_text_injection = f"{pending_text_injection}\n\n{injection}"
-                                    else:
-                                        pending_text_injection = injection
-                                except UnicodeDecodeError:
-                                    pass
-                            # NOTE: for the allow_any_attachment path we deliberately
-                            # do NOT inject a path string here. ``gateway/run.py``
-                            # already detects DOCUMENT-typed events with
-                            # ``application/octet-stream`` MIME and emits a context
-                            # note with the sandbox-translated cache path via
-                            # ``to_agent_visible_cache_path()`` (important for
-                            # Docker/Modal terminal backends).
-                        except Exception as e:
-                            logger.warning(
-                                "[Discord] Failed to cache document %s: %s",
-                                att.filename, e, exc_info=True,
-                            )
+                        media_urls.append(cached_path)
+                        media_types.append(doc_mime)
+                        logger.info(
+                            "[Discord] Cached user %s: %s",
+                            "document" if in_allowlist else "attachment",
+                            cached_path,
+                        )
+                        # Inject text content for any text-readable document
+                        # Inject text content for text-readable documents
+                        # (capped at 100 KB). Gate on a text-like extension/MIME
+                        # — NOT a blind UTF-8 decode, since binary formats like
+                        # PDF/zip/docx can have decodable ASCII headers. Unknown
+                        # but clearly-textual types (text/* MIME or a known text
+                        # extension) are inlined too; everything else relies on
+                        # ``gateway/run.py`` to emit a path-pointing context note.
+                        MAX_TEXT_INJECT_BYTES = 100 * 1024
+                        _is_text = (
+                            ext in _TEXT_INJECT_EXTENSIONS
+                            or (content_type or "").startswith("text/")
+                        )
+                        if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            try:
+                                text_content = raw_bytes.decode("utf-8")
+                                display_name = att.filename or f"document{ext or '.txt'}"
+                                display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                                injection = f"[Content of {display_name}]:\n{text_content}"
+                                if pending_text_injection:
+                                    pending_text_injection = f"{pending_text_injection}\n\n{injection}"
+                                else:
+                                    pending_text_injection = injection
+                            except UnicodeDecodeError:
+                                pass
+                        # NOTE: for the untyped-attachment path we deliberately
+                        # do NOT inject a path string here. ``gateway/run.py``
+                        # already detects DOCUMENT-typed events with
+                        # ``application/octet-stream`` MIME and emits a context
+                        # note with the sandbox-translated cache path via
+                        # ``to_agent_visible_cache_path()`` (important for
+                        # Docker/Modal terminal backends).
+                    except Exception as e:
+                        logger.warning(
+                            "[Discord] Failed to cache document %s: %s",
+                            att.filename, e, exc_info=True,
+                        )
 
         # Use normalized_content (saved before auto-threading) instead of message.content,
         # to detect /slash commands in channel messages.

@@ -1,0 +1,5 @@
+name: sakana-provider
+kind: model-provider
+version: 1.0.0
+description: Sakana AI Fugu models
+author: Nous Research

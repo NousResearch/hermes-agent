@@ -191,6 +191,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.gmi-serving.com/v1",
         base_url_env_var="GMI_BASE_URL",
     ),
+    "sakana": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("SAKANA_API_KEY",),
+        base_url_override="https://api.sakana.ai/v1",
+        base_url_env_var="SAKANA_BASE_URL",
+    ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://ollama.com/v1",
@@ -338,6 +344,10 @@ ALIASES: Dict[str, str] = {
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
 
+    # sakana
+    "sakana-ai": "sakana",
+    "fugu": "sakana",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -361,6 +371,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
+    "sakana": "Sakana AI",
     "tencent-tokenhub": "Tencent TokenHub",
     "lmstudio": "LM Studio",
     "local": "Local endpoint",

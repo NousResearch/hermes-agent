@@ -21,6 +21,7 @@ import pytest
 import hermes_state
 from hermes_state import (
     SessionDB,
+    _db_opens_cleanly,
     is_malformed_db_error,
     repair_state_db_schema,
 )
@@ -242,3 +243,120 @@ def test_repair_on_clean_db_is_noop(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 10
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# #50502 — FTS *write* corruption that reads alone report as healthy.
+#
+# A readable state.db can still be unusable for persistence: when the FTS5
+# index is corrupt only on the write path, every read (integrity_check,
+# COUNT(*) FROM sessions/messages) succeeds while every INSERT INTO messages
+# fails through the messages_fts_insert trigger with
+# "database disk image is malformed". The gateway swallows that write error
+# and the next turn reloads an empty/stale transcript — immediate same-session
+# amnesia. The health probe must therefore also exercise a (rolled-back)
+# write, not just reads.
+#
+# These tests simulate the failure by making the messages_fts_insert trigger
+# raise on insert. That faithfully reproduces "writes fail through the FTS
+# triggers while reads pass" without sqlite_master surgery (which newer SQLite
+# builds block), so the detection contract is exercised on every SQLite.
+# ---------------------------------------------------------------------------
+def _break_fts_insert_trigger(db_path: Path) -> None:
+    """Make the messages_fts_insert trigger fail like a corrupt FTS index.
+
+    Reads of sessions/messages and PRAGMA integrity_check stay healthy; only
+    the trigger-driven write path raises 'database disk image is malformed'.
+    """
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("DROP TRIGGER IF EXISTS messages_fts_insert")
+        conn.execute(
+            "CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN "
+            "  SELECT RAISE(ABORT, 'database disk image is malformed'); "
+            "END"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_read_probes_miss_fts_write_corruption(tmp_path):
+    """The old read-only checks all pass on a write-corrupt FTS index."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _break_fts_insert_trigger(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        # Every read-only signal the old probe relied on still reports healthy.
+        assert conn.execute("PRAGMA journal_mode").fetchone() is not None
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 10
+    finally:
+        conn.close()
+
+
+def test_db_opens_cleanly_detects_fts_write_corruption(tmp_path):
+    """The write-aware probe flags the corruption the read checks miss."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+
+    # Healthy DB: probe reports clean.
+    assert _db_opens_cleanly(db_path) is None
+
+    _break_fts_insert_trigger(db_path)
+
+    # Corrupt write path: probe now returns the failure reason.
+    reason = _db_opens_cleanly(db_path)
+    assert reason is not None
+    assert "malformed" in reason.lower()
+
+
+def test_fts_write_probe_rolls_back_and_corruption_is_real(tmp_path):
+    """The probe must persist nothing, and the simulated corruption must
+    actually block real appends (not just be a synthetic flag)."""
+    db_path = tmp_path / "state.db"
+    sid = _build_healthy_db(db_path)
+    _break_fts_insert_trigger(db_path)
+
+    # The probe ran an INSERT internally; it must have rolled back — no probe
+    # sentinel row leaks into messages.
+    assert _db_opens_cleanly(db_path) is not None
+    conn = sqlite3.connect(str(db_path))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 10
+        leaked = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE content LIKE "
+            "'__hermes_fts_write_probe__%'"
+        ).fetchone()[0]
+        assert leaked == 0
+    finally:
+        conn.close()
+
+    # A real append really does fail on this DB (the silent-drop class).
+    db = SessionDB(db_path=db_path)
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            db.append_message(sid, role="user", content="next turn")
+    finally:
+        db.close()
+
+
+def test_healthy_db_passes_write_probe(tmp_path):
+    """A healthy DB stays healthy and the write probe leaves no residue."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+
+    assert _db_opens_cleanly(db_path) is None
+    # Probe is non-destructive: counts unchanged, no sentinel rows.
+    conn = sqlite3.connect(str(db_path))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 10
+        assert conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE content LIKE "
+            "'__hermes_fts_write_probe__%'"
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()

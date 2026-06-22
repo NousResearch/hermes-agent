@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -394,12 +395,55 @@ def _backup_db_file(db_path: Path) -> Optional[Path]:
         return None
 
 
+def _fts_write_probe(conn: sqlite3.Connection) -> Optional[str]:
+    """Drive a rolled-back ``messages`` write through the FTS triggers.
+
+    ``PRAGMA integrity_check`` and ``SELECT`` probes only exercise reads, so an
+    FTS5 index that is corrupt *only on the write path* (the
+    ``messages_fts_insert`` trigger raising ``database disk image is
+    malformed``) reports healthy while every real ``append_message`` silently
+    fails -- the #50502 immediate-history-drop class.
+
+    Insert a sentinel row inside a transaction and ALWAYS roll it back, so the
+    FTS triggers actually fire (proving the index is writable) without
+    persisting anything. Returns ``None`` when the write path is healthy, else
+    the error string. A missing ``messages`` table is treated as healthy here
+    (a fresh/partial DB the caller's read checks already cover).
+    """
+    sentinel = "__hermes_fts_write_probe__" + uuid.uuid4().hex
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+    except sqlite3.DatabaseError as exc:
+        return str(exc)
+    try:
+        conn.execute("SELECT 1 FROM messages LIMIT 0")
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) "
+            "VALUES (?, ?, ?, ?)",
+            (sentinel, "user", sentinel, 0.0),
+        )
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return None
+        return str(exc)
+    except sqlite3.DatabaseError as exc:
+        return str(exc)
+    finally:
+        try:
+            conn.rollback()
+        except sqlite3.DatabaseError:
+            pass
+    return None
+
+
 def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
 
     Runs the same first-statement (``PRAGMA journal_mode``) that trips the
-    malformed-schema parse, then ``PRAGMA integrity_check`` and a canonical
-    ``sessions`` read.
+    malformed-schema parse, then ``PRAGMA integrity_check``, a canonical
+    ``sessions`` read, AND a transactionally rolled-back ``messages`` write so
+    the FTS triggers are exercised (catches the #50502 write-only corruption
+    class that reads alone report as healthy).
     """
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     try:
@@ -409,6 +453,9 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         if problems:
             return "; ".join(problems[:3])
         conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+        write_reason = _fts_write_probe(conn)
+        if write_reason is not None:
+            return write_reason
         return None
     except sqlite3.DatabaseError as exc:
         return str(exc)

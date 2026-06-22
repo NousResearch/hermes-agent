@@ -1,4 +1,9 @@
-# Per-PR table — 40 code PRs (manifest #50111 excluded)
+# Per-PR table — 42 code/test PRs (manifest #50111 excluded)
+
+Regenerated from live GitHub truth (open arminanton PRs). The closed/superseded
+#50457 (opus-context 100-file bundle) is NOT a code PR — its unique files were
+reattributed to their live owners (#50664 opus-context test, #50555 agy-cli,
+#50626 subdirectory-hints, #50657 auth/runtime-provider).
 
 | PR | status | mergeable | changed this campaign | rebasable |
 |---|---|---|---|---|
@@ -28,7 +33,7 @@
 | #50048 | draft | MERGEABLE | — | yes |
 | #50053 | draft | MERGEABLE | leak-fix (engine name) | yes |
 | #50054 | draft | MERGEABLE | — | yes |
-| #50055 | draft | MERGEABLE | — | yes |
+| #50055 | draft | MERGEABLE | created (isolated agy-cli) | yes |
 | #50056 | draft | MERGEABLE | v0.17.0-ready variant | yes |
 | #50064 | draft | MERGEABLE | rebased (test fn) | yes |
 | #50066 | draft | MERGEABLE | — | yes |
@@ -40,7 +45,9 @@
 | #50146 | draft | MERGEABLE | — | yes |
 | #50155 | draft | MERGEABLE | — | yes |
 | #50296 | draft | MERGEABLE | rebased onto origin/main (agent_init drift) | yes |
-| #50457 | draft | MERGEABLE | slimmed 100->4 files | yes |
 | #50555 | draft | MERGEABLE | created (isolated agy-cli) | yes |
+| #50626 | draft | MERGEABLE | reattributed from closed #50457 (subdirectory_hints) | yes |
+| #50657 | draft | MERGEABLE | reattributed from closed #50457 (auth/runtime_provider) | yes |
+| #50664 | draft | MERGEABLE | feature-gated behavioral delta (was blanket-skip; reattributed from closed #50457) | yes |
 
-**40 code PRs: 8 ready-for-review, 32 draft. All MERGEABLE on current origin/main.**
+**42 code/test PRs: 8 ready-for-review, 34 draft. Mergeable state per live GitHub (UNKNOWN = GitHub still computing).**

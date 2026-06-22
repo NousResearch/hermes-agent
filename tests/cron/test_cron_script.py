@@ -221,7 +221,7 @@ class TestRunJobScript:
         )
         monkeypatch.setattr(sched_mod, "_run_job_script", lambda _path: (True, ""))
 
-        success, _doc, final_response, error = sched_mod._run_job_impl({
+        success, _doc, final_response, error = sched_mod.run_job({
             "id": "job123",
             "name": "empty-script-job",
             "prompt": "Report only if there is data.",

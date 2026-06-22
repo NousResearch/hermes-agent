@@ -4330,6 +4330,200 @@ def get_model_options(profile: Optional[str] = None, refresh: bool = False):
         raise HTTPException(status_code=500, detail="Failed to list model options")
 
 
+def _model_library_path() -> Path:
+    return get_hermes_home() / "models.json"
+
+
+def _short_model_label(model: str) -> str:
+    text = str(model or "").strip()
+    return (text.rsplit("/", 1)[-1] if text else "") or text
+
+
+def _model_library_key(row: Dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("provider", "")).strip().lower(),
+        str(row.get("model", "")).strip().lower(),
+        str(row.get("baseUrl", row.get("base_url", ""))).strip().rstrip("/").lower(),
+    )
+
+
+_MODEL_LIBRARY_CREDENTIAL_QUERY_KEYS: frozenset[str] = frozenset({
+    "access_token",
+    "api_key",
+    "apikey",
+    "auth_token",
+    "bearer_token",
+    "key",
+    "password",
+    "secret",
+    "token",
+})
+
+
+def _base_url_contains_credentials(base_url: str) -> bool:
+    text = str(base_url or "").strip()
+    if not text:
+        return False
+    parsed = urllib.parse.urlsplit(text)
+    if parsed.username or parsed.password:
+        return True
+    query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    return any(key.lower() in _MODEL_LIBRARY_CREDENTIAL_QUERY_KEYS for key in query)
+
+
+def _validate_model_library_base_url(base_url: str) -> str:
+    text = str(base_url or "").strip()
+    if _base_url_contains_credentials(text):
+        raise HTTPException(status_code=400, detail="baseUrl must not contain credentials")
+    return text
+
+
+def _normalize_model_library_row(row: Dict[str, Any], index: int = 0) -> Optional[Dict[str, Any]]:
+    if not isinstance(row, dict):
+        return None
+    provider = str(row.get("provider", "") or "").strip()
+    model = str(row.get("model", "") or "").strip()
+    if not provider or not model:
+        return None
+    base_url = str(row.get("baseUrl", row.get("base_url", "")) or "").strip()
+    if _base_url_contains_credentials(base_url):
+        return None
+    return {
+        "id": str(row.get("id") or f"remote:library:{provider}:{index}:{model}"),
+        "name": str(row.get("name") or _short_model_label(model) or provider),
+        "provider": provider,
+        "model": model,
+        "baseUrl": base_url,
+        "createdAt": row.get("createdAt") if isinstance(row.get("createdAt"), (int, float)) else 0,
+    }
+
+
+def _read_model_library() -> list[Dict[str, Any]]:
+    path = _model_library_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    except Exception:
+        raw = []
+    rows: list[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for index, item in enumerate(raw if isinstance(raw, list) else []):
+        row = _normalize_model_library_row(item, index)
+        if row is None:
+            continue
+        key = _model_library_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
+    return rows
+
+
+def _write_model_library(rows: list[Dict[str, Any]]) -> None:
+    path = _model_library_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _current_model_library_row() -> Optional[Dict[str, Any]]:
+    cfg = load_config()
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        provider = str(model_cfg.get("provider", "") or "").strip()
+        model = str(model_cfg.get("default", model_cfg.get("name", "")) or "").strip()
+        base_url = str(model_cfg.get("base_url", "") or "").strip()
+    else:
+        provider = ""
+        model = str(model_cfg or "").strip()
+        base_url = ""
+    if not provider or not model:
+        return None
+    if _base_url_contains_credentials(base_url):
+        base_url = ""
+    return {
+        "id": f"remote:active:{provider}:{model}",
+        "name": _short_model_label(model) or provider,
+        "provider": provider,
+        "model": model,
+        "baseUrl": base_url,
+        "createdAt": 0,
+    }
+
+
+@app.get("/api/model/library")
+def get_model_library(profile: Optional[str] = None):
+    with _config_profile_scope(profile):
+        rows = _read_model_library()
+        current = _current_model_library_row()
+    if current:
+        current_key = _model_library_key(current)
+        rows = [current] + [row for row in rows if _model_library_key(row) != current_key]
+    return {"models": rows}
+
+
+@app.post("/api/model/library")
+def add_model_library_row(body: Dict[str, Any], profile: Optional[str] = None):
+    provider = str(body.get("provider", "") or "").strip()
+    model = str(body.get("model", "") or "").strip()
+    if not provider or not model:
+        raise HTTPException(status_code=400, detail="provider and model required")
+    base_url = _validate_model_library_base_url(body.get("baseUrl", body.get("base_url", "")))
+    name = str(body.get("name", "") or "").strip() or _short_model_label(model) or provider
+    with _config_profile_scope(profile):
+        rows = _read_model_library()
+        key = (provider.lower(), model.lower(), base_url.rstrip("/").lower())
+        for row in rows:
+            if _model_library_key(row) == key:
+                return row
+        row = {
+            "id": f"remote:library:{secrets.token_hex(8)}",
+            "name": name,
+            "provider": provider,
+            "model": model,
+            "baseUrl": base_url,
+            "createdAt": int(time.time() * 1000),
+        }
+        rows.append(row)
+        _write_model_library(rows)
+        return row
+
+
+@app.patch("/api/model/library/{model_id:path}")
+def update_model_library_row(model_id: str, body: Dict[str, Any], profile: Optional[str] = None):
+    with _config_profile_scope(profile):
+        rows = _read_model_library()
+        for index, row in enumerate(rows):
+            if row.get("id") != model_id:
+                continue
+            next_row = dict(row)
+            for key in ("name", "provider", "model"):
+                if key in body:
+                    next_row[key] = str(body.get(key, "") or "").strip()
+            if "baseUrl" in body or "base_url" in body:
+                next_row["baseUrl"] = _validate_model_library_base_url(
+                    body.get("baseUrl", body.get("base_url", ""))
+                )
+            normalized = _normalize_model_library_row(next_row, index)
+            if not normalized:
+                raise HTTPException(status_code=400, detail="provider and model required")
+            rows[index] = normalized
+            _write_model_library(rows)
+            return {"ok": True, "model": normalized}
+    raise HTTPException(status_code=404, detail="model not found")
+
+
+@app.delete("/api/model/library/{model_id:path}")
+def delete_model_library_row(model_id: str, profile: Optional[str] = None):
+    with _config_profile_scope(profile):
+        rows = _read_model_library()
+        filtered = [row for row in rows if row.get("id") != model_id]
+        if len(filtered) == len(rows):
+            raise HTTPException(status_code=404, detail="model not found")
+        _write_model_library(filtered)
+    return {"ok": True}
+
+
 @app.get("/api/model/recommended-default")
 def get_recommended_default_model(provider: str = ""):
     """Return the recommended default model for a freshly-authenticated provider.

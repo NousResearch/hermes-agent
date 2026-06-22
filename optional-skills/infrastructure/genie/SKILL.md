@@ -1,8 +1,8 @@
 ---
 name: genie
 description: VPS disk cleanup. Deletes old snaps, logs, and cron files.
-version: 1.6.0
-author: Indigo Karasu (indigokarasu)
+version: 1.7.0
+author: Jared Zimmerman (jaredzimmerman), with Indigo Karasu (indigokarasu) / Hermes Agent
 license: MIT
 platforms: [linux]
 source: https://github.com/indigokarasu/genie

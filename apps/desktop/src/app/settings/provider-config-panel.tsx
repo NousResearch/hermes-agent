@@ -2,82 +2,21 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getMemoryProviderConfig, saveMemoryProviderConfig } from '@/hermes'
-import { Check, Loader2, Save } from '@/lib/icons'
+import { Loader2, Save, SlidersHorizontal } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
-import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
+import type { MemoryProviderConfig } from '@/types/hermes'
 
-import { CONTROL_TEXT } from './constants'
-import { LoadingState, Pill } from './primitives'
+import { FieldControl } from './field-control'
+import { ListRow, LoadingState, Pill } from './primitives'
+import { ProviderConfigModal } from './provider-config-modal'
 
-/** Seed editable values from the schema: non-secret fields keep their current
- *  value, secret fields start blank (their value is never returned). */
+/** Seed editable values from the inline fields only, so saving the compact
+ *  panel never re-writes fields owned by the full-config editor. Secret fields
+ *  start blank (their value is never returned). */
 function seedValues(config: MemoryProviderConfig): Record<string, string> {
-  return Object.fromEntries(config.fields.map(field => [field.key, field.kind === 'secret' ? '' : field.value]))
-}
-
-function FieldControl({
-  field,
-  value,
-  onChange
-}: {
-  field: MemoryProviderField
-  value: string
-  onChange: (value: string) => void
-}) {
-  if (field.kind === 'select') {
-    const selected = field.options.find(option => option.value === value)
-
-    return (
-      <>
-        <Select onValueChange={onChange} value={value}>
-          <SelectTrigger className={CONTROL_TEXT}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {field.options.map(option => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {(selected?.description || field.description) && (
-          <span className="text-xs text-muted-foreground">{selected?.description || field.description}</span>
-        )}
-      </>
-    )
-  }
-
-  if (field.kind === 'secret') {
-    return (
-      <div className="flex flex-wrap items-center gap-2">
-        <Input
-          className="min-w-64 flex-1 font-mono"
-          onChange={event => onChange(event.target.value)}
-          placeholder={field.is_set ? 'Leave blank to keep current value' : field.placeholder}
-          type="password"
-          value={value}
-        />
-        {field.is_set && (
-          <Pill tone="primary">
-            <Check className="size-3" />
-            Set
-          </Pill>
-        )}
-      </div>
-    )
-  }
-
-  return (
-    <Input
-      className="font-mono"
-      onChange={event => onChange(event.target.value)}
-      placeholder={field.placeholder}
-      value={value}
-    />
+  return Object.fromEntries(
+    config.fields.filter(field => field.inline).map(field => [field.key, field.kind === 'secret' ? '' : field.value])
   )
 }
 
@@ -86,6 +25,7 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
   const [values, setValues] = useState<Record<string, string>>({})
   const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [showModal, setShowModal] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -130,17 +70,19 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
     return <LoadingState label="Loading memory provider settings..." />
   }
 
+  const inlineFields = config.fields.filter(field => field.inline)
   const secretFields = config.fields.filter(field => field.kind === 'secret')
+  const hasFullConfig = config.fields.some(field => !field.inline)
 
   return (
-    <section className="py-3">
-      <button
-        aria-expanded={expanded}
-        className="flex w-full items-center justify-between gap-3 rounded-lg bg-background/60 px-3 py-2 text-left hover:bg-accent/50"
-        onClick={() => setExpanded(open => !open)}
-        type="button"
-      >
-        <span className="flex min-w-0 items-center gap-2">
+    <section className="py-1">
+      <div className="flex items-center gap-2 py-2">
+        <button
+          aria-expanded={expanded}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          onClick={() => setExpanded(open => !open)}
+          type="button"
+        >
           <DisclosureCaret open={expanded} />
           <span className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
             {config.label} settings
@@ -148,32 +90,50 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
           {secretFields.map(field => (
             <Pill key={field.key}>{field.is_set ? `${field.label} set` : `${field.label} not set`}</Pill>
           ))}
-        </span>
-      </button>
+        </button>
+        {hasFullConfig && (
+          <Button onClick={() => setShowModal(true)} size="sm" type="button" variant="secondary">
+            <SlidersHorizontal className="size-3.5" />
+            Full config…
+          </Button>
+        )}
+      </div>
 
       {expanded && (
-        <div className="mt-3 grid gap-4 rounded-xl bg-background/60 p-4">
-          {config.fields.map(field => (
-            <label className="grid gap-1.5" key={field.key}>
-              <span className="text-xs font-medium text-muted-foreground">{field.label}</span>
-              <FieldControl
-                field={field}
-                onChange={value => setValues(current => ({ ...current, [field.key]: value }))}
-                value={values[field.key] ?? ''}
+        <div className="ml-1.5 border-l-2 border-(--ui-accent-secondary)/25 bg-(--ui-bg-card) pb-4 pl-4 pr-4">
+          {inlineFields.map(field => (
+            <div className="border-b border-border/40 last:border-b-0" key={field.key}>
+              <ListRow
+                action={
+                  <FieldControl
+                    field={field}
+                    onChange={value => setValues(current => ({ ...current, [field.key]: value }))}
+                    value={values[field.key] ?? ''}
+                  />
+                }
+                description={field.description}
+                title={field.label}
               />
-              {field.kind !== 'select' && field.description && (
-                <span className="text-xs text-muted-foreground">{field.description}</span>
-              )}
-            </label>
+            </div>
           ))}
 
-          <div className="flex justify-end">
+          <div className="flex items-center justify-end pt-3">
             <Button disabled={saving} onClick={() => void save()} size="sm">
               {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
               Save
             </Button>
           </div>
         </div>
+      )}
+
+      {hasFullConfig && (
+        <ProviderConfigModal
+          config={config}
+          onOpenChange={setShowModal}
+          onSaved={refresh}
+          open={showModal}
+          provider={provider}
+        />
       )}
     </section>
   )

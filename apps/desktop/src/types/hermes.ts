@@ -120,7 +120,7 @@ export interface EnvVarInfo {
   url: null | string
 }
 
-export type MemoryProviderFieldKind = 'secret' | 'select' | 'text'
+export type MemoryProviderFieldKind = 'bool' | 'json' | 'number' | 'secret' | 'select' | 'text'
 
 export interface MemoryProviderFieldOption {
   description: string
@@ -130,6 +130,8 @@ export interface MemoryProviderFieldOption {
 
 export interface MemoryProviderField {
   description: string
+  group: string
+  inline: boolean
   is_set: boolean
   key: string
   kind: MemoryProviderFieldKind
@@ -140,6 +142,7 @@ export interface MemoryProviderField {
 }
 
 export interface MemoryProviderConfig {
+  docs_url: string
   fields: MemoryProviderField[]
   label: string
   name: string

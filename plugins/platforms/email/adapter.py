@@ -159,14 +159,16 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
     return False
     
 def check_email_requirements() -> bool:
-    """Check if email platform dependencies are available."""
-    addr = os.getenv("EMAIL_ADDRESS")
-    pwd = os.getenv("EMAIL_PASSWORD")
-    imap = os.getenv("EMAIL_IMAP_HOST")
-    smtp = os.getenv("EMAIL_SMTP_HOST")
-    if not all([addr, pwd, imap, smtp]):
-        return False
-    return True
+    """Check if email platform settings are available and non-blank.
+
+    Treats blank/whitespace-only values as missing so an abandoned setup that
+    left empty ``EMAIL_*`` keys in ``.env`` does not enable the platform (#40715).
+    """
+    addr = os.getenv("EMAIL_ADDRESS", "").strip()
+    pwd = os.getenv("EMAIL_PASSWORD", "").strip()
+    imap = os.getenv("EMAIL_IMAP_HOST", "").strip()
+    smtp = os.getenv("EMAIL_SMTP_HOST", "").strip()
+    return all([addr, pwd, imap, smtp])
 
 
 def _decode_header_value(raw: str) -> str:
@@ -307,11 +309,20 @@ class EmailAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
 
-        self._address = os.getenv("EMAIL_ADDRESS", "")
+        # Resolve connection settings from the env vars first, then fall back to
+        # PlatformConfig.extra (address/imap_host/smtp_host) — the canonical dict
+        # gateway.config populates and that the "connected" check, the
+        # send-helper, and `hermes config show` already read. Without the
+        # fallback a config.yaml-only setup left these empty. Host/address values
+        # are stripped: a stray space or newline made IMAP4_SSL raise the
+        # misleading ``[Errno 8] nodename nor servname`` (an unresolvable name)
+        # instead of an obvious "host not set" error.
+        extra = config.extra or {}
+        self._address = (os.getenv("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
         self._password = os.getenv("EMAIL_PASSWORD", "")
-        self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
+        self._imap_host = (os.getenv("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
         self._imap_port = env_int("EMAIL_IMAP_PORT", 993)
-        self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
+        self._smtp_host = (os.getenv("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
         self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
 
@@ -319,7 +330,6 @@ class EmailAdapter(BasePlatformAdapter):
         #   platforms:
         #     email:
         #       skip_attachments: true
-        extra = config.extra or {}
         self._skip_attachments = extra.get("skip_attachments", False)
 
         # Track message IDs we've already processed to avoid duplicates
@@ -396,6 +406,36 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
+        # Validate up front so a missing host surfaces as an actionable config
+        # error instead of IMAP4_SSL("") raising the cryptic
+        # ``[Errno 8] nodename nor servname provided, or not known``.
+        missing = [
+            name
+            for name, value in (
+                ("EMAIL_ADDRESS", self._address),
+                ("EMAIL_PASSWORD", self._password),
+                ("EMAIL_IMAP_HOST", self._imap_host),
+                ("EMAIL_SMTP_HOST", self._smtp_host),
+            )
+            if not value
+        ]
+        if missing:
+            message = (
+                "Not configured — missing "
+                + ", ".join(missing)
+                + ". Set it via `hermes gateway setup` (env) or platforms.email "
+                "in config.yaml."
+            )
+            logger.error("[Email] %s", message)
+            # Mark non-retryable so the gateway does NOT keep reconnecting against
+            # an empty host. A blank-but-present env var (e.g. ``EMAIL_IMAP_HOST=``)
+            # used to slip past the startup gate and drive an indefinite retry
+            # loop that leaked memory until the host OOM-killed (#40715).
+            self._set_fatal_error(
+                "email_missing_configuration", message, retryable=False
+            )
+            return False
+
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)

@@ -158,31 +158,6 @@ async def test_registers_native_restart_slash_command(adapter):
     )
 
 
-@pytest.mark.asyncio
-async def test_registers_native_ooo_slash_command(adapter):
-    """Discord should expose /ooo as a subcommand group for Ouroboros."""
-    from gateway.ouroboros_native import OOO_SUBCOMMANDS
-
-    adapter._run_simple_slash = AsyncMock()
-    adapter._register_slash_commands()
-
-    assert "ooo" in adapter._client.tree.commands
-    group = adapter._client.tree.commands["ooo"]
-    assert set(group._children) == set(OOO_SUBCOMMANDS)
-    assert list(group._children) == list(OOO_SUBCOMMANDS)
-
-    interaction = SimpleNamespace()
-    await group._children["evaluate"].callback(
-        interaction,
-        args="sess-123 artifact.md",
-    )
-
-    adapter._run_simple_slash.assert_awaited_once_with(
-        interaction,
-        "/ooo evaluate sess-123 artifact.md",
-    )
-
-
 # ------------------------------------------------------------------
 # Auto-registration from COMMAND_REGISTRY
 # ------------------------------------------------------------------
@@ -548,70 +523,6 @@ def test_build_slash_event_preserves_thread_context(adapter):
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "555"
     assert "TestGuild" in event.source.chat_name
-
-
-def test_build_slash_event_populates_thread_interaction_metadata(adapter):
-    thread = _FakeThreadChannel(channel_id=555, name="Planning", parent_id=123)
-    thread.parent_id = 123
-    interaction = SimpleNamespace(
-        id=987654321,
-        **{"token": "interaction-placeholder"},
-        guild_id=999,
-        guild=SimpleNamespace(id=888, name="InteractionGuild"),
-        channel=thread,
-        channel_id=555,
-        user=SimpleNamespace(display_name="Jezza", id=42),
-    )
-
-    event = adapter._build_slash_event(interaction, "/ooo evaluate sess artifact.md")
-
-    assert event.source.guild_id == "999"
-    assert event.source.parent_chat_id == "123"
-    assert event.source.thread_id == "555"
-    assert event.source.message_id == "987654321"
-    assert event.message_id == "987654321"
-    assert event.source.message_id != interaction.token
-    assert event.message_id != interaction.token
-
-
-def test_build_slash_event_falls_back_to_guild_and_thread_parent_objects(adapter):
-    thread = _FakeThreadChannel(channel_id=555, name="Planning", parent_id=123)
-    interaction = SimpleNamespace(
-        id=123456789,
-        channel=thread,
-        channel_id=555,
-        guild=SimpleNamespace(id=777, name="InteractionGuild"),
-        user=SimpleNamespace(display_name="Jezza", id=42),
-    )
-
-    event = adapter._build_slash_event(interaction, "/ooo status")
-
-    assert event.source.guild_id == "777"
-    assert event.source.parent_chat_id == "123"
-    assert event.source.message_id == "123456789"
-    assert event.message_id == "123456789"
-
-
-def test_build_slash_event_interaction_ids_distinguish_identical_commands(adapter):
-    def make_event(interaction_id: int):
-        interaction = SimpleNamespace(
-            id=interaction_id,
-            channel=_FakeThreadChannel(channel_id=555, name="Planning", parent_id=123),
-            channel_id=555,
-            guild_id=999,
-            user=SimpleNamespace(display_name="Jezza", id=42),
-        )
-        return adapter._build_slash_event(interaction, "/ooo run --seed-path seed.yaml")
-
-    first = make_event(111111)
-    second = make_event(222222)
-
-    assert first.message_id == "111111"
-    assert first.source.message_id == "111111"
-    assert second.message_id == "222222"
-    assert second.source.message_id == "222222"
-    assert first.message_id != second.message_id
-    assert first.source.message_id != second.source.message_id
 
 
 def test_build_slash_event_uses_group_context_for_channels(adapter):

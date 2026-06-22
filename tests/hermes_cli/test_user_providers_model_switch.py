@@ -246,6 +246,41 @@ def test_list_authenticated_providers_dict_models_dedupe_with_default(monkeypatc
     assert user_prov["models"].count("model-a") == 1
 
 
+def test_list_authenticated_providers_splits_comma_default_model_chain(monkeypatch):
+    """Comma-separated ``default_model`` chains should surface as individual rows.
+
+    Desktop ``model.options`` consumes this picker payload directly, so a raw
+    fallback chain string would otherwise render as one unselectable dropdown
+    entry.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "volcengine-agent-plan": {
+            "name": "VOLCENGINE-AGENT-PLAN",
+            "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+            "default_model": "deepseek-v4-flash, deepseek-v4-pro, glm-5.2, deepseek-v4-flash",
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="volcengine-agent-plan",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    user_prov = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "volcengine-agent-plan"),
+        None,
+    )
+
+    assert user_prov is not None
+    assert user_prov["models"] == ["deepseek-v4-flash", "deepseek-v4-pro", "glm-5.2"]
+    assert user_prov["total_models"] == 3
+
+
 def test_openai_native_curated_catalog_is_non_empty():
     """Regression: built-in openai must have a static catalog for picker totals."""
     from hermes_cli.models import _PROVIDER_MODELS

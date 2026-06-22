@@ -291,6 +291,34 @@ def test_list_enumerates_dict_format_models_without_singular_model(monkeypatch):
     assert thor_rows[0]["total_models"] == 3
 
 
+def test_list_splits_comma_chain_custom_provider_model(monkeypatch):
+    """A comma-separated custom-provider ``model:`` chain should be split.
+
+    Regression: desktop picker rows are fed from ``list_authenticated_providers``
+    and previously rendered the whole fallback chain as one entry.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openai-codex",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Volcengine Agent Plan",
+                "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                "model": "deepseek-v4-flash, deepseek-v4-pro, glm-5.2, deepseek-v4-flash",
+            }
+        ],
+        max_models=50,
+    )
+
+    rows = [p for p in providers if p["name"] == "Volcengine Agent Plan"]
+    assert len(rows) == 1
+    assert rows[0]["models"] == ["deepseek-v4-flash", "deepseek-v4-pro", "glm-5.2"]
+    assert rows[0]["total_models"] == 3
+
+
 def test_list_dedupes_dict_model_matching_singular_default(monkeypatch):
     """When the singular ``model:`` is also a key in the ``models:`` dict,
     it must appear exactly once in the picker."""

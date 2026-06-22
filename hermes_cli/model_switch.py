@@ -109,6 +109,29 @@ def _check_hermes_model_warning(model_name: str) -> str:
     return ""
 
 
+def _append_declared_model_ids(models: list[str], *sources: object) -> None:
+    """Append configured model ids, splitting comma-chain defaults into entries.
+
+    Some provider configs store ``default_model`` as a comma-separated fallback
+    chain (for example ``volcengine-agent-plan``). The desktop picker and
+    ``/model`` menus need individually selectable model ids, not the raw chain.
+    """
+    for source in sources:
+        if isinstance(source, dict):
+            entries = source.keys()
+        elif isinstance(source, list):
+            entries = source
+        else:
+            entries = [source]
+
+        for entry in entries:
+            if not isinstance(entry, str):
+                continue
+            for model_id in (part.strip() for part in entry.split(",")):
+                if model_id and model_id not in models:
+                    models.append(model_id)
+
+
 # ---------------------------------------------------------------------------
 # Model aliases -- short names -> (vendor, family) with NO version numbers.
 # Resolved dynamically against the live models.dev catalog.
@@ -1769,22 +1792,13 @@ def list_authenticated_providers(
             default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
 
             # Build models list from both default_model and full models array
-            models_list = []
-            if default_model:
-                models_list.append(default_model)
-            # Also include the full models list from config.
-            # Hermes writes ``models:`` as a dict keyed by model id
-            # (see hermes_cli/main.py::_save_custom_provider); older
-            # configs or hand-edited files may still use a list.
+            models_list: list[str] = []
+            # Also include the full models list from config. Hermes writes
+            # ``models:`` as a dict keyed by model id (see
+            # hermes_cli/main.py::_save_custom_provider); older configs or
+            # hand-edited files may still use a list.
             cfg_models = ep_cfg.get("models", [])
-            if isinstance(cfg_models, dict):
-                for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
-            elif isinstance(cfg_models, list):
-                for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+            _append_declared_model_ids(models_list, default_model, cfg_models)
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
@@ -1970,18 +1984,8 @@ def list_authenticated_providers(
             # downstream readers (agent/models_dev.py, gateway/run.py,
             # run_agent.py, hermes_cli/config.py) already consume that dict.
             default_model = (entry.get("model") or "").strip()
-            if default_model and default_model not in groups[group_key]["models"]:
-                groups[group_key]["models"].append(default_model)
-
             cfg_models = entry.get("models", {})
-            if isinstance(cfg_models, dict):
-                for m in cfg_models:
-                    if m and m not in groups[group_key]["models"]:
-                        groups[group_key]["models"].append(m)
-            elif isinstance(cfg_models, list):
-                for m in cfg_models:
-                    if m and m not in groups[group_key]["models"]:
-                        groups[group_key]["models"].append(m)
+            _append_declared_model_ids(groups[group_key]["models"], default_model, cfg_models)
 
         _section4_emitted_slugs: set = set()
         _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()

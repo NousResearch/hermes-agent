@@ -71,6 +71,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "browser_navigate",
     "browser_click",
     "browser_type",
+    "browser_type_secret",
     "browser_press",
     "browser_snapshot",
     "browser_scroll",

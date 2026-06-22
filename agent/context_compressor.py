@@ -522,10 +522,12 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[patch] {mode} in {path} ({content_len:,} chars result)"
 
     if tool_name in {"browser_navigate", "browser_click", "browser_snapshot",
-                     "browser_type", "browser_scroll", "browser_vision"}:
+                     "browser_type", "browser_type_secret", "browser_scroll",
+                     "browser_vision"}:
         url = args.get("url", "")
         ref = args.get("ref", "")
-        detail = f" {url}" if url else (f" ref={ref}" if ref else "")
+        env_var = args.get("env_var", "")
+        detail = f" {url}" if url else (f" ref={ref}" if ref else (f" env_var={env_var}" if env_var else ""))
         return f"[{tool_name}]{detail} ({content_len:,} chars)"
 
     if tool_name == "web_search":

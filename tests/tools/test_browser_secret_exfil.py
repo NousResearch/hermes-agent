@@ -62,6 +62,136 @@ class TestBrowserSecretExfil:
         assert captured["url"] == "https://wttr.in/K%C3%B6ln"
 
 
+class TestBrowserTypeSecret:
+    """Verify allowlisted browser secret-fill does not expose secret values."""
+
+    def test_fills_allowlisted_env_without_echoing_secret(self, monkeypatch):
+        from tools.browser_tool import browser_type_secret
+
+        monkeypatch.setenv("DEVELOPER_ACCESS_CODE", "secret-value-123")
+        calls = []
+
+        def mock_run(task_id, command, args, **_kwargs):
+            calls.append((task_id, command, args))
+            return {"success": True}
+
+        cfg = {
+            "browser": {
+                "secret_fill": {
+                    "allowed_env_vars": ["DEVELOPER_ACCESS_CODE"],
+                    "allowed_hosts": ["agent.ai.anser.com"],
+                }
+            }
+        }
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg), \
+             patch("tools.browser_tool._last_session_key", return_value="task-1"), \
+             patch(
+                 "tools.browser_tool._browser_eval",
+                 return_value=json.dumps({
+                     "success": True,
+                     "result": "https://agent.ai.anser.com/developer",
+                 }),
+             ), \
+             patch("tools.browser_tool._is_camofox_mode", return_value=False), \
+             patch("tools.browser_tool._run_browser_command", side_effect=mock_run):
+            result = browser_type_secret("e3", "DEVELOPER_ACCESS_CODE", task_id="base")
+
+        parsed = json.loads(result)
+        assert parsed == {
+            "success": True,
+            "typed_secret_env": "DEVELOPER_ACCESS_CODE",
+            "element": "@e3",
+            "host": "agent.ai.anser.com",
+        }
+        assert calls == [("task-1", "fill", ["@e3", "secret-value-123"])]
+        assert "secret-value-123" not in result
+
+    def test_rejects_env_var_not_allowlisted(self, monkeypatch):
+        from tools.browser_tool import browser_type_secret
+
+        monkeypatch.setenv("DEVELOPER_ACCESS_CODE", "secret-value-123")
+        cfg = {
+            "browser": {
+                "secret_fill": {
+                    "allowed_env_vars": [],
+                    "allowed_hosts": ["agent.ai.anser.com"],
+                }
+            }
+        }
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg), \
+             patch("tools.browser_tool._run_browser_command") as mock_run:
+            result = browser_type_secret("@e3", "DEVELOPER_ACCESS_CODE", task_id="base")
+
+        parsed = json.loads(result)
+        assert parsed["success"] is False
+        assert "allowed_env_vars" in parsed["error"]
+        mock_run.assert_not_called()
+        assert "secret-value-123" not in result
+
+    def test_rejects_disallowed_current_host(self, monkeypatch):
+        from tools.browser_tool import browser_type_secret
+
+        monkeypatch.setenv("DEVELOPER_ACCESS_CODE", "secret-value-123")
+        cfg = {
+            "browser": {
+                "secret_fill": {
+                    "allowed_env_vars": ["DEVELOPER_ACCESS_CODE"],
+                    "allowed_hosts": ["agent.ai.anser.com"],
+                }
+            }
+        }
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg), \
+             patch("tools.browser_tool._last_session_key", return_value="task-1"), \
+             patch(
+                 "tools.browser_tool._browser_eval",
+                 return_value=json.dumps({
+                     "success": True,
+                     "result": "https://example.com/login",
+                 }),
+             ), \
+             patch("tools.browser_tool._run_browser_command") as mock_run:
+            result = browser_type_secret("@e3", "DEVELOPER_ACCESS_CODE", task_id="base")
+
+        parsed = json.loads(result)
+        assert parsed["success"] is False
+        assert "example.com" in parsed["error"]
+        mock_run.assert_not_called()
+        assert "secret-value-123" not in result
+
+    def test_fill_failure_does_not_return_backend_secret_echo(self, monkeypatch):
+        from tools.browser_tool import browser_type_secret
+
+        monkeypatch.setenv("DEVELOPER_ACCESS_CODE", "secret-value-123")
+        cfg = {
+            "browser": {
+                "secret_fill": {
+                    "allowed_env_vars": ["DEVELOPER_ACCESS_CODE"],
+                    "allowed_hosts": ["agent.ai.anser.com"],
+                }
+            }
+        }
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg), \
+             patch("tools.browser_tool._last_session_key", return_value="task-1"), \
+             patch(
+                 "tools.browser_tool._browser_eval",
+                 return_value=json.dumps({
+                     "success": True,
+                     "result": "https://agent.ai.anser.com/developer",
+                 }),
+             ), \
+             patch("tools.browser_tool._is_camofox_mode", return_value=False), \
+             patch(
+                 "tools.browser_tool._run_browser_command",
+                 return_value={"success": False, "error": "failed: secret-value-123"},
+             ):
+            result = browser_type_secret("@e3", "DEVELOPER_ACCESS_CODE", task_id="base")
+
+        parsed = json.loads(result)
+        assert parsed["success"] is False
+        assert "DEVELOPER_ACCESS_CODE" in parsed["error"]
+        assert "secret-value-123" not in result
+
+
 class TestWebExtractSecretExfil:
     """Verify web_extract_tool blocks URLs containing secrets."""
 

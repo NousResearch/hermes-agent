@@ -64,6 +64,7 @@ import time
 import requests
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
+from urllib.parse import urlparse
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
 from utils import env_int, is_truthy_value
@@ -345,6 +346,76 @@ def _get_dialog_policy_config() -> Tuple[str, float]:
         return DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S
 
 
+def _get_secret_fill_policy() -> Tuple[set[str], set[str]]:
+    """Return allowlisted env vars and hosts for browser secret-fill."""
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+        secret_cfg = browser_cfg.get("secret_fill", {}) if isinstance(browser_cfg, dict) else {}
+        if not isinstance(secret_cfg, dict):
+            return set(), set()
+
+        raw_envs = secret_cfg.get("allowed_env_vars", [])
+        raw_hosts = secret_cfg.get("allowed_hosts", [])
+        if isinstance(raw_envs, str):
+            raw_envs = [raw_envs]
+        if isinstance(raw_hosts, str):
+            raw_hosts = [raw_hosts]
+
+        allowed_envs = {
+            str(name).strip()
+            for name in raw_envs
+            if str(name).strip()
+        }
+        allowed_hosts = {
+            str(host).strip().lower()
+            for host in raw_hosts
+            if str(host).strip()
+        }
+        return allowed_envs, allowed_hosts
+    except Exception as exc:
+        logger.debug("Could not read browser.secret_fill policy from config: %s", exc)
+        return set(), set()
+
+
+def _secret_fill_host_allowed(hostname: str, allowed_hosts: set[str]) -> bool:
+    """Return True when hostname matches the profile secret-fill host policy."""
+    host = (hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return False
+
+    for allowed in allowed_hosts:
+        candidate = allowed.strip().lower().rstrip(".")
+        if not candidate:
+            continue
+        if candidate == host:
+            return True
+        if candidate.startswith("*.") and host.endswith(candidate[1:]):
+            return True
+        if candidate.startswith(".") and host.endswith(candidate):
+            return True
+    return False
+
+
+def _current_browser_url(task_id: str) -> Tuple[Optional[str], Optional[str]]:
+    """Return the current page URL for a browser session, without raising."""
+    result_text = _browser_eval("window.location.href", task_id)
+    try:
+        result = json.loads(result_text)
+    except (TypeError, json.JSONDecodeError):
+        return None, "Could not read current browser URL."
+
+    if not result.get("success"):
+        return None, str(result.get("error") or "Could not read current browser URL.")
+
+    current_url = result.get("result")
+    if not isinstance(current_url, str) or not current_url.strip():
+        return None, "Current browser URL was empty."
+    return current_url.strip(), None
+
+
 def _ensure_cdp_supervisor(task_id: str) -> None:
     """Start a CDP supervisor for ``task_id`` if an endpoint is reachable.
 
@@ -441,6 +512,7 @@ _agent_browser_resolved = False
 # agent-browser v0.25.3+ supports ``--engine lightpanda`` natively.
 _cached_browser_engine: Optional[str] = None
 _browser_engine_resolved = False
+_SECRET_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
 def _is_legacy_provider_registry_overridden() -> bool:
@@ -1659,6 +1731,24 @@ BROWSER_TOOL_SCHEMAS = [
         }
     },
     {
+        "name": "browser_type_secret",
+        "description": "Fill an input field with a secret from an environment variable without exposing the secret in tool arguments or results. The env var must be allowlisted in browser.secret_fill.allowed_env_vars, and the current browser host must be allowlisted in browser.secret_fill.allowed_hosts. Use browser_press separately to submit when needed.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The element reference from the snapshot (e.g., '@e3')"
+                },
+                "env_var": {
+                    "type": "string",
+                    "description": "Name of the environment variable containing the secret, such as DEVELOPER_ACCESS_CODE. Do not pass the secret value."
+                }
+            },
+            "required": ["ref", "env_var"]
+        }
+    },
+    {
         "name": "browser_scroll",
         "description": "Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first.",
         "parameters": {
@@ -2767,6 +2857,91 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
             "error": result.get("error", f"Failed to type into {ref}")
         }
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+
+
+def browser_type_secret(ref: str, env_var: str, task_id: Optional[str] = None) -> str:
+    """
+    Fill an input with an allowlisted environment variable without echoing it.
+
+    Args:
+        ref: Element reference (e.g., "@e3")
+        env_var: Environment variable name containing the secret
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with secret-fill metadata only
+    """
+    env_name = (env_var or "").strip()
+    if not _SECRET_ENV_NAME_RE.match(env_name):
+        return json.dumps({
+            "success": False,
+            "error": "Invalid secret environment variable name.",
+        }, ensure_ascii=False)
+
+    allowed_envs, allowed_hosts = _get_secret_fill_policy()
+    if env_name not in allowed_envs:
+        return json.dumps({
+            "success": False,
+            "error": (
+                f"Secret fill for {env_name} is not allowed by "
+                "browser.secret_fill.allowed_env_vars."
+            ),
+        }, ensure_ascii=False)
+
+    secret_value = os.environ.get(env_name)
+    if not secret_value:
+        return json.dumps({
+            "success": False,
+            "error": f"Secret environment variable {env_name} is not set.",
+        }, ensure_ascii=False)
+
+    effective_task_id = _last_session_key(task_id or "default")
+    current_url, url_error = _current_browser_url(effective_task_id)
+    if url_error or not current_url:
+        return json.dumps({
+            "success": False,
+            "error": url_error or "Could not read current browser URL.",
+        }, ensure_ascii=False)
+
+    parsed_url = urlparse(current_url)
+    hostname = parsed_url.hostname or ""
+    if not _secret_fill_host_allowed(hostname, allowed_hosts):
+        return json.dumps({
+            "success": False,
+            "error": (
+                f"Secret fill for {env_name} is not allowed on host "
+                f"{hostname or '<unknown>'}."
+            ),
+        }, ensure_ascii=False)
+
+    if not ref.startswith("@"):
+        ref = f"@{ref}"
+
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_type
+
+        result_text = camofox_type(ref, secret_value, task_id)
+        try:
+            result = json.loads(result_text)
+        except (TypeError, json.JSONDecodeError):
+            result = {"success": False}
+    else:
+        result = _run_browser_command(effective_task_id, "fill", [ref, secret_value])
+
+    if result.get("success"):
+        response = {
+            "success": True,
+            "typed_secret_env": env_name,
+            "element": ref,
+            "host": hostname,
+        }
+        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+
+    response = {
+        "success": False,
+        "error": f"Failed to fill secret environment variable {env_name} into {ref}.",
+    }
+    return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
 def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
@@ -3948,6 +4123,14 @@ registry.register(
     handler=lambda args, **kw: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="⌨️",
+)
+registry.register(
+    name="browser_type_secret",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_type_secret"],
+    handler=lambda args, **kw: browser_type_secret(ref=args.get("ref", ""), env_var=args.get("env_var", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🔐",
 )
 registry.register(
     name="browser_scroll",

@@ -14,10 +14,11 @@ import json
 import logging
 import os
 import tempfile
+import time
 import html as _html
 import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Any
+from typing import Dict, List, Optional, Set, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,30 @@ from plugins.platforms.telegram.telegram_network import (
     parse_fallback_ip_env,
 )
 from utils import atomic_replace, env_float, env_int
+
+
+class _RetryableFloodError(Exception):
+    """Internal sentinel raised when 3 inline flood-control retries are exhausted.
+
+    The ``send()`` chunk loop catches Telegram ``RetryAfter`` exceptions
+    inline and waits up to ``retry_after`` seconds per attempt.  When those
+    3 inline attempts are exhausted and the error is still flood control,
+    raising this sentinel — instead of letting the original ``RetryAfter``
+    propagate — lets the outer ``send()`` except clause at the bottom of
+    the method recognise the case explicitly and return
+    ``SendResult(retryable=True)``.  That in turn gives the base class
+    ``_send_with_retry`` a chance to keep backing off with exponential
+    backoff (2s/4s/8s), pushing the total budget above the typical 14-26s
+    Telegram flood window.
+
+    The wrapped ``retry_after`` is preserved on the instance so the
+    outer catch can also record the flood window for inter-chunk spacing.
+    """
+
+    def __init__(self, message: str, *, retry_after: float) -> None:
+        super().__init__(message)
+        self.retry_after = float(retry_after)
+
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
@@ -360,6 +385,22 @@ class TelegramAdapter(BasePlatformAdapter):
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
 
+    # Flood-control recovery constants.  Telegram's per-chat send rate is
+    # ~1 msg/sec; rapid back-and-forth produces 14-26s flood windows (per the
+    # gateway.log evidence from 2026-06-21).  The historical 5s ceiling on
+    # inline flood waits meant any wait > 5s aborted the send instead of
+    # retrying — losing the message.  We now honor up to 60s inline and
+    # surface anything beyond that as ``retryable=True`` so the base class
+    # ``_send_with_retry`` outer loop can keep backing off.
+    _FLOOD_WAIT_CEILING_SECONDS = 60.0
+    # Per-chat flood window memory TTL.  Larger than any reasonable wait we
+    # honor inline; entries older than this are dropped on access.
+    _FLOOD_WINDOW_TTL_SECONDS = 60.0
+    # Max sleep inserted between chunks of a multi-message reply to avoid
+    # re-triggering a fresh flood window on the next chunk.  Telegram's own
+    # per-chat rate is ~1/s, so a 1s cap is enough headroom.
+    _FLOOD_CHUNK_SPACING_SECONDS = 1.0
+
     # Telegram's edit_message applies MarkdownV2 formatting only on the
     # finalize=True path.  Without this flag, stream_consumer._send_or_edit
     # short-circuits when the raw text is unchanged between the last streamed
@@ -530,6 +571,15 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Per-chat flood window tracking for inter-chunk spacing.  Keyed by
+        # (chat_id, thread_id); value is the monotonic timestamp at which the
+        # most-recently-observed ``retry_after`` expires.  When the next chunk
+        # goes out, we sleep ``min(_FLOOD_CHUNK_SPACING_SECONDS, remaining)``
+        # to avoid re-triggering Telegram's ~1 msg/sec rate limit on the
+        # chunk immediately following a flood.
+        # Entries older than ``_FLOOD_WINDOW_TTL_SECONDS`` are pruned lazily
+        # on access (``_flood_window_remaining``).
+        self._flood_windows: Dict[Tuple[str, Optional[str]], float] = {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -917,6 +967,102 @@ class TelegramAdapter(BasePlatformAdapter):
             if context is not None:
                 stack.append(context)
         return False
+
+    # --- Flood-control window tracking -----------------------------------
+    # A "flood window" is the per-chat cooldown Telegram imposes after a send
+    # burst (~1 msg/s rate limit).  We record the most-recently-observed
+    # ``retry_after`` so that subsequent chunks in a multi-message reply
+    # don't trip a fresh flood window on the chunk immediately following
+    # one that already hit the limit.
+
+    def _flood_window_key(
+        self, chat_id: str, thread_id: Optional[str]
+    ) -> Tuple[str, Optional[str]]:
+        """Key for ``_flood_windows`` — chat_id + thread_id when present."""
+        return (str(chat_id) if chat_id is not None else "", thread_id)
+
+    def _flood_windows_map(self) -> Dict[Tuple[str, Optional[str]], float]:
+        """Return the per-chat flood-window map, creating it lazily.
+
+        Some tests construct adapters with ``object.__new__(TelegramAdapter)``
+        to bypass ``__init__`` (avoiding full PTB/connection setup).  Using
+        ``getattr`` keeps those tests working — the map just starts empty.
+        """
+        store = getattr(self, "_flood_windows", None)
+        if store is None:
+            store = {}
+            self._flood_windows = store
+        return store
+
+    def _record_flood_window(
+        self, chat_id: str, thread_id: Optional[str], retry_after: float
+    ) -> None:
+        """Record an active flood window for ``(chat_id, thread_id)``.
+
+        ``retry_after`` is in seconds (Telegram's ``RetryAfter.retry_after``
+        field).  We translate it to a monotonic expiry timestamp so callers
+        can compute remaining time without consulting wall-clock state.
+        """
+        try:
+            wait = float(retry_after)
+        except (TypeError, ValueError):
+            wait = 1.0
+        if wait <= 0:
+            return
+        # Cap recorded window at TTL so stale entries don't outlive their
+        # usefulness in the map.
+        capped = min(wait, self._FLOOD_WINDOW_TTL_SECONDS)
+        self._flood_windows_map()[self._flood_window_key(chat_id, thread_id)] = (
+            time.monotonic() + capped
+        )
+
+    def _flood_window_remaining(
+        self, chat_id: str, thread_id: Optional[str]
+    ) -> float:
+        """Seconds remaining on the active flood window (0.0 if none/expired).
+
+        Lazily prunes entries older than ``_FLOOD_WINDOW_TTL_SECONDS`` so the
+        map doesn't grow unbounded across long bot uptimes.
+        """
+        store = self._flood_windows_map()
+        key = self._flood_window_key(chat_id, thread_id)
+        expires_at = store.get(key)
+        if expires_at is None:
+            return 0.0
+        remaining = expires_at - time.monotonic()
+        if remaining <= 0.0:
+            store.pop(key, None)
+            return 0.0
+        # Opportunistic GC: drop any other expired entries we encounter.
+        ttl = self._FLOOD_WINDOW_TTL_SECONDS
+        now = time.monotonic()
+        stale = [k for k, exp in store.items() if exp <= now or (exp - now) > ttl]
+        for k in stale:
+            store.pop(k, None)
+        return remaining
+
+    async def _flood_chunk_spacing_sleep(
+        self, chat_id: str, thread_id: Optional[str]
+    ) -> float:
+        """Sleep before the next chunk of a multi-message reply.
+
+        Returns the number of seconds slept (0.0 if no wait was needed).
+        Bounded by ``_FLOOD_CHUNK_SPACING_SECONDS`` so a long flood window
+        doesn't translate into a multi-second pause between every chunk —
+        only enough to stay below Telegram's ~1 msg/s rate ceiling.
+        """
+        remaining = self._flood_window_remaining(chat_id, thread_id)
+        if remaining <= 0.0:
+            return 0.0
+        wait = min(self._FLOOD_CHUNK_SPACING_SECONDS, remaining)
+        if wait > 0.0:
+            logger.debug(
+                "[%s] Inter-chunk flood spacing: sleeping %.2fs before next chunk "
+                "(window_remaining=%.2fs, chat=%s)",
+                self.name, wait, remaining, chat_id,
+            )
+            await asyncio.sleep(wait)
+        return wait
 
     def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
         value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
@@ -2453,6 +2599,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
             for i, chunk in enumerate(chunks):
                 retried_thread_not_found = False
+                # Inter-chunk spacing — when N>1 chunks are about to go out in
+                # quick succession, sleep up to ``_FLOOD_CHUNK_SPACING_SECONDS``
+                # (or whatever's left on an active flood window for this chat)
+                # before sending the *next* chunk.  Telegram's per-chat rate is
+                # ~1 msg/s; without this, the chunk immediately following one
+                # that hit flood control is the most likely to re-trip the
+                # limit, cascading into chunk 2/3/... failures.  See gateway.log
+                # evidence from 2026-06-21.
+                if i > 0:
+                    await self._flood_chunk_spacing_sleep(chat_id, thread_id)
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
                 private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
                 # reply_to_mode="off" on the existing telegram_dm_topic_reply_fallback path
@@ -2618,6 +2774,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     except Exception as send_err:
                         retry_after = getattr(send_err, "retry_after", None)
                         if retry_after is not None or "retry after" in str(send_err).lower():
+                            # Record flood window for inter-chunk spacing.
+                            # Use ``thread_id`` from the enclosing scope; this
+                            # path is reached mid-chunk so thread_id is set.
+                            _send_thread_id = thread_id
+                            self._record_flood_window(chat_id, _send_thread_id, float(retry_after) if retry_after is not None else 1.0)
                             if _send_attempt < 2:
                                 wait = float(retry_after) if retry_after is not None else 1.0
                                 logger.warning(
@@ -2629,6 +2790,17 @@ class TelegramAdapter(BasePlatformAdapter):
                                 )
                                 await asyncio.sleep(wait)
                                 continue
+                            # 3 inline attempts exhausted and the error is
+                            # still flood control — surface retryable so the
+                            # outer ``_send_with_retry`` can keep backing off
+                            # with exponential backoff (2s/4s/8s).  Total
+                            # budget then exceeds typical 14-26s flood
+                            # windows, preventing lost messages on long
+                            # Telegram sessions (gateway.log 2026-06-21).
+                            raise _RetryableFloodError(
+                                f"flood_control:{retry_after or '?'}",
+                                retry_after=float(retry_after) if retry_after is not None else 1.0,
+                            )
                         raise
                 message_ids.append(str(msg.message_id))
 
@@ -2672,7 +2844,12 @@ class TelegramAdapter(BasePlatformAdapter):
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(e)
             is_pool_timeout = self._looks_like_pool_timeout(e)
-            return SendResult(success=False, error=str(e), retryable=(is_connect_timeout or is_pool_timeout or not is_timeout))
+            is_retryable_flood = isinstance(e, _RetryableFloodError)
+            return SendResult(
+                success=False,
+                error=str(e),
+                retryable=(is_connect_timeout or is_pool_timeout or not is_timeout or is_retryable_flood),
+            )
 
     async def send_or_update_status(
         self,
@@ -2802,18 +2979,34 @@ class TelegramAdapter(BasePlatformAdapter):
                 return await self._edit_overflow_split(
                     chat_id, message_id, content, finalize=finalize, metadata=metadata,
                 )
-            # Flood control / RetryAfter — short waits are retried inline,
-            # long waits return a failure immediately so streaming can fall back
-            # to a normal final send instead of leaving a truncated partial.
+            # Flood control / RetryAfter — inline-sleep and retry up to a 60s ceiling;
+            # for longer waits we surface ``retryable=True`` so the base class
+            # ``_send_with_retry`` outer loop (exponential backoff, 3 attempts)
+            # keeps backing off.  The historical 5s ceiling silently dropped
+            # any wait > 5s — losing the message — see gateway.log evidence
+            # from 2026-06-21 where 14-26s windows aborted every time.
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
-                wait = retry_after if retry_after else 1.0
+                wait = float(retry_after) if retry_after else 1.0
+                _edit_thread_id = self._metadata_thread_id(metadata)
+                # Record this window so subsequent chunks (this chat) pace
+                # themselves — see Change 3 / ``_flood_chunk_spacing_sleep``.
+                self._record_flood_window(chat_id, _edit_thread_id, wait)
+                if wait > self._FLOOD_WAIT_CEILING_SECONDS:
+                    logger.warning(
+                        "[%s] Telegram flood control wait %.1fs exceeds ceiling %.1fs, "
+                        "surfacing retryable",
+                        self.name, wait, self._FLOOD_WAIT_CEILING_SECONDS,
+                    )
+                    return SendResult(
+                        success=False,
+                        error=f"flood_control:{wait}",
+                        retryable=True,
+                    )
                 logger.warning(
-                    "[%s] Telegram flood control, waiting %.1fs",
+                    "[%s] Telegram flood control, waiting %.1fs (will retry inline)",
                     self.name, wait,
                 )
-                if wait > 5.0:
-                    return SendResult(success=False, error=f"flood_control:{wait}")
                 await asyncio.sleep(wait)
                 try:
                     await self._bot.edit_message_text(
@@ -2823,6 +3016,30 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
+                    # If the inline retry hit another flood, walk the same
+                    # ceiling path so we don't loop indefinitely inside one
+                    # ``edit_message`` call.  Re-raise into the outer ``except``
+                    # via a controlled return so the caller's retry budget is
+                    # the source of truth.
+                    retry_err_str = str(retry_err).lower()
+                    if (
+                        getattr(retry_err, "retry_after", None) is not None
+                        or "retry after" in retry_err_str
+                    ):
+                        inner_wait = float(
+                            getattr(retry_err, "retry_after", None) or 1.0
+                        )
+                        self._record_flood_window(chat_id, _edit_thread_id, inner_wait)
+                        logger.warning(
+                            "[%s] Edit retry hit another flood window (%.1fs); "
+                            "surfacing retryable",
+                            self.name, inner_wait,
+                        )
+                        return SendResult(
+                            success=False,
+                            error=f"flood_control:{inner_wait}",
+                            retryable=True,
+                        )
                     logger.error(
                         "[%s] Edit retry failed after flood wait: %s",
                         self.name, retry_err,

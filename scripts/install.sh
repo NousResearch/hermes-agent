@@ -2014,6 +2014,93 @@ run_setup_wizard() {
     fi
 }
 
+install_platform_sdks() {
+    # If the broad extras install fell back to a narrower tier, messaging SDKs
+    # can be missing even though the user just configured platform tokens in
+    # ~/.hermes/.env. Verify those imports and repair the venv before we offer
+    # to start the gateway.
+    if [ "$USE_VENV" != true ]; then
+        log_info "Skipping platform SDK verification (--no-venv: targeted installs disabled)"
+        return 0
+    fi
+
+    local python_exe="$INSTALL_DIR/venv/bin/python"
+    if [ ! -x "$python_exe" ]; then
+        log_warn "Skipping platform SDK verification: $python_exe not found"
+        return 0
+    fi
+
+    local env_path="$HERMES_HOME/.env"
+    if [ ! -f "$env_path" ]; then
+        return 0
+    fi
+
+    local needed=()
+    local entry var import_name spec raw
+    while IFS='|' read -r var import_name spec; do
+        raw="$(grep "^${var}=" "$env_path" 2>/dev/null | tail -n1 | cut -d'=' -f2-)"
+        if [ -z "$raw" ] || [ "$raw" = "your-token-here" ]; then
+            continue
+        fi
+        if [ "$var" = "WHATSAPP_ENABLED" ] && [ "$raw" != "true" ]; then
+            continue
+        fi
+        needed+=("$var|$import_name|$spec")
+    done <<'EOF'
+TELEGRAM_BOT_TOKEN|telegram|python-telegram-bot[webhooks]>=22.6,<23
+DISCORD_BOT_TOKEN|discord|discord.py[voice]>=2.7.1,<3
+SLACK_BOT_TOKEN|slack_sdk|slack-sdk>=3.40.1,<4
+SLACK_APP_TOKEN|slack_bolt|slack-bolt>=1.27.0,<2
+WHATSAPP_ENABLED|qrcode|qrcode>=7.4.2,<8
+EOF
+
+    if [ "${#needed[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    echo ""
+    log_info "Verifying platform SDKs for tokens found in $env_path ..."
+
+    local missing=()
+    for entry in "${needed[@]}"; do
+        IFS='|' read -r var import_name spec <<< "$entry"
+        if ! "$python_exe" -c "import $import_name" >/dev/null 2>&1; then
+            missing+=("$entry")
+            log_warn "  $import_name NOT importable (needed for $var)"
+        fi
+    done
+
+    if [ "${#missing[@]}" -eq 0 ]; then
+        log_success "Platform SDKs ready"
+        return 0
+    fi
+
+    log_info "Installing missing platform SDKs into the venv ..."
+
+    local install_failed=false
+    for entry in "${missing[@]}"; do
+        IFS='|' read -r var import_name spec <<< "$entry"
+        if ! VIRTUAL_ENV="$INSTALL_DIR/venv" $UV_CMD pip install "$spec"; then
+            log_warn "  Failed to install $spec for $var"
+            install_failed=true
+            continue
+        fi
+        if ! "$python_exe" -c "import $import_name" >/dev/null 2>&1; then
+            log_warn "  Installed $spec but import still fails for $import_name"
+            install_failed=true
+            continue
+        fi
+        log_success "  Installed $spec"
+    done
+
+    if [ "$install_failed" = true ]; then
+        log_warn "Some messaging SDKs are still missing. Gateway platforms tied to those tokens may not start."
+        return 0
+    fi
+
+    log_success "Platform SDKs ready"
+}
+
 maybe_start_gateway() {
     # Check if any messaging platform tokens were configured
     ENV_FILE="$HERMES_HOME/.env"
@@ -2808,6 +2895,7 @@ main() {
     setup_path
     copy_config_templates
     run_setup_wizard
+    install_platform_sdks
     maybe_start_gateway
 
     if [ "$INCLUDE_DESKTOP" = true ]; then

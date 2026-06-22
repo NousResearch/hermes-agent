@@ -26,6 +26,7 @@ The fix has three pieces — these tests pin all three:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from types import SimpleNamespace
 
@@ -456,4 +457,128 @@ class TestRecoveryAfterPrune:
             thread_id="1",
         ))
         assert after == "111"
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Media / synthetic send path — #50990 wired the streaming and control-message
+# fallbacks but not _send_with_dm_topic_reply_anchor_retry, so #31501 recurred
+# for photo/voice/document/synthetic sends.  Drive the helper end-to-end.
+# ---------------------------------------------------------------------------
+
+
+class _BadRequest(Exception):
+    """Stand-in for ``telegram.error.BadRequest``.
+
+    ``_is_bad_request_error`` sniffs the class name, so any exception whose
+    name ends in ``badrequest`` is treated as a permanent BadRequest.
+    """
+
+
+class TestAnchorRetryMediaPathPrunesBinding:
+    """The media / synthetic send path must also prune the stale binding when
+    Telegram reports the DM topic is gone — and must NOT prune when only the
+    reply anchor is stale (case-1) or the topic is merely ``topic_closed``.
+    """
+
+    @staticmethod
+    def _drive(adapter, *, error, metadata, reply_to_message_id=None):
+        """Run the anchor-retry helper with a send_fn that fails once with
+        ``error`` then succeeds; return (result, list-of-call-kwargs)."""
+        calls = []
+
+        async def send_fn(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise error
+            return SimpleNamespace(message_id=999)
+
+        send_kwargs = {
+            "chat_id": "5595856929",
+            "message_thread_id": 15287,
+            "direct_messages_topic_id": 15287,
+            "reply_to_message_id": reply_to_message_id,
+        }
+        result = asyncio.run(
+            adapter._send_with_dm_topic_reply_anchor_retry(
+                send_fn,
+                send_kwargs,
+                metadata,
+                reply_to_message_id,
+                "photo",
+            )
+        )
+        return result, calls
+
+    def test_prunes_when_topic_deleted(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        _seed_binding(db, thread_id="15287")
+        adapter = _bare_adapter(db)
+
+        result, calls = self._drive(
+            adapter,
+            error=_BadRequest("Bad Request: message thread not found"),
+            metadata={
+                "telegram_dm_topic_reply_fallback": True,
+                "direct_messages_topic_id": 15287,
+            },
+        )
+
+        # Retried with routing stripped, and the retry succeeded.
+        assert len(calls) == 2
+        assert calls[1].get("message_thread_id") is None
+        assert calls[1].get("direct_messages_topic_id") is None
+        assert result.message_id == 999
+        # The stale binding is gone, so recovery stops resurrecting the
+        # deleted topic for the next inbound message (#31501).
+        assert db.get_telegram_topic_binding(
+            chat_id="5595856929", thread_id="15287",
+        ) is None
+        db.close()
+
+    def test_does_not_prune_on_stale_reply_anchor(self, tmp_path):
+        # Case-1: the reply *target* was deleted, not the topic. The topic is
+        # still alive, so the binding must survive even though we retry.
+        db = SessionDB(db_path=tmp_path / "state.db")
+        _seed_binding(db, thread_id="15287")
+        adapter = _bare_adapter(db)
+
+        _result, calls = self._drive(
+            adapter,
+            error=_BadRequest(
+                "Bad Request: message to be replied not found",
+            ),
+            metadata={
+                "telegram_dm_topic_reply_fallback": True,
+                "direct_messages_topic_id": 15287,
+            },
+            reply_to_message_id=4242,
+        )
+
+        assert len(calls) == 2  # still retried without the anchor
+        assert db.get_telegram_topic_binding(
+            chat_id="5595856929", thread_id="15287",
+        ) is not None
+        db.close()
+
+    def test_does_not_prune_when_topic_only_closed(self, tmp_path):
+        # ``topic_closed`` triggers the retry (it is a topic marker) but the
+        # topic still exists, so the binding must NOT be pruned.
+        db = SessionDB(db_path=tmp_path / "state.db")
+        _seed_binding(db, thread_id="15287")
+        adapter = _bare_adapter(db)
+
+        _result, calls = self._drive(
+            adapter,
+            error=_BadRequest("Bad Request: TOPIC_CLOSED"),
+            metadata={
+                "telegram_dm_topic_reply_fallback": True,
+                "direct_messages_topic_id": 15287,
+            },
+        )
+
+        assert len(calls) == 2
+        assert db.get_telegram_topic_binding(
+            chat_id="5595856929", thread_id="15287",
+        ) is not None
         db.close()

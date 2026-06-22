@@ -934,6 +934,25 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             if reset_media is not None:
                 reset_media()
+            # If the topic itself is gone (Bot API "thread not found"), the
+            # retry below strips routing but the stale
+            # ``telegram_dm_topic_bindings`` row would survive and keep steering
+            # future inbound messages back into the deleted topic (#31501) — the
+            # same prune the streaming-send and control-message fallbacks
+            # already perform. Gated on ``_is_thread_not_found_error`` exactly
+            # like those sites, so a case-1 stale reply anchor (the topic still
+            # exists) and a merely ``topic_closed`` topic are deliberately left
+            # untouched; only the ``direct_messages_topic_id`` topic-deletion
+            # case prunes.
+            if (
+                metadata
+                and metadata.get("direct_messages_topic_id")
+                and self._is_thread_not_found_error(send_err)
+            ):
+                self._prune_stale_dm_topic_binding(
+                    send_kwargs.get("chat_id"),
+                    metadata.get("direct_messages_topic_id"),
+                )
             retry_kwargs = dict(send_kwargs)
             retry_kwargs["reply_to_message_id"] = None
             retry_kwargs.pop("message_thread_id", None)

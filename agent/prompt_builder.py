@@ -1741,6 +1741,43 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
         return None
 
 
+def load_preferences_md(context_length: Optional[int] = None) -> Optional[str]:
+    """Load PREFERENCES.md from HERMES_HOME and return its content, or None.
+
+    The *earned preferences* layer: short, evidence-cited lines that the
+    monthly identity-reflection loop proposes and a human approves, derived
+    from ``~/.hermes/identity/LEDGER.md``.  Injected into the **stable** tier
+    of the system prompt immediately after ``SOUL.md`` (see
+    ``agent/system_prompt.py``) so it is prefix-cache-stable like the soul.
+
+    Mirrors :func:`load_soul_md`: same security scan and head/tail truncation
+    rails.  Returns ``None`` when the file is absent or empty so the caller
+    can cleanly skip the section.
+    """
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading PREFERENCES.md: %s", e)
+
+    pref_path = get_hermes_home() / "PREFERENCES.md"
+    if not pref_path.exists():
+        return None
+    try:
+        content = pref_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        content = _scan_context_content(content, "PREFERENCES.md")
+        content = _truncate_content(
+            content, "PREFERENCES.md", context_length=context_length,
+            read_path=str(pref_path),
+        )
+        return content
+    except Exception as e:
+        logger.debug("Could not read PREFERENCES.md from %s: %s", pref_path, e)
+        return None
+
+
 def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """.hermes.md / HERMES.md — walk to git root."""
     hermes_md_path = _find_hermes_md(cwd_path)

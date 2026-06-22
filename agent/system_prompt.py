@@ -161,6 +161,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
+    # Earned preferences (PREFERENCES.md) — evidence-cited lines proposed by the
+    # monthly identity-reflection loop and human-approved.  Injected into the
+    # stable tier immediately after SOUL.md so it is prefix-cache-stable.  Gated
+    # by the same condition as SOUL so delegation/subagent prompts that skip
+    # context files also skip preferences.  Headered so it is never mistaken for
+    # the constitution (SOUL.md).
+    if agent.load_soul_identity or not agent.skip_context_files:
+        _pref_content = _r.load_preferences_md(_ctx_len)
+        if _pref_content:
+            stable_parts.append(
+                "# Earned preferences (evidence-backed — see "
+                "~/.hermes/identity/LEDGER.md)\n\n" + _pref_content
+            )
+
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 

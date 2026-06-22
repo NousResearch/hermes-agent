@@ -2795,9 +2795,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         )
 
     def _build_memory_uri(self, subdir: str) -> str:
-        """Build a viking:// memory URI under the configured peer namespace."""
+        """Build a viking:// memory URI under the configured agent namespace."""
         slug = uuid.uuid4().hex[:12]
-        return f"viking://user/peers/{self._agent}/memories/{subdir}/mem_{slug}.md"
+        return f"viking://user/{self._agent}/memories/{subdir}/mem_{slug}.md"
 
     def on_memory_write(
         self,

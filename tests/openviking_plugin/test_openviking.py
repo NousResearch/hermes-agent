@@ -824,8 +824,8 @@ class TestOpenVikingBrowse:
 class TestOpenVikingMemoryUriBuilder:
     """Regression tests for _build_memory_uri — fixes #36969.
 
-    OpenViking's current memory layout stores peer-scoped memories under
-    viking://user/peers/{peer_id}/...
+    OpenViking's current memory layout stores agent-scoped memories under
+    viking://user/{agent}/...
     """
 
     def _make_provider(self, user="alice", agent="coder"):
@@ -834,19 +834,19 @@ class TestOpenVikingMemoryUriBuilder:
         p._agent = agent
         return p
 
-    def test_uri_layout_includes_peer_segment(self):
-        """URI must contain /peers/{peer_id}/ between user and memories."""
+    def test_uri_layout_includes_agent_segment(self):
+        """URI must contain /{agent}/ between user and memories."""
         p = self._make_provider(user="alice", agent="coder")
         uri = p._build_memory_uri("preferences")
-        assert uri.startswith("viking://user/peers/coder/memories/preferences/mem_")
+        assert uri.startswith("viking://user/coder/memories/preferences/mem_")
         assert uri.endswith(".md")
 
-    def test_uri_uses_configured_peer_not_default(self):
-        """_agent value is the OpenViking actor peer ID, not hardcoded to 'hermes'."""
+    def test_uri_uses_configured_agent_not_default(self):
+        """_agent value is the OpenViking actor ID, not hardcoded to 'hermes'."""
         p = self._make_provider(user="alice", agent="research-bot")
         uri = p._build_memory_uri("entities")
-        assert "/peers/research-bot/" in uri
-        assert "/peers/hermes/" not in uri
+        assert "/research-bot/" in uri
+        assert "/hermes/" not in uri
 
     def test_uri_slug_is_twelve_hex_chars_and_unique(self):
         """Slug must be 12 hex chars and differ between calls."""

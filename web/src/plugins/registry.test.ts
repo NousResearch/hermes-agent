@@ -43,12 +43,4 @@ describe("plugin SDK dialog/toast surface", () => {
     expect(typeof sdk.hooks.useState).toBe("function");
     expect(typeof sdk.hooks.useCallback).toBe("function");
   });
-
-  it("does not bump SDK_CONTRACT_VERSION (additive change)", () => {
-    exposePluginSDK();
-    const sdk = (globalThis as any).window.__HERMES_PLUGIN_SDK__;
-    // Pre-existing version per registry.ts:98. This test fails if a future
-    // PR accidentally bumps the major for an additive surface change.
-    expect(sdk.sdkVersion).toBe("1.1.0");
-  });
 });

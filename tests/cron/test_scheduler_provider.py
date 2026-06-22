@@ -589,9 +589,14 @@ class TestResolveTickInterval:
         from cron.scheduler_provider import _resolve_tick_interval
         assert _resolve_tick_interval(60) == 60
 
-    def test_builtin_default_is_15_not_60(self):
-        """InProcessCronScheduler.start() default interval is 15 s (halved crash window)."""
+    def test_builtin_default_is_60(self):
+        """InProcessCronScheduler.start() default interval remains 60 s.
+
+        The crash-window problem is addressed by recover_crash_window_jobs()
+        running at startup, not by shortening the polling interval. Keeping 60 s
+        avoids 4x more disk I/O for users who never hit the bug.
+        """
         import inspect
         from cron.scheduler_provider import InProcessCronScheduler
         sig = inspect.signature(InProcessCronScheduler.start)
-        assert sig.parameters["interval"].default == 15
+        assert sig.parameters["interval"].default == 60

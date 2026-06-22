@@ -1206,6 +1206,77 @@ def advance_next_run(job_id: str) -> bool:
         return False
 
 
+def recover_crash_window_jobs() -> int:
+    """One-shot startup recovery for advance_next_run crash-window victims.
+
+    Called once by InProcessCronScheduler.start() before the tick loop begins.
+    Scans jobs.json for jobs where advance_next_run() wrote a future next_run_at
+    but mark_job_run() never followed (gateway crashed between the two), leaving
+    last_run_at=None with next_run_at suspiciously far in the future.
+
+    For those jobs, resets next_run_at to now so the very first tick fires them.
+    This isolates crash-window recovery from the normal get_due_jobs() hot-path.
+
+    Returns the number of jobs whose next_run_at was reset.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        now = _hermes_now()
+        changed = 0
+        for job in jobs:
+            if not job.get("enabled", True):
+                continue
+            if job.get("last_run_at") is not None:
+                continue
+            next_run = job.get("next_run_at")
+            if not next_run:
+                continue
+            schedule = job.get("schedule", {})
+            kind = schedule.get("kind")
+            if kind not in {"cron", "interval"}:
+                continue
+            try:
+                next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
+            except (ValueError, TypeError):
+                continue
+            if next_run_dt <= now:
+                continue
+            grace = _compute_grace_seconds(schedule)
+            if (next_run_dt - now).total_seconds() <= grace:
+                continue
+            created_at = job.get("created_at")
+            if not created_at:
+                continue
+            try:
+                created_dt = _ensure_aware(datetime.fromisoformat(created_at))
+                first_run_expected = None
+                if kind == "interval":
+                    first_run_expected = created_dt + timedelta(
+                        minutes=schedule.get("minutes", 1)
+                    )
+                elif kind == "cron" and HAS_CRONITER:
+                    _fc = croniter(schedule["expr"], created_dt)
+                    first_run_expected = _ensure_aware(_fc.get_next(datetime))
+                if first_run_expected is not None and now > first_run_expected:
+                    logger.warning(
+                        "Startup recovery: job '%s' (never ran, "
+                        "first_run_expected=%s, next_run_at=%s, grace=%ds) "
+                        "— advance_next_run crash window detected; "
+                        "resetting next_run_at to fire on first tick",
+                        job.get("name", job["id"]),
+                        first_run_expected.isoformat(),
+                        next_run,
+                        grace,
+                    )
+                    job["next_run_at"] = now.isoformat()
+                    changed += 1
+            except Exception:
+                pass
+        if changed:
+            save_jobs(jobs)
+        return changed
+
+
 def _machine_id() -> str:
     """Stable-ish identifier for claim attribution/debugging (NOT correctness).
 
@@ -1302,12 +1373,6 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             continue
 
         next_run = job.get("next_run_at")
-        # Track whether next_run_at was freshly computed in THIS tick (missing
-        # from storage). Used by the crash-window catch-up below to distinguish
-        # a legitimately new job (whose first run is genuinely in the future)
-        # from a crash-window job (whose advance_next_run moved next_run_at to
-        # the next period before the gateway died).
-        _next_run_was_recovered = False
         if not next_run:
             schedule = job.get("schedule", {})
             kind = schedule.get("kind")
@@ -1335,7 +1400,6 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
             job["next_run_at"] = recovered_next
             next_run = recovered_next
-            _next_run_was_recovered = True
             logger.info(
                 "Job '%s' had no next_run_at; recovering %s run at %s",
                 job.get("name", job["id"]),
@@ -1429,59 +1493,6 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     # Fall through to due.append(job) — execute once now
 
             due.append(job)
-
-        elif (
-            not _next_run_was_recovered
-            and kind in {"cron", "interval"}
-            and job.get("last_run_at") is None
-            and (next_run_dt - now).total_seconds() > grace
-            and job.get("created_at")
-        ):
-            # Crash-window catch-up for never-ran jobs.
-            #
-            # Scenario: advance_next_run pre-writes the NEXT period's time to
-            # jobs.json before the job executes. If the gateway crashes between
-            # that write and mark_job_run, the job looks "not yet due" on every
-            # subsequent restart (next_run_at is tomorrow, last_run_at is null).
-            #
-            # Guard: _next_run_was_recovered=True means next_run_at was missing
-            # and we just computed it fresh — the job is genuinely new, not a
-            # crash victim. Skip it.
-            #
-            # Guard: not _next_run_was_recovered + last_run_at=None + next_run_at
-            # far in the future means advance_next_run ran but mark_job_run
-            # never did. We verify by checking that now is past the job's
-            # EXPECTED FIRST RUN TIME (computed from created_at + schedule), so
-            # a legitimately new job whose first run is truly in the future is
-            # never fired early.
-            try:
-                created_dt = _ensure_aware(datetime.fromisoformat(job["created_at"]))
-                # Compute the expected first run from the creation time, not now.
-                # For interval: created_at + interval. For cron: first croniter
-                # occurrence after creation. Without croniter, skip (can't
-                # reliably determine first run; avoid false positives).
-                first_run_expected = None
-                if kind == "interval":
-                    first_run_expected = created_dt + timedelta(
-                        minutes=schedule.get("minutes", 1)
-                    )
-                elif kind == "cron" and HAS_CRONITER:
-                    _first_cron = croniter(schedule["expr"], created_dt)
-                    first_run_expected = _ensure_aware(_first_cron.get_next(datetime))
-
-                if first_run_expected is not None and now > first_run_expected:
-                    logger.warning(
-                        "Job '%s' (never ran, first_run_expected=%s, "
-                        "next_run_at=%s, grace=%ds): "
-                        "recovering advance_next_run crash window — firing now",
-                        job.get("name", job["id"]),
-                        first_run_expected.isoformat(),
-                        next_run,
-                        grace,
-                    )
-                    due.append(job)
-            except Exception:
-                pass
 
     if needs_save:
         save_jobs(raw_jobs)

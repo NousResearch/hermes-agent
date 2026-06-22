@@ -193,26 +193,38 @@ class InProcessCronScheduler(CronScheduler):
     to the pre-refactor ``_start_cron_ticker`` core loop. The caller runs it in
     a daemon thread.
 
-    Default polling interval is 15 seconds (was 60 s). Override via the
+    Default polling interval is 60 seconds. Override via the
     ``HERMES_CRON_INTERVAL`` env var or ``cron.tick_interval_seconds`` in
-    config.yaml. A shorter interval reduces the window in which a gateway
-    restart after ``advance_next_run`` but before job completion can cause a
-    missed fire — the next restart re-evaluates sooner.
+    config.yaml (minimum 5 s). On startup, ``recover_crash_window_jobs()``
+    runs once to reset any jobs that were lost in an advance_next_run crash
+    window so they fire on the very first tick.
     """
 
     @property
     def name(self) -> str:
         return "builtin"
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=15):
+    def start(self, stop_event, *, adapters=None, loop=None, interval=60):
         import logging
         from cron.scheduler import tick as cron_tick
-        from cron.jobs import record_ticker_heartbeat
+        from cron.jobs import record_ticker_heartbeat, recover_crash_window_jobs
 
         interval = _resolve_tick_interval(interval)
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
+
+        # One-shot startup recovery: resets any jobs whose next_run_at was
+        # pre-written by advance_next_run but whose mark_job_run never ran
+        # (gateway crashed in the window between the two). After this call,
+        # those jobs have next_run_at=now and will fire on the first tick.
+        _recovered = recover_crash_window_jobs()
+        if _recovered:
+            logger.info(
+                "Startup: reset %d crash-window job(s) to fire on first tick",
+                _recovered,
+            )
+
         # Heartbeat once before the first sleep so `hermes cron status` sees a
         # live ticker immediately after startup, not only after the first tick.
         record_ticker_heartbeat()

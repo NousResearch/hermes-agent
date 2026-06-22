@@ -20,6 +20,7 @@ from cron.jobs import (
     mark_job_run,
     advance_next_run,
     get_due_jobs,
+    recover_crash_window_jobs,
     save_job_output,
 )
 
@@ -1073,18 +1074,18 @@ class TestGetDueJobs:
             "origin": None,
         }
 
-    def test_crash_window_interval_job_fires_when_first_run_overdue(
+    def test_crash_window_interval_job_resets_next_run_at_on_startup(
         self, tmp_cron_dir, monkeypatch
     ):
-        """An interval job with next_run_at in far future but that never ran fires
-        if its first expected run time is already past (crash-window catch-up).
+        """recover_crash_window_jobs() resets next_run_at to now for an interval
+        job whose advance_next_run crashed before mark_job_run ran.
 
         Scenario: job created at 09:00, interval 60 min → first_run_expected 10:00.
         advance_next_run wrote next_run_at = 23:00 before the crash.
-        At 10:30 the job should be caught by the elif and returned as due.
+        At startup (10:30), recover_crash_window_jobs() resets next_run_at to
+        now so the very first tick fires the job.
         """
         from datetime import timezone
-        from cron.jobs import _hermes_now
 
         now = datetime(2026, 6, 22, 10, 30, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
@@ -1096,20 +1097,23 @@ class TestGetDueJobs:
             schedule_dict={"kind": "interval", "minutes": 60, "display": "every 60m"},
         )])
 
-        due = get_due_jobs()
-        assert [j["id"] for j in due] == ["crash-interval"], (
-            "crash-window catch-up: interval job with overdue first_run_expected "
-            "was not returned as due"
+        recovered = recover_crash_window_jobs()
+        assert recovered == 1, "expected exactly 1 job to be reset"
+        # next_run_at must now be <= now so the first tick fires it
+        nr = get_job("crash-interval")["next_run_at"]
+        from cron.jobs import _ensure_aware
+        assert _ensure_aware(datetime.fromisoformat(nr)) <= now, (
+            "recover_crash_window_jobs did not reset next_run_at to now"
         )
 
-    def test_crash_window_does_not_fire_when_first_run_still_future(
+    def test_crash_window_does_not_reset_when_first_run_still_future(
         self, tmp_cron_dir, monkeypatch
     ):
-        """Catch-up does NOT trigger when first_run_expected hasn't arrived yet.
+        """recover_crash_window_jobs() leaves job untouched when first_run_expected
+        hasn't arrived yet — this is a legitimately new job, not a crash victim.
 
         Scenario: job created at 09:00, interval 60 min → first_run_expected 10:00.
         advance_next_run wrote next_run_at = 23:00 but it's only 09:45 now.
-        The job must NOT be returned: it genuinely hasn't reached its due time yet.
         """
         from datetime import timezone
 
@@ -1119,21 +1123,20 @@ class TestGetDueJobs:
         save_jobs([self._crash_window_job(
             job_id="crash-not-yet",
             created_iso="2026-06-22T09:00:00+00:00",
-            next_run_iso="2026-06-22T23:00:00+00:00",   # far future
+            next_run_iso="2026-06-22T23:00:00+00:00",
             schedule_dict={"kind": "interval", "minutes": 60, "display": "every 60m"},
         )])
 
-        assert get_due_jobs() == [], (
-            "crash-window catch-up fired prematurely: first_run_expected is still in the future"
+        recovered = recover_crash_window_jobs()
+        assert recovered == 0, (
+            "recover_crash_window_jobs reset a job whose first_run_expected is still in the future"
         )
 
-    def test_crash_window_does_not_fire_when_job_already_ran(
+    def test_crash_window_does_not_reset_when_job_already_ran(
         self, tmp_cron_dir, monkeypatch
     ):
-        """Catch-up does NOT trigger when last_run_at is set (job already ran once).
-
-        A job can have next_run_at in the future and last_run_at set if its
-        previous run succeeded normally. The elif requires last_run_at is None.
+        """recover_crash_window_jobs() ignores jobs where last_run_at is set —
+        those ran successfully before; next_run_at is legitimately in the future.
         """
         from datetime import timezone
 
@@ -1146,39 +1149,49 @@ class TestGetDueJobs:
             next_run_iso="2026-06-22T23:00:00+00:00",
             schedule_dict={"kind": "interval", "minutes": 60, "display": "every 60m"},
         )
-        job["last_run_at"] = "2026-06-22T10:00:00+00:00"   # ran successfully once
+        job["last_run_at"] = "2026-06-22T10:00:00+00:00"
         job["last_status"] = "ok"
         save_jobs([job])
 
-        assert get_due_jobs() == [], (
-            "catch-up fired for a job that already ran (last_run_at is set)"
+        recovered = recover_crash_window_jobs()
+        assert recovered == 0, (
+            "recover_crash_window_jobs reset a job that already ran (last_run_at is set)"
         )
 
-    def test_crash_window_same_tick_recovery_does_not_fire(
+    def test_crash_window_recovery_resets_multiple_victims(
         self, tmp_cron_dir, monkeypatch
     ):
-        """A job whose next_run_at was recovered IN THIS TICK (next_run_at=None →
-        computed now+interval) must NOT also trigger the crash-window catch-up.
-
-        _next_run_was_recovered=True prevents double-firing within the same tick.
-        The job was just created (created_at=now-5min), recovery sets its first
-        next_run_at to now+55min — which is not yet due. It must not fire.
+        """recover_crash_window_jobs() resets all qualifying jobs in a single pass,
+        matching the 11-job scenario from issue #51038.
         """
         from datetime import timezone
 
-        now = datetime(2026, 6, 22, 10, 5, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 22, 15, 45, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
 
-        save_jobs([self._crash_window_job(
-            job_id="crash-same-tick",
-            created_iso="2026-06-22T10:00:00+00:00",   # just created 5 min ago
-            next_run_iso=None,                           # forces in-tick recovery
+        victims = [
+            self._crash_window_job(
+                job_id=f"crash-{i}",
+                created_iso="2026-06-22T09:00:00+00:00",
+                next_run_iso="2026-06-23T09:00:00+00:00",   # tomorrow
+                schedule_dict={"kind": "interval", "minutes": 60, "display": "every 60m"},
+            )
+            for i in range(3)
+        ]
+        # One legitimate job that ran before — must NOT be reset
+        ran_before = self._crash_window_job(
+            job_id="ran-before",
+            created_iso="2026-06-22T09:00:00+00:00",
+            next_run_iso="2026-06-23T09:00:00+00:00",
             schedule_dict={"kind": "interval", "minutes": 60, "display": "every 60m"},
-        )])
+        )
+        ran_before["last_run_at"] = "2026-06-22T10:00:00+00:00"
+        save_jobs(victims + [ran_before])
 
-        assert get_due_jobs() == [], (
-            "_next_run_was_recovered guard failed: same-tick recovery job was fired "
-            "by the crash-window catch-up path"
+        recovered = recover_crash_window_jobs()
+        assert recovered == 3, f"expected 3 resets, got {recovered}"
+        assert get_job("ran-before")["next_run_at"] == "2026-06-23T09:00:00+00:00", (
+            "job that already ran was incorrectly reset"
         )
 
 

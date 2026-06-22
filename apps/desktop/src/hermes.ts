@@ -60,6 +60,7 @@ export type {
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
+  ComputerUseCheck,
   ComputerUsePermissionSource,
   ComputerUseStatus,
   ConfigFieldSchema,

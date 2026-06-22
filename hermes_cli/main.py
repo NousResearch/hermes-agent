@@ -12598,27 +12598,32 @@ def main():
                 sys.exit(request_permissions_grant())
             if perms_action == "status":
                 import json as _json
-                from tools.computer_use.permissions import permissions_status
-                st = permissions_status()
+                from tools.computer_use.permissions import computer_use_status
+                st = computer_use_status()
                 if bool(getattr(args, "json", False)):
                     print(_json.dumps(st, indent=2, sort_keys=True))
-                else:
-                    if not st["installed"]:
-                        print("cua-driver: not installed")
-                        print("  Run: hermes computer-use install")
-                    elif not st["platform_supported"]:
-                        print("Computer Use permissions are managed on macOS only.")
-                    else:
-                        def _glyph(v):
-                            return "✅" if v is True else ("❌" if v is False else "•")
-                        print(f"cua-driver: {st.get('version') or 'installed'}")
-                        print(f"  {_glyph(st['accessibility'])} Accessibility")
-                        print(f"  {_glyph(st['screen_recording'])} Screen Recording")
-                        if st.get("error"):
-                            print(f"  ⚠ {st['error']}")
-                        if st["accessibility"] is not True or st["screen_recording"] is not True:
-                            print("  Grant: hermes computer-use permissions grant")
-                sys.exit(0 if st.get("accessibility") and st.get("screen_recording") else 1)
+                    sys.exit(0 if st["ready"] else 1)
+                if not st["platform_supported"]:
+                    print(f"Computer Use is not supported on {st['platform']}.")
+                    sys.exit(1)
+                if not st["installed"]:
+                    print("cua-driver: not installed. Run: hermes computer-use install")
+                    sys.exit(1)
+                glyph = lambda v: "✅" if v is True else ("❌" if v is False else "•")  # noqa: E731
+                print(f"cua-driver: {st['version'] or 'installed'} ({st['platform']})")
+                if st["can_grant"]:  # macOS TCC permissions
+                    print(f"  {glyph(st['accessibility'])} Accessibility")
+                    print(f"  {glyph(st['screen_recording'])} Screen Recording")
+                    if not st["ready"]:
+                        print("  Grant: hermes computer-use permissions grant")
+                else:  # no TCC model — readiness is driver health
+                    print(f"  {glyph(st['ready'])} driver health (no permission toggles on {st['platform']})")
+                for c in st["checks"]:
+                    if c["status"] != "ok":
+                        print(f"  ⚠ {c['label']}: {c['message']}")
+                if st["error"]:
+                    print(f"  ⚠ {st['error']}")
+                sys.exit(0 if st["ready"] else 1)
             computer_use_perms.print_help()
             return
         # No subcommand → show help

@@ -1,21 +1,24 @@
 """
-macOS Accessibility + Screen Recording permission helpers for Computer Use.
+Cross-platform Computer Use readiness + macOS permission helpers.
 
-cua-driver 0.5+ owns the permission model. Crucially, the grants attach to
-cua-driver's OWN TCC identity (``com.trycua.driver`` — the installed
-``CuaDriver.app``), NOT the terminal, the Hermes CLI, or the Hermes desktop
-app. So:
+cua-driver runs on macOS, Windows, and Linux, but "ready to drive" means
+something different on each:
 
-  * ``cua-driver permissions status --json`` reports the driver daemon's real
-    grant state, independent of who asks.
-  * ``cua-driver permissions grant`` launches CuaDriver via LaunchServices so
-    the macOS dialog is attributed to ``com.trycua.driver`` — the process that
-    actually does the work.
+  * macOS — explicit TCC grants (Accessibility + Screen Recording). cua-driver
+    reports/requests them via ``permissions status`` / ``permissions grant``.
+    The grants attach to cua-driver's OWN identity (``com.trycua.driver`` /
+    the installed ``CuaDriver.app``), NOT Hermes — so no Hermes entitlement is
+    involved, and ``grant`` launches CuaDriver via LaunchServices so the macOS
+    dialog is attributed correctly.
+  * Windows — no TCC toggles; the UIAccess worker (``cua-driver-uia.exe``) may
+    trip a SmartScreen prompt on first run. Readiness == driver health.
+  * Linux — assistive control via the X11/XWayland stack. Readiness == driver
+    health.
 
-Because the permission lives with the cua-driver binary, the Hermes desktop
-app needs no Accessibility / Screen Recording entitlements of its own. This is
-a thin, testable client driven by the ``hermes computer-use permissions`` CLI
-and the desktop ``/api/tools/computer-use/status`` endpoint.
+The universal signal on every platform is ``cua-driver doctor --json`` (binary
+integrity + platform support). ``computer_use_status`` folds that together with
+the macOS permission detail into one payload for the desktop card, the
+``hermes computer-use permissions`` CLI, and ``/api/tools/computer-use/status``.
 """
 
 from __future__ import annotations
@@ -25,8 +28,10 @@ import os
 import shutil
 import subprocess
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
+# Platforms with a cua-driver runtime backend (mirrors the toolset platform_gate).
+_RUNTIME_PLATFORMS = frozenset({"darwin", "win32", "linux"})
 _BOOLS = ("accessibility", "screen_recording", "screen_recording_capturable")
 
 
@@ -61,18 +66,65 @@ def _run(binary: str, *args: str, timeout: float) -> subprocess.CompletedProcess
     )
 
 
-def permissions_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
-    """Computer Use install + macOS permission state for the desktop card.
+def _json_out(binary: str, *args: str, timeout: float) -> Any:
+    """Run ``binary args`` and parse stdout as JSON, or ``None`` on any failure."""
+    raw = (_run(binary, *args, timeout=timeout).stdout or "").strip()
+    return json.loads(raw) if raw else None
 
-    ``None`` permission values mean "unknown" — the driver binary is missing,
-    the platform has no TCC model, or no CuaDriver daemon is running to answer
-    for its own identity yet.
+
+def _doctor(binary: str) -> Optional[Dict[str, Any]]:
+    """``cua-driver doctor --json`` → ``{ok, checks:[{label,status,message}]}``."""
+    try:
+        data = _json_out(binary, "doctor", "--json", timeout=12)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    checks: List[Dict[str, str]] = [
+        {
+            "label": str(p.get("label", "")),
+            "status": str(p.get("status", "")),
+            "message": str(p.get("message", "")),
+        }
+        for p in data.get("probes", [])
+        if isinstance(p, dict)
+    ]
+    return {"ok": bool(data.get("ok")), "checks": checks}
+
+
+def _mac_permissions(binary: str, out: Dict[str, Any]) -> None:
+    """Fold ``cua-driver permissions status --json`` booleans into ``out``."""
+    try:
+        data = _json_out(binary, "permissions", "status", "--json", timeout=10)
+    except subprocess.TimeoutExpired:
+        out["error"] = "cua-driver permissions status timed out"
+        return
+    except Exception as exc:  # spawn failure or malformed JSON
+        out["error"] = f"cua-driver permissions status failed: {exc}"
+        return
+    if isinstance(data, dict):
+        out.update({k: data[k] for k in _BOOLS if isinstance(data.get(k), bool)})
+        if isinstance(data.get("source"), dict):
+            out["source"] = data["source"]
+
+
+def computer_use_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
+    """Unified, OS-aware Computer Use readiness for the desktop card.
+
+    ``ready`` is the single signal the UI keys off: on macOS it's both TCC
+    grants; elsewhere it's driver health (no TCC model). ``None`` means
+    unknown (binary missing / probe failed). ``can_grant`` is macOS-only.
     """
+    plat = sys.platform
     binary = shutil.which(_driver_cmd(driver_cmd))
     out: Dict[str, Any] = {
-        "platform_supported": sys.platform == "darwin",
+        "platform": plat,
+        "platform_supported": plat in _RUNTIME_PLATFORMS,
         "installed": bool(binary),
         "version": None,
+        "ready": None,
+        "can_grant": plat == "darwin",
+        "checks": [],
         "source": None,
         "error": None,
         **{k: None for k in _BOOLS},
@@ -85,24 +137,17 @@ def permissions_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Permissions are a macOS concept; cua-driver only exposes the subcommand there.
-    if sys.platform != "darwin":
-        return out
+    doctor = _doctor(binary)
+    if doctor is not None:
+        out["checks"] = doctor["checks"]
 
-    try:
-        raw = (_run(binary, "permissions", "status", "--json", timeout=10).stdout or "").strip()
-        data = json.loads(raw) if raw else {}
-    except subprocess.TimeoutExpired:
-        out["error"] = "cua-driver permissions status timed out"
-        return out
-    except Exception as exc:  # spawn failure or malformed JSON
-        out["error"] = f"cua-driver permissions status failed: {exc}"
-        return out
-
-    if isinstance(data, dict):
-        out.update({k: data[k] for k in _BOOLS if isinstance(data.get(k), bool)})
-        if isinstance(data.get("source"), dict):
-            out["source"] = data["source"]
+    if plat == "darwin":
+        _mac_permissions(binary, out)
+        if out["error"] is None:
+            out["ready"] = out["accessibility"] is True and out["screen_recording"] is True
+    elif doctor is not None:
+        # No TCC model off macOS — readiness is driver health.
+        out["ready"] = doctor["ok"]
     return out
 
 
@@ -111,10 +156,11 @@ def request_permissions_grant(driver_cmd: Optional[str] = None) -> int:
 
     Launches CuaDriver via LaunchServices so the TCC dialog is attributed to
     ``com.trycua.driver``, then waits for the grant. Returns the driver's exit
-    code (0 ok), 2 if the binary is missing, 64 on an unsupported platform.
+    code (0 ok), 2 if the binary is missing, 64 on a non-macOS platform (which
+    has no TCC permission model to grant).
     """
     if sys.platform != "darwin":
-        print("Computer Use permissions are managed on macOS only.")
+        print("Computer Use permissions are a macOS concept; nothing to grant here.")
         return 64
 
     binary = shutil.which(_driver_cmd(driver_cmd))

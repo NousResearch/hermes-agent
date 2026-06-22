@@ -581,11 +581,11 @@ export interface ToolsetConfig {
 
 /** Shape of `GET /api/tools/computer-use/status`.
  *
- *  Computer Use drives the Mac through cua-driver, whose Accessibility +
- *  Screen Recording grants attach to cua-driver's OWN TCC identity
- *  (`com.trycua.driver`), not the Hermes app. Permission booleans are
- *  `null` when unknown (binary missing, or no CuaDriver daemon running to
- *  answer for its own identity). */
+ *  cua-driver runs on macOS, Windows, and Linux. `ready` is the single OS-aware
+ *  readiness signal: on macOS both TCC grants (Accessibility + Screen
+ *  Recording, which attach to cua-driver's own `com.trycua.driver` identity,
+ *  not Hermes); elsewhere, driver health from `cua-driver doctor`. `null`
+ *  means unknown (binary missing / probe failed). */
 export interface ComputerUsePermissionSource {
   attribution?: string
   executable?: string
@@ -594,13 +594,28 @@ export interface ComputerUsePermissionSource {
   responsible_ppid?: number
 }
 
+export interface ComputerUseCheck {
+  label: string
+  status: string
+  message: string
+}
+
 export interface ComputerUseStatus {
-  /** macOS is the only platform with the TCC permission model cua-driver gates. */
+  /** `sys.platform`: "darwin" | "win32" | "linux" | ... */
+  platform: string
+  /** cua-driver has a runtime backend for this platform. */
   platform_supported: boolean
   /** cua-driver binary resolved on PATH. */
   installed: boolean
   /** e.g. "cua-driver 0.5.1", or null when unknown. */
   version: string | null
+  /** Unified readiness — both TCC grants (macOS) or driver health (else). */
+  ready: boolean | null
+  /** Whether a permission grant flow exists (macOS-only TCC). */
+  can_grant: boolean
+  /** Cross-platform `cua-driver doctor` probes. */
+  checks: ComputerUseCheck[]
+  /** macOS TCC detail — `null` off macOS or when unknown. */
   accessibility: boolean | null
   screen_recording: boolean | null
   screen_recording_capturable: boolean | null

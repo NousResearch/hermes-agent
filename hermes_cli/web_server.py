@@ -10673,43 +10673,45 @@ async def run_toolset_post_setup(
 
 
 # ---------------------------------------------------------------------------
-# Computer Use (cua-driver) — install + macOS permission state
+# Computer Use (cua-driver) — cross-platform readiness + macOS permission grant
 #
-# Computer Use drives the Mac through cua-driver, whose Accessibility +
-# Screen Recording grants attach to cua-driver's OWN TCC identity
-# (com.trycua.driver / the installed CuaDriver.app) — not the Hermes desktop
-# app or this server. The desktop's Computer Use card reflects that state and
-# triggers a grant via the same `cua-driver permissions grant` flow the CLI
-# uses, so no Hermes-side entitlement is involved.
+# cua-driver runs on macOS, Windows, and Linux. The desktop card reflects
+# per-OS readiness: on macOS the Accessibility + Screen Recording TCC grants
+# (which attach to cua-driver's OWN identity, com.trycua.driver — not Hermes,
+# so no app entitlement is involved); elsewhere, driver health from
+# `cua-driver doctor`. The grant flow is macOS-only (no TCC toggles to request
+# on Windows/Linux).
 # ---------------------------------------------------------------------------
 
 
 @app.get("/api/tools/computer-use/status")
 async def get_computer_use_status(profile: Optional[str] = None):
-    """Report cua-driver install + macOS permission state for the desktop card.
+    """Cross-platform Computer Use readiness for the desktop card.
 
-    See ``tools.computer_use.permissions.permissions_status`` for the payload
-    shape. Read-only and fast (shells ``cua-driver permissions status``).
+    See ``tools.computer_use.permissions.computer_use_status`` for the payload
+    shape. Read-only and fast (shells ``cua-driver doctor`` + macOS
+    ``permissions status``).
     """
-    from tools.computer_use.permissions import permissions_status
+    from tools.computer_use.permissions import computer_use_status
 
     with _profile_scope(profile):
-        return permissions_status()
+        return computer_use_status()
 
 
 @app.post("/api/tools/computer-use/permissions/grant")
 async def grant_computer_use_permissions(profile: Optional[str] = None):
     """Spawn ``hermes computer-use permissions grant`` as a background action.
 
-    ``cua-driver permissions grant`` launches CuaDriver via LaunchServices so
-    the macOS TCC dialog is attributed to com.trycua.driver, then waits for
-    the user to approve. The frontend polls ``GET /api/actions/computer-use-
-    grant/status`` for progress and re-reads ``/status`` once it exits.
+    macOS-only: ``cua-driver permissions grant`` launches CuaDriver via
+    LaunchServices so the TCC dialog is attributed to com.trycua.driver, then
+    waits for approval. The frontend polls ``GET /api/actions/computer-use-
+    grant/status`` and re-reads ``/status`` once it exits. Windows/Linux have
+    no TCC toggles to grant, so this returns 400 there.
     """
     if sys.platform != "darwin":
         raise HTTPException(
             status_code=400,
-            detail="Computer Use permissions are managed on macOS only.",
+            detail="Computer Use permission grants are a macOS concept.",
         )
     try:
         proc = _spawn_hermes_action(

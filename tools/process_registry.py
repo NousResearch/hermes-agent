@@ -483,6 +483,24 @@ class ProcessRegistry:
         self._move_to_finished(session)
         return session
 
+    @staticmethod
+    def _daemon_term_grace_seconds() -> float:
+        """Grace window (s) between SIGTERM and escalated SIGKILL.
+
+        Read from ``terminal.daemon_term_grace_seconds`` in config.yaml; floored
+        at 0 (0 disables escalation). Falls back to the DEFAULT_CONFIG value if
+        config is unreadable, so callers always get a sane number.
+        """
+        try:
+            from hermes_cli.config import read_raw_config, cfg_get, DEFAULT_CONFIG
+            cfg = read_raw_config()
+            val = cfg_get(cfg, "terminal", "daemon_term_grace_seconds")
+            if val is None:
+                val = DEFAULT_CONFIG["terminal"]["daemon_term_grace_seconds"]
+            return max(float(val), 0.0)
+        except Exception:
+            return 2.0
+
     @classmethod
     def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> None:
         """Terminate a host-visible PID and its descendants.
@@ -496,12 +514,17 @@ class ProcessRegistry:
         POSIX: walks the process tree with ``psutil`` and SIGTERMs
         children before the parent so subprocess trees (e.g. Chromium
         renderers/GPU helpers spawned by an ``agent-browser`` daemon)
-        don't get reparented to init and survive cleanup.
+        don't get reparented to init and survive cleanup.  After a bounded
+        grace window (``terminal.daemon_term_grace_seconds``) any tree member
+        that ignored SIGTERM — a daemon stalled in its signal handler — is
+        escalated to SIGKILL so it can't leak indefinitely.  Set the grace to
+        0 to disable escalation (SIGTERM only).
 
         Windows: shells out to ``taskkill /PID <pid> /T /F``. This is
         the documented Microsoft primitive for tree-kill and matches the
-        existing convention in ``gateway.status.terminate_pid``. We can't
-        reuse the POSIX psutil path on Windows because:
+        existing convention in ``gateway.status.terminate_pid``.  ``/F`` is
+        already a hard kill, so no separate escalation step is needed.  We
+        can't reuse the POSIX psutil path on Windows because:
 
           1. Windows doesn't maintain a Unix-style process tree —
              ``psutil.Process.children(recursive=True)`` walks PPID
@@ -550,18 +573,50 @@ class ProcessRegistry:
         import psutil
         try:
             parent = psutil.Process(pid)
-            for child in parent.children(recursive=True):
-                try:
-                    child.terminate()
-                except psutil.NoSuchProcess:
-                    pass
-            parent.terminate()
         except psutil.NoSuchProcess:
             return
         except (OSError, PermissionError):
             try:
                 os.kill(pid, signal.SIGTERM)
             except (OSError, ProcessLookupError, PermissionError):
+                pass
+            return
+
+        # Snapshot the whole tree (children before parent) and SIGTERM each.
+        try:
+            targets = parent.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            targets = []
+        targets.append(parent)
+
+        for proc in targets:
+            try:
+                proc.terminate()
+            except psutil.NoSuchProcess:
+                pass
+            except (psutil.AccessDenied, OSError):
+                pass
+
+        # Escalate to SIGKILL for anything that ignored SIGTERM within the
+        # grace window — a daemon stalled in its signal handler would otherwise
+        # leak indefinitely.
+        grace = cls._daemon_term_grace_seconds()
+        if grace <= 0:
+            return
+        try:
+            _gone, alive = psutil.wait_procs(targets, timeout=grace)
+        except (psutil.Error, OSError):
+            alive = []
+        for proc in alive:
+            try:
+                proc.kill()  # SIGKILL on POSIX
+                logger.info(
+                    "Escalated to SIGKILL for pid %d (ignored SIGTERM within "
+                    "%.1fs grace)", proc.pid, grace,
+                )
+            except psutil.NoSuchProcess:
+                pass
+            except (psutil.AccessDenied, OSError):
                 pass
 
     # ----- Spawn -----

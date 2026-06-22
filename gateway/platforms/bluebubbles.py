@@ -72,6 +72,21 @@ _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
 
+# Characters that render as tofu boxes on iMessage because Apple Color Emoji
+# has no glyphs for them.  Strips:
+#   * Block Elements (U+2580..U+259F) — streaming-cursor artifacts like ▉ that
+#     the agent's stream renderer can leak into the final message.
+#   * Private Use Area (U+E000..U+F8FF) — Slack custom workspace emoji live
+#     here and get carried through when Slack history ends up in model context.
+#   * Supplementary Private Use Areas (U+F0000..U+FFFFD, U+100000..U+10FFFD).
+_IMSG_TOFU_RE = re.compile(
+    "[\u2580-\u259F\ue000-\uf8ff\U000f0000-\U000ffffd\U00100000-\U0010fffd]"
+)
+
+
+def _sanitize_for_imessage(text: str) -> str:
+    return _IMSG_TOFU_RE.sub("", text or "").rstrip()
+
 
 def _redact(text: str) -> str:
     """Redact phone numbers and emails from log output."""
@@ -303,8 +318,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def _webhook_url(self) -> str:
         """Compute the external webhook URL for BlueBubbles registration."""
         host = self.webhook_host
-        if host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
-            host = "localhost"
+        # Use 127.0.0.1 literal rather than "localhost": on macOS with modern
+        # Node.js the BlueBubbles Server resolves "localhost" to ::1 (IPv6
+        # first), but the aiohttp TCPSite binds 127.0.0.1 only, so webhook
+        # dispatches fail with ECONNREFUSED on same-host installs.
+        if host in {"0.0.0.0", "127.0.0.1", "localhost", "::", "::1"}:
+            host = "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property
@@ -769,7 +788,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return info
 
     def format_message(self, content: str) -> str:
-        return strip_markdown(content)
+        return _sanitize_for_imessage(strip_markdown(content))
 
     # ------------------------------------------------------------------
     # Inbound attachment downloading (from #4588)

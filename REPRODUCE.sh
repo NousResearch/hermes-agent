@@ -25,8 +25,10 @@ cd "$SRC" || { echo "checkout not found: $SRC"; exit 1; }
 GH="env -u GITHUB_TOKEN -u GH_TOKEN gh"
 
 echo "============ 1. DIFF-COVERAGE (overlay vs v0.16.0 ∩ 40 feature PRs) ============"
+# DISCARD = .bak editor backups + .project-intel/ generated index + transcripts/ eval
+# captures. None are contributable source; excluded from the src-delta the PRs must cover.
 { git diff --name-only "$V016" HEAD; git diff --name-only "$V016"; } | sort -u \
-  | grep -vE '(\.bak$|\.bak\.|^\.project-intel/)' > /tmp/rep_src.txt
+  | grep -vE '(\.bak$|\.bak\.|^\.project-intel/|^transcripts/)' > /tmp/rep_src.txt
 : > /tmp/rep_prunion.txt
 # IMPORTANT: build the feature-PR file union from `git diff --name-only origin/main...<head>`
 # (ground truth) NOT from `gh pr view --json files`. The gh files view CAPS at 100 entries

@@ -20,6 +20,7 @@ import hmac
 import importlib.util
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -3480,6 +3481,90 @@ _EMPTY_MODEL_INFO: dict = {
     "effective_context_length": 0,
     "capabilities": {},
 }
+
+
+def _iso_z(dt: Optional[datetime]) -> Optional[str]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _finite_float(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) else None
+
+
+def _clamp_percent(value: float) -> float:
+    return max(0.0, min(100.0, value))
+
+
+def _serialize_account_usage_window(window: Any) -> dict:
+    used = _finite_float(getattr(window, "used_percent", None))
+    remaining = None if used is None else _clamp_percent(100.0 - _clamp_percent(used))
+    return {
+        "label": str(getattr(window, "label", "") or ""),
+        "used_percent": None if used is None else _clamp_percent(used),
+        "remaining_percent": remaining,
+        "reset_at": _iso_z(getattr(window, "reset_at", None)),
+        "detail": getattr(window, "detail", None),
+    }
+
+
+def _serialize_account_usage(snapshot: Any, *, provider: str = "openai-codex") -> dict:
+    if snapshot is None:
+        return {
+            "available": False,
+            "details": [],
+            "error": "Codex quota unavailable",
+            "fetched_at": None,
+            "plan": None,
+            "provider": provider,
+            "source": None,
+            "title": "OpenAI Codex quota",
+            "windows": [],
+        }
+
+    unavailable_reason = getattr(snapshot, "unavailable_reason", None)
+    return {
+        "available": bool(getattr(snapshot, "available", False)),
+        "details": list(getattr(snapshot, "details", ()) or ()),
+        "error": unavailable_reason,
+        "fetched_at": _iso_z(getattr(snapshot, "fetched_at", None)),
+        "plan": getattr(snapshot, "plan", None),
+        "provider": str(getattr(snapshot, "provider", provider) or provider),
+        "source": getattr(snapshot, "source", None),
+        "title": str(getattr(snapshot, "title", "OpenAI Codex quota") or "OpenAI Codex quota"),
+        "windows": [
+            _serialize_account_usage_window(window)
+            for window in (getattr(snapshot, "windows", ()) or ())
+        ],
+    }
+
+
+@app.get("/api/codex/usage")
+def get_codex_usage(profile: Optional[str] = None):
+    """Return OpenAI Codex quota for the requested profile's auth store.
+
+    OpenAI Codex OAuth credentials are profile-local. The desktop normally
+    routes this request to the active profile backend process; the query param
+    keeps the endpoint safe for local profile-scoped tests / direct dashboard
+    calls by swapping HERMES_HOME for the duration of the fetch.
+    """
+    try:
+        from agent import account_usage
+
+        with _profile_scope(profile):
+            snapshot = account_usage.fetch_account_usage("openai-codex")
+        return _serialize_account_usage(snapshot, provider="openai-codex")
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/codex/usage failed")
+        return _serialize_account_usage(None, provider="openai-codex")
 
 
 @app.get("/api/model/info")

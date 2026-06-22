@@ -231,6 +231,26 @@ export interface ModelInfoResponse {
   provider: string
 }
 
+export interface CodexUsageWindow {
+  detail?: null | string
+  label: string
+  remaining_percent?: null | number
+  reset_at?: null | string
+  used_percent?: null | number
+}
+
+export interface CodexUsageResponse {
+  available: boolean
+  details: string[]
+  error?: null | string
+  fetched_at?: null | string
+  plan?: null | string
+  provider: string
+  source?: null | string
+  title?: string
+  windows: CodexUsageWindow[]
+}
+
 export interface ModelPricing {
   /** Formatted $/Mtok input price, e.g. "$3.00", or "free", or "" if unknown. */
   input: string

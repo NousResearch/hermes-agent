@@ -8,6 +8,7 @@ import type {
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
+  CodexUsageResponse,
   ConfigSchemaResponse,
   CronJob,
   CronJobCreatePayload,
@@ -59,6 +60,7 @@ export type {
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
+  CodexUsageResponse,
   ConfigFieldSchema,
   ConfigSchemaResponse,
   CronJob,
@@ -266,6 +268,13 @@ export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
   })
 }
 
+export function getCodexUsage(): Promise<CodexUsageResponse> {
+  return window.hermesDesktop.api<CodexUsageResponse>({
+    ...profileScoped(),
+    path: '/api/codex/usage'
+  })
+}
+
 export function getStatus(): Promise<StatusResponse> {
   return window.hermesDesktop.api<StatusResponse>({
     path: '/api/status'
@@ -347,10 +356,7 @@ export function getMemoryProviderConfig(provider: string): Promise<MemoryProvide
   })
 }
 
-export function saveMemoryProviderConfig(
-  provider: string,
-  values: Record<string, string>
-): Promise<{ ok: boolean }> {
+export function saveMemoryProviderConfig(provider: string, values: Record<string, string>): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config`,
     method: 'PUT',

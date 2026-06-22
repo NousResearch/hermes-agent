@@ -1401,3 +1401,152 @@ class TestOpenVikingMemoryUriBuilder:
             assert f"/memories/{subdir}/mem_" in uri, (
                 f"subdir '{subdir}' not placed correctly in URI: {uri}"
             )
+
+
+# ===================================================================
+# Issue #21130 — OPENVIKING_* not reloaded after /reload
+# ===================================================================
+
+
+class TestEnsureClientReloadsEnv:
+    """Verify /reload picks up new OPENVIKING_* values without a restart (#21130)."""
+
+    def test_ensure_client_rebuilds_when_api_key_changes(self, monkeypatch):
+        constructions = []
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key, account="", user="", agent="hermes"):
+                constructions.append({"endpoint": endpoint, "api_key": api_key,
+                                      "account": account, "user": user, "agent": agent})
+                self.endpoint, self.api_key = endpoint, api_key
+                self.account, self.user, self.agent = account, user, agent
+
+            def health(self):
+                return True
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://srv:31933")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        first = provider._ensure_client()
+        assert first is not None
+        assert first.api_key == ""
+        assert len(constructions) == 1
+
+        # Same env on second call — must reuse cached client (no rebuild).
+        assert provider._ensure_client() is first
+        assert len(constructions) == 1
+
+        # Simulate /reload: env now carries the new API key.
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-fresh")
+        rebuilt = provider._ensure_client()
+        assert rebuilt is not None
+        assert rebuilt is not first
+        assert rebuilt.api_key == "sk-fresh"
+        assert len(constructions) == 2
+
+    def test_ensure_client_rebuilds_when_endpoint_changes(self, monkeypatch):
+        builds = []
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key, **kw):
+                builds.append(endpoint)
+                self.endpoint = endpoint
+
+            def health(self):
+                return True
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://a")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "key")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        provider._ensure_client()
+        provider._ensure_client()  # cached
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://b")
+        provider._ensure_client()  # rebuilds
+        assert builds == ["http://a", "http://b"]
+
+    def test_ensure_client_returns_none_when_health_fails(self, monkeypatch):
+        class _StubClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            def health(self):
+                return False
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://dead")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        assert provider._ensure_client() is None
+        assert provider._client is None
+
+    def test_handle_tool_call_uses_ensure_client(self, monkeypatch):
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+
+        class _StubClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            def health(self):
+                return False
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+
+        out = provider.handle_tool_call("viking_search", {"query": "x"})
+        assert "not connected" in out.lower()
+
+    def test_prefetch_goes_through_ensure_client(self, monkeypatch):
+        # Pre-turn recall must refresh from env too, not just tool calls: a
+        # /reload before the first recall of a turn should reach the new client.
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        calls = {"n": 0}
+        monkeypatch.setattr(provider, "_ensure_client", lambda: (calls.__setitem__("n", calls["n"] + 1) or None))
+        # Long-enough query so the length guard doesn't short-circuit first.
+        assert provider.prefetch("remember my project deadlines please") == ""
+        assert calls["n"] == 1
+
+    def test_on_session_switch_goes_through_ensure_client(self, monkeypatch):
+        # Session rotation (/new, /branch, /resume) is a live client-gated path;
+        # it must refresh from env rather than read a stale snapshot.
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        calls = {"n": 0}
+        monkeypatch.setattr(provider, "_ensure_client", lambda: (calls.__setitem__("n", calls["n"] + 1) or None))
+        provider.on_session_switch("new-sid-123")
+        assert calls["n"] == 1
+
+    def test_unreachable_local_endpoint_triggers_recovery(self, monkeypatch):
+        # A newly-resolved LOCAL endpoint that isn't up must preserve
+        # initialize()'s recovery: (re)start the server + attach in the
+        # background — not silently disable memory (sweeper feedback on #21130).
+        class _StubClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            def health(self):
+                return False  # -> classified "unreachable"
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+        monkeypatch.setattr("plugins.memory.openviking._is_local_openviking_url", lambda _u: True)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:31933")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        recovered = {"n": 0}
+        monkeypatch.setattr(
+            provider,
+            "_handle_runtime_openviking_unreachable",
+            lambda *a, **k: recovered.__setitem__("n", recovered["n"] + 1),
+        )
+        assert provider._ensure_client() is None
+        assert recovered["n"] == 1

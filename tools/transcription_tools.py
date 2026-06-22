@@ -1128,14 +1128,18 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             _local_model_name = model_name
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
+        local_config = _load_stt_config().get("local", {})
         _forced_lang = (
-            _load_stt_config().get("local", {}).get("language")
+            local_config.get("language")
             or os.getenv(LOCAL_STT_LANGUAGE_ENV)
             or None
         )
         transcribe_kwargs = {"beam_size": 5}
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
+        initial_prompt = local_config.get("initial_prompt")
+        if isinstance(initial_prompt, str) and initial_prompt.strip():
+            transcribe_kwargs["initial_prompt"] = initial_prompt
 
         try:
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)

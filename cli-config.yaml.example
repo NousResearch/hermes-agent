@@ -896,6 +896,7 @@ stt:
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
+    # initial_prompt: ""       # Optional faster-whisper prompt, e.g. bias Chinese output to simplified Chinese
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
   # mistral:

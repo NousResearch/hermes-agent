@@ -597,6 +597,120 @@ def test_resume_windows_gateways_after_update_respawns_unmapped_by_cmdline(
     assert "Restarting 1 unmapped Windows gateway process(es)" in out
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_returns_cold_start_token_when_installed_but_none_running(
+    _winp,
+    monkeypatch,
+):
+    """No gateway running + autostart entry installed → cold-start token.
+
+    A gateway that died between updates (spawning terminal/TUI closed) leaves
+    nothing for the resume path to relaunch, but the installed autostart entry
+    is an explicit "I want a gateway" signal. The pause step must return a
+    token that tells resume to cold-start one.
+    """
+    import hermes_cli.gateway as gateway_mod
+    from hermes_cli import gateway_windows
+
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [])
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+
+    token = cli_main._pause_windows_gateways_for_update()
+
+    assert token == {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped_pids": [],
+        "unmapped": [],
+        "cold_start_if_installed": True,
+    }
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_returns_none_when_nothing_running_and_not_installed(
+    _winp,
+    monkeypatch,
+):
+    """No gateway running + no autostart entry → no token (gateway-less user).
+
+    Users who deliberately run without a gateway must not get one forced on
+    them by an update.
+    """
+    import hermes_cli.gateway as gateway_mod
+    from hermes_cli import gateway_windows
+
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [])
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: False)
+
+    assert cli_main._pause_windows_gateways_for_update() is None
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_resume_cold_starts_gateway_when_token_requests_it(
+    _winp,
+    monkeypatch,
+    capsys,
+):
+    """cold_start_if_installed token + nothing running → fresh detached spawn."""
+    import hermes_cli.gateway as gateway_mod
+    from hermes_cli import gateway_windows
+
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [])
+    spawned = []
+    monkeypatch.setattr(
+        gateway_windows,
+        "_spawn_detached",
+        lambda: spawned.append(True) or 4242,
+    )
+
+    token = {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped_pids": [],
+        "unmapped": [],
+        "cold_start_if_installed": True,
+    }
+
+    cli_main._resume_windows_gateways_after_update(token)
+
+    assert token["resume_needed"] is False
+    assert spawned == [True]
+    assert "Starting Windows gateway after update (PID 4242)" in capsys.readouterr().out
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_resume_cold_start_skips_when_gateway_already_running(
+    _winp,
+    monkeypatch,
+    capsys,
+):
+    """Don't double-start: if a gateway came up between pause and resume
+    (e.g. the autostart entry fired), the cold-start must no-op."""
+    import hermes_cli.gateway as gateway_mod
+    from hermes_cli import gateway_windows
+
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [9001])
+    spawned = []
+    monkeypatch.setattr(
+        gateway_windows,
+        "_spawn_detached",
+        lambda: spawned.append(True) or 4242,
+    )
+
+    token = {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped_pids": [],
+        "unmapped": [],
+        "cold_start_if_installed": True,
+    }
+
+    cli_main._resume_windows_gateways_after_update(token)
+
+    assert spawned == []
+    assert "Starting Windows gateway after update" not in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # cmd_update integration — concurrent-instance gate
 # ---------------------------------------------------------------------------

@@ -753,7 +753,7 @@ class KawaiiSpinner:
                 time.sleep(0.1)
                 continue
             frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
-            elapsed = time.time() - self.start_time
+            elapsed = time.monotonic() - self.start_time
             if wings:
                 left, right = wings[self.frame_idx % len(wings)]
                 line = f"  {left} {frame} {self.message} {right} ({elapsed:.1f}s)"
@@ -769,7 +769,7 @@ class KawaiiSpinner:
         if self.running:
             return
         self.running = True
-        self.start_time = time.time()
+        self.start_time = time.monotonic()
         self.thread = threading.Thread(target=self._animate, daemon=True)
         self.thread.start()
 
@@ -806,7 +806,7 @@ class KawaiiSpinner:
             blanks = ' ' * max(self.last_line_len + 5, 40)
             self._write(f"\r{blanks}\r", end='', flush=True)
         if final_message:
-            elapsed = f" ({time.time() - self.start_time:.1f}s)" if self.start_time else ""
+            elapsed = f" ({time.monotonic() - self.start_time:.1f}s)" if self.start_time else ""
             if is_tty:
                 self._write(f"  {final_message}", flush=True)
             else:

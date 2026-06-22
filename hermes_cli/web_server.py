@@ -69,8 +69,11 @@ from hermes_cli.memory_providers import (
     get_memory_provider,
 )
 from gateway.status import (
+    derive_gateway_busy,
+    derive_gateway_drainable,
     get_running_pid,
     get_runtime_status_running_pid,
+    parse_active_agents,
     read_runtime_status,
 )
 from utils import env_var_enabled
@@ -141,6 +144,22 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     provider.start(stop_event, interval=interval)
 
 
+def _warm_gateway_module() -> None:
+    try:
+        import hermes_cli.gateway  # noqa: F401
+    except Exception:
+        pass
+
+
+def _resolve_restart_drain_timeout() -> float:
+    try:
+        from hermes_cli.gateway import _get_restart_drain_timeout
+        return _get_restart_drain_timeout()
+    except ImportError:
+        from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+        return DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+
+
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
@@ -150,6 +169,14 @@ async def _lifespan(app: "FastAPI"):
     # On app.state (not a module global) so the Lock binds to the running
     # event loop during lifespan startup — see _get_event_state's docstring.
     app.state.chat_argv_lock = asyncio.Lock()
+
+    # Fire hermes_cli.gateway import into a background thread so the event
+    # loop is not blocked and HERMES_DASHBOARD_READY fires without delay.
+    # On a cold Windows install the module chain triggers .pyc compilation
+    # and Defender real-time scans that can stall the event loop for 15-30s.
+    # Running in an executor means the cost is paid in a worker thread while
+    # the server socket is already open and accepting probes.
+    asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
@@ -1835,6 +1862,33 @@ async def get_status(profile: Optional[str] = None):
         except Exception:
             pass
 
+        # Busy/drainable readout (NAS lifecycle-safety gate).  active_agents is
+        # the in-flight gateway-turn count the gateway now persists at every
+        # turn boundary; gateway_busy/gateway_drainable are derived from it +
+        # liveness via the single shared contract in gateway.status.  Liveness
+        # keys off gateway_running (a live PID/health probe), NEVER
+        # gateway_updated_at — a healthy idle gateway never advances that.
+        active_agents = parse_active_agents((runtime or {}).get("active_agents", 0))
+        gateway_busy = derive_gateway_busy(
+            gateway_running=gateway_running,
+            gateway_state=gateway_state,
+            active_agents=active_agents,
+        )
+        gateway_drainable = derive_gateway_drainable(
+            gateway_running=gateway_running,
+            gateway_state=gateway_state,
+        )
+        # Resolved drain timeout (seconds) so NAS can size its poll deadline
+        # without out-of-band knowledge.  Offload to a thread: on a cold
+        # Windows install the first import of hermes_cli.gateway blocks the
+        # asyncio event loop for 15-30s (.pyc compilation + Defender scans),
+        # exceeding the desktop handshake's 15s socket timeout.  After the
+        # first call the module is in sys.modules and run_in_executor returns
+        # in microseconds.
+        restart_drain_timeout = await asyncio.get_running_loop().run_in_executor(
+            None, _resolve_restart_drain_timeout
+        )
+
         # Dashboard auth gate (Phase 7): surface whether the gate is engaged
         # and which providers are registered so ``hermes status`` and the
         # SPA's StatusPage can show "OAuth gate ON via Nous Research" or
@@ -1863,6 +1917,10 @@ async def get_status(profile: Optional[str] = None):
             "gateway_platforms": gateway_platforms,
             "gateway_exit_reason": gateway_exit_reason,
             "gateway_updated_at": gateway_updated_at,
+            "active_agents": active_agents,
+            "gateway_busy": gateway_busy,
+            "gateway_drainable": gateway_drainable,
+            "restart_drain_timeout": restart_drain_timeout,
             "active_sessions": active_sessions,
             "auth_required": auth_required,
             "auth_providers": auth_providers,
@@ -10947,7 +11005,12 @@ def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
         return None
     client_host = ws.client.host if ws.client else ""
     if not client_host:
-        return None
+        # Fail-closed: a loopback-bound dashboard with auth disabled must
+        # not accept a WebSocket with no identifiable peer. ASGI servers
+        # behind a misconfigured proxy or unix socket can deliver
+        # ws.client == None or "" — treating that as "allowed" would let
+        # an unidentified peer reach a loopback-only surface.
+        return f"missing_or_empty_peer bound={bound_host or '?'}"
     if client_host in _LOOPBACK_HOSTS:
         return None
     return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
@@ -10989,7 +11052,10 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
-        return True
+        # Fail-closed: see _ws_client_reason for rationale. An empty
+        # client_host on a loopback-bound dashboard with auth disabled
+        # must be rejected, not accepted as a default-allow.
+        return False
     return client_host in _LOOPBACK_HOSTS
 
 

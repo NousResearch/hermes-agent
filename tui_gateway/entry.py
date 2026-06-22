@@ -130,6 +130,19 @@ def _log_signal(signum: int, frame) -> None:
     timer.daemon = True
     timer.start()
 
+    # ── Flush sessions before exit ───────────────────────────────────
+    # The atexit handler (_shutdown_sessions) is registered in
+    # tui_gateway/server.py, but a worker thread holding the GIL or
+    # _stdout_lock can block atexit from completing within the grace
+    # window.  Explicitly finalize sessions here so that unpersisted
+    # messages reach state.db before the hard-exit timer fires.
+    try:
+        from tui_gateway.server import _shutdown_sessions
+
+        _shutdown_sessions()
+    except Exception:
+        pass
+
     try:
         sys.exit(0)
     except SystemExit:

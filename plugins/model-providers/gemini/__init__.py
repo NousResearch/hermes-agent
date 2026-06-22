@@ -2,6 +2,7 @@
 
 gemini:            Google AI Studio (API key) — uses GeminiNativeClient
 google-gemini-cli: Google Cloud Code Assist (OAuth) — uses GeminiCloudCodeClient
+google-antigravity: Google Antigravity Code Assist (OAuth) — uses AntigravityCloudCodeClient
 
 Both report api_mode="chat_completions" but use custom native clients
 that bypass the standard OpenAI transport. The profile captures auth
@@ -68,5 +69,22 @@ google_gemini_cli = GeminiProfile(
     auth_type="oauth_external",
 )
 
+google_antigravity = GeminiProfile(
+    name="google-antigravity",
+    aliases=(
+        "antigravity",
+        "antigravity-oauth",
+        "antigravity-cli",
+        "google-antigravity-oauth",
+        "agy",
+        "agy-cli",
+    ),
+    api_mode="chat_completions",
+    env_vars=(),  # OAuth — no API key
+    base_url="antigravity-pa://google",  # Antigravity Code Assist internal scheme
+    auth_type="oauth_external",
+)
+
 register_provider(gemini)
 register_provider(google_gemini_cli)
+register_provider(google_antigravity)

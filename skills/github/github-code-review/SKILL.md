@@ -144,7 +144,7 @@ PR_NUMBER=123
 curl -s \
   -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER \
-  | python3 -c "
+  | python -c "
 import sys, json
 pr = json.load(sys.stdin)
 print(f\"Title: {pr['title']}\")
@@ -157,7 +157,7 @@ print(f\"Body:\n{pr['body']}\")"
 curl -s \
   -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER/files \
-  | python3 -c "
+  | python -c "
 import sys, json
 for f in json.load(sys.stdin):
     print(f\"{f['status']:10} +{f['additions']:-4} -{f['deletions']:-4}  {f['filename']}\")"
@@ -224,7 +224,7 @@ gh api repos/$OWNER/$REPO/pulls/123/comments \
 HEAD_SHA=$(curl -s \
   -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['head']['sha'])")
+  | python -c "import sys,json; print(json.load(sys.stdin)['head']['sha'])")
 
 curl -s -X POST \
   -H "Authorization: token $GITHUB_TOKEN" \
@@ -254,7 +254,7 @@ gh pr review 123 --comment --body "Some suggestions, nothing blocking."
 HEAD_SHA=$(curl -s \
   -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['head']['sha'])")
+  | python -c "import sys,json; print(json.load(sys.stdin)['head']['sha'])")
 
 curl -s -X POST \
   -H "Authorization: token $GITHUB_TOKEN" \
@@ -419,7 +419,7 @@ gh pr review $PR_NUMBER --request-changes --body "Found a few issues — see inl
 ```bash
 HEAD_SHA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/pulls/$PR_NUMBER \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['head']['sha'])")
+  | python -c "import sys,json; print(json.load(sys.stdin)['head']['sha'])")
 
 # Build the review JSON — event is APPROVE, REQUEST_CHANGES, or COMMENT
 curl -s -X POST \

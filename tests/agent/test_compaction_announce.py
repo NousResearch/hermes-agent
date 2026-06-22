@@ -699,4 +699,142 @@ class TestSingleDoneSite:
         assert "_emit_compaction_announce" not in tc_src
 
 
+# ───────── provider/model split + granular CompactionStats layout ─────────
+
+from agent.compaction_stats import CompactionStats  # noqa: E402
+
+
+def _good_stats(**ov):
+    base = dict(
+        pre_messages=748, post_messages=34, eligible_count=332,
+        kept_messages=32, summary_messages=1, anchor_messages=1,
+        cleared_count=416, folded_count=300,
+        pre_tokens=397767, post_tokens=17811,
+        kept_tokens=11211, summary_tokens=4800, anchor_tokens=1800,
+        cleared_tokens=247262, folded_tokens=139294,
+    )
+    base.update(ov)
+    return CompactionStats(**base)
+
+
+class TestProviderModelSplit:
+    def test_no_triple_prefix(self):
+        # model carries its own provider prefix AND a provider is passed
+        out = _format_compaction_announce(
+            engine_name="lcm", status="compacted",
+            old_session_id="a", new_session_id="b",
+            old_messages=10, new_messages=3, pre_tokens=1000, post_tokens=100,
+            model="claude-app/claude-opus-4-8", provider="claude-app",
+        )
+        assert "claude-app/claude-app" not in out
+        assert "claude-app/claude-opus-4-8" in out
+
+    def test_bare_model_no_provider(self):
+        out = _format_compaction_announce(
+            engine_name="lcm", status="compacted",
+            old_session_id="a", new_session_id="b",
+            old_messages=10, new_messages=3, pre_tokens=1000, post_tokens=100,
+            model="gpt-5.4", provider="",
+        )
+        assert "gpt-5.4" in out and "/gpt-5.4" not in out
+
+
+class TestReasoningSegment:
+    def test_reasoning_rendered(self):
+        out = _format_compaction_announce(
+            engine_name="lcm", status="compacted",
+            old_session_id="a", new_session_id="b",
+            old_messages=10, new_messages=3, pre_tokens=1000, post_tokens=100,
+            model="claude-opus-4-8", provider="claude-app", reasoning="xhigh",
+        )
+        assert "r:xhigh" in out
+
+    @pytest.mark.parametrize("r", ["", None, "default", "none", "DEFAULT"])
+    def test_reasoning_skipped_for_unset_or_default(self, r):
+        out = _format_compaction_announce(
+            engine_name="lcm", status="compacted",
+            old_session_id="a", new_session_id="b",
+            old_messages=10, new_messages=3, pre_tokens=1000, post_tokens=100,
+            model="claude-opus-4-8", provider="claude-app", reasoning=r,
+        )
+        assert "r:" not in out
+
+
+class TestGranularLayout:
+    def test_granular_breakdown_reconciles_in_text(self):
+        s = _good_stats()
+        out = _format_compaction_announce(
+            engine_name="lcm", status="compacted",
+            old_session_id="a", new_session_id="b",
+            old_messages=s.pre_messages, new_messages=s.post_messages,
+            pre_tokens=s.pre_tokens, post_tokens=s.post_tokens,
+            model="claude-app/claude-opus-4-8", provider="claude-app",
+            trigger_reason="hygiene_messages", trigger_value=1000,
+            reasoning="xhigh", stats=s,
+        )
+        assert "Messages:  748 → 34" in out
+        assert "Removed from live context (716 messages)" in out  # 416+300
+        assert "416 cleared messages" in out
+        assert "300 folded messages" in out
+        assert "Replacement cost:" in out
+        assert "r:xhigh" in out
+        assert "claude-app/claude-app" not in out
+        assert "~~" not in out  # no double-tilde
+
+    def test_zero_clear_omits_removed_block(self):
+        s = _good_stats(
+            pre_messages=120, post_messages=34, eligible_count=120,
+            kept_messages=32, summary_messages=1, anchor_messages=1,
+            cleared_count=0, folded_count=88,
+            pre_tokens=58000, post_tokens=12500,
+            kept_tokens=8000, summary_tokens=3000, anchor_tokens=1500,
+            cleared_tokens=0, folded_tokens=50000,
+        )
+        out = _format_compaction_announce(
+            engine_name="lcm", status="compacted",
+            old_session_id="a", new_session_id="b",
+            old_messages=120, new_messages=34, pre_tokens=58000, post_tokens=12500,
+            model="claude-opus-4-8", provider="claude-app", stats=s,
+        )
+        # cleared==0 but folded>0 → block present (folded line) but no "cleared messages" line
+        assert "0 cleared messages" not in out
+        assert "88 folded messages" in out
+
+    def test_bad_stats_degrades_to_two_line(self, caplog):
+        import logging
+        s = _good_stats(cleared_count=999)  # broken: msg axis fails
+        with caplog.at_level(logging.WARNING):
+            out = _format_compaction_announce(
+                engine_name="lcm", status="compacted",
+                old_session_id="a", new_session_id="b",
+                old_messages=748, new_messages=34, pre_tokens=397767, post_tokens=17811,
+                model="claude-opus-4-8", provider="claude-app", stats=s,
+            )
+        assert "Removed from live context" not in out  # degraded
+        assert "748→34 messages" in out  # two-line form
+        assert "COMPACTION_STATS_RECONCILE_FAILED" in caplog.text
+
+    def test_no_stats_is_back_compat_two_line(self):
+        out = _format_compaction_announce(
+            engine_name="lcm", status="compacted",
+            old_session_id="a", new_session_id="b",
+            old_messages=748, new_messages=34, pre_tokens=397767, post_tokens=17811,
+            model="claude-opus-4-8", provider="claude-app",
+        )
+        assert "748→34 messages" in out
+        assert "Removed from live context" not in out
+
+    def test_recovery_hint_override(self):
+        s = _good_stats()
+        out = _format_compaction_announce(
+            engine_name="lcm", status="compacted",
+            old_session_id="a", new_session_id="b",
+            old_messages=s.pre_messages, new_messages=s.post_messages,
+            pre_tokens=s.pre_tokens, post_tokens=s.post_tokens,
+            model="claude-opus-4-8", provider="claude-app", stats=s,
+            recovery_hint="↩ custom store hint (state.db + lcm.db)",
+        )
+        assert "custom store hint (state.db + lcm.db)" in out
+
+
 

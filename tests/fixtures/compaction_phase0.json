@@ -1,0 +1,85 @@
+{
+  "_doc": "Phase-0 frozen fixture (Pass-5 fixture-is-oracle). Captured from REAL session 20260620_183729_da1192ac via estimate_messages_tokens_rough over disjoint row subsets. The message axis is EXACT real data; summary/anchor token values model a representative post-compaction summary+anchor for hermetic reconciliation. This fixture is the ORACLE: a producer mismatch is a producer bug, not a re-freeze. Re-freeze only on a deliberate LCM-behavior change, with a reason.",
+  "captured": "2026-06-21",
+  "estimator": "estimate_messages_tokens_rough",
+  "shapes": {
+    "tool_heavy_hygiene": {
+      "_note": "Real 748-msg session da1192ac. cleared = filter-removed (tool+system+contentless-assistant). fold = eligible minus fresh-tail-32. Post = kept + 1 summary + system anchor.",
+      "session_id": "20260620_183729_da1192ac",
+      "fresh_tail_count": 32,
+      "pre_messages": 748,
+      "eligible_count": 332,
+      "cleared_count": 416,
+      "folded_count": 300,
+      "kept_messages": 32,
+      "summary_messages": 1,
+      "anchor_messages": 1,
+      "post_messages": 34,
+      "pre_tokens": 397767,
+      "cleared_tokens": 247262,
+      "folded_tokens": 139294,
+      "kept_tokens": 11211,
+      "summary_tokens": 4800,
+      "anchor_tokens": 1800,
+      "post_tokens": 17811,
+      "_reconciles": {
+        "msg_axis": "cleared 416 + folded 300 + kept 32 == pre 748",
+        "eligible": "kept 32 + folded 300 == eligible 332; cleared 416 == pre 748 - eligible 332",
+        "post_msg": "kept 32 + summary 1 + anchor 1 == post 34",
+        "token_pre": "cleared 247262 + folded 139294 + kept 11211 == pre 397767",
+        "token_post": "kept 11211 + summary 4800 + anchor 1800 == post 17811",
+        "freed": "pre 397767 - post 17811 == 379956; cleared 247262 + folded 139294 - summary 4800 - anchor 1800 == 379956"
+      }
+    },
+    "zero_fold_222": {
+      "_note": "The literal 222->222 shape: hygiene removed tool/system/contentless (cleared>0) but LCM folded nothing (folded=0, summary=0, kept==eligible). Synthetic but structurally exact; validate() must accept it.",
+      "fresh_tail_count": 32,
+      "pre_messages": 658,
+      "eligible_count": 222,
+      "cleared_count": 436,
+      "folded_count": 0,
+      "kept_messages": 222,
+      "summary_messages": 0,
+      "anchor_messages": 0,
+      "post_messages": 222,
+      "pre_tokens": 329000,
+      "cleared_tokens": 299000,
+      "folded_tokens": 0,
+      "kept_tokens": 30000,
+      "summary_tokens": 0,
+      "anchor_tokens": 0,
+      "post_tokens": 30000,
+      "_reconciles": {
+        "msg_axis": "cleared 436 + folded 0 + kept 222 == pre 658",
+        "eligible": "kept 222 + folded 0 == eligible 222; cleared 436 == 658 - 222",
+        "post_msg": "kept 222 + summary 0 + anchor 0 == post 222",
+        "freed": "pre 329000 - post 30000 == 299000; cleared 299000 + folded 0 - 0 - 0 == 299000"
+      }
+    },
+    "zero_clear_allchat": {
+      "_note": "All-chat session: hygiene filter removes nothing (cleared==0, eligible==pre), LCM folds older chat into a summary. Formatter must omit the 'Removed from live context' block.",
+      "fresh_tail_count": 32,
+      "pre_messages": 120,
+      "eligible_count": 120,
+      "cleared_count": 0,
+      "folded_count": 88,
+      "kept_messages": 32,
+      "summary_messages": 1,
+      "anchor_messages": 1,
+      "post_messages": 34,
+      "pre_tokens": 58000,
+      "cleared_tokens": 0,
+      "folded_tokens": 50000,
+      "kept_tokens": 8000,
+      "summary_tokens": 3000,
+      "anchor_tokens": 1500,
+      "post_tokens": 12500,
+      "_reconciles": {
+        "msg_axis": "cleared 0 + folded 88 + kept 32 == pre 120",
+        "token_pre": "cleared 0 + folded 50000 + kept 8000 == pre 58000",
+        "token_post": "kept 8000 + summary 3000 + anchor 1500 == post 12500",
+        "freed": "pre 58000 - post 12500 == 45500; cleared 0 + folded 50000 - summary 3000 - anchor 1500 == 45500"
+      }
+    }
+  }
+}

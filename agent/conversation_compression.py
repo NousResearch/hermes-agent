@@ -208,6 +208,9 @@ def _format_compaction_announce(
     after_fallback: bool = False,
     trigger_reason: "str | None" = None,
     trigger_value: "int | None" = None,
+    reasoning: "str | None" = None,
+    stats: "Any | None" = None,
+    recovery_hint: "str | None" = None,
 ) -> "str | None":
     """Build the engine-aware announce line, or ``None`` if gating says skip.
 
@@ -221,6 +224,13 @@ def _format_compaction_announce(
     ``trigger_reason``/``trigger_value`` (optional) render an honest 'why this
     fired' clause in the head (message-count valve, token valve, overflow, …);
     they NEVER affect gating.
+
+    ``stats`` (optional ``CompactionStats``) renders the granular reconciling
+    breakdown ("Removed from live context …"). If absent OR it fails
+    ``validate()``, the announce degrades to the two-line Messages+Context form
+    (a reconcile failure can never ship wrong math). ``reasoning`` adds the
+    ``r:<level>`` segment to the model line (omitted for unset/default/none).
+    ``recovery_hint`` overrides the default recovery line (per-path store).
     """
     is_lcm = engine_name == "lcm"
 
@@ -238,6 +248,18 @@ def _format_compaction_announce(
             return None
 
     degraded = status in _DEGRADED_STATUSES
+
+    # Validate stats; on any failure fall back to None (two-line form) and log a
+    # loud, greppable marker — a reconcile bug must NEVER ship wrong numbers.
+    if stats is not None:
+        try:
+            _ok, _reason = stats.validate()
+        except Exception as _verr:  # pragma: no cover - defensive
+            _ok, _reason = False, f"validate() raised: {_verr}"
+        if not _ok:
+            logger.warning("COMPACTION_STATS_RECONCILE_FAILED %s", _reason)
+            stats = None
+
     head = "🗜️ Context compacted"
     head += _compaction_reason_clause(trigger_reason, trigger_value)
     if after_fallback:
@@ -245,24 +267,41 @@ def _format_compaction_announce(
     if degraded:
         head += " (degraded)"
 
-    parts = [f"{head}: {old_messages}→{new_messages} messages"]
-    parts.append(f"{_abbrev_tokens(pre_tokens)}→{_abbrev_tokens(post_tokens)} tokens")
+    from agent.provider_model_util import format_provider_model
+    model_part = format_provider_model(provider, model) if model else ""
+    # r:<level> — omit for unset/empty/default/none (match runtime footer skip set)
+    _r = (reasoning or "").strip().lower()
+    if _r and _r not in {"default", "none"}:
+        model_part = f"{model_part} · r:{_r}" if model_part else f"r:{_r}"
+    if is_lcm and model_part:
+        model_part = f"{model_part} · engine: lcm"
+    elif is_lcm:
+        model_part = "engine: lcm"
 
-    if model:
-        parts.append(f"{provider}/{model}" if provider else str(model))
+    if stats is not None:
+        line = _format_granular_announce(
+            head, stats, model_part, after_fallback, window_from, window_to,
+        )
+    else:
+        # ── back-compat two-line form ──
+        parts = [f"{head}: {old_messages}→{new_messages} messages"]
+        parts.append(f"{_abbrev_tokens(pre_tokens)}→{_abbrev_tokens(post_tokens)} tokens")
+        if model:
+            parts.append(format_provider_model(provider, model))
+            if _r and _r not in {"default", "none"}:
+                parts.append(f"r:{_r}")
+        if after_fallback:
+            wf, wt = _compaction_window_label(window_from), _compaction_window_label(window_to)
+            if wf and wt and wf != wt:
+                parts.append(f"window {wf}→{wt}")
+        if is_lcm:
+            parts.append("engine: lcm")
+        line = " · ".join(parts)
 
-    if after_fallback:
-        wf, wt = _compaction_window_label(window_from), _compaction_window_label(window_to)
-        if wf and wt and wf != wt:
-            parts.append(f"window {wf}→{wt}")
-
-    if is_lcm:
-        parts.append("engine: lcm")
-
-    line = " · ".join(parts)
-
-    # Recovery reference (engine-correct).
-    if is_lcm:
+    # Recovery reference (engine-correct, or caller-supplied per-path hint).
+    if recovery_hint:
+        ref = recovery_hint
+    elif is_lcm:
         if raw_store_count and raw_store_count > 0:
             ref = (
                 f"↩ nothing lost — {raw_store_count:,} raw turns from this session "
@@ -283,6 +322,66 @@ def _format_compaction_announce(
         line += "\nSummary: unavailable — summarizer degraded this pass; raw store is intact."
 
     return line
+
+
+def _format_granular_announce(
+    head: str, stats: "Any", model_part: str,
+    after_fallback: bool, window_from: "int | None", window_to: "int | None",
+) -> str:
+    """Render the multi-line single-unit (messages) breakdown from a validated
+    ``CompactionStats``. Every line leads with messages; tokens are the
+    parenthetical secondary. Reconciles by construction (validate() passed)."""
+    lines: list[str] = []
+    # Headline: messages pre→post + what's kept
+    kept_bits = [f"kept {stats.kept_messages} recent chat"]
+    if stats.summary_messages:
+        kept_bits.append(f"{stats.summary_messages} summary")
+    if stats.anchor_messages:
+        kept_bits.append(f"{stats.anchor_messages} anchor{'s' if stats.anchor_messages != 1 else ''}")
+    lines.append(f"{head}")
+    lines.append(f"   Messages:  {stats.pre_messages} → {stats.post_messages}   ({' + '.join(kept_bits)})")
+
+    # Context line — guard freed<=0 (no net reduction)
+    if stats.freed_tokens > 0 and stats.freed_pct is not None:
+        lines.append(
+            f"   Context:   {_abbrev_tokens(stats.pre_tokens)} → {_abbrev_tokens(stats.post_tokens)} tokens"
+            f"   (freed {_abbrev_tokens(stats.freed_tokens)}, {stats.freed_pct}% smaller)"
+        )
+    else:
+        lines.append(
+            f"   Context:   {_abbrev_tokens(stats.pre_tokens)} → {_abbrev_tokens(stats.post_tokens)} tokens"
+            f"   (no net token reduction this pass)"
+        )
+
+    # "Removed from live context" block — omit entirely when nothing cleared
+    removed = stats.cleared_count + stats.folded_count
+    if removed > 0:
+        lines.append(f"   Removed from live context ({removed} messages):")
+        if stats.cleared_count > 0:
+            lines.append(
+                f"     • {stats.cleared_count} cleared messages  →  {_abbrev_tokens(stats.cleared_tokens)} reclaimed"
+                f"   (tool results + system + tool-call-only turns)"
+            )
+        if stats.folded_count > 0:
+            lines.append(
+                f"     • {stats.folded_count} folded messages   →  {_abbrev_tokens(stats.folded_tokens)} reclaimed"
+                f"   (older chat condensed into {stats.summary_messages or 1} summary)"
+            )
+        replacement = stats.summary_tokens + stats.anchor_tokens
+        if replacement > 0:
+            lines.append(
+                f"   Replacement cost: {_abbrev_tokens(replacement)} kept in context (summary + anchors)"
+            )
+
+    if after_fallback:
+        wf, wt = _compaction_window_label(window_from), _compaction_window_label(window_to)
+        if wf and wt and wf != wt:
+            lines.append(f"   Window: {wf} → {wt}")
+
+    if model_part:
+        lines.append(f"   Model: {model_part}")
+
+    return "\n".join(lines)
 
 
 def _emit_compaction_announce(agent: Any, *, dedupe_key, **fmt_kwargs) -> None:
@@ -1000,6 +1099,29 @@ def compress_context(
             now_monotonic=_now_mono,
             current_turn_id=getattr(agent, "_current_turn_id", None),
         )
+        # Granular stats (in-turn population = the whole messages list; cleared=0).
+        # Built inside try/except; validate()+degrade so a reconcile bug never
+        # ships wrong math or breaks the turn. Guarded by hasattr so built-in /
+        # overflow / manual paths (no LCM marker shape) simply degrade.
+        _inturn_stats = None
+        try:
+            from agent.compaction_stats import build_inturn_stats
+            from agent.model_metadata import estimate_messages_tokens_rough as _est
+            _cand = build_inturn_stats(messages=messages, compressed=compressed, estimator=_est)
+            _ok2, _why2 = _cand.validate()
+            if _ok2:
+                _inturn_stats = _cand
+            else:
+                logger.debug("COMPACTION_STATS_RECONCILE_FAILED in-turn %s", _why2)
+        except Exception:
+            logger.debug("in-turn stats build failed; degrading to two-line", exc_info=True)
+        _reasoning_inturn = None
+        try:
+            from gateway.run import _load_gateway_config as _lgc
+            _ac = (_lgc().get("agent") or {})
+            _reasoning_inturn = str(_ac.get("reasoning_effort", "") or "").strip() or None
+        except Exception:
+            _reasoning_inturn = None
         _emit_compaction_announce(
             agent,
             dedupe_key=_dedupe_key,
@@ -1023,6 +1145,8 @@ def compress_context(
                 getattr(_cc, "threshold_tokens", None)
                 if trigger_reason == "threshold" else None
             ),
+            reasoning=_reasoning_inturn,
+            stats=_inturn_stats,
         )
     except Exception:
         logger.debug("compaction announce skipped (non-fatal)", exc_info=True)

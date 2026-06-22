@@ -9,7 +9,36 @@ import stat
 
 import pytest
 
-from plugins.memory.mem0 import Mem0MemoryProvider
+from plugins.memory.mem0 import Mem0MemoryProvider, resolve_capture, capture_is_on
+
+
+class TestResolveCapture:
+    """F1 (2026-06-21): the SHARED capture-intent resolver. The plugin AND the
+    flip-lag drift cron import this, so its precedence is the single source of
+    truth (P2-2). env > config > default; returns (value, source)."""
+
+    def test_env_wins_over_config(self):
+        # AC3b: an env override shadows the disk value — the exact flip-lag footgun.
+        assert resolve_capture("auto", "off") == ("auto", "env")
+        assert resolve_capture("off", "auto") == ("off", "env")
+
+    def test_config_when_no_env(self):
+        assert resolve_capture(None, "off") == ("off", "config")
+        assert resolve_capture("", "off") == ("off", "config")  # empty env != set
+
+    def test_default_when_neither(self):
+        assert resolve_capture(None, None) == ("auto", "default")
+        assert resolve_capture("", "") == ("auto", "default")
+
+    def test_normalizes_case_and_whitespace(self):
+        assert resolve_capture(None, " OFF ") == ("off", "config")
+        assert resolve_capture(" Auto ", None) == ("auto", "env")
+
+    def test_capture_is_on_set(self):
+        for v in ("auto", "on", "true", "1", "AUTO", " on "):
+            assert capture_is_on(v) is True
+        for v in ("off", "false", "0", "no", "manual", ""):
+            assert capture_is_on(v) is False
 
 
 class FakeClientV2:
@@ -94,6 +123,9 @@ class TestMem0FiltersV2:
         call = client.captured_add[0]
         assert call["user_id"] == "u123"
         assert call["agent_id"] == "hermes"
+        # F1: the auto path stamps write_kind="auto" so the drift detector can
+        # count auto-writes exactly.
+        assert call["metadata"]["write_kind"] == "auto"
 
     def test_conclude_uses_write_filters(self, monkeypatch):
         client = FakeClientV2()
@@ -106,6 +138,9 @@ class TestMem0FiltersV2:
         assert call["user_id"] == "u123"
         assert call["agent_id"] == "hermes"
         assert call["infer"] is False
+        # F1: the deliberate path stamps write_kind="deliberate" — NOT counted
+        # as auto by the drift detector.
+        assert call["metadata"]["write_kind"] == "deliberate"
 
     def test_read_filters_no_agent_id(self):
         """Read filters should use user_id only — cross-session recall across agents."""
@@ -115,11 +150,20 @@ class TestMem0FiltersV2:
         assert provider._read_filters() == {"user_id": "u123"}
 
     def test_write_filters_include_agent_id(self):
-        """Write filters should include agent_id for attribution."""
+        """Write filters should include agent_id for attribution + write_kind provenance."""
         provider = Mem0MemoryProvider()
         provider._user_id = "u123"
         provider._agent_id = "hermes"
-        assert provider._write_filters() == {"user_id": "u123", "agent_id": "hermes"}
+        # F1 (2026-06-21): every write now carries write_kind provenance; default "auto".
+        assert provider._write_filters() == {
+            "user_id": "u123", "agent_id": "hermes",
+            "metadata": {"write_kind": "auto"},
+        }
+        # Explicit deliberate (mem0_conclude path) stamps "deliberate".
+        assert provider._write_filters(write_kind="deliberate") == {
+            "user_id": "u123", "agent_id": "hermes",
+            "metadata": {"write_kind": "deliberate"},
+        }
 
 
 # ---------------------------------------------------------------------------

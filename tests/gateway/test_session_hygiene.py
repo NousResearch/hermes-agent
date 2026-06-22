@@ -1068,3 +1068,43 @@ async def test_hygiene_announce_kill_switch_suppresses(monkeypatch, tmp_path):
     result = await runner._handle_message(_hyg_event())
     assert result == "ok"
     assert not [s for s in adapter.sent if "Context compacted" in s["content"]]
+
+
+# ---------------------------------------------------------------------------
+# hygiene_threshold config key resolution (T8) — mirrors the gateway inline parse
+# ---------------------------------------------------------------------------
+
+def _resolve_hyg_threshold(comp_cfg):
+    """Mirror of gateway/run.py inline resolution (default 0.85, clamp 0<x<=1)."""
+    _hyg_threshold_pct = 0.85
+    raw = comp_cfg.get("hygiene_threshold")
+    if raw is not None:
+        try:
+            v = float(raw)
+            if 0.0 < v <= 1.0:
+                _hyg_threshold_pct = v
+        except (TypeError, ValueError):
+            pass
+    return _hyg_threshold_pct
+
+
+def test_hygiene_threshold_default_when_absent():
+    assert _resolve_hyg_threshold({}) == 0.85
+
+
+def test_hygiene_threshold_override():
+    assert _resolve_hyg_threshold({"hygiene_threshold": 0.9}) == 0.9
+
+
+def test_hygiene_threshold_garbage_falls_back():
+    assert _resolve_hyg_threshold({"hygiene_threshold": "nope"}) == 0.85
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.1, 1.5, 2])
+def test_hygiene_threshold_out_of_range_falls_back(bad):
+    assert _resolve_hyg_threshold({"hygiene_threshold": bad}) == 0.85
+
+
+def test_hygiene_threshold_is_in_config_defaults():
+    from hermes_cli.config import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["compression"]["hygiene_threshold"] == 0.85

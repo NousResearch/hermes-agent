@@ -53,6 +53,39 @@ _DEFAULT_DESTRUCTIVE = {
     "token_ttl_seconds": 300,     # dry-run confirm-token lifetime
 }
 
+# Capture-mode values that mean "auto-capture ON" (per-turn sync_turn write).
+# Anything else (notably "off") = recall-only.
+_CAPTURE_ON = ("auto", "on", "true", "1")
+
+
+def resolve_capture(env_value: Optional[str], config_value: Optional[str]) -> tuple:
+    """Resolve the effective capture mode + its source. SINGLE SOURCE OF TRUTH.
+
+    F1 (2026-06-21, P2-2): the plugin AND the capture-flip-lag drift detector
+    cron MUST agree on intent, so the env→config→default precedence lives here
+    and both import it (never replicate it — a replicated resolver drifts the
+    instant precedence changes, reintroducing the very drift the detector guards).
+
+    Precedence (matches the historical plugin line 544): MEM0_CAPTURE env var
+    wins over the profile config `capture` key, which wins over the "auto" default.
+    An env override makes a disk edit a NO-OP even after a restart — that is the
+    flip-lag footgun, so the source is returned too (the operator/detector must
+    know WHICH source is live).
+
+    Returns (value, source) where value is lower-cased/stripped and source is one
+    of "env" | "config" | "default".
+    """
+    if env_value is not None and str(env_value).strip() != "":
+        return str(env_value).strip().lower(), "env"
+    if config_value is not None and str(config_value).strip() != "":
+        return str(config_value).strip().lower(), "config"
+    return "auto", "default"
+
+
+def capture_is_on(value: str) -> bool:
+    """True if a resolved capture value means auto-capture is active."""
+    return str(value).strip().lower() in _CAPTURE_ON
+
 
 def _trunc(s: str, n: int = 200) -> str:
     """Truncate resolved memory text for ledger/preview (never store unbounded)."""
@@ -541,10 +574,22 @@ class Mem0MemoryProvider(MemoryProvider):
         # and explicit mem0_conclude writes, but skips per-turn auto-capture —
         # used for latency-sensitive / high-traffic agents (e.g. voice agents)
         # where we want shared recall without paying a write on every turn.
-        self._capture = str(
-            os.environ.get("MEM0_CAPTURE")
-            or self._config.get("capture", "auto")
-        ).strip().lower()
+        # Resolution + the env>config>default precedence live in the shared
+        # resolve_capture() (P2-2) so the flip-lag drift cron resolves intent
+        # IDENTICALLY (import, never replicate).
+        self._capture, self._capture_source = resolve_capture(
+            os.environ.get("MEM0_CAPTURE"),
+            self._config.get("capture"),
+        )
+        # F1-L1: make the in-effect capture state an explicit, timestamped,
+        # greppable fact in agent.log (turns the silent flip-lag — disk says off
+        # but the running process still captures — into something verifiable by
+        # pid). "verify it took" = grep this line for the CURRENT pid (P2-6).
+        logger.info(
+            "mem0: capture=%s (source=%s); auto-capture %s for this process (pid %s)",
+            self._capture, self._capture_source,
+            "ON" if capture_is_on(self._capture) else "OFF", os.getpid(),
+        )
 
         # Destructive tools gate (C1, fail-closed): only enabled when the
         # profile's mem0.json sets destructive_tools_enabled true (Apollo+Aegis).
@@ -566,21 +611,29 @@ class Mem0MemoryProvider(MemoryProvider):
         """Filters for search/get_all — scoped to user only for cross-session recall."""
         return {"user_id": self._user_id}
 
-    def _write_filters(self) -> Dict[str, Any]:
+    def _write_filters(self, write_kind: str = "auto") -> Dict[str, Any]:
         """Filters for add — scoped to user + agent for attribution.
 
         When pin_user_id is enabled, new writes also carry audit-only provenance
         so rows written during the pin window can be restored to their platform
         bucket if the feature is rolled back. Historical backfill MUST NOT stamp
         these keys; it rewrites only user_id and is guarded by payload hashes.
+
+        write_kind (F1, 2026-06-21): provenance of HOW this row was written —
+        "auto" (per-turn sync_turn extraction, infer=True) vs "deliberate"
+        (mem0_conclude / seeders / backfills, verbatim). Stamped on EVERY write
+        regardless of pin_user_id, so the capture-flip-lag drift detector can
+        count auto-writes exactly. Rows WITHOUT this key are legacy/pre-deploy =
+        unknown, NEVER inferred as auto (absence-of-stamp != auto).
         """
         filters: Dict[str, Any] = {"user_id": self._user_id, "agent_id": self._agent_id}
+        metadata: Dict[str, Any] = {"write_kind": write_kind}
         if getattr(self, "_pin_user_id", False):
-            metadata: Dict[str, Any] = {"orig_lane": getattr(self, "_orig_lane", "unknown") or "unknown"}
+            metadata["orig_lane"] = getattr(self, "_orig_lane", "unknown") or "unknown"
             orig_sender = getattr(self, "_orig_sender_id", None)
             if orig_sender is not None and str(orig_sender) != "":
                 metadata["orig_sender_id"] = str(orig_sender)
-            filters["metadata"] = metadata
+        filters["metadata"] = metadata
         return filters
 
     @staticmethod
@@ -663,8 +716,9 @@ class Mem0MemoryProvider(MemoryProvider):
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
         # Recall-only mode: skip per-turn auto-capture. Explicit mem0_conclude
-        # writes and prefetch/search recall still work.
-        if self._capture not in ("auto", "on", "true", "1"):
+        # writes and prefetch/search recall still work. Uses the shared
+        # capture_is_on() so the "what counts as on" set has ONE definition.
+        if not capture_is_on(self._capture):
             return
         if self._is_breaker_open():
             return
@@ -676,7 +730,7 @@ class Mem0MemoryProvider(MemoryProvider):
                     {"role": "user", "content": user_content},
                     {"role": "assistant", "content": assistant_content},
                 ]
-                client.add(messages, **self._write_filters())
+                client.add(messages, **self._write_filters(write_kind="auto"))
                 self._record_success()
             except Exception as e:
                 self._record_failure()
@@ -748,7 +802,7 @@ class Mem0MemoryProvider(MemoryProvider):
             try:
                 client.add(
                     [{"role": "user", "content": conclusion}],
-                    **self._write_filters(),
+                    **self._write_filters(write_kind="deliberate"),
                     infer=False,
                 )
                 self._record_success()

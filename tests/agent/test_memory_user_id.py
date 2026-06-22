@@ -237,7 +237,11 @@ class TestMem0UserIdScoping:
             provider.initialize(session_id="test-sess", user_id="discord_user", platform="discord")
 
         assert provider._user_id == "discord_user"
-        assert provider._write_filters() == {"user_id": "discord_user", "agent_id": "apollo"}
+        assert provider._write_filters() == {
+            "user_id": "discord_user",
+            "agent_id": "apollo",
+            "metadata": {"write_kind": "auto"},
+        }
 
     def test_pin_user_id_flag_on_configured_user_wins_and_stamps_provenance(self):
         """Pin mode unifies writes under configured user_id and records raw lane provenance."""
@@ -258,6 +262,7 @@ class TestMem0UserIdScoping:
             "user_id": "ace",
             "agent_id": "apollo",
             "metadata": {
+                "write_kind": "auto",
                 "orig_sender_id": "117431298246705156",
                 "orig_lane": "discord",
             },
@@ -297,7 +302,7 @@ class TestMem0UserIdScoping:
         assert provider._write_filters() == {
             "user_id": "ace",
             "agent_id": "apollo",
-            "metadata": {"orig_lane": "cron"},
+            "metadata": {"write_kind": "auto", "orig_lane": "cron"},
         }
 
 

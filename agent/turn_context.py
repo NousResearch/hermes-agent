@@ -23,6 +23,7 @@ move-and-name refactor with no semantic change.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import uuid
 from dataclasses import dataclass
@@ -32,6 +33,29 @@ from agent.iteration_budget import IterationBudget
 from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
+
+
+def _bound_prefetch_query(query: str) -> str:
+    """Cap a memory-recall query before it is embedded / hybrid-searched.
+
+    Some hosts pack their whole system prompt + tool catalogue into the prompt
+    text, arriving as a 50-100KB "user message". Embedding that blob stalls the
+    memory backend and the signal is boilerplate, not intent. Bound it to
+    ``HERMES_PREFETCH_QUERY_MAX_CHARS`` characters (default 1500); set the env
+    var to ``0`` to disable the cap entirely.
+    """
+    try:
+        cap = int(os.environ.get("HERMES_PREFETCH_QUERY_MAX_CHARS", "1500"))
+    except (TypeError, ValueError):
+        cap = 1500
+    if cap > 0 and len(query) > cap:
+        logger.info(
+            "Memory prefetch query truncated: %d -> %d chars "
+            "(set HERMES_PREFETCH_QUERY_MAX_CHARS to override; 0 disables)",
+            len(query), cap,
+        )
+        return query[:cap]
+    return query
 
 
 def _compression_made_progress(
@@ -419,6 +443,7 @@ def build_turn_context(
     if agent._memory_manager:
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
+            _query = _bound_prefetch_query(_query)
             ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
         except Exception:
             pass

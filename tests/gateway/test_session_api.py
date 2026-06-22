@@ -438,3 +438,39 @@ async def test_session_header_rejected_without_api_key(adapter, session_db):
         assert resp.status == 403
         data = await resp.json()
         assert "X-Hermes-Session-Key requires API key" in data["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_initializes_mcp_tools_for_session_api(adapter):
+    calls = []
+
+    class _FakeAgent:
+        session_prompt_tokens = 1
+        session_completion_tokens = 2
+        session_total_tokens = 3
+        session_id = "mcp-session"
+
+        def run_conversation(self, **kwargs):
+            calls.append(("run", kwargs["task_id"]))
+            return {"final_response": "ok"}
+
+    def _fake_discover():
+        calls.append("discover")
+        return []
+
+    def _fake_create_agent(**kwargs):
+        calls.append("create")
+        return _FakeAgent()
+
+    with patch("tools.mcp_tool.discover_mcp_tools", side_effect=_fake_discover), \
+         patch.object(adapter, "_create_agent", side_effect=_fake_create_agent):
+        result, usage = await adapter._run_agent(
+            user_message="hello",
+            conversation_history=[],
+            session_id="sess-1",
+        )
+
+    assert result["final_response"] == "ok"
+    assert result["session_id"] == "mcp-session"
+    assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+    assert calls[:2] == ["discover", "create"]

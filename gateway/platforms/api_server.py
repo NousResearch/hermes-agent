@@ -3732,6 +3732,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id or "",
             )
             try:
+                try:
+                    # Session-based REST chat paths construct AIAgent
+                    # directly, so they must initialize configured MCP
+                    # servers just like CLI startup and gateway boot do.
+                    from tools.mcp_tool import discover_mcp_tools
+
+                    discover_mcp_tools()
+                except Exception:
+                    logger.debug(
+                        "MCP tool discovery failed for api_server session run",
+                        exc_info=True,
+                    )
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
                     session_id=session_id,

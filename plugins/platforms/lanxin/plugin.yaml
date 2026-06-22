@@ -12,15 +12,15 @@ requires_env:
   - name: LANXIN_APP_ID
     description: "Lanxin application ID"
     prompt: "Lanxin App ID"
-    url: "https://open.lxim.cn"
+    url: "https://www.lanxin.cn"
     password: false
   - name: LANXIN_APP_SECRET
     description: "Lanxin application secret"
     prompt: "Lanxin App Secret"
-    url: "https://open.lxim.cn"
+    url: "https://www.lanxin.cn"
     password: true
   - name: LANXIN_API_GW
-    description: "Lanxin API gateway URL (e.g. https://api-gw.lxim.cn)"
+    description: "Lanxin API gateway URL"
     prompt: "Lanxin API Gateway URL"
     password: false
 optional_env:

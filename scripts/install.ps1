@@ -1514,11 +1514,16 @@ function Install-Venv {
         Write-Info "Skipping virtual environment (-NoVenv)"
         return
     }
-    
-    Write-Info "Creating virtual environment with Python $PythonVersion..."
-    
+
+    # Read the detected Python version from script scope.  Test-Python may
+    # have updated $script:PythonVersion to a fallback (e.g. "3.12") when the
+    # preferred version was unavailable.  Using $script: explicitly avoids any
+    # scope-chain ambiguity.
+    $detectedPy = $script:PythonVersion
+    Write-Info "Creating virtual environment with Python $detectedPy..."
+
     Push-Location $InstallDir
-    
+
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
         # On Windows, native Python extensions (e.g. _bcrypt.pyd) are loaded as
@@ -1532,12 +1537,12 @@ function Install-Venv {
         }
         Remove-Item -Recurse -Force "venv"
     }
-    
+
     # uv creates the venv and pins the Python version in one step.  uv emits
     # normal progress such as "Using CPython ..." on stderr; under Windows
     # PowerShell 5.1 with EAP=Stop that stderr is a NativeCommandError unless
     # we temporarily relax EAP and trust $LASTEXITCODE for real failures.
-    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $PythonVersion }
+    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $detectedPy }
     # Relaxing EAP above means a *genuine* uv-venv failure (exit != 0) no longer
     # aborts on its own. Capture $LASTEXITCODE immediately and fail fast, so the
     # `venv` stage can't falsely report success (and Invoke-Stage can't emit
@@ -1561,8 +1566,8 @@ function Install-Venv {
     }
 
     Pop-Location
-    
-    Write-Success "Virtual environment ready (Python $PythonVersion)"
+
+    Write-Success "Virtual environment ready (Python $detectedPy)"
 }
 
 function Install-Dependencies {

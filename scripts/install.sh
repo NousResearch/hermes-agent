@@ -586,11 +586,23 @@ check_python() {
         PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION")"
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python installed: $PYTHON_FOUND_VERSION"
-    else
-        log_error "Failed to install Python $PYTHON_VERSION"
-        log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
-        exit 1
+        return 0
     fi
+
+    # Fallback: check if ANY Python 3.10+ is already available on the system
+    log_info "Trying to find any existing Python 3.10+..."
+    for _fallback_ver in 3.12 3.13 3.10; do
+        if PYTHON_PATH="$("$UV_CMD" python find "$_fallback_ver" 2>/dev/null)"; then
+            PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+            log_success "Found fallback: $PYTHON_FOUND_VERSION"
+            PYTHON_VERSION="$_fallback_ver"
+            return 0
+        fi
+    done
+
+    log_error "Failed to find or install Python $PYTHON_VERSION"
+    log_info "Install Python 3.11+ manually, then re-run this script"
+    exit 1
 }
 
 # Best-effort automatic git provisioning, mirroring install.ps1's Install-Git

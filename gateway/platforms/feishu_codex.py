@@ -53,7 +53,7 @@ async def handle_codex_message(
     import subprocess
     try:
         subprocess.run(
-            ["lark-cli", "im", "send", "--chat-id", chat_id, "--text", result_msg],
+            ["lark-cli", "im", "+messages-send", "--chat-id", chat_id, "--text", result_msg],
             capture_output=True, text=True, timeout=15,
         )
     except Exception as e:

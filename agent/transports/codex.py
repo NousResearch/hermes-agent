@@ -247,6 +247,36 @@ class ResponsesApiTransport(ProviderTransport):
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
 
+        # Provider profiles can override Responses API kwargs the same way the
+        # chat-completions transport lets profiles set top-level reasoning
+        # fields or extra_body entries.  This is intentionally applied after
+        # the generic reasoning builder so providers with narrower effort
+        # dials (for example Sakana Fugu: high/xhigh only) can clamp invalid
+        # default/user-selected values before request_overrides get the final
+        # word.
+        profile = params.get("provider_profile")
+        if profile is not None:
+            try:
+                extra_body_from_profile, top_level_from_profile = (
+                    profile.build_api_kwargs_extras(
+                        reasoning_config=params.get("reasoning_config"),
+                        model=model,
+                        base_url=params.get("base_url"),
+                        session_id=params.get("session_id"),
+                    )
+                )
+            except Exception:
+                extra_body_from_profile, top_level_from_profile = {}, {}
+            if top_level_from_profile:
+                kwargs.update(top_level_from_profile)
+            if extra_body_from_profile:
+                existing_extra_body = kwargs.get("extra_body")
+                merged_extra_body: Dict[str, Any] = {}
+                if isinstance(existing_extra_body, dict):
+                    merged_extra_body.update(existing_extra_body)
+                merged_extra_body.update(extra_body_from_profile)
+                kwargs["extra_body"] = merged_extra_body
+
         request_overrides = params.get("request_overrides")
         if request_overrides:
             kwargs.update(request_overrides)

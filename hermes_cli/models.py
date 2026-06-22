@@ -378,6 +378,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
     ],
+    "sakana-fugu": [
+        "fugu-ultra",
+        "fugu",
+    ],
     "opencode-zen": [
         "kimi-k2.5",
         "gpt-5.4-pro",
@@ -1188,6 +1192,10 @@ _PROVIDER_ALIASES = {
     "arceeai": "arcee",
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
+    "sakana": "sakana-fugu",
+    "fugu": "sakana-fugu",
+    "sakana-ai": "sakana-fugu",
+    "sakanaai": "sakana-fugu",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "minimax-portal": "minimax-oauth",

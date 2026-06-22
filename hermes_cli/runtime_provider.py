@@ -275,6 +275,34 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _provider_profile_api_mode(provider: Optional[str], base_url: str = "") -> Optional[str]:
+    """Return a non-default api_mode declared by a matching ProviderProfile.
+
+    Profile api_mode is a provider default, not an unconditional override for a
+    user-supplied endpoint. If the user points a provider at a different base
+    URL (for example MiniMax's OpenAI-compatible /v1 endpoint instead of its
+    default /anthropic endpoint), let URL detection/config decide the transport.
+    """
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile((provider or "").strip().lower())
+    except Exception:
+        profile = None
+    if profile is None:
+        return None
+
+    profile_mode = _parse_api_mode(getattr(profile, "api_mode", None))
+    if not profile_mode or profile_mode == "chat_completions":
+        return None
+
+    profile_base = str(getattr(profile, "base_url", "") or "").strip().rstrip("/")
+    resolved_base = str(base_url or "").strip().rstrip("/")
+    if profile_base and resolved_base and resolved_base != profile_base:
+        return None
+    return profile_mode
+
+
 def _maybe_apply_codex_app_server_runtime(
     *,
     provider: str,
@@ -410,6 +438,10 @@ def _resolve_runtime_from_pool_entry(
             detected = _detect_api_mode_for_url(base_url)
             if detected:
                 api_mode = detected
+            else:
+                profile_mode = _provider_profile_api_mode(provider, base_url)
+                if profile_mode:
+                    api_mode = profile_mode
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
@@ -1368,6 +1400,10 @@ def _resolve_explicit_runtime(
                 detected = _detect_api_mode_for_url(base_url)
                 if detected:
                     api_mode = detected
+                else:
+                    profile_mode = _provider_profile_api_mode(provider, base_url)
+                    if profile_mode:
+                        api_mode = profile_mode
 
         return {
             "provider": provider,

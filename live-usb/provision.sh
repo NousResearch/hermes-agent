@@ -111,15 +111,27 @@ if [[ ! -b "$PROVISION_PART" ]]; then
 fi
 
 MNT=$(mktemp -d)
+TMP_CFG=""
 mount "$PROVISION_PART" "$MNT"
-cleanup() { umount "$MNT" 2>/dev/null || true; rm -rf "$MNT"; }
+cleanup() {
+  umount "$MNT" 2>/dev/null || true
+  rm -rf "$MNT"
+  if [[ -n "${TMP_CFG:-}" ]]; then
+    rm -rf "$TMP_CFG"
+  fi
+}
 trap cleanup EXIT
 
 # ---- Write config -----------------------------------------------------------
 if [[ -n "$CONFIG_DIR" ]]; then
+  TMP_CFG=$(mktemp -d)
+  mkdir -p "${TMP_CFG}/.hermes"
+  tar cf - -C "$CONFIG_DIR" . | tar xf - -C "${TMP_CFG}/.hermes"
   tar czf "${MNT}/hermes-config.tar.gz" \
-    -C "$(dirname "$CONFIG_DIR")" "$(basename "$CONFIG_DIR")"
-  echo "✓  Config dir packed from ${CONFIG_DIR}"
+    -C "${TMP_CFG}" ".hermes"
+  rm -rf "${TMP_CFG}"
+  TMP_CFG=""
+  echo "✓  Config dir packed from ${CONFIG_DIR} as .hermes"
 
 elif [[ -n "$CONFIG_TARBALL" ]]; then
   cp "$CONFIG_TARBALL" "${MNT}/hermes-config.tar.gz"

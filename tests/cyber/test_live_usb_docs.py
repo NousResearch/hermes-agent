@@ -82,6 +82,23 @@ def test_direct_live_usb_scripts_fail_closed_on_unverified_media() -> None:
     assert 'PROVISION_PART="$(_partition_path "$DEVICE" 3)"' in provision_script
 
 
+def test_direct_provision_script_repacks_config_dirs_as_dot_hermes() -> None:
+    section = _live_usb_section()
+    provision_script = (LIVE_USB_DIR / "provision.sh").read_text(encoding="utf-8")
+
+    assert 'config=".agentcyber-home"' in section
+    assert "repack" in section.lower()
+    assert "prebuilt tarballs must already contain a `.hermes/` top-level directory" in section
+    assert 'tar cf - -C "$CONFIG_DIR" .' in provision_script
+    assert 'tar xf - -C "${TMP_CFG}/.hermes"' in provision_script
+    assert 'tar czf "${MNT}/hermes-config.tar.gz" \\' in provision_script
+    assert '-C "${TMP_CFG}" ".hermes"' in provision_script
+    assert 'TMP_CFG=""' in provision_script
+    assert 'if [[ -n "${TMP_CFG:-}" ]]' in provision_script
+    assert 'TMP_CFG=""\n  echo "✓  Config dir packed from ${CONFIG_DIR} as .hermes"' in provision_script
+    assert '-C "$(dirname "$CONFIG_DIR")" "$(basename "$CONFIG_DIR")"' not in provision_script
+
+
 def test_direct_build_script_rejects_dev_or_block_output_targets() -> None:
     build_script = (LIVE_USB_DIR / "build_iso.sh").read_text(encoding="utf-8")
     lowered = build_script.lower()

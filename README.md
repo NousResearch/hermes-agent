@@ -317,7 +317,7 @@ sudo live-usb/provision.sh --usb /dev/sdb \
   --audit
 ```
 
-The provisioned config is written to the `HERMESCFG` FAT32 partition. On first boot, the wizard detects it and starts the gateway automatically — no keyboard input needed.
+The provisioned config is written to the `HERMESCFG` FAT32 partition. Config directories are repacked under a top-level `.hermes/` directory before first boot, so a standalone `.agentcyber-home` can be used as the source directory; prebuilt tarballs must already contain that `.hermes/` top-level directory. On first boot, the wizard detects the archive and starts the gateway automatically — no keyboard input needed.
 
 ---
 
@@ -355,7 +355,7 @@ Then ask the agent:
                                              operator_approval="<matching one-time token>")
 ```
 
-The `list_usb` and `status` actions are safe read-only checks and need no root or approval token. `build`, `write`, and `provision` require the agent session to run as root plus an exact operator approval token; set `HERMES_AGENTCYBER_LIVE_USB_APPROVAL` only for the approved maintenance session and pass the exact same value as `operator_approval`. `write` and `provision` also reject targets unless Linux reports verified whole removable `/dev` disk metadata, then use the canonical `/dev/...` target rather than an operator-supplied alias. Root/sudo alone is not sufficient for these agent tool calls, and unattended cron lanes must not perform them.
+The `list_usb` and `status` actions are safe read-only checks and need no root or approval token. `build`, `write`, and `provision` require the agent session to run as root plus an exact operator approval token; set `HERMES_AGENTCYBER_LIVE_USB_APPROVAL` only for the approved maintenance session and pass the exact same value as `operator_approval`. `write` and `provision` also reject targets unless Linux reports verified whole removable `/dev` disk metadata, then use the canonical `/dev/...` target rather than an operator-supplied alias. When `provision` receives a config directory such as `.agentcyber-home`, the direct script repacks its contents under `.hermes` so first boot populates `/home/hermes/.hermes/config.yaml`; prebuilt tarballs must already contain a `.hermes/` top-level directory. Root/sudo alone is not sufficient for these agent tool calls, and unattended cron lanes must not perform them.
 
 ---
 

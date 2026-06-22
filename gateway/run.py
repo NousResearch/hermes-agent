@@ -4993,8 +4993,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
+        # Avoid zombie deadlock: kill -0 returns success on zombies (the PID
+        # still occupies the process table), causing the watcher to loop
+        # forever.  Check /proc/PID/status for State:Z and bail.  Also cap
+        # the wait at 120 s (600 * 0.2s) as a safety net.
         shell_cmd = (
-            f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
+            f"n=0; deadline=600; "
+            f"while [ $n -lt $deadline ] && kill -0 {current_pid} 2>/dev/null; do "
+            f"  grep -qs '^State:.*Z' /proc/{current_pid}/status 2>/dev/null && break; "
+            f"  n=$((n + 1)); sleep 0.2; "
+            f"done; "
             f"{cmd} gateway restart"
         )
         # Same marker scrub as the Windows watcher above: this watcher runs
@@ -8640,15 +8648,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _stt_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     if _stt_adapter:
                         try:
-                            _stt_msg = (
+                            # Build a smarter DM — check what the user has already configured
+                            _stt_msg_parts = [
                                 "🎤 I received your voice message but can't transcribe it — "
-                                "no speech-to-text provider is configured.\n\n"
-                                "To enable voice: install faster-whisper "
-                                "(`uv pip install faster-whisper` in the Hermes venv; "
-                                "`pip install faster-whisper` also works if pip is on PATH) "
-                                "and set `stt.enabled: true` in config.yaml, "
-                                "then /restart the gateway."
-                            )
+                                "no speech-to-text provider is available."
+                            ]
+                            try:
+                                from tools.transcription_tools import _load_stt_config, is_stt_enabled
+                                _cfg = _load_stt_config()
+                                _enabled = is_stt_enabled(_cfg)
+                                _provider = _cfg.get("provider", "auto")
+                                if not _enabled:
+                                    _stt_msg_parts.append(
+                                        "✅ **STT is disabled** in your config "
+                                        "(`stt.enabled: false`). Set it to `true` "
+                                        "and /restart the gateway."
+                                    )
+                                elif _provider in ("local", "auto"):
+                                    _stt_msg_parts.append(
+                                        "To enable local voice transcription:\n"
+                                        "1. Install faster-whisper:\n"
+                                        "   `VIRTUAL_ENV=/opt/hermes/.venv uv pip install \"faster-whisper==1.2.1\"`\n"
+                                        "2. If you get a **permission denied** error, the venv is owned by "
+                                        "a different user. Run the install command as the venv owner:\n"
+                                        "   `su - $(stat -c '%U' /opt/hermes/.venv) -c 'VIRTUAL_ENV=/opt/hermes/.venv "
+                                        "uv pip install \"faster-whisper==1.2.1\"'`\n"
+                                        "3. Then /restart the gateway."
+                                    )
+                                else:
+                                    # Cloud provider — API key may be missing
+                                    _stt_msg_parts.append(
+                                        f"Your configured STT provider is **{_provider}**. "
+                                        "Make sure the required API key is set in your `.env` file, "
+                                        "then /restart the gateway."
+                                    )
+                            except Exception:
+                                # Fallback if the config check itself fails
+                                _stt_msg_parts.append(
+                                    "To enable voice: install faster-whisper "
+                                    "(`uv pip install faster-whisper` in the Hermes venv; "
+                                    "`pip install faster-whisper` also works if pip is on PATH) "
+                                    "and set `stt.enabled: true` in config.yaml, "
+                                    "then /restart the gateway."
+                                )
+                            _stt_msg = "\n\n".join(_stt_msg_parts)
                             if self._has_setup_skill():
                                 _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
                             await _stt_adapter.send(
@@ -12910,9 +12953,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "No STT provider" in error
                         or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
                     ):
+                        # Check if STT is actually configured — helps the agent
+                        # give a better response than the generic "not configured".
+                        _stt_config_hint = ""
+                        try:
+                            from tools.transcription_tools import _load_stt_config, is_stt_enabled
+                            _cfg = _load_stt_config()
+                            if is_stt_enabled(_cfg):
+                                _provider = _cfg.get("provider", "auto")
+                                if _provider == "local":
+                                    _stt_config_hint = (
+                                        " (Note: stt.enabled is true and provider is 'local', "
+                                        "but faster-whisper failed to install — likely a venv "
+                                        "write-permission issue)"
+                                    )
+                                else:
+                                    _stt_config_hint = (
+                                        f" (Note: stt.enabled is true, provider is '{_provider}', "
+                                        "but the provider is unavailable)"
+                                    )
+                        except Exception:
+                            pass
                         _no_stt_note = (
                             "[The user sent a voice message but I can't listen "
-                            "to it right now — no STT provider is configured. "
+                            "to it right now — no STT provider is available."
+                            f"{_stt_config_hint} "
                             "A direct message has already been sent to the user "
                             "with setup instructions."
                         )

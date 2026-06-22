@@ -223,8 +223,20 @@ def _try_lazy_install_stt() -> bool:
         import importlib.util as _iu
         if _iu.find_spec("faster_whisper"):
             return True
+        logger.warning(
+            "faster-whisper was installed but importlib still cannot find it "
+            "(may require Python restart)"
+        )
     except Exception as exc:
-        logger.debug("Lazy install of faster-whisper failed: %s", exc)
+        logger.warning(
+            "Lazy install of faster-whisper failed: %s. "
+            "This is often a permission issue: the Hermes process user cannot "
+            "write to the virtual environment. Try running manually as the "
+            "venv owner: `stat -c '%%u' '$(dirname $(dirname $(which python3)))'` "
+            "then `su - <owner> -c 'VIRTUAL_ENV=/opt/hermes/.venv "
+            "uv pip install faster-whisper==1.2.1'`",
+            exc,
+        )
     return False
 
 

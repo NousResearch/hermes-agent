@@ -4529,3 +4529,248 @@ def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch
         )
         assert res.stale == [], "stale_timeout_seconds=0 should disable detection"
         assert kb.get_task(conn, t).status == "running"
+
+
+# ---------------------------------------------------------------------------
+# Auto-subscribe on `hermes kanban create` (and the `kanban_create` tool)
+# ---------------------------------------------------------------------------
+#
+# Bug report (2026-06-21): the CLI help text for `hermes kanban create`
+# advertises "auto-subscribes you to events" but `_cmd_create` never called
+# `kb.add_notify_sub(...)`. Same gap in the `kanban_create` model tool. As
+# a result, orchestrator workers that filed follow-up tasks via the tool
+# received no terminal-state notifications, and the human had to manually
+# check on the board. The gateway's `/kanban create` slash command already
+# handles this correctly by reading `event.source`; we just need the bare
+# CLI and the tool to do the same thing from the active session's chat
+# binding (env vars set by the agent runtime / a chat-bound shell).
+#
+# These tests pin the resolution order and the no-binding fallback:
+#
+#   1. explicit --auto-subscribe-* args always win
+#   2. else HERMES_NOTIFY_* env vars (set by chat sessions)
+#   3. else no-op + note on stderr ("auto-subscribe skipped; user can
+#      `notify-subscribe` manually")
+#   4. --json mode (machine output) and --no-auto-subscribe both opt out
+
+_SUBSCRIBE_ENV_VARS = (
+    "HERMES_NOTIFY_PLATFORM",
+    "HERMES_NOTIFY_CHAT_ID",
+    "HERMES_NOTIFY_THREAD_ID",
+    "HERMES_NOTIFY_USER_ID",
+)
+
+
+def _make_create_ns_with_auto_subscribe(**overrides):
+    """Build a Namespace for _cmd_create with auto-subscribe knobs.
+
+    The CLI gain two new flags (--no-auto-subscribe, --auto-subscribe-*)
+    and a new read-only 'auto_subscribe' boolean we resolve internally.
+    """
+    # Defaults for the auto-subscribe knobs. Apply FIRST so caller
+    # overrides (in **overrides) win.
+    auto_defaults = {
+        "no_auto_subscribe": False,
+        "auto_subscribe_platform": None,
+        "auto_subscribe_chat_id": None,
+        "auto_subscribe_thread_id": None,
+        "auto_subscribe_user_id": None,
+        "branch": None,  # used by parent task tests; harmless here
+        "max_retries": None,
+    }
+    auto_defaults.update(overrides)
+    return _make_create_ns(**auto_defaults)
+
+
+def _clear_subscribe_env(monkeypatch):
+    for var in _SUBSCRIBE_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+def _first_task_id(conn):
+    """Helper: return the most recently created task id."""
+    row = conn.execute(
+        "SELECT id FROM tasks ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None, "expected at least one task to exist"
+    return row[0]
+
+
+def test_cli_create_auto_subscribes_when_env_binding_present(
+    kanban_home, monkeypatch, capsys,
+):
+    """HERMES_NOTIFY_* env vars set -> a notify_sub row is created on
+    create, mirroring what the gateway already does for /kanban create."""
+    from hermes_cli import kanban as kb_cli
+    _clear_subscribe_env(monkeypatch)
+    monkeypatch.setenv("HERMES_NOTIFY_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_NOTIFY_CHAT_ID", "chat-xyz")
+    monkeypatch.setenv("HERMES_NOTIFY_THREAD_ID", "7")
+    monkeypatch.setenv("HERMES_NOTIFY_USER_ID", "user-1")
+    # Suppress the unrelated "no gateway" warning so the test asserts only
+    # what it cares about.
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
+    ns = _make_create_ns_with_auto_subscribe(
+        title="auto-sub", assignee="worker",
+    )
+    assert kb_cli._cmd_create(ns) == 0
+    out = capsys.readouterr().out
+    assert "auto-subscribed" in out
+    with kb.connect() as conn:
+        task_id = _first_task_id(conn)
+        subs = kb.list_notify_subs(conn, task_id=task_id)
+    assert len(subs) == 1
+    sub = subs[0]
+    assert sub["platform"] == "telegram"
+    assert sub["chat_id"] == "chat-xyz"
+    assert sub["thread_id"] == "7"
+    assert sub["user_id"] == "user-1"
+    # notifier_profile falls back to HERMES_PROFILE or "user"; either is
+    # acceptable — pin that it's non-empty and a string.
+    assert isinstance(sub["notifier_profile"], str) and sub["notifier_profile"]
+
+
+def test_cli_create_no_binding_emits_warning_skips_subscribe(
+    kanban_home, monkeypatch, capsys,
+):
+    """No HERMES_NOTIFY_* env vars and no explicit args -> the create
+    still succeeds but a stderr note says auto-subscribe was skipped and
+    the kanban_notify_subs table stays empty."""
+    from hermes_cli import kanban as kb_cli
+    _clear_subscribe_env(monkeypatch)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
+    ns = _make_create_ns_with_auto_subscribe(
+        title="no-binding", assignee="worker",
+    )
+    assert kb_cli._cmd_create(ns) == 0
+    captured = capsys.readouterr()
+    # Note goes to stderr (operators see it; --json consumers don't).
+    assert "auto-subscribe skipped" in captured.err
+    # No "auto-subscribed" suffix on stdout.
+    assert "auto-subscribed" not in captured.out
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn) == [], (
+            "no sub should be created when there's no chat binding"
+        )
+
+
+def test_cli_create_no_auto_subscribe_flag_overrides_env(
+    kanban_home, monkeypatch, capsys,
+):
+    """`--no-auto-subscribe` opts out even when the env binding is set
+    (escape hatch for callers who script creates and want to manage
+    subscriptions explicitly)."""
+    from hermes_cli import kanban as kb_cli
+    _clear_subscribe_env(monkeypatch)
+    monkeypatch.setenv("HERMES_NOTIFY_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_NOTIFY_CHAT_ID", "chat-xyz")
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
+    ns = _make_create_ns_with_auto_subscribe(
+        title="opt-out", assignee="worker", no_auto_subscribe=True,
+    )
+    assert kb_cli._cmd_create(ns) == 0
+    captured = capsys.readouterr()
+    assert "auto-subscribe skipped" in captured.err
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn) == []
+
+
+def test_cli_create_explicit_args_override_env(
+    kanban_home, monkeypatch, capsys,
+):
+    """`--auto-subscribe-platform=discord --auto-subscribe-chat-id=...`
+    takes precedence over the env vars (lets a script subscribe a
+    different chat than the one it ran from)."""
+    from hermes_cli import kanban as kb_cli
+    _clear_subscribe_env(monkeypatch)
+    monkeypatch.setenv("HERMES_NOTIFY_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_NOTIFY_CHAT_ID", "chat-from-env")
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
+    ns = _make_create_ns_with_auto_subscribe(
+        title="explicit", assignee="worker",
+        auto_subscribe_platform="discord",
+        auto_subscribe_chat_id="channel-42",
+    )
+    assert kb_cli._cmd_create(ns) == 0
+    with kb.connect() as conn:
+        subs = kb.list_notify_subs(conn)
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "channel-42"
+
+
+def test_cli_create_json_mode_skips_auto_subscribe(
+    kanban_home, monkeypatch, capsys,
+):
+    """`--json` (machine output) opts out, matching the gateway's
+    `is_create and output` rule: scripted callers manage subs
+    explicitly via `notify-subscribe`."""
+    from hermes_cli import kanban as kb_cli
+    _clear_subscribe_env(monkeypatch)
+    monkeypatch.setenv("HERMES_NOTIFY_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_NOTIFY_CHAT_ID", "chat-xyz")
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
+    ns = _make_create_ns_with_auto_subscribe(
+        title="json-mode", assignee="worker", json=True,
+    )
+    assert kb_cli._cmd_create(ns) == 0
+    out = capsys.readouterr().out
+    # --json path prints a JSON object — parse and verify the task id is
+    # in there, and that no sub was created.
+    data = json.loads(out)
+    assert data["title"] == "json-mode"
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn) == []
+
+
+def test_cli_create_auto_subscribe_help_text_mentions_caveat(
+    kanban_home,
+):
+    """The `create` subcommand's help text must reflect the new
+    behaviour: auto-subscribe happens, but only when a chat binding is
+    available. Pin the wording so it doesn't drift back to a misleading
+    'auto-subscribes you' claim."""
+    import argparse as _ap
+    from hermes_cli import kanban as kb_cli
+    root = _ap.ArgumentParser()
+    subs = root.add_subparsers()
+    kb_cli.build_parser(subs)
+    found = None
+    for action in root._actions:
+        if isinstance(action, _ap._SubParsersAction):
+            for name, parser in action.choices.items():
+                if name != "kanban":
+                    continue
+                for sub_action in parser._actions:
+                    if not isinstance(sub_action, _ap._SubParsersAction):
+                        continue
+                    for act in sub_action._choices_actions:
+                        if getattr(act, "dest", "") == "create":
+                            found = act.help or ""
+    assert found, "could not locate `kanban create` help text"
+    # Must NOT be the old misleading claim.
+    assert "auto-subscribes you to events" not in found
+    # Must mention auto-subscribe in some form so the help still sets
+    # the right expectation.
+    assert "auto-subscribe" in found.lower() or "subscribed" in found.lower()
+

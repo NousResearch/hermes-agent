@@ -303,7 +303,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Absolute path to use as default workdir. Omit to clear.")
 
     # --- create ---
-    p_create = sub.add_parser("create", help="Create a new task")
+    p_create = sub.add_parser(
+        "create",
+        help="Create a new task (auto-subscribes the active chat when run from a chat-bound shell)",
+    )
     p_create.add_argument("title", help="Task title")
     p_create.add_argument("--body", default=None, help="Optional opening post")
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
@@ -361,6 +364,37 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Initial card status. Use 'blocked' for cards "
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
+    p_create.add_argument("--no-auto-subscribe", action="store_true",
+                          dest="no_auto_subscribe",
+                          help="Skip the auto-subscribe that would normally "
+                               "attach the active chat to this task's terminal "
+                               "events. Useful for scripted creates that manage "
+                               "subscriptions explicitly via "
+                               "`hermes kanban notify-subscribe`.")
+    p_create.add_argument(
+        "--auto-subscribe-platform", default=None,
+        dest="auto_subscribe_platform",
+        help="Override the auto-subscribe target platform (default: pull from "
+             "$HERMES_NOTIFY_PLATFORM if set, e.g. by a chat-bound shell).",
+    )
+    p_create.add_argument(
+        "--auto-subscribe-chat-id", default=None,
+        dest="auto_subscribe_chat_id",
+        help="Override the auto-subscribe target chat id (default: pull from "
+             "$HERMES_NOTIFY_CHAT_ID if set).",
+    )
+    p_create.add_argument(
+        "--auto-subscribe-thread-id", default=None,
+        dest="auto_subscribe_thread_id",
+        help="Override the auto-subscribe target thread id (default: pull from "
+             "$HERMES_NOTIFY_THREAD_ID if set).",
+    )
+    p_create.add_argument(
+        "--auto-subscribe-user-id", default=None,
+        dest="auto_subscribe_user_id",
+        help="Override the auto-subscribe target user id (default: pull from "
+             "$HERMES_NOTIFY_USER_ID if set).",
+    )
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- swarm ---
@@ -989,6 +1023,126 @@ def _profile_author() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Auto-subscribe resolution for `hermes kanban create`
+# ---------------------------------------------------------------------------
+#
+# The CLI and the `kanban_create` model tool used to claim "auto-subscribes
+# you to events" without actually calling ``kb.add_notify_sub(...)``. The
+# fix mirrors what the gateway's ``/kanban create`` slash command already
+# does: pull the active chat binding from explicit args → env vars set by
+# a chat-bound shell → nothing. When the binding is missing the create
+# still succeeds and a stderr note points the user at the manual
+# ``notify-subscribe`` verb.
+
+# Names of env vars that a chat-bound shell (Telegram/Discord/Slack/...
+# adapter) can set so the CLI knows which chat to subscribe.
+_AUTO_SUB_ENV_VARS = (
+    "HERMES_NOTIFY_PLATFORM",
+    "HERMES_NOTIFY_CHAT_ID",
+    "HERMES_NOTIFY_THREAD_ID",
+    "HERMES_NOTIFY_USER_ID",
+)
+
+
+def _resolve_auto_subscribe_target(args) -> Optional[dict]:
+    """Return the auto-subscribe target for a create, or ``None`` to skip.
+
+    Resolution order:
+
+    1. Explicit ``--auto-subscribe-*`` args on the CLI (a script can pin
+       a different chat than the one the call was made from).
+    2. ``HERMES_NOTIFY_*`` env vars (override — lets a chat-bound shell
+       or operator script force a different target without changing the
+       underlying session binding).
+    3. ``HERMES_SESSION_*`` env vars (set in the agent subprocess env
+       by the gateway; the same source the ``kanban_create`` model
+       tool reads from ``gateway.session_context``).
+    4. ``None`` — no binding available; the caller should log a "skipped"
+       note and continue.
+    """
+    platform = getattr(args, "auto_subscribe_platform", None)
+    chat_id = getattr(args, "auto_subscribe_chat_id", None)
+    thread_id = getattr(args, "auto_subscribe_thread_id", None)
+    user_id = getattr(args, "auto_subscribe_user_id", None)
+
+    # Caller-provided args always win. Fall through to env if any are
+    # missing or both platform+chat_id are unset.
+    if not (platform and chat_id):
+        env_platform = (
+            os.environ.get("HERMES_NOTIFY_PLATFORM")
+            or os.environ.get("HERMES_SESSION_PLATFORM")
+        )
+        env_chat_id = (
+            os.environ.get("HERMES_NOTIFY_CHAT_ID")
+            or os.environ.get("HERMES_SESSION_CHAT_ID")
+        )
+        env_thread = (
+            os.environ.get("HERMES_NOTIFY_THREAD_ID")
+            or os.environ.get("HERMES_SESSION_THREAD_ID")
+        )
+        env_user = (
+            os.environ.get("HERMES_NOTIFY_USER_ID")
+            or os.environ.get("HERMES_SESSION_USER_ID")
+        )
+        if env_platform and env_chat_id:
+            platform = platform or env_platform
+            chat_id = chat_id or env_chat_id
+            thread_id = thread_id or env_thread
+            user_id = user_id or env_user
+
+    if not (platform and chat_id):
+        return None
+    return {
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": thread_id or None,
+        "user_id": user_id or None,
+    }
+
+
+def _auto_subscribe_create(
+    conn,
+    *,
+    task_id: str,
+    args,
+) -> Optional[dict]:
+    """Wire the active chat binding into ``kanban_notify_subs`` for a new task.
+
+    Returns the resolved binding dict (so the caller can print a
+    confirmation) or ``None`` when auto-subscribe was skipped (no
+    binding, --no-auto-subscribe, or --json). The caller is responsible
+    for the user-visible note; this function is silent on the skip path.
+    """
+    if getattr(args, "no_auto_subscribe", False):
+        return None
+    if getattr(args, "json", False):
+        return None
+    target = _resolve_auto_subscribe_target(args)
+    if target is None:
+        return None
+    try:
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform=target["platform"],
+            chat_id=target["chat_id"],
+            thread_id=target["thread_id"],
+            user_id=target["user_id"],
+            notifier_profile=_profile_author(),
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        # Auto-subscribe is a best-effort UX nicety; never let a sub
+        # failure roll back the create.
+        print(
+            f"kanban: auto-subscribe failed (task {task_id} created, "
+            f"but notification not registered): {exc}",
+            file=sys.stderr,
+        )
+        return None
+    return target
+
+
+# ---------------------------------------------------------------------------
 # Boards management (hermes kanban boards …)
 # ---------------------------------------------------------------------------
 
@@ -1332,11 +1486,41 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
         )
+        # Auto-subscribe the active chat to the new task's terminal
+        # events. Mirrors what the gateway's `/kanban create` slash
+        # command already does. Best-effort: any failure here is logged
+        # to stderr and the create still succeeds.
+        _auto_sub = _auto_subscribe_create(conn, task_id=task_id, args=args)
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
     else:
-        print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+        suffix = ""
+        if _auto_sub is not None:
+            suffix = (
+                f"  (auto-subscribed {_auto_sub['platform']}:"
+                f"{_auto_sub['chat_id']}"
+                + (f":{_auto_sub['thread_id']}" if _auto_sub["thread_id"] else "")
+                + " — you'll be notified when it completes or blocks)"
+            )
+        print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'}){suffix}")
+        # When auto-subscribe was skipped (no binding or --no-auto-subscribe)
+        # note it on stderr so callers parsing --json output aren't
+        # confused, and so it sits next to the existing dispatcher-
+        # presence warning in the operator's terminal.
+        if _auto_sub is None and not getattr(args, "json", False):
+            if getattr(args, "no_auto_subscribe", False):
+                print(
+                    "kanban: auto-subscribe skipped (--no-auto-subscribe); "
+                    "subscribe manually with `hermes kanban notify-subscribe` if needed.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "kanban: no chat binding detected; auto-subscribe skipped; "
+                    "subscribe manually with `hermes kanban notify-subscribe` if needed.",
+                    file=sys.stderr,
+                )
 
         # Warn when the task would sit in `ready` because no dispatcher is
         # present. Only warn on ready+assigned tasks — triage/todo are
@@ -2720,7 +2904,7 @@ Common subcommands:
   `list` (alias `ls`)   List tasks on the current board
   `show <id>`           Task details + comments + events
   `stats`               Per-status / per-assignee counts
-  `create <title>…`     Create a task (auto-subscribes you to events)
+  `create <title>…`     Create a task (auto-subscribes the active chat when run from a chat-bound shell)
   `comment <id> <msg>`  Append a comment
   `complete <id>…`      Mark task(s) done
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive

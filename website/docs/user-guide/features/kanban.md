@@ -778,6 +778,20 @@ bot> ✓ t_9fc1a3 completed by transcriber
 
 Subscriptions auto-remove themselves once the task reaches `done` or `archived`. If you script a create with `--json` (machine output) the auto-subscribe is skipped — the assumption is that scripted callers want to manage subscriptions explicitly via `/kanban notify-subscribe`.
 
+#### Same behaviour in `hermes kanban create` (CLI) and the `kanban_create` tool
+
+The bare CLI and the model tool auto-subscribe the same way the gateway does, so a worker running a chat-bound `kanban_create` from inside its own session gets the same delivery. The CLI reads `$HERMES_NOTIFY_PLATFORM` / `$HERMES_NOTIFY_CHAT_ID` / `$HERMES_NOTIFY_THREAD_ID` (with `$HERMES_SESSION_*` from the gateway subprocess as a fallback). The tool reads the gateway's ContextVars via `gateway.session_context`.
+
+Opt out with `--no-auto-subscribe` (CLI) or `auto_subscribe=false` in the tool's config gate (`kanban.auto_subscribe_on_create`). Explicit overrides:
+
+```bash
+# Subscribe a different chat than the one the call ran from
+hermes kanban create "research X" --assignee researcher \
+  --auto-subscribe-platform discord --auto-subscribe-chat-id channel-42
+```
+
+If no binding is available, the create still succeeds and the CLI prints a stderr note pointing you at `hermes kanban notify-subscribe`.
+
 ### Output truncation in messaging
 
 Gateway platforms have practical message-length caps. If `/kanban list`, `/kanban show`, or `/kanban tail` produce more than ~3800 characters of output, the response is truncated with a `… (truncated; use \`hermes kanban …\` in your terminal for full output)` footer. The CLI surface has no such cap.

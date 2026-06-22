@@ -1250,6 +1250,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
                 _spinner_result = function_result
             except KeyboardInterrupt:
+                # Record the interrupted tool result before re-raising, so the
+                # conversation history doesn't get an orphaned tool_call with
+                # no matching tool_result (which causes HTTP 400 from strict
+                # providers like DeepSeek and Anthropic).
+                messages.append(make_tool_result_message(
+                    function_name,
+                    f"[Tool execution interrupted — {function_name} was cancelled by keyboard interrupt]",
+                    getattr(tool_call, "id", "") or "",
+                ))
                 function_result = _emit_cancelled_terminal_post_tool_call(
                     agent,
                     function_name=function_name,
@@ -1291,6 +1300,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     tool_request_middleware_trace=list(middleware_trace),
                 )
             except KeyboardInterrupt:
+                # Record the interrupted tool result before re-raising, so the
+                # conversation history doesn't get an orphaned tool_call with
+                # no matching tool_result (which causes HTTP 400 from strict
+                # providers like DeepSeek and Anthropic).
+                messages.append(make_tool_result_message(
+                    function_name,
+                    f"[Tool execution interrupted — {function_name} was cancelled by keyboard interrupt]",
+                    getattr(tool_call, "id", "") or "",
+                ))
                 _emit_cancelled_terminal_post_tool_call(
                     agent,
                     function_name=function_name,

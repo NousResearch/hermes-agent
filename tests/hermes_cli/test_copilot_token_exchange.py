@@ -14,8 +14,10 @@ def _clear_jwt_cache():
     """Reset the module-level JWT cache before each test."""
     import hermes_cli.copilot_auth as mod
     mod._jwt_cache.clear()
+    mod._endpoint_cache.clear()
     yield
     mod._jwt_cache.clear()
+    mod._endpoint_cache.clear()
 
 
 class TestExchangeCopilotToken:
@@ -157,3 +159,101 @@ class TestCallerIntegration:
         assert token == "exchanged_jwt"
         assert source == "GH_TOKEN"
         mock_exchange.assert_called_once_with("gho_raw")
+
+
+class TestCopilotApiBaseUrl:
+    """Regression tests for base-URL resolution (#50252).
+
+    The token-exchange response advertises the account-specific API host under
+    ``endpoints.api``. Previously it was dropped, leaving the Copilot provider
+    to rely on a hardcoded default that could end up empty at chat time.
+    """
+
+    def _mock_urlopen(self, *, token="tid=abc", endpoints=None):
+        import json as _json
+        from unittest.mock import MagicMock as _MagicMock
+        payload = {"token": token, "expires_at": time.time() + 1800}
+        if endpoints is not None:
+            payload["endpoints"] = endpoints
+        mock_resp = _MagicMock()
+        mock_resp.read.return_value = _json.dumps(payload).encode()
+        mock_resp.__enter__ = _MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = _MagicMock(return_value=False)
+        return mock_resp
+
+    @patch("urllib.request.urlopen")
+    def test_exchange_caches_advertised_endpoint(self, mock_urlopen):
+        from hermes_cli.copilot_auth import (
+            exchange_copilot_token,
+            _endpoint_cache,
+            _token_fingerprint,
+        )
+
+        mock_urlopen.return_value = self._mock_urlopen(
+            endpoints={"api": "https://copilot-proxy.example.com/"}
+        )
+        exchange_copilot_token("gho_test123")
+
+        fp = _token_fingerprint("gho_test123")
+        assert _endpoint_cache[fp] == "https://copilot-proxy.example.com"
+
+    @patch("urllib.request.urlopen")
+    def test_base_url_uses_advertised_endpoint(self, mock_urlopen):
+        from hermes_cli.copilot_auth import get_copilot_api_base_url
+
+        mock_urlopen.return_value = self._mock_urlopen(
+            endpoints={"api": "https://copilot-proxy.example.com"}
+        )
+        assert get_copilot_api_base_url("gho_test123") == "https://copilot-proxy.example.com"
+
+    @patch("urllib.request.urlopen")
+    def test_base_url_falls_back_to_default_when_no_endpoint(self, mock_urlopen):
+        from hermes_cli.copilot_auth import (
+            get_copilot_api_base_url,
+            DEFAULT_COPILOT_API_BASE_URL,
+        )
+
+        mock_urlopen.return_value = self._mock_urlopen()
+        assert get_copilot_api_base_url("gho_test123") == DEFAULT_COPILOT_API_BASE_URL
+
+    def test_base_url_empty_token_returns_default(self):
+        from hermes_cli.copilot_auth import (
+            get_copilot_api_base_url,
+            DEFAULT_COPILOT_API_BASE_URL,
+        )
+
+        assert get_copilot_api_base_url("") == DEFAULT_COPILOT_API_BASE_URL
+
+    @patch("urllib.request.urlopen", side_effect=Exception("network error"))
+    def test_base_url_exchange_failure_returns_default(self, mock_urlopen):
+        from hermes_cli.copilot_auth import (
+            get_copilot_api_base_url,
+            DEFAULT_COPILOT_API_BASE_URL,
+        )
+
+        assert get_copilot_api_base_url("gho_test123") == DEFAULT_COPILOT_API_BASE_URL
+
+
+class TestResolveCredentialsCopilotBaseUrl:
+    """The provider resolver must always return a non-empty Copilot base URL."""
+
+    @patch("hermes_cli.copilot_auth.resolve_copilot_token", return_value=("gho_raw", "GH_TOKEN"))
+    @patch("hermes_cli.copilot_auth.get_copilot_api_token", return_value="exchanged_jwt")
+    @patch("hermes_cli.copilot_auth.get_copilot_api_base_url", return_value="https://copilot-proxy.example.com")
+    def test_resolver_uses_exchange_endpoint(self, mock_base, mock_tok, mock_resolve, monkeypatch):
+        monkeypatch.delenv("COPILOT_API_BASE_URL", raising=False)
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+
+        creds = resolve_api_key_provider_credentials("copilot")
+        assert creds["base_url"] == "https://copilot-proxy.example.com"
+
+    @patch("hermes_cli.copilot_auth.resolve_copilot_token", return_value=("gho_raw", "GH_TOKEN"))
+    @patch("hermes_cli.copilot_auth.get_copilot_api_token", return_value="exchanged_jwt")
+    @patch("hermes_cli.copilot_auth.get_copilot_api_base_url", return_value="https://api.githubcopilot.com")
+    def test_resolver_never_empty_with_blank_env(self, mock_base, mock_tok, mock_resolve, monkeypatch):
+        monkeypatch.setenv("COPILOT_API_BASE_URL", "   ")
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+
+        creds = resolve_api_key_provider_credentials("copilot")
+        assert creds["base_url"]
+        assert creds["base_url"] == "https://api.githubcopilot.com"

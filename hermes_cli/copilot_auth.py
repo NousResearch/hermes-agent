@@ -282,6 +282,14 @@ def copilot_device_code_login(
 _jwt_cache: dict[str, tuple[str, float]] = {}
 _JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
 
+# Canonical Copilot API base URL. The token-exchange response advertises the
+# real endpoint under ``endpoints.api`` (it can differ for Copilot Enterprise
+# / proxied accounts); we cache it per raw-token fingerprint and fall back to
+# this default when the exchange does not return one.
+DEFAULT_COPILOT_API_BASE_URL = "https://api.githubcopilot.com"
+# Maps raw_token_fingerprint -> resolved api base URL from the exchange.
+_endpoint_cache: dict[str, str] = {}
+
 # Token exchange endpoint and headers (matching VS Code / Copilot CLI)
 _TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
 _EDITOR_VERSION = "vscode/1.104.1"
@@ -343,9 +351,20 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
     expires_at = float(expires_at) if expires_at else time.time() + 1800
 
     _jwt_cache[fp] = (api_token, expires_at)
+    # The exchange response advertises the account-specific API host under
+    # ``endpoints.api``. Cache it so the provider resolver can use the
+    # canonical base URL instead of relying solely on a hardcoded default
+    # (which left the Copilot provider with an empty base URL — #50252).
+    endpoints = data.get("endpoints")
+    api_endpoint = ""
+    if isinstance(endpoints, dict):
+        api_endpoint = str(endpoints.get("api") or "").strip().rstrip("/")
+    if api_endpoint:
+        _endpoint_cache[fp] = api_endpoint
     logger.debug(
-        "Copilot token exchanged, expires_at=%s",
+        "Copilot token exchanged, expires_at=%s, api_endpoint=%s",
         expires_at,
+        api_endpoint or DEFAULT_COPILOT_API_BASE_URL,
     )
     return api_token, expires_at
 
@@ -366,6 +385,28 @@ def get_copilot_api_token(raw_token: str) -> str:
     except Exception as exc:
         logger.debug("Copilot token exchange failed, using raw token: %s", exc)
         return raw_token
+
+
+def get_copilot_api_base_url(raw_token: str) -> str:
+    """Resolve the Copilot API base URL for a raw GitHub token.
+
+    Performs (or reuses the cache of) a token exchange and returns the
+    account-specific ``endpoints.api`` advertised by GitHub. Falls back to
+    :data:`DEFAULT_COPILOT_API_BASE_URL` when the token is empty, the
+    exchange fails, or no endpoint is advertised. The return value is never
+    empty, so the provider resolver always has a usable base URL (#50252).
+    """
+    if not raw_token:
+        return DEFAULT_COPILOT_API_BASE_URL
+    fp = _token_fingerprint(raw_token)
+    cached = _endpoint_cache.get(fp)
+    if cached:
+        return cached
+    try:
+        exchange_copilot_token(raw_token)
+    except Exception as exc:
+        logger.debug("Copilot base URL resolution fell back to default: %s", exc)
+    return _endpoint_cache.get(fp) or DEFAULT_COPILOT_API_BASE_URL
 
 
 # ─── Copilot API Headers ───────────────────────────────────────────────────

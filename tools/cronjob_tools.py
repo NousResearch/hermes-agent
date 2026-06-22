@@ -193,6 +193,18 @@ def _check_invisible_unicode(prompt: str) -> str:
     return ""
 
 
+def _strip_code_blocks(text: str) -> str:
+    """Strip fenced and inline code blocks, replacing them with a space.
+
+    Without the space replacement, adjacent text across removed regions
+    concatenates and can accidentally match threat-pattern regexes (e.g.
+    ``cat ... .env`` formed from text before and after a code block).
+    """
+    text = re.sub(r"`{3}[\s\S]*?`{3}", " ", text)
+    text = re.sub(r"`[^`]+`", " ", text)
+    return text
+
+
 def _strip_invisible_unicode(prompt: str) -> tuple[str, list[str]]:
     """Strip invisible-unicode characters from *prompt*, preserving the ZWJ
     that lives inside legitimate emoji sequences.
@@ -271,6 +283,10 @@ def _scan_cron_skill_assembled(assembled: str) -> tuple[str, str]:
             "char(s) (%s) from vetted skill content",
             len(removed), ", ".join(removed),
         )
+    # Strip code blocks before scanning so that text across block boundaries
+    # cannot concatenate into a false-positive threat pattern (e.g. "cat … .env"
+    # formed from prose before and after a fenced code block).  See #50754.
+    cleaned = _strip_code_blocks(cleaned)
     prompt_to_scan = _strip_cron_safe_constructs(cleaned)
     for pattern, pid in _CRON_SKILL_ASSEMBLED_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):

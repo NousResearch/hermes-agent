@@ -2716,6 +2716,13 @@ DEFAULT_CONFIG = {
         # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
         # pings.
         "approval_mentions": False,
+        # Discord voice-channel inactivity timeout, in seconds. Set to 0 to
+        # keep the bot in VC until an explicit `/voice leave` / disconnect.
+        "voice_channel_inactivity_timeout_seconds": 300,
+        # Minimum seconds to wait for a VC playback before force-stopping it.
+        # The adapter also probes clip duration and extends this floor by a
+        # padding window, so long TTS readbacks are not cut at exactly 120s.
+        "voice_playback_timeout_seconds": 120,
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and

@@ -1928,6 +1928,7 @@ export const ja = defineLocale({
       send: '送信',
       sendSelected: '選択を送信',
       clearSelection: 'クリア',
+      selectedLabel: '選択中',
       multiSelectedCount: count => `${count} 件選択中`,
       multiSelectChoice: choice => `${choice} を複数選択に切り替え`
     },

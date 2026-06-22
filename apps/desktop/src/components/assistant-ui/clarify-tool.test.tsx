@@ -71,6 +71,20 @@ describe('ClarifyTool multi-select UX', () => {
     )
   })
 
+  it('shows the selected single choice while the response is pending', () => {
+    const request = renderClarifyTool(vi.fn(() => new Promise(() => {})))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Past sessions' }))
+
+    expect(request).toHaveBeenCalledWith('clarify.respond', {
+      request_id: 'req-1',
+      answer: 'Past sessions'
+    })
+    const status = screen.getByRole('status')
+    expect(status.textContent).toContain('Selected')
+    expect(status.textContent).toContain('Past sessions')
+  })
+
   it('uses the right-side circle to stage multiple choices without submitting until Send selected', async () => {
     const request = renderClarifyTool()
 
@@ -79,6 +93,8 @@ describe('ClarifyTool multi-select UX', () => {
 
     expect(request).not.toHaveBeenCalled()
     expect(screen.getByText('2 selected')).toBeTruthy()
+    expect(screen.getByText('Selected')).toBeTruthy()
+    expect(screen.getByText('Past sessions, Web sources')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Send selected' }))
 
@@ -88,5 +104,17 @@ describe('ClarifyTool multi-select UX', () => {
         answer: 'Past sessions, Web sources'
       })
     )
+  })
+
+  it('shows the current free-form draft as a custom selection', () => {
+    renderClarifyTool()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Other (type your answer)' }))
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), {
+      target: { value: 'Use only local reports' }
+    })
+
+    expect(screen.getByText('Selected')).toBeTruthy()
+    expect(screen.getByText('Other (type your answer): Use only local reports')).toBeTruthy()
   })
 })

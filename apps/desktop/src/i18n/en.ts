@@ -1798,6 +1798,7 @@ export const en: Translations = {
       send: 'Send',
       sendSelected: 'Send selected',
       clearSelection: 'Clear',
+      selectedLabel: 'Selected',
       multiSelectedCount: count => `${count} selected`,
       multiSelectChoice: choice => `Toggle ${choice} for multi-select`
     },

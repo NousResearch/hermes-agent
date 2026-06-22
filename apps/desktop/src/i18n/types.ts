@@ -1436,6 +1436,7 @@ export interface Translations {
       send: string
       sendSelected: string
       clearSelection: string
+      selectedLabel: string
       multiSelectedCount: (count: number) => string
       multiSelectChoice: (choice: string) => string
     }

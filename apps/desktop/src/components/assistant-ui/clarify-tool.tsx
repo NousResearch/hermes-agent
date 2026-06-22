@@ -115,6 +115,8 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const [multiSelectedChoices, setMultiSelectedChoices] = useState<string[]>([])
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const hasMultiSelections = multiSelectedChoices.length > 0
+  const freeformSelection = typing && draft.trim() ? `${copy.other}: ${draft.trim()}` : null
+  const selectedAnswerSummary = selectedChoice ?? (hasMultiSelections ? multiSelectedChoices.join(', ') : freeformSelection)
 
   // Race: tool.start fires a tick before clarify.request, so request_id
   // arrives slightly after the tool block mounts. Hold the whole panel on a
@@ -228,6 +230,17 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         </span>
         <span className="flex-1 whitespace-pre-wrap font-medium leading-snug text-foreground">{question}</span>
       </div>
+
+      {selectedAnswerSummary && (
+        <div
+          aria-live="polite"
+          className="flex items-start gap-2 rounded-md border border-primary/15 bg-primary/5 px-2.5 py-1.5 text-xs"
+          role="status"
+        >
+          <span className="shrink-0 font-medium text-primary">{copy.selectedLabel}</span>
+          <span className="min-w-0 flex-1 wrap-anywhere text-foreground/85">{selectedAnswerSummary}</span>
+        </div>
+      )}
 
       {!typing && hasChoices && (
         <div className="grid gap-0.5" role="group">

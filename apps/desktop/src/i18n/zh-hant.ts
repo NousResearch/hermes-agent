@@ -1869,6 +1869,7 @@ export const zhHant = defineLocale({
       send: '傳送',
       sendSelected: '傳送所選',
       clearSelection: '清除',
+      selectedLabel: '已選取',
       multiSelectedCount: count => `已選取 ${count} 項`,
       multiSelectChoice: choice => `切換 ${choice} 的多選狀態`
     },

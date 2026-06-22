@@ -1976,6 +1976,7 @@ export const zh: Translations = {
       send: '发送',
       sendSelected: '发送所选',
       clearSelection: '清除',
+      selectedLabel: '已选择',
       multiSelectedCount: count => `已选择 ${count} 项`,
       multiSelectChoice: choice => `切换 ${choice} 的多选状态`
     },

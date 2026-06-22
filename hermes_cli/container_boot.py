@@ -245,19 +245,43 @@ def _read_container_argv() -> tuple[str, ...]:
 
 
 def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:
-    """Strip the s6/wrapper prefix off PID 1 argv, leaving the hermes args.
+    """Strip the s6/wrapper prefix off the container argv, leaving the hermes args.
 
-    The container PID 1 argv looks like
-    ``/init /opt/hermes/docker/main-wrapper.sh <subcommand> [args...]`` and
-    the wrapper re-execs ``hermes <subcommand>``. Peel ``init`` →
-    ``main-wrapper.sh`` → ``hermes`` so callers can match on the bare
-    subcommand. Shared by the legacy-gateway and dashboard role detectors.
+    Two container-command argv shapes are handled:
+
+    * **s6-overlay v2 / tini:** PID 1 argv is
+      ``/init /opt/hermes/docker/main-wrapper.sh <subcommand> [args...]``.
+    * **s6-overlay v3:** PID 1 is ``s6-svscan`` and the command lives on the
+      rc.init-launched process as ``/bin/sh -e
+      /run/s6/basedir/scripts/rc.init top /opt/hermes/docker/main-wrapper.sh
+      <subcommand> [args...]`` (see :func:`_read_container_argv`).
+
+    Rather than peel each leading token positionally (which silently breaks
+    the moment s6 changes its launcher shape again — exactly what happened
+    in the v2→v3 bump), drop everything up to and including the
+    ``main-wrapper.sh`` token: that wrapper path is the stable boundary the
+    image owns, and the subcommand always follows it. Pre-s6 / direct
+    ``hermes`` invocations carry no wrapper, so fall back to peeling a bare
+    ``init`` prefix. The wrapper re-execs ``hermes <subcommand>``, so an
+    explicit leading ``hermes`` is peeled too. Shared by the legacy-gateway
+    and dashboard role detectors.
     """
     args = list(argv)
-    if args and Path(args[0]).name == "init":
+
+    # Preferred boundary: everything through main-wrapper.sh is launcher
+    # prefix. Covers s6-overlay v2 (`/init …main-wrapper.sh …`) and v3
+    # (`/bin/sh -e …rc.init top …main-wrapper.sh …`) with one rule.
+    wrapper_idx = next(
+        (i for i, a in enumerate(args) if a.endswith("main-wrapper.sh")),
+        None,
+    )
+    if wrapper_idx is not None:
+        args = args[wrapper_idx + 1 :]
+    elif args and Path(args[0]).name == "init":
+        # Defensive: an `init` prefix with no wrapper token in argv.
         args = args[1:]
-    if args and args[0].endswith("main-wrapper.sh"):
-        args = args[1:]
+
+    # The wrapper re-execs `hermes <subcommand>`; peel an explicit hermes.
     if args and Path(args[0]).name == "hermes":
         args = args[1:]
     return args

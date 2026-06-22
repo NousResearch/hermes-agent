@@ -1,0 +1,18 @@
+=== integration_v017_sequential.sh 2026-06-22T09:48:53Z ===
+fresh v0.17.0 worktree; applying PRs sequentially
+  #50296: conflict resolved via patch (agent/agent_init.py)
+  #50073: conflict resolved via patch ()
+  #50064: conflict resolved via patch (tests/run_agent/test_provider_attribution_headers.py)
+  #50056: conflict resolved via patch (tests/hermes_cli/test_kanban_db.py)
+  #49917: conflict resolved via patch ()
+  #49916: conflict resolved via patch (tui_gateway/server.py)
+  #49644: conflict resolved via patch (hermes_cli/commands.py)
+  #49184: conflict resolved via patch ()
+  #48065: conflict resolved via patch ()
+
+apply results: clean=30 resolved=9 failed=0 ->
+
+===== BUILD: py_compile integrated tree (changed files) =====
+integrated changed .py files=117  compile-fail=0
+
+RESULT: PASS — 39 PRs integrate onto v0.17.0 (30 clean + 9 resolved), tree compiles

@@ -77,6 +77,10 @@ def test_setup_hint_uses_gateway_service_command(monkeypatch: pytest.MonkeyPatch
     # longer enables Spectrum or fetches a separate spectrumProjectId — it
     # reuses this id directly.
     monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "dashboard")
+    # No existing credentials — first-time setup path.
+    monkeypatch.setattr(
+        cli.photon_auth, "load_project_credentials", lambda: (None, None),
+    )
     monkeypatch.setattr(
         cli.photon_auth,
         "regenerate_project_secret",
@@ -86,16 +90,16 @@ def test_setup_hint_uses_gateway_service_command(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(
         cli.photon_auth,
         "register_user_if_absent",
-        lambda *args, **kwargs: ({"id": "user_123", "phoneNumber": "+15551234567"}, True),
+        lambda *args, **kwargs: ({"id": "user_123", "phoneNumber": "+155****4567"}, True),
     )
-    monkeypatch.setattr(cli.photon_auth, "user_assigned_line", lambda user: "+15557654321")
+    monkeypatch.setattr(cli.photon_auth, "user_assigned_line", lambda user: "+155****4321")
     monkeypatch.setattr(cli.photon_auth, "store_user_numbers", lambda **kwargs: None)
     monkeypatch.setattr(cli, "_install_sidecar", lambda: 0)
 
     rc = cli._cmd_setup(
         argparse.Namespace(
             project_name=None,
-            phone="+15551234567",
+            phone="+155****4567",
             first_name=None,
             last_name=None,
             email=None,
@@ -108,3 +112,107 @@ def test_setup_hint_uses_gateway_service_command(monkeypatch: pytest.MonkeyPatch
     out = capsys.readouterr().out
     assert "Start the gateway:  hermes gateway start" in out
     assert "--platform photon" not in out
+    assert "new secret saved" in out
+    assert "restart it so the sidecar" in out
+
+
+def test_setup_reuses_valid_existing_secret(
+    monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """Re-running setup with a valid existing secret must NOT regenerate it."""
+    regenerate_called = False
+
+    def _fake_regenerate(token, dashboard_id):
+        nonlocal regenerate_called
+        regenerate_called = True
+        return "new_secret"
+
+    monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
+    monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "dashboard")
+    monkeypatch.setattr(
+        cli.photon_auth,
+        "load_project_credentials",
+        lambda: ("dashboard", "existing_secret"),
+    )
+    # list_users succeeds — existing secret is valid.
+    monkeypatch.setattr(
+        cli.photon_auth, "list_users", lambda pid, secret: [],
+    )
+    monkeypatch.setattr(cli.photon_auth, "regenerate_project_secret", _fake_regenerate)
+    monkeypatch.setattr(cli.photon_auth, "store_project_credentials", lambda **kwargs: None)
+    monkeypatch.setattr(
+        cli.photon_auth,
+        "register_user_if_absent",
+        lambda *args, **kwargs: ({"id": "user_123", "phoneNumber": "+155****4567"}, True),
+    )
+    monkeypatch.setattr(cli.photon_auth, "user_assigned_line", lambda user: "+155****4321")
+    monkeypatch.setattr(cli.photon_auth, "store_user_numbers", lambda **kwargs: None)
+    monkeypatch.setattr(cli, "_install_sidecar", lambda: 0)
+
+    rc = cli._cmd_setup(
+        argparse.Namespace(
+            project_name=None,
+            phone="+155****4567",
+            first_name=None,
+            last_name=None,
+            email=None,
+            no_browser=True,
+            skip_sidecar_install=False,
+        )
+    )
+
+    assert rc == 0
+    assert not regenerate_called, "regenerate_project_secret must not be called when existing creds are valid"
+    out = capsys.readouterr().out
+    assert "existing credentials valid" in out
+    assert "restart" not in out.lower()
+
+
+def test_setup_regenerates_when_existing_secret_invalid(
+    monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """When existing credentials are invalid, setup must regenerate."""
+    monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
+    monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "dashboard")
+    monkeypatch.setattr(
+        cli.photon_auth,
+        "load_project_credentials",
+        lambda: ("dashboard", "stale_secret"),
+    )
+    # list_users fails — existing secret is invalid.
+    monkeypatch.setattr(
+        cli.photon_auth,
+        "list_users",
+        lambda pid, secret: (_ for _ in ()).throw(RuntimeError("auth failed")),
+    )
+    monkeypatch.setattr(
+        cli.photon_auth,
+        "regenerate_project_secret",
+        lambda token, dashboard_id: "new_secret",
+    )
+    monkeypatch.setattr(cli.photon_auth, "store_project_credentials", lambda **kwargs: None)
+    monkeypatch.setattr(
+        cli.photon_auth,
+        "register_user_if_absent",
+        lambda *args, **kwargs: ({"id": "user_123", "phoneNumber": "+155****4567"}, True),
+    )
+    monkeypatch.setattr(cli.photon_auth, "user_assigned_line", lambda user: "+155****4321")
+    monkeypatch.setattr(cli.photon_auth, "store_user_numbers", lambda **kwargs: None)
+    monkeypatch.setattr(cli, "_install_sidecar", lambda: 0)
+
+    rc = cli._cmd_setup(
+        argparse.Namespace(
+            project_name=None,
+            phone="+155****4567",
+            first_name=None,
+            last_name=None,
+            email=None,
+            no_browser=True,
+            skip_sidecar_install=False,
+        )
+    )
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "new secret saved" in out
+    assert "restart it so the sidecar" in out

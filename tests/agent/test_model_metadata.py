@@ -10,6 +10,7 @@ Coverage levels:
   Persistent cache       — save/load, corruption, update, provider isolation
 """
 
+import logging
 import time
 
 import pytest
@@ -1670,3 +1671,122 @@ class TestMoAContextLength:
             "p", base_url="http://127.0.0.1/v1", provider="moa", config_context_length=500_000
         )
         assert ctx == 500_000
+
+
+class TestFetchModelMetadataResilience:
+    """fetch_model_metadata should survive transient OpenRouter outages: retry
+    briefly, fall back to cached metadata, and not alarm the user with a
+    WARNING when a usable cache is available (#50770).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch, tmp_path):
+        import agent.model_metadata as mm
+        # Point the disk cache at an isolated dir and reset in-memory cache so
+        # tests don't read/write the user's real ~/.hermes cache.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(mm, "_model_metadata_cache", {}, raising=False)
+        monkeypatch.setattr(mm, "_model_metadata_cache_time", 0, raising=False)
+        monkeypatch.setattr(mm, "_save_model_metadata_disk_cache", lambda data: None)
+        monkeypatch.setattr(mm.time, "sleep", lambda *_a, **_k: None)
+        return mm
+
+    @staticmethod
+    def _ok_response(models):
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {"data": models}
+        return resp
+
+    def test_retries_transient_error_then_succeeds(self, _isolate, monkeypatch):
+        import requests
+        mm = _isolate
+        calls = {"n": 0}
+
+        def fake_get(*_a, **_k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise requests.exceptions.SSLError("EOF in violation of protocol")
+            return self._ok_response([{"id": "vendor/model-x", "context_length": 64000}])
+
+        monkeypatch.setattr(mm.requests, "get", fake_get)
+        result = mm.fetch_model_metadata(force_refresh=True)
+        assert calls["n"] == 2  # one failure, one success
+        assert "vendor/model-x" in result
+
+    def test_certificate_verify_failure_is_not_retried(self, _isolate, monkeypatch):
+        # A broken cert chain is deterministic — the handshake fails identically
+        # on every attempt, so retrying only adds a second doomed request. The
+        # repo draws this line in error_classifier; the fetch must honor it.
+        import requests
+        mm = _isolate
+        calls = {"n": 0}
+
+        def fake_get(*_a, **_k):
+            calls["n"] += 1
+            raise requests.exceptions.SSLError(
+                "HTTPSConnectionPool(host='openrouter.ai', port=443): "
+                "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+                "unable to get local issuer certificate (_ssl.c:1006)"
+            )
+
+        monkeypatch.setattr(mm.requests, "get", fake_get)
+        mm.fetch_model_metadata(force_refresh=True)
+        assert calls["n"] == 1  # exactly one request, no retry
+
+    def test_gives_up_after_max_attempts(self, _isolate, monkeypatch):
+        import requests
+        mm = _isolate
+        calls = {"n": 0}
+
+        def fake_get(*_a, **_k):
+            calls["n"] += 1
+            raise requests.exceptions.SSLError("EOF in violation of protocol")
+
+        monkeypatch.setattr(mm.requests, "get", fake_get)
+        mm.fetch_model_metadata(force_refresh=True)
+        assert calls["n"] == mm._MODEL_METADATA_FETCH_ATTEMPTS
+
+    def test_falls_back_to_memory_cache_without_warning(self, _isolate, monkeypatch, caplog):
+        import requests
+        mm = _isolate
+        monkeypatch.setattr(mm, "_model_metadata_cache", {"cached/model": {"context_length": 1234}}, raising=False)
+
+        def fake_get(*_a, **_k):
+            raise requests.exceptions.SSLError("EOF in violation of protocol")
+
+        monkeypatch.setattr(mm.requests, "get", fake_get)
+        with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
+            result = mm.fetch_model_metadata(force_refresh=True)
+        assert result == {"cached/model": {"context_length": 1234}}
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_falls_back_to_disk_cache_without_warning(self, _isolate, monkeypatch, caplog):
+        import requests
+        mm = _isolate
+        monkeypatch.setattr(mm, "_load_model_metadata_disk_cache", lambda: {"disk/model": {"context_length": 5678}})
+
+        def fake_get(*_a, **_k):
+            raise requests.exceptions.ConnectionError("connection reset")
+
+        monkeypatch.setattr(mm.requests, "get", fake_get)
+        with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
+            result = mm.fetch_model_metadata(force_refresh=True)
+        assert result == {"disk/model": {"context_length": 5678}}
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_warns_only_when_no_cache_available(self, _isolate, monkeypatch, caplog):
+        import requests
+        mm = _isolate
+        monkeypatch.setattr(mm, "_load_model_metadata_disk_cache", lambda: {})
+
+        def fake_get(*_a, **_k):
+            raise requests.exceptions.SSLError("EOF in violation of protocol")
+
+        monkeypatch.setattr(mm.requests, "get", fake_get)
+        with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
+            result = mm.fetch_model_metadata(force_refresh=True)
+        assert result == {}
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        assert "Failed to fetch model metadata" in warnings[0].message

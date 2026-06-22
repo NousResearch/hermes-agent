@@ -108,6 +108,37 @@ _model_metadata_cache_time: float = 0
 _novita_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _novita_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
+
+# OpenRouter metadata is best-effort: a flaky network blip should retry briefly
+# and otherwise fall back to cached metadata without alarming the user (#50770).
+_MODEL_METADATA_FETCH_ATTEMPTS = 2
+_MODEL_METADATA_FETCH_BACKOFF = 0.5  # seconds, multiplied by attempt number
+_TRANSIENT_FETCH_ERRORS = (
+    requests.exceptions.SSLError,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
+
+
+def _is_retryable_fetch_error(error: Exception) -> bool:
+    """False for deterministic failures that a retry would only reproduce.
+
+    A broken certificate chain (TLS-inspecting proxy, missing custom CA,
+    expired/self-signed cert) fails the handshake identically every time, so
+    retrying just adds a second doomed request. The repo already draws this
+    line in agent/error_classifier.py — reuse its patterns rather than
+    re-deriving them here. Everything else in _TRANSIENT_FETCH_ERRORS (EOF-style
+    SSL blips, connection resets, timeouts) stays retryable.
+    """
+    try:
+        from agent.error_classifier import _SSL_CERT_VERIFY_PATTERNS
+    except Exception:
+        return True
+
+    error_msg = str(error).lower()
+    return not any(p in error_msg for p in _SSL_CERT_VERIFY_PATTERNS)
+
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
@@ -852,48 +883,68 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 _model_metadata_cache_time = time.time() - disk_age
                 return _model_metadata_cache
 
-    try:
-        # Tuple (connect, read) — flat timeout=10 means urllib3 can block 10s per
-        # retry stage through proxies that 403 CONNECT, ballooning to minutes
-        # (#46620). 5s connect / 10s read fails fast on unreachable hosts.
-        response = requests.get(OPENROUTER_MODELS_URL, timeout=(5, 10), verify=_resolve_requests_verify())
-        response.raise_for_status()
-        data = response.json()
+    last_error: Optional[Exception] = None
+    for attempt in range(_MODEL_METADATA_FETCH_ATTEMPTS):
+        try:
+            # Tuple (connect, read) — flat timeout=10 means urllib3 can block 10s per
+            # retry stage through proxies that 403 CONNECT, ballooning to minutes
+            # (#46620). 5s connect / 10s read fails fast on unreachable hosts.
+            response = requests.get(OPENROUTER_MODELS_URL, timeout=(5, 10), verify=_resolve_requests_verify())
+            response.raise_for_status()
+            data = response.json()
 
-        cache = {}
-        for model in data.get("data", []):
-            model_id = model.get("id", "")
-            entry = {
-                "context_length": model.get("context_length", 128000),
-                "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
-                "name": model.get("name", model_id),
-                "pricing": model.get("pricing", {}),
-            }
-            _add_model_aliases(cache, model_id, entry)
-            canonical = model.get("canonical_slug", "")
-            if canonical and canonical != model_id:
-                _add_model_aliases(cache, canonical, entry)
+            cache = {}
+            for model in data.get("data", []):
+                model_id = model.get("id", "")
+                entry = {
+                    "context_length": model.get("context_length", 128000),
+                    "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
+                    "name": model.get("name", model_id),
+                    "pricing": model.get("pricing", {}),
+                }
+                _add_model_aliases(cache, model_id, entry)
+                canonical = model.get("canonical_slug", "")
+                if canonical and canonical != model_id:
+                    _add_model_aliases(cache, canonical, entry)
 
-        _model_metadata_cache = cache
-        _model_metadata_cache_time = time.time()
-        _save_model_metadata_disk_cache(cache)
-        logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
-        return cache
+            _model_metadata_cache = cache
+            _model_metadata_cache_time = time.time()
+            _save_model_metadata_disk_cache(cache)
+            logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
+            return cache
 
-    except Exception as e:
-        logger.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
-        if _model_metadata_cache:
-            return _model_metadata_cache
-        disk_cache = _load_model_metadata_disk_cache()
-        if disk_cache:
-            _model_metadata_cache = disk_cache
-            disk_age = _model_metadata_disk_cache_age_seconds()
-            if disk_age is not None:
-                _model_metadata_cache_time = time.time() - min(disk_age, _MODEL_CACHE_TTL)
-            else:
-                _model_metadata_cache_time = time.time() - _MODEL_CACHE_TTL + 1
-            return _model_metadata_cache
-        return {}
+        except _TRANSIENT_FETCH_ERRORS as e:
+            # Network/SSL blip — retry briefly before giving up. A certificate
+            # verification failure is deterministic, so it falls through to the
+            # cache path on the first attempt instead of burning a second request.
+            last_error = e
+            if attempt + 1 < _MODEL_METADATA_FETCH_ATTEMPTS and _is_retryable_fetch_error(e):
+                time.sleep(_MODEL_METADATA_FETCH_BACKOFF * (attempt + 1))
+                continue
+        except Exception as e:
+            last_error = e
+        break
+
+    # Fetch failed (transient retries exhausted, or a non-transient error).
+    # Fall back to cached metadata so a flaky network doesn't degrade the run.
+    # When a cache is available the user still has working metadata, so log at
+    # DEBUG instead of alarming them with a WARNING for a non-problem (#50770).
+    if _model_metadata_cache:
+        logger.debug("Could not refresh model metadata from OpenRouter (%s); using in-memory cache", last_error)
+        return _model_metadata_cache
+    disk_cache = _load_model_metadata_disk_cache()
+    if disk_cache:
+        logger.debug("Could not refresh model metadata from OpenRouter (%s); using disk cache", last_error)
+        _model_metadata_cache = disk_cache
+        disk_age = _model_metadata_disk_cache_age_seconds()
+        if disk_age is not None:
+            _model_metadata_cache_time = time.time() - min(disk_age, _MODEL_CACHE_TTL)
+        else:
+            _model_metadata_cache_time = time.time() - _MODEL_CACHE_TTL + 1
+        return _model_metadata_cache
+    # No cache to fall back on — this genuinely degrades the run, so warn.
+    logger.warning("Failed to fetch model metadata from OpenRouter: %s", last_error)
+    return {}
 
 
 def fetch_endpoint_model_metadata(

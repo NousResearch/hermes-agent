@@ -4687,6 +4687,55 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "Invalid API response" in result["error"]
 
+    def test_plain_string_chat_completion_response_is_wrapped(self, agent):
+        """A plain assistant text string from an OpenAI-compatible gateway
+        should be treated as a successful chat-completions response, not an
+        invalid-response retry.
+        """
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = "ok"
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "ok"
+        assert agent.client.chat.completions.create.call_count == 1
+
+    def test_invalid_response_without_dunder_dict_does_not_mask_error(self, agent):
+        """An invalid response object without ``__dict__`` must not be turned
+        into a secondary ``vars(response)`` TypeError.
+        """
+        self._setup_agent(agent)
+
+        class SlotsOnlyResponse:
+            __slots__ = ("choices", "usage")
+
+            def __init__(self):
+                self.choices = []
+                self.usage = None
+
+        agent.client.chat.completions.create.return_value = SlotsOnlyResponse()
+        from agent import conversation_loop as _conv_loop
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result.get("completed") is False
+        assert result.get("failed") is True
+        assert "Invalid API response" in result["error"]
+        assert "__dict__" not in result["error"]
+
     def test_content_filter_refusal_surfaced_not_retried(self, agent):
         """A model refusal must be surfaced immediately, NOT laundered into
         the empty-response retry loop and reported as "rate limited" / "no

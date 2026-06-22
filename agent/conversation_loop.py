@@ -25,6 +25,7 @@ import ssl
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -1150,6 +1151,30 @@ def run_conversation(
                     # Log response with provider info if available
                     resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
                     logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
+
+                # Some OpenAI-compatible gateways return a plain assistant text
+                # string on the non-streaming chat-completions path instead of
+                # an SDK ChatCompletion object. Wrap it into the minimal shape
+                # the rest of the loop expects so normalization and retry logic
+                # can proceed normally.
+                if agent.api_mode == "chat_completions" and isinstance(response, str):
+                    response = SimpleNamespace(
+                        id="text-response-" + str(uuid.uuid4()),
+                        model=agent.model,
+                        choices=[
+                            SimpleNamespace(
+                                index=0,
+                                message=SimpleNamespace(
+                                    role="assistant",
+                                    content=response,
+                                    tool_calls=None,
+                                    reasoning_content=None,
+                                ),
+                                finish_reason="stop",
+                            )
+                        ],
+                        usage=None,
+                    )
                 
                 # Validate response shape before proceeding
                 response_invalid = False
@@ -1288,7 +1313,10 @@ def run_conversation(
                     # Check for x-openrouter-provider or similar metadata
                     if provider_name == "Unknown" and response:
                         # Log all response attributes for debugging
-                        resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
+                        if hasattr(response, "__dict__"):
+                            resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
+                        else:
+                            resp_attrs = {"type": type(response).__name__, "repr": str(response)[:100]}
                         if agent.verbose_logging:
                             logging.debug(f"Response attributes for invalid response: {resp_attrs}")
                     

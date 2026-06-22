@@ -308,6 +308,20 @@ TOOLSETS = {
         "includes": []
     },
 
+    "feishu_bitable": {
+        "description": "Feishu/Lark Bitable (多维表格) CRUD — list tables, fields, records; search, create, update",
+        "tools": [
+            "feishu_bitable_list_tables", "feishu_bitable_list_fields",
+            "feishu_bitable_list_records", "feishu_bitable_search_records",
+            "feishu_bitable_create_records", "feishu_bitable_update_records",
+            "feishu_bitable_create_table", "feishu_bitable_create_field",
+            "feishu_bitable_delete_field", "feishu_bitable_update_field",
+            "feishu_bitable_list_views", "feishu_bitable_create_view",
+            "feishu_bitable_delete_view",
+        ],
+        "includes": []
+    },
+
     "spotify": {
         "description": "Native Spotify playback, search, playlist, album, and library tools",
         "tools": [
@@ -514,6 +528,19 @@ TOOLSETS = {
             "feishu_drive_list_comment_replies",
             "feishu_drive_reply_comment",
             "feishu_drive_add_comment",
+            "feishu_bitable_list_tables",
+            "feishu_bitable_list_fields",
+            "feishu_bitable_list_records",
+            "feishu_bitable_search_records",
+            "feishu_bitable_create_records",
+            "feishu_bitable_update_records",
+            "feishu_bitable_create_table",
+            "feishu_bitable_create_field",
+            "feishu_bitable_delete_field",
+            "feishu_bitable_update_field",
+            "feishu_bitable_list_views",
+            "feishu_bitable_create_view",
+            "feishu_bitable_delete_view",
         ],
         "includes": []
     },

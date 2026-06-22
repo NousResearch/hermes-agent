@@ -142,6 +142,44 @@ _SECRET_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Same secret headers serialized in JSON form (``"x-api-key": "<value>"``). The
+# bare-header regex above cannot match this shape — the closing quote sits
+# between the name and the colon — and ``_JSON_FIELD_RE``'s key list omits the
+# hyphenated header names, so opaque custom/local-backend keys (no vendor prefix
+# for ``_PREFIX_RE`` to catch) leak verbatim from serialized request dumps. This
+# mirrors the JSON-field redaction shape, so it is applied under the same
+# ``code_file`` gate.
+_SECRET_HEADER_JSON_RE = re.compile(
+    # ``(?:\\.|[^"\\])`` consumes JSON string contents escape-aware, so a value
+    # containing an escaped quote (``"ab\"cd"``) is masked whole rather than
+    # truncated at the embedded quote (which would leave the tail in cleartext).
+    rf'("{_SECRET_HEADER_NAMES}"\s*:\s*")((?:\\.|[^"\\])+)(")',
+    re.IGNORECASE,
+)
+
+# Cookie: / Set-Cookie: headers carry session, auth and CSRF tokens and were
+# previously unhandled. The full cookie payload is masked while the header name
+# is preserved. A ``name=value`` pair is required so plain prose ("the cookie:
+# …") is left untouched.
+_COOKIE_HEADER_RE = re.compile(
+    r"((?:Set-)?Cookie:\s*)(\S+=[^\r\n]+)",
+    re.IGNORECASE,
+)
+
+# The on-disk request/response dump sink serializes headers as JSON, so cookies
+# also appear as ``"Cookie": "<name=value…>"`` — the bare regex above cannot see
+# that shape. A ``name=value`` pair is required so non-header ``"Cookie"`` values
+# are left untouched. JSON-shaped, so applied under the ``code_file`` gate.
+_COOKIE_HEADER_JSON_RE = re.compile(
+    # Escape-aware single-group value match (see _SECRET_HEADER_JSON_RE): the
+    # whole JSON string value of a "Cookie"/"Set-Cookie" key is masked. A single
+    # unambiguous group (no internal "=" split) avoids superlinear backtracking
+    # on malformed/unterminated JSON. A JSON key literally named Cookie is a
+    # strong-enough header signal that the "name=value" requirement is dropped.
+    r'("(?:Set-)?Cookie"\s*:\s*")((?:\\.|[^"\\])*)(")',
+    re.IGNORECASE,
+)
+
 # Telegram bot tokens: bot<digits>:<token> or <digits>:<token>,
 # where token part is restricted to [-A-Za-z0-9_] and length >= 30
 _TELEGRAM_RE = re.compile(
@@ -390,6 +428,21 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
                 return f'{key}: "{_mask_token(value)}"'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
 
+            # Secret headers serialized as JSON ("x-api-key": "<opaque>"). The
+            # bare _SECRET_HEADER_RE below can't see this shape; without this an
+            # opaque custom/local-backend key leaks from on-disk request dumps.
+            text = _SECRET_HEADER_JSON_RE.sub(
+                lambda m: m.group(1) + _mask_token(m.group(2)) + m.group(3),
+                text,
+            )
+
+            # Cookies serialized as JSON ("Cookie": "sid=<secret>…") in the same
+            # request/response dump sink — the bare cookie regex can't see this.
+            text = _COOKIE_HEADER_JSON_RE.sub(
+                lambda m: m.group(1) + _mask_token(m.group(2)) + m.group(3),
+                text,
+            )
+
     # Authorization headers — _AUTH_HEADER_RE matches any scheme after
     # "[Proxy-]Authorization:" case-insensitively, so "uthorization" is the
     # cheapest substring gate that covers every casing without a casefold().
@@ -403,6 +456,18 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # colon-separated, so gate on ":" — the regex itself is the precise filter.
     if ":" in text:
         text = _SECRET_HEADER_RE.sub(
+            lambda m: m.group(1) + _mask_token(m.group(2)),
+            text,
+        )
+
+        # Cookie: / Set-Cookie: header values (session/auth/CSRF tokens). The
+        # whole cookie payload is masked; preserving attribute words like
+        # ``HttpOnly`` is not worth a parser, and a redactor erring toward
+        # over-masking is the safe direction. No casefold-free substring gate:
+        # mixed-case headers (``CoOkie:``) must not bypass a security redactor,
+        # and the IGNORECASE regex is itself the precise filter (the ":" gate
+        # above already scopes the scan).
+        text = _COOKIE_HEADER_RE.sub(
             lambda m: m.group(1) + _mask_token(m.group(2)),
             text,
         )

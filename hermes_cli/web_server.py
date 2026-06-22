@@ -232,7 +232,21 @@ def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
         return app.state.chat_argv_lock
 
 
-app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
+app = FastAPI(
+    title="Hermes Agent",
+    version=__version__,
+    lifespan=_lifespan,
+    # Relocate FastAPI's auto-generated API docs under the auth-gated ``/api/``
+    # prefix. At the default root paths (``/docs``, ``/redoc``,
+    # ``/openapi.json``) they bypass ``auth_middleware`` — which only gates
+    # ``/api/*`` — exposing the interactive API explorer and full schema
+    # unauthenticated on any 0.0.0.0 / reverse-proxied bind. Moving all three
+    # (Swagger UI fetches the schema from ``openapi_url``) puts them behind the
+    # same gate as every other ``/api/*`` route.
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).

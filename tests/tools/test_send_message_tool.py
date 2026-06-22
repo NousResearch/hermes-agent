@@ -319,6 +319,42 @@ class TestSendMessageTool:
             force_document=False,
         )
 
+    def test_email_subject_reaches_transport(self):
+        email_platform = Platform("email")
+        email_cfg = SimpleNamespace(enabled=True, token=None, extra={})
+        config = SimpleNamespace(
+            platforms={email_platform: email_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "email:andy@example.com",
+                        "message": "done",
+                        "subject": "[Hermes][Test] Subject",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            email_platform,
+            email_cfg,
+            "andy@example.com",
+            "done",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+            subject="[Hermes][Test] Subject",
+        )
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()

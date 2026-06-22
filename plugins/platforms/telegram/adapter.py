@@ -2920,13 +2920,14 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
+                continuation_message_ids=tuple(message_ids[1:]) if len(message_ids) > 1 else (),
                 raw_response={
                     "message_ids": message_ids,
                     "requested_thread_id": requested_thread_id,
                     "thread_fallback": used_thread_fallback,
                 },
             )
-            
+
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             err_str = str(e).lower()

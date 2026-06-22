@@ -1625,6 +1625,13 @@ class GatewayStreamConsumer:
                         # Record this (and any continuation fragments from an
                         # oversized first send) for fresh-final cleanup.
                         self._track_preview_ids_from_result(result)
+                        # When send() split content across multiple 4096-char
+                        # chunks (legacy path), treat it like an edit overflow:
+                        # the content was fully delivered so the got_done block
+                        # must not fire a second finalize edit (which would
+                        # re-split into a duplicate chunk).
+                        if getattr(result, "continuation_message_ids", None):
+                            self._last_edit_overflowed = True
                     else:
                         self._edit_supported = False
                     self._already_sent = True

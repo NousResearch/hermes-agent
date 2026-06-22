@@ -356,19 +356,39 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to high-noise chats.
 
-    Telegram is Bob's mobile inbox, so it should receive concise, safe provider
-    failure categories instead of raw HTTP bodies, request IDs, or policy text.
-    Other platforms keep the existing behaviour for now.
+    Telegram: redacts secrets and replaces provider error bodies with short
+    user-facing categories. Telegram is Bob's mobile inbox, so it should
+    receive concise, safe text instead of raw HTTP bodies, request IDs,
+    or policy text.
+
+    Discord and Slack: strip model chain-of-thought (`<think>...</think>` blocks,
+    `Reasoning:` prefixes, etc.) before delivery. Reasoning models
+    (`minimax-m3:cloud`, `sonar-reasoning-pro`, Claude with extended
+    thinking) emit their internal deliberation as part of the final
+    assistant turn; the gateway relays that verbatim by default, which
+    means chat users see the full CoT before the actual answer. The
+    CLI / TUI / Desktop clients have a separate `display.show_reasoning`
+    toggle for users who want to see CoT locally; messaging platforms
+    have no equivalent toggle, so the stripper runs unconditionally for
+    these two surfaces.
+
+    All other platforms: no transformation. Behavior preserved.
     """
     if not text:
         return text
-    if _gateway_platform_value(platform) != "telegram":
-        return text
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
-    if _looks_like_gateway_provider_error(redacted):
-        return _gateway_provider_error_reply(redacted)
-    return redacted
+    platform_value = _gateway_platform_value(platform)
+
+    if platform_value in ("discord", "slack"):
+        return _strip_for_platform(platform_value, text) or text
+
+    if platform_value == "telegram":
+        redacted = _redact_gateway_user_facing_secrets(str(text))
+        if _looks_like_gateway_provider_error(redacted):
+            return _gateway_provider_error_reply(redacted)
+        return redacted
+
+    return text
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
@@ -1671,6 +1691,7 @@ from gateway.session import (
     is_shared_multi_user_session,
 )
 from gateway.delivery import DeliveryRouter
+from gateway.text_sanitize import strip_for_platform as _strip_for_platform
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -9690,16 +9711,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else getattr(self, "_show_reasoning", False)
                 )
             if _show_reasoning_effective and response and not _intentional_silence:
-                last_reasoning = agent_result.get("last_reasoning")
-                if last_reasoning:
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-                    else:
-                        display_reasoning = last_reasoning.strip()
-                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                # Suppress the reasoning prepending for messaging platforms
+                # where chain-of-thought is noise (Discord, Slack).  These
+                # platforms relay text 1:1 to the user; the user has no UI
+                # to collapse the reasoning block, and the actual answer is
+                # buried under a code-fence wall of CoT.
+                #
+                # We do this by *not* setting _show_reasoning_effective for
+                # those platforms, which short-circuits the entire
+                # prepending block.  The CLI / TUI / Desktop clients still
+                # honor display.show_reasoning locally.
+                platform_value = _gateway_platform_value(source.platform)
+                if platform_value in ("discord", "slack"):
+                    pass  # skip prepending
+                else:
+                    last_reasoning = agent_result.get("last_reasoning")
+                    if last_reasoning:
+                        # Collapse long reasoning to keep messages readable
+                        lines = last_reasoning.strip().splitlines()
+                        if len(lines) > 15:
+                            display_reasoning = "\n".join(lines[:15])
+                            display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
+                        else:
+                            display_reasoning = last_reasoning.strip()
+                        response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When

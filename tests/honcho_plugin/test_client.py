@@ -264,6 +264,58 @@ class TestFromGlobalConfig:
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.base_url == "http://root:9000"
 
+    def test_base_url_from_sdk_native_endpoint_block(self, tmp_path):
+        """endpoint.baseUrl (SDK-native format) is read — fixes silent cloud-routing for Claude Desktop users (#43800)."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "workspace": "personal",
+            "endpoint": {"baseUrl": "http://localhost:8500"},
+        }))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://localhost:8500"
+
+    def test_endpoint_base_url_wins_over_top_level_and_env(self, tmp_path):
+        """Resolution order: endpoint.baseUrl > top-level baseUrl/base_url > env vars."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "baseUrl": "http://root:9000",
+            "base_url": "http://root-snake:9000",
+            "endpoint": {"baseUrl": "http://nested:8500"},
+        }))
+
+        with patch.dict(os.environ, {
+            "HONCHO_BASE_URL": "http://env:8000",
+            "HONCHO_ENDPOINT": "http://env-endpoint:8000",
+        }, clear=False):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://nested:8500"
+
+    def test_honcho_endpoint_env_var_fallback(self, tmp_path):
+        """HONCHO_ENDPOINT is accepted as a fallback to HONCHO_BASE_URL (users who set the SDK's native env var name)."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"workspace": "local"}))
+
+        with patch.dict(os.environ, {
+            "HONCHO_BASE_URL": "",
+            "HONCHO_ENDPOINT": "http://localhost:8500",
+        }, clear=False):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://localhost:8500"
+
+    def test_endpoint_block_non_dict_is_ignored(self, tmp_path):
+        """Defensive: a non-dict ``endpoint`` key (e.g. accidentally set to a string) doesn't crash config parsing."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "workspace": "local",
+            "endpoint": "http://malformed:8500",  # not a dict
+        }))
+
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://env:8000"}, clear=False):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        # Falls through to env var, doesn't crash
+        assert config.base_url == "http://env:8000"
+
     def test_timeout_from_config_root(self, tmp_path):
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"timeout": 75}))

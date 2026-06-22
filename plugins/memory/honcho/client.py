@@ -451,10 +451,22 @@ class HonchoClientConfig:
             or raw.get("environment", "production")
         )
 
+        # Resolution order: SDK-native nested form (endpoint.baseUrl) wins
+        # because that's the format Claude Desktop and the Honcho docs write,
+        # and most users arriving from those tools have it set. Top-level
+        # baseUrl / base_url and the env var stay as fallbacks for users
+        # who configured Hermes directly.
+        _endpoint_block = raw.get("endpoint")
+        _native_base_url = (
+            _endpoint_block.get("baseUrl")
+            if isinstance(_endpoint_block, dict) else None
+        )
         base_url = (
-            raw.get("baseUrl")
+            _native_base_url
+            or raw.get("baseUrl")
             or raw.get("base_url")
             or os.environ.get("HONCHO_BASE_URL", "").strip()
+            or os.environ.get("HONCHO_ENDPOINT", "").strip()
             or None
         )
         timeout = _resolve_optional_float(
@@ -826,7 +838,24 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         if resolved_base_url:
             logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", resolved_base_url, config.workspace_id)
         else:
-            logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
+            # resolved_base_url is None at this point only if neither
+            # endpoint.baseUrl, baseUrl, base_url, nor the env vars were set
+            # AND environment=production — which means the SDK will default
+            # to https://api.honcho.dev (the public cloud). Surface that
+            # explicitly so users with self-hosted containers notice if
+            # their config wasn't picked up.
+            _default_target = (
+                "https://api.honcho.dev"
+                if config.environment == "production"
+                else f"https://api.{config.environment}.honcho.dev"
+                if config.environment == "local"
+                else "SDK default (environment=%s)" % config.environment
+            )
+            logger.info(
+                "Initializing Honcho client (host: %s, workspace: %s, "
+                "base_url unset — will default to %s)",
+                config.host, config.workspace_id, _default_target,
+            )
 
         # Local Honcho instances don't require an API key, but the SDK
         # expects a non-empty string.  Use a placeholder for local URLs.

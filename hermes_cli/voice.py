@@ -219,6 +219,7 @@ from tools.voice_mode import (
     play_audio_file,
     transcribe_recording,
 )
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +252,7 @@ def _beeps_enabled() -> bool:
 
         voice_cfg = load_config().get("voice", {})
         if isinstance(voice_cfg, dict):
-            return bool(voice_cfg.get("beep_enabled", True))
+            return is_truthy_value(voice_cfg.get("beep_enabled"), default=True)
     except Exception:
         pass
     return True

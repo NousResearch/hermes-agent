@@ -374,15 +374,19 @@ def _compute_tool_definitions(
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
                 tools_to_include.update(resolved)
+                logger.debug("Enabled toolset '%s': %s", toolset_name, ", ".join(resolved) if resolved else "no tools")
                 if not quiet_mode:
                     print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.update(legacy_tools)
+                logger.debug("Enabled legacy toolset '%s': %s", toolset_name, ", ".join(legacy_tools))
                 if not quiet_mode:
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif not quiet_mode:
-                print(f"⚠️  Unknown toolset: {toolset_name}")
+            else:
+                logger.debug("Unknown toolset: %s", toolset_name)
+                if not quiet_mode:
+                    print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
         # Default: start with everything
         from toolsets import get_all_toolsets
@@ -419,15 +423,19 @@ def _compute_tool_definitions(
                 else:
                     resolved = resolve_toolset(toolset_name)
                     tools_to_include.difference_update(resolved)
+                logger.debug("Disabled toolset '%s': %s", toolset_name, ", ".join(resolved) if resolved else "no tools")
                 if not quiet_mode:
                     print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif toolset_name in _LEGACY_TOOLSET_MAP:
                 legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
                 tools_to_include.difference_update(legacy_tools)
+                logger.debug("Disabled legacy toolset '%s': %s", toolset_name, ", ".join(legacy_tools))
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif not quiet_mode:
-                print(f"⚠️  Unknown toolset: {toolset_name}")
+            else:
+                logger.debug("Unknown toolset: %s", toolset_name)
+                if not quiet_mode:
+                    print(f"⚠️  Unknown toolset: {toolset_name}")
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
@@ -506,11 +514,14 @@ def _compute_tool_definitions(
                     }
                     break
 
-    if not quiet_mode:
-        if filtered_tools:
-            tool_names = [t["function"]["name"] for t in filtered_tools]
+    if filtered_tools:
+        tool_names = [t["function"]["name"] for t in filtered_tools]
+        logger.debug("Final tool selection (%d tools): %s", len(filtered_tools), ", ".join(tool_names))
+        if not quiet_mode:
             print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
-        else:
+    else:
+        logger.debug("No tools selected (all filtered out or unavailable)")
+        if not quiet_mode:
             print("🛠️  No tools selected (all filtered out or unavailable)")
 
     global _last_resolved_tool_names
@@ -548,12 +559,18 @@ def _compute_tool_definitions(
                 context_length=context_length,
                 config=ts_cfg,
             )
-            if assembly.activated and not quiet_mode:
-                print(
-                    f"🔎 Tool Search: {assembly.deferred_count} MCP/plugin tools deferred "
-                    f"(~{assembly.deferred_tokens} tokens) behind tool_search/describe/call. "
-                    f"Threshold ~{assembly.threshold_tokens} tokens."
+            if assembly.activated:
+                logger.debug(
+                    "Tool Search: %d MCP/plugin tools deferred (~%d tokens) behind "
+                    "tool_search/describe/call. Threshold ~%d tokens.",
+                    assembly.deferred_count, assembly.deferred_tokens, assembly.threshold_tokens,
                 )
+                if not quiet_mode:
+                    print(
+                        f"🔎 Tool Search: {assembly.deferred_count} MCP/plugin tools deferred "
+                        f"(~{assembly.deferred_tokens} tokens) behind tool_search/describe/call. "
+                        f"Threshold ~{assembly.threshold_tokens} tokens."
+                    )
             filtered_tools = assembly.tool_defs
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)

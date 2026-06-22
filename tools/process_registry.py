@@ -97,7 +97,8 @@ class ProcessSession:
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
     env_ref: Any = None                         # Reference to the environment object
     cwd: Optional[str] = None                   # Working directory
-    started_at: float = 0.0                     # time.time() of spawn
+    started_at: float = 0.0                     # time.time() of spawn (wall clock)
+    host_start_time: Optional[int] = None       # kernel start ticks (/proc/<pid>/stat f22) — PID-reuse guard
     exited: bool = False                        # Whether the process has finished
     exit_code: Optional[int] = None             # Exit code (None if still running)
     completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
@@ -428,12 +429,47 @@ class ProcessRegistry:
         from gateway.status import _pid_exists
         return _pid_exists(pid)
 
+    @staticmethod
+    def _safe_host_start_time(pid: Optional[int]) -> Optional[int]:
+        """Kernel start ticks for a host PID, or None when unavailable."""
+        if not pid:
+            return None
+        try:
+            from gateway.status import get_process_start_time
+            return get_process_start_time(pid)
+        except Exception:
+            return None
+
+    @classmethod
+    def _host_pid_is_ours(cls, pid: Optional[int], expected_start: Optional[int]) -> bool:
+        """True only if ``pid`` is alive AND still the process we spawned.
+
+        The kernel recycles PID/PGID numbers once a process exits and is reaped,
+        so a stored PID can later name an *unrelated* process — observed in the
+        wild as a recycled number landing on a desktop browser's session leader,
+        which our tree-kill then SIGTERMs (Firefox dying at irregular intervals).
+        We compare the kernel start time captured at spawn against the live one;
+        a mismatch means the number was recycled and must never be signalled.
+
+        When no baseline was captured (legacy checkpoints, or platforms without
+        ``/proc``) we degrade to a bare liveness check rather than refusing to
+        act, preserving prior best-effort behaviour.
+        """
+        if not cls._is_host_pid_alive(pid):
+            return False
+        if expected_start is None:
+            return True
+        return cls._safe_host_start_time(pid) == expected_start
+
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
         """Update recovered host-PID sessions when the underlying process has exited."""
         if session is None or session.exited or not session.detached or session.pid_scope != "host":
             return session
 
-        if self._is_host_pid_alive(session.pid):
+        # Identity-aware liveness: a recycled PID (alive but a different process
+        # than we spawned) must be treated as "our process exited", so it is
+        # moved to finished and can never be tree-killed by a later kill().
+        if self._host_pid_is_ours(session.pid, session.host_start_time):
             return session
 
         with session._lock:
@@ -448,18 +484,61 @@ class ProcessRegistry:
         return session
 
     @staticmethod
-    def _terminate_host_pid(pid: int) -> None:
+    def _proc_alive(proc) -> bool:
+        """True if a psutil.Process is running and not a zombie.
+
+        A zombie is already dead (just unreaped), so there's nothing to SIGKILL.
+        """
+        try:
+            import psutil
+            if not proc.is_running():
+                return False
+            return proc.status() != psutil.STATUS_ZOMBIE
+        except Exception:
+            return False
+
+    @staticmethod
+    def _daemon_term_grace_seconds() -> float:
+        """Grace window (s) between SIGTERM and escalated SIGKILL.
+
+        Read from ``terminal.daemon_term_grace_seconds`` in config.yaml; floored
+        at 0 (0 disables escalation). Falls back to the DEFAULT_CONFIG value if
+        config is unreadable, so callers always get a sane number.
+        """
+        try:
+            from hermes_cli.config import read_raw_config, cfg_get, DEFAULT_CONFIG
+            cfg = read_raw_config()
+            val = cfg_get(cfg, "terminal", "daemon_term_grace_seconds")
+            if val is None:
+                val = DEFAULT_CONFIG["terminal"]["daemon_term_grace_seconds"]
+            return max(float(val), 0.0)
+        except Exception:
+            return 2.0
+
+    @classmethod
+    def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> None:
         """Terminate a host-visible PID and its descendants.
+
+        ``expected_start`` is the kernel start time captured when we spawned the
+        process. When provided, it is re-validated against the live PID before
+        any signal is sent; a mismatch (or a dead PID) means the number was
+        recycled onto an unrelated process and we refuse to touch it, so a stale
+        background-session PID can never tree-kill a browser or other stranger.
 
         POSIX: walks the process tree with ``psutil`` and SIGTERMs
         children before the parent so subprocess trees (e.g. Chromium
         renderers/GPU helpers spawned by an ``agent-browser`` daemon)
-        don't get reparented to init and survive cleanup.
+        don't get reparented to init and survive cleanup.  After a bounded
+        grace window (``terminal.daemon_term_grace_seconds``) any tree member
+        that ignored SIGTERM — a daemon stalled in its signal handler — is
+        escalated to SIGKILL so it can't leak indefinitely.  Set the grace to
+        0 to disable escalation (SIGTERM only).
 
         Windows: shells out to ``taskkill /PID <pid> /T /F``. This is
         the documented Microsoft primitive for tree-kill and matches the
-        existing convention in ``gateway.status.terminate_pid``. We can't
-        reuse the POSIX psutil path on Windows because:
+        existing convention in ``gateway.status.terminate_pid``.  ``/F`` is
+        already a hard kill, so no separate escalation step is needed.  We
+        can't reuse the POSIX psutil path on Windows because:
 
           1. Windows doesn't maintain a Unix-style process tree —
              ``psutil.Process.children(recursive=True)`` walks PPID
@@ -479,6 +558,15 @@ class ProcessRegistry:
         POSIX and a missing ``taskkill.exe`` on Windows (effectively
         unreachable on real Windows installs, but cheap insurance).
         """
+        if expected_start is not None and not cls._host_pid_is_ours(pid, expected_start):
+            # PID was recycled (start time changed) or is gone — never signal a
+            # stranger. A leaked orphan is strictly preferable to killing e.g.
+            # a browser whose session leader reused this dead session's PID.
+            logger.warning(
+                "Refusing to terminate host pid %d: start-time mismatch — "
+                "PID was recycled onto an unrelated process.", pid,
+            )
+            return
         if _IS_WINDOWS:
             try:
                 subprocess.run(
@@ -499,18 +587,60 @@ class ProcessRegistry:
         import psutil
         try:
             parent = psutil.Process(pid)
-            for child in parent.children(recursive=True):
-                try:
-                    child.terminate()
-                except psutil.NoSuchProcess:
-                    pass
-            parent.terminate()
         except psutil.NoSuchProcess:
             return
         except (OSError, PermissionError):
             try:
                 os.kill(pid, signal.SIGTERM)
             except (OSError, ProcessLookupError, PermissionError):
+                pass
+            return
+
+        # Snapshot the whole tree (children before parent) and SIGTERM each.
+        try:
+            targets = parent.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            targets = []
+        targets.append(parent)
+
+        for proc in targets:
+            try:
+                proc.terminate()
+            except psutil.NoSuchProcess:
+                pass
+            except (psutil.AccessDenied, OSError):
+                pass
+
+        # Escalate to SIGKILL for anything that ignored SIGTERM within the
+        # grace window — a daemon stalled in its signal handler would otherwise
+        # leak indefinitely.
+        grace = cls._daemon_term_grace_seconds()
+        if grace <= 0:
+            return
+        # Sleep out the grace window, then independently re-probe every target
+        # and SIGKILL any survivor.  We deliberately do NOT trust
+        # ``psutil.wait_procs``'s gone/alive partition here: it reaps via
+        # ``Process.wait()`` and can mis-partition when a target transitions
+        # through a zombie state or when reaping is racy across a parent/child
+        # tree, which left survivors un-killed.  A direct liveness re-probe is
+        # deterministic.
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            if not any(cls._proc_alive(_p) for _p in targets):
+                break
+            time.sleep(0.05)
+        for proc in targets:
+            try:
+                if not cls._proc_alive(proc):
+                    continue
+                proc.kill()  # SIGKILL on POSIX
+                logger.info(
+                    "Escalated to SIGKILL for pid %d (ignored SIGTERM within "
+                    "%.1fs grace)", proc.pid, grace,
+                )
+            except psutil.NoSuchProcess:
+                pass
+            except (psutil.AccessDenied, OSError):
                 pass
 
     # ----- Spawn -----
@@ -573,6 +703,7 @@ class ProcessRegistry:
                     dimensions=(30, 120),
                 )
                 session.pid = pty_proc.pid
+                session.host_start_time = self._safe_host_start_time(session.pid)
                 # Store the pty handle on the session for read/write
                 session._pty = pty_proc
 
@@ -625,6 +756,7 @@ class ProcessRegistry:
 
         session.process = proc
         session.pid = proc.pid
+        session.host_start_time = self._safe_host_start_time(session.pid)
 
         try:
             # Start output reader thread
@@ -1239,7 +1371,10 @@ class ProcessRegistry:
                 # Non-local -- kill inside sandbox
                 session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
             elif session.detached and session.pid_scope == "host" and session.pid:
-                if not self._is_host_pid_alive(session.pid):
+                # Identity check, not bare liveness: if the PID is gone OR was
+                # recycled onto an unrelated process, treat our process as
+                # exited and never tree-kill the stranger.
+                if not self._host_pid_is_ours(session.pid, session.host_start_time):
                     with session._lock:
                         session.exited = True
                         session.exit_code = None
@@ -1248,7 +1383,7 @@ class ProcessRegistry:
                         "status": "already_exited",
                         "exit_code": session.exit_code,
                     }
-                self._terminate_host_pid(session.pid)
+                self._terminate_host_pid(session.pid, session.host_start_time)
             else:
                 return {
                     "status": "error",
@@ -1461,11 +1596,17 @@ class ProcessRegistry:
                 entries = []
                 for s in self._running.values():
                     if not s.exited:
+                        # Lazily backfill the kernel start time for host PIDs so
+                        # recovery after restart can detect PID recycling even
+                        # for sessions spawned before this field existed.
+                        if s.host_start_time is None and s.pid_scope == "host" and s.pid:
+                            s.host_start_time = self._safe_host_start_time(s.pid)
                         entries.append({
                             "session_id": s.id,
                             "command": s.command,
                             "pid": s.pid,
                             "pid_scope": s.pid_scope,
+                            "host_start_time": s.host_start_time,
                             "cwd": s.cwd,
                             "started_at": s.started_at,
                             "task_id": s.task_id,
@@ -1520,49 +1661,63 @@ class ProcessRegistry:
                 )
                 continue
 
-            # Check if PID is still alive
-            alive = self._is_host_pid_alive(pid)
+            # The PID must be alive AND still the same process we spawned. A
+            # bare liveness check is unsafe: across a restart (especially a
+            # reboot or long uptime) the kernel may have recycled this number
+            # onto an unrelated process — adopting it would let a later kill or
+            # watcher tree-kill a stranger (e.g. a browser). Re-validate the
+            # kernel start time recorded in the checkpoint.
+            recorded_start = entry.get("host_start_time")
+            if not self._host_pid_is_ours(pid, recorded_start):
+                if self._is_host_pid_alive(pid):
+                    logger.info(
+                        "Not recovering session %s: pid %d is alive but its "
+                        "start time no longer matches — PID was recycled onto "
+                        "an unrelated process; refusing to adopt it.",
+                        entry.get("session_id", "?"), pid,
+                    )
+                continue
 
-            if alive:
-                session = ProcessSession(
-                    id=entry["session_id"],
-                    command=entry.get("command", "unknown"),
-                    task_id=entry.get("task_id", ""),
-                    session_key=entry.get("session_key", ""),
-                    pid=pid,
-                    pid_scope=pid_scope,
-                    cwd=entry.get("cwd"),
-                    started_at=entry.get("started_at", time.time()),
-                    detached=True,  # Can't read output, but can report status + kill
-                    watcher_platform=entry.get("watcher_platform", ""),
-                    watcher_chat_id=entry.get("watcher_chat_id", ""),
-                    watcher_user_id=entry.get("watcher_user_id", ""),
-                    watcher_user_name=entry.get("watcher_user_name", ""),
-                    watcher_thread_id=entry.get("watcher_thread_id", ""),
-                    watcher_message_id=entry.get("watcher_message_id", ""),
-                    watcher_interval=entry.get("watcher_interval", 0),
-                    notify_on_complete=entry.get("notify_on_complete", False),
-                    watch_patterns=entry.get("watch_patterns", []),
-                )
-                with self._lock:
-                    self._running[session.id] = session
-                recovered += 1
-                logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
+            session = ProcessSession(
+                id=entry["session_id"],
+                command=entry.get("command", "unknown"),
+                task_id=entry.get("task_id", ""),
+                session_key=entry.get("session_key", ""),
+                pid=pid,
+                host_start_time=recorded_start,
+                pid_scope=pid_scope,
+                cwd=entry.get("cwd"),
+                started_at=entry.get("started_at", time.time()),
+                detached=True,  # Can't read output, but can report status + kill
+                watcher_platform=entry.get("watcher_platform", ""),
+                watcher_chat_id=entry.get("watcher_chat_id", ""),
+                watcher_user_id=entry.get("watcher_user_id", ""),
+                watcher_user_name=entry.get("watcher_user_name", ""),
+                watcher_thread_id=entry.get("watcher_thread_id", ""),
+                watcher_message_id=entry.get("watcher_message_id", ""),
+                watcher_interval=entry.get("watcher_interval", 0),
+                notify_on_complete=entry.get("notify_on_complete", False),
+                watch_patterns=entry.get("watch_patterns", []),
+            )
+            with self._lock:
+                self._running[session.id] = session
+            recovered += 1
+            logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
 
-                # Re-enqueue watcher so gateway can resume notifications
-                if session.watcher_interval > 0:
-                    self.pending_watchers.append({
-                        "session_id": session.id,
-                        "check_interval": session.watcher_interval,
-                        "session_key": session.session_key,
-                        "platform": session.watcher_platform,
-                        "chat_id": session.watcher_chat_id,
-                        "user_id": session.watcher_user_id,
-                        "user_name": session.watcher_user_name,
-                        "thread_id": session.watcher_thread_id,
-                        "message_id": session.watcher_message_id,
-                        "notify_on_complete": session.notify_on_complete,
-                    })
+            # Re-enqueue watcher so gateway can resume notifications
+            if session.watcher_interval > 0:
+                self.pending_watchers.append({
+                    "session_id": session.id,
+                    "check_interval": session.watcher_interval,
+                    "session_key": session.session_key,
+                    "platform": session.watcher_platform,
+                    "chat_id": session.watcher_chat_id,
+                    "user_id": session.watcher_user_id,
+                    "user_name": session.watcher_user_name,
+                    "thread_id": session.watcher_thread_id,
+                    "message_id": session.watcher_message_id,
+                    "notify_on_complete": session.notify_on_complete,
+                })
 
         self._write_checkpoint()
 

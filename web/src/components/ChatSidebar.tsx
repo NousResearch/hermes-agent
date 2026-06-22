@@ -34,6 +34,7 @@ import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
+import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
@@ -44,6 +45,7 @@ interface SessionInfo {
   model?: string;
   provider?: string;
   credential_warning?: string;
+  title?: string;
 }
 
 interface RpcEnvelope {
@@ -78,6 +80,7 @@ interface ChatSidebarProps {
   profile?: string;
   className?: string;
   onDashboardNewSessionRequest?: () => void;
+  onSessionTitleChange?: (title: string | null) => void;
   /**
    * Render the tool-call activity card. Defaults to true. The dashboard Chat
    * tab sets this false so the right rail stays a thin model + session-list
@@ -91,6 +94,7 @@ export function ChatSidebar({
   profile,
   className,
   onDashboardNewSessionRequest,
+  onSessionTitleChange,
   showTools = true,
 }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
@@ -266,91 +270,96 @@ export function ChatSidebar({
       });
 
       ws.addEventListener("message", (ev) => {
-      let frame: RpcEnvelope;
+        let frame: RpcEnvelope;
 
-      try {
-        frame = JSON.parse(ev.data);
-      } catch {
-        return;
-      }
-
-      if (frame.method !== "event" || !frame.params) {
-        return;
-      }
-
-      const { type, payload } = frame.params;
-
-      if (type === "dashboard.new_session_requested") {
-        onDashboardNewSessionRequest?.();
-      } else if (type === "tool.start") {
-        const p = payload as
-          | { tool_id?: string; name?: string; context?: string }
-          | undefined;
-        const toolId = p?.tool_id;
-
-        if (!toolId) {
+        try {
+          frame = JSON.parse(ev.data);
+        } catch {
           return;
         }
 
-        setTools((prev) =>
-          [
-            ...prev,
-            {
-              kind: "tool" as const,
-              id: `tool-${toolId}-${prev.length}`,
-              tool_id: toolId,
-              name: p?.name ?? "tool",
-              context: p?.context,
-              status: "running" as const,
-              startedAt: Date.now(),
-            },
-          ].slice(-TOOL_LIMIT),
-        );
-      } else if (type === "tool.progress") {
-        const p = payload as
-          | { name?: string; preview?: string }
-          | undefined;
-
-        if (!p?.name || !p.preview) {
+        if (frame.method !== "event" || !frame.params) {
           return;
         }
 
-        setTools((prev) =>
-          prev.map((t) =>
-            t.status === "running" && t.name === p.name
-              ? { ...t, preview: p.preview }
-              : t,
-          ),
-        );
-      } else if (type === "tool.complete") {
-        const p = payload as
-          | {
-              tool_id?: string;
-              summary?: string;
-              error?: string;
-              inline_diff?: string;
-            }
-          | undefined;
+        const { type, payload } = frame.params;
 
-        if (!p?.tool_id) {
-          return;
+        if (type === "session.info") {
+          const title = titleFromSessionInfoPayload(payload);
+          if (title !== undefined) {
+            onSessionTitleChange?.(title);
+          }
+        } else if (type === "dashboard.new_session_requested") {
+          onDashboardNewSessionRequest?.();
+        } else if (type === "tool.start") {
+          const p = payload as
+            | { tool_id?: string; name?: string; context?: string }
+            | undefined;
+          const toolId = p?.tool_id;
+
+          if (!toolId) {
+            return;
+          }
+
+          setTools((prev) =>
+            [
+              ...prev,
+              {
+                kind: "tool" as const,
+                id: `tool-${toolId}-${prev.length}`,
+                tool_id: toolId,
+                name: p?.name ?? "tool",
+                context: p?.context,
+                status: "running" as const,
+                startedAt: Date.now(),
+              },
+            ].slice(-TOOL_LIMIT),
+          );
+        } else if (type === "tool.progress") {
+          const p = payload as
+            | { name?: string; preview?: string }
+            | undefined;
+
+          if (!p?.name || !p.preview) {
+            return;
+          }
+
+          setTools((prev) =>
+            prev.map((t) =>
+              t.status === "running" && t.name === p.name
+                ? { ...t, preview: p.preview }
+                : t,
+            ),
+          );
+        } else if (type === "tool.complete") {
+          const p = payload as
+            | {
+                tool_id?: string;
+                summary?: string;
+                error?: string;
+                inline_diff?: string;
+              }
+            | undefined;
+
+          if (!p?.tool_id) {
+            return;
+          }
+
+          setTools((prev) =>
+            prev.map((t) =>
+              t.tool_id === p.tool_id
+                ? {
+                    ...t,
+                    status: p.error ? "error" : "done",
+                    summary: p.summary,
+                    error: p.error,
+                    inline_diff: p.inline_diff,
+                    completedAt: Date.now(),
+                  }
+                : t,
+            ),
+          );
         }
-
-        setTools((prev) =>
-          prev.map((t) =>
-            t.tool_id === p.tool_id
-              ? {
-                  ...t,
-                  status: p.error ? "error" : "done",
-                  summary: p.summary,
-                  error: p.error,
-                  inline_diff: p.inline_diff,
-                  completedAt: Date.now(),
-                }
-              : t,
-          ),
-        );
-      }
       });
     })();
 
@@ -358,7 +367,7 @@ export function ChatSidebar({
       unmounting = true;
       ws?.close();
     };
-  }, [channel, onDashboardNewSessionRequest, version]);
+  }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
   // (a profile/channel switch bumps `version`).

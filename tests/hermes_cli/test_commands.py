@@ -1144,6 +1144,8 @@ class TestTelegramMenuCommands:
         for name in (
             "debug",
             "restart",
+            "reload_mcp",
+            "reload_skills",
             "update",
             "verbose",
             "commands",

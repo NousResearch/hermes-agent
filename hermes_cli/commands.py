@@ -537,6 +537,8 @@ _TELEGRAM_MENU_PRIORITY = (
     # Maintenance / diagnostics — the ones that prompted this priority list.
     "debug",
     "restart",
+    "reload-mcp",
+    "reload-skills",
     "update",
     "verbose",
     "commands",

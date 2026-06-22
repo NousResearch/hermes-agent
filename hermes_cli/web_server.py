@@ -6049,7 +6049,7 @@ async def disconnect_oauth_provider(
 #          → returns { session_id, flow: "pkce", auth_url }
 #     2. UI opens auth_url in a new tab. User authorizes, copies code.
 #     3. POST /api/providers/oauth/anthropic/submit { session_id, code }
-#          → server exchanges (code + verifier) → tokens at console.anthropic.com
+#          → server exchanges (code + verifier) → tokens at platform.claude.com
 #          → persists to ~/.hermes/.anthropic_oauth.json AND credential pool
 #          → returns { ok: true, status: "approved" }
 #

@@ -1,6 +1,7 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
 import asyncio
+from contextlib import contextmanager
 import os
 import json
 import shutil
@@ -2823,6 +2824,92 @@ class TestConfigRoundTrip:
             elif expected == "list" and not isinstance(val, list):
                 mismatches.append(f"{key}: expected list, got {type(val).__name__}")
         assert not mismatches, f"Type mismatches:\n" + "\n".join(mismatches)
+
+
+# ---------------------------------------------------------------------------
+# Sticky active-profile settings routing
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardStickyActiveProfileSettings:
+    """Settings routes should follow the sticky active profile by default."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    @staticmethod
+    def _activate_profile(name: str) -> Path:
+        from hermes_cli import profiles as profiles_mod
+
+        home = profiles_mod.get_profile_dir(name)
+        home.mkdir(parents=True, exist_ok=True)
+        profiles_mod.set_active_profile(name)
+        return home
+
+    @staticmethod
+    @contextmanager
+    def _scoped_home(home: Path):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        token = set_hermes_home_override(str(home))
+        try:
+            yield
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_get_env_vars_defaults_to_sticky_active_profile(self):
+        from hermes_cli.config import save_env_value
+
+        profile_home = self._activate_profile("discord-bot")
+        with self._scoped_home(profile_home):
+            save_env_value("DISCORD_BOT_TOKEN", "profile-secret-ABCDE")
+
+        data = self.client.get("/api/env").json()
+        assert data["DISCORD_BOT_TOKEN"]["is_set"] is True
+        assert data["DISCORD_BOT_TOKEN"]["redacted_value"] == redact_key("profile-secret-ABCDE")
+
+    def test_put_env_var_without_profile_writes_only_sticky_active_profile(self):
+        from hermes_cli.config import load_env
+
+        profile_home = self._activate_profile("discord-bot")
+        resp = self.client.put(
+            "/api/env",
+            json={"key": "DISCORD_BOT_TOKEN", "value": "sticky-profile-token"},
+        )
+        assert resp.status_code == 200
+
+        assert "DISCORD_BOT_TOKEN" not in load_env()
+        with self._scoped_home(profile_home):
+            assert load_env()["DISCORD_BOT_TOKEN"] == "sticky-profile-token"
+
+    def test_put_config_without_profile_writes_only_sticky_active_profile(self):
+        from hermes_cli.config import load_config, save_config
+
+        def model_name(raw):
+            return raw if isinstance(raw, str) else raw.get("default")
+
+        profile_home = self._activate_profile("discord-bot")
+        save_config({"model": "default/model"})
+        with self._scoped_home(profile_home):
+            save_config({"model": "profile/old"})
+
+        resp = self.client.put("/api/config", json={"config": {"model": "profile/new"}})
+        assert resp.status_code == 200
+
+        default_model = model_name(load_config().get("model"))
+        assert default_model == "default/model"
+
+        with self._scoped_home(profile_home):
+            profile_model = model_name(load_config().get("model"))
+        assert profile_model == "profile/new"
 
 
 # ---------------------------------------------------------------------------

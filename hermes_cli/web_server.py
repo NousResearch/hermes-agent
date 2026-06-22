@@ -3455,7 +3455,7 @@ async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpd
 
 @app.get("/api/config")
 async def get_config(profile: Optional[str] = None):
-    with _profile_scope(profile):
+    with _profile_scope(_effective_dashboard_settings_profile(profile)):
         config = _normalize_config_for_web(load_config())
     # Strip internal keys that the frontend shouldn't see or send back
     return {k: v for k, v in config.items() if not k.startswith("_")}
@@ -3490,7 +3490,7 @@ def get_model_info(profile: Optional[str] = None):
     Also returns model capabilities (vision, reasoning, tools) when available.
     """
     try:
-        with _profile_scope(profile):
+        with _profile_scope(_effective_dashboard_settings_profile(profile)):
             cfg = load_config()
         model_cfg = cfg.get("model", "")
 
@@ -3614,7 +3614,7 @@ def get_model_options(profile: Optional[str] = None, refresh: bool = False):
         # come back as skeleton rows carrying `authenticated=False` +
         # `auth_type`/`key_env`/`warning` so the GUI can render a setup
         # affordance instead of hiding the provider entirely.
-        with _profile_scope(profile):
+        with _profile_scope(_effective_dashboard_settings_profile(profile)):
             return build_models_payload(
                 load_picker_context(),
                 include_unconfigured=True,
@@ -3721,7 +3721,7 @@ def get_auxiliary_models(profile: Optional[str] = None):
     selected profile's (read/write asymmetry).
     """
     try:
-        with _profile_scope(profile):
+        with _profile_scope(_effective_dashboard_settings_profile(profile)):
             cfg = load_config()
         aux_cfg = cfg.get("auxiliary", {})
         if not isinstance(aux_cfg, dict):
@@ -3802,7 +3802,9 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                 }
 
         def _apply_assignment():
-            with _profile_scope(body.profile or profile):
+            with _profile_scope(
+                _effective_dashboard_settings_profile(body.profile or profile)
+            ):
                 return _apply_model_assignment_sync(
                     scope, provider, model, task, base_url, api_key
                 )
@@ -4033,7 +4035,9 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 @app.put("/api/config")
 async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
     try:
-        with _profile_scope(body.profile or profile):
+        with _profile_scope(
+            _effective_dashboard_settings_profile(body.profile or profile)
+        ):
             save_config(_denormalize_config_from_web(body.config))
         return {"ok": True}
     except HTTPException:
@@ -4133,7 +4137,7 @@ def _catalog_provider_env_metadata() -> dict:
 
 @app.get("/api/env")
 async def get_env_vars(profile: Optional[str] = None):
-    with _profile_scope(profile):
+    with _profile_scope(_effective_dashboard_settings_profile(profile)):
         env_on_disk = load_env()
     channel_keys = _channel_managed_env_keys()
     catalog_meta = _catalog_provider_env_metadata()
@@ -4178,7 +4182,9 @@ async def get_env_vars(profile: Optional[str] = None):
 @app.put("/api/env")
 async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     try:
-        with _profile_scope(body.profile or profile):
+        with _profile_scope(
+            _effective_dashboard_settings_profile(body.profile or profile)
+        ):
             save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
     except ValueError as exc:
@@ -4297,7 +4303,9 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
 @app.delete("/api/env")
 async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     try:
-        with _profile_scope(body.profile or profile):
+        with _profile_scope(
+            _effective_dashboard_settings_profile(body.profile or profile)
+        ):
             removed = remove_env_value(body.key)
         if not removed:
             raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
@@ -4337,7 +4345,9 @@ async def reveal_env_var(
     _reveal_timestamps.append(now)
 
     # --- Reveal ---
-    with _profile_scope(body.profile or profile):
+    with _profile_scope(
+        _effective_dashboard_settings_profile(body.profile or profile)
+    ):
         env_on_disk = load_env()
     value = env_on_disk.get(body.key)
     if value is None:
@@ -10162,6 +10172,17 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
 _SKILLS_PROFILE_LOCK = threading.RLock()
 
 
+def _effective_dashboard_settings_profile(profile: Optional[str]) -> str:
+    """Return the profile settings routes should read/write by default."""
+    requested = (profile or "").strip()
+    if requested:
+        return requested
+
+    from hermes_cli.profiles import get_active_profile
+
+    return get_active_profile()
+
+
 @contextmanager
 def _profile_scope(profile: Optional[str]):
     """Scope config + skill-directory resolution to ``profile`` for one request.
@@ -10673,7 +10694,7 @@ async def get_config_raw(profile: Optional[str] = None):
     ``config_path`` is machine-global and always reports the dashboard
     process's own profile, which is wrong under the global profile switcher.
     """
-    with _profile_scope(profile):
+    with _profile_scope(_effective_dashboard_settings_profile(profile)):
         path = get_config_path()
     if not path.exists():
         return {"yaml": "", "path": str(path)}
@@ -10686,7 +10707,9 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
         parsed = yaml.safe_load(body.yaml_text)
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
-        with _profile_scope(body.profile or profile):
+        with _profile_scope(
+            _effective_dashboard_settings_profile(body.profile or profile)
+        ):
             save_config(parsed)
         return {"ok": True}
     except yaml.YAMLError as e:

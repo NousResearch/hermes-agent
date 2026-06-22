@@ -48,11 +48,58 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+_canonical_removable_device() {
+  local input="$1"
+  local canonical=""
+  canonical="$(readlink -f -- "$input" 2>/dev/null || true)"
+
+  if [[ -z "$canonical" || "$canonical" != /dev/* ]]; then
+    echo "❌  Target must resolve to a canonical /dev/... block device: $input" >&2
+    return 1
+  fi
+  if [[ ! -b "$canonical" ]]; then
+    echo "❌  Not a block device: $canonical" >&2
+    return 1
+  fi
+
+  local device_type=""
+  device_type="$(lsblk -dn -o TYPE -- "$canonical" 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ "$device_type" != "disk" ]]; then
+    echo "❌  Target must be a whole removable disk, not a partition or mapper: $canonical" >&2
+    return 1
+  fi
+
+  local base="$(basename "$canonical")"
+  local removable_path="/sys/class/block/${base}/removable"
+  local removable=""
+  if [[ -r "$removable_path" ]]; then
+    removable="$(tr -d '[:space:]' < "$removable_path")"
+  fi
+  if [[ "$removable" != "1" ]]; then
+    echo "❌  Refusing to provision: Linux does not verify ${canonical} as removable media." >&2
+    echo "    Expected ${removable_path} to contain 1; got '${removable:-unreadable}'." >&2
+    echo "    Root/operator approval is not enough without verifiable removable-media metadata." >&2
+    return 1
+  fi
+
+  printf '%s\n' "$canonical"
+}
+
+_partition_path() {
+  local disk="$1"
+  local number="$2"
+  if [[ "$disk" =~ [0-9]$ ]]; then
+    printf '%sp%s\n' "$disk" "$number"
+  else
+    printf '%s%s\n' "$disk" "$number"
+  fi
+}
+
 [[ -z "$DEVICE" ]]    && { echo "❌  --usb required";   exit 1; }
 [[ $EUID -ne 0 ]]     && { echo "❌  Run as root";      exit 1; }
-[[ ! -b "$DEVICE" ]]  && { echo "❌  Not a block device: $DEVICE"; exit 1; }
+DEVICE="$(_canonical_removable_device "$DEVICE")" || exit 1
 
-PROVISION_PART="${DEVICE}3"
+PROVISION_PART="$(_partition_path "$DEVICE" 3)"
 if [[ ! -b "$PROVISION_PART" ]]; then
   echo "❌  Config partition ${PROVISION_PART} not found."
   echo "    Write the ISO first (./write_usb.sh) — it creates a config partition."

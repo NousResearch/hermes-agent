@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 README = ROOT / "README.md"
+LIVE_USB_DIR = ROOT / "live-usb"
 
 
 def _live_usb_section() -> str:
@@ -53,3 +54,21 @@ def test_readme_live_usb_examples_do_not_imply_root_alone_is_enough() -> None:
     )
     for obsolete_claim in obsolete_root_only_claims:
         assert obsolete_claim not in lowered
+
+
+def test_direct_live_usb_scripts_fail_closed_on_unverified_media() -> None:
+    write_script = (LIVE_USB_DIR / "write_usb.sh").read_text(encoding="utf-8")
+    provision_script = (LIVE_USB_DIR / "provision.sh").read_text(encoding="utf-8")
+
+    for script in (write_script, provision_script):
+        lowered = script.lower()
+        assert "readlink -f --" in script
+        assert "target must resolve to a canonical /dev/... block device" in lowered
+        assert "target must be a whole removable disk" in lowered
+        assert "root/operator approval is not enough" in lowered
+        assert "removable" in script
+        assert '"$removable" != "1"' in script
+        assert "refusing to" in lowered
+
+    assert "WARNING: /sys/block" not in write_script
+    assert 'PROVISION_PART="$(_partition_path "$DEVICE" 3)"' in provision_script

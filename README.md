@@ -140,6 +140,8 @@ Plug it in, pick a boot mode from the GRUB menu, and the agent starts — no ins
 
 The examples below are manual operator procedures for an approved maintenance window. Inside AgentCyber, the `live_usb` tool is disabled by default: `status` and `list_usb` are read-only, while `build`, `write`, and `provision` require root plus exact operator approval via `HERMES_AGENTCYBER_LIVE_USB_APPROVAL`/`operator_approval`. `write` and `provision` additionally require verified removable Linux block-device metadata and pass a canonical `/dev/...` target to the scripts. Unattended cron lanes must not set the approval token, run `sudo`, build an ISO, write a USB, or provision media.
 
+The direct `live-usb/write_usb.sh` and `live-usb/provision.sh` scripts also fail closed unless the target resolves to a canonical whole-disk `/dev/...` path and Linux reports `removable = 1`; root/sudo alone is not sufficient for non-removable, partition, mapper, symlink-only, or unverifiable targets.
+
 **Supported targets:** Any x86-64 PC (UEFI or legacy BIOS) and ARM64 boards (Raspberry Pi 4/5, ARM servers).
 
 ---

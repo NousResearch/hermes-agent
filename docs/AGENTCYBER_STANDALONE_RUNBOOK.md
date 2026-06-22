@@ -179,6 +179,8 @@ Exact spacing and icons may vary by terminal skin.
 
 AgentCyber `write` and `provision` tool calls also require the target to be verifiably removable via Linux block-device metadata; edge-case media that cannot be verified should be handled manually outside unattended tool control.
 
+The direct `live-usb/write_usb.sh` and `live-usb/provision.sh` scripts enforce the same removable-media boundary before destructive work: the operator-supplied path must resolve to a canonical whole-disk `/dev/...` device and Linux must report `removable = 1`. Root/sudo alone is not sufficient for non-removable, partition, mapper, symlink-only, or unverifiable targets.
+
 For an explicitly approved live USB maintenance session only, the operator can set a token in the standalone AgentCyber environment and provide the same value as `operator_approval` in the `live_usb` tool call. The value must match exactly; AgentCyber does not trim whitespace or normalize case for high-consequence approval tokens:
 
 ```bash

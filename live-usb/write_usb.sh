@@ -87,6 +87,43 @@ list_removable() {
   echo "Only drives with RM=1 (removable) are shown."
 }
 
+_canonical_removable_device() {
+  local input="$1"
+  local canonical=""
+  canonical="$(readlink -f -- "$input" 2>/dev/null || true)"
+
+  if [[ -z "$canonical" || "$canonical" != /dev/* ]]; then
+    echo "❌  Target must resolve to a canonical /dev/... block device: $input" >&2
+    return 1
+  fi
+  if [[ ! -b "$canonical" ]]; then
+    echo "❌  Not a block device: $canonical" >&2
+    return 1
+  fi
+
+  local device_type=""
+  device_type="$(lsblk -dn -o TYPE -- "$canonical" 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ "$device_type" != "disk" ]]; then
+    echo "❌  Target must be a whole removable disk, not a partition or mapper: $canonical" >&2
+    return 1
+  fi
+
+  local base="$(basename "$canonical")"
+  local removable_path="/sys/class/block/${base}/removable"
+  local removable=""
+  if [[ -r "$removable_path" ]]; then
+    removable="$(tr -d '[:space:]' < "$removable_path")"
+  fi
+  if [[ "$removable" != "1" ]]; then
+    echo "❌  Refusing to write: Linux does not verify ${canonical} as removable media." >&2
+    echo "    Expected ${removable_path} to contain 1; got '${removable:-unreadable}'." >&2
+    echo "    Root/operator approval is not enough without verifiable removable-media metadata." >&2
+    return 1
+  fi
+
+  printf '%s\n' "$canonical"
+}
+
 if [[ "$LIST_ONLY" == "true" ]]; then
   list_removable
   exit 0
@@ -110,20 +147,11 @@ if [[ -z "$DEVICE" ]]; then
   read -r DEVICE
 fi
 
-if [[ ! -b "$DEVICE" ]]; then
-  echo "❌  Not a block device: $DEVICE"
-  exit 1
-fi
+DEVICE="$(_canonical_removable_device "$DEVICE")" || exit 1
 
 if mount | grep -q "^${DEVICE} "; then
   echo "❌  Device ${DEVICE} appears to be mounted as a system device. Refusing."
   exit 1
-fi
-
-REMOVABLE=$(cat /sys/block/$(basename "$DEVICE")/removable 2>/dev/null || echo "?")
-if [[ "$REMOVABLE" == "0" ]]; then
-  echo "⚠  WARNING: /sys/block/$(basename "$DEVICE")/removable = 0"
-  echo "   This may be a non-removable drive. Double-check the device path."
 fi
 
 DRIVE_SIZE=$(lsblk -d -n -o SIZE "$DEVICE" 2>/dev/null || echo "unknown")

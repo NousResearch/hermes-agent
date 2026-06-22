@@ -246,6 +246,24 @@ async def test_intermediate_send_still_retriggers_typing(adapter):
     adapter._bot.send_chat_action.assert_awaited()
 
 
+@pytest.mark.asyncio
+async def test_cron_delivery_does_not_retrigger_typing(adapter):
+    """Cron/automation deliveries (metadata['job_id']) are final user-visible
+    messages. They must NOT re-arm Telegram's typing timer, same as the
+    notify case.  See #50791."""
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_messages_enabled = False
+
+    result = await adapter.send(
+        "12345", "Morning update.", metadata={"job_id": "cron-abc123"},
+    )
+
+    assert result.success is True
+    adapter._bot.send_chat_action.assert_not_called()
+
+
 # =========================================================================
 # format_message - bold and italic
 # =========================================================================

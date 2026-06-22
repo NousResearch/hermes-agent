@@ -2445,11 +2445,12 @@ class GatewaySlashCommandsMixin:
             return EphemeralReply(t("gateway.yolo.enabled"))
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
-        """Handle /verbose command — cycle tool progress display mode.
+        """Handle /verbose command — set or cycle tool progress display mode.
 
         Gated by ``display.tool_progress_command`` in config.yaml (default off).
-        When enabled, cycles the tool progress mode through off → new → all →
-        verbose → off for the *current platform*.  The setting is saved to
+        When enabled, accepts an explicit mode or cycles the tool progress mode
+        through off → new → all → verbose → off for the *current platform*.
+        The setting is saved to
         ``display.platforms.<platform>.tool_progress`` so each channel can
         have its own verbosity level independently.
         """
@@ -2471,7 +2472,7 @@ class GatewaySlashCommandsMixin:
         if not gate_enabled:
             return t("gateway.verbose.not_enabled")
 
-        # --- cycle mode (per-platform) ----------------------------------------
+        # --- choose mode (per-platform) ----------------------------------------
         cycle = ["off", "new", "all", "verbose"]
         descriptions = {
             "off": t("gateway.verbose.mode_off"),
@@ -2485,8 +2486,29 @@ class GatewaySlashCommandsMixin:
         current = resolve_display_setting(user_config, platform_key, "tool_progress", "all")
         if current not in cycle:
             current = "all"
-        idx = (cycle.index(current) + 1) % len(cycle)
-        new_mode = cycle[idx]
+
+        arg = ""
+        try:
+            text = (getattr(event, "message", None) or "").strip()
+            if text.startswith("/"):
+                parts = text.split(None, 1)
+                if len(parts) > 1:
+                    arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        if arg in {"status", "?"}:
+            return (
+                f"{descriptions[current]}\n"
+                + t("gateway.verbose.saved_suffix", platform=platform_key)
+            )
+        if arg in cycle:
+            new_mode = arg
+        elif arg == "":
+            idx = (cycle.index(current) + 1) % len(cycle)
+            new_mode = cycle[idx]
+        else:
+            return "Usage: /verbose [off|new|all|verbose|status]"
 
         # Save to display.platforms.<platform>.tool_progress
         try:

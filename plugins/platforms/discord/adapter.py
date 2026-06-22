@@ -3546,6 +3546,18 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_reload_skills(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reload-skills")
 
+        @tree.command(name="verbose", description="Set Discord tool progress display")
+        @discord.app_commands.describe(mode="Tool progress display mode")
+        @discord.app_commands.choices(mode=[
+            discord.app_commands.Choice(name="off — no tool progress messages", value="off"),
+            discord.app_commands.Choice(name="new — compact breadcrumbs for new tools", value="new"),
+            discord.app_commands.Choice(name="all — every tool progress update", value="all"),
+            discord.app_commands.Choice(name="verbose — full detailed tool output", value="verbose"),
+            discord.app_commands.Choice(name="status — show current mode", value="status"),
+        ])
+        async def slash_verbose(interaction: discord.Interaction, mode: str = ""):
+            await self._run_simple_slash(interaction, f"/verbose {mode}".strip())
+
         @tree.command(name="voice", description="Toggle voice reply mode")
         @discord.app_commands.describe(mode="Voice mode: join, channel, leave, on, tts, off, or status")
         @discord.app_commands.choices(mode=[
@@ -5174,6 +5186,7 @@ class DiscordAdapter(BasePlatformAdapter):
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
+        #   discord.thread_free_response_channels: Auto-thread free-response channel messages (default: false)
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
 
         thread_id = None
@@ -5264,7 +5277,12 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            thread_free_response = os.getenv("DISCORD_THREAD_FREE_RESPONSE_CHANNELS", "false").lower() in {
+                "true",
+                "1",
+                "yes",
+            }
+            skip_thread = bool(channel_ids & no_thread_channels) or (is_free_channel and not thread_free_response)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
@@ -7049,6 +7067,10 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         if isinstance(ntc, list):
             ntc = ",".join(str(v) for v in ntc)
         os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+    if "thread_free_response_channels" in discord_cfg and not os.getenv("DISCORD_THREAD_FREE_RESPONSE_CHANNELS"):
+        os.environ["DISCORD_THREAD_FREE_RESPONSE_CHANNELS"] = str(
+            discord_cfg["thread_free_response_channels"]
+        ).lower()
     # history_backfill: recover missed channel messages for shared sessions
     # when require_mention is active.  Fetches messages between bot turns
     # and prepends them to the user message for context.

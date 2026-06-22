@@ -915,6 +915,52 @@ class Task:
 
 
 @dataclass
+class DependencyImpactChild:
+    """Preview row for one direct child of a task."""
+
+    id: str
+    title: str
+    status: str
+    assignee: Optional[str]
+    blocking_parent_ids: list[str]
+    would_unblock: bool
+    reason: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "status": self.status,
+            "assignee": self.assignee,
+            "blocking_parent_ids": list(self.blocking_parent_ids),
+            "would_unblock": self.would_unblock,
+            "reason": self.reason,
+        }
+
+
+@dataclass
+class DependencyImpactPreview:
+    """Single-task preview of what completion would unblock downstream."""
+
+    task_id: str
+    total_children: int
+    will_unblock_count: int
+    still_blocked_count: int
+    unchanged_count: int
+    children: list[DependencyImpactChild] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "total_children": self.total_children,
+            "will_unblock_count": self.will_unblock_count,
+            "still_blocked_count": self.still_blocked_count,
+            "unchanged_count": self.unchanged_count,
+            "children": [c.as_dict() for c in self.children],
+        }
+
+
+@dataclass
 class Run:
     """In-memory view of a ``task_runs`` row.
 
@@ -2687,6 +2733,117 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
         (task_id,),
     ).fetchall()
     return [r["child_id"] for r in rows]
+
+
+def dependency_impact_preview(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    failure_limit: int = None,
+) -> DependencyImpactPreview:
+    """Return the direct children that completing ``task_id`` would unblock.
+
+    The preview intentionally mirrors :func:`recompute_ready`: ``todo`` children
+    promote once all parents are done/archived, while ``blocked`` children only
+    auto-promote when they are dependency-blocked rather than sticky
+    human/worker blocks or circuit-breaker failures.
+    """
+    if failure_limit is None:
+        failure_limit = DEFAULT_FAILURE_LIMIT
+    if get_task(conn, task_id) is None:
+        raise ValueError(f"unknown task {task_id}")
+
+    child_rows = conn.execute(
+        """
+        SELECT c.*
+        FROM tasks c
+        JOIN task_links l ON l.child_id = c.id
+        WHERE l.parent_id = ?
+        ORDER BY c.priority DESC, c.created_at ASC, c.id ASC
+        """,
+        (task_id,),
+    ).fetchall()
+
+    children: list[DependencyImpactChild] = []
+    will_unblock = 0
+    still_blocked = 0
+    unchanged = 0
+    for row in child_rows:
+        child = Task.from_row(row)
+        blockers = [
+            r["id"]
+            for r in conn.execute(
+                """
+                SELECT p.id
+                FROM tasks p
+                JOIN task_links l ON l.parent_id = p.id
+                WHERE l.child_id = ?
+                  AND p.id != ?
+                  AND p.status NOT IN ('done', 'archived')
+                ORDER BY p.id
+                """,
+                (child.id, task_id),
+            ).fetchall()
+        ]
+
+        would_unblock = False
+        reason = "unchanged"
+        if blockers:
+            reason = "blocked_by_other_parents"
+            still_blocked += 1
+        elif child.status == "todo":
+            reason = "will_promote_to_ready"
+            would_unblock = True
+            will_unblock += 1
+        elif child.status == "blocked":
+            failures = int(child.consecutive_failures or 0)
+            task_limit = child.max_retries
+            effective_limit = (
+                int(task_limit) if task_limit is not None else int(failure_limit)
+            )
+            if _has_sticky_block(conn, child.id):
+                reason = "sticky_block"
+                unchanged += 1
+            elif failures >= effective_limit:
+                reason = "failure_limit"
+                unchanged += 1
+            else:
+                reason = "will_promote_to_ready"
+                would_unblock = True
+                will_unblock += 1
+        elif child.status == "ready":
+            reason = "already_ready"
+            unchanged += 1
+        elif child.status == "running":
+            reason = "already_running"
+            unchanged += 1
+        elif child.status in ("done", "archived"):
+            reason = f"already_{child.status}"
+            unchanged += 1
+        else:
+            reason = f"status_{child.status}"
+            unchanged += 1
+
+        children.append(
+            DependencyImpactChild(
+                id=child.id,
+                title=child.title,
+                status=child.status,
+                assignee=child.assignee,
+                blocking_parent_ids=blockers,
+                would_unblock=would_unblock,
+                reason=reason,
+            )
+        )
+
+    return DependencyImpactPreview(
+        task_id=task_id,
+        total_children=len(children),
+        will_unblock_count=will_unblock,
+        still_blocked_count=still_blocked,
+        unchanged_count=unchanged,
+        children=children,
+    )
 
 
 def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Optional[str]]]:

@@ -559,6 +559,9 @@ def get_task(
             "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
             "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],
             "links": _links_for(conn, task_id),
+            "dependency_impact": kanban_db.dependency_impact_preview(
+                conn, task_id,
+            ).as_dict(),
             "runs": [
                 _run_dict(r)
                 for r in kanban_db.list_runs(

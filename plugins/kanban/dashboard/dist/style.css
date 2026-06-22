@@ -696,6 +696,58 @@
 }
 .hermes-kanban-dep-chip-x:hover { color: var(--color-destructive, #d14a4a); }
 
+.hermes-kanban-impact {
+  margin-top: 0.55rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  padding-top: 0.55rem;
+}
+.hermes-kanban-impact-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.68rem;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-impact-summary span {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.08rem 0.35rem;
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+}
+.hermes-kanban-impact-row {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, 8rem) minmax(0, 1fr);
+  grid-template-areas:
+    "id state"
+    "title title";
+  gap: 0.12rem 0.45rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 45%, transparent);
+  font-size: 0.72rem;
+}
+.hermes-kanban-impact-id {
+  grid-area: id;
+  color: var(--color-foreground);
+}
+.hermes-kanban-impact-state {
+  grid-area: state;
+  color: var(--color-muted-foreground);
+  overflow-wrap: anywhere;
+}
+.hermes-kanban-impact-row--yes .hermes-kanban-impact-state {
+  color: #3fb97d;
+  font-weight: 600;
+}
+.hermes-kanban-impact-row--blocked .hermes-kanban-impact-state {
+  color: #d4b348;
+}
+.hermes-kanban-impact-title {
+  grid-area: title;
+  color: var(--color-foreground);
+  overflow-wrap: anywhere;
+}
+
 /* ---- Inline edit affordances --------------------------------------- */
 
 .hermes-kanban-editable {

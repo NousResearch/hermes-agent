@@ -26,7 +26,7 @@ import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     from hermes_constants import get_hermes_home
@@ -420,7 +420,7 @@ def quick() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def deep(
-    confirm: Optional[callable] = None,
+    confirm: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ) -> Dict[str, Any]:
     """Deep cleanup.
 

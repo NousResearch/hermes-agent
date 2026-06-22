@@ -5287,7 +5287,7 @@ class AIAgent:
         system_message: str = None,
         conversation_history: List[Dict[str, Any]] = None,
         task_id: str = None,
-        stream_callback: Optional[callable] = None,
+        stream_callback: Optional[Callable[[str], None]] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
     ) -> Dict[str, Any]:
@@ -5304,7 +5304,7 @@ class AIAgent:
             persist_user_timestamp,
         )
 
-    def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
+    def chat(self, message: str, stream_callback: Optional[Callable[[str], None]] = None) -> str:
         """
         Simple chat interface that returns just the final response.
 

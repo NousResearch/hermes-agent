@@ -163,6 +163,7 @@ def _cmd_review(args: argparse.Namespace, *, ctx=None) -> int:
         reviewer_config = {**reviewer_config, "mode": review_mode}
         ignore_patterns = (*core.DEFAULT_IGNORE_PATTERNS, *reviewer_config.get("ignore_patterns", []))
         included_files, skipped_files = core.filter_files(files, patterns=ignore_patterns)
+        review_diff = core.build_review_diff(diff, included_files, skipped_files)
         docs = core.collect_trusted_docs(
             ref,
             base_ref,
@@ -170,7 +171,7 @@ def _cmd_review(args: argparse.Namespace, *, ctx=None) -> int:
         )
         context, manifest = core.build_review_input(
             metadata=metadata,
-            diff=diff,
+            diff=review_diff,
             docs=docs,
             included_files=included_files,
             skipped_files=skipped_files,

@@ -101,6 +101,24 @@ def run_gh_json(args: Sequence[str], *, timeout: int = 120) -> Any:
     return json.loads(run_gh(args, timeout=timeout) or "null")
 
 
+def _flatten_paginated_json(data: Any) -> List[Dict[str, Any]]:
+    """Normalize ``gh api --paginate --slurp`` output into one item list."""
+    if not isinstance(data, list):
+        return []
+    if all(isinstance(page, list) for page in data):
+        flattened: List[Dict[str, Any]] = []
+        for page in data:
+            flattened.extend(item for item in page if isinstance(item, dict))
+        return flattened
+    return [item for item in data if isinstance(item, dict)]
+
+
+def run_gh_paginated_json(args: Sequence[str], *, timeout: int = 120) -> List[Dict[str, Any]]:
+    """Run a paginated GitHub API request and return a flattened item list."""
+    data = run_gh_json([*args, "--paginate", "--slurp"], timeout=timeout)
+    return _flatten_paginated_json(data)
+
+
 def fetch_pr_metadata(ref: PullRequestRef) -> Dict[str, Any]:
     fields = [
         "number",
@@ -136,12 +154,39 @@ def fetch_pr_diff(ref: PullRequestRef) -> str:
 
 
 def fetch_pr_files(ref: PullRequestRef) -> List[Dict[str, Any]]:
-    data = run_gh_json([
+    return run_gh_paginated_json([
         "api",
         f"repos/{ref.full_name}/pulls/{ref.number}/files",
-        "--paginate",
     ])
-    return data if isinstance(data, list) else []
+
+
+def build_review_diff(diff: str, included_files: Sequence[Dict[str, Any]], skipped_files: Sequence[Dict[str, Any]]) -> str:
+    """Return the diff that should be sent to the model.
+
+    When no files were skipped, keep the complete ``gh pr diff`` output because
+    it contains the richest Git-native context. Once generated/ignored files are
+    skipped, rebuild the review diff from included GitHub file patches so the
+    model input and manifest agree about what was excluded.
+    """
+    if not skipped_files:
+        return diff
+    chunks: List[str] = []
+    for item in included_files:
+        filename = str(item.get("filename") or "")
+        if not filename:
+            continue
+        previous = str(item.get("previous_filename") or filename)
+        patch = str(item.get("patch") or "").strip()
+        if patch:
+            chunks.append(f"diff --git a/{previous} b/{filename}\n{patch}")
+        else:
+            chunks.append(
+                f"diff --git a/{previous} b/{filename}\n"
+                "[No textual patch returned by GitHub API for this included file]"
+            )
+    if chunks:
+        return "\n\n".join(chunks)
+    return "[No included textual diff remained after ignored/generated files were skipped]"
 
 
 def _api_get_json(path: str) -> Any:
@@ -639,17 +684,24 @@ def write_artifacts(out_dir: Path, *, context: str, manifest: Dict[str, Any], re
 
 def post_or_update_summary_comment(ref: PullRequestRef, body: str) -> Dict[str, Any]:
     """Create or update the persistent PR summary comment identified by marker."""
-    comments = run_gh_json([
+    current_user = run_gh_json(["api", "user", "--jq", ".login"], timeout=60)
+    current_login = str(current_user or "")
+    comments = run_gh_paginated_json([
         "api",
         f"repos/{ref.full_name}/issues/{ref.number}/comments",
-        "--paginate",
     ])
     existing: Optional[Dict[str, Any]] = None
-    if isinstance(comments, list):
-        for comment in comments:
-            if isinstance(comment, dict) and SUMMARY_COMMENT_MARKER in str(comment.get("body") or ""):
-                existing = comment
-                break
+    for comment in comments:
+        raw_user = comment.get("user")
+        user = raw_user if isinstance(raw_user, dict) else {}
+        author_login = str(user.get("login") or "")
+        if (
+            SUMMARY_COMMENT_MARKER in str(comment.get("body") or "")
+            and current_login
+            and author_login == current_login
+        ):
+            existing = comment
+            break
     if existing and existing.get("id"):
         comment_id = str(existing["id"])
         current_body = str(existing.get("body") or "")

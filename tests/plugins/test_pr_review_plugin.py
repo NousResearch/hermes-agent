@@ -74,6 +74,34 @@ def test_filter_files_skips_generated_defaults():
     assert all(f["skip_reason"] == "ignored_path" for f in skipped)
 
 
+def test_fetch_pr_files_slurps_and_flattens_paginated_api(monkeypatch):
+    calls = []
+
+    def fake_run_gh_json(args, timeout=120):
+        calls.append(args)
+        return [[{"filename": "a.py"}], [{"filename": "b.py"}]]
+
+    monkeypatch.setattr(core, "run_gh_json", fake_run_gh_json)
+
+    files = core.fetch_pr_files(core.PullRequestRef("owner", "repo", 1))
+
+    assert [f["filename"] for f in files] == ["a.py", "b.py"]
+    assert calls == [["api", "repos/owner/repo/pulls/1/files", "--paginate", "--slurp"]]
+
+
+def test_build_review_diff_excludes_skipped_files_when_filtering():
+    full_diff = "diff --git a/src/app.py b/src/app.py\n+ok\n\ndiff --git a/dist/app.js b/dist/app.js\n+generated"
+    included = [{"filename": "src/app.py", "patch": "@@\n+ok"}]
+    skipped = [{"filename": "dist/app.js", "skip_reason": "ignored_path"}]
+
+    review_diff = core.build_review_diff(full_diff, included, skipped)
+
+    assert "src/app.py" in review_diff
+    assert "+ok" in review_diff
+    assert "dist/app.js" not in review_diff
+    assert "generated" not in review_diff
+
+
 def test_build_review_input_records_truncation_and_docs():
     metadata = {
         "number": 7,
@@ -252,19 +280,69 @@ def test_post_or_update_summary_comment_updates_existing_without_duplicate(monke
 
     def fake_run_gh_json(args, timeout=120):
         calls.append(args)
-        if args[:2] == ["api", "repos/owner/repo/issues/7/comments"] and "--method" not in args:
-            return [{"id": 123, "body": f"{core.SUMMARY_COMMENT_MARKER}\nold", "html_url": "old-url"}]
+        if args == ["api", "user", "--jq", ".login"]:
+            return "hermes-bot"
         if args[:2] == ["api", "repos/owner/repo/issues/comments/123"]:
             return {"id": 123, "body": body, "html_url": "new-url"}
         raise AssertionError(f"unexpected gh api call: {args}")
 
+    def fake_run_gh_paginated_json(args, timeout=120):
+        calls.append(args)
+        if args[:2] == ["api", "repos/owner/repo/issues/7/comments"]:
+            return [
+                {
+                    "id": 123,
+                    "body": f"{core.SUMMARY_COMMENT_MARKER}\nold",
+                    "html_url": "old-url",
+                    "user": {"login": "hermes-bot"},
+                }
+            ]
+        raise AssertionError(f"unexpected paginated gh api call: {args}")
+
     monkeypatch.setattr(core, "run_gh_json", fake_run_gh_json)
+    monkeypatch.setattr(core, "run_gh_paginated_json", fake_run_gh_paginated_json)
 
     result = core.post_or_update_summary_comment(ref, body)
 
     assert result == {"action": "updated", "comment_id": "123", "url": "new-url"}
     assert any("PATCH" in call for call in calls)
     assert not any("POST" in call for call in calls)
+
+
+def test_post_or_update_summary_comment_ignores_marker_from_other_author(monkeypatch):
+    calls = []
+    ref = core.PullRequestRef("owner", "repo", 7)
+    body = f"{core.SUMMARY_COMMENT_MARKER}\n## Hermes PR Review\nnew"
+
+    def fake_run_gh_json(args, timeout=120):
+        calls.append(args)
+        if args == ["api", "user", "--jq", ".login"]:
+            return "hermes-bot"
+        if args[:2] == ["api", "repos/owner/repo/issues/7/comments"] and "POST" in args:
+            return {"id": 456, "body": body, "html_url": "created-url"}
+        raise AssertionError(f"unexpected gh api call: {args}")
+
+    def fake_run_gh_paginated_json(args, timeout=120):
+        calls.append(args)
+        if args[:2] == ["api", "repos/owner/repo/issues/7/comments"]:
+            return [
+                {
+                    "id": 123,
+                    "body": f"{core.SUMMARY_COMMENT_MARKER}\nspoof",
+                    "html_url": "old-url",
+                    "user": {"login": "someone-else"},
+                }
+            ]
+        raise AssertionError(f"unexpected paginated gh api call: {args}")
+
+    monkeypatch.setattr(core, "run_gh_json", fake_run_gh_json)
+    monkeypatch.setattr(core, "run_gh_paginated_json", fake_run_gh_paginated_json)
+
+    result = core.post_or_update_summary_comment(ref, body)
+
+    assert result == {"action": "created", "comment_id": "456", "url": "created-url"}
+    assert not any("PATCH" in call for call in calls)
+    assert any("POST" in call for call in calls)
 
 
 def test_cmd_review_posts_comment_with_mocked_gh_and_llm(monkeypatch, tmp_path):

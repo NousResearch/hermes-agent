@@ -1128,12 +1128,62 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
 
 
 def _finalize_single_query(cli) -> None:
-    """Close one-shot CLI resources before releasing the active session lease."""
+    """Close one-shot CLI resources before releasing the active session lease.
+
+    Also closes out the SQLite session row in state.db (so ``hermes sessions
+    list`` / ``/resume`` see the CLI -q run as ended instead of indefinitely
+    open) and flushes the WAL so writes from this process survive even when
+    the next thing that happens is the kernel reaping the PID — including
+    the SIGTERM-driven ``os._exit(0)`` path on kanban workers (#28181).
+    Without the WAL flush, a CLI -q run that writes < 50 messages (every
+    kanban worker is one of these) leaves committed frames only in the WAL
+    file; if another process's ``TRUNCATE`` checkpoint races ahead, those
+    frames are lost on the next open and the session row effectively
+    disappears from state.db. (FIX-STATE-DB-CLI-CAPTURE)
+    """
     try:
         _notify_single_query_session_finalize(cli)
         _run_cleanup(notify_session_finalize=False)
     finally:
+        _close_session_db_for_one_shot(cli)
         cli._release_active_session()
+
+
+def _close_session_db_for_one_shot(cli) -> None:
+    """End + flush state.db so a one-shot CLI run leaves a clean, persisted
+    session row instead of one stranded in the WAL or left with
+    ``ended_at = NULL``.
+
+    Mirrors what the interactive ``HermesCLI.run()`` finally block already
+    does at the equivalent exit point: call ``end_session`` to stamp the
+    end timestamp, run a TRUNCATE WAL checkpoint, and close the connection
+    so the WAL frames are merged back into the main DB file before the
+    process exits. Every step is best-effort — never raise, since this runs
+    on the way out and a failing flush must not block exit.
+    """
+    db = getattr(cli, "_session_db", None)
+    if db is None:
+        return
+    # Prefer agent.session_id over cli.session_id — compression splits
+    # can leave cli.session_id pointing at an ended parent while the
+    # agent's id is the live child the run actually wrote messages to.
+    session_id = (
+        getattr(cli, "session_id", None)
+        or getattr(getattr(cli, "agent", None), "session_id", None)
+    )
+    try:
+        if session_id:
+            db.end_session(session_id, "cli_close")
+    except Exception as exc:
+        logger.debug("one-shot end_session failed for %s: %s", session_id, exc)
+    try:
+        db._try_wal_checkpoint()
+    except Exception as exc:
+        logger.debug("one-shot WAL checkpoint failed: %s", exc)
+    try:
+        db.close()
+    except Exception as exc:
+        logger.debug("one-shot SessionDB close failed: %s", exc)
 
 
 def _reset_terminal_input_modes_on_exit() -> None:
@@ -14935,6 +14985,34 @@ def main(
         # the flush against any rare blocking-I/O case (the reporter measured
         # flush in <1ms; the alarm is a failsafe, not the common path).
         if os.environ.get("HERMES_KANBAN_TASK"):
+            # FIX-STATE-DB-CLI-CAPTURE: flush state.db before the kernel
+            # reaps us so the just-persisted session row + messages survive
+            # the SIGTERM. Without this, kanban-worker -q runs leave the
+            # row stranded in the WAL file — a TRUNCATE checkpoint from a
+            # concurrent process can then race past our un-flushed frames
+            # and the row effectively disappears on the next open.
+            try:
+                _db = getattr(cli, "_session_db", None)
+                if _db is not None:
+                    _sid = (
+                        getattr(cli, "session_id", None)
+                        or getattr(getattr(cli, "agent", None), "session_id", None)
+                    )
+                    if _sid:
+                        try:
+                            _db.end_session(_sid, "sigterm")
+                        except Exception:
+                            pass
+                    try:
+                        _db._try_wal_checkpoint()
+                    except Exception:
+                        pass
+                    try:
+                        _db.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass  # signal handler — never raise
             try:
                 import signal as _sig_mod
                 if hasattr(_sig_mod, "SIGALRM"):

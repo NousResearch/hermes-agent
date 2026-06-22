@@ -36,6 +36,7 @@ from agent.handoff_telemetry import (
     new_trace_id,
     record_handoff_telemetry,
 )
+from agent.agent_model_resolution import normalize_agent_id, resolve_agent_model
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -252,6 +253,13 @@ def _record_child_handoff_telemetry(
             exit_reason=exit_reason,
             model=getattr(child, "model", None),
             provider=getattr(child, "provider", None),
+            agent_id=getattr(child, "_agent_id", None),
+            assigned_model=getattr(child, "_assigned_model", None),
+            assigned_provider=getattr(child, "_assigned_provider", None),
+            effective_model=getattr(child, "model", None),
+            effective_provider=getattr(child, "provider", None),
+            model_source=getattr(child, "_model_source", None),
+            model_resolution_warnings=getattr(child, "_model_resolution_warnings", None),
             api_mode=getattr(child, "api_mode", None),
             api_calls=api_calls,
             duration_seconds=duration_seconds,
@@ -949,6 +957,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    agent_id: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1043,8 +1052,21 @@ def _build_child_agent(
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
+    # Resolve canonical agent assignment before events/agent construction so
+    # progress, AIAgent kwargs, and telemetry agree on the same effective model.
+    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    model_resolution = resolve_agent_model(
+        agent_id,
+        fallback_model=model or getattr(parent_agent, "model", None),
+        fallback_provider=override_provider or getattr(parent_agent, "provider", None),
+        fallback_fallbacks=parent_fallback,
+        fallback_source="delegation.config_or_parent",
+    )
+    for warning in model_resolution.warnings:
+        logger.warning("delegate_task model resolution: %s", warning)
+
     # Resolve the child's effective model early so it can ride on every event.
-    effective_model_for_cb = model or getattr(parent_agent, "model", None)
+    effective_model_for_cb = model_resolution.effective_model or model or getattr(parent_agent, "model", None)
 
     # Build progress callback to relay tool calls to parent display.
     # Identity kwargs thread the subagent_id through every emitted event so the
@@ -1079,9 +1101,9 @@ def _build_child_agent(
 
         child_thinking_cb = _child_thinking
 
-    # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
-    effective_provider = override_provider or getattr(parent_agent, "provider", None)
+    # Resolve effective credentials: canonical agent matrix > config override > parent inherit
+    effective_model = model_resolution.effective_model or model or parent_agent.model
+    effective_provider = model_resolution.effective_provider or override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
@@ -1138,11 +1160,14 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    # Use per-agent matrix fallbacks when present; otherwise inherit the parent's
+    # fallback provider chain so subagents can recover from rate-limits and
+    # credential exhaustion exactly like the top-level agent does.
+    child_fallback = (
+        model_resolution.effective_fallbacks
+        if model_resolution.effective_fallbacks is not None
+        else parent_fallback
+    )
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1177,7 +1202,7 @@ def _build_child_agent(
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
-        fallback_model=parent_fallback,
+        fallback_model=child_fallback,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
@@ -1209,6 +1234,16 @@ def _build_child_agent(
     setattr(child, "_handoff_trace_id", handoff_trace_id)
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._agent_id = model_resolution.agent_id
+    child._assigned_model = model_resolution.assigned_model
+    child._assigned_provider = model_resolution.assigned_provider
+    child._assigned_fallbacks = model_resolution.assigned_fallbacks
+    child._model_source = model_resolution.model_source
+    child._model_resolution_warnings = list(model_resolution.warnings)
+    try:
+        child._session_init_model_config.update(model_resolution.as_dict())
+    except Exception:
+        pass
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -2035,6 +2070,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    agent_id: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2128,7 +2164,7 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role, "agent_id": agent_id}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2169,6 +2205,7 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            task_agent_id = normalize_agent_id(t.get("agent_id") or t.get("agent") or agent_id)
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2191,6 +2228,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                agent_id=task_agent_id,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2802,6 +2840,16 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
+            "agent_id": {
+                "type": "string",
+                "description": (
+                    "Canonical agent identity for model enforcement. When set "
+                    "(case-insensitive; e.g. turing, alice, devin, seek), the "
+                    "child's model/provider/fallbacks are resolved from "
+                    "agents.models.<agent_id> in live config.yaml. This is "
+                    "separate from role='leaf'/'orchestrator'."
+                ),
+            },
             "toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -2828,6 +2876,14 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                        },
+                        "agent_id": {
+                            "type": "string",
+                            "description": "Per-task canonical agent identity for model enforcement; overrides top-level agent_id.",
+                        },
+                        "agent": {
+                            "type": "string",
+                            "description": "Alias for per-task agent_id for cron/delegation compatibility.",
                         },
                         "acp_command": {
                             "type": "string",
@@ -2904,6 +2960,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        agent_id=args.get("agent_id") or args.get("agent"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

@@ -40,6 +40,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
+from agent.agent_model_resolution import resolve_job_model
 
 logger = logging.getLogger(__name__)
 
@@ -1429,6 +1430,9 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Prompt: %s", prompt[:100])
 
     agent = None
+    model = ""
+    model_resolution = None
+    runtime = None
 
     # Mark this as a cron session so the approval system can apply cron_mode.
     # This env var is process-wide and persists for the lifetime of the
@@ -1518,6 +1522,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             )
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+        model_resolution = None
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -1528,14 +1533,32 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 with open(_cfg_path, encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
                 _cfg = _expand_env_vars(_cfg)
-                _model_cfg = _cfg.get("model", {})
-                if not job.get("model"):
-                    if isinstance(_model_cfg, str):
-                        model = _model_cfg
-                    elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
+                if not isinstance(_cfg, dict):
+                    _cfg = {}
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+
+        fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+        model_resolution = resolve_job_model(
+            job,
+            config=_cfg,
+            default_model=model or None,
+            default_provider=job.get("provider"),
+            default_fallbacks=fallback_model,
+        )
+        model = model_resolution.effective_model or model or ""
+        for warning in model_resolution.warnings:
+            logger.warning("Job '%s': cron model resolution: %s", job_id, warning)
+        logger.info(
+            "Job '%s': model resolution source=%s agent_id=%s assigned=%s/%s effective=%s/%s",
+            job_id,
+            model_resolution.model_source,
+            model_resolution.agent_id,
+            model_resolution.assigned_provider,
+            model_resolution.assigned_model,
+            model_resolution.effective_provider,
+            model_resolution.effective_model,
+        )
 
         # Apply IPv4 preference if configured.
         try:
@@ -1586,8 +1609,10 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # circuits that precedence and can resurrect old providers (for
             # example DeepSeek) for cron jobs that do not pin provider/model.
             runtime_kwargs = {
-                "requested": job.get("provider"),
+                "requested": model_resolution.effective_provider or job.get("provider"),
             }
+            if model:
+                runtime_kwargs["target_model"] = model
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
@@ -1617,7 +1642,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
-        fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+        fallback_model = model_resolution.effective_fallbacks if model_resolution else (_cfg.get("fallback_providers") or _cfg.get("fallback_model") or None)
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
         if runtime_provider:
@@ -1688,6 +1713,17 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+        try:
+            agent._session_init_model_config.update(
+                {
+                    "cron_job_id": job_id,
+                    **(model_resolution.as_dict() if model_resolution else {}),
+                }
+            )
+            agent._agent_id = model_resolution.agent_id if model_resolution else None
+            agent._model_source = model_resolution.model_source if model_resolution else None
+        except Exception:
+            pass
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
@@ -1826,6 +1862,10 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
+**Model Source:** {model_resolution.model_source if model_resolution else 'unknown'}
+**Agent ID:** {model_resolution.agent_id if model_resolution else ''}
+**Effective Model:** {model_resolution.effective_model if model_resolution else model}
+**Effective Provider:** {model_resolution.effective_provider if model_resolution else (runtime.get('provider') if isinstance(runtime, dict) else '')}
 
 ## Prompt
 
@@ -1848,6 +1888,10 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
+**Model Source:** {model_resolution.model_source if model_resolution else 'unknown'}
+**Agent ID:** {model_resolution.agent_id if model_resolution else ''}
+**Effective Model:** {model_resolution.effective_model if model_resolution else model}
+**Effective Provider:** {model_resolution.effective_provider if model_resolution else (runtime.get('provider') if isinstance(runtime, dict) else '')}
 
 ## Prompt
 

@@ -78,9 +78,16 @@ def build_handoff_telemetry_event(
     exit_reason: Optional[str],
     model: Optional[str],
     provider: Optional[str],
-    api_mode: Optional[str],
-    api_calls: Any,
-    duration_seconds: Any,
+    agent_id: Optional[str] = None,
+    assigned_model: Optional[str] = None,
+    assigned_provider: Optional[str] = None,
+    effective_model: Optional[str] = None,
+    effective_provider: Optional[str] = None,
+    model_source: Optional[str] = None,
+    model_resolution_warnings: Optional[Any] = None,
+    api_mode: Optional[str] = None,
+    api_calls: Any = 0,
+    duration_seconds: Any = 0,
     input_tokens: Any = 0,
     output_tokens: Any = 0,
     cache_read_tokens: Any = 0,
@@ -102,6 +109,12 @@ def build_handoff_telemetry_event(
     prompt = _int(prompt_tokens) or (in_tokens + cache_read + cache_write)
     total = _int(total_tokens) or (prompt + out_tokens)
 
+    warnings_list = (
+        list(model_resolution_warnings)
+        if isinstance(model_resolution_warnings, (list, tuple, set))
+        else ([str(model_resolution_warnings)] if model_resolution_warnings else [])
+    )
+
     event: dict[str, Any] = {
         "schema_version": 1,
         "event_type": "agent_handoff",
@@ -116,6 +129,13 @@ def build_handoff_telemetry_event(
         "exit_reason": exit_reason,
         "model": model,
         "provider": provider,
+        "agent_id": agent_id,
+        "assigned_model": assigned_model,
+        "assigned_provider": assigned_provider,
+        "effective_model": effective_model or model,
+        "effective_provider": effective_provider or provider,
+        "model_source": model_source,
+        "model_resolution_warnings": warnings_list,
         "api_mode": api_mode,
         "api_calls": _int(api_calls),
         "duration_seconds": round(_number(duration_seconds, 0.0), 3),

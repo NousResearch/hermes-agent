@@ -601,3 +601,76 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+class TestCronFdLimit:
+    def test_ensure_cron_fd_limit_raises_low_soft_limit(self, monkeypatch):
+        import cron.scheduler as scheduler
+
+        calls = []
+
+        class FakeResource:
+            RLIMIT_NOFILE = object()
+            RLIM_INFINITY = -1
+
+            @staticmethod
+            def getrlimit(which):
+                assert which is FakeResource.RLIMIT_NOFILE
+                return (256, 4096)
+
+            @staticmethod
+            def setrlimit(which, limits):
+                assert which is FakeResource.RLIMIT_NOFILE
+                calls.append(limits)
+
+        monkeypatch.setitem(sys.modules, "resource", FakeResource)
+        monkeypatch.setenv("HERMES_CRON_MIN_NOFILE", "1024")
+        monkeypatch.setattr(scheduler, "_fd_limit_checked", False)
+
+        scheduler._ensure_cron_fd_limit()
+
+        assert calls == [(1024, 4096)]
+
+    def test_ensure_cron_fd_limit_clamps_to_hard_limit(self, monkeypatch):
+        import cron.scheduler as scheduler
+
+        calls = []
+
+        class FakeResource:
+            RLIMIT_NOFILE = object()
+            RLIM_INFINITY = -1
+
+            @staticmethod
+            def getrlimit(which):
+                assert which is FakeResource.RLIMIT_NOFILE
+                return (256, 512)
+
+            @staticmethod
+            def setrlimit(which, limits):
+                assert which is FakeResource.RLIMIT_NOFILE
+                calls.append(limits)
+
+        monkeypatch.setitem(sys.modules, "resource", FakeResource)
+        monkeypatch.setenv("HERMES_CRON_MIN_NOFILE", "1024")
+        monkeypatch.setattr(scheduler, "_fd_limit_checked", False)
+
+        scheduler._ensure_cron_fd_limit()
+
+        assert calls == [(512, 512)]
+
+    def test_ensure_cron_fd_limit_noops_when_disabled(self, monkeypatch):
+        import cron.scheduler as scheduler
+
+        class FakeResource:
+            RLIMIT_NOFILE = object()
+            RLIM_INFINITY = -1
+
+            @staticmethod
+            def getrlimit(which):  # pragma: no cover - should not be called
+                raise AssertionError("disabled fd-limit helper imported resource")
+
+        monkeypatch.setitem(sys.modules, "resource", FakeResource)
+        monkeypatch.setenv("HERMES_CRON_MIN_NOFILE", "0")
+        monkeypatch.setattr(scheduler, "_fd_limit_checked", False)
+
+        scheduler._ensure_cron_fd_limit()

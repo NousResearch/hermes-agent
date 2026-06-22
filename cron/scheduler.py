@@ -44,6 +44,51 @@ from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+_fd_limit_checked = False
+
+
+def _ensure_cron_fd_limit() -> None:
+    """Raise the scheduler process' soft fd limit for cron workloads.
+
+    macOS launchd services commonly start with RLIMIT_NOFILE soft=256 even
+    when the hard limit is much higher. A busy cron tick can briefly need more
+    descriptors than that while running several jobs in parallel, launching
+    data-collection scripts, opening SQLite handles, and creating HTTP clients.
+    Keep this best-effort so restricted platforms still run normally.
+    """
+    global _fd_limit_checked
+    if _fd_limit_checked:
+        return
+    _fd_limit_checked = True
+
+    try:
+        desired = int(os.getenv("HERMES_CRON_MIN_NOFILE", "1024") or "0")
+    except (TypeError, ValueError):
+        desired = 1024
+    if desired <= 0:
+        return
+
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft >= desired:
+            return
+        if hard == resource.RLIM_INFINITY:
+            new_soft = desired
+        else:
+            new_soft = min(desired, hard)
+        if new_soft <= soft:
+            return
+        resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, hard))
+        logger.info(
+            "Raised cron RLIMIT_NOFILE soft limit from %s to %s (hard=%s)",
+            soft,
+            new_soft,
+            "unlimited" if hard == resource.RLIM_INFINITY else hard,
+        )
+    except Exception as exc:
+        logger.debug("Could not raise cron RLIMIT_NOFILE: %s", exc)
 
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
@@ -1266,6 +1311,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
+        _ensure_cron_fd_limit()
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
         result = subprocess.run(
             argv,
@@ -2408,6 +2454,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         Number of jobs executed (0 if another tick is already running)
     """
     lock_dir, lock_file = _get_lock_paths()
+    _ensure_cron_fd_limit()
     lock_dir.mkdir(parents=True, exist_ok=True)
 
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows

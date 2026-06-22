@@ -187,6 +187,12 @@ TOOLSETS = {
         "tools": ["read_file", "write_file", "patch", "search_files"],
         "includes": []
     },
+
+    "restricted_lane": {
+        "description": "Restricted-lane proof/output capability: exposes only proof-path-only write under a manifest-declared allowlisted root.",
+        "tools": ["restricted_lane_proof_write"],
+        "includes": []
+    },
     
     "tts": {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
@@ -320,7 +326,8 @@ TOOLSETS = {
         "tools": [],
         "includes": ["web", "vision", "image_gen"]
     },
-    
+
+
     # ==========================================================================
     # Full Hermes toolsets (CLI + messaging platforms)
     #

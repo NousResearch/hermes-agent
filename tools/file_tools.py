@@ -2,6 +2,7 @@
 """File Tools Module - LLM agent file manipulation tools."""
 
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -16,6 +17,8 @@ from tools.file_operations import (
     normalize_search_pagination,
 )
 from tools import file_state
+from tools.path_security import validate_within_dir
+from tools.registry import tool_error
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -181,6 +184,152 @@ def _is_expected_write_exception(exc: Exception) -> bool:
     if isinstance(exc, OSError) and exc.errno in _EXPECTED_WRITE_ERRNOS:
         return True
     return False
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+_RESTRICTED_LANE_ALLOWED_ROOT_ENV = "HERMES_RESTRICTED_LANE_ALLOWED_ROOT"
+_RESTRICTED_LANE_REQUIRED_TOOLSET = "restricted_lane"
+_RESTRICTED_LANE_REQUIRED_CAPABILITY = "restricted_lane_proof_write"
+_restricted_lane_manifest_lock = threading.Lock()
+_restricted_lane_manifests_by_task: dict[str, dict] = {}
+
+
+def _normalize_restricted_lane_manifest(manifest: dict | None, task_id: str = "default") -> dict:
+    if not isinstance(manifest, dict):
+        raise PermissionError("restricted lane manifest missing or invalid")
+
+    allowed_root_raw = str(manifest.get("allowed_root", "") or "").strip()
+    if not allowed_root_raw:
+        raise PermissionError("restricted lane manifest missing allowed_root")
+
+    normalized = {
+        "allowed_root": str(_resolve_path_for_task(allowed_root_raw, task_id)),
+        "toolset": str(manifest.get("toolset") or _RESTRICTED_LANE_REQUIRED_TOOLSET),
+        "capability": str(manifest.get("capability") or _RESTRICTED_LANE_REQUIRED_CAPABILITY),
+    }
+    return normalized
+
+
+def set_restricted_lane_manifest_for_task(task_id: str, manifest: dict) -> dict:
+    normalized = _normalize_restricted_lane_manifest(manifest, task_id)
+    key = task_id or "default"
+    with _restricted_lane_manifest_lock:
+        _restricted_lane_manifests_by_task[key] = normalized
+    return dict(normalized)
+
+
+def clear_restricted_lane_manifest_for_task(task_id: str | None = None) -> None:
+    with _restricted_lane_manifest_lock:
+        if task_id is None:
+            _restricted_lane_manifests_by_task.clear()
+            return
+        _restricted_lane_manifests_by_task.pop(task_id or "default", None)
+
+
+def _resolve_restricted_lane_manifest_root(task_id: str = "default") -> Path:
+    """Resolve the runtime-bound restricted-lane output root.
+
+    The restricted-lane capability must not trust a free caller-chosen root as
+    the sole authority. The runtime binds the allowed root via an explicit
+    manifest/environment declaration, and the tool call may only confirm that
+    same root, not choose a different one.
+    """
+    key = task_id or "default"
+    with _restricted_lane_manifest_lock:
+        manifest = dict(_restricted_lane_manifests_by_task.get(key) or {})
+    if not manifest:
+        raise PermissionError(
+            "restricted lane manifest/root binding missing: "
+            "session setup must bind a structured restricted-lane manifest before using restricted_lane_proof_write"
+        )
+    normalized = _normalize_restricted_lane_manifest(manifest, task_id)
+    if normalized["toolset"] != _RESTRICTED_LANE_REQUIRED_TOOLSET:
+        raise PermissionError(
+            "restricted lane manifest toolset mismatch: "
+            f"expected {_RESTRICTED_LANE_REQUIRED_TOOLSET}, got {normalized['toolset']}"
+        )
+    if normalized["capability"] != _RESTRICTED_LANE_REQUIRED_CAPABILITY:
+        raise PermissionError(
+            "restricted lane manifest capability mismatch: "
+            f"expected {_RESTRICTED_LANE_REQUIRED_CAPABILITY}, got {normalized['capability']}"
+        )
+    return Path(normalized["allowed_root"])
+
+
+def restricted_lane_proof_write_tool(
+    allowed_root: str,
+    relative_path: str,
+    content: str,
+    reason: str,
+    operation_class: str,
+    task_id: str = "default",
+) -> str:
+    """Write only within an explicit allowlisted proof/output root."""
+    try:
+        manifest_root = _resolve_restricted_lane_manifest_root(task_id)
+        requested_root = _resolve_path_for_task(allowed_root, task_id)
+        if requested_root != manifest_root:
+            return tool_error(
+                "restricted lane manifest/root mismatch: caller-supplied allowed_root does not match the runtime-bound manifest root",
+                ok=False,
+                result="blocked",
+                mechanism="restricted_lane_manifest_binding",
+                declared_allowed_root=str(manifest_root),
+                requested_allowed_root=str(requested_root),
+                reason=reason,
+                operation_class=operation_class,
+            )
+
+        root = manifest_root
+        target = root / relative_path
+
+        validation_error = validate_within_dir(target, root)
+        if validation_error:
+            return json.dumps({
+                "ok": False,
+                "result": "blocked",
+                "mechanism": "canonical_path_guard",
+                "evidence": f"Denied write outside allowlisted proof root: {target} ({validation_error})",
+                "allowed_root": str(root),
+                "attempted_path": str(target),
+                "reason": reason,
+                "operation_class": operation_class,
+            }, ensure_ascii=False)
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        stale_warning = _check_file_staleness(str(target), task_id)
+        resolved_target = str(target.resolve())
+        with file_state.lock_path(resolved_target):
+            cross_warning = file_state.check_stale(task_id, resolved_target)
+            existed = target.exists()
+            target.write_text(content, encoding="utf-8")
+            _update_read_timestamp(str(target), task_id)
+            file_state.note_write(task_id, resolved_target)
+
+        result = {
+            "ok": True,
+            "result": "written",
+            "path": str(target),
+            "operation": "update" if existed else "create",
+            "bytes": len(content.encode("utf-8")),
+            "sha256": _sha256_file(target),
+            "reason": reason,
+            "operation_class": operation_class,
+            "allowed_root": str(root),
+        }
+        effective_warning = cross_warning or stale_warning
+        if effective_warning:
+            result["_warning"] = effective_warning
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        if _is_expected_write_exception(e):
+            logger.debug("restricted_lane_proof_write expected denial: %s: %s", type(e).__name__, e)
+        else:
+            logger.error("restricted_lane_proof_write error: %s: %s", type(e).__name__, e, exc_info=True)
+        return tool_error(str(e))
 
 
 _file_ops_lock = threading.Lock()
@@ -1104,6 +1253,22 @@ PATCH_SCHEMA = {
     },
 }
 
+RESTRICTED_LANE_PROOF_WRITE_SCHEMA = {
+    "name": "restricted_lane_proof_write",
+    "description": "Write a file only under a declared proof/output root with canonical path and symlink-escape denial. This is the first-class Hermes restricted-lane proof-path-only write capability. It returns an auditable record with path, operation, bytes, sha256, and reason.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "allowed_root": {"type": "string", "description": "Absolute or task-relative allowlisted proof/output root for this restricted-lane run."},
+            "relative_path": {"type": "string", "description": "Relative path under allowed_root to write."},
+            "content": {"type": "string", "description": "Full UTF-8 text content to write."},
+            "reason": {"type": "string", "description": "Why this wrapper-governed proof write is allowed."},
+            "operation_class": {"type": "string", "description": "Audit classification for the write, e.g. wrapper_governed_write or harness_artifact_write."}
+        },
+        "required": ["allowed_root", "relative_path", "content", "reason", "operation_class"]
+    }
+}
+
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
     "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
@@ -1160,6 +1325,18 @@ def _handle_patch(args, **kw):
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid)
 
 
+def _handle_restricted_lane_proof_write(args, **kw):
+    tid = kw.get("task_id") or "default"
+    return restricted_lane_proof_write_tool(
+        allowed_root=args.get("allowed_root", ""),
+        relative_path=args.get("relative_path", ""),
+        content=args.get("content", ""),
+        reason=args.get("reason", ""),
+        operation_class=args.get("operation_class", ""),
+        task_id=tid,
+    )
+
+
 def _handle_search_files(args, **kw):
     tid = kw.get("task_id") or "default"
     target_map = {"grep": "content", "find": "files"}
@@ -1174,4 +1351,5 @@ def _handle_search_files(args, **kw):
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000)
 registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000)
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000)
+registry.register(name="restricted_lane_proof_write", toolset="restricted_lane", schema=RESTRICTED_LANE_PROOF_WRITE_SCHEMA, handler=_handle_restricted_lane_proof_write, check_fn=_check_file_reqs, emoji="🔐", max_result_size_chars=100_000)
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)

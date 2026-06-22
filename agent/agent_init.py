@@ -53,6 +53,7 @@ from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from model_tools import check_toolset_requirements, get_tool_definitions
+from tools.file_tools import set_restricted_lane_manifest_for_task
 from utils import base_url_host_matches
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
@@ -202,6 +203,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    restricted_lane_manifest: Dict[str, Any] = None,
 ):
     """
     Initialize the AI Agent.
@@ -280,6 +282,7 @@ def init_agent(
     agent.skip_context_files = skip_context_files
     agent.load_soul_identity = load_soul_identity
     agent.pass_session_id = pass_session_id
+    agent._restricted_lane_manifest = None
     agent._credential_pool = credential_pool
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
@@ -912,9 +915,9 @@ def init_agent(
     )
     
     # Show tool configuration and store valid tool names for validation
-    agent.valid_tool_names = set()
+    agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
+
     if agent.tools:
-        agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools}
         tool_names = sorted(agent.valid_tool_names)
         if not agent.quiet_mode:
             print(f"🛠️  Loaded {len(agent.tools)} tools: {', '.join(tool_names)}")
@@ -986,6 +989,23 @@ def init_agent(
         _SESSION_ID.set(agent.session_id)
     except Exception:
         pass  # CLI/test mode — ContextVar not needed
+
+    if restricted_lane_manifest is not None:
+        agent._restricted_lane_manifest = set_restricted_lane_manifest_for_task(
+            agent.session_id,
+            restricted_lane_manifest,
+        )
+    elif enabled_toolsets and "restricted_lane" in enabled_toolsets:
+        declared_root = os.environ.get("HERMES_RESTRICTED_LANE_ALLOWED_ROOT", "").strip()
+        if declared_root:
+            agent._restricted_lane_manifest = set_restricted_lane_manifest_for_task(
+                agent.session_id,
+                {
+                    "allowed_root": declared_root,
+                    "toolset": "restricted_lane",
+                    "capability": "restricted_lane_proof_write",
+                },
+            )
 
     # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
     hermes_home = get_hermes_home()

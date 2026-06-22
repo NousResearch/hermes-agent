@@ -2086,6 +2086,56 @@ class CLICommandsMixin:
         else:
             _cprint("  Failed to save runtime_footer setting to config.yaml")
 
+    def _handle_timestamps_command(self, cmd_original: str) -> None:
+        """Toggle or inspect ``display.timestamps`` from the CLI.
+
+        When on, submitted and streamed message labels carry an ``[HH:MM]``
+        suffix and ``/history`` prefixes each turn with its time (for turns
+        that carry a stored timestamp).
+
+        Usage:
+            /timestamps           → toggle
+            /timestamps on|off    → explicit
+            /timestamps status    → show current state
+        """
+        from cli import _cprint, save_config_value
+        from hermes_cli.colors import Colors as _Colors
+
+        arg = ""
+        try:
+            parts = (cmd_original or "").strip().split(None, 1)
+            if len(parts) > 1:
+                arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        current = bool(getattr(self, "show_timestamps", False))
+
+        if arg in {"status", "?"}:
+            state = "ON" if current else "OFF"
+            _cprint(f"  {_Colors.BOLD}Message timestamps:{_Colors.RESET} {state}")
+            return
+
+        if arg in {"on", "enable", "true", "1"}:
+            new_state = True
+        elif arg in {"off", "disable", "false", "0"}:
+            new_state = False
+        elif arg == "":
+            new_state = not current
+        else:
+            _cprint("  Usage: /timestamps [on|off|status]")
+            return
+
+        self.show_timestamps = new_state
+        if save_config_value("display.timestamps", new_state):
+            state = (
+                f"{_Colors.GREEN}ON{_Colors.RESET}" if new_state
+                else f"{_Colors.DIM}OFF{_Colors.RESET}"
+            )
+            _cprint(f"  Message timestamps: {state}")
+        else:
+            _cprint("  Failed to save timestamps setting to config.yaml")
+
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.
 

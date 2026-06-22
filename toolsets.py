@@ -216,7 +216,13 @@ TOOLSETS = {
         "tools": [],
         "includes": []
     },
-    
+
+    "headroom": {
+        "description": "Tool output compression: retrieve full originals of compressed tool outputs",
+        "tools": ["headroom_retrieve"],
+        "includes": []
+    },
+
     "session_search": {
         "description": "Search and recall past conversations with summarization",
         "tools": ["session_search"],

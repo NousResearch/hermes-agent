@@ -553,6 +553,22 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # HRM-T0a active-topic-pointer routing.  When enabled, the inbound
+    # session-key pre-pass consults ``active_topic_pointer`` (via
+    # ``gateway.active_topic.resolve_topic_session_key``) and routes the turn
+    # to a topic-derived session whenever a pointer exists for the inbound
+    # principal/app.  When disabled, the legacy thread-derived session-key
+    # path is used unchanged (soft rollback layer 1 from the plan §8).
+    #
+    # ``topic_default_app_id`` is the single app_id this gateway stamps onto
+    # every inbound principal.  Per residual-risk note in the plan §9 (and
+    # charter § Cross-repo execution discipline), HRM-T0a takes app_id as
+    # an input parameter; a richer multi-app resolver is T1's responsibility.
+    # When ``None``, the routing pre-pass short-circuits — no app_id ⇒ no
+    # principal ⇒ legacy fall-through.
+    topic_pointer_mode_enabled: bool = True
+    topic_default_app_id: Optional[str] = None
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -657,6 +673,10 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "topic": {
+                "pointer_mode_enabled": self.topic_pointer_mode_enabled,
+                "default_app_id": self.topic_default_app_id,
+            },
         }
     
     @classmethod
@@ -726,6 +746,22 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        # HRM-T0a: read ``topic.pointer_mode_enabled`` and
+        # ``topic.default_app_id`` from the nested block in YAML. Accept the
+        # legacy flat keys too so older configs aren't broken on upgrade.
+        topic_block = data.get("topic") if isinstance(data.get("topic"), dict) else {}
+        topic_pointer_mode_enabled_raw = data.get("topic_pointer_mode_enabled")
+        if topic_pointer_mode_enabled_raw is None:
+            topic_pointer_mode_enabled_raw = topic_block.get("pointer_mode_enabled")
+        topic_default_app_id_raw = data.get("topic_default_app_id")
+        if topic_default_app_id_raw is None:
+            topic_default_app_id_raw = topic_block.get("default_app_id")
+        topic_default_app_id = (
+            str(topic_default_app_id_raw)
+            if topic_default_app_id_raw
+            else None
+        )
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -746,6 +782,10 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            topic_pointer_mode_enabled=_coerce_bool(
+                topic_pointer_mode_enabled_raw, True
+            ),
+            topic_default_app_id=topic_default_app_id,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:

@@ -3043,7 +3043,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return self._exit_code
 
     def _session_key_for_source(self, source: SessionSource) -> str:
-        """Resolve the current session key for a source, honoring gateway config when available."""
+        """Resolve the current session key for a source, honoring gateway config when available.
+
+        HRM-T0a step 4: the primary path through ``session_store
+        ._generate_session_key`` already runs the active-topic-pointer
+        pre-pass. The session-store-less fallback path below mirrors the
+        same pre-pass so a session_store-less init (early boot, tests)
+        still honours pointer-mode routing.
+        """
         if hasattr(self, "session_store") and self.session_store is not None:
             try:
                 session_key = self.session_store._generate_session_key(source)
@@ -3065,6 +3072,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
+        # HRM-T0a routing pre-pass (fallback path). Same fail-closed
+        # semantics: any miss falls through to legacy build_session_key.
+        if (
+            getattr(config, "topic_pointer_mode_enabled", True)
+            and getattr(config, "topic_default_app_id", None)
+        ):
+            session_db = getattr(self, "_session_db", None)
+            if session_db is not None:
+                try:
+                    from gateway.active_topic import resolve_topic_session_key
+                    topic_key = resolve_topic_session_key(
+                        source,
+                        session_db,
+                        app_id=config.topic_default_app_id,
+                        profile=_profile,
+                        pointer_mode_enabled=True,
+                        require_registered_check=True,
+                    )
+                    if topic_key:
+                        return topic_key
+                except Exception:
+                    logger.debug(
+                        "topic routing pre-pass failed in session_key fallback",
+                        exc_info=True,
+                    )
         return build_session_key(
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),

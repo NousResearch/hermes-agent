@@ -576,7 +576,10 @@ CREATE TABLE IF NOT EXISTS messages (
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
-    compacted INTEGER NOT NULL DEFAULT 0
+    compacted INTEGER NOT NULL DEFAULT 0,
+    moved_to_session_id TEXT,
+    moved_to_message_id INTEGER,
+    moved_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -5024,3 +5027,621 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
+
+    # ── HRM-T0a: active-topic pointer + move primitive ─────────────────
+    #
+    # Side tables for the same-chat active-topic-pointer routing model
+    # and the atomic session-move primitive. Mirrors the opt-in
+    # telegram-topic migration pattern: the tables are created on first
+    # explicit use, not at SessionDB startup, so profiles that never
+    # touch /topic or move-turns stay schema-pristine.
+
+    def apply_hrm_t0a_migration(self) -> None:
+        """Create active_topic_pointer + move_log tables on first explicit use.
+
+        Schema:
+          active_topic_pointer — same-chat routing pointer keyed by
+            (platform, user_id, chat_id, app_id) → topic_id.
+          move_log — idempotent audit row per session-move call,
+            keyed by (idempotency_key, src_session_id, dst_session_id).
+
+        The soft-delete columns on `messages` (moved_to_session_id,
+        moved_to_message_id, moved_at) are declared in SCHEMA_SQL and
+        picked up by _reconcile_columns() at startup; this migration
+        only owns the new side tables.
+        """
+        def _do(conn):
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS active_topic_pointer (
+                    platform        TEXT NOT NULL,
+                    user_id         TEXT NOT NULL,
+                    chat_id         TEXT NOT NULL,
+                    app_id          TEXT NOT NULL,
+                    topic_id        TEXT NOT NULL,
+                    bound_thread_id TEXT,
+                    updated_at      REAL NOT NULL,
+                    updated_by      TEXT NOT NULL,
+                    PRIMARY KEY (platform, user_id, chat_id, app_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_atp_app_topic
+                    ON active_topic_pointer (app_id, topic_id);
+
+                CREATE TABLE IF NOT EXISTS move_log (
+                    idempotency_key TEXT NOT NULL,
+                    src_session_id  TEXT NOT NULL,
+                    dst_session_id  TEXT NOT NULL,
+                    range_spec      TEXT NOT NULL,
+                    src_message_ids TEXT NOT NULL,
+                    dst_message_ids TEXT NOT NULL,
+                    response_body   TEXT NOT NULL,
+                    committed_at    REAL NOT NULL,
+                    PRIMARY KEY (idempotency_key, src_session_id, dst_session_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_move_log_src
+                    ON move_log (src_session_id, committed_at);
+                CREATE INDEX IF NOT EXISTS idx_move_log_dst
+                    ON move_log (dst_session_id, committed_at);
+                """
+            )
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                ("hrm_t0a_schema_version", "1"),
+            )
+
+            # Stamp the migration-applied marker once. Used by the inbound
+            # router to identify legacy (pre-HRM-T0a) sessions as
+            # session.started_at < hrm_t0a_applied_at — set high-water-mark
+            # so no existing session can be misclassified by clock skew.
+            row = conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                ("hrm_t0a_applied_at",),
+            ).fetchone()
+            if row is None:
+                max_started = conn.execute(
+                    "SELECT MAX(started_at) FROM sessions"
+                ).fetchone()
+                ceiling = float(max_started[0] or 0.0) if max_started else 0.0
+                stamp = max(time.time(), ceiling + 1.0)
+                conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?)",
+                    ("hrm_t0a_applied_at", repr(stamp)),
+                )
+        self._execute_write(_do)
+
+    # ── active_topic_pointer accessors ──────────────────────────────────
+
+    def read_active_topic(
+        self,
+        *,
+        platform: str,
+        user_id: str,
+        chat_id: str,
+        app_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the pointer row for the principal/app, or None if unset.
+
+        Read-only: does NOT trigger the HRM-T0a migration. If the side
+        tables haven't been created yet, callers see ``None`` (legacy /
+        unrouted) without paying the migration cost on the hot read path.
+        """
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT topic_id, bound_thread_id, updated_at, updated_by
+                    FROM active_topic_pointer
+                    WHERE platform = ? AND user_id = ? AND chat_id = ? AND app_id = ?
+                    """,
+                    (str(platform), str(user_id), str(chat_id), str(app_id)),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if row is None:
+            return None
+        if isinstance(row, sqlite3.Row):
+            return {
+                "topic_id": row["topic_id"],
+                "bound_thread_id": row["bound_thread_id"],
+                "updated_at": row["updated_at"],
+                "updated_by": row["updated_by"],
+            }
+        return {
+            "topic_id": row[0],
+            "bound_thread_id": row[1],
+            "updated_at": row[2],
+            "updated_by": row[3],
+        }
+
+    def set_active_topic(
+        self,
+        *,
+        platform: str,
+        user_id: str,
+        chat_id: str,
+        app_id: str,
+        topic_id: str,
+        bound_thread_id: Optional[str] = None,
+        updated_by: str,
+    ) -> Dict[str, Any]:
+        """Upsert the pointer for the principal/app to *topic_id*.
+
+        Returns ``{"prior": <prior_row_or_None>, "current": <new_row>}`` so
+        the caller can compose a compensating ``set_active_topic`` if a
+        downstream step (e.g. confirmation banner emit) fails after commit.
+
+        Triggers the HRM-T0a migration on first call.
+        """
+        if not topic_id:
+            raise ValueError("topic_id is required")
+        if not updated_by:
+            raise ValueError("updated_by is required (provenance for audit)")
+        self.apply_hrm_t0a_migration()
+        now = time.time()
+
+        def _do(conn):
+            prior_row = conn.execute(
+                """
+                SELECT topic_id, bound_thread_id, updated_at, updated_by
+                FROM active_topic_pointer
+                WHERE platform = ? AND user_id = ? AND chat_id = ? AND app_id = ?
+                """,
+                (str(platform), str(user_id), str(chat_id), str(app_id)),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO active_topic_pointer (
+                    platform, user_id, chat_id, app_id,
+                    topic_id, bound_thread_id, updated_at, updated_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(platform, user_id, chat_id, app_id) DO UPDATE SET
+                    topic_id = excluded.topic_id,
+                    bound_thread_id = excluded.bound_thread_id,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by
+                """,
+                (
+                    str(platform),
+                    str(user_id),
+                    str(chat_id),
+                    str(app_id),
+                    str(topic_id),
+                    str(bound_thread_id) if bound_thread_id else None,
+                    now,
+                    str(updated_by),
+                ),
+            )
+            prior: Optional[Dict[str, Any]] = None
+            if prior_row is not None:
+                if isinstance(prior_row, sqlite3.Row):
+                    prior = {
+                        "topic_id": prior_row["topic_id"],
+                        "bound_thread_id": prior_row["bound_thread_id"],
+                        "updated_at": prior_row["updated_at"],
+                        "updated_by": prior_row["updated_by"],
+                    }
+                else:
+                    prior = {
+                        "topic_id": prior_row[0],
+                        "bound_thread_id": prior_row[1],
+                        "updated_at": prior_row[2],
+                        "updated_by": prior_row[3],
+                    }
+            return {
+                "prior": prior,
+                "current": {
+                    "topic_id": str(topic_id),
+                    "bound_thread_id": str(bound_thread_id) if bound_thread_id else None,
+                    "updated_at": now,
+                    "updated_by": str(updated_by),
+                },
+            }
+        return self._execute_write(_do)
+
+    def clear_active_topic(
+        self,
+        *,
+        platform: str,
+        user_id: str,
+        chat_id: str,
+        app_id: str,
+        updated_by: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Delete the pointer for the principal/app. Returns the prior row, or None."""
+        if not updated_by:
+            raise ValueError("updated_by is required (provenance for audit)")
+        self.apply_hrm_t0a_migration()
+
+        def _do(conn):
+            prior_row = conn.execute(
+                """
+                SELECT topic_id, bound_thread_id, updated_at, updated_by
+                FROM active_topic_pointer
+                WHERE platform = ? AND user_id = ? AND chat_id = ? AND app_id = ?
+                """,
+                (str(platform), str(user_id), str(chat_id), str(app_id)),
+            ).fetchone()
+            conn.execute(
+                "DELETE FROM active_topic_pointer "
+                "WHERE platform = ? AND user_id = ? AND chat_id = ? AND app_id = ?",
+                (str(platform), str(user_id), str(chat_id), str(app_id)),
+            )
+            if prior_row is None:
+                return None
+            if isinstance(prior_row, sqlite3.Row):
+                return {
+                    "topic_id": prior_row["topic_id"],
+                    "bound_thread_id": prior_row["bound_thread_id"],
+                    "updated_at": prior_row["updated_at"],
+                    "updated_by": prior_row["updated_by"],
+                }
+            return {
+                "topic_id": prior_row[0],
+                "bound_thread_id": prior_row[1],
+                "updated_at": prior_row[2],
+                "updated_by": prior_row[3],
+            }
+        return self._execute_write(_do)
+
+    # ── session-move primitive ──────────────────────────────────────────
+
+    def _resolve_move_range(
+        self,
+        conn: sqlite3.Connection,
+        src_session_id: str,
+        range_spec: str,
+    ) -> List[int]:
+        """Resolve a range spec to a concrete list of message row ids in src.
+
+        Supported specs (kept narrow on purpose; T4 wraps richer UX):
+          - "last:N"      → the last N active, non-tombstoned messages
+          - "range:A..B"  → messages.id A through B inclusive (active only)
+        """
+        if not range_spec or ":" not in range_spec:
+            raise ValueError(f"unsupported range_spec: {range_spec!r}")
+        kind, _, payload = range_spec.partition(":")
+        if kind == "last":
+            try:
+                n = int(payload)
+            except ValueError as exc:
+                raise ValueError(f"last:N requires integer N, got {payload!r}") from exc
+            if n <= 0:
+                raise ValueError("last:N requires N > 0")
+            rows = conn.execute(
+                """
+                SELECT id FROM messages
+                WHERE session_id = ?
+                  AND active = 1
+                  AND moved_to_session_id IS NULL
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (src_session_id, n),
+            ).fetchall()
+            ids = [r[0] if not isinstance(r, sqlite3.Row) else r["id"] for r in rows]
+            ids.reverse()
+            return ids
+        if kind == "range":
+            if ".." not in payload:
+                raise ValueError(f"range:A..B requires A..B, got {payload!r}")
+            a_str, b_str = payload.split("..", 1)
+            try:
+                a = int(a_str)
+                b = int(b_str)
+            except ValueError as exc:
+                raise ValueError(f"range:A..B requires integers, got {payload!r}") from exc
+            if a > b:
+                raise ValueError("range:A..B requires A <= B")
+            rows = conn.execute(
+                """
+                SELECT id FROM messages
+                WHERE session_id = ?
+                  AND active = 1
+                  AND moved_to_session_id IS NULL
+                  AND id BETWEEN ? AND ?
+                ORDER BY id ASC
+                """,
+                (src_session_id, a, b),
+            ).fetchall()
+            return [r[0] if not isinstance(r, sqlite3.Row) else r["id"] for r in rows]
+        raise ValueError(f"unsupported range kind: {kind!r}")
+
+    def move_turns(
+        self,
+        *,
+        src_session_id: str,
+        dst_session_id: str,
+        range_spec: str,
+        idempotency_key: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """Atomically move a range of messages from src to dst.
+
+        Charter contract: read src range → INSERT into dst → tombstone src
+        rows (soft delete via moved_to_session_id / moved_to_message_id /
+        moved_at) → append move_log row, all inside one BEGIN IMMEDIATE
+        transaction. On crash mid-transaction, src and dst are byte-equal
+        to the pre-call state and no move_log row exists.
+
+        Idempotency:
+          - Non-dry-run calls REQUIRE an ``idempotency_key`` (the move_log
+            primary key includes (key, src, dst)). A second call with the
+            same key returns the cached response body byte-equal.
+          - Dry-run calls do NOT write any state (BEGIN IMMEDIATE + plan
+            + ROLLBACK pattern via an exception). The response includes a
+            suggested key the client can echo on commit.
+
+        Returns a dict shaped:
+          {
+            "dry_run": bool,
+            "src_session_id": str,
+            "dst_session_id": str,
+            "range_spec": str,
+            "src_message_ids": [int, ...],
+            "dst_message_ids": [int, ...],   # empty when dry_run=True
+            "idempotency_key": str,
+            "replay": bool,                  # True if the row already existed
+            "committed_at": float,
+          }
+        """
+        if not src_session_id or not dst_session_id:
+            raise ValueError("src_session_id and dst_session_id are required")
+        if src_session_id == dst_session_id:
+            raise ValueError("src_session_id must differ from dst_session_id")
+        if not dry_run and not idempotency_key:
+            raise ValueError("idempotency_key is required for non-dry-run move")
+
+        self.apply_hrm_t0a_migration()
+
+        if dry_run:
+            # Dry-run: resolve the range under a snapshot read; never write.
+            # Use the read connection (lock-held, no BEGIN IMMEDIATE) so we
+            # don't acquire the WAL write lock for a plan-only call.
+            with self._lock:
+                # Existence checks
+                src_exists = self._conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ?",
+                    (src_session_id,),
+                ).fetchone()
+                if src_exists is None:
+                    raise KeyError(f"src session not found: {src_session_id}")
+                dst_exists = self._conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ?",
+                    (dst_session_id,),
+                ).fetchone()
+                if dst_exists is None:
+                    raise KeyError(f"dst session not found: {dst_session_id}")
+                src_ids = self._resolve_move_range(
+                    self._conn, src_session_id, range_spec
+                )
+            return {
+                "dry_run": True,
+                "src_session_id": src_session_id,
+                "dst_session_id": dst_session_id,
+                "range_spec": range_spec,
+                "src_message_ids": src_ids,
+                "dst_message_ids": [],
+                "idempotency_key": idempotency_key or "",
+                "replay": False,
+                "committed_at": 0.0,
+            }
+
+        def _do(conn):
+            # Replay check first — if this key+pair was already committed,
+            # return the cached response body byte-equal (charter contract).
+            replay_row = conn.execute(
+                """
+                SELECT response_body FROM move_log
+                WHERE idempotency_key = ?
+                  AND src_session_id = ?
+                  AND dst_session_id = ?
+                """,
+                (idempotency_key, src_session_id, dst_session_id),
+            ).fetchone()
+            if replay_row is not None:
+                body_json = replay_row[0] if not isinstance(replay_row, sqlite3.Row) else replay_row["response_body"]
+                cached = json.loads(body_json)
+                cached["replay"] = True
+                return cached
+
+            # Validate session existence under the same transaction snapshot.
+            if conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?",
+                (src_session_id,),
+            ).fetchone() is None:
+                raise KeyError(f"src session not found: {src_session_id}")
+            if conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?",
+                (dst_session_id,),
+            ).fetchone() is None:
+                raise KeyError(f"dst session not found: {dst_session_id}")
+
+            src_ids = self._resolve_move_range(conn, src_session_id, range_spec)
+            if not src_ids:
+                # Nothing to move — empty audit row so a replay with the
+                # same key is still idempotent (returns the same shape).
+                committed_at = time.time()
+                response = {
+                    "dry_run": False,
+                    "src_session_id": src_session_id,
+                    "dst_session_id": dst_session_id,
+                    "range_spec": range_spec,
+                    "src_message_ids": [],
+                    "dst_message_ids": [],
+                    "idempotency_key": idempotency_key,
+                    "replay": False,
+                    "committed_at": committed_at,
+                }
+                conn.execute(
+                    """
+                    INSERT INTO move_log (
+                        idempotency_key, src_session_id, dst_session_id,
+                        range_spec, src_message_ids, dst_message_ids,
+                        response_body, committed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        idempotency_key,
+                        src_session_id,
+                        dst_session_id,
+                        range_spec,
+                        json.dumps([]),
+                        json.dumps([]),
+                        json.dumps(response),
+                        committed_at,
+                    ),
+                )
+                return response
+
+            # Copy each src message into dst preserving role/content/etc.
+            dst_ids: List[int] = []
+            for src_id in src_ids:
+                src_row = conn.execute(
+                    """
+                    SELECT role, content, tool_call_id, tool_calls, tool_name,
+                           timestamp, token_count, finish_reason, reasoning,
+                           reasoning_content, reasoning_details,
+                           codex_reasoning_items, codex_message_items,
+                           platform_message_id, observed, active, compacted
+                    FROM messages WHERE id = ?
+                    """,
+                    (src_id,),
+                ).fetchone()
+                if src_row is None:
+                    raise RuntimeError(f"src message vanished mid-move: id={src_id}")
+                cur = conn.execute(
+                    """
+                    INSERT INTO messages (
+                        session_id, role, content, tool_call_id, tool_calls,
+                        tool_name, timestamp, token_count, finish_reason,
+                        reasoning, reasoning_content, reasoning_details,
+                        codex_reasoning_items, codex_message_items,
+                        platform_message_id, observed, active, compacted
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        dst_session_id,
+                        src_row[0] if not isinstance(src_row, sqlite3.Row) else src_row["role"],
+                        src_row[1] if not isinstance(src_row, sqlite3.Row) else src_row["content"],
+                        src_row[2] if not isinstance(src_row, sqlite3.Row) else src_row["tool_call_id"],
+                        src_row[3] if not isinstance(src_row, sqlite3.Row) else src_row["tool_calls"],
+                        src_row[4] if not isinstance(src_row, sqlite3.Row) else src_row["tool_name"],
+                        src_row[5] if not isinstance(src_row, sqlite3.Row) else src_row["timestamp"],
+                        src_row[6] if not isinstance(src_row, sqlite3.Row) else src_row["token_count"],
+                        src_row[7] if not isinstance(src_row, sqlite3.Row) else src_row["finish_reason"],
+                        src_row[8] if not isinstance(src_row, sqlite3.Row) else src_row["reasoning"],
+                        src_row[9] if not isinstance(src_row, sqlite3.Row) else src_row["reasoning_content"],
+                        src_row[10] if not isinstance(src_row, sqlite3.Row) else src_row["reasoning_details"],
+                        src_row[11] if not isinstance(src_row, sqlite3.Row) else src_row["codex_reasoning_items"],
+                        src_row[12] if not isinstance(src_row, sqlite3.Row) else src_row["codex_message_items"],
+                        src_row[13] if not isinstance(src_row, sqlite3.Row) else src_row["platform_message_id"],
+                        src_row[14] if not isinstance(src_row, sqlite3.Row) else src_row["observed"],
+                        src_row[15] if not isinstance(src_row, sqlite3.Row) else src_row["active"],
+                        src_row[16] if not isinstance(src_row, sqlite3.Row) else src_row["compacted"],
+                    ),
+                )
+                dst_ids.append(int(cur.lastrowid))
+
+            # Tombstone src rows. Soft-delete only: we keep the content
+            # for raw inspection (admin flag) and so a forensic dump can
+            # cross-reference src↔dst by moved_to_message_id.
+            moved_at = time.time()
+            for src_id, dst_id in zip(src_ids, dst_ids):
+                conn.execute(
+                    """
+                    UPDATE messages SET
+                        moved_to_session_id = ?,
+                        moved_to_message_id = ?,
+                        moved_at = ?,
+                        active = 0
+                    WHERE id = ?
+                    """,
+                    (dst_session_id, dst_id, moved_at, src_id),
+                )
+
+            committed_at = time.time()
+            response = {
+                "dry_run": False,
+                "src_session_id": src_session_id,
+                "dst_session_id": dst_session_id,
+                "range_spec": range_spec,
+                "src_message_ids": src_ids,
+                "dst_message_ids": dst_ids,
+                "idempotency_key": idempotency_key,
+                "replay": False,
+                "committed_at": committed_at,
+            }
+            conn.execute(
+                """
+                INSERT INTO move_log (
+                    idempotency_key, src_session_id, dst_session_id,
+                    range_spec, src_message_ids, dst_message_ids,
+                    response_body, committed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    idempotency_key,
+                    src_session_id,
+                    dst_session_id,
+                    range_spec,
+                    json.dumps(src_ids),
+                    json.dumps(dst_ids),
+                    json.dumps(response),
+                    committed_at,
+                ),
+            )
+            return response
+        return self._execute_write(_do)
+
+    def read_move_log(
+        self,
+        *,
+        session_id: str,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Audit feed for a session — moves where the session is src or dst.
+
+        Read-only: returns ``[]`` if the move_log table doesn't exist yet.
+        """
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    """
+                    SELECT idempotency_key, src_session_id, dst_session_id,
+                           range_spec, src_message_ids, dst_message_ids,
+                           committed_at
+                    FROM move_log
+                    WHERE src_session_id = ? OR dst_session_id = ?
+                    ORDER BY committed_at DESC
+                    LIMIT ?
+                    """,
+                    (session_id, session_id, int(limit)),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            if isinstance(row, sqlite3.Row):
+                out.append({
+                    "idempotency_key": row["idempotency_key"],
+                    "src_session_id": row["src_session_id"],
+                    "dst_session_id": row["dst_session_id"],
+                    "range_spec": row["range_spec"],
+                    "src_message_ids": json.loads(row["src_message_ids"]),
+                    "dst_message_ids": json.loads(row["dst_message_ids"]),
+                    "committed_at": row["committed_at"],
+                })
+            else:
+                out.append({
+                    "idempotency_key": row[0],
+                    "src_session_id": row[1],
+                    "dst_session_id": row[2],
+                    "range_spec": row[3],
+                    "src_message_ids": json.loads(row[4]),
+                    "dst_message_ids": json.loads(row[5]),
+                    "committed_at": row[6],
+                })
+        return out

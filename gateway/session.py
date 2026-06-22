@@ -861,13 +861,66 @@ class SessionStore:
             return None
 
     def _generate_session_key(self, source: SessionSource) -> str:
-        """Generate a session key from a source."""
+        """Generate a session key from a source.
+
+        HRM-T0a step 4: when ``topic_pointer_mode_enabled`` is True and
+        the gateway has a ``topic_default_app_id`` configured, the
+        ``active_topic_pointer`` table is consulted **first**. If a
+        pointer exists for the inbound principal and (when the registry
+        checker is wired) the topic is still registered, the returned
+        key is the topic-routed key — NOT the legacy thread-derived key.
+
+        Legacy fall-through is preserved: any of (pointer mode off,
+        no default app_id, no pointer row, registry rejects/unwired)
+        returns the existing thread-derived key built via
+        :func:`build_session_key`.
+        """
+        profile = self._resolve_profile_for_key(source)
+        topic_key = self._resolve_topic_session_key(source, profile=profile)
+        if topic_key:
+            return topic_key
         return build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
-            profile=self._resolve_profile_for_key(source),
+            profile=profile,
         )
+
+    def _resolve_topic_session_key(
+        self,
+        source: SessionSource,
+        *,
+        profile: Optional[str],
+    ) -> Optional[str]:
+        """HRM-T0a pre-pass — return topic-routed session key, or ``None``.
+
+        Wraps :func:`gateway.active_topic.resolve_topic_session_key` so the
+        SessionStore call site stays small. Imported lazily to avoid
+        circular imports between ``gateway.active_topic`` and this module.
+        """
+        if not getattr(self.config, "topic_pointer_mode_enabled", True):
+            return None
+        app_id = getattr(self.config, "topic_default_app_id", None)
+        if not app_id:
+            return None
+        if self._db is None:
+            return None
+        try:
+            from gateway.active_topic import resolve_topic_session_key
+            return resolve_topic_session_key(
+                source,
+                self._db,
+                app_id=app_id,
+                profile=profile,
+                pointer_mode_enabled=True,
+                require_registered_check=True,
+            )
+        except Exception:  # noqa: BLE001 — defensive: never fail routing
+            logger.debug(
+                "resolve_topic_session_key raised; falling through to legacy key",
+                exc_info=True,
+            )
+            return None
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.

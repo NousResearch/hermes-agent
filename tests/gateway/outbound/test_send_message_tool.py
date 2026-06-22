@@ -318,6 +318,39 @@ class TestSendMessageTool:
         )
 
 
+    def test_email_subject_reaches_transport(self):
+        email_platform = Platform("email")
+        email_cfg = SimpleNamespace(enabled=True, token=None, extra={})
+        config = SimpleNamespace(
+            platforms={email_platform: email_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "email:andy@example.com",
+                        "message": "done",
+                        "subject": "[Hermes][Test] Subject",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once()
+        kwargs = send_mock.await_args
+        assert kwargs.args[0] == email_platform
+        assert kwargs.args[2] == "andy@example.com"
+        assert kwargs.args[3] == "done"
+        assert kwargs.kwargs.get("subject") == "[Hermes][Test] Subject"
+
+
     def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path, monkeypatch):
         # This test exercises the strict-allowlist path; force strict mode on
         # and disable recency trust so the freshly-written tmp_path file is

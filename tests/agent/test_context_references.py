@@ -98,15 +98,8 @@ def test_parse_quoted_references_with_spaces_and_preserve_unquoted_ranges():
     assert refs[0].line_end == 9
     assert refs[1].target == "docs and specs"
     assert refs[2].target == "src/main.py"
-
-
-def test_malformed_file_ref_space_after_colon_not_parsed():
-    """H3: `@file: Desktop/path` (space after colon) matches no REFERENCE_PATTERN ref."""
-    from agent.context_references import parse_context_references
-
-    refs = parse_context_references("你调用codex @file: Desktop/sage/xhs_covers 封面图")
-
-    assert refs == []
+    assert refs[2].line_start == 1
+    assert refs[2].line_end == 2
 
 
 def test_expand_file_range_and_folder_listing(sample_repo: Path):
@@ -332,6 +325,59 @@ def test_defaults_allowed_root_to_cwd(tmp_path: Path):
     assert result.expanded
     assert "```\noutside\n```" not in result.message
     assert any("outside the allowed workspace" in warning for warning in result.warnings)
+
+
+def test_parse_references_with_space_after_colon():
+    from agent.context_references import parse_context_references
+
+    refs = parse_context_references("放到这边\n@file: Desktop/sage/xhs_covers 封面图")
+
+    assert [ref.kind for ref in refs] == ["file"]
+    assert refs[0].target == "Desktop/sage/xhs_covers"
+
+
+def test_chinese_message_with_folder_and_long_outside_path(tmp_path: Path):
+    """Composer fidelity: Chinese + @folder + long path outside cwd."""
+    from agent.context_references import parse_context_references, preprocess_context_references
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("inside\n", encoding="utf-8")
+
+    long_rel = (
+        "tmp/wechat_sim/com.tencent.xinWeChat/Data/Documents/"
+        "xwechat_files/wxid_test/temp/RWTemp/2026-06/"
+        "9e20f478899dc29eb19741386f9343c8/7e321e0bb349fc2cdb4b12028661f846.jpg"
+    )
+    outside = tmp_path / long_rel
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 20)
+
+    message = (
+        "你调用codex给我出封面图 然后出的封面图放到这边 "
+        f"@folder:`Desktop/sage/xhs_covers` "
+        "封面图上面我的照片用这张 把我抠出来 "
+        f"@file:`{long_rel}`"
+    )
+
+    refs = parse_context_references(message)
+    assert [ref.kind for ref in refs] == ["folder", "file"]
+    assert refs[0].target == "Desktop/sage/xhs_covers"
+    assert refs[1].target == long_rel
+
+    result = preprocess_context_references(
+        message,
+        cwd=workspace,
+        context_length=100_000,
+        allowed_root=workspace,
+    )
+
+    assert result.expanded
+    # Chinese instruction preserved at the front.
+    assert result.message.startswith("你调用codex给我出封面图")
+    # Paths outside / missing from workspace surface as context warnings, not silent drops.
+    assert len(result.warnings) >= 1
+    assert long_rel in result.message
 
 
 @pytest.mark.asyncio

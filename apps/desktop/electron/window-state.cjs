@@ -98,12 +98,11 @@ function applyWindowState(win, userDataPath) {
 // windows — the primary window uses `'main'`, secondary session windows
 // use their session id. Each gets its own persisted state file.
 function trackWindowState(win, userDataPath, winKey) {
-  const statePath = winKey
+  const statePath = (winKey && winKey !== 'main')
     ? path.join(userDataPath, `window-state-${sanitizeKey(winKey)}.json`)
     : stateFilePath(userDataPath)
 
   let debounceTimer = null
-  let savedNormal = null // { width, height } captured before maximize
 
   // Save the current geometry to disk.
   function persist() {
@@ -112,10 +111,12 @@ function trackWindowState(win, userDataPath, winKey) {
     const isMaximized = typeof win.isMaximized === 'function' && win.isMaximized()
     let width, height
 
-    if (isMaximized && savedNormal) {
-      // Use the pre-maximize normal size for restore.
-      width = savedNormal.width
-      height = savedNormal.height
+    if (isMaximized && typeof win.getNormalBounds === 'function') {
+      // getNormalBounds() returns the pre-maximize geometry even while
+      // the window is full-screen — that's the size we want for restore.
+      const normalBounds = win.getNormalBounds()
+      width = normalBounds.width
+      height = normalBounds.height
     } else {
       const size = win.getSize()
       width = size[0]
@@ -153,16 +154,11 @@ function trackWindowState(win, userDataPath, winKey) {
   }
 
   function onMaximize() {
-    // Capture the normal size just before the window fills the screen.
-    if (!win.isDestroyed()) {
-      const size = win.getSize()
-      savedNormal = { width: size[0], height: size[1] }
-    }
+    // getNormalBounds() inside persist() handles capturing the normal size.
     persist()
   }
 
   function onUnmaximize() {
-    savedNormal = null
     persist()
   }
 

@@ -751,3 +751,55 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 - Push this bounded ledger-only follow-up to the guarded sync branch and verify local `HEAD` equals the remote branch tip.
 - Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
+
+### 2026-06-22T01:38:14Z — sync upstream and fix Live USB status readiness gates
+
+**Commands / status**
+
+- `git status --short --branch && git remote -v && git branch --show-current && git rev-parse HEAD`: started clean on `agentcyber/upstream-sync-20260621-194355...origin/agentcyber/upstream-sync-20260621-194355` at `78e669b2c2fe2db700984771cd3df75de3bd8e52`; no `MERGE_HEAD` or unmerged files.
+- `git fetch upstream main --prune && git fetch origin main --prune && git fetch origin agentcyber/upstream-sync-20260621-194355 --prune`: fetched cleanly; upstream advanced from `73340d8be` to `2b3a4f0af`.
+- Drift after fetch before merge: `HEAD..upstream/main` -> `1`; `upstream/main..HEAD` -> `93`; `HEAD..origin/main` -> `0`; `origin/main..HEAD` -> `266`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`.
+- `git merge --no-ff upstream/main`: merged cleanly with the `ort` strategy; merge commit `3484d74c5794d67a6a9ac36545da431b94f73d54` with `HEAD^2` equal to upstream `2b3a4f0af80f`.
+- Drift after merge before local status-readiness fix: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `94`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `2`.
+
+**Changed files**
+
+- Upstream merge changed 3 upstream files: `agent/agent_runtime_helpers.py`, `tests/run_agent/test_deepseek_reasoning_content_echo.py`, and `tests/run_agent/test_run_agent.py`.
+- Required AgentCyber/Live USB files remained present and tracked: `tools/cyber_live_usb.py`, `tests/cyber/test_live_usb_tool.py`, `tests/cyber/test_live_usb_docs.py`, `scripts/agentcyber`, this ledger, `docs/AGENTCYBER_STANDALONE_RUNBOOK.md`, and `live-usb/{build_iso.sh,write_usb.sh,provision.sh}`.
+- `tools/cyber_live_usb.py`: changed `status` output so dependency readiness is reported separately as `build_dependencies_ready` / `write_dependencies_ready`, while legacy `can_build` / `can_write` now also require root plus the live USB approval env gate. Added explicit `operation_gates` text for root plus exact operator approval, removable Linux block-device metadata, canonical `/dev` targets, and safe `status`/`list_usb` actions.
+- `tests/cyber/test_live_usb_tool.py`: added a regression for non-root/no-approval status with all dependencies mocked present, proving `can_build` and `can_write` remain false and gate guidance is present.
+- `docs/AGENTCYBER_LIVE_USB_UPSTREAM_LEDGER.md`: added this run entry.
+
+**Verification**
+
+- Initial combined focused pytest after upstream merge showed the known order-dependent `tests/hermes_cli/test_tools_config.py::test_get_platform_tools_recovers_non_configurable_toolsets_from_composite` failure (`terminal` missing from `enabled` in the combined process); rerunning that test alone passed: `1 passed, 8 warnings in 4.19s`.
+- Pre-fix wrapper acceptance after upstream merge: `scripts/run_tests.sh tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py tests/run_agent/test_deepseek_reasoning_content_echo.py tests/run_agent/test_run_agent.py` -> `734 tests passed, 0 failed`.
+- Subagent upstream preservation review: `PASS`; required AgentCyber/Live USB files present/tracked, no unmerged entries, no conflict markers, and merge changed only the expected upstream files.
+- Subagent Live USB next-gap review: `REQUEST_CHANGES`; `status` reported `can_write: true` from `dd` availability alone on a non-root/no-approval run. This run fixed that gap.
+- After the fix: `uv run --frozen python -m pytest tests/cyber/test_live_usb_tool.py -q -o addopts= --tb=short` -> `55 passed in 0.85s`.
+- `uv run --frozen python -m ruff check tools/cyber_live_usb.py tests/cyber/test_live_usb_tool.py` -> `All checks passed!`.
+- A repeated combined `uv run --frozen python -m pytest ... -q -o addopts= --tb=short` again hit the same known order-dependent `test_tools_config.py` failure, while the isolated wrapper path passed.
+- Final wrapper acceptance after the fix: `scripts/run_tests.sh tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py tests/run_agent/test_deepseek_reasoning_content_echo.py tests/run_agent/test_run_agent.py` -> `735 tests passed, 0 failed`.
+- `scripts/agentcyber status --json` -> `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, local runtime health `ok: true`, secret fields as booleans/presence only, and git `dirty: true` only because this lane was uncommitted.
+- `scripts/agentcyber hermes tools list` -> `cyber` enabled and `live_usb` disabled.
+- `git diff --check && git diff --cached --check && git diff --check HEAD~1..HEAD` -> passed with no output.
+- Subagent spec review after the fix: `PASS`.
+- Subagent quality review after the fix: `APPROVED`; no critical or important issues, only future positive-case coverage suggestions.
+
+**Blockers / boundaries**
+
+- No cron jobs were scheduled, created, updated, paused, resumed, or removed.
+- No default `~/.hermes`, default gateway, default cron, or default profiles were modified.
+- No files were deleted.
+- No USB/block-device writes, ISO builds as root, `sudo`, package installs, hardware actions, external security actions, cloud spend, credential access/disclosure, or public disclosure were performed.
+- Status commands contacted only the configured local Ollama health endpoint and printed booleans/status fields, not secrets.
+- One attempted inline `python -c` status summarization command was blocked by the approval guard and was not approved; verification relied on tests and safe status/tool-list commands instead.
+
+**Commit / push**
+
+- Pending: commit this upstream merge plus scoped Live USB status-readiness/ledger lane, push to `origin/agentcyber/upstream-sync-20260621-194355` without force, verify local `HEAD` equals the remote branch tip, then make one bounded ledger-only follow-up with the post-push facts.
+
+**Next lane**
+
+- Push and verify this scoped status-readiness lane plus one bounded ledger-only follow-up.
+- Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.

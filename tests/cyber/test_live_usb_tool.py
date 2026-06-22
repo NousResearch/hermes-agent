@@ -92,8 +92,34 @@ class TestLiveUsbTool:
     def test_status_reports_build_deps(self) -> None:
         out = json.loads(_handle({"action": "status"}))
         assert "build_dependencies" in out
+        assert "build_dependencies_ready" in out
+        assert "write_dependencies_ready" in out
         assert "can_build" in out
         assert "can_write" in out
+        assert "operation_gates" in out
+
+    def test_status_can_flags_do_not_ignore_destructive_gates(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv(live_usb._APPROVAL_ENV_VAR, raising=False)
+        monkeypatch.setattr(live_usb, "_running_as_root", lambda: False)
+        monkeypatch.setattr(live_usb.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+        out = json.loads(_handle({"action": "status"}))
+
+        assert out["build_dependencies_ready"] is True
+        assert out["write_dependencies_ready"] is True
+        assert out["can_build"] is False
+        assert out["can_write"] is False
+        gates = out["operation_gates"]
+        assert gates["root"] is False
+        assert gates["operator_approval_env_configured"] is False
+        assert gates["safe_actions"] == ["status", "list_usb"]
+        assert "root plus exact operator approval" in gates["build"]
+        assert "root plus exact operator approval" in gates["write"]
+        assert "verifiable removable Linux block-device metadata" in gates["write"]
+        assert "dependency checks alone" in gates["build"]
 
     def test_status_lists_available_isos(self) -> None:
         out = json.loads(_handle({"action": "status"}))

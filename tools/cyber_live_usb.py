@@ -261,12 +261,38 @@ def _status(args: dict = None, **_kw: Any) -> dict:
     }
     missing_build = [k for k, v in deps.items() if not v and k in ("debootstrap", "mksquashfs", "xorriso")]
     missing_write = [k for k, v in deps.items() if not v and k in ("dd",)]
+    build_dependencies_ready = len(missing_build) == 0
+    write_dependencies_ready = len(missing_write) == 0
+    root_available = _running_as_root()
+    approval_env_configured = bool(os.getenv(_APPROVAL_ENV_VAR))
 
     return {
         "available_isos":       iso_info,
         "build_dependencies":   deps,
-        "can_build":            len(missing_build) == 0,
-        "can_write":            len(missing_write) == 0,
+        "build_dependencies_ready": build_dependencies_ready,
+        "write_dependencies_ready": write_dependencies_ready,
+        # These legacy readiness flags intentionally include high-consequence
+        # gates so status output does not imply that dependency presence alone
+        # authorizes build/write operations.
+        "can_build":            build_dependencies_ready and root_available and approval_env_configured,
+        "can_write":            write_dependencies_ready and root_available and approval_env_configured,
+        "operation_gates": {
+            "root": root_available,
+            "operator_approval_env_configured": approval_env_configured,
+            "build": (
+                "build requires root plus exact operator approval; dependency checks alone "
+                "do not authorize ISO creation."
+            ),
+            "write": (
+                "write requires root plus exact operator approval plus verifiable removable "
+                "Linux block-device metadata and a canonical /dev target."
+            ),
+            "provision": (
+                "provision requires root plus exact operator approval plus verifiable removable "
+                "Linux block-device metadata and a canonical /dev target."
+            ),
+            "safe_actions": ["status", "list_usb"],
+        },
         "missing_for_build":    missing_build,
         "missing_for_write":    missing_write,
         "scripts_dir":          str(_SCRIPTS_DIR),

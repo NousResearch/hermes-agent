@@ -75,7 +75,7 @@ def _iter_sshd_config_lines() -> list[str]:
         pass
     for p in paths:
         try:
-            for raw in p.read_text(errors="replace").splitlines():
+            for raw in p.read_text(encoding="utf-8", errors="replace").splitlines():
                 stripped = raw.strip()
                 if stripped and not stripped.startswith("#"):
                     lines.append(stripped)
@@ -119,7 +119,7 @@ def _in_container() -> bool:
     if os.environ.get("HERMES_DESKTOP_CHILD_PID"):
         return False  # desktop child, not a server container
     try:
-        cgroup = Path("/proc/1/cgroup").read_text(errors="replace")
+        cgroup = Path("/proc/1/cgroup").read_text(encoding="utf-8", errors="replace")
         if any(tok in cgroup for tok in ("docker", "containerd", "kubepods", "libpod")):
             return True
     except Exception:
@@ -140,7 +140,7 @@ def _path_is_mounted(path: Path) -> bool:
     except Exception:
         target = path
     try:
-        mounts = Path("/proc/mounts").read_text(errors="replace").splitlines()
+        mounts = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace").splitlines()
     except Exception:
         return True  # can't tell — fail safe (no warning)
     best = None

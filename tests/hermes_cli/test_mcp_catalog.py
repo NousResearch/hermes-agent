@@ -197,6 +197,53 @@ class TestManifestParsing:
         assert get_entry("official/demo") is not None
         assert get_entry("missing") is None
 
+    def test_http_headers_parsed(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${DEMO_KEY}"},
+            },
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_KEY", "prompt": "key", "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import get_entry
+
+        e = get_entry("demo")
+        assert e is not None
+        assert e.transport.headers == {"Authorization": "Bearer ${DEMO_KEY}"}
+
+    def test_http_headers_must_be_mapping(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": ["not", "a", "mapping"],
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        # Invalid manifest is skipped silently by list_catalog().
+        assert list_catalog() == []
+
+    def test_headers_rejected_on_stdio_transport(self, catalog_dir):
+        body = _basic_manifest()
+        body["transport"] = {
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "demo-mcp"],
+            "headers": {"Authorization": "Bearer x"},
+        }
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        # headers are http-only; stdio + headers is a malformed manifest.
+        assert list_catalog() == []
+
 
 # ---------------------------------------------------------------------------
 # Install flow
@@ -306,6 +353,50 @@ class TestInstall:
         server = load_config()["mcp_servers"]["demo"]
         assert server["url"] == "https://mcp.example.com/sse"
         assert server["auth"] == "oauth"
+
+    def test_install_http_api_key_writes_header_and_saves_secret(
+        self, catalog_dir, monkeypatch
+    ):
+        """End-to-end http + api_key: the prompted secret lands in .env and the
+        manifest's Authorization header is copied into the server config with
+        the ${ENV} placeholder intact (resolved at runtime, never persisted).
+        """
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://api.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${DEMO_KEY}"},
+            },
+            auth={
+                "type": "api_key",
+                "env": [{"name": "DEMO_KEY", "prompt": "key", "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(
+            mcp_catalog, "_prompt_input", lambda *a, **kw: "secret-val"
+        )
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import get_env_value, load_config, get_config_path
+
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["url"] == "https://api.example.com/mcp"
+        # api_key path must not write an oauth marker.
+        assert "auth" not in server
+        # The secret itself is stored in .env.
+        assert get_env_value("DEMO_KEY") == "secret-val"
+        # On DISK the header keeps the ${ENV} placeholder — the literal token is
+        # never persisted to config.yaml. (load_config() expands ${VAR} in
+        # memory on read, so this check reads the raw file.)
+        raw = get_config_path().read_text()
+        assert "Bearer ${DEMO_KEY}" in raw
+        assert "secret-val" not in raw
 
     def test_install_required_env_missing_raises(self, catalog_dir, monkeypatch):
         body = _basic_manifest(

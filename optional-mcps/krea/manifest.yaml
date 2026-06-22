@@ -1,0 +1,52 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: krea
+description: Generate images and video through Krea's hosted API — 40+ models (Flux, Imagen, Nano Banana, Veo, Kling, Seedance), plus Topaz upscaling and LoRA styles.
+source: https://docs.krea.ai/developers/mcp
+
+# Krea ships a hosted MCP server over Streamable HTTP. It supports OAuth (billed
+# to a Krea account's compute units) OR a workspace API token (billed to the
+# workspace's separate prepaid API balance). Hermes's MCP client cannot run the
+# interactive OAuth browser flow non-interactively, so this entry uses the API
+# token path: the prompted key is stored in ~/.hermes/.env and threaded into the
+# Authorization header via the ${KREA_API_KEY} placeholder, which the runtime
+# resolves per-profile at connect time. The literal token never lands in
+# config.yaml.
+transport:
+  type: http
+  url: https://api.krea.ai/mcp
+  headers:
+    Authorization: "Bearer ${KREA_API_KEY}"
+
+auth:
+  type: api_key
+  env:
+    - name: KREA_API_KEY
+      prompt: "Krea API token (create at krea.ai/settings/api-tokens — workspace owners/admins only)"
+      required: true
+      secret: true
+
+# Tool selection at install time:
+# Krea's MCP exposes a small, coherent surface — model discovery, schema
+# inspection, generate (image/video), enhance, asset upload, node-app execution,
+# and job polling/cancel. None are destructive to anything but the user's own
+# jobs, so we leave default_enabled unset: the install-time probe lists whatever
+# the server advertises and pre-checks all of it. Users prune from there.
+
+post_install: |
+  Krea's API balance is SEPARATE from any Krea web-app subscription/compute
+  units. Generation calls draw from a prepaid API balance — top up at
+  krea.ai/app/api (workspace owners only). Reads (list_models, get_model_schema,
+  get_job) are free; completed generations are billed per model, and failed or
+  cancelled jobs are not charged.
+
+  Create a token at krea.ai/settings/api-tokens (owners/admins only). If API
+  access isn't enabled on your workspace yet, email support@krea.ai.
+
+  Start a new Hermes session to load the Krea tools. Model IDs match the API
+  docs, e.g. image/krea/krea-2/medium, google/nano-banana-pro, google/veo-3.1.
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure krea

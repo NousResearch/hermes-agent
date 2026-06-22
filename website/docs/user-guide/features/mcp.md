@@ -154,6 +154,32 @@ Note this is distinct from `${INSTALL_DIR}` in catalog manifests, which is
 substituted at install-time with the path the catalog cloned the entry's
 repo into.
 
+### HTTP catalog entries with a static API token
+
+A catalog entry whose server authenticates with a static bearer token (rather
+than OAuth) declares `auth: api_key` to prompt for the secret at install time,
+and a `transport.headers` block to send it:
+
+```yaml
+transport:
+  type: http
+  url: https://api.example.com/mcp
+  headers:
+    Authorization: "Bearer ${EXAMPLE_API_KEY}"
+auth:
+  type: api_key
+  env:
+    - name: EXAMPLE_API_KEY
+      prompt: "Example API token"
+      secret: true
+```
+
+At install the prompted token is written to `~/.hermes/.env` and the header is
+copied into `mcp_servers.<name>.headers` **with the `${ENV}` placeholder
+intact** — the literal token is never persisted to `config.yaml`; it's resolved
+per-profile at connect time. `transport.headers` is only valid for `http`
+transport.
+
 ### Updating tool selection later
 
 ```bash

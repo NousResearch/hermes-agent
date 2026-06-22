@@ -77,6 +77,12 @@ class TransportSpec:
     args: List[str] = field(default_factory=list)
     url: Optional[str] = None
     version: Optional[str] = None  # informational, pinned
+    # Static headers for http transport, copied verbatim into the
+    # mcp_servers.<name>.headers block. Values may contain ${ENV} placeholders
+    # (resolved at runtime by tools/mcp_tool.py::_interpolate_env_vars), which
+    # is how an api_key auth entry threads a prompted secret into an
+    # Authorization header without ever writing the literal token to config.
+    headers: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -184,17 +190,24 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     args = transport_raw.get("args") or []
     if not isinstance(args, list):
         raise CatalogError(f"{path}: transport.args must be a list")
+    headers_raw = transport_raw.get("headers") or {}
+    if not isinstance(headers_raw, dict):
+        raise CatalogError(f"{path}: transport.headers must be a mapping")
+    headers = {str(k): str(v) for k, v in headers_raw.items()}
     transport = TransportSpec(
         type=t_type,
         command=transport_raw.get("command"),
         args=[str(a) for a in args],
         url=transport_raw.get("url"),
         version=transport_raw.get("version"),
+        headers=headers,
     )
     if t_type == "stdio" and not transport.command:
         raise CatalogError(f"{path}: stdio transport requires 'command'")
     if t_type == "http" and not transport.url:
         raise CatalogError(f"{path}: http transport requires 'url'")
+    if headers and t_type != "http":
+        raise CatalogError(f"{path}: transport.headers is only valid for http transport")
 
     auth_raw = data.get("auth") or {"type": "none"}
     if not isinstance(auth_raw, dict):
@@ -470,6 +483,12 @@ def _build_server_config(
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
     elif t.type == "http":
         cfg["url"] = t.url
+        if t.headers:
+            # Copied verbatim — values may carry ${ENV} placeholders that the
+            # runtime resolves per-profile (tools/mcp_tool.py). This is how an
+            # api_key entry sends its prompted secret as an Authorization
+            # header without persisting the literal token in config.yaml.
+            cfg["headers"] = dict(t.headers)
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
     return cfg

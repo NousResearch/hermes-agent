@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from dataclasses import replace
 import hashlib
 import json
 import logging
@@ -1465,7 +1466,11 @@ class WeixinAdapter(BasePlatformAdapter):
         )
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
         if event.message_type == MessageType.TEXT:
-            self._enqueue_text_event(event)
+            split_events = self._split_batched_inbound_text_event(event)
+            if len(split_events) > 1:
+                await self._dispatch_split_text_burst(split_events)
+            else:
+                self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
 
@@ -1524,6 +1529,40 @@ class WeixinAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks[key] = asyncio.create_task(
             self._flush_text_batch(key)
         )
+
+    def _split_batched_inbound_text_event(self, event: MessageEvent) -> List[MessageEvent]:
+        """Expand short chat-like multiline payloads into separate events.
+
+        Weixin/iLink can batch rapid user messages into a single multiline text
+        payload before Hermes receives them. Split only the short chat-style
+        shape so later lines can interrupt the current turn instead of being
+        trapped inside one aggregated prompt.
+        """
+        if event.message_type != MessageType.TEXT or event.media_urls:
+            return [event]
+        if not _should_split_short_chat_block_for_weixin(event.text or ""):
+            return [event]
+
+        lines = [line.strip() for line in (event.text or "").splitlines() if line.strip()]
+        if len(lines) <= 1:
+            return [event]
+
+        base_message_id = event.message_id or ""
+        return [
+            replace(
+                event,
+                text=line,
+                message_id=f"{base_message_id}:part{idx}" if base_message_id else None,
+            )
+            for idx, line in enumerate(lines, start=1)
+        ]
+
+    async def _dispatch_split_text_burst(self, events: List[MessageEvent]) -> None:
+        """Schedule pre-batched chat lines as distinct inbound deliveries."""
+        for idx, event in enumerate(events):
+            asyncio.create_task(self.handle_message(event))
+            if idx < len(events) - 1:
+                await asyncio.sleep(0)
 
     async def _flush_text_batch(self, key: str) -> None:
         """Wait for quiet period then dispatch aggregated text."""

@@ -1061,6 +1061,60 @@ class TestWeixinTextDebounce:
         asyncio.run(_drive())
         assert dispatched == ["one\ntwo\nthree"]
 
+    def test_inbound_chatty_multiline_batch_splits_into_separate_dispatches(self):
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+
+        message = {
+            "from_user_id": "wxid_user1",
+            "message_id": "msg-1",
+            "item_list": [{"type": 1, "text_item": {"text": "第一行\n第二行\n第三行"}}],
+        }
+
+        async def _drive():
+            await adapter._process_message(message)
+            await asyncio.sleep(0.05)
+
+        asyncio.run(_drive())
+
+        assert adapter.handle_message.await_count == 3
+        texts = [call.args[0].text for call in adapter.handle_message.await_args_list]
+        message_ids = [call.args[0].message_id for call in adapter.handle_message.await_args_list]
+        assert texts == ["第一行", "第二行", "第三行"]
+        assert message_ids == ["msg-1:part1", "msg-1:part2", "msg-1:part3"]
+
+    def test_inbound_structured_multiline_text_still_batches_as_one_event(self):
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_split_delay_seconds = 0.05
+
+        message = {
+            "from_user_id": "wxid_user1",
+            "message_id": "msg-1",
+            "item_list": [
+                {
+                    "type": 1,
+                    "text_item": {
+                        "text": "今天结论：\n- 留存下降 3%\n- 转化上涨 8%\n- 主要问题在首日激活"
+                    },
+                }
+            ],
+        }
+
+        async def _drive():
+            await adapter._process_message(message)
+            await asyncio.sleep(0.2)
+
+        asyncio.run(_drive())
+
+        assert adapter.handle_message.await_count == 1
+        assert adapter.handle_message.await_args[0][0].text == (
+            "今天结论：\n- 留存下降 3%\n- 转化上涨 8%\n- 主要问题在首日激活"
+        )
+
 
 class _StubResponse:
     def __init__(self, *, status=200, body="{}", delay=0.0):

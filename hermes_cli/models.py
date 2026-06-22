@@ -288,26 +288,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.5-flash",
         "gemini-3.1-flash-lite-preview",
     ],
-    "google-gemini-cli": [
-        "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
-        # Code Assist serves two flash slugs with different access gates
-        # (gemini-cli models.ts): gemini-3-flash-preview is the preview flash
-        # that subscription/free-tier OAuth users actually reach, while
-        # gemini-3.5-flash is GA-channel-gated. Offer both so non-GA users
-        # aren't stuck with a slug cloudcode-pa 404s for them.
-        "gemini-3-flash-preview",
-        "gemini-3.5-flash",
-    ],
-    "google-antigravity": [
-        "gemini-3-flash-agent",
-        "gemini-3.5-flash-low",
-        "gemini-pro-agent",
-        "gemini-3.1-pro-low",
-        "claude-sonnet-4-6",
-        "claude-opus-4-6-thinking",
-        "gpt-oss-120b-medium",
-    ],
     "zai": [
         "glm-5.2",
         "glm-5.1",
@@ -1066,8 +1046,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
-    ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (Code Assist OAuth flow)"),
-    ProviderEntry("google-antigravity", "Google Antigravity (OAuth)", "Google Antigravity via OAuth + Code Assist (Gemini 3.5/3.1, Claude, GPT-OSS where entitled)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (V3, R1, coder, direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI Grok (Direct API)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu direct API)"),
@@ -1138,7 +1116,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
     "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
-    "google":   ("Google Gemini",   "AI Studio API or OAuth + Code Assist",            ["gemini", "google-gemini-cli"]),
+    "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "Codex CLI or direct OpenAI API",                  ["openai-codex", "openai-api"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
@@ -1259,14 +1237,6 @@ _PROVIDER_ALIASES = {
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
     "qwen-portal": "qwen-oauth",
-    "gemini-cli": "google-gemini-cli",
-    "gemini-oauth": "google-gemini-cli",
-    "antigravity": "google-antigravity",
-    "antigravity-oauth": "google-antigravity",
-    "antigravity-cli": "google-antigravity",
-    "google-antigravity-oauth": "google-antigravity",
-    "agy": "google-antigravity",
-    "agy-cli": "google-antigravity",
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
@@ -1994,13 +1964,10 @@ _AGGREGATOR_PROVIDERS = frozenset(
 )
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models
-# (e.g. google-antigravity serves Claude / Gemini / GPT-OSS where the account
-# is entitled). For bare short-alias resolution (`sonnet`, `opus`, ...) these
-# must NOT hijack the alias away from the model's native vendor provider
-# (`anthropic`, `gemini`, ...). They're tried only as a last resort, after
-# every native-vendor catalog. They are NOT aggregators (an explicit switch TO
-# them is still valid), so they stay out of _AGGREGATOR_PROVIDERS.
-_BORROWED_MODEL_PROVIDERS = frozenset({"google-antigravity"})
+# would be listed here (tried only as a last resort for bare short-alias
+# resolution, after every native-vendor catalog, so they never hijack an alias
+# away from the model's native vendor). None are currently defined.
+_BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 
 
 def _resolve_static_model_alias(
@@ -2052,9 +2019,9 @@ def _resolve_static_model_alias(
         if provider in current_keys and (matched := _match(provider)):
             return provider, matched
 
-    # Last resort: providers that re-expose other vendors' models (e.g.
-    # google-antigravity serving Claude). Only reached when no native-vendor
-    # catalog matched — so `sonnet` resolves to anthropic, not antigravity.
+    # Last resort: providers that re-expose other vendors' models. Only reached
+    # when no native-vendor catalog matched — so `sonnet` resolves to anthropic.
+    # None are currently defined (_BORROWED_MODEL_PROVIDERS is empty).
     for provider in _BORROWED_MODEL_PROVIDERS:
         if provider in current_keys and (matched := _match(provider)):
             return provider, matched
@@ -2429,32 +2396,6 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     return merged
 
 
-def _fetch_antigravity_models(*, force_refresh: bool = False) -> list[str]:
-    try:
-        from agent import antigravity_oauth
-        from agent.antigravity_code_assist import (
-            fetch_available_models_with_fallbacks,
-            load_code_assist,
-            parse_agent_model_ids,
-        )
-        from hermes_cli.auth import resolve_antigravity_oauth_runtime_credentials
-
-        creds = resolve_antigravity_oauth_runtime_credentials(force_refresh=force_refresh)
-        access_token = str(creds.get("api_key") or "").strip()
-        project_id = str(creds.get("project_id") or "").strip()
-        if not access_token:
-            return []
-        if not project_id:
-            info = load_code_assist(access_token)
-            project_id = info.project_id
-            if project_id:
-                antigravity_oauth.update_project_ids(project_id=project_id, managed_project_id=project_id)
-        payload = fetch_available_models_with_fallbacks(access_token, project_id=project_id)
-        return parse_agent_model_ids(payload)
-    except Exception:
-        return []
-
-
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Return the best known model catalog for a provider.
 
@@ -2485,10 +2426,6 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         return get_codex_model_ids(access_token=access_token)
     if normalized == "xai-oauth":
         return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
-    if normalized == "google-antigravity":
-        live = _fetch_antigravity_models(force_refresh=force_refresh)
-        if live:
-            return live
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())

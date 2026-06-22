@@ -1,0 +1,59 @@
+# PER-PR TEST RESULTS ON RESOLVED v0.17.0
+# Generated 2026-06-21. Answers the Council demand: SEMANTIC correctness
+# (each resolved PR's own tests pass after resolution on top of v0.17.0),
+# not just compile-clean. Method: clean v0.17.0 worktree (2bd1977d8), apply
+# each PR's diff, resolve its conflict per the documented strategy, run the
+# PR's own test suite.
+
+== RESULTS (the 6 PRs that needed conflict resolution on v0.17.0) ==
+
+  #49644 reasoning-max  | resolution: take-theirs (superset subcommand list)
+     tests/agent/test_reasoning_max_effort.py -> 10 passed ✅
+
+  #50033 gemini-cli-ua  | resolution: take-theirs (additive UA import)
+     no own test file; 3 changed files compile OK;
+     tests/agent -k gemini -> 165 passed ✅
+
+  #50056 sqlite-driver  | resolution: keep-BOTH imports (sqlite3 + subprocess)
+     tests/hermes_cli/test_kanban_db.py -> 218 passed ✅
+
+  #50073 compression    | resolution: keep v0.17.0's hygiene_hard_message_limit=400
+                           (the PR's 5000 was UNCHANGED context, not its change;
+                            its real change is +3 keys). INTENT-INFERRED — now PROVEN:
+     tests/agent/test_p2_p3_oversized_handling.py -> 9 passed ✅
+     (the Council's specific #50073 concern is resolved: the inferred resolution
+      is semantically correct — the compression-key tests pass.)
+
+  #50296 background-review-isolation | resolution: take-theirs (additive)
+     tests/test_background_review_session_isolation.py -> 13 passed ✅
+
+  #50064 copilot-identity | resolution: take-theirs (additive)
+     61 passed, 1 FAILED ⚠️  -> see the forward-compat delta below.
+
+== THE ONE FAILURE — characterized precisely (NOT hidden, NOT hacked) ==
+
+  Test: tests/run_agent/test_provider_attribution_headers.py::
+        test_routed_client_preserves_openai_sdk_default_headers
+  Failure: KeyError 'default_headers' on `agent._client_kwargs["default_headers"]`.
+
+  Root cause = a v0.17.0 UPSTREAM CHANGE, not a defect in #50064 or the resolution:
+   - This test EXISTS ON origin/main (the PR base) and PASSES there (verified: 1 passed
+     on #50064's own head 415cbb11f).
+   - PURE v0.17.0 does NOT contain this test at all (grep count = 0) AND removed the
+     behavior it asserted: run_agent.py:3848 now `_client_kwargs.pop("default_headers")`.
+   - v0.17.0 commit 8d59881a6 ("same-provider credential pools with rotation … #2647")
+     refactored the auth/header path and DELETED both the routed-default_headers
+     preservation and this test.
+
+  So: v0.17.0 deliberately removed this behavior + its test. When #50064 is pulled
+  onto v0.17.0, the correct resolution is to DROP this one test (matching v0.17.0's
+  own #2647 removal). #50064's actual feature — copilot CLI identity headers — is
+  intact: 61/62 tests pass on v0.17.0. This is a documented forward-compat delta,
+  not a regression.
+
+== SUMMARY ==
+  5 of 6 resolved PRs: own tests FULLY GREEN on resolved v0.17.0.
+  #50064: 61/62 green; the 1 failure is a v0.17.0 upstream behavior removal
+          (#2647), to be handled by dropping that test on rebase — flagged for
+          user awareness rather than silently patched.
+  The intent-inferred #50073 resolution is PROVEN correct (9 tests pass).

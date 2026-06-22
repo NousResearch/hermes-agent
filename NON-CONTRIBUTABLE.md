@@ -35,3 +35,17 @@ isolate-agy-cli disposition. Previously 5 were bundled in #50457 and 1
 - 139 delta files in PRs; 21 non-contributable = 9 .bak (discard) + 12 generated (discard).
 - 0 real-source orphans. agy-cli isolated to #50555.
 - Decision recorded durably here, per review (not chat-only).
+
+## DISCARD ratification evidence (2026-06-21) — nothing in src references them
+Authoritative recount (git-diff vs v0.16.0): **140 real-src files (all in open PRs) +
+25 DISCARD + 0 orphans**. The 25 DISCARD =
+- **9 `.bak`** editor-backup snapshots (e.g. `agent/anthropic_adapter.py.bak.20260603100620`)
+- **12 `.project-intel/`** generated index artifacts (incl. a binary `project-index.sqlite`)
+- **4 `transcripts/`** eval-capture text files (`C_{opus,sonnet}_{baseline,contradiction}.txt`)
+
+**Reference check (the safety proof):** `git grep` across all real src code files
+(`*.py *.yaml *.toml *.cfg *.ini`) for any reference to these DISCARD paths returns
+**0 hits** — no real code imports, reads, or references any `.bak`, `.project-intel/`,
+or `transcripts/` file. They are byte-for-byte droppable with zero impact on the
+shipped source. (.bak = editor backups; .project-intel = a regenerable index;
+transcripts = captured eval output — none are runtime dependencies.)

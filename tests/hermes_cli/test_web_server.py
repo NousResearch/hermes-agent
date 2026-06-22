@@ -1376,6 +1376,73 @@ class TestWebServerEndpoints:
         assert data["AWS_REGION"]["category"] == "provider"
         assert data["AWS_PROFILE"]["provider"] == "bedrock"
 
+    def test_delete_env_var_prunes_matching_env_seeded_auth_entry(self, monkeypatch):
+        """Deleting a Desktop-managed provider key also clears its env-seeded pool entry."""
+        from hermes_constants import get_hermes_home
+        from agent.credential_pool import load_pool
+
+        hermes_home = get_hermes_home()
+        env_path = hermes_home / ".env"
+        auth_path = hermes_home / "auth.json"
+        env_path.write_text("ZAI_API_KEY=sk-zai-old\nOTHER_KEY=keep-me\n")
+        monkeypatch.setenv("ZAI_API_KEY", "sk-zai-old")
+
+        auth_path.write_text(json.dumps({
+            "version": 1,
+            "credential_pool": {
+                "zai": [
+                    {
+                        "id": "env-zai",
+                        "label": "ZAI_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:ZAI_API_KEY",
+                        "access_token": "sk-zai-old",
+                    },
+                    {
+                        "id": "manual-zai",
+                        "label": "manual",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-zai-manual",
+                    },
+                ],
+                "minimax-cn": [
+                    {
+                        "id": "env-minimax",
+                        "label": "MINIMAX_CN_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:MINIMAX_CN_API_KEY",
+                        "access_token": "sk-minimax",
+                    }
+                ],
+            },
+        }))
+
+        resp = self.client.request("DELETE", "/api/env", json={"key": "ZAI_API_KEY"})
+
+        assert resp.status_code == 200
+        assert resp.json()["auth_providers_removed"] == ["zai"]
+        assert "ZAI_API_KEY" not in env_path.read_text()
+        assert "OTHER_KEY=keep-me" in env_path.read_text()
+        assert os.environ.get("ZAI_API_KEY") is None
+
+        auth_store = json.loads(auth_path.read_text())
+        assert [entry["source"] for entry in auth_store["credential_pool"]["zai"]] == ["manual"]
+        assert auth_store["credential_pool"]["minimax-cn"][0]["source"] == "env:MINIMAX_CN_API_KEY"
+        assert auth_store["suppressed_sources"]["zai"] == ["env:ZAI_API_KEY"]
+
+        set_resp = self.client.put("/api/env", json={"key": "ZAI_API_KEY", "value": "sk-zai-new"})
+
+        assert set_resp.status_code == 200
+        auth_store = json.loads(auth_path.read_text())
+        assert "zai" not in auth_store.get("suppressed_sources", {})
+        pool = load_pool("zai")
+        assert any(entry.source == "env:ZAI_API_KEY" and entry.access_token == "sk-zai-new" for entry in pool.entries())
+        assert any(entry.source == "manual" and entry.access_token == "sk-zai-manual" for entry in pool.entries())
+
     def test_platform_scoped_messaging_env_vars_are_channel_managed(self):
         from hermes_cli.web_server import (
             _MESSAGING_KEYS_PAGE_KEYS,

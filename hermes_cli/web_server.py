@@ -733,6 +733,106 @@ class EnvVarReveal(BaseModel):
     profile: Optional[str] = None
 
 
+def _auth_provider_ids_for_env_key(key: str) -> List[str]:
+    """Return provider ids that may seed credentials from an env var."""
+    env_key = str(key or "").strip()
+    if not env_key:
+        return []
+
+    provider_ids: List[str] = []
+    seen: set[str] = set()
+
+    def _add(provider_id: str) -> None:
+        normalized = str(provider_id or "").strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            provider_ids.append(normalized)
+
+    # OpenRouter is still special-cased in the credential pool seeding path.
+    if env_key == "OPENROUTER_API_KEY":
+        _add("openrouter")
+
+    # Anthropic accepts several env-token forms before consulting the registry.
+    if env_key in {"ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}:
+        _add("anthropic")
+
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+    except Exception:
+        return provider_ids
+
+    for provider_id, config in PROVIDER_REGISTRY.items():
+        env_vars = getattr(config, "api_key_env_vars", ()) or ()
+        if env_key in env_vars:
+            _add(provider_id)
+    return provider_ids
+
+
+def _set_env_source_suppression(
+    key: str,
+    *,
+    suppressed: bool,
+    extra_provider_ids: Optional[List[str]] = None,
+) -> None:
+    """Toggle suppression for credentials seeded from a Desktop-managed env var."""
+    provider_ids = _auth_provider_ids_for_env_key(key)
+    for provider_id in extra_provider_ids or []:
+        if provider_id not in provider_ids:
+            provider_ids.append(provider_id)
+    if not provider_ids:
+        return
+
+    source = f"env:{key}"
+    try:
+        from hermes_cli.auth import suppress_credential_source, unsuppress_credential_source
+    except Exception:
+        return
+
+    for provider_id in provider_ids:
+        if suppressed:
+            suppress_credential_source(provider_id, source)
+        else:
+            unsuppress_credential_source(provider_id, source)
+
+
+def _prune_env_seeded_credentials(key: str) -> List[str]:
+    """Remove credential-pool entries that were seeded from a deleted env var."""
+    source = f"env:{key}"
+    try:
+        from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+    except Exception:
+        return []
+
+    pruned_providers: List[str] = []
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            return []
+
+        changed = False
+        for provider_id, entries in list(pool.items()):
+            if not isinstance(entries, list):
+                continue
+            retained = [
+                entry for entry in entries
+                if not (isinstance(entry, dict) and entry.get("source") == source)
+            ]
+            if len(retained) == len(entries):
+                continue
+            if retained:
+                pool[provider_id] = retained
+            else:
+                pool.pop(provider_id, None)
+            pruned_providers.append(str(provider_id))
+            changed = True
+
+        if changed:
+            _save_auth_store(auth_store)
+
+    return sorted(pruned_providers)
+
+
 class MemoryProviderConfigUpdate(BaseModel):
     values: Dict[str, str] = {}
 
@@ -4207,6 +4307,7 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
             save_env_value(body.key, body.value)
+            _set_env_source_suppression(body.key, suppressed=False)
         return {"ok": True, "key": body.key}
     except ValueError as exc:
         # save_env_value raises ValueError for invalid names and for keys
@@ -4326,9 +4427,19 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
             removed = remove_env_value(body.key)
-        if not removed:
-            raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
-        return {"ok": True, "key": body.key}
+            if not removed:
+                raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
+            pruned_providers = _prune_env_seeded_credentials(body.key)
+            _set_env_source_suppression(
+                body.key,
+                suppressed=True,
+                extra_provider_ids=pruned_providers,
+            )
+        return {
+            "ok": True,
+            "key": body.key,
+            "auth_providers_removed": pruned_providers,
+        }
     except HTTPException:
         raise
     except ValueError as exc:

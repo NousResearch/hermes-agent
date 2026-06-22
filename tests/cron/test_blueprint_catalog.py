@@ -72,6 +72,17 @@ class TestScheduleResolution:
         spec = fill_blueprint(get_blueprint("morning-brief"), {})
         assert spec["schedule"] == "0 8 * * *"
 
+    def test_loose_threads_defaults_to_morning_report(self):
+        blueprint = get_blueprint("loose-threads")
+        assert blueprint is not None
+        spec = fill_blueprint(blueprint, {})
+        assert spec["schedule"] == "15 8 * * *"
+        assert spec["name"] == "Loose-threads report"
+        assert "questions asked but not answered" in spec["prompt"]
+        assert "suggestions made but not acted on" in spec["prompt"]
+        assert "revenue/deadline/blocker impact" in spec["prompt"]
+        assert "[SILENT]" in spec["prompt"]
+
 
 class TestValidation:
     def test_invalid_time_rejected(self):

@@ -135,6 +135,34 @@ CATALOG: List[AutomationBlueprint] = [
         tags=("daily", "briefing"),
     ),
     AutomationBlueprint(
+        key="loose-threads",
+        title="Loose-threads report",
+        description="A morning check for questions, suggestions, decisions, or "
+        "ideas that came up but never got resolved.",
+        category="daily",
+        schedule_template="{minute} {hour} * * *",
+        prompt_template=(
+            "Review the user's recent conversations and work since the previous "
+            "day. Find loose threads: questions asked but not answered, "
+            "suggestions made but not acted on, decisions raised but not made, "
+            "concerns moved past, or ideas that showed energy but got no "
+            "follow-through. Rank at most {count} items by relevance to active "
+            "goals, urgency, revenue/deadline/blocker impact, and repeated user "
+            "interest. For each item, include: the loose thread, why it matters, "
+            "and one suggested next move. Keep it concise and scannable. If there "
+            "are no meaningful unresolved threads, respond with [SILENT]."
+        ),
+        slots=[
+            _TIME("08:15"),
+            BlueprintSlot(
+                name="count", type="enum", label="How many threads?",
+                default="5", options=("3", "5", "8"),
+            ),
+            _DELIVER,
+        ],
+        tags=("daily", "review", "memory"),
+    ),
+    AutomationBlueprint(
         key="important-mail",
         title="Important-mail monitor",
         description="Check your inbox periodically and ping you ONLY about mail "

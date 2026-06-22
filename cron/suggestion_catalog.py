@@ -61,6 +61,29 @@ CATALOG: List[CatalogEntry] = [
         },
     ),
     CatalogEntry(
+        key="catalog:loose-threads-report",
+        title="Loose-threads report",
+        description="Every morning, find questions, suggestions, decisions, or "
+        "ideas from yesterday that were moved past but not resolved.",
+        job_spec={
+            "prompt": (
+                "Review the user's recent conversations and work since the "
+                "previous day. Find loose threads: questions asked but not "
+                "answered, suggestions made but not acted on, decisions raised "
+                "but not made, concerns moved past, or ideas that showed energy "
+                "but got no follow-through. Rank at most 5 items by relevance "
+                "to active goals, urgency, revenue/deadline/blocker impact, "
+                "and repeated user interest. For each item, include: the loose "
+                "thread, why it matters, and one suggested next move. Keep it "
+                "concise and scannable. If there are no meaningful unresolved "
+                "threads, respond with [SILENT]."
+            ),
+            "schedule": "15 8 * * *",
+            "name": "Loose-threads report",
+            "deliver": "origin",
+        },
+    ),
+    CatalogEntry(
         key="catalog:important-mail-monitor",
         title="Important-mail monitor",
         description="Check your inbox periodically and ping you ONLY about mail "

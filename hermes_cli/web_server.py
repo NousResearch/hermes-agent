@@ -5156,13 +5156,36 @@ def _claude_code_only_status() -> Dict[str, Any]:
     return {"logged_in": False, "source": None}
 
 
-# Provider catalog. The order matters — it's how we render the UI list.
-# ``cli_command`` is what the dashboard surfaces as the copy-to-clipboard
-# fallback while Phase 2 (in-browser flows) isn't built yet.
-# ``flow`` describes the OAuth shape so the future modal can pick the
-# right UI: ``pkce`` = open URL + paste callback code, ``device_code`` =
-# show code + verification URL + poll, ``external`` = read-only (delegated
-# to a third-party CLI like Claude Code or Qwen).
+def _copilot_acp_status() -> Dict[str, Any]:
+    """Status for copilot-acp — credentials are owned by the Copilot CLI.
+
+    There is no cheap programmatic credential probe for the ACP subprocess, so
+    this is a read-only "managed by the Copilot CLI" card (like claude-code):
+    Hermes never claims a login state it can't verify.
+    """
+    return {
+        "logged_in": False,
+        "source": "copilot_cli",
+        "source_label": "Managed by the GitHub Copilot CLI",
+        "token_preview": None,
+        "expires_at": None,
+        "has_refresh_token": False,
+    }
+
+
+# Explicit, hand-tuned OAuth/account provider cards. These carry the bits that
+# can't be derived from the unified provider catalog: the OAuth ``flow`` shape,
+# the per-provider ``status_fn``, the ``cli_command`` fallback, and curated
+# display order. They are the OVERRIDE BASE for ``_build_oauth_catalog()``,
+# which unions them with every accounts-tab provider in ``provider_catalog()``
+# so newly-added OAuth/external providers appear automatically (no hand edit).
+# This tuple also still includes two entries that are NOT catalog providers but
+# must show on the Accounts tab: the api-key Anthropic PKCE card and the
+# synthetic ``claude-code`` subscription row.
+# ``flow`` describes the OAuth shape so the modal can pick the right UI:
+# ``pkce`` = open URL + paste callback code, ``device_code`` = show code +
+# verification URL + poll, ``external`` = read-only (delegated to a third-party
+# CLI like Claude Code or Qwen), ``loopback`` = 127.0.0.1 callback listener.
 _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {
         "id": "nous",
@@ -5211,6 +5234,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "cli_command": "hermes auth add xai-oauth",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth",
         "status_fn": None,  # dispatched via auth.get_xai_oauth_auth_status
+    },
+    {
+        "id": "copilot-acp",
+        "name": "GitHub Copilot (ACP)",
+        "flow": "external",
+        "cli_command": "copilot /login",
+        "docs_url": "https://docs.github.com/en/copilot",
+        "status_fn": _copilot_acp_status,
     },
     # ── Anthropic / Claude entries sit at the bottom: the API-key path
     # first, then the subscription OAuth path (which only works with extra

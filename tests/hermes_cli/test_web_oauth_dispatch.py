@@ -470,6 +470,38 @@ def test_xai_oauth_listed_as_loopback_flow():
     assert "grok" in providers["xai-oauth"]["name"].lower()
 
 
+def test_accounts_offers_every_oauth_provider_from_catalog():
+    """PARITY CONTRACT: every accounts-tab provider in the unified catalog (the
+    `hermes model` universe) must be offered by /api/providers/oauth. This keeps
+    the desktop Accounts tab in lockstep with the CLI picker — no provider the
+    CLI can sign into may be missing from the GUI.
+    """
+    from hermes_cli.provider_catalog import provider_catalog
+
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    offered = {p["id"] for p in resp.json()["providers"]}
+    for d in provider_catalog():
+        if d.tab == "accounts":
+            assert d.slug in offered, (
+                f"{d.slug} is an accounts-tab provider in `hermes model` but is "
+                f"missing from the desktop Accounts tab (/api/providers/oauth)"
+            )
+
+
+def test_copilot_acp_now_in_accounts():
+    """Regression: copilot-acp was a canonical provider the CLI could configure,
+    but had no Accounts card (the reported GUI/CLI drift).
+    """
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+    assert "copilot-acp" in providers
+    # copilot-acp is managed by an external CLI: read-only card, not auto-removable.
+    assert providers["copilot-acp"]["flow"] == "external"
+    assert providers["copilot-acp"]["disconnectable"] is False
+
+
 def test_oauth_catalog_marks_external_providers_not_disconnectable():
     """External CLI credentials are visible in Accounts but cannot be removed by Hermes."""
     resp = client.get("/api/providers/oauth", headers=HEADERS)

@@ -2944,6 +2944,7 @@ def select_provider_and_model(args=None):
     from hermes_cli.models import (
         CANONICAL_PROVIDERS,
         _PROVIDER_LABELS,
+        _canonical_slugs,
         group_providers,
         provider_group_for_slug,
     )
@@ -2999,6 +3000,18 @@ def select_provider_and_model(args=None):
             ordered.append((key, label, members))
 
     for key, provider_info in _custom_provider_map.items():
+        # Skip custom providers that duplicate a canonical provider slug.
+        # The canonical entry already appears above with its live model
+        # count; the custom-provider copy would show "(0)" because the
+        # static _PROVIDER_MODELS for aggregators like OpenRouter is empty.
+        #
+        # Match on key (handles providers dict where provider_key is
+        # preserved) AND on lowercased name (handles custom_providers list
+        # where provider_key is stripped by the normalizer but the display
+        # name still matches the canonical label).
+        provider_name_slug = (provider_info["name"] or "").strip().lower().replace(" ", "-")
+        if key in _canonical_slugs or provider_name_slug in _canonical_slugs:
+            continue
         name = provider_info["name"]
         base_url = provider_info["base_url"]
         short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")

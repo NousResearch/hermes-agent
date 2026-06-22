@@ -71,3 +71,16 @@ returns 1 instead of 2 on clean) that our PR set (sqlite-driver #50056, bedrock,
 Method note: the unbounded 33K-test whole-suite cannot run to completion here (session-reap, not
 OOM), so PR-scope (66 files exercising the touched source) + per-failure isolation on both trees is
 the rigorous substitute that isolates OUR contribution. Raw logs: `<prscope-clean.log / prscope-int.log>`.
+
+## Post-fix re-run (rebuilt integrated tree with both fixes)
+
+After fixing #50047 + #50048 and rebuilding the integrated tree, the full 66-file PR-scope set:
+**5 failed, 4731 passed** (down from 13 failed). Every one of the 5 accounted for:
+- `test_reasoning_xhigh_honored_for_copilot_gpt5` ×1 — overlay-only Bucket-C test (above).
+- `test_skills_tool.py::TestSkillViewPrerequisites` ×4 — **present IDENTICALLY in the clean
+  v0.17.0 FAILED set** AND pass in isolation on both trees → upstream test-isolation artifacts,
+  not PR-introduced.
+
+**Final: PR-introduced net-new failures across the full 40-PR diff scope = 0.** The two genuine
+defects this scope caught (#50047, #50048) are fixed; the rebuilt integrated tree confirms the
+gateway docker test + all 146 send_message tests now pass.

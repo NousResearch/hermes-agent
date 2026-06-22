@@ -72,9 +72,8 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
                 target=_worker,
                 args=(
                     weakref.ref(self, weakref_cb),
+                    self._create_worker_context(),
                     self._work_queue,
-                    self._initializer,
-                    self._initargs,
                 ),
                 daemon=True,
             )

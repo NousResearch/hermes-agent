@@ -1783,12 +1783,12 @@ async def get_status(profile: Optional[str] = None):
         # Try local PID check first (same-host).  If that fails and a remote
         # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
         # dashboard works when the gateway runs in a separate container.
-        gateway_pid = get_running_pid()
+        loop = asyncio.get_running_loop()
+        gateway_pid = await loop.run_in_executor(None, get_running_pid)
         gateway_running = gateway_pid is not None
         remote_health_body: dict | None = None
 
         if not gateway_running and _GATEWAY_HEALTH_URL:
-            loop = asyncio.get_running_loop()
             alive, remote_health_body = await loop.run_in_executor(
                 None, _probe_gateway_health
             )
@@ -3031,8 +3031,9 @@ async def get_profiles_sessions(
         name, home = _cron_profile_home(profile)
         targets.append((name, home))
     else:
+        loop = asyncio.get_running_loop()
         try:
-            infos = profiles_mod.list_profiles()
+            infos = await loop.run_in_executor(None, profiles_mod.list_profiles)
             targets = [(info.name, info.path) for info in infos]
         except Exception:
             _log.exception("GET /api/profiles/sessions: list_profiles failed")
@@ -7661,16 +7662,23 @@ def _find_cron_job_profile(job_id: str) -> Optional[str]:
 @app.get("/api/cron/jobs")
 async def list_cron_jobs(profile: str = "all"):
     requested = (profile or "all").strip()
+    loop = asyncio.get_running_loop()
     if requested.lower() != "all":
-        return _call_cron_for_profile(requested, "list_jobs", True)
+        return await loop.run_in_executor(
+            None, _call_cron_for_profile, requested, "list_jobs", True
+        )
 
+    profile_dicts = await loop.run_in_executor(None, _cron_profile_dicts)
     jobs: List[Dict[str, Any]] = []
-    for item in _cron_profile_dicts():
+    for item in profile_dicts:
         name = str(item.get("name") or "")
         if not name:
             continue
         try:
-            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
+            profile_jobs = await loop.run_in_executor(
+                None, _call_cron_for_profile, name, "list_jobs", True
+            )
+            jobs.extend(profile_jobs)
         except Exception:
             _log.exception("Failed to list cron jobs for profile %s", name)
     return jobs
@@ -7678,10 +7686,11 @@ async def list_cron_jobs(profile: str = "all"):
 
 @app.get("/api/cron/jobs/{job_id}")
 async def get_cron_job(job_id: str, profile: Optional[str] = None):
-    selected = profile or _find_cron_job_profile(job_id)
+    loop = asyncio.get_running_loop()
+    selected = profile or await loop.run_in_executor(None, _find_cron_job_profile, job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
-    job = _call_cron_for_profile(selected, "get_job", job_id)
+    job = await loop.run_in_executor(None, _call_cron_for_profile, selected, "get_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
@@ -9795,8 +9804,10 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
 @app.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
+    loop = asyncio.get_running_loop()
     try:
-        return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
+        infos = await loop.run_in_executor(None, profiles_mod.list_profiles)
+        return {"profiles": [_profile_to_dict(p) for p in infos]}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
         return {"profiles": _fallback_profile_dicts(profiles_mod)}

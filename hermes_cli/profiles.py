@@ -27,13 +27,73 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+# find_alias_for_profile scans ~/.local/bin/ to reverse-lookup wrapper aliases.
+# With ~3774 files in that directory (common on dev machines), every call that
+# triggers list_profiles → find_alias_for_profile reads every file — and
+# concurrent async requests (cron/profiles/sessions endpoints) all do it in
+# parallel. Cache the scan for 2s with a lock so only one thread scans at a time.
+_WRAPPER_CACHE: Dict[str, Tuple[float, Dict[str, Optional[str]]]] = {}
+_WRAPPER_SCAN_TTL_S = 2.0
+_WRAPPER_SCAN_LOCK = threading.Lock()
+
+def _scan_wrapper_dir() -> Dict[str, Optional[str]]:
+    """Scan ~/.local/bin/ for `hermes -p <name>` wrappers.
+    Returns {needle: alias} preferring custom aliases over profile-named ones."""
+    wrapper_dir = _get_wrapper_dir()
+    if not wrapper_dir.is_dir():
+        return {}
+    is_windows = sys.platform == "win32"
+    # Track (custom_alias, profile_named_alias) per needle; custom wins.
+    pairs: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
+    for entry in sorted(wrapper_dir.iterdir()):
+        if is_windows and entry.suffix != ".bat":
+            continue
+        if not is_windows and entry.suffix:
+            continue
+        if not entry.is_file():
+            continue
+        try:
+            content = entry.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        import re as _re
+        for m in _re.finditer(r"hermes -p (\S+)", content):
+            needle = f"hermes -p {m.group(1)}"
+            alias = entry.stem if is_windows else entry.name
+            custom, named = pairs.get(needle, (None, None))
+            if alias == m.group(1):
+                named = alias
+            else:
+                custom = alias
+            pairs[needle] = (custom, named)
+    return {needle: (custom or named) for needle, (custom, named) in pairs.items()}
+
+def _get_wrapper_scan() -> Dict[str, Optional[str]]:
+    """Thread-safe cached wrapper scan. Only one thread scans at a time;
+    concurrent callers wait for the first result and share it."""
+    wrapper_dir = _get_wrapper_dir()
+    cache_key = str(wrapper_dir.resolve())
+    now = time.monotonic()
+    cached = _WRAPPER_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _WRAPPER_SCAN_TTL_S:
+        return cached[1]
+    with _WRAPPER_SCAN_LOCK:
+        cached = _WRAPPER_CACHE.get(cache_key)
+        if cached and (now - cached[0]) < _WRAPPER_SCAN_TTL_S:
+            return cached[1]
+        result = _scan_wrapper_dir()
+        _WRAPPER_CACHE[cache_key] = (time.monotonic(), result)
+        return result
 
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
@@ -506,28 +566,8 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
     is_windows = sys.platform == "win32"
     needle = f"hermes -p {canon}"
 
-    custom: Optional[str] = None
-    profile_named: Optional[str] = None
-    for entry in sorted(wrapper_dir.iterdir()):
-        if not entry.is_file():
-            continue
-        # Only our own wrappers are named with the alias and (on Windows) .bat.
-        if is_windows and entry.suffix != ".bat":
-            continue
-        if not is_windows and entry.suffix:
-            continue
-        try:
-            content = entry.read_text()
-        except (OSError, UnicodeDecodeError):
-            continue
-        if needle not in content:
-            continue
-        alias = entry.stem if is_windows else entry.name
-        if alias == canon:
-            profile_named = alias
-        elif custom is None:
-            custom = alias
-    return custom if custom is not None else profile_named
+    needle_map = _get_wrapper_scan()
+    return needle_map.get(needle)
 
 
 # ---------------------------------------------------------------------------

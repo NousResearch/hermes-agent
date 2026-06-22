@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from types import SimpleNamespace
 
 
 def _git(*args: str, cwd):
@@ -46,6 +47,57 @@ def test_orbit_worker_rejects_non_allowlisted_git_remote_before_script(tmp_path)
     assert "t_1ecf7ff4" in output
     # The guard must fire before the script path is resolved/executed.
     assert "script failed" not in output.lower()
+
+
+def test_orbit_worker_rejects_same_repo_name_wrong_owner_before_script(tmp_path):
+    import cron.scheduler as sched
+
+    workspace = tmp_path / "t_wrong_owner"
+    workspace.mkdir()
+    _git("init", cwd=workspace)
+    _git(
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/not-orbit/orbit-governance.git",
+        cwd=workspace,
+    )
+
+    job = {
+        "id": "job-owner-guard",
+        "name": "orbit guarded worker",
+        "no_agent": True,
+        "script": "would-run-if-owner-guard-failed.sh",
+        "workdir": str(workspace),
+        "orbit_worker_guard": True,
+        "task_id": "t_owner_guard",
+        "run_id": "4304",
+    }
+
+    success, output, response, error = sched.run_job(job)
+
+    assert success is False
+    assert response == ""
+    assert sched.WORKSPACE_ALLOWLIST_VIOLATION in (error or "")
+    assert sched.WORKSPACE_ALLOWLIST_VIOLATION in output
+    assert "not-orbit/orbit-governance" in output
+    assert "script failed" not in output.lower()
+
+
+def test_observed_github_actor_ignores_spoofable_env(monkeypatch):
+    import cron.scheduler as sched
+
+    monkeypatch.setenv("HERMES_GITHUB_ACTOR", "expected-spoof")
+    monkeypatch.setenv("GITHUB_ACTOR", "expected-spoof")
+    monkeypatch.setenv("GH_ACTOR", "expected-spoof")
+    monkeypatch.setattr(sched.shutil, "which", lambda name: "/usr/bin/gh")
+
+    def fake_run(*args, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="real-token-user\n", stderr="")
+
+    monkeypatch.setattr(sched.subprocess, "run", fake_run)
+
+    assert sched._observed_github_actor() == "real-token-user"
 
 
 def test_orbit_worker_rejects_profile_actor_mismatch_before_mutation(tmp_path, monkeypatch):

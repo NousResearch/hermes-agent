@@ -116,9 +116,9 @@ WORKSPACE_ALLOWLIST_VIOLATION = "WORKSPACE_ALLOWLIST_VIOLATION"
 WORKER_ATTRIBUTION_MISMATCH = "WORKER_ATTRIBUTION_MISMATCH"
 
 _DEFAULT_ORBIT_ALLOWED_REPOS = frozenset({
-    "orbit-governance",
-    "orbitgrc-ui",
-    "orbit-docs",
+    "adavidson510/orbit-governance",
+    "adavidson510/orbitgrc-ui",
+    "adavidson510/orbit-docs",
 })
 
 
@@ -162,13 +162,20 @@ def _path_is_relative_to(child: Path, parent: Path) -> bool:
         return False
 
 
-def _normalize_allowed_repo_names(raw) -> set[str]:
+def _normalize_allowed_repo_names(raw) -> tuple[set[str], set[str]]:
+    """Return qualified and explicit-bare allowed repo names.
+
+    Fully-qualified allowlist entries pin owner/repo and must not silently
+    loosen to bare-name matches. Bare repo-name entries are preserved only as an
+    explicit opt-in compatibility path.
+    """
     if raw is None or raw is False or raw == "":
-        return set(_DEFAULT_ORBIT_ALLOWED_REPOS)
+        return set(_DEFAULT_ORBIT_ALLOWED_REPOS), set()
     items = raw
     if isinstance(raw, str):
         items = re.split(r"[,\s]+", raw)
-    allowed: set[str] = set()
+    qualified: set[str] = set()
+    bare_allowed: set[str] = set()
     for item in items or []:
         text = str(item or "").strip().lower()
         if not text:
@@ -176,10 +183,13 @@ def _normalize_allowed_repo_names(raw) -> set[str]:
         text = text.rstrip("/")
         if text.endswith(".git"):
             text = text[:-4]
-        # Accept either "owner/repo" or bare "repo" allowlist entries.
-        allowed.add(text)
-        allowed.add(text.rsplit("/", 1)[-1])
-    return allowed or set(_DEFAULT_ORBIT_ALLOWED_REPOS)
+        if "/" in text:
+            qualified.add(text)
+        else:
+            bare_allowed.add(text)
+    if not qualified and not bare_allowed:
+        return set(_DEFAULT_ORBIT_ALLOWED_REPOS), set()
+    return qualified, bare_allowed
 
 
 def _repo_name_from_remote(url: str) -> Optional[str]:
@@ -240,18 +250,9 @@ def _observed_github_actor() -> Optional[str]:
     """Best-effort current GitHub write actor for attribution preflight.
 
     Cron should not require GitHub for unrelated jobs, so this is only called
-    inside the opt-in ORBIT guard. Env overrides make the helper cheap and easy
-    to test; falling back to `gh api user` mirrors the write identity used by
-    GitHub CLI driven comment/review/receipt scripts.
+    inside the opt-in ORBIT guard. The observed actor must come from the real
+    write credential. Spoofable environment variables are deliberately ignored.
     """
-    for name in (
-        "HERMES_GITHUB_ACTOR",
-        "GITHUB_ACTOR",
-        "GH_ACTOR",
-    ):
-        value = os.environ.get(name)
-        if value and value.strip():
-            return value.strip()
     gh = shutil.which("gh")
     if not gh:
         return None
@@ -349,7 +350,7 @@ def _check_orbit_worker_guards(job: dict) -> None:
         logger.error("%s: %s", WORKSPACE_ALLOWLIST_VIOLATION, details)
         raise CronWorkerIsolationViolation(WORKSPACE_ALLOWLIST_VIOLATION, details)
 
-    allowed = _normalize_allowed_repo_names(
+    allowed_qualified, allowed_bare = _normalize_allowed_repo_names(
         job.get("allowed_repos") or job.get("orbit_allowed_repos")
     )
     repo_root = _git_toplevel_for_guard(effective_cwd)
@@ -368,10 +369,10 @@ def _check_orbit_worker_guards(job: dict) -> None:
         for remote in remotes:
             repo_name = _repo_name_from_remote(remote)
             bare = repo_name.rsplit("/", 1)[-1] if repo_name else None
-            if repo_name not in allowed and bare not in allowed:
+            if repo_name not in allowed_qualified and bare not in allowed_bare:
                 details["observed_remote"] = remote
                 details["observed_repo"] = repo_name or ""
-                details["allowed_repos"] = ",".join(sorted(allowed))
+                details["allowed_repos"] = ",".join(sorted([*allowed_qualified, *allowed_bare]))
                 details["reason"] = "git remote is outside ORBIT allowlist"
                 logger.error("%s: %s", WORKSPACE_ALLOWLIST_VIOLATION, details)
                 raise CronWorkerIsolationViolation(WORKSPACE_ALLOWLIST_VIOLATION, details)

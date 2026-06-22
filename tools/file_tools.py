@@ -147,14 +147,34 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     return base.resolve()
 
 
+def _preserve_container_absolute_path(filepath: str) -> bool:
+    """Return True for container-native absolute paths under non-local backends.
+
+    Docker/Singularity/Modal/Daytona file operations execute inside the backend
+    sandbox. In that context, absolute paths such as /workspace/... and
+    /outputs/... are container paths, often backed by explicit mounts. Resolving
+    them on the host first can rewrite /workspace/projects/... into the host
+    source path and then hand that host path back to the container, where it may
+    become a private, non-durable container path instead of the intended mount.
+    """
+    env = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    if env == "local":
+        return False
+    path = str(Path(filepath).expanduser())
+    return path in {"/workspace", "/outputs"} or path.startswith(("/workspace/", "/outputs/"))
+
+
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's absolute base directory.
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
-    paths are returned resolved-but-unanchored.
+    paths are returned resolved-but-unanchored, except container-native absolute
+    paths are preserved for non-local terminal backends.
     """
     p = Path(filepath).expanduser()
     if p.is_absolute():
+        if _preserve_container_absolute_path(filepath):
+            return p
         return p.resolve()
     return (_resolve_base_dir(task_id) / p).resolve()
 

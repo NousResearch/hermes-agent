@@ -4441,22 +4441,55 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 return False
 
-            # Refuse to start network-accessible with a placeholder key.
-            # Ported from openclaw/openclaw#64586.
+            # Refuse to start network-accessible with a placeholder or weak key.
+            # Ported from openclaw/openclaw#64586; entropy floor raised to 16 in
+            # the June 2026 hermes-0day hardening (an 8-char key dispatching
+            # terminal-capable agent work on a public bind is brute-forceable).
             if is_network_accessible(self._host) and self._api_key:
                 try:
                     from hermes_cli.auth import has_usable_secret
-                    if not has_usable_secret(self._api_key, min_length=8):
+                    if not has_usable_secret(self._api_key, min_length=16):
                         logger.error(
-                            "[%s] Refusing to start: API_SERVER_KEY is set to a "
-                            "placeholder value. Generate a real secret "
-                            "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
-                            "before exposing the API server on %s.",
+                            "[%s] Refusing to start: API_SERVER_KEY is a "
+                            "placeholder or too short (<16 chars) for a "
+                            "network-accessible bind. This endpoint dispatches "
+                            "terminal-capable agent work — a guessable key is "
+                            "remote code execution. Generate a strong secret "
+                            "(e.g. `openssl rand -hex 32`) and set "
+                            "API_SERVER_KEY before exposing it on %s.",
                             self.name, self._host,
                         )
                         return False
                 except ImportError:
                     pass
+
+            # Loud warning when a network-accessible API server runs against an
+            # unsandboxed local terminal backend. The API server can drive the
+            # agent's terminal/file tools as the host user; on a public bind
+            # that is the exact surface the hermes-0day campaign abused to write
+            # ~/.hermes/config.yaml and plant persistence. Sandboxing (Docker /
+            # remote backend) contains the blast radius. Warn, don't refuse —
+            # the operator may have an external firewall / strong key.
+            if is_network_accessible(self._host):
+                try:
+                    from hermes_cli.config import load_config as _load_cfg
+                    _backend = (
+                        ((_load_cfg() or {}).get("terminal") or {}).get(
+                            "backend", "local"
+                        )
+                    )
+                except Exception:
+                    _backend = "local"
+                if str(_backend).lower() == "local":
+                    logger.warning(
+                        "[%s] API server is network-accessible (%s) AND the "
+                        "terminal backend is 'local' (unsandboxed). Agent work "
+                        "dispatched through this endpoint runs as the host user "
+                        "with full terminal/file access. Strongly consider a "
+                        "sandboxed backend (terminal.backend: docker) and "
+                        "firewalling this port to trusted networks only.",
+                        self.name, self._host,
+                    )
 
             # Port conflict detection — fail fast if port is already in use
             try:

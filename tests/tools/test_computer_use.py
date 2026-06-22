@@ -1386,18 +1386,45 @@ def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
 
 
 class TestCuaDriverSessionReconnect:
-    def test_call_tool_reconnects_once_after_closed_resource(self):
-        """A daemon restart closes the cached MCP stdio channel; recover once."""
+    """Verify reconnect-once on a closed-resource error. After the
+    lifecycle-owner refactor (Sun Jun 21 2026) the session no longer goes
+    through bridge.run(_aenter/_aexit); instead, reconnect calls
+    `_stop_lifecycle_locked` + `_start_lifecycle_locked` directly. The
+    tests below mock those helpers so the reconnect contract stays
+    frozen across the API change.
+    """
+
+    def _make_session(self, bridge):
         import threading
         from typing import Any, cast
-        from anyio import ClosedResourceError
         from tools.computer_use.cua_backend import _CuaDriverSession
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._bridge = bridge
+        session._session = object()
+        session._lock = threading.Lock()
+        session._started = True
+        session._capabilities = {}
+        session._capability_version = ""
+        session._ready_event = None  # populated by real _start_lifecycle
+        session._shutdown_event = None
+        session._lifecycle_future = None
+        session._setup_error = None
+        session._call_tool_async = lambda name, args: ("call", name, args)
+        # Record what reconnect does — stop then start, in that order.
+        session._reconnect_log = []
+        session._stop_lifecycle_locked = lambda: session._reconnect_log.append("stop")
+        session._start_lifecycle_locked = lambda: session._reconnect_log.append("start")
+        return session
+
+    def test_call_tool_reconnects_once_after_closed_resource(self):
+        """A daemon restart closes the cached MCP stdio channel; recover once."""
+        from anyio import ClosedResourceError
 
         class FakeBridge:
             def __init__(self):
                 self.calls = []
-                # 1st call_tool -> closed; aexit ok; aenter ok; retried call_tool ok.
-                self.effects = [ClosedResourceError(), None, None, {"ok": True}]
+                # 1st call_tool -> closed transport; retried call_tool ok.
+                self.effects = [ClosedResourceError(), {"ok": True}]
 
             def run(self, value, timeout=None):
                 self.calls.append((value, timeout))
@@ -1407,30 +1434,17 @@ class TestCuaDriverSessionReconnect:
                 return effect
 
         bridge = FakeBridge()
-        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
-        session._bridge = bridge
-        session._session = object()
-        session._exit_stack = None
-        session._lock = threading.Lock()
-        session._started = True
-        session._call_tool_async = lambda name, args: ("call", name, args)
-        session._aexit = lambda: ("aexit",)
-        session._aenter = lambda: ("aenter",)
+        session = self._make_session(bridge)
 
         assert session.call_tool("list_apps", {}) == {"ok": True}
-        # Reconnect-once sequence: failed call -> aexit -> aenter -> retried call.
+        # Reconnect-once sequence: failed call -> stop -> start -> retried call.
         assert bridge.calls[0][0] == ("call", "list_apps", {})
-        assert bridge.calls[1][0] == ("aexit",)
-        assert bridge.calls[2][0] == ("aenter",)
-        assert bridge.calls[3][0] == ("call", "list_apps", {})
-        assert len(bridge.calls) == 4
+        assert session._reconnect_log == ["stop", "start"]
+        assert bridge.calls[1][0] == ("call", "list_apps", {})
+        assert len(bridge.calls) == 2
 
     def test_call_tool_does_not_retry_on_unrelated_error(self):
         """Non-transport errors must propagate without a reconnect attempt."""
-        import threading
-        from typing import Any, cast
-        from tools.computer_use.cua_backend import _CuaDriverSession
-
         class FakeBridge:
             def __init__(self):
                 self.calls = []
@@ -1440,15 +1454,7 @@ class TestCuaDriverSessionReconnect:
                 raise ValueError("boom")
 
         bridge = FakeBridge()
-        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
-        session._bridge = bridge
-        session._session = object()
-        session._exit_stack = None
-        session._lock = threading.Lock()
-        session._started = True
-        session._call_tool_async = lambda name, args: ("call", name, args)
-        session._aexit = lambda: ("aexit",)
-        session._aenter = lambda: ("aenter",)
+        session = self._make_session(bridge)
 
         import pytest
         with pytest.raises(ValueError):
@@ -1573,11 +1579,16 @@ class TestCuaEnvironmentScrubbing:
     """Verify that cua-driver subprocess environment is sanitized (issue #37878)."""
 
     def test_cua_session_sanitizes_provider_env_vars(self):
-        """_CuaDriverSession._aenter() must sanitize sensitive env vars.
+        """_CuaDriverSession lifecycle must sanitize sensitive env vars.
 
-        The cua-driver MCP subprocess should not inherit Hermes-managed credentials
-        or other sensitive environment variables — only runtime-required vars.
-        This is a regression test for issue #37878.
+        The cua-driver MCP subprocess should not inherit Hermes-managed
+        credentials or other sensitive environment variables — only
+        runtime-required vars. Regression test for issue #37878.
+
+        After the lifecycle-owner refactor, env scrubbing happens inside
+        `_lifecycle_coro`; this test drives that coroutine directly with
+        all the MCP/stdio plumbing mocked, captures the env arg passed
+        to StdioServerParameters, and asserts the scrub contract.
         """
         from unittest.mock import MagicMock, patch, AsyncMock
         from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
@@ -1586,62 +1597,79 @@ class TestCuaEnvironmentScrubbing:
         bridge = _AsyncBridge()
         session = _CuaDriverSession(bridge)
 
-        captured_env = {}
+        captured_env: Dict[str, str] = {}
 
-        async def test_aenter():
-            # Set up test environment with both safe and blocked vars
+        async def drive_lifecycle():
             test_env = {
-                "OPENAI_API_KEY": "sk-secret",  # blocked
+                "OPENAI_API_KEY": "sk-secret",         # blocked
                 "ANTHROPIC_API_KEY": "sk-ant-secret",  # blocked
-                "PATH": "/usr/bin:/bin",  # safe
-                "HOME": "/home/user",  # safe
-                "SAFE_VAR": "allowed",  # safe
+                "PATH": "/usr/bin:/bin",               # safe
+                "HOME": "/home/user",                  # safe
+                "SAFE_VAR": "allowed",                 # safe
             }
 
-            with patch.dict(os.environ, test_env, clear=True):
-                with patch("tools.computer_use.cua_backend.cua_driver_binary_available",
-                          return_value=True):
-                    # Mock StdioServerParameters to capture the env arg
-                    def capture_env(**kwargs):
-                        captured_env.update(kwargs.get("env", {}))
-                        # Return mock that works with async context manager
-                        mock = MagicMock()
-                        mock.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
-                        mock.__aexit__ = AsyncMock(return_value=None)
-                        return mock
+            def capture_env(**kwargs):
+                captured_env.update(kwargs.get("env", {}))
+                # Return any sentinel — never actually used by the
+                # patched stdio_client path below.
+                return MagicMock()
 
-                    with patch("mcp.StdioServerParameters", side_effect=capture_env), \
-                         patch("mcp.client.stdio.stdio_client") as mock_stdio, \
-                         patch("mcp.ClientSession") as mock_session_class, \
-                         patch("contextlib.AsyncExitStack"):
+            with patch.dict(os.environ, test_env, clear=True), \
+                 patch("tools.computer_use.cua_backend.cua_driver_binary_available",
+                       return_value=True), \
+                 patch("tools.computer_use.cua_backend._resolve_mcp_invocation",
+                       return_value=("cua-driver", ["mcp"])), \
+                 patch("mcp.StdioServerParameters", side_effect=capture_env), \
+                 patch("mcp.client.stdio.stdio_client") as mock_stdio, \
+                 patch("mcp.ClientSession") as mock_session_class:
 
-                        # Setup mocks for stdio_client and ClientSession
-                        mock_read = MagicMock()
-                        mock_write = MagicMock()
-                        mock_stdio.return_value.__aenter__ = AsyncMock(
-                            return_value=(mock_read, mock_write))
-                        mock_stdio.return_value.__aexit__ = AsyncMock(return_value=None)
+                # stdio_client(params) is used as `async with`.
+                mock_stdio.return_value.__aenter__ = AsyncMock(
+                    return_value=(MagicMock(), MagicMock()))
+                mock_stdio.return_value.__aexit__ = AsyncMock(return_value=None)
 
-                        mock_session = MagicMock()
-                        mock_session.initialize = AsyncMock()
-                        mock_session_class.return_value.__aenter__ = AsyncMock(
-                            return_value=mock_session)
-                        mock_session_class.return_value.__aexit__ = AsyncMock(return_value=None)
+                # ClientSession(read, write) is used as `async with`.
+                fake_session = MagicMock()
+                fake_session.initialize = AsyncMock()
+                # tools/list yields nothing — keeps _populate_capabilities
+                # quiet without us needing to fully mock the response shape.
+                fake_session.list_tools = AsyncMock(return_value=MagicMock(tools=[]))
+                mock_session_class.return_value.__aenter__ = AsyncMock(
+                    return_value=fake_session)
+                mock_session_class.return_value.__aexit__ = AsyncMock(return_value=None)
 
-                        try:
-                            await session._aenter()
-                        except Exception:
-                            pass  # Mocks may raise, but env should be captured
+                # Run the lifecycle with the shutdown event pre-set so it
+                # tears down right after setup. We can't pre-set
+                # session._shutdown_event because _lifecycle_coro creates
+                # it inside the coroutine; instead, kick a background
+                # task that signals as soon as the event exists.
+                async def _signal_shutdown_when_ready():
+                    for _ in range(200):  # ~1s budget
+                        if session._shutdown_event is not None:
+                            session._shutdown_event.set()
+                            return
+                        await asyncio.sleep(0.005)
 
-        asyncio.run(test_aenter())
+                signal_task = asyncio.create_task(_signal_shutdown_when_ready())
+                try:
+                    await session._lifecycle_coro()
+                except BaseException:
+                    pass  # mocks may raise; the env capture still landed
+                finally:
+                    signal_task.cancel()
+                    try:
+                        await signal_task
+                    except (asyncio.CancelledError, BaseException):
+                        pass
 
-        # Verify blocked credentials are not in the passed env
+        asyncio.run(drive_lifecycle())
+
+        # Blocked credentials must NOT have been passed to the subprocess.
         assert "OPENAI_API_KEY" not in captured_env, \
             "OPENAI_API_KEY should be stripped from cua-driver subprocess"
         assert "ANTHROPIC_API_KEY" not in captured_env, \
             "ANTHROPIC_API_KEY should be stripped from cua-driver subprocess"
-
-        # Verify PATH is preserved (safe var)
+        # At least one safe var must survive the scrub.
         assert "PATH" in captured_env or "SAFE_VAR" in captured_env, \
             "At least one safe environment variable should be preserved"
 
@@ -2305,3 +2333,155 @@ class TestElementTokenAttachment:
 
         # Stale 99 token is gone; only the two new tokens remain.
         assert backend._snapshot_tokens == {1: "snap2:1", 2: "snap2:2"}
+
+
+class TestSessionLifecycle:
+    """Surface gap (audit June 2026): Hermes never declared a cua-driver
+    session, so the agent-cursor overlay was inert and per-run state
+    (config overrides, recording ownership, cursor identity) was shared
+    across concurrent runs. Wired now: backend.start() calls
+    start_session with a per-instance UUID, backend.stop() calls
+    end_session, and every tool call carries the session id.
+    """
+
+    def _backend_with_mock_session(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session._started = True  # start() probe
+        backend._session.call_tool.return_value = {
+            "data": "ok", "images": [], "image_mime_types": [],
+            "structuredContent": None, "isError": False,
+        }
+        backend._session.supports_capability = lambda cap, tool=None: False
+        backend._active_pid = 42
+        backend._active_window_id = 7
+        return backend
+
+    def test_session_id_format(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        # hermes-{12 hex chars} — short enough to surface in logs
+        # without being a privacy hazard, unique enough for concurrent runs.
+        assert backend._session_id.startswith("hermes-")
+        assert len(backend._session_id) == 7 + 12
+
+    def test_session_id_unique_per_backend(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        a = CuaDriverBackend()._session_id
+        b = CuaDriverBackend()._session_id
+        assert a != b, "each Hermes run should mint its own session id"
+
+    def test_start_invokes_start_session_with_run_id(self):
+        from unittest.mock import MagicMock, patch
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        # Replace the real session with a mock to capture call_tool.
+        backend._session = MagicMock()
+        backend._session.start = MagicMock()
+        backend._session.call_tool = MagicMock(return_value={
+            "data": "", "images": [], "image_mime_types": [],
+            "structuredContent": None, "isError": False,
+        })
+
+        # Stub the optional-dep lazy-install so start() runs end-to-end
+        # without trying to pip-install anything.
+        with patch("tools.lazy_deps.ensure"):
+            backend.start()
+
+        # First call_tool after _session.start() must be start_session
+        # with this backend instance's session id.
+        first_call = backend._session.call_tool.call_args_list[0]
+        name, args = first_call.args
+        assert name == "start_session"
+        assert args["session"] == backend._session_id
+
+    def test_stop_invokes_end_session_before_disconnect(self):
+        from unittest.mock import MagicMock, patch
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session._started = True
+        backend._session.call_tool = MagicMock(return_value={
+            "data": "", "images": [], "image_mime_types": [],
+            "structuredContent": None, "isError": False,
+        })
+        backend._bridge = MagicMock()
+
+        backend.stop()
+
+        # end_session must precede _session.stop() so cua-driver can
+        # clean up per-session state while the channel is still open.
+        call_names = [c.args[0] for c in backend._session.call_tool.call_args_list]
+        assert "end_session" in call_names
+        end_session_args = next(
+            c.args[1] for c in backend._session.call_tool.call_args_list
+            if c.args[0] == "end_session"
+        )
+        assert end_session_args["session"] == backend._session_id
+        # _session.stop() ran after the end_session call.
+        backend._session.stop.assert_called_once()
+
+    def test_action_calls_carry_session(self):
+        backend = self._backend_with_mock_session()
+        backend.click(element=3, button="left")
+        name, args = backend._session.call_tool.call_args.args
+        assert args["session"] == backend._session_id
+
+    def test_capture_list_windows_carries_session(self):
+        backend = self._backend_with_mock_session()
+        # list_windows returns no windows so capture short-circuits early
+        # — but the session arg should already be on the call.
+        backend._session.call_tool.return_value = {
+            "data": "", "images": [], "image_mime_types": [],
+            "structuredContent": {"windows": []}, "isError": False,
+        }
+        backend.capture(mode="ax")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "list_windows"
+        assert args["session"] == backend._session_id
+
+    def test_list_apps_carries_session(self):
+        backend = self._backend_with_mock_session()
+        backend._session.call_tool.return_value = {
+            "data": [], "images": [], "image_mime_types": [],
+            "structuredContent": None, "isError": False,
+        }
+        backend.list_apps()
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "list_apps"
+        assert args["session"] == backend._session_id
+
+    def test_explicit_session_override_preserved(self):
+        """An action coming in with an explicit `session` (e.g. a
+        sub-agent harness wiring its own id through) wins over the
+        backend's default. setdefault semantics."""
+        backend = self._backend_with_mock_session()
+        # Bypass click() and inject straight through _action since
+        # the public signature doesn't expose session — this is the
+        # contract that subagent-harness code can rely on.
+        backend._action("click", {"pid": 1, "button": "left",
+                                  "session": "harness-subagent-3"})
+        name, args = backend._session.call_tool.call_args.args
+        assert args["session"] == "harness-subagent-3"
+
+    def test_session_lifecycle_failures_are_non_fatal(self):
+        """If start_session raises (older cua-driver build, anonymous
+        path), backend.start() must still succeed — the rest of the
+        wrapper works fine in anonymous mode."""
+        from unittest.mock import MagicMock, patch
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.start = MagicMock()
+        # First call (start_session) raises; subsequent calls are fine.
+        backend._session.call_tool.side_effect = [
+            RuntimeError("older cua-driver — start_session unknown"),
+        ]
+
+        with patch("tools.lazy_deps.ensure"):
+            backend.start()  # must not raise

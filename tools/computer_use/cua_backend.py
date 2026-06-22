@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import json
 import logging
 import os
@@ -43,6 +44,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import (
@@ -454,12 +456,23 @@ class _AsyncBridge:
 # ---------------------------------------------------------------------------
 
 class _CuaDriverSession:
-    """Holds the mcp ClientSession. Spawned lazily; re-entered on drop."""
+    """Holds the mcp ClientSession. Spawned lazily; re-entered on drop.
+
+    Lifecycle ownership: a single long-running coroutine
+    (`_lifecycle_coro`) opens both the stdio_client and ClientSession
+    contexts, populates capabilities, sets `_ready_event`, and then waits
+    on `_shutdown_event`. When shutdown is signalled the same coroutine
+    closes the contexts — keeping anyio's cancel-scope task-identity
+    invariant intact (the bridge schedules each `bridge.run(coro)` as a
+    NEW task, so opening contexts in one and closing them in another
+    raises "Attempted to exit cancel scope in a different task").
+    Tool calls run in their own short-lived tasks; they only touch the
+    session object, never the surrounding contexts.
+    """
 
     def __init__(self, bridge: _AsyncBridge) -> None:
         self._bridge = bridge
         self._session = None
-        self._exit_stack = None
         self._lock = threading.Lock()
         self._started = False
         # Surface 4 of NousResearch/hermes-agent#47072: per-tool
@@ -471,51 +484,77 @@ class _CuaDriverSession:
         # `supports_capability` rather than reading directly.
         self._capabilities: Dict[str, set] = {}
         self._capability_version: str = ""
+        # Lifecycle plumbing — see class docstring above.
+        self._ready_event = threading.Event()
+        self._shutdown_event: Optional[asyncio.Event] = None  # created on bridge loop
+        self._lifecycle_future = None  # concurrent.futures.Future
+        self._setup_error: Optional[BaseException] = None
 
     def _require_started(self) -> None:
         if not self._started:
             raise RuntimeError("cua-driver session not started")
 
-    async def _aenter(self) -> None:
-        from contextlib import AsyncExitStack
+    async def _lifecycle_coro(self) -> None:
+        """Long-lived owner of the stdio MCP contexts. Opens, signals
+        ready, blocks on shutdown, then cleans up. enter + exit happen
+        in the SAME asyncio task, so anyio's cancel-scope invariant
+        holds — fixing the "Attempted to exit cancel scope in a
+        different task than it was entered in" warning emitted by the
+        previous _aenter/_aexit split.
+        """
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
         from tools.environments.local import _sanitize_subprocess_env
 
-        if not cua_driver_binary_available():
-            raise RuntimeError(cua_driver_install_hint())
+        # Build the shutdown event on the loop's thread so the asyncio
+        # primitive belongs to the correct loop.
+        self._shutdown_event = asyncio.Event()
 
-        # Surface 8: ask cua-driver itself which subcommand spawns the MCP
-        # server, instead of hardcoding ["mcp"]. Falls back transparently
-        # for older drivers (or any indeterminate discovery failure).
-        command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
-        params = StdioServerParameters(
-            command=command,
-            args=args,
-            env=_sanitize_subprocess_env(dict(os.environ)),
-        )
-        stack = AsyncExitStack()
-        read, write = await stack.enter_async_context(stdio_client(params))
-        session = await stack.enter_async_context(ClientSession(read, write))
-        init_result = await session.initialize()
-        self._exit_stack = stack
-        self._session = session
+        try:
+            if not cua_driver_binary_available():
+                raise RuntimeError(cua_driver_install_hint())
 
-        # Surface 4: extract `capability_version` from the initialize
-        # response's serverInfo (trycua/cua#1961 set this to "1"). Bumps
-        # mean breaking renames; we just record the value so callers can
-        # log it on a connect cycle for debuggability.
-        server_info = getattr(init_result, "serverInfo", None)
-        if server_info is not None:
-            cv = getattr(server_info, "capability_version", None) or getattr(server_info, "capabilityVersion", None)
-            if isinstance(cv, str):
-                self._capability_version = cv
+            # Surface 8: ask cua-driver itself which subcommand spawns
+            # the MCP server, instead of hardcoding ["mcp"]. Falls back
+            # transparently for older drivers / any discovery failure.
+            command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
+            params = StdioServerParameters(
+                command=command,
+                args=args,
+                env=_sanitize_subprocess_env(dict(os.environ)),
+            )
 
-        # Populate the per-tool capability map from tools/list. cua-driver
-        # always emits `capabilities` (even when empty) per tool, so this
-        # is a cheap one-shot — and falling back to an empty set on a
-        # missing field means older drivers degrade to "no capabilities
-        # advertised", which the supports_capability check handles.
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    # Populate capabilities + capability_version BEFORE
+                    # exposing the session to callers, so the first
+                    # tool call already sees them.
+                    await self._populate_capabilities(session)
+                    self._session = session
+                    self._ready_event.set()
+                    # Hold the contexts open until stop() / restart asks
+                    # us to wind down. Tool calls run as their own tasks
+                    # on the same loop and touch self._session directly.
+                    await self._shutdown_event.wait()
+        except BaseException as e:
+            # Capture both ordinary errors and anyio CancelledError.
+            # The caller (start()) inspects this to surface setup
+            # failures to the synchronous world.
+            self._setup_error = e
+            self._ready_event.set()
+            raise
+        finally:
+            # Clearing _session before the contexts unwind would let a
+            # racing call_tool see None during teardown — but the
+            # outer context-manager exits AFTER this block, so set to
+            # None here is fine: stop() has already flipped _started.
+            self._session = None
+
+    async def _populate_capabilities(self, session: Any) -> None:
+        """Surface 4: cache per-tool capability sets + capability_version
+        from tools/list. Soft prerequisite — discovery failure leaves
+        the map empty and supports_capability degrades to False."""
         try:
             tools_list = await session.list_tools()
             for tool in getattr(tools_list, "tools", []) or []:
@@ -524,8 +563,8 @@ class _CuaDriverSession:
                     continue
                 caps = getattr(tool, "capabilities", None)
                 if caps is None:
-                    # Some MCP client SDKs forward custom fields via
-                    # the model_extra dict instead of attribute access.
+                    # Some MCP SDKs forward custom fields via
+                    # `model_extra` (Pydantic v2) instead of attributes.
                     extra = getattr(tool, "model_extra", None) or {}
                     caps = extra.get("capabilities")
                 if isinstance(caps, list):
@@ -534,37 +573,90 @@ class _CuaDriverSession:
                     }
                 else:
                     self._capabilities[tool_name] = set()
+            # capability_version is a top-level sibling of `tools` on the
+            # tools/list response. cua-driver-core/src/tool.rs:354 emits
+            # it; cua-driver-core/src/protocol.rs:150 leaves it OUT of
+            # initialize — so we discover here, not there.
+            cv = getattr(tools_list, "capability_version", None)
+            if cv is None:
+                extra = getattr(tools_list, "model_extra", None) or {}
+                cv = extra.get("capability_version")
+            if isinstance(cv, str):
+                self._capability_version = cv
         except Exception as e:
-            # Capability discovery is a soft prerequisite — if it fails,
-            # supports_capability just returns False and consumers degrade
-            # to pre-#47072 behaviour. Log and continue.
             logger.debug("cua-driver tools/list capability discovery failed: %s", e)
-
-    async def _aexit(self) -> None:
-        if self._exit_stack is not None:
-            try:
-                await self._exit_stack.aclose()
-            except Exception as e:
-                logger.warning("cua-driver shutdown error: %s", e)
-        self._exit_stack = None
-        self._session = None
 
     def start(self) -> None:
         with self._lock:
             if self._started:
                 return
             self._bridge.start()
-            self._bridge.run(self._aenter(), timeout=15.0)
+            self._start_lifecycle_locked()
             self._started = True
+
+    def _start_lifecycle_locked(self) -> None:
+        """Spawn the lifecycle owner and wait for it to reach ready.
+        Caller must hold self._lock."""
+        # Reset per-session state.
+        self._ready_event = threading.Event()
+        self._setup_error = None
+        self._shutdown_event = None
+        # Fire-and-forget schedule on the bridge loop. The future tracks
+        # completion of the WHOLE lifecycle (open → wait → close), not
+        # just the open step — start() waits on _ready_event separately.
+        loop = self._bridge._loop
+        if loop is None:
+            raise RuntimeError("cua-driver bridge not started")
+        self._lifecycle_future = asyncio.run_coroutine_threadsafe(
+            self._lifecycle_coro(), loop
+        )
+        if not self._ready_event.wait(timeout=15.0):
+            # Best-effort: signal shutdown if the future is still alive.
+            self._signal_shutdown_locked()
+            raise RuntimeError("cua-driver session never reached ready (timeout 15s)")
+        # If setup failed, the lifecycle coroutine set _setup_error
+        # before setting _ready_event. Re-raise it on the caller's thread.
+        if self._setup_error is not None:
+            raise RuntimeError(
+                f"cua-driver session setup failed: {self._setup_error}"
+            ) from self._setup_error
 
     def stop(self) -> None:
         with self._lock:
             if not self._started:
                 return
+            self._started = False
+            self._stop_lifecycle_locked()
+
+    def _stop_lifecycle_locked(self) -> None:
+        """Signal shutdown + wait for the lifecycle coroutine to unwind.
+        Caller must hold self._lock."""
+        self._signal_shutdown_locked()
+        fut = self._lifecycle_future
+        if fut is None:
+            return
+        try:
+            # 5s budget for context unwind (stdio_client teardown).
+            fut.result(timeout=5.0)
+        except concurrent.futures.TimeoutError:
+            logger.warning("cua-driver session shutdown timed out (5s)")
+        except Exception as e:
+            # Real shutdown errors (not the previous cancel-scope race
+            # which is now structurally impossible) still get surfaced.
+            logger.warning("cua-driver shutdown error: %s", e)
+        finally:
+            self._lifecycle_future = None
+
+    def _signal_shutdown_locked(self) -> None:
+        """Set the asyncio shutdown event from the caller's thread."""
+        loop = self._bridge._loop
+        event = self._shutdown_event
+        if loop is not None and event is not None and loop.is_running():
             try:
-                self._bridge.run(self._aexit(), timeout=5.0)
-            finally:
-                self._started = False
+                loop.call_soon_threadsafe(event.set)
+            except RuntimeError:
+                # Loop closed — nothing to signal.
+                pass
 
     async def _call_tool_async(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         result = await self._session.call_tool(name, args)
@@ -605,14 +697,18 @@ class _CuaDriverSession:
         )
 
     def _restart_session_locked(self) -> None:
-        """Recreate the MCP session after the daemon/stdin transport was closed."""
-        try:
-            if self._started:
-                self._bridge.run(self._aexit(), timeout=5.0)
-        except Exception as e:
-            logger.debug("cua-driver session cleanup before reconnect failed: %s", e)
+        """Recreate the MCP session after the daemon/stdin transport was closed.
+        Caller must hold self._lock (the reconnect-once retry path holds it)."""
+        if self._started:
+            try:
+                self._stop_lifecycle_locked()
+            except Exception as e:
+                logger.debug("cua-driver session cleanup before reconnect failed: %s", e)
         self._started = False
-        self._bridge.run(self._aenter(), timeout=15.0)
+        # Clear stale capability state; the next start populates from scratch.
+        self._capabilities = {}
+        self._capability_version = ""
+        self._start_lifecycle_locked()
         self._started = True
 
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
@@ -690,7 +786,7 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 class CuaDriverBackend(ComputerUseBackend):
-    """Default computer-use backend. Cross-platform via cua-driver MCP (macOS + Windows)."""
+    """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
     def __init__(self) -> None:
         self._bridge = _AsyncBridge()
@@ -707,6 +803,24 @@ class CuaDriverBackend(ComputerUseBackend):
         # element. Cleared whenever a fresh capture overwrites the
         # snapshot context.
         self._snapshot_tokens: Dict[int, str] = {}
+        # Per-instance cua-driver session id. cua-driver's MCP server
+        # instructions ask every consumer to declare a stable session
+        # at the start of a run (start_session) and tear it down at
+        # the end (end_session). Doing so:
+        #   - Gets a distinct agent-cursor color per Hermes run, with
+        #     overlay rendering visualising where actions land
+        #     (without moving the real OS cursor).
+        #   - Isolates per-session config + recording ownership so
+        #     concurrent Hermes runs / subagents don't step on each
+        #     other.
+        # We mint a UUID4-based id once per CuaDriverBackend instance —
+        # one Hermes run = one backend = one session — and pass it as
+        # `session` on every cua-driver tool call. Sessions are an
+        # additive feature on the cua-driver side: when our id is
+        # unknown to the driver (older builds), the tool calls
+        # degrade to the anonymous / unsynced path documented in the
+        # MCP server instructions.
+        self._session_id: str = f"hermes-{uuid.uuid4().hex[:12]}"
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
@@ -727,7 +841,31 @@ class CuaDriverBackend(ComputerUseBackend):
         importlib.invalidate_caches()
         self._session.start()
 
+        # Declare the run's session identity to cua-driver. From the
+        # cua-driver server instructions: "start_session(session) once
+        # at the start of a run → declares THIS run's identity (a
+        # stable id you choose). Pass that same `session` on every
+        # action below. It owns your agent cursor (a distinct color
+        # per id) and follows the run across apps/windows." Failure
+        # to start the session is non-fatal — cua-driver's tools
+        # accept anonymous calls (the cursor just won't render),
+        # so we degrade rather than abort.
+        try:
+            self._session.call_tool("start_session", {"session": self._session_id})
+        except Exception as e:
+            logger.debug("cua-driver start_session failed (continuing anonymous): %s", e)
+
     def stop(self) -> None:
+        # Tear the cua-driver session down before disconnecting so the
+        # driver can clean up per-session state (cursor overlay, recording
+        # ownership, config overrides). Best-effort — even if it fails,
+        # the connection drop below releases the daemon-side state via
+        # the session_end hook cua-driver registers internally.
+        if self._session._started:
+            try:
+                self._session.call_tool("end_session", {"session": self._session_id})
+            except Exception as e:
+                logger.debug("cua-driver end_session failed (continuing teardown): %s", e)
         try:
             self._session.stop()
         finally:
@@ -757,7 +895,10 @@ class CuaDriverBackend(ComputerUseBackend):
         # PR's effective minimum (trycua/cua#1961 + #1908) is well past
         # that, so the fallback is gone — the wrapper now treats the
         # structured shape as the only contract.
-        lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
+        lw_out = self._session.call_tool(
+            "list_windows",
+            {"on_screen_only": True, "session": self._session_id},
+        )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
         windows = [
             {
@@ -821,7 +962,12 @@ class CuaDriverBackend(ComputerUseBackend):
             # screenshot tool: just the PNG, no AX walk.
             sc_out = self._session.call_tool(
                 "screenshot",
-                {"window_id": self._active_window_id, "format": "jpeg", "quality": 85},
+                {
+                    "window_id": self._active_window_id,
+                    "format": "jpeg",
+                    "quality": 85,
+                    "session": self._session_id,
+                },
             )
             if sc_out["images"]:
                 png_b64 = sc_out["images"][0]
@@ -834,7 +980,11 @@ class CuaDriverBackend(ComputerUseBackend):
             # get_window_state: AX tree + optional screenshot.
             gws_out = self._session.call_tool(
                 "get_window_state",
-                {"pid": self._active_pid, "window_id": self._active_window_id},
+                {
+                    "pid": self._active_pid,
+                    "window_id": self._active_window_id,
+                    "session": self._session_id,
+                },
             )
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)
@@ -1049,7 +1199,7 @@ class CuaDriverBackend(ComputerUseBackend):
 
     # ── Introspection ──────────────────────────────────────────────
     def list_apps(self) -> List[Dict[str, Any]]:
-        out = self._session.call_tool("list_apps", {})
+        out = self._session.call_tool("list_apps", {"session": self._session_id})
         data = out["data"]
         if isinstance(data, list):
             return data
@@ -1078,7 +1228,10 @@ class CuaDriverBackend(ComputerUseBackend):
         raise_window=True is intentionally ignored: stealing the user's focus
         is exactly what this backend is designed to avoid.
         """
-        lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
+        lw_out = self._session.call_tool(
+            "list_windows",
+            {"on_screen_only": True, "session": self._session_id},
+        )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
         windows = [
             {
@@ -1141,6 +1294,11 @@ class CuaDriverBackend(ComputerUseBackend):
         # Attach the snapshot's element_token whenever the call carries
         # an element_index and the target tool advertises support.
         self._maybe_attach_element_token(name, args)
+        # Carry this run's session id so the cua-driver agent cursor
+        # and per-session state (config overrides, recording ownership)
+        # stay tied to this run. setdefault preserves any explicit
+        # session a caller already supplied.
+        args.setdefault("session", self._session_id)
         try:
             out = self._session.call_tool(name, args)
         except Exception as e:

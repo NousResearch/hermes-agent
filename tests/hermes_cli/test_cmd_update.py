@@ -220,6 +220,7 @@ class TestCmdUpdateBranchFallback:
         import subprocess as _subprocess
         build_ok = _subprocess.CompletedProcess([], 0, stdout="", stderr="")
         with patch.object(hm, "_is_termux_env", return_value=False), \
+             patch.object(hm, "_web_ui_build_needed", return_value=True), \
              patch.object(hm, "_run_with_idle_timeout", return_value=build_ok) as mock_idle:
             cmd_update(mock_args)
 
@@ -300,6 +301,30 @@ class TestCmdUpdateBranchFallback:
                 "repo-root npm install must stream output "
                 "(no capture_output) so postinstall progress is visible"
             )
+
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_desktop_spawned_update_skips_nested_desktop_rebuild(
+        self, mock_run, mock_which, mock_args, monkeypatch, capsys
+    ):
+        from hermes_cli import main as hm
+
+        mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+        monkeypatch.setenv("HERMES_UPDATE_SKIP_DESKTOP_REBUILD", "1")
+        build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        with patch.object(hm, "_is_termux_env", return_value=False), \
+             patch.object(hm, "_run_with_idle_timeout", return_value=build_ok), \
+             patch.object(hm, "_desktop_packaged_executable", return_value=PROJECT_ROOT / "apps/desktop/release/mac-arm64/Hermes.app"), \
+             patch.object(hm, "_desktop_dist_exists", return_value=True):
+            cmd_update(mock_args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list if c.args]
+        assert not any("desktop --build-only" in command for command in commands)
+        assert "Skipping desktop app rebuild (handled by Desktop updater)" in capsys.readouterr().out
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""

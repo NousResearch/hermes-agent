@@ -9287,11 +9287,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # an existing packaged executable or desktop dist); people who have
         # never run ``hermes desktop`` shouldn't be forced into a full
         # Electron build by ``hermes update``.
+        skip_desktop_rebuild = os.getenv("HERMES_UPDATE_SKIP_DESKTOP_REBUILD") == "1"
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
         from hermes_constants import find_node_executable
 
-        if (desktop_dir / "package.json").exists() and find_node_executable("npm") and has_desktop_app:
+        if skip_desktop_rebuild:
+            print("→ Skipping desktop app rebuild (handled by Desktop updater)")
+        elif (desktop_dir / "package.json").exists() and find_node_executable("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Stream the build output live (long Electron builds otherwise

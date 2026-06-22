@@ -2049,6 +2049,10 @@ async function applyUpdatesPosixInApp() {
   // Node lives directly under %LOCALAPPDATA%\hermes\node, not node\bin.
   const env = {
     HERMES_HOME,
+    // Desktop self-update owns the GUI rebuild below. Prevent the nested
+    // `hermes update` step from running its own desktop build first, which
+    // otherwise burns CPU and can leave the update overlay looking stuck.
+    HERMES_UPDATE_SKIP_DESKTOP_REBUILD: '1',
     PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
   }
 

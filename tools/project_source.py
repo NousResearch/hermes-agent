@@ -81,8 +81,8 @@ def _resolve_project_root(args: dict[str, Any]) -> tuple[str | None, str | None]
                 ".planning/intelligence/ with the hot index)."
             ),
             "examples": [
-                {"project_root": "/home/ndsadmin/dev/dashboard", "query": "AccountController"},
-                {"project_root": "/mnt/devvm/projects/<svc>", "query": "init_project"},
+                {"project_root": "/path/to/project", "query": "AccountController"},
+                {"project_root": "/path/to/service", "query": "init_project"},
             ],
         })
     root = str(Path(root).expanduser().resolve())
@@ -111,8 +111,8 @@ def _search(args: dict[str, Any], **kw):
                 "a match-all scan."
             ),
             "examples": [
-                {"project_root": "/home/ndsadmin/dev/dashboard", "query": "AccountController"},
-                {"project_root": "/home/ndsadmin/dev/dashboard", "query": "signin", "scope": "src"},
+                {"project_root": "/path/to/project", "query": "AccountController"},
+                {"project_root": "/path/to/project", "query": "signin", "scope": "src"},
             ],
         })
     root, err = _resolve_project_root(args)
@@ -175,8 +175,8 @@ SEARCH_DESCRIPTION = (
     "terminal when the question is about a project file, symbol, config "
     "key, route, feature, doc, log, or session. Pass project_root=<abs "
     "path> (or set $PINTEL_PROJECT_ROOT). Examples: "
-    "(a) `project_root: /home/ndsadmin/dev/dashboard, query: AccountController` (find a class); "
-    "(b) `project_root: /mnt/devvm/projects/<svc>, query: signin, scope: src` (find a feature); "
+    "(a) `project_root: /path/to/project, query: AccountController` (find a class); "
+    "(b) `project_root: /path/to/service, query: signin, scope: src` (find a feature); "
     "(c) `project_root: <root>, query: API_KEY, scope: configs` (find a config key); "
     "(d) `project_root: <root>, query: ERROR, scope: logs` (search runtime logs). "
     "Scopes: auto (default), src, tests, scripts, configs, docs, routes, "

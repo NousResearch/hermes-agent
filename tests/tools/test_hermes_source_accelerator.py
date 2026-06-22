@@ -14,7 +14,7 @@ def _resolve_accel_root():
     if candidate.exists():
         return candidate
     # Fallback: canonical live workspace on this host
-    live = Path("/mnt/devvm/custom/hermes/workspace/scripts/source_accelerator")
+    live = Path("/path/to/workspace/scripts/source_accelerator")
     if live.exists():
         return live
     # Last resort: env var override
@@ -118,4 +118,4 @@ def test_workspace_default_ignores_hermes_home(monkeypatch):
 
     cfgmod = importlib.reload(cfgmod)
     cfg = cfgmod.get_config()
-    assert str(cfg.workspace_root) == "/mnt/devvm/custom/hermes/workspace"
+    assert str(cfg.workspace_root) == "/path/to/workspace"

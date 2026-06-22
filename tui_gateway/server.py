@@ -4285,6 +4285,19 @@ def _(rid, params: dict) -> dict:
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     except Exception:
         explicit_cwd = False
+    # A standalone `hermes --tui` launch rides the module-level stdio transport
+    # (dispatch binds _stdio_transport when no per-request transport is given),
+    # whereas the Desktop GUI dispatches over a bound WSTransport. For the former
+    # the gateway process IS the user terminal, so its launch directory (the
+    # resolved cwd below) is the genuine workspace and must be persisted -- without
+    # it the Desktop session list groups every TUI session under No workspace
+    # (#50438). Desktop keeps the explicit-choice-only rule: its launch dir is
+    # shared across sessions and is intentionally not stamped onto the row.
+    if not explicit_cwd:
+        try:
+            explicit_cwd = current_transport() is _stdio_transport
+        except Exception:
+            explicit_cwd = False
     resolved_cwd = _completion_cwd(params)
     source = str(params.get("source") or "tui").strip() or "tui"
     _enable_gateway_prompts()

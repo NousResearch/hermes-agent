@@ -117,6 +117,24 @@ class TestEnvAssignments:
         assert "SECRET_TOKEN=" in result
         assert "mypassword" not in result
 
+    def test_live_usb_approval_env_masked(self):
+        text = "HERMES_AGENTCYBER_LIVE_USB_APPROVAL=approved-live-usb-lane-super-secret"
+        result = redact_sensitive_text(text)
+        assert result == "HERMES_AGENTCYBER_LIVE_USB_APPROVAL=***"
+        assert "approved-live-usb-lane-super-secret" not in result
+
+    def test_live_usb_approval_quoted_env_with_spaces_masked(self):
+        text = 'HERMES_AGENTCYBER_LIVE_USB_APPROVAL="approved live usb lane super secret"'
+        result = redact_sensitive_text(text)
+        assert result == 'HERMES_AGENTCYBER_LIVE_USB_APPROVAL="***"'
+        assert "approved live usb lane super secret" not in result
+
+    def test_live_usb_approval_unquoted_env_with_spaces_masked(self):
+        text = "HERMES_AGENTCYBER_LIVE_USB_APPROVAL=approved live usb lane super secret"
+        result = redact_sensitive_text(text)
+        assert result == "HERMES_AGENTCYBER_LIVE_USB_APPROVAL=***"
+        assert "approved live usb lane super secret" not in result
+
 
 class TestJsonFields:
     def test_json_api_key(self):
@@ -133,6 +151,54 @@ class TestJsonFields:
         text = '{"name": "John", "model": "gpt-4"}'
         result = redact_sensitive_text(text)
         assert result == text
+
+    @pytest.mark.parametrize(
+        "field",
+        ["operator_approval", "approval_token", "live_usb_approval"],
+    )
+    def test_live_usb_approval_json_fields_masked(self, field):
+        text = f'{{"action": "write", "{field}": "approved-live-usb-lane-super-secret"}}'
+        result = redact_sensitive_text(text)
+        assert field in result
+        assert f'"{field}": "***"' in result
+        assert "approved-live-usb-lane-super-secret" not in result
+
+    @pytest.mark.parametrize(
+        "field",
+        ["operator_approval", "approval_token", "live_usb_approval", "operator-approval"],
+    )
+    def test_live_usb_approval_python_dict_repr_masked(self, field):
+        text = str({"action": "write", field: "approved-live-usb-lane-super-secret"})
+        result = redact_sensitive_text(text)
+        assert field in result
+        assert f"'{field}': '***'" in result
+        assert "approved-live-usb-lane-super-secret" not in result
+
+    def test_live_usb_approval_json_value_with_apostrophe_masked(self):
+        text = '{"operator_approval": "approved live usb lane operator\'s secret"}'
+        result = redact_sensitive_text(text)
+        assert result == '{"operator_approval": "***"}'
+        assert "operator's secret" not in result
+
+    def test_live_usb_approval_json_value_with_escaped_quote_masked(self):
+        text = '{"operator_approval": "approved live usb lane operator\\"s secret"}'
+        result = redact_sensitive_text(text)
+        assert result == '{"operator_approval": "***"}'
+        assert "operator" not in result.removeprefix('{"operator_approval": "***"}')
+
+    def test_live_usb_approval_python_repr_value_with_escaped_quote_masked(self):
+        text = r"{'operator_approval': 'approved live usb lane operator\'s secret'}"
+        result = redact_sensitive_text(text)
+        assert result == "{'operator_approval': '***'}"
+        assert "operator\\'s secret" not in result
+
+    def test_code_file_approval_identifiers_unchanged(self):
+        text = 'def f(operator_approval: str) -> None:\n    operator_approval = args.get("operator_approval")'
+        assert redact_sensitive_text(text, code_file=True) == text
+
+    def test_code_file_approval_url_literal_unchanged(self):
+        text = 'URL = "https://example.com/live?operator_approval=fixture-value&x=1"'
+        assert redact_sensitive_text(text, code_file=True) == text
 
 
 class TestAuthHeaders:
@@ -433,6 +499,16 @@ class TestWebUrlsNotRedacted:
         text = "Fetching https://example.com/api?access_token=opaque_value_here_1234&format=json"
         assert redact_sensitive_text(text) == text
 
+    def test_live_usb_approval_query_redacted_without_broad_url_redaction(self):
+        text = (
+            "Fetching https://example.com/live?operator_approval="
+            "approved-live-usb-lane-super-secret&access_token=opaque_value_here_1234"
+        )
+        result = redact_sensitive_text(text)
+        assert "operator_approval=***" in result
+        assert "approved-live-usb-lane-super-secret" not in result
+        assert "access_token=opaque_value_here_1234" in result
+
     def test_magic_link_checkout_passes_through(self):
         text = "Open https://checkout.example.com/resume?magic=ABCDEF123456&customer=42"
         assert redact_sensitive_text(text) == text
@@ -457,6 +533,49 @@ class TestWebUrlsNotRedacted:
         )
         assert redact_sensitive_text(text) == text
 
+    def test_live_usb_approval_access_log_target_redacted(self):
+        text = (
+            'INFO aiohttp.access: 127.0.0.1 "POST '
+            '/live-usb?operator_approval=approved-live-usb-lane-super-secret&event=write '
+            'HTTP/1.1" 200 173 "-" "test-client"'
+        )
+        result = redact_sensitive_text(text)
+        assert "operator_approval=***" in result
+        assert "approved-live-usb-lane-super-secret" not in result
+        assert "event=write" in result
+
+    def test_live_usb_approval_access_log_encoded_target_redacted(self):
+        text = (
+            'INFO aiohttp.access: 127.0.0.1 "POST '
+            '/live-usb?operator%5Fapprov%61l=approved-live-usb-lane-super-secret&event=write '
+            'HTTP/1.1" 200 173 "-" "test-client"'
+        )
+        result = redact_sensitive_text(text)
+        assert "operator%5Fapprov%61l=***" in result
+        assert "approved-live-usb-lane-super-secret" not in result
+        assert "event=write" in result
+
+    def test_live_usb_approval_percent_encoded_query_key_redacted(self):
+        text = "https://example.com/live?operator%5Fapproval=approved-live-usb-lane-super-secret&x=1"
+        result = redact_sensitive_text(text)
+        assert "operator%5Fapproval=***" in result
+        assert "approved-live-usb-lane-super-secret" not in result
+        assert "x=1" in result
+
+    def test_live_usb_approval_percent_encoded_query_letters_redacted(self):
+        text = "https://example.com/live?operator%5Fapprov%61l=approved-live-usb-lane-super-secret&x=1"
+        result = redact_sensitive_text(text)
+        assert "operator%5Fapprov%61l=***" in result
+        assert "approved-live-usb-lane-super-secret" not in result
+        assert "x=1" in result
+
+    def test_live_usb_approval_percent_encoded_hyphen_query_key_redacted(self):
+        text = "https://example.com/live?operator%2Dapproval=approved-live-usb-lane-super-secret&x=1"
+        result = redact_sensitive_text(text)
+        assert "operator%2Dapproval=***" in result
+        assert "approved-live-usb-lane-super-secret" not in result
+        assert "x=1" in result
+
     def test_known_prefix_inside_url_still_redacted(self):
         """sk-/ghp_/JWT-shaped values inside a URL are still caught by
         _PREFIX_RE / _JWT_RE — the carve-out is for opaque tokens only."""
@@ -474,7 +593,7 @@ class TestWebUrlsNotRedacted:
 
 
 class TestFormBodyRedaction:
-    """Form-urlencoded body redaction (k=v&k=v with no other text)."""
+    """Form-urlencoded body redaction (k=v or k=v&k=v with no other text)."""
 
     def test_pure_form_body(self):
         text = "password=mysecret&username=bob&token=opaqueValue"
@@ -489,6 +608,127 @@ class TestFormBodyRedaction:
         assert "topsecret" not in result
         assert "alicepw" not in result
         assert "client_id=app" in result
+
+    def test_hyphenated_sensitive_form_key_still_redacted(self):
+        result = redact_sensitive_text("x-amz-signature=supersecret&x=1", force=True)
+        assert result == "x-amz-signature=***&x=1"
+        assert "supersecret" not in result
+
+    def test_live_usb_approval_form_body(self):
+        text = "action=write&operator_approval=approved-live-usb-lane-super-secret&device=/dev/sdz"
+        result = redact_sensitive_text(text)
+        assert "operator_approval=***" in result
+        assert "approved-live-usb-lane-super-secret" not in result
+        assert "device=/dev/sdz" in result
+
+    def test_single_live_usb_approval_form_field(self):
+        text = "operator_approval=approved-live-usb-lane-super-secret"
+        result = redact_sensitive_text(text)
+        assert result == "operator_approval=***"
+        assert "approved-live-usb-lane-super-secret" not in result
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "operator%5Fapproval=approved-live-usb-lane-super-secret",
+            "operator%5Fapprov%61l=approved-live-usb-lane-super-secret",
+            "operator%2Dapproval=approved-live-usb-lane-super-secret",
+            "action=write&operator%5Fapprov%61l=approved-live-usb-lane-super-secret&device=/dev/sdz",
+            "curl -d operator%5Fapproval=approved-live-usb-lane-super-secret https://example/live",
+            'curl -d operator%5Fapproval="approved live usb lane super secret" https://example/live',
+            'curl -d operator%5Fapproval="approved live usb lane foo&bar" https://example/live',
+            "curl -d operator%5Fapprov%61l='approved-live-usb-lane-super-secret' https://example/live",
+        ],
+    )
+    def test_encoded_live_usb_approval_form_keys_masked(self, text):
+        result = redact_sensitive_text(text)
+        assert "***" in result
+        assert "approved-live-usb-lane-super-secret" not in result
+        assert "approved live usb lane super secret" not in result
+
+    @pytest.mark.parametrize(
+        ("text", "expected_suffix"),
+        [
+            (
+                "operator_approval=approved live usb lane super secret --device /dev/sdz",
+                " --device /dev/sdz",
+            ),
+            (
+                "operator_approval: approved live usb lane super secret --device /dev/sdz",
+                " --device /dev/sdz",
+            ),
+            (
+                "live_usb write --operator-approval approved live usb lane super secret --device /dev/sdz",
+                " --device /dev/sdz",
+            ),
+            (
+                "curl -d operator_approval=approved live usb lane super secret https://example/live",
+                " https://example/live",
+            ),
+            (
+                "operator_approval=approved live usb lane super secret -d /dev/sdz",
+                " -d /dev/sdz",
+            ),
+            (
+                "live_usb write --operator-approval approved live usb lane super secret -d /dev/sdz",
+                " -d /dev/sdz",
+            ),
+            (
+                "curl -d operator_approval=approved live usb lane super secret ; SECOND_COMMAND --flag",
+                "; SECOND_COMMAND --flag",
+            ),
+            (
+                "curl -d operator_approval=approved live usb lane super secret | tee out",
+                "| tee out",
+            ),
+        ],
+    )
+    def test_unquoted_live_usb_approval_values_with_spaces_masked(self, text, expected_suffix):
+        result = redact_sensitive_text(text)
+        assert "***" in result
+        assert "approved" not in result
+        assert "super secret" not in result
+        assert result.endswith(expected_suffix)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "not_operator_approval=benign-value",
+            "myapproval_token=value",
+            "foo_operator-approval=bar",
+            "foo.operator_approval=benign-value",
+            "foo-operator_approval=benign-value",
+        ],
+    )
+    def test_larger_benign_approval_like_keys_unchanged(self, text):
+        assert redact_sensitive_text(text) == text
+
+    @pytest.mark.parametrize("text", ["code=200", "key=value", "session=abc123"])
+    def test_single_non_approval_form_field_unchanged(self, text):
+        assert redact_sensitive_text(text) == text
+
+    @pytest.mark.parametrize(
+        ("text", "expected_fragment"),
+        [
+            ("operator_approval: approved-live-usb-lane-super-secret", "operator_approval: ***"),
+            ("operator_approval: approved live usb lane super secret", "operator_approval: ***"),
+            ("approval_token: approved-live-usb-lane-super-secret", "approval_token: ***"),
+            (
+                'live_usb(action="write", operator_approval="approved-live-usb-lane-super-secret")',
+                'operator_approval="***"',
+            ),
+            ("--operator-approval=approved-live-usb-lane-super-secret", "--operator-approval=***"),
+            ("--operator-approval approved-live-usb-lane-super-secret", "--operator-approval ***"),
+            (
+                "curl -d operator_approval=approved-live-usb-lane-super-secret https://example/live",
+                "operator_approval=***",
+            ),
+        ],
+    )
+    def test_live_usb_approval_common_text_forms(self, text, expected_fragment):
+        result = redact_sensitive_text(text)
+        assert expected_fragment in result
+        assert "approved-live-usb-lane-super-secret" not in result
 
     def test_non_form_text_unchanged(self):
         """Sentences with `&` should NOT trigger form redaction."""

@@ -54,12 +54,21 @@ async def test_cyber_audit_records_breakglass_metadata_without_raw_secret_args(m
             "tool_call": {
                 "name": "terminal",
                 "input": {
-                    "command": "password reset 192.168.1.120",
+                    "command": (
+                        "curl -d operator_approval=approved-live-usb-lane-super-secret "
+                        "https://example/live && live_usb write --operator-approval "
+                        "approved-live-usb-lane-super-secret"
+                    ),
                     "password": "do-not-log",
                     "approval_token": "bg_123",
+                    "operator_approval": "approved-live-usb-lane-super-secret",
+                    "live_usb_approval": "alternate-live-usb-lane-super-secret",
                 },
             },
-            "tool_result": {"ok": True},
+            "tool_result": {
+                "ok": True,
+                "stderr": "operator_approval=approved-live-usb-lane-super-secret",
+            },
         },
     )
 
@@ -67,3 +76,27 @@ async def test_cyber_audit_records_breakglass_metadata_without_raw_secret_args(m
     assert written[0]["agentcyber_gate"]["gate"] == "S5"
     assert written[0]["tool_input"]["password"] == "***"
     assert written[0]["tool_input"]["approval_token"] == "***"
+    assert written[0]["tool_input"]["operator_approval"] == "***"
+    assert written[0]["tool_input"]["live_usb_approval"] == "***"
+    assert "operator_approval=***" in written[0]["tool_input"]["command"]
+    assert "--operator-approval ***" in written[0]["tool_input"]["command"]
+    assert "operator_approval=***" in written[0]["tool_result_preview"]
+    assert "approved-live-usb-lane-super-secret" not in str(written[0])
+
+
+def test_cyber_audit_preserves_benign_approval_metadata_keys():
+    result = cyber_audit._redact(
+        {
+            "approval_status": "accepted",
+            "requires_approval": False,
+            "not_operator_approval": "benign-value",
+            "foo.operator_approval_value": "benign-value",
+            "operator_approval": "approved-live-usb-lane-super-secret",
+        }
+    )
+
+    assert result["approval_status"] == "accepted"
+    assert result["requires_approval"] is False
+    assert result["not_operator_approval"] == "benign-value"
+    assert result["foo.operator_approval_value"] == "benign-value"
+    assert result["operator_approval"] == "***"

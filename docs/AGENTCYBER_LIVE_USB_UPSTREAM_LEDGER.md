@@ -654,3 +654,51 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 - Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
 - Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If no upstream drift or new Live USB gap is found, continue treating the lane as verification/no-op.
+
+### 2026-06-22T00:51:29Z — harden Live USB approval redaction and audit logs
+
+**Commands / status**
+
+- `git status --short --branch && git remote -v && git branch --show-current`: started on `agentcyber/upstream-sync-20260621-194355...origin/agentcyber/upstream-sync-20260621-194355` with local `HEAD` ahead of the origin sync branch by 9 commits and an unexpected dirty redaction/audit lane in `agent/redact.py`, `gateway/builtin_hooks/cyber_audit.py`, `tests/agent/test_redact.py`, and `tests/gateway/test_cyber_audit_hook.py`.
+- `git fetch upstream main --prune && git fetch origin main --prune && git fetch origin agentcyber/upstream-sync-20260621-194355 --prune`: fetched cleanly; upstream advanced from `c768c4b71` to `73340d8be`.
+- Drift after fetch before this commit: `HEAD..upstream/main` -> `19`; `upstream/main..HEAD` -> `90`; `HEAD..origin/main` -> `0`; `origin/main..HEAD` -> `244`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `9`.
+- Starting tips: `HEAD=ba6d6158c41d`; `upstream/main=73340d8be650`; `origin/main=480559a7edeb`; `origin/agentcyber/upstream-sync-20260621-194355=fb602389b0cc`.
+
+**Changed files**
+
+- `agent/redact.py`: broadened forced secret redaction for AgentCyber Live USB/operator approval tokens while preserving broad URL pass-through and code-file source visibility. Added exact/canonical approval-key handling for env, prose, CLI flag, form body, URL query, access-log, JSON/Python repr, percent-encoded key variants, quoted values with escaped delimiters, shell separators, and `x-amz-signature` form-key compatibility.
+- `gateway/builtin_hooks/cyber_audit.py`: routed audit string values and tool result previews through forced redaction; redacts exact approval-token keys while preserving benign approval metadata keys.
+- `tests/agent/test_redact.py`: expanded regression coverage for Live USB approval redaction, encoded keys, quoted/unquoted values with spaces, suffix/separator preservation, code-file false positives, single-field form false positives, hyphenated sensitive keys, and prior URL pass-through invariants.
+- `tests/gateway/test_cyber_audit_hook.py`: covered audit redaction of approval keys/commands/results and benign approval metadata preservation.
+- `docs/AGENTCYBER_LIVE_USB_UPSTREAM_LEDGER.md`: added this run entry.
+
+**Verification**
+
+- Initial focused verification before review fixes: `uv run --frozen python -m pytest tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py tests/cyber/test_live_usb_tool.py tests/cyber/test_live_usb_docs.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py -q -o addopts= --tb=short` -> `269 passed, 7 warnings`.
+- Iterative reviewer-driven RED/GREEN fixes covered code-file false positives, single-field form false positives, encoded approval keys, mixed/escaped quoted values, suffix preservation, larger approval-like key false positives, exact audit key handling, `x-amz-signature`, and shell separator preservation.
+- Final focused redaction/audit run: `uv run --frozen python -m pytest tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py -q -o addopts= --tb=short` -> `140 passed in 1.92s`.
+- `uv run --frozen python -m ruff check agent/redact.py gateway/builtin_hooks/cyber_audit.py tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py` -> `All checks passed!`.
+- Expanded wrapper: `scripts/run_tests.sh tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py` -> `306 tests passed, 0 failed`.
+- `scripts/agentcyber status --json` -> `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, local runtime health `ok: true`, secret fields as booleans/presence only, and git `dirty: true` only because this lane was uncommitted.
+- `scripts/agentcyber hermes tools list` -> `cyber` enabled and `live_usb` disabled.
+- `git diff --check && git diff --cached --check` -> passed with no output.
+- Subagent spec review initially found concrete gaps; after fixes, final spec review: `PASS`.
+- Subagent quality review initially returned `REQUEST_CHANGES`; after fixes, final quality review: `APPROVED`.
+
+**Blockers / boundaries**
+
+- Upstream drift exists (`HEAD..upstream/main` -> `19` before this local commit), so the next safe action is to commit this verified dirty lane, then merge upstream on the guarded sync branch and rerun focused tests.
+- No cron jobs were scheduled, created, updated, paused, resumed, or removed.
+- No default `~/.hermes`, default gateway, default cron, or default profiles were modified.
+- No files were deleted.
+- No USB/block-device writes, ISO builds as root, `sudo`, package installs, hardware actions, external security actions, cloud spend, credential access/disclosure, or public disclosure were performed.
+- Status commands contacted only the configured local Ollama health endpoint and printed booleans/status fields, not secrets.
+
+**Commit / push**
+
+- Pending: commit this verified redaction/audit/ledger lane, merge upstream drift, rerun focused tests, push without force, then verify local `HEAD` equals the remote sync branch tip.
+
+**Next lane**
+
+- Commit this verified redaction/audit lane and merge current upstream drift on the guarded sync branch.
+- After merge, preserve AgentCyber/Live USB files and rerun focused tests before push.

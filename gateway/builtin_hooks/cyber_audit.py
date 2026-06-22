@@ -38,11 +38,31 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Match common secret-bearing key names inside tool argument dicts
+# Match common secret-bearing key names inside tool argument dicts. Live USB
+# approval keys are exact after `-`/`_` normalization to avoid redacting benign
+# metadata such as `approval_status` or larger names like `not_operator_approval`.
 _REDACT_RE = re.compile(
     r"api[_-]?key|token|password|secret|credential|auth|bearer",
     re.IGNORECASE,
 )
+_APPROVAL_REDACT_KEYS = {"operator_approval", "approval_token", "live_usb_approval"}
+
+
+def _should_redact_key(key: Any) -> bool:
+    key_text = str(key)
+    if _REDACT_RE.search(key_text):
+        return True
+    return key_text.lower().replace("-", "_") in _APPROVAL_REDACT_KEYS
+
+
+def _redact_text(value: str) -> str:
+    """Redact secret-bearing strings before they enter the cyber audit log."""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(value, force=True)
+    except Exception:
+        return value
 
 
 def _is_enabled() -> bool:
@@ -71,13 +91,16 @@ def _redact(obj: Any, depth: int = 0) -> Any:
         return obj
     if isinstance(obj, dict):
         return {
-            k: "***" if _REDACT_RE.search(str(k)) else _redact(v, depth + 1)
+            k: "***" if _should_redact_key(k) else _redact(v, depth + 1)
             for k, v in obj.items()
         }
     if isinstance(obj, list):
         return [_redact(item, depth + 1) for item in obj[:20]]
-    if isinstance(obj, str) and len(obj) > 500:
-        return obj[:500] + "…"
+    if isinstance(obj, str):
+        redacted = _redact_text(obj)
+        if len(redacted) > 500:
+            return redacted[:500] + "…"
+        return redacted
     return obj
 
 
@@ -224,7 +247,8 @@ async def handle(event_type: str, context: dict) -> None:
                 raw_input = {"_raw": raw_input[:300]}
         record["tool_input"]  = _redact(raw_input)
         # Truncate result to keep log manageable
-        result_str = str(tool_result)
+        redacted_result = _redact(tool_result)
+        result_str = _redact_text(str(redacted_result))
         record["tool_result_preview"] = result_str[:300] + ("…" if len(result_str) > 300 else "")
 
     elif event_type == "agent:end":

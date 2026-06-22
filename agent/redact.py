@@ -10,6 +10,7 @@ the first 6 and last 4 characters for debuggability.
 import logging
 import os
 import re
+from urllib.parse import unquote_plus
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,9 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
     "code",           # OAuth authorization codes
     "signature",      # pre-signed URL signatures
     "x-amz-signature",
+    "operator_approval",
+    "approval_token",
+    "live_usb_approval",
 })
 
 # Sensitive form-urlencoded / JSON body key names (case-insensitive exact match).
@@ -53,6 +57,15 @@ _SENSITIVE_BODY_KEYS = frozenset({
     "private_key",
     "authorization",
     "key",
+    "operator_approval",
+    "approval_token",
+    "live_usb_approval",
+})
+
+_SENSITIVE_APPROVAL_KEYS = frozenset({
+    "operator_approval",
+    "approval_token",
+    "live_usb_approval",
 })
 
 # Snapshot at import time so runtime env mutations (e.g. LLM-generated
@@ -107,17 +120,58 @@ _PREFIX_PATTERNS = [
     r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
 ]
 
-# ENV assignment patterns: KEY=value where KEY contains a secret-like name
-_SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
+# ENV assignment patterns: KEY=value where KEY contains a secret-like name.
+# LIVE_USB_APPROVAL is deliberately included because AgentCyber uses an
+# operator-controlled one-time approval as a high-consequence safety gate; it
+# must not persist in tool-call history, audit logs, or command output.
+_SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|LIVE_USB_APPROVAL)"
 _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
 )
 
-# JSON field patterns: "apiKey": "value", "token": "value", etc.
-_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
+# JSON / Python-dict-repr field patterns: "apiKey": "value", 'token': 'value', etc.
+_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material|operator[_-]approval|approval[_-]token|live[_-]usb[_-]approval)"
 _JSON_FIELD_RE = re.compile(
-    rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"',
+    rf'(["\']({_JSON_KEY_NAMES})["\'])\s*:\s*("(?:\\.|[^"])*"|\'(?:\\.|[^\'])*\')',
     re.IGNORECASE,
+)
+
+_APPROVAL_KEY_PATTERN = (
+    r"(?:(?<=--)|(?<![A-Za-z0-9_.%-]))(?:HERMES_AGENTCYBER_LIVE_USB_APPROVAL|operator[_-]approval|"
+    r"approval[_-]token|live[_-]usb[_-]approval)"
+)
+_APPROVAL_QUOTED_ASSIGN_RE = re.compile(
+    rf"((?:--)?{_APPROVAL_KEY_PATTERN}\s*(?:=|:)\s*)(\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*')",
+    re.IGNORECASE,
+)
+_APPROVAL_UNQUOTED_ASSIGN_RE = re.compile(
+    rf"((?:--)?{_APPROVAL_KEY_PATTERN}\s*(?:=|:)\s*)([^\s&;|,'\"}})]+)",
+    re.IGNORECASE,
+)
+_APPROVAL_LINE_ASSIGN_RE = re.compile(
+    rf"((?:--)?{_APPROVAL_KEY_PATTERN}\s*(?:=|:)\s*)([^\r\n;&|,)}}]+)",
+    re.IGNORECASE,
+)
+_APPROVAL_QUOTED_FLAG_RE = re.compile(
+    r"(--(?:operator-approval|approval-token|live-usb-approval)\s+)(\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*')",
+    re.IGNORECASE,
+)
+_APPROVAL_UNQUOTED_FLAG_RE = re.compile(
+    r"(--(?:operator-approval|approval-token|live-usb-approval)\s+)([^\s&;|,'\"})]+)",
+    re.IGNORECASE,
+)
+_APPROVAL_LINE_FLAG_RE = re.compile(
+    r"(--(?:operator-approval|approval-token|live-usb-approval)\s+)([^\r\n;&|,)]+)",
+    re.IGNORECASE,
+)
+_FORM_PAIR_ANYWHERE_RE = re.compile(
+    r"(?<![A-Za-z0-9_.%+-])([A-Za-z0-9_.%+-]+)=([^\r\n;&|,)]+)"
+)
+_FORM_QUOTED_PAIR_ANYWHERE_RE = re.compile(
+    r"(?<![A-Za-z0-9_.%+-])([A-Za-z0-9_.%+-]+)=(\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*')"
+)
+_APPROVAL_VALUE_SUFFIX_RE = re.compile(
+    r"\s+(--[A-Za-z0-9][A-Za-z0-9_-]*\b|-[A-Za-z]\b|(?:https?|wss?|ftp)://)"
 )
 
 # Authorization headers — any scheme (Bearer, Basic, Token, Digest, …) plus the
@@ -199,9 +253,9 @@ _HTTP_REQUEST_TARGET_QUERY_RE = re.compile(
 )
 
 # Form-urlencoded body detection: conservative — only applies when the entire
-# text looks like a query string (k=v&k=v pattern with no newlines).
+# text looks like a query/form body (k=v or k=v&k=v pattern with no newlines).
 _FORM_BODY_RE = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$"
+    r"^[A-Za-z_][A-Za-z0-9_.%+-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.%+-]*=[^&\s]*)*$"
 )
 
 # Compile known prefix patterns into one alternation
@@ -265,7 +319,24 @@ def _mask_token(token: str) -> str:
     return mask_secret(token, head=6, tail=4, floor=18)
 
 
-def _redact_query_string(query: str) -> str:
+def _canonical_sensitive_key(key: str) -> str:
+    """Normalize query/form keys before comparing with sensitive key sets."""
+    decoded = key
+    # Decode a bounded number of times so percent-encoded approval keys such as
+    # ``operator%5Fapprov%61l`` cannot bypass the approval-token exception.
+    for _ in range(3):
+        next_decoded = unquote_plus(decoded)
+        if next_decoded == decoded:
+            break
+        decoded = next_decoded
+    return decoded.lower().replace("-", "_")
+
+
+def _redact_query_string(
+    query: str,
+    *,
+    sensitive_params: frozenset[str] = _SENSITIVE_QUERY_PARAMS,
+) -> str:
     """Redact sensitive parameter values in a URL query string.
 
     Handles `k=v&k=v` format. Sensitive keys (case-insensitive) have values
@@ -280,7 +351,10 @@ def _redact_query_string(query: str) -> str:
             parts.append(pair)
             continue
         key, _, value = pair.partition("=")
-        if key.lower() in _SENSITIVE_QUERY_PARAMS:
+        decoded_key_raw = unquote_plus(key).lower()
+        decoded_key = _canonical_sensitive_key(key)
+        normalized_params = {param.replace("-", "_") for param in sensitive_params}
+        if decoded_key_raw in sensitive_params or decoded_key in normalized_params:
             parts.append(f"{key}=***")
         else:
             parts.append(pair)
@@ -303,6 +377,102 @@ def _redact_url_query_params(text: str) -> str:
     return _URL_WITH_QUERY_RE.sub(_sub, text)
 
 
+def _redact_live_usb_approval_url_query_params(text: str) -> str:
+    """Redact only Live USB approval query params while preserving other URL params.
+
+    Broad URL query redaction is intentionally disabled below because agents
+    often need opaque magic-link/OAuth/pre-signed URLs intact. Live USB approval
+    tokens are different: they are high-consequence operator approvals and
+    should never persist when accidentally embedded in a URL.
+    """
+    def _sub(m: re.Match) -> str:
+        scheme = m.group(1)
+        authority = m.group(2)
+        path = m.group(3)
+        query = _redact_query_string(m.group(4), sensitive_params=_SENSITIVE_APPROVAL_KEYS)
+        fragment = m.group(5) or ""
+        return f"{scheme}://{authority}{path}?{query}{fragment}"
+
+    return _URL_WITH_QUERY_RE.sub(_sub, text)
+
+
+def _split_approval_value_suffix(value: str) -> tuple[str, str]:
+    """Split a redacted unquoted approval value from following safe context."""
+    suffix_match = _APPROVAL_VALUE_SUFFIX_RE.search(value)
+    if suffix_match:
+        return value[:suffix_match.start()], value[suffix_match.start():]
+    return value, ""
+
+
+def _redact_quoted_approval_value(value: str) -> str | None:
+    """Return a redacted quoted approval literal, preserving suffix, if valid."""
+    if not value or value[0] not in {'"', "'"}:
+        return None
+    quote = value[0]
+    escaped = False
+    for idx in range(1, len(value)):
+        ch = value[idx]
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == quote:
+            return f"{quote}***{quote}{value[idx + 1:]}"
+    return None
+
+
+def _redact_approval_text_patterns(text: str) -> str:
+    """Redact Live USB approval tokens in common prose/CLI assignment forms."""
+    def _redact_line_value(m: re.Match) -> str:
+        value = m.group(2)
+        quoted = _redact_quoted_approval_value(value)
+        if quoted is not None:
+            return f"{m.group(1)}{quoted}"
+        _secret, suffix = _split_approval_value_suffix(value)
+        return f"{m.group(1)}***{suffix}"
+
+    def _redact_quoted_value(m: re.Match) -> str:
+        value_literal = m.group(2)
+        return f"{m.group(1)}{value_literal[0]}***{value_literal[-1]}"
+
+    text = _APPROVAL_QUOTED_ASSIGN_RE.sub(_redact_quoted_value, text)
+    text = _APPROVAL_QUOTED_FLAG_RE.sub(_redact_quoted_value, text)
+    text = _APPROVAL_LINE_ASSIGN_RE.sub(_redact_line_value, text)
+    text = _APPROVAL_LINE_FLAG_RE.sub(_redact_line_value, text)
+    text = _APPROVAL_UNQUOTED_ASSIGN_RE.sub(lambda m: f"{m.group(1)}***", text)
+    return _APPROVAL_UNQUOTED_FLAG_RE.sub(lambda m: f"{m.group(1)}***", text)
+
+
+def _redact_approval_form_pairs_anywhere(text: str) -> str:
+    """Redact approval form pairs embedded in shell/prose text.
+
+    This intentionally only redacts keys that canonicalize to Live USB approval
+    names, including percent-encoded spellings such as `operator%5Fapprov%61l`.
+    """
+    def _sub_quoted(m: re.Match) -> str:
+        key = m.group(1)
+        if _canonical_sensitive_key(key) not in _SENSITIVE_APPROVAL_KEYS:
+            return m.group(0)
+        value = m.group(2)
+        return f"{key}={value[0]}***{value[-1]}"
+
+    def _sub(m: re.Match) -> str:
+        key = m.group(1)
+        value = m.group(2)
+        if _canonical_sensitive_key(key) not in _SENSITIVE_APPROVAL_KEYS:
+            return m.group(0)
+        quoted = _redact_quoted_approval_value(value)
+        if quoted is not None:
+            return f"{key}={quoted}"
+        _secret, suffix = _split_approval_value_suffix(value)
+        return f"{key}=***{suffix}"
+
+    text = _FORM_QUOTED_PAIR_ANYWHERE_RE.sub(_sub_quoted, text)
+    return _FORM_PAIR_ANYWHERE_RE.sub(_sub, text)
+
+
 def _redact_url_userinfo(text: str) -> str:
     """Strip `user:password@` from HTTP/WS/FTP URLs.
 
@@ -315,11 +485,15 @@ def _redact_url_userinfo(text: str) -> str:
     )
 
 
-def _redact_http_request_target_query_params(text: str) -> str:
+def _redact_http_request_target_query_params(
+    text: str,
+    *,
+    sensitive_params: frozenset[str] = _SENSITIVE_QUERY_PARAMS,
+) -> str:
     """Redact sensitive query params in HTTP access-log request targets."""
     def _sub(m: re.Match) -> str:
         prefix = m.group(1)
-        query = _redact_query_string(m.group(2))
+        query = _redact_query_string(m.group(2), sensitive_params=sensitive_params)
         return f"{prefix}?{query}"
     return _HTTP_REQUEST_TARGET_QUERY_RE.sub(_sub, text)
 
@@ -327,17 +501,21 @@ def _redact_http_request_target_query_params(text: str) -> str:
 def _redact_form_body(text: str) -> str:
     """Redact sensitive values in a form-urlencoded body.
 
-    Only applies when the entire input looks like a pure form body
-    (k=v&k=v with no newlines, no other text). Single-line non-form
-    text passes through unchanged. This is a conservative pass — the
-    `_redact_url_query_params` function handles embedded query strings.
+    Multi-field bodies keep the historical conservative behavior. Single-field
+    bodies are redacted only for Live USB approval keys, avoiding broad false
+    positives such as `code=200` or `key=value`.
     """
-    if not text or "\n" in text or "&" not in text:
+    if not text or "\n" in text or "=" not in text:
         return text
-    # The body-body form check is strict: only trigger on clean k=v&k=v.
-    if not _FORM_BODY_RE.match(text.strip()):
+    stripped = text.strip()
+    if not _FORM_BODY_RE.match(stripped):
         return text
-    return _redact_query_string(text.strip())
+    if "&" in stripped:
+        return _redact_query_string(stripped)
+    key, _, _value = stripped.partition("=")
+    if _canonical_sensitive_key(key) in _SENSITIVE_APPROVAL_KEYS:
+        return _redact_query_string(stripped, sensitive_params=_SENSITIVE_APPROVAL_KEYS)
+    return text
 
 
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False) -> str:
@@ -371,6 +549,12 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if not (force or _REDACT_ENABLED):
         return text
 
+    # High-consequence Live USB approvals may contain spaces and are exact-match
+    # tokens, so redact their common textual forms before generic env parsing.
+    # Preserve code_file=True's historical false-positive guard for source text.
+    if not code_file and "approval" in text.lower():
+        text = _redact_approval_text_patterns(text)
+
     # Known prefixes (sk-, ghp_, etc.) — gate on substring presence
     if _has_known_prefix_substring(text):
         text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
@@ -380,14 +564,19 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         if "=" in text:
             def _redact_env(m):
                 name, quote, value = m.group(1), m.group(2), m.group(3)
-                return f"{name}={quote}{_mask_token(value)}{quote}"
+                masked = "***" if "LIVE_USB_APPROVAL" in name.upper() else _mask_token(value)
+                return f"{name}={quote}{masked}{quote}"
             text = _ENV_ASSIGN_RE.sub(_redact_env, text)
 
         # JSON fields: "apiKey": "***"  (skip for code files — false positives)
-        if ":" in text and '"' in text:
+        if ":" in text and ('"' in text or "'" in text):
             def _redact_json(m):
-                key, value = m.group(1), m.group(2)
-                return f'{key}: "{_mask_token(value)}"'
+                key, field, value_literal = m.group(1), m.group(2), m.group(3)
+                normalized_field = field.lower().replace("-", "_")
+                quote = value_literal[0]
+                value = value_literal[1:-1]
+                masked = "***" if normalized_field in _SENSITIVE_APPROVAL_KEYS else _mask_token(value)
+                return f'{key}: {quote}{masked}{quote}'
             text = _JSON_FIELD_RE.sub(_redact_json, text)
 
     # Authorization headers — _AUTH_HEADER_RE matches any scheme after
@@ -427,6 +616,22 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
 
+    # Approval-token query params are a narrow exception to the URL-query
+    # passthrough below: Live USB operator approvals are high-consequence
+    # one-time tokens and must not persist if embedded in URLs or access logs.
+    # Run this narrow pass on all URLs/access-log request targets so percent-
+    # encoded approval keys cannot bypass a raw substring pre-check.
+    if not code_file:
+        text = _redact_approval_text_patterns(text)
+        text = _redact_approval_form_pairs_anywhere(text)
+        if "://" in text:
+            text = _redact_live_usb_approval_url_query_params(text)
+        if _has_http_method_substring(text):
+            text = _redact_http_request_target_query_params(
+                text,
+                sensitive_params=_SENSITIVE_APPROVAL_KEYS,
+            )
+
     # NOTE: Web-URL redaction (query params + userinfo + HTTP access-log
     # request targets) is intentionally OFF. Many legitimate workflows pass
     # opaque tokens through query strings — magic-link checkouts, OAuth
@@ -436,8 +641,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # caught by _PREFIX_RE and _JWT_RE above. DB connection-string passwords
     # are still caught by _DB_CONNSTR_RE.
 
-    # Form-urlencoded bodies (only triggers on clean k=v&k=v inputs).
-    if "&" in text and "=" in text:
+    # Form-urlencoded bodies. Multi-field bodies keep the historical behavior;
+    # single-field bodies are limited to approval keys to avoid false positives.
+    if not code_file and "=" in text:
         text = _redact_form_body(text)
 
     # E.164 phone numbers (Signal, WhatsApp)

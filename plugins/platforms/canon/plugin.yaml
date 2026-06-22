@@ -1,0 +1,60 @@
+name: canon-platform
+label: Canon
+kind: platform
+version: 0.1.0
+description: >
+  Canon gateway adapter for Hermes Agent. Connects Hermes to Canon agent
+  conversations over Canon's REST and SSE APIs.
+author: Hermes Agent contributors
+requires_env: []
+provides_tools:
+  - canon_runtime_control
+optional_env:
+  - name: CANON_API_KEY
+    description: "Advanced/headless Canon agent API key override"
+    prompt: "Canon API key override"
+    password: true
+  - name: CANON_AGENT
+    description: "Canon profile name from ~/.canon/agents.json"
+    prompt: "Canon profile"
+    password: false
+  - name: CANON_AGENTS_JSON_BOOTSTRAP
+    description: "Initial agents.json contents for fresh volumes"
+    prompt: "Canon agents.json bootstrap"
+    password: true
+  - name: CANON_HOME
+    description: "Canon profile directory, defaults to ~/.canon"
+    prompt: "Canon home"
+    password: false
+  - name: CANON_BASE_URL
+    description: "Canon agent REST API base URL"
+    prompt: "Canon base URL"
+    password: false
+  - name: CANON_STREAM_URL
+    description: "Canon agent SSE stream base URL"
+    prompt: "Canon stream URL"
+    password: false
+  - name: CANON_HOME_CHANNEL
+    description: "Default Canon conversation ID for cron / notification delivery"
+    prompt: "Canon home conversation ID"
+    password: false
+  - name: CANON_ALLOWED_USERS
+    description: "Comma-separated Canon user IDs allowed to talk to Hermes"
+    prompt: "Allowed Canon user IDs"
+    password: false
+  - name: CANON_ALLOW_ALL_USERS
+    description: "Allow any Canon user to talk to Hermes"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: CANON_GROUP_ALLOWED_USERS
+    description: "Comma-separated Canon user IDs allowed only in group conversations"
+    prompt: "Allowed Canon group user IDs"
+    password: false
+  - name: CANON_GROUP_ALLOWED_CONVERSATIONS
+    description: "Comma-separated Canon group conversation IDs allowed for any sender"
+    prompt: "Allowed Canon group conversation IDs"
+    password: false
+  - name: CANON_HISTORY_LIMIT
+    description: "Messages to fetch when hydrating Canon conversation context"
+    prompt: "Canon history limit"
+    password: false

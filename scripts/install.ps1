@@ -185,6 +185,18 @@ function Write-Err {
     Write-Host "[X] $Message" -ForegroundColor Red
 }
 
+function Invoke-NativeWithRelaxedErrorAction {
+    param([scriptblock]$Script)
+
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Script
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+}
+
 # Inspect npm output for a TLS-trust failure and, if found, print actionable
 # remediation. npm/Node surface corporate MITM proxies and missing root CAs as
 # "unable to get local issuer certificate" / "self-signed certificate in
@@ -318,6 +330,36 @@ function Install-AgentBrowser {
 # Dependency checks
 # ============================================================================
 
+# Resolve the PowerShell host executable used to spawn child PowerShell
+# processes (the astral uv installer below).  We must NOT hardcode the bare
+# name `powershell`: it names *Windows PowerShell* and only resolves when its
+# System32 directory is on PATH.  When install.ps1 is run under PowerShell 7+
+# (`pwsh`) -- or any session where `powershell` isn't on PATH -- a bare
+# `powershell` spawn dies with "The term 'powershell' is not recognized",
+# aborting uv installation (field report: Windows install stuck, uv install
+# failed with exactly that message).  Prefer the absolute path of the host we
+# are already running in (PATH-independent), then fall back to whichever of
+# powershell/pwsh is resolvable, and only then to the bare name.
+function Get-PowerShellHostExe {
+    try {
+        $hostExe = (Get-Process -Id $PID).Path
+        if ($hostExe -and (Test-Path $hostExe)) {
+            $leaf = Split-Path $hostExe -Leaf
+            # Only trust the current host when it is a real PowerShell CLI
+            # (not e.g. powershell_ise.exe or an embedded host that can't take
+            # `-ExecutionPolicy`/`-Command`).
+            if ($leaf -match '^(?i:powershell|pwsh)\.exe$') { return $hostExe }
+        }
+    } catch { }
+    foreach ($candidate in @("powershell", "pwsh")) {
+        $cmd = Get-Command $candidate -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($cmd -and $cmd.Source) { return $cmd.Source }
+    }
+    # Last-ditch: hand back the bare name so the spawn surfaces its own error.
+    return "powershell"
+}
+
 function Install-Uv {
     # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there —
     # no PATH probing, no conda guards, no multi-location resolution chains.
@@ -341,7 +383,11 @@ function Install-Uv {
     try {
         $ErrorActionPreference = "Continue"
         $env:UV_INSTALL_DIR = Join-Path $HermesHome "bin"
-        powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+        # Spawn via the resolved host exe (see Get-PowerShellHostExe) rather
+        # than a bare `powershell`, which isn't guaranteed to be on PATH under
+        # PowerShell 7 / pwsh-only setups.
+        $psHostExe = Get-PowerShellHostExe
+        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {
@@ -892,6 +938,42 @@ function Test-Node {
     return $true
 }
 
+function Update-ProcessPathForPackages {
+    # Make freshly-installed shims (rg.exe, ffmpeg.exe) visible to Get-Command in
+    # THIS process without spawning a new shell, by folding the persisted
+    # User+Machine hives plus winget's alias-shim directory into $env:Path.
+    # Called after every package-manager attempt (winget/choco/scoop): previously
+    # PATH was only refreshed inside the winget branch, so a successful
+    # choco/scoop fallback -- or any install on a box without winget -- could be
+    # misreported as "not installed".
+    #
+    # MERGE rather than overwrite: start from the existing process PATH so any
+    # process-only entries added earlier in this installer run survive, then
+    # APPEND hive/winget-Links entries not already present (case-insensitive,
+    # order-preserving dedupe). A wholesale replace would silently drop those
+    # process-only entries.
+    $candidates = @()
+    $candidates += $env:Path
+    $candidates += [Environment]::GetEnvironmentVariable("Path", "User")
+    $candidates += [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $wingetLinks = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"
+    if (Test-Path $wingetLinks) {
+        $candidates += $wingetLinks
+    }
+    $seen = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $ordered = New-Object System.Collections.Generic.List[string]
+    foreach ($chunk in $candidates) {
+        if ([string]::IsNullOrEmpty($chunk)) { continue }
+        foreach ($entry in $chunk.Split(';')) {
+            $trimmed = $entry.Trim()
+            if ($trimmed -and $seen.Add($trimmed)) {
+                $ordered.Add($trimmed)
+            }
+        }
+    }
+    $env:Path = [string]::Join(';', $ordered)
+}
+
 function Install-SystemPackages {
     $script:HasRipgrep = $false
     $script:HasFfmpeg = $false
@@ -961,25 +1043,33 @@ function Install-SystemPackages {
             try {
                 $output = winget install --exact --id $pkg --source winget --silent `
                     --accept-package-agreements --accept-source-agreements 2>&1
+                $code = $LASTEXITCODE
                 $output | Out-File -FilePath $log -Encoding utf8
-                "winget exit: $LASTEXITCODE" | Out-File -FilePath $log -Encoding utf8 -Append
+                "winget exit: $code" | Out-File -FilePath $log -Encoding utf8 -Append
+                # 0x8A15002B (-1978335189) = APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE.
+                # winget treats `install` on a package it already has registered as
+                # an *upgrade*, finds no newer version, and bails with this code --
+                # even when the binary is gone from disk/PATH (stale registration,
+                # files removed outside winget, or a missing alias shim). We KNOW the
+                # command was missing (that's why we're here), so a plain install
+                # dead-ends forever. Force a reinstall to repair the registration so
+                # the shim reappears.
+                if ($code -eq -1978335189) {
+                    "-> already-installed/no-upgrade; retrying with --force" | Out-File -FilePath $log -Encoding utf8 -Append
+                    $output = winget install --exact --id $pkg --source winget --silent --force `
+                        --accept-package-agreements --accept-source-agreements 2>&1
+                    $output | Out-File -FilePath $log -Encoding utf8 -Append
+                    "winget exit (force): $LASTEXITCODE" | Out-File -FilePath $log -Encoding utf8 -Append
+                }
             } catch {
                 $_ | Out-File -FilePath $log -Encoding utf8 -Append
                 "winget exit: <exception>" | Out-File -FilePath $log -Encoding utf8 -Append
             }
         }
-        # Refresh PATH from both env-var hives AND winget's alias shim directory.
-        # winget exposes packages via "command line aliases" in %LOCALAPPDATA%\
-        # Microsoft\WinGet\Links, which is added to PATH by the AppExecutionAlias
-        # machinery only in *newly-spawned* shells -- not the current process.
-        # Without this addition, Get-Command rg below would falsely return null
-        # immediately after a successful install.
-        $wingetLinks = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"
-        $envPath = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-        if (Test-Path $wingetLinks) {
-            $envPath = "$envPath;$wingetLinks"
-        }
-        $env:Path = $envPath
+        # Refresh PATH so packages winget exposed via "command line aliases" in
+        # %LOCALAPPDATA%\Microsoft\WinGet\Links (added to PATH only in
+        # newly-spawned shells, not this process) are visible to Get-Command below.
+        Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed"
             $script:HasRipgrep = $true
@@ -1005,6 +1095,7 @@ function Install-SystemPackages {
         foreach ($pkg in $chocoPkgs) {
             try { choco install $pkg -y 2>&1 | Out-Null } catch { }
         }
+        Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed via chocolatey"
             $script:HasRipgrep = $true
@@ -1023,6 +1114,7 @@ function Install-SystemPackages {
         foreach ($pkg in $scoopPkgs) {
             try { scoop install $pkg 2>&1 | Out-Null } catch { }
         }
+        Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed via scoop"
             $script:HasRipgrep = $true
@@ -1060,9 +1152,10 @@ function Install-Repository {
         # directory OR a symlink OR a submodule-style gitfile -- and also when
         # it's a broken stub left over from a failed previous install (e.g.
         # a partial Remove-Item that couldn't delete a locked index.lock).
-        # Validate the repo properly by asking git itself.  Two checks
-        # belt-and-braces: rev-parse AND git status.  If either fails the
-        # repo is broken and we fall through to a fresh clone.
+        # Validate the repo properly by asking git itself.  Three checks
+        # belt-and-braces: rev-parse (work tree), git status, and a resolvable
+        # HEAD (an initial commit).  If any fails the repo is broken and we
+        # fall through to a fresh clone.
         $repoValid = $false
         if (Test-Path "$InstallDir\.git") {
             Push-Location $InstallDir
@@ -1077,7 +1170,17 @@ function Install-Repository {
                 $null = & git -c windows.appendAtomically=false status --short 2>&1
                 $statusOk = ($LASTEXITCODE -eq 0)
 
-                if ($revParseOk -and $statusOk) {
+                # An interrupted previous clone leaves a repo with NO initial
+                # commit. rev-parse/status still succeed there, but the update
+                # path's `git stash` (and later `git checkout`) abort with
+                # "You do not have the initial commit yet" and fail the install
+                # (#40998). Require a resolvable HEAD so such partial checkouts
+                # are treated as broken and re-cloned fresh below.
+                $global:LASTEXITCODE = 0
+                $null = & git -c windows.appendAtomically=false rev-parse --verify HEAD 2>&1
+                $hasCommit = ($LASTEXITCODE -eq 0)
+
+                if ($revParseOk -and $statusOk -and $hasCommit) {
                     $repoValid = $true
                 }
             } catch {}
@@ -1114,12 +1217,26 @@ function Install-Repository {
                 # agent-created dirs (e.g. tinker-atropos/) survive too.
                 $statusOut = git -c windows.appendAtomically=false status --porcelain 2>$null
                 if (-not [string]::IsNullOrWhiteSpace(($statusOut -join "`n"))) {
+                    # A previously interrupted update can leave the index with
+                    # unmerged entries. In that state `git stash` aborts with
+                    # "could not write index" and the following `git checkout`
+                    # aborts with "you need to resolve your current index first"
+                    # -- the GUI "git checkout main failed (exit 1)" install
+                    # failure. Clear the conflict markers with `git reset` first:
+                    # working-tree changes are kept (and stashed just below); only
+                    # the index conflict state is dropped. Mirrors the `hermes
+                    # update` path (#4735).
+                    $unmergedOut = git -c windows.appendAtomically=false ls-files --unmerged 2>$null
+                    if (-not [string]::IsNullOrWhiteSpace(($unmergedOut -join "`n"))) {
+                        Write-Info "Clearing unmerged index entries from a previous conflict..."
+                        git -c windows.appendAtomically=false reset -q 2>$null
+                    }
                     $stashName = "hermes-install-autostash-" + (Get-Date -Format "yyyyMMdd-HHmmss")
                     Write-Info "Local changes detected, stashing before update..."
                     git -c windows.appendAtomically=false stash push --include-untracked -m "$stashName"
                     if ($LASTEXITCODE -eq 0) { $autostashRef = "stash@{0}" }
                 }
-                git -c windows.appendAtomically=false fetch origin
+                git -c windows.appendAtomically=false fetch origin $Branch
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
                 # Precedence: Commit > Tag > Branch.  Commit and Tag check
                 # out as detached HEAD intentionally -- they're meant to be
@@ -1198,16 +1315,19 @@ function Install-Repository {
             }
             $didUpdate = $true
         } else {
-            # Directory exists but isn't a usable git repo.  Wipe it and
-            # fall through to a fresh clone.  A leftover ``.git`` stub from
-            # a partial uninstall used to lock the installer into the
-            # "update" branch forever, emitting three ``fatal: not a git
-            # repository`` errors and failing with "not in a git directory".
-            Write-Warn "Existing directory at $InstallDir is not a valid git repo -- replacing it."
+            # Directory exists but isn't a usable git repo -- e.g. an
+            # interrupted clone with no initial commit (#40998), or a leftover
+            # ``.git`` stub from a partial uninstall that used to lock the
+            # installer into the "update" branch forever. Move it aside rather
+            # than deleting it -- never destroy a directory the user might still
+            # want -- and fall through to a fresh clone.
+            $backupDir = "$InstallDir.broken-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+            Write-Warn "Existing directory at $InstallDir is not a valid git repo."
+            Write-Warn "Moving it aside to $backupDir before re-cloning."
             try {
-                Remove-Item -Recurse -Force $InstallDir -ErrorAction Stop
+                Move-Item -LiteralPath $InstallDir -Destination $backupDir -ErrorAction Stop
             } catch {
-                Write-Err "Could not remove $InstallDir : $_"
+                Write-Err "Could not move $InstallDir aside : $_"
                 Write-Info "Close any programs that might be using files in $InstallDir (editors,"
                 Write-Info "terminals, running hermes processes) and try again."
                 throw
@@ -1232,7 +1352,7 @@ function Install-Repository {
         Write-Info "Trying SSH clone..."
         $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
         try {
-            git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir
+            Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir }
             if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
         } catch { }
         $env:GIT_SSH_COMMAND = $null
@@ -1241,7 +1361,7 @@ function Install-Repository {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Info "SSH failed, trying HTTPS..."
             try {
-                git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlHttps $InstallDir
+                Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlHttps $InstallDir }
                 if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
             } catch { }
         }
@@ -1357,11 +1477,32 @@ function Install-Venv {
     
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
+        # On Windows, native Python extensions (e.g. _bcrypt.pyd) are loaded as
+        # DLLs by any running hermes process. Windows denies deletion of loaded
+        # DLLs, so kill any hermes.exe tree before removing the venv.
+        if ($env:OS -eq "Windows_NT") {
+            $myPid = $PID
+            Write-Info "Stopping any running hermes processes before recreating venv..."
+            & taskkill /F /T /IM hermes.exe /FI "PID ne $myPid" 2>$null | Out-Null
+            Start-Sleep -Milliseconds 800
+        }
         Remove-Item -Recurse -Force "venv"
     }
     
-    # uv creates the venv and pins the Python version in one step
-    & $UvCmd venv venv --python $PythonVersion
+    # uv creates the venv and pins the Python version in one step.  uv emits
+    # normal progress such as "Using CPython ..." on stderr; under Windows
+    # PowerShell 5.1 with EAP=Stop that stderr is a NativeCommandError unless
+    # we temporarily relax EAP and trust $LASTEXITCODE for real failures.
+    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $PythonVersion }
+    # Relaxing EAP above means a *genuine* uv-venv failure (exit != 0) no longer
+    # aborts on its own. Capture $LASTEXITCODE immediately and fail fast, so the
+    # `venv` stage can't falsely report success (and Invoke-Stage can't emit
+    # ok=true) when the venv was never created.
+    $venvExitCode = $LASTEXITCODE
+    if ($venvExitCode -ne 0) {
+        Pop-Location
+        throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
+    }
 
     # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
     # the user's shell). uv honours UV_PYTHON over an existing venv for the
@@ -1431,7 +1572,7 @@ function Install-Dependencies {
         # in the wrong directory and imports fail with ModuleNotFoundError.
         # (Mirrors the same flag in scripts/install.sh::install_deps.)
         $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
-        & $UvCmd sync --extra all --locked
+        Invoke-NativeWithRelaxedErrorAction { & $UvCmd sync --extra all --locked }
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Main package installed (hash-verified via uv.lock)"
             $script:InstalledTier = "hash-verified (uv.lock)"
@@ -1506,7 +1647,7 @@ except Exception:
     if (-not $skipPipFallback) {
         foreach ($tier in $installTiers) {
         Write-Info "Trying tier: $($tier.Name) ..."
-        & $UvCmd pip install -e $tier.Spec
+        Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install -e $tier.Spec }
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Main package installed ($($tier.Name))"
             $script:InstalledTier = $tier.Name
@@ -1711,7 +1852,7 @@ function Write-BootstrapMarker {
 function Copy-ConfigTemplates {
     Write-Info "Setting up configuration files..."
     
-    # Create ~/.hermes directory structure
+    # Create the HERMES_HOME directory structure ($HermesHome, default %LOCALAPPDATA%\hermes)
     New-Item -ItemType Directory -Force -Path "$HermesHome\cron" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\sessions" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\logs" | Out-Null
@@ -1729,13 +1870,13 @@ function Copy-ConfigTemplates {
         $examplePath = "$InstallDir\.env.example"
         if (Test-Path $examplePath) {
             Copy-Item $examplePath $envPath
-            Write-Success "Created ~/.hermes/.env from template"
+            Write-Success "Created $envPath from template"
         } else {
             New-Item -ItemType File -Force -Path $envPath | Out-Null
-            Write-Success "Created ~/.hermes/.env"
+            Write-Success "Created $envPath"
         }
     } else {
-        Write-Info "~/.hermes/.env already exists, keeping it"
+        Write-Info "$envPath already exists, keeping it"
     }
     
     # Create config.yaml
@@ -1744,10 +1885,10 @@ function Copy-ConfigTemplates {
         $examplePath = "$InstallDir\cli-config.yaml.example"
         if (Test-Path $examplePath) {
             Copy-Item $examplePath $configPath
-            Write-Success "Created ~/.hermes/config.yaml from template"
+            Write-Success "Created $configPath from template"
         }
     } else {
-        Write-Info "~/.hermes/config.yaml already exists, keeping it"
+        Write-Info "$configPath already exists, keeping it"
     }
     
     # Create SOUL.md if it doesn't exist (global persona file).
@@ -1780,25 +1921,25 @@ Delete the contents (or this file) to use the default personality.
 "@
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($soulPath, $soulContent, $utf8NoBom)
-        Write-Success "Created ~/.hermes/SOUL.md (edit to customize personality)"
+        Write-Success "Created $soulPath (edit to customize personality)"
     }
     
-    Write-Success "Configuration directory ready: ~/.hermes/"
+    Write-Success "Configuration directory ready: $HermesHome"
     
-    # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
-    Write-Info "Syncing bundled skills to ~/.hermes/skills/ ..."
+    # Seed bundled skills into $HermesHome\skills (manifest-based, one-time per skill)
+    Write-Info "Syncing bundled skills to $HermesHome\skills ..."
     $pythonExe = "$InstallDir\venv\Scripts\python.exe"
     if (Test-Path $pythonExe) {
         try {
             & $pythonExe "$InstallDir\tools\skills_sync.py" 2>$null
-            Write-Success "Skills synced to ~/.hermes/skills/"
+            Write-Success "Skills synced to $HermesHome\skills"
         } catch {
             # Fallback: simple directory copy
             $bundledSkills = "$InstallDir\skills"
             $userSkills = "$HermesHome\skills"
             if ((Test-Path $bundledSkills) -and -not (Get-ChildItem $userSkills -Exclude '.bundled_manifest' -ErrorAction SilentlyContinue)) {
                 Copy-Item -Path "$bundledSkills\*" -Destination $userSkills -Recurse -Force -ErrorAction SilentlyContinue
-                Write-Success "Skills copied to ~/.hermes/skills/"
+                Write-Success "Skills copied to $HermesHome\skills"
             }
         }
     }
@@ -2078,6 +2219,75 @@ function Clear-ElectronBuildCache {
     return $removed
 }
 
+# Last-resort Electron mirror after GitHub download fails (#47266).
+$script:DesktopElectronFallbackMirror = "https://npmmirror.com/mirrors/electron/"
+
+# Electron package dir — workspace-local nest first, then root hoist.
+function Get-ElectronDir {
+    param([string]$InstallDir)
+    $desktopLocal = Join-Path $InstallDir 'apps\desktop\node_modules\electron'
+    if (Test-Path -LiteralPath $desktopLocal) { return $desktopLocal }
+    return (Join-Path $InstallDir 'node_modules\electron')
+}
+
+# True when dist/ holds a usable Electron binary (#38673 / run-electron-builder.cjs).
+function Test-ElectronDist {
+    param([string]$InstallDir)
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
+    $distExe = Join-Path $electronDir 'dist\electron.exe'
+    return (Test-Path -LiteralPath $distExe)
+}
+
+# Best-effort: run electron/install.js to populate dist/ (optional mirror).
+function Restore-ElectronDist {
+    param([string]$InstallDir, [string]$Mirror)
+    if (Test-ElectronDist -InstallDir $InstallDir) { return $true }
+
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
+    $distExe = Join-Path $electronDir 'dist\electron.exe'
+    $installer = Join-Path $electronDir 'install.js'
+    if (-not (Test-Path -LiteralPath $installer)) { return $false }
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $node) { return $false }
+
+    $distDir = Join-Path $electronDir 'dist'
+    if (Test-Path -LiteralPath $distDir) {
+        Remove-Item -LiteralPath $distDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath (Join-Path $electronDir 'path.txt') -Force -ErrorAction SilentlyContinue
+
+    $prevMirror = $env:ELECTRON_MIRROR
+    if ($Mirror) { $env:ELECTRON_MIRROR = $Mirror }
+    try {
+        # Out-Host so the downloader's progress shows on the console WITHOUT
+        # leaking into this function's return value (PowerShell returns every
+        # object left on the output stream, so a bare pipe here would make the
+        # boolean below ambiguous).
+        & $node.Source $installer 2>&1 | ForEach-Object { "$_" } | Out-Host
+    } catch {
+    } finally {
+        $env:ELECTRON_MIRROR = $prevMirror
+    }
+    return (Test-Path -LiteralPath $distExe)
+}
+
+function Test-ElectronPkgStagedMissingDist {
+    param([string]$InstallDir)
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
+    return (
+        (Test-Path -LiteralPath (Join-Path $electronDir 'package.json')) -and
+        (Test-Path -LiteralPath (Join-Path $electronDir 'install.js')) -and
+        (-not (Test-ElectronDist -InstallDir $InstallDir))
+    )
+}
+
+function Try-RestoreElectronDist {
+    param([string]$InstallDir)
+    if (Restore-ElectronDist -InstallDir $InstallDir) { return $true }
+    if ($env:ELECTRON_MIRROR) { return $false }
+    return Restore-ElectronDist -InstallDir $InstallDir -Mirror $script:DesktopElectronFallbackMirror
+}
+
 function Install-Desktop {
     # Build apps/desktop into a launchable Hermes.exe. Only called from
     # Stage-Desktop, which is itself only included in the manifest when
@@ -2173,10 +2383,16 @@ function Install-Desktop {
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
-            Show-NpmCertHint ($npmOut -join "`n") | Out-Null
-            throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
+            if (Test-ElectronPkgStagedMissingDist -InstallDir $InstallDir) {
+                Write-Warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
+                Try-RestoreElectronDist -InstallDir $InstallDir | Out-Null
+            } else {
+                Show-NpmCertHint ($npmOut -join "`n") | Out-Null
+                throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
+            }
+        } else {
+            Write-Success "Desktop workspace dependencies installed"
         }
-        Write-Success "Desktop workspace dependencies installed"
     } catch {
         if ($prevEAP) { $ErrorActionPreference = $prevEAP }
         Pop-Location
@@ -2219,19 +2435,34 @@ function Install-Desktop {
         & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
         $code = $LASTEXITCODE
         if ($code -ne 0) {
-            # A corrupt cached Electron zip makes `pack` fail with an opaque
-            # ENOENT on the final `electron` -> `Hermes` rename: app-builder's
-            # unpack-electron extracted a partial tree (missing the binary) from
-            # the bad zip, and re-running reuses the poisoned cache forever.
-            # Purge the cached download + any stale unpacked output and retry
-            # once; @electron/get re-downloads with its own SHASUM check. Without
-            # this a corrupt download hard-fails the whole installer.
-            $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
-            if ($purged.Count -gt 0) {
-                Write-Warn "Desktop build failed - cleared cached Electron download, retrying once:"
+            $purged = @()
+            $restored = $false
+            if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
+                $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
+                $restored = Restore-ElectronDist -InstallDir $InstallDir
+            }
+            if ($restored) {
+                Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
                 foreach ($p in $purged) { Write-Info "  - $p" }
                 & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
                 $code = $LASTEXITCODE
+            }
+        }
+        if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
+            $mirror = $script:DesktopElectronFallbackMirror
+            Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
+            Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"
+            Write-Info "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
+            if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
+                Restore-ElectronDist -InstallDir $InstallDir -Mirror $mirror | Out-Null
+            }
+            $prevMirror = $env:ELECTRON_MIRROR
+            $env:ELECTRON_MIRROR = $mirror
+            try {
+                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+                $code = $LASTEXITCODE
+            } finally {
+                $env:ELECTRON_MIRROR = $prevMirror
             }
         }
         $ErrorActionPreference = $prevEAP

@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import {
   $desktopBoot,
@@ -25,11 +26,16 @@ import {
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
 import {
+  $activeSessionId,
   $attentionSessionIds,
   $connection,
+  $currentCwd,
   $sessions,
   $workingSessionIds,
+  ensureDefaultWorkspaceCwd,
   setConnection,
+  setCurrentBranch,
+  setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
@@ -120,6 +126,13 @@ export function useGatewayBoot({
       reconnecting = true
 
       try {
+        // Drop a stale REMOTE backend cache before re-dialing. After sleep/wake a
+        // remote backend can become unreachable, but it has no child process
+        // whose 'exit' would clear the main process's cached descriptor — without
+        // this the renderer re-dials the same dead endpoint forever and stays on
+        // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
+        await desktop.revalidateConnection?.().catch(() => undefined)
+
         const conn = await desktop.getConnection($activeGatewayProfile.get())
 
         if (cancelled) {
@@ -218,6 +231,15 @@ export function useGatewayBoot({
         reconnectAttempt = 0
         reauthNotified = false
         clearReconnectTimer()
+
+        // A revalidate-driven reconnect can rebuild the backend in place when the
+        // cached remote was found dead, which re-drives the boot-progress overlay.
+        // Unlike the initial boot, nothing calls completeDesktopBoot() afterwards,
+        // so dismiss it here once we're open again — otherwise the overlay sticks
+        // at ~94%. A no-op on a normal (non-rebuild) reconnect.
+        if (bootCompleted) {
+          completeDesktopBoot()
+        }
       } else if (bootCompleted && (st === 'closed' || st === 'error')) {
         // The socket dropped after a healthy boot (typically sleep/wake). Try
         // to bring it back instead of leaving the composer stuck disabled.
@@ -335,6 +357,12 @@ export function useGatewayBoot({
           message: translateNow('boot.steps.loadingSettings'),
           progress: 97
         })
+        await ensureDefaultWorkspaceCwd()
+        const remoteDefault = await desktopDefaultCwd().catch(() => null)
+        if (remoteDefault?.cwd && !$activeSessionId.get() && !$currentCwd.get()) {
+          setCurrentCwd(remoteDefault.cwd)
+          setCurrentBranch(remoteDefault.branch || '')
+        }
         await callbacksRef.current.refreshHermesConfig()
 
         if (cancelled) {

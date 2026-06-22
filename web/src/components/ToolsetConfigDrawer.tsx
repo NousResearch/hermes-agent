@@ -20,6 +20,9 @@ import { cn, themedBody } from "@/lib/utils";
 interface Props {
   /** The toolset whose backends are being configured. */
   toolset: ToolsetInfo;
+  /** Optional profile to scope config reads/writes to (Skills page profile
+   *  selector). Omitted = the dashboard process's own profile. */
+  profile?: string;
   onClose: () => void;
   /** Called after a toggle/provider/key change so the parent grid refreshes. */
   onChanged: () => void;
@@ -31,7 +34,7 @@ interface Props {
  * the toolset on/off, pick a provider, enter API keys, and run a provider's
  * post-setup install hook (npm/pip/binary) with a live log tail.
  */
-export function ToolsetConfigDrawer({ toolset, onClose, onChanged }: Props) {
+export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Props) {
   const { toast, showToast } = useToast();
   const [config, setConfig] = useState<ToolsetConfig | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,7 +63,7 @@ export function ToolsetConfigDrawer({ toolset, onClose, onChanged }: Props) {
     // react-hooks/set-state-in-effect — setState only fires inside the
     // async .then/.catch/.finally callbacks.
     return api
-      .getToolsetConfig(toolset.name)
+      .getToolsetConfig(toolset.name, profile)
       .then((cfg) => {
         setConfig(cfg);
         setActiveProvider(cfg.active_provider);
@@ -72,7 +75,7 @@ export function ToolsetConfigDrawer({ toolset, onClose, onChanged }: Props) {
       })
       .catch(() => showToast("Failed to load toolset config", "error"))
       .finally(() => setLoading(false));
-  }, [toolset.name, showToast]);
+  }, [toolset.name, profile, showToast]);
 
   useEffect(() => {
     void loadConfig();
@@ -121,7 +124,7 @@ export function ToolsetConfigDrawer({ toolset, onClose, onChanged }: Props) {
   const handleToggle = async (next: boolean) => {
     setToggling(true);
     try {
-      await api.toggleToolset(toolset.name, next);
+      await api.toggleToolset(toolset.name, next, profile);
       setEnabled(next);
       showToast(
         `${toolset.label || toolset.name} ${next ? "enabled" : "disabled"}`,
@@ -138,7 +141,7 @@ export function ToolsetConfigDrawer({ toolset, onClose, onChanged }: Props) {
   const handleSelectProvider = async (provider: ToolsetProvider) => {
     setSelecting(provider.name);
     try {
-      await api.selectToolsetProvider(toolset.name, provider.name);
+      await api.selectToolsetProvider(toolset.name, provider.name, profile);
       setActiveProvider(provider.name);
       showToast(`Provider set to ${provider.name}`, "success");
       onChanged();
@@ -164,7 +167,7 @@ export function ToolsetConfigDrawer({ toolset, onClose, onChanged }: Props) {
     }
     setSavingProvider(provider.name);
     try {
-      const res = await api.saveToolsetEnv(toolset.name, env);
+      const res = await api.saveToolsetEnv(toolset.name, env, profile);
       setIsSet((prev) => ({ ...prev, ...res.is_set }));
       // Clear saved drafts so the inputs reset to the "saved" placeholder.
       setDrafts((prev) => {
@@ -195,7 +198,7 @@ export function ToolsetConfigDrawer({ toolset, onClose, onChanged }: Props) {
     setPostSetupLog([]);
     setPostSetupKey(provider.post_setup);
     try {
-      await api.runToolsetPostSetup(toolset.name, provider.post_setup);
+      await api.runToolsetPostSetup(toolset.name, provider.post_setup, profile);
       // Bump the trigger so the poll effect (re)starts tailing the log.
       setPostSetupTrigger((n) => n + 1);
     } catch (e) {
@@ -306,7 +309,7 @@ export function ToolsetConfigDrawer({ toolset, onClose, onChanged }: Props) {
                       </Badge>
                     ) : (
                       <Button
-                        size="xs"
+                        size="sm"
                         outlined
                         onClick={() => void handleSelectProvider(provider)}
                         disabled={selecting !== null}
@@ -373,7 +376,7 @@ export function ToolsetConfigDrawer({ toolset, onClose, onChanged }: Props) {
                         </div>
                       ))}
                       <Button
-                        size="xs"
+                        size="sm"
                         onClick={() => void handleSaveKeys(provider)}
                         disabled={savingProvider !== null}
                       >
@@ -398,22 +401,28 @@ export function ToolsetConfigDrawer({ toolset, onClose, onChanged }: Props) {
                         . Runs on this host — may take a few minutes.
                       </p>
                       <Button
-                        size="xs"
+                        size="sm"
                         outlined
+                        className={cn(
+                          postSetupRunning &&
+                            postSetupKey === provider.post_setup &&
+                            "[&_svg]:animate-spin",
+                        )}
                         onClick={() => void handleRunPostSetup(provider)}
                         disabled={postSetupRunning}
+                        prefix={
+                          postSetupRunning &&
+                          postSetupKey === provider.post_setup ? (
+                            <Loader2 />
+                          ) : (
+                            <Terminal />
+                          )
+                        }
                       >
                         {postSetupRunning &&
-                        postSetupKey === provider.post_setup ? (
-                          <>
-                            <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                            Installing…
-                          </>
-                        ) : (
-                          <>
-                            <Terminal className="h-3 w-3 mr-1" /> Run setup
-                          </>
-                        )}
+                        postSetupKey === provider.post_setup
+                          ? "Installing…"
+                          : "Run setup"}
                       </Button>
                     </div>
                   )}

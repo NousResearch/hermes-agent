@@ -63,3 +63,42 @@ data/
 # Compose/profile runtime state (bind-mounted; avoid ownership/secret issues)
 hermes-config/
 runtime/
+
+# ---------- Not needed inside the Docker image ----------
+
+# Desktop app source (Tauri/Electron); never installed in the container
+apps/
+
+# Test suite — not shipped in production images
+tests/
+
+# Documentation site (Docusaurus) and supplementary docs
+website/
+docs/
+
+# Assets only used by the GitHub README
+assets/
+infographic/
+
+# Plugin-level docs (hermes-achievements ships docs/ but the runtime doesn't read them)
+plugins/hermes-achievements/docs/
+
+# Nix / Homebrew / AUR packaging metadata — irrelevant to Docker
+nix/
+flake.nix
+flake.lock
+packaging/
+
+# Design and planning documents
+plans/
+.plans/
+
+# ACP registry manifest (icon + agent.json) — not consumed at runtime
+acp_registry/
+
+# Repo-level dotfiles that are git-only or dev-tooling config
+.env.example
+.envrc
+.gitattributes
+.hadolint.yaml
+.mailmap

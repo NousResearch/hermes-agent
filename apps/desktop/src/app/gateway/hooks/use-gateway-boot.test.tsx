@@ -2,6 +2,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 
 import { useGatewayBoot } from './use-gateway-boot'
@@ -122,6 +123,7 @@ beforeEach(() => {
   FakeWebSocket.instances = []
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
+  $activeGatewayProfile.set('default')
   $gatewayState.set('idle')
   $desktopBoot.set({
     error: null,
@@ -222,6 +224,18 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($desktopBoot.get().error).toBeNull()
     // It is actively retrying, not idle — more sockets were minted.
     expect(FakeWebSocket.instances.length).toBeGreaterThan(1)
+  })
+
+  it('seeds the primary gateway profile from the desktop preference before connecting', async () => {
+    const desktop = fakeDesktop()
+    desktop.profile.get = vi.fn(async () => ({ profile: 'coder' }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($activeGatewayProfile.get()).toBe('coder')
+    expect(desktop.profile.get).toHaveBeenCalled()
   })
 
   it('FIX: after the prolonged drop the hook raises a recoverable boot error (the escape hatch)', async () => {

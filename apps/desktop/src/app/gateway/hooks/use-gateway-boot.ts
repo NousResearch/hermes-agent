@@ -222,6 +222,20 @@ export function useGatewayBoot({
     // Secondary (background-profile) sockets funnel into the same handler.
     configureGatewayRegistry({ onEvent: event => callbacksRef.current.handleGatewayEvent(event) })
 
+    const seedPrimaryProfileFromPreference = async () => {
+      try {
+        const pref = await desktop.profile?.get?.()
+        const profileKey = normalizeProfileKey(pref?.profile)
+
+        $activeGatewayProfile.set(profileKey)
+        setPrimaryGateway(gateway, profileKey)
+
+        return profileKey
+      } catch {
+        return null
+      }
+    }
+
     const offState = gateway.onState(st => {
       // Mirror to the composer only while the primary is the active profile —
       // a background secondary reconnect mustn't flip the foreground state.
@@ -315,6 +329,7 @@ export function useGatewayBoot({
 
     async function boot() {
       try {
+        await seedPrimaryProfileFromPreference()
         const conn = await desktop.getConnection()
 
         if (cancelled) {
@@ -343,10 +358,7 @@ export function useGatewayBoot({
         // same-profile resumes are no-op swaps and any reconnect targets the
         // right backend. Best-effort: a missing preference means "default".
         try {
-          const pref = await desktop.profile?.get?.()
-          const profileKey = (pref?.profile ?? '').trim() || 'default'
-          $activeGatewayProfile.set(profileKey)
-          setPrimaryGateway(gateway, profileKey)
+          const profileKey = (await seedPrimaryProfileFromPreference()) || 'default'
           void ensureGatewayForProfile(profileKey)
         } catch {
           $activeGatewayProfile.set('default')

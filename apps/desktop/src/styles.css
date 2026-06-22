@@ -1214,19 +1214,33 @@ canvas {
   background: transparent !important;
 }
 
-[data-slot='aui_assistant-message-content'] > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
+/* Fade scaffolding so the prose reading column stays primary. Two targets:
+   a thinking disclosure fades as one block, and each *individual* tool row
+   (`[data-tool-row]`) fades on its own. We deliberately do NOT fade the tool
+   group wrapper (`[data-tool-group]`): opacity on a parent opens a stacking
+   context, so a child row can never be more opaque than the group — that made
+   it impossible to keep one row lit (an open diff) while its siblings faded.
+   With the fade per-row, each row hovers/focuses independently. */
+[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'],
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row] {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
 }
 
-[data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']):is(:hover, :focus-within) {
+/* Lift on hover or *keyboard* focus only. `:focus-within` also matches the
+   focus a mouse click leaves on the disclosure toggle, which kept a row lit
+   after you clicked to collapse it; `:has(:focus-visible)` excludes that. */
+[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure']:is(:hover, :has(:focus-visible)),
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row]:is(:hover, :has(:focus-visible)) {
   opacity: 1;
 }
 
-/* A generated image is the deliverable, not scaffolding — keep it at full
-   strength instead of dimming it until hover. */
-[data-slot='aui_assistant-message-content'] > [data-slot='tool-block']:has([data-slot='aui_generated-image']) {
+/* File edits (write_file / edit_file / patch) are the deliverable, not
+   scaffolding — the diff is what the user reviews, like a PR. An *expanded*
+   edit stays at full strength; collapsed it fades like any other row. The
+   `data-file-edit` marker sits on the same row element and is only present
+   while the row is open. */
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row][data-file-edit] {
   opacity: 1;
 }
 

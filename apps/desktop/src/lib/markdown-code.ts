@@ -108,6 +108,56 @@ export function codiconForLanguage(language: string | undefined): string {
   return CODICON_BY_LANGUAGE[sanitizeLanguageTag(language || '')] || 'code'
 }
 
+// File extension → language tag, so a filename can resolve to the same icon a
+// fenced code block of that language would get. Only extensions that map to a
+// non-generic codicon need an entry; everything else falls through to `code`.
+const LANGUAGE_BY_EXTENSION: Record<string, string> = {
+  bash: 'bash',
+  cfg: 'ini',
+  conf: 'ini',
+  css: 'css',
+  dockerfile: 'dockerfile',
+  env: 'env',
+  gql: 'graphql',
+  graphql: 'graphql',
+  ini: 'ini',
+  json: 'json',
+  json5: 'json',
+  less: 'less',
+  markdown: 'markdown',
+  md: 'markdown',
+  mdx: 'markdown',
+  mmd: 'mermaid',
+  ps1: 'powershell',
+  psql: 'sql',
+  sass: 'sass',
+  scss: 'scss',
+  sh: 'bash',
+  sql: 'sql',
+  svg: 'svg',
+  toml: 'toml',
+  yaml: 'yaml',
+  yml: 'yml',
+  zsh: 'zsh'
+}
+
+// Pick an icon for a file path by its extension (or bare name like
+// `Dockerfile`), reusing the language→codicon map so file-edit rows and code
+// blocks share one visual vocabulary. Unknown / generic code files get `code`.
+export function codiconForFilename(path: string | undefined): string {
+  const base = (path || '').replace(/\\/g, '/').split('/').pop()?.trim().toLowerCase() || ''
+
+  if (!base) {
+    return 'code'
+  }
+
+  const dot = base.lastIndexOf('.')
+  const token = dot > 0 ? base.slice(dot + 1) : base
+  const language = LANGUAGE_BY_EXTENSION[token] || token
+
+  return codiconForLanguage(language)
+}
+
 function proseLineCount(body: string): number {
   return body.split('\n').filter(line => {
     const trimmed = line.trim()

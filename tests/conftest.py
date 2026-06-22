@@ -602,7 +602,31 @@ _LIVE_SYSTEM_GUARD_BYPASS_MARK = "live_system_guard_bypass"
 
 
 def pytest_configure(config):  # noqa: D401 — pytest hook
-    """Register markers used by hermetic conftest."""
+    """Register markers used by hermetic conftest, and raise the soft open-file
+    limit so a SINGLE-PROCESS run of the whole suite doesn't exhaust FDs.
+
+    macOS defaults RLIMIT_NOFILE to 256. The per-file CI runner
+    (``run_tests_parallel.py``) never hits this — each file gets a fresh
+    interpreter. But running the suite (or a whole subsystem like
+    ``tests/gateway/``) in one process accumulates open handles across thousands
+    of tests and dies with ``OSError: [Errno 24] Too many open files`` — which
+    masquerades as thousands of unrelated test errors. Raising the *soft* limit
+    toward the (effectively unlimited) hard limit makes single-process /
+    pollution-sweep runs work, without changing any test behaviour or hiding a
+    real per-file leak (each CI subprocess still starts at the OS default).
+    """
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = 65536 if hard == resource.RLIM_INFINITY else min(hard, 65536)
+        if soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    except (ImportError, ValueError, OSError):
+        # resource is POSIX-only; a setrlimit refusal is non-fatal — the suite
+        # still runs per-file under CI where the default limit suffices.
+        pass
+
     config.addinivalue_line(
         "markers",
         f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "

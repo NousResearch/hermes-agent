@@ -398,8 +398,8 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
 
     Runs the same first-statement (``PRAGMA journal_mode``) that trips the
-    malformed-schema parse, then ``PRAGMA integrity_check`` and a canonical
-    ``sessions`` read.
+    malformed-schema parse, then verifies canonical reads and a rolled-back
+    message write so FTS trigger/index corruption cannot pass as healthy.
     """
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     try:
@@ -409,6 +409,18 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         if problems:
             return "; ".join(problems[:3])
         conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+        probe_session_id = f"_hermes_health_probe_{time.time_ns()}"
+        conn.execute("BEGIN")
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            (probe_session_id, "health_probe", time.time()),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) "
+            "VALUES (?, ?, ?, ?)",
+            (probe_session_id, "user", "health probe", time.time()),
+        )
+        conn.rollback()
         return None
     except sqlite3.DatabaseError as exc:
         return str(exc)
@@ -417,16 +429,17 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
 
 
 def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, Any]:
-    """Repair a state.db whose ``sqlite_master`` schema is malformed.
+    """Repair a state.db whose schema or FTS indexes are malformed.
 
-    Handles the "duplicate object definition" / malformed-schema class where
-    even ``PRAGMA`` statements fail. Tries least-destructive recovery first
-    and escalates:
+    Handles both FTS index corruption that rejects message writes and the
+    "duplicate object definition" schema class where even ``PRAGMA`` statements
+    fail. Tries least-destructive recovery first and escalates:
 
-      1. **De-duplicate** ``sqlite_master`` (keep the lowest rowid per
+      1. **Rebuild FTS indexes in place** from their canonical content rows.
+      2. **De-duplicate** ``sqlite_master`` (keep the lowest rowid per
          ``type``/``name``). Fixes the canonical "table X already exists"
          case and PRESERVES the existing FTS index intact.
-      2. **Drop the FTS schema** (every ``messages_fts*`` object) + ``VACUUM``.
+      3. **Drop the FTS schema** (every ``messages_fts*`` object).
          The next ``SessionDB()`` open rebuilds the FTS indexes from the
          canonical ``messages`` table.
 
@@ -448,9 +461,32 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
         report["error"] = f"{db_path} does not exist"
         return report
 
+    if _db_opens_cleanly(db_path) is None:
+        report["repaired"] = True
+        report["strategy"] = "already_healthy"
+        return report
+
     if backup:
         bpath = _backup_db_file(db_path)
         report["backup_path"] = str(bpath) if bpath else None
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            for table_name in ("messages_fts", "messages_fts_trigram"):
+                conn.execute(
+                    f"INSERT INTO {table_name}({table_name}) VALUES('rebuild')"
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        if _db_opens_cleanly(db_path) is None:
+            report["repaired"] = True
+            report["strategy"] = "rebuild_fts"
+            logger.warning("state.db FTS indexes rebuilt in place: %s", db_path)
+            return report
+    except sqlite3.DatabaseError as exc:
+        logger.warning("state.db FTS rebuild pass failed: %s", exc)
 
     # ── Strategy 1: de-duplicate sqlite_master (keeps FTS index) ──
     try:
@@ -482,15 +518,14 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     except sqlite3.DatabaseError as exc:
         logger.warning("state.db dedup repair pass failed: %s", exc)
 
-    # ── Strategy 2: drop all FTS schema, VACUUM, rebuild on next open ──
+    # ── Strategy 2: drop all FTS schema, rebuild on next open ──
     try:
         conn = sqlite3.connect(str(db_path), isolation_level=None)
         try:
-            conn.execute("PRAGMA writable_schema=ON")
-            conn.execute("DELETE FROM sqlite_master WHERE name LIKE 'messages_fts%'")
-            conn.execute("PRAGMA writable_schema=OFF")
-            conn.commit()
-            conn.execute("VACUUM")
+            for trigger_name in _FTS_TRIGGERS:
+                conn.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+            conn.execute("DROP TABLE IF EXISTS messages_fts")
+            conn.execute("DROP TABLE IF EXISTS messages_fts_trigram")
         finally:
             conn.close()
         reason = _db_opens_cleanly(db_path)
@@ -503,8 +538,25 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
             )
             return report
         report["error"] = reason
-    except sqlite3.DatabaseError as exc:
-        report["error"] = str(exc)
+    except sqlite3.DatabaseError:
+        try:
+            conn = sqlite3.connect(str(db_path), isolation_level=None)
+            try:
+                conn.execute("PRAGMA writable_schema=ON")
+                conn.execute("DELETE FROM sqlite_master WHERE name LIKE 'messages_fts%'")
+                conn.execute("PRAGMA writable_schema=OFF")
+                conn.commit()
+                conn.execute("VACUUM")
+            finally:
+                conn.close()
+            reason = _db_opens_cleanly(db_path)
+            if reason is None:
+                report["repaired"] = True
+                report["strategy"] = "drop_fts_rebuild"
+                return report
+            report["error"] = reason
+        except sqlite3.DatabaseError as exc:
+            report["error"] = str(exc)
 
     if not report["repaired"]:
         logger.error(

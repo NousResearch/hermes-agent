@@ -1217,6 +1217,11 @@ def run_doctor(args):
     if state_db_path.exists():
         try:
             import sqlite3
+            from hermes_state import _db_opens_cleanly
+
+            health_error = _db_opens_cleanly(state_db_path)
+            if health_error is not None:
+                raise sqlite3.DatabaseError(health_error)
             conn = sqlite3.connect(str(state_db_path))
             cursor = conn.execute("SELECT COUNT(*) FROM sessions")
             count = cursor.fetchone()[0]
@@ -1231,7 +1236,7 @@ def run_doctor(args):
                 # this is NOT a plain FTS-index rebuild. Repair sqlite_master
                 # in place (backup first; sessions/messages preserved).
                 check_warn(
-                    f"{_DHH}/state.db schema is malformed (sessions hidden until repaired)",
+                    f"{_DHH}/state.db is malformed (session reads or writes may fail)",
                     f"({e})",
                 )
                 if should_fix:
@@ -1260,13 +1265,13 @@ def run_doctor(args):
                             f"({report.get('error')}; backup: {report.get('backup_path')})",
                         )
                         issues.append(
-                            "state.db schema malformed and auto-repair failed — "
+                            "state.db malformed and auto-repair failed — "
                             "restore from the backup copy beside state.db"
                         )
                 else:
                     issues.append(
-                        "state.db schema malformed — run 'hermes doctor --fix' "
-                        "(or 'hermes sessions repair') to recover hidden sessions"
+                        "state.db malformed — run 'hermes doctor --fix' "
+                        "(or 'hermes sessions repair') to restore session storage"
                     )
             else:
                 check_warn(f"{_DHH}/state.db exists but has issues: {e}")

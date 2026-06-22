@@ -816,6 +816,15 @@ def _build_gateway_agent_history(
     return agent_history, observed_context
 
 
+def _select_cached_agent_history(
+    persisted_history: List[Dict[str, Any]],
+    live_history: Any,
+) -> List[Dict[str, Any]]:
+    if isinstance(live_history, list) and len(live_history) > len(persisted_history):
+        return list(live_history)
+    return persisted_history
+
+
 def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
     """Prepend observed Telegram context to the API-only current user turn."""
 
@@ -15397,6 +15406,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_id_alt=getattr(source, "user_id_alt", None),
             )
             agent = None
+            reused_cached_agent = False
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
 
@@ -15441,6 +15451,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 self._cleanup_agent_resources(_ev_agent)
                         else:
                             agent = cached[0]
+                            reused_cached_agent = True
                             # Refresh LRU order so the cap enforcement evicts
                             # truly-oldest entries, not the one we just used.
                             if hasattr(_cache, "move_to_end"):
@@ -15685,6 +15696,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent_holder[0] = agent
             # Capture the full tool definitions for transcript logging
             tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
+
+            if reused_cached_agent and getattr(agent, "session_id", None) == session_id:
+                selected_history = _select_cached_agent_history(
+                    history,
+                    getattr(agent, "_session_messages", None),
+                )
+                if selected_history is not history:
+                    logger.warning(
+                        "Persisted transcript lagged cached history for session %s "
+                        "(disk=%d, memory=%d); preserving live conversation context",
+                        session_key,
+                        len(history),
+                        len(selected_history),
+                    )
+                    history = selected_history
             
             # Convert history to agent format.
             # Two cases:

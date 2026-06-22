@@ -53,6 +53,18 @@ def _corrupt_duplicate_fts(db_path: Path) -> None:
     conn.close()
 
 
+def _break_fts_insert_trigger(db_path: Path) -> None:
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("DROP TRIGGER messages_fts_insert")
+    conn.execute(
+        "CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN "
+        "SELECT RAISE(ABORT, 'database disk image is malformed'); "
+        "END"
+    )
+    conn.commit()
+    conn.close()
+
+
 def test_duplicate_fts_makes_every_statement_fail(tmp_path):
     """Document the failure: not even PRAGMA journal_mode survives."""
     db_path = tmp_path / "state.db"
@@ -64,6 +76,34 @@ def test_duplicate_fts_makes_every_statement_fail(tmp_path):
         conn.execute("PRAGMA journal_mode").fetchone()
     conn.close()
     assert is_malformed_db_error(exc_info.value)
+
+
+def test_health_probe_detects_message_write_failure(tmp_path):
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _break_fts_insert_trigger(db_path)
+
+    reason = hermes_state._db_opens_cleanly(db_path)
+
+    assert reason is not None
+    assert "database disk image is malformed" in reason
+
+
+def test_repair_restores_message_writes_when_fts_trigger_is_broken(tmp_path):
+    db_path = tmp_path / "state.db"
+    sid = _build_healthy_db(db_path)
+    _break_fts_insert_trigger(db_path)
+
+    report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is True
+    assert report["strategy"] == "drop_fts_rebuild"
+    db = SessionDB(db_path=db_path)
+    try:
+        db.append_message(sid, role="user", content="write works again")
+        assert db.message_count(session_id=sid) == 11
+    finally:
+        db.close()
 
 
 def test_repair_preserves_sessions_and_messages(tmp_path):

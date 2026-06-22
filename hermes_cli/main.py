@@ -12307,12 +12307,11 @@ def main():
 
     sessions_repair = sessions_subparsers.add_parser(
         "repair",
-        help="Repair a malformed state.db schema so hidden sessions reappear",
+        help="Repair malformed state.db schema or FTS indexes",
         description=(
-            "Recover a state.db whose schema is malformed (e.g. 'table "
-            "messages_fts already exists'), which makes Desktop/Dashboard show "
-            "no sessions. A backup is made first; sessions and messages are "
-            "preserved and the FTS search index is rebuilt if needed."
+            "Recover a state.db whose schema or FTS indexes are malformed. "
+            "A backup is made first; sessions and messages are preserved and "
+            "the FTS search indexes are rebuilt if needed."
         ),
     )
     sessions_repair.add_argument(

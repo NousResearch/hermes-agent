@@ -1706,3 +1706,32 @@ class TestAgentCacheMessageCountRebaseline:
         runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][2] == 5
+
+
+class TestCachedAgentHistoryFallback:
+    def test_longer_live_history_wins_when_persisted_history_lags(self):
+        from gateway.run import _select_cached_agent_history
+
+        persisted = []
+        live = [
+            {"role": "user", "content": "work in hermes-agent"},
+            {"role": "assistant", "content": "Understood."},
+        ]
+
+        selected = _select_cached_agent_history(persisted, live)
+
+        assert selected == live
+        assert selected is not live
+
+    def test_persisted_history_wins_when_it_is_at_least_as_current(self):
+        from gateway.run import _select_cached_agent_history
+
+        persisted = [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+        ]
+        live = [{"role": "user", "content": "stale"}]
+
+        selected = _select_cached_agent_history(persisted, live)
+
+        assert selected is persisted

@@ -50,10 +50,14 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+import httpx
+
 from agent.web_search_provider import WebSearchProvider
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
+
+_FIRECRAWL_CLOUD_API_URL = "https://api.firecrawl.dev"
 
 
 # ---------------------------------------------------------------------------
@@ -120,11 +124,17 @@ Firecrawl = _FirecrawlProxy()
 
 
 def _get_direct_firecrawl_config() -> Optional[tuple]:
-    """Return explicit direct Firecrawl kwargs + cache key, or None when unset."""
+    """Return direct Firecrawl mode/kwargs/cache key, or None when unavailable."""
     api_key = os.getenv("FIRECRAWL_API_KEY", "").strip()
     api_url = os.getenv("FIRECRAWL_API_URL", "").strip().rstrip("/")
 
     if not api_key and not api_url:
+        if _is_explicit_firecrawl_selection():
+            return (
+                "keyless",
+                {"api_url": _FIRECRAWL_CLOUD_API_URL},
+                ("direct-keyless", _FIRECRAWL_CLOUD_API_URL, None),
+            )
         return None
 
     kwargs: Dict[str, str] = {}
@@ -133,7 +143,41 @@ def _get_direct_firecrawl_config() -> Optional[tuple]:
     if api_url:
         kwargs["api_url"] = api_url
 
-    return kwargs, ("direct", api_url or None, api_key or None)
+    return "sdk", kwargs, ("direct", api_url or None, api_key or None)
+
+
+def _is_explicit_firecrawl_selection() -> bool:
+    """Return True when config explicitly selects Firecrawl for web tools."""
+    import tools.web_tools as _wt
+
+    cfg = _wt._load_web_config()
+    return any(
+        (cfg.get(key) or "").lower().strip() == "firecrawl"
+        for key in ("backend", "search_backend", "extract_backend")
+    )
+
+
+class _KeylessFirecrawlClient:
+    """Minimal REST client for Firecrawl's keyless cloud mode."""
+
+    def __init__(self, api_url: str = _FIRECRAWL_CLOUD_API_URL):
+        self.api_url = api_url.rstrip("/")
+
+    def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        response = httpx.post(
+            f"{self.api_url}{path}",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def search(self, *, query: str, limit: int = 5) -> Dict[str, Any]:
+        return self._post("/v2/search", {"query": query, "limit": limit})
+
+    def scrape(self, *, url: str, formats: List[str]) -> Dict[str, Any]:
+        return self._post("/v2/scrape", {"url": url, "formats": formats})
 
 
 def _get_firecrawl_gateway_url() -> str:
@@ -160,7 +204,7 @@ def _is_tool_gateway_ready() -> bool:
 
 
 def _has_direct_firecrawl_config() -> bool:
-    """Return True when direct Firecrawl config is explicitly configured."""
+    """Return True when a direct or explicit-keyless Firecrawl path is available."""
     return _get_direct_firecrawl_config() is not None
 
 
@@ -191,8 +235,10 @@ def _raise_web_backend_configuration_error() -> None:
 
     message = (
         "Web tools are not configured. "
-        "Set FIRECRAWL_API_KEY for cloud Firecrawl or set FIRECRAWL_API_URL "
-        "for a self-hosted Firecrawl instance."
+        "Set FIRECRAWL_API_KEY for authenticated cloud Firecrawl, set "
+        "FIRECRAWL_API_URL for a self-hosted Firecrawl instance, or explicitly "
+        "select Firecrawl in web.backend/search_backend/extract_backend to use "
+        "cloud keyless mode."
     )
     if _wt.managed_nous_tools_enabled():
         message += (
@@ -228,7 +274,7 @@ def _get_firecrawl_client() -> Any:
 
     direct_config = _get_direct_firecrawl_config()
     if direct_config is not None and not _wt.prefers_gateway("web"):
-        kwargs, client_config = direct_config
+        client_mode, kwargs, client_config = direct_config
     else:
         managed_gateway = _wt.resolve_managed_tool_gateway(
             "firecrawl", token_reader=_wt._read_nous_access_token
@@ -244,6 +290,7 @@ def _get_firecrawl_client() -> Any:
             "api_key": managed_gateway.nous_user_token,
             "api_url": managed_gateway.gateway_origin,
         }
+        client_mode = "sdk"
         client_config = (
             "tool-gateway",
             kwargs["api_url"],
@@ -257,7 +304,10 @@ def _get_firecrawl_client() -> Any:
 
     # Construct via the re-exported Firecrawl proxy on tools.web_tools so
     # unit tests patching ``tools.web_tools.Firecrawl`` see their mock.
-    _wt._firecrawl_client = _wt.Firecrawl(**kwargs)
+    if client_mode == "keyless":
+        _wt._firecrawl_client = _KeylessFirecrawlClient(api_url=kwargs["api_url"])
+    else:
+        _wt._firecrawl_client = _wt.Firecrawl(**kwargs)
     _wt._firecrawl_client_config = client_config
     return _wt._firecrawl_client
 
@@ -579,15 +629,15 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Firecrawl",
-            "badge": "paid · optional gateway",
+            "badge": "keyless/paid · optional gateway",
             "tag": (
-                "Full search + extract; supports direct API and "
+                "Full search + extract; supports keyless cloud, direct API, and "
                 "Nous tool-gateway routing."
             ),
             "env_vars": [
                 {
                     "key": "FIRECRAWL_API_KEY",
-                    "prompt": "Firecrawl API key (or leave blank for self-hosted)",
+                    "prompt": "Firecrawl API key (optional; blank = keyless cloud or self-hosted)",
                     "url": "https://docs.firecrawl.dev/introduction",
                 },
             ],

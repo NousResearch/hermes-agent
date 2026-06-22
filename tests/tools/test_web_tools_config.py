@@ -240,6 +240,82 @@ class TestFirecrawlClientConfig:
                     with pytest.raises(ValueError):
                         _get_firecrawl_client()
 
+    def test_explicit_firecrawl_config_without_creds_uses_keyless_client(self):
+        """Explicit Firecrawl config should build the keyless cloud client."""
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
+            with patch("tools.web_tools._read_nous_access_token", return_value=None):
+                with patch("tools.web_tools.Firecrawl", side_effect=AssertionError("SDK path should not run")):
+                    from tools.web_tools import _get_firecrawl_client
+
+                    result = _get_firecrawl_client()
+
+        assert isinstance(result, firecrawl_provider._KeylessFirecrawlClient)
+        assert result.api_url == "https://api.firecrawl.dev"
+
+    def test_keyless_firecrawl_search_omits_authorization_header(self, monkeypatch):
+        """Keyless Firecrawl search must not send a bearer header."""
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        captured = {}
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"success": True, "data": {"web": []}}
+
+        def _fake_post(url, *, json, headers, timeout):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            captured["timeout"] = timeout
+            return _Response()
+
+        monkeypatch.setattr(firecrawl_provider.httpx, "post", _fake_post)
+
+        client = firecrawl_provider._KeylessFirecrawlClient()
+        result = client.search(query="firecrawl", limit=1)
+
+        assert result["success"] is True
+        assert captured["url"] == "https://api.firecrawl.dev/v2/search"
+        assert captured["json"] == {"query": "firecrawl", "limit": 1}
+        assert captured["headers"] == {"Content-Type": "application/json"}
+        assert "Authorization" not in captured["headers"]
+
+    def test_keyless_firecrawl_scrape_omits_authorization_header(self, monkeypatch):
+        """Keyless Firecrawl scrape must not send a bearer header."""
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        captured = {}
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"success": True, "data": {"markdown": "# ok"}}
+
+        def _fake_post(url, *, json, headers, timeout):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            captured["timeout"] = timeout
+            return _Response()
+
+        monkeypatch.setattr(firecrawl_provider.httpx, "post", _fake_post)
+
+        client = firecrawl_provider._KeylessFirecrawlClient()
+        result = client.scrape(url="https://example.com", formats=["markdown"])
+
+        assert result["success"] is True
+        assert captured["url"] == "https://api.firecrawl.dev/v2/scrape"
+        assert captured["json"] == {"url": "https://example.com", "formats": ["markdown"]}
+        assert captured["headers"] == {"Content-Type": "application/json"}
+        assert "Authorization" not in captured["headers"]
+
 
 class TestBackendSelection:
     """Test suite for _get_backend() backend selection logic.

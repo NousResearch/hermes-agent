@@ -219,6 +219,23 @@ class TestIsAvailable:
         monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
         assert p.is_available() is True
 
+    def test_firecrawl_explicit_config_allows_keyless_cloud(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("firecrawl")
+        assert p is not None
+        assert p.is_available() is False
+
+        monkeypatch.setattr(
+            "tools.web_tools._load_web_config",
+            lambda: {"backend": "firecrawl"},
+            raising=False,
+        )
+        assert p.is_available() is True
+
     def test_ddgs_always_available_when_package_importable(self) -> None:
         """DDGS is the always-on fallback — no API key required.
 

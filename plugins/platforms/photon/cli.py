@@ -164,15 +164,32 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         print("could not resolve a Photon project id", file=sys.stderr)
         return 1
 
-    # 3. Rotate the project secret and persist creds (runtime -> ~/.hermes/.env,
+    # 3. Provision Spectrum credentials (runtime -> ~/.hermes/.env,
     #    ids -> auth.json). Spectrum is always enabled and provisioned at
     #    create-time, and the dashboard project id *is* the Spectrum project id
     #    (ids unified), so there's nothing to enable — the id we already have is
     #    the Spectrum id.
+    #
+    #    On re-run we reuse an existing valid secret instead of regenerating.
+    #    Regenerating invalidates the credential that a running sidecar holds
+    #    in its process env, causing all outbound sends to fail with
+    #    AuthenticationError until the gateway is restarted (GH #50755).
     try:
         print("[3/5] Provisioning Spectrum credentials...")
         spectrum_id = dashboard_id
-        secret = photon_auth.regenerate_project_secret(token, dashboard_id)
+        existing_id, existing_secret = photon_auth.load_project_credentials()
+        secret: str = ""
+        reused = False
+        if existing_id and existing_secret:
+            # Validate the existing credential with a lightweight API call.
+            try:
+                photon_auth.list_users(existing_id, existing_secret)
+                secret = existing_secret
+                reused = True
+            except Exception:
+                secret = ""  # fall through to regeneration
+        if not secret:
+            secret = photon_auth.regenerate_project_secret(token, dashboard_id)
         photon_auth.store_project_credentials(
             spectrum_project_id=spectrum_id,
             project_secret=secret,
@@ -180,7 +197,15 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             name=name,
         )
         # spectrum_id is an opaque non-secret id; safe to show.
-        print(f"  ✓ Spectrum ready (project id {spectrum_id}) — secret saved")
+        if reused:
+            print(f"  ✓ Spectrum ready (project id {spectrum_id}) — existing credentials valid")
+        else:
+            print(f"  ✓ Spectrum ready (project id {spectrum_id}) — new secret saved")
+            print(
+                "  ⚠ Project secret was regenerated. If the gateway is running, "
+                "restart it so the sidecar picks up the new secret:\n"
+                "      hermes gateway restart"
+            )
     except Exception as e:
         print(f"spectrum provisioning failed: {e}", file=sys.stderr)
         return 1

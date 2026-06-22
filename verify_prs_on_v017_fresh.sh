@@ -28,7 +28,7 @@ echo "    $(wc -l < "$WORK/prs.txt") PRs"
 : > "$OUT"
 clean=0; conf=0; skip=0
 while read -r num br; do
-  if [ "$num" = "50111" ]; then echo "#$num SKIP manifest-only" >> "$OUT"; skip=$((skip+1)); continue; fi
+  # #50111 is the manifest PR (all-additive docs) — it applies clean too; count it like any other.
   # fetch the PR branch + its merge-base content (need enough history for 3-way)
   git fetch -q --force fork "$br:pr_$num" 2>/dev/null
   mb=$(git merge-base "$V017" "pr_$num" 2>/dev/null)

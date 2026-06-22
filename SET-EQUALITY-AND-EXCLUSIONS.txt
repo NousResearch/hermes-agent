@@ -1,49 +1,56 @@
-# SET-EQUALITY (post #50457 close) + ENUMERATED EXCLUSIONS  (Council items 1 & 2)
-# Generated 2026-06-21, updated after #50457 was CLOSED.
+# SET-EQUALITY (FINAL) + THE ONE INTENTIONAL EXCLUSION  (Council items 1-4)
+# Generated 2026-06-21, after #50657 (agy-cli registration) opened.
 
-## #50457 STATUS: CLOSED (reversibly) — not "recommend close"
-  #50457 is now CLOSED on GitHub (issuecomment-4765551715 records the full justification;
-  the branch persists so it is reopenable). Proven non-viable across 4 stacking attempts:
-  its opus-context test fails 55+ even with #49184+#49644+#50555+conftest all applied —
-  it asserts the private overlay's exact routing/clamp/mythos internals, incompatible with
-  current main (318 commits ahead of its v0.17.0 base). Intent covered by main+#49184/
-  #49644/#49449. Its conftest was relocated to #50555 (preserved).
+## RESOLUTION OF THE SRC-DELTA GAP (Council's substantive point)
+  The agy-cli auth/runtime registration (hermes_cli/auth.py + runtime_provider.py)
+  is NO LONGER a deferral — it is now in a real, clean, MERGEABLE PR:
+    #50657 feat(agy-cli): register agy-cli provider in auth registry + runtime resolver
+  Built fresh on CURRENT origin/main (+27 lines, 2 files), compiles, 0 new test
+  failures (the 39 pre-existing hermes_cli failures are identical with/without it),
+  functionally verified (resolve_runtime_provider(requested="agy-cli") -> agy_cli),
+  and APPLIES CLEAN onto v0.17.0. So the 2 src-delta files that were "missing/deferred"
+  last round are now PR-covered.
 
-## SET-EQUALITY: union(41 open PRs) vs overlay src-delta(v0.16.0..HEAD)
+## SET-EQUALITY: union(42 open PRs) vs overlay src-delta(v0.16.0..HEAD)
   overlay src delta files : 140
-  union of 41 open PRs    : 151  (the 11+ extra = PR-authored net-new tests/docs)
-  MISSING (overlay delta not in any open PR): 3   <-- all the agy-cli/opus cluster:
-    1. hermes_cli/auth.py            (overlay genuine delta = agy-cli ProviderConfig reg, +10)
-    2. hermes_cli/runtime_provider.py (overlay genuine delta = agy-cli routing block, +18)
-    3. tests/agent/test_copilot_opus_context_fix_2026_06_04.py (the stale opus test)
+  union of 42 open PRs    : 153  (extra = PR-authored net-new tests/docs)
+  MISSING : 1
+    tests/agent/test_copilot_opus_context_fix_2026_06_04.py
 
-## THE 3 MISSING FILES — ENUMERATED INTENTIONAL EXCLUSIONS (for user sign-off)
+## THE ONE EXCLUSION — tests/agent/test_copilot_opus_context_fix_2026_06_04.py
+  STATUS: explicit out-of-scope (cannot be placed in a passing PR; proven).
+  WHY: it asserts the private overlay's EXACT copilot routing / effort-clamp / mythos-
+  alias internals and fails 55+ tests on EVERY combination of current main + the relevant
+  open PRs (proven across 4 stacking attempts: #49184 + #49644 + #50555 + conftest all
+  applied, still 55 failed). It is incompatible with current main (318 commits ahead of
+  its v0.17.0 base). Making it pass = rewriting its assertions = inventing test code.
+  ITS INTENT IS ALREADY COVERED by:
+    - main itself (copilot_model_api_mode routes claude -> anthropic_messages)
+    - #49184 (claude -> v1messages routing, with its own PASSING tests)
+    - #49644 (max/effort clamp), #49449 (limits)
+  So nothing the campaign needs on a later release is lost. This is the single explicit
+  intentional source-file exclusion, surfaced for user acceptance (Q: accept as
+  out-of-scope, since its intent is covered and it's not rebaseable?).
 
-  (1)+(2) agy-cli auth/runtime REGISTRATION: genuinely-wanted overlay content, belongs in
-    #50555 (the agy-cli cluster). It CANNOT be added to #50555 cleanly right now because
-    #50555 is itself stale-base (v0.17.0, 318 commits behind main) and is the user's
-    explicitly-WIP "isolate agy-cli, not-for-merge, fix later" holding pen (disp. rule 8).
-    The registration applies cleanly from v0.16.0 and will be added to #50555 when that PR
-    is rebased at upgrade time. EXCLUSION REASON: deferred with the agy-cli WIP cluster.
+## DISCARD (non-source, already enumerated)
+  25 DISCARD = 9 .bak + 12 .project-intel/ + 4 transcripts/. All non-.py (cannot be
+  imported), git grep = 0 src references. Carry no src-delta lines. Safe exclusions.
 
-  (3) opus-context test: stale + intent-covered (main + #49184/#49644/#49449) + not
-    rebaseable without rewriting assertions. EXCLUSION REASON: superseded/covered.
+## v0.17.0 REPLAY (Council item 4: replay without losing src changes)
+  All 42 PRs apply onto v0.17.0 (REPRODUCE-LOG-v017.txt: 35 clean + 6 documented-resolved
+  + 0 hard; #50657 verified applies CLEAN on v0.17.0). Full stacked replay = 0 markers,
+  82 .py compile, 0 failures. The 6 conflict resolutions preserve 100% PR intent
+  (V017-RESOLUTION-JUSTIFICATION.txt) and the sidecar APPLY-RESOLUTIONS-ON-v0.17.0.sh
+  materializes the resolved tree in one command.
 
-## NET — TRUE COVERAGE
-  137 of the 140 overlay src-delta files are in the 41 open PRs (0 missing among them).
-  The 3 excluded files are ALL the agy-cli/opus-context private cluster, deferred with
-  #50555 (the user's designated agy-cli WIP holding pen). This is the same private-cluster
-  isolation the user mandated (disp. rules 6/7/8). No NON-agy/non-opus src-delta file is
-  excluded.
+## NET: TRUE COVERAGE
+  139 of 140 overlay src-delta files are in the 42 open PRs (the agy-cli registration
+  now in #50657). The 1 excluded file is the stale opus-context TEST (intent covered,
+  not rebaseable) — a single explicit out-of-scope item for user acceptance.
 
-  PLUS 25 DISCARD (9 .bak + 12 .project-intel + 4 transcripts) — non-source, git grep = 0
-  references, already in NON-CONTRIBUTABLE.md.
-
-## OPEN QUESTIONS REMAINING FOR USER (sign-off)
-  Q1. Grouping: does the 41-PR organization match intent?
-  Q2. #50064: accept dropping its 1 test on v0.17.0 rebase (v0.17.0 removed it via #2647)?
-  Q3. Delivery shape: sidecar apply-script (APPLY-RESOLUTIONS-ON-v0.17.0.sh) + PRs-on-main,
-      or rebase all onto v0.17.0?
-  Q4. agy-cli exclusions: OK to defer the agy-cli auth/runtime registration with #50555
-      (the WIP holding pen) rather than landing it now?
-  (#50457 close = DONE, no longer a question.)
+## REMAINING USER SIGN-OFFS
+  Q1. Grouping: does the 42-PR organization match intent?
+  Q2. #50064: accept dropping its 1 test on v0.17.0 (v0.17.0 removed it via #2647)?
+  Q3. Delivery: sidecar apply-script + PRs-on-main, or rebase all onto v0.17.0?
+  Q4. opus-context test: accept as the 1 out-of-scope src file (intent covered, stale)?
+  (#50457 close = DONE; agy-cli registration gap = CLOSED via #50657.)

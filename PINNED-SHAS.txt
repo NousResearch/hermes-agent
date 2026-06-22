@@ -1,46 +1,48 @@
-# PINNED PR HEAD SHAs — regenerated from live GitHub on 2026-06-21 23:36
-# Total open PRs: 41 (8 ready-for-review, 33 draft)
-# CHANGES THIS RUN: #50457 CLOSED (stale opus-context, conftest relocated to #50555).
+# PINNED PR HEAD SHAs — regenerated from live GitHub on 2026-06-21 23:44
+# Total open PRs: 42 (8 ready-for-review, 34 draft)
+# CHANGES THIS RUN: #50457 CLOSED (stale opus test). #50657 OPENED (agy-cli auth/runtime
+#   registration, the src-delta that was deferred — now in a clean MERGEABLE PR on main).
 #   #49916 rebased->MERGEABLE. #50555 gained the agy-cli conftest.
 
-#48024   feat/expose-reasoning-api-server                     c5346ea34f8ec55b07e98fba3fb64af6a22ec746 draft=false
-#48057   feat/drop-empty-name-tools                           a4589b1650a294d460988c14c34952425153a44c draft=false
-#48065   fix/context-engine-tool-schema-doublewrap            ea7e64f4606f20041361f023b7d6e6a11ae6da66 draft=false
-#48069   fix/mcp-keepalive-inflight-race                      4a1fbe9e1651e22d19b93e939586a4164a67db89 draft=false
-#48101   feat/per-model-system-prompt-prelude                 af2016d1ef930b121520925a170897e121eecd80 draft=false
-#49184   feat/copilot-claude-v1messages-routing               d684ef80833de99e3a394f2f01776b77ae7bbc5d draft=false
-#49449   feat/copilot-codex-true-limits-pr                    cd27defe2bea6d3f36ab27d2272242eed96520f6 draft=false
-#49644   feat/reasoning-max-effort                            bda59d73b7c7472bb580a9d957ffc7de129998b3 draft=false
-#49915   feat/tui-ctrlc-interrupt-vscode                      e33e4f781fd80d7357fb7131db88f13e837adfa3 draft=true
-#49916   fix/tui-yolo-badge-approval-mode                     caa1daea311ada975e7f1e758c7c1dc8eb54aeb1 draft=true
-#49917   fix/tui-notify-autodispatch-gate                     09a6734a878ab92f49c7238a67ed4577ad68247a draft=true
-#50021   feat/tool-timing-sidecar                             80ce952014d0b506af8ddeb243ed64090bd73b33 draft=true
-#50022   feat/model-router-proxy-tool                         6f6ab5839962b8bd5ef9b9b18eaa22b4b0357477 draft=true
-#50031   feat/copilot-auto-mode-router                        1bdae0a130a013b41bfaaffadb22410b9f0ce381 draft=true
-#50032   feat/source-accelerator                              9fc6f0e626718440d7911ff93c8f9b0d7a96877e draft=true
-#50033   feat/gemini-cli-user-agent                           44dc4d733edc451da4d2b3d2d9a266e40841856a draft=true
-#50038   feat/codex-cli-identity                              cf14b57314c2a68af8e722a0b33833372261be36 draft=true
-#50040   feat/delegate-task-persona                           25b495a06a725aa93f0ec8eb454ee5f1f5857eec draft=true
-#50041   fix/doctor-optional-integrations                     9103989bab285272bffb2b13169acaf587d893e3 draft=true
-#50042   feat/file-tools-read-guards                          a54e706a7fb686162c68affb68826615018ea8b0 draft=true
-#50045   feat/skills-hub-tool-guard                           5a12f857a41bea3ac04bff12f40e548f23f0f801 draft=true
-#50046   feat/stable-tag-update-check                         0d226f1eea732f91bc35eb803d6e6f5642efdb2e draft=true
-#50047   fix/gateway-liveness-and-root-guard                  b3695d09af5a29199839fc407ceb86250e0c9b02 draft=true
-#50048   feat/send-plain-text-directive                       001b549c64d2b04365fa239458807697f8aaf916 draft=true
-#50053   feat/context-engine-grounding-hooks                  15c27997e536b06b2222473946796ba98880ad31 draft=true
-#50054   feat/plugin-register-command-override                352b1318456df9cc80cdc22038475c5244ea0bc8 draft=true
-#50055   fix/copilot-assistant-prefill-trailing-user          35da2881600a4975cda8d087d7be56f9366d1b10 draft=true
-#50056   feat/sqlite-driver-selection                         8c322d2acc7b3151422a281be5f0f8f794750fe5 draft=true
-#50064   feat/copilot-cli-identity-claude-vision              415cbb11fb58d3b01ac37b023a5220d759c2c160 draft=true
-#50066   tests/bedrock-region-sessions-pagination             37a76f469d0ed368bacfeecbaa91f740d23b8e1f draft=true
-#50068   feat/tui-autopilot-yolo-status-badges                123efe8bef364ee7b597b05d1615c9f6aff61fc1 draft=true
-#50073   feat/compression-oversized-message-offload           c6103ae4e4ee4e7c6755f554a16b186bffdb463d draft=true
-#50078   tests/orphan-test-catchup-and-discord-max            6be7d823107362afc7327f295552a43d565e81fc draft=true
-#50080   tests/context-engine-unwrap-and-compression-runtime  139e57647e84ded09307a9767d0d04cd86c44c91 draft=true
-#50086   fix/web-server-profiles-sessions-dedupe              c7e2620c904e62c66985015a8c42d71aff21c2f8 draft=true
-#50111   deferred/residual-lines-on-v0.17.0                   17277d5d675b0a81a931f657bc06254e8f796920 draft=true
-#50146   feat/gateway-media-image-classification              b674df63082bc6c0edc3c83d4baece18c5a37c3c draft=true
-#50155   feat/cmx-grounding-enforcement-hook                  02e537931a2e8b7ae4b2aa82d499f317c50b1735 draft=true
-#50296   fix/background-review-session-isolation              084b79bed93102e43aa130c43779f64b322fd706 draft=true
-#50555   feat/agy-cli-provider-isolated                       d6c626665c762a00cde09f715700bdbe1198b857 draft=true
-#50626   feat/subdir-hints-and-xai-label                      a11fc394c2df5a1ae9dfcaba2b3a389fbf1ff0ea draft=true
+#48024   feat/expose-reasoning-api-server                       c5346ea34f8ec55b07e98fba3fb64af6a22ec746 draft=false
+#48057   feat/drop-empty-name-tools                             a4589b1650a294d460988c14c34952425153a44c draft=false
+#48065   fix/context-engine-tool-schema-doublewrap              ea7e64f4606f20041361f023b7d6e6a11ae6da66 draft=false
+#48069   fix/mcp-keepalive-inflight-race                        4a1fbe9e1651e22d19b93e939586a4164a67db89 draft=false
+#48101   feat/per-model-system-prompt-prelude                   af2016d1ef930b121520925a170897e121eecd80 draft=false
+#49184   feat/copilot-claude-v1messages-routing                 d684ef80833de99e3a394f2f01776b77ae7bbc5d draft=false
+#49449   feat/copilot-codex-true-limits-pr                      cd27defe2bea6d3f36ab27d2272242eed96520f6 draft=false
+#49644   feat/reasoning-max-effort                              bda59d73b7c7472bb580a9d957ffc7de129998b3 draft=false
+#49915   feat/tui-ctrlc-interrupt-vscode                        e33e4f781fd80d7357fb7131db88f13e837adfa3 draft=true
+#49916   fix/tui-yolo-badge-approval-mode                       caa1daea311ada975e7f1e758c7c1dc8eb54aeb1 draft=true
+#49917   fix/tui-notify-autodispatch-gate                       09a6734a878ab92f49c7238a67ed4577ad68247a draft=true
+#50021   feat/tool-timing-sidecar                               80ce952014d0b506af8ddeb243ed64090bd73b33 draft=true
+#50022   feat/model-router-proxy-tool                           6f6ab5839962b8bd5ef9b9b18eaa22b4b0357477 draft=true
+#50031   feat/copilot-auto-mode-router                          1bdae0a130a013b41bfaaffadb22410b9f0ce381 draft=true
+#50032   feat/source-accelerator                                9fc6f0e626718440d7911ff93c8f9b0d7a96877e draft=true
+#50033   feat/gemini-cli-user-agent                             44dc4d733edc451da4d2b3d2d9a266e40841856a draft=true
+#50038   feat/codex-cli-identity                                cf14b57314c2a68af8e722a0b33833372261be36 draft=true
+#50040   feat/delegate-task-persona                             25b495a06a725aa93f0ec8eb454ee5f1f5857eec draft=true
+#50041   fix/doctor-optional-integrations                       9103989bab285272bffb2b13169acaf587d893e3 draft=true
+#50042   feat/file-tools-read-guards                            a54e706a7fb686162c68affb68826615018ea8b0 draft=true
+#50045   feat/skills-hub-tool-guard                             5a12f857a41bea3ac04bff12f40e548f23f0f801 draft=true
+#50046   feat/stable-tag-update-check                           0d226f1eea732f91bc35eb803d6e6f5642efdb2e draft=true
+#50047   fix/gateway-liveness-and-root-guard                    b3695d09af5a29199839fc407ceb86250e0c9b02 draft=true
+#50048   feat/send-plain-text-directive                         001b549c64d2b04365fa239458807697f8aaf916 draft=true
+#50053   feat/context-engine-grounding-hooks                    15c27997e536b06b2222473946796ba98880ad31 draft=true
+#50054   feat/plugin-register-command-override                  352b1318456df9cc80cdc22038475c5244ea0bc8 draft=true
+#50055   fix/copilot-assistant-prefill-trailing-user            35da2881600a4975cda8d087d7be56f9366d1b10 draft=true
+#50056   feat/sqlite-driver-selection                           8c322d2acc7b3151422a281be5f0f8f794750fe5 draft=true
+#50064   feat/copilot-cli-identity-claude-vision                415cbb11fb58d3b01ac37b023a5220d759c2c160 draft=true
+#50066   tests/bedrock-region-sessions-pagination               37a76f469d0ed368bacfeecbaa91f740d23b8e1f draft=true
+#50068   feat/tui-autopilot-yolo-status-badges                  123efe8bef364ee7b597b05d1615c9f6aff61fc1 draft=true
+#50073   feat/compression-oversized-message-offload             c6103ae4e4ee4e7c6755f554a16b186bffdb463d draft=true
+#50078   tests/orphan-test-catchup-and-discord-max              6be7d823107362afc7327f295552a43d565e81fc draft=true
+#50080   tests/context-engine-unwrap-and-compression-runtime    139e57647e84ded09307a9767d0d04cd86c44c91 draft=true
+#50086   fix/web-server-profiles-sessions-dedupe                c7e2620c904e62c66985015a8c42d71aff21c2f8 draft=true
+#50111   deferred/residual-lines-on-v0.17.0                     17f314e248aeff5c3051216c08fb6579f13959a6 draft=true
+#50146   feat/gateway-media-image-classification                b674df63082bc6c0edc3c83d4baece18c5a37c3c draft=true
+#50155   feat/cmx-grounding-enforcement-hook                    02e537931a2e8b7ae4b2aa82d499f317c50b1735 draft=true
+#50296   fix/background-review-session-isolation                084b79bed93102e43aa130c43779f64b322fd706 draft=true
+#50555   feat/agy-cli-provider-isolated                         d6c626665c762a00cde09f715700bdbe1198b857 draft=true
+#50626   feat/subdir-hints-and-xai-label                        a11fc394c2df5a1ae9dfcaba2b3a389fbf1ff0ea draft=true
+#50657   feat/agy-cli-provider-registration                     5d80c179a5cc90ec5620413a57bbe844974b617f draft=true

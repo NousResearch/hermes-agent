@@ -3486,3 +3486,142 @@ class TestHomeTargetEnvVarRegistry:
         from cron.scheduler import _HOME_TARGET_ENV_VARS
 
         assert _HOME_TARGET_ENV_VARS.get("whatsapp") == "WHATSAPP_HOME_CHANNEL"
+
+
+class TestCronDeliveryMirror:
+    """cron.mirror_delivery / per-job attach_to_session: opt-in append of a
+    cron delivery into the target chat's gateway session transcript.
+
+    Default OFF preserves the historical isolation guarantee byte-for-byte.
+    When enabled, delivery rides the existing gateway.mirror.mirror_to_session
+    so cron uses exactly the same path interactive send_message mirroring uses.
+    """
+
+    def test_gate_default_off(self):
+        from cron.scheduler import _cron_mirror_delivery_enabled
+
+        # No per-job flag, no config -> off (historical behaviour).
+        assert _cron_mirror_delivery_enabled({}, {}) is False
+        assert _cron_mirror_delivery_enabled({"id": "x"}, {"cron": {}}) is False
+
+    def test_gate_global_config_on(self):
+        from cron.scheduler import _cron_mirror_delivery_enabled
+
+        assert _cron_mirror_delivery_enabled({}, {"cron": {"mirror_delivery": True}}) is True
+
+    def test_gate_per_job_overrides_global(self):
+        from cron.scheduler import _cron_mirror_delivery_enabled
+
+        # Per-job False wins even if global is on.
+        assert _cron_mirror_delivery_enabled(
+            {"attach_to_session": False}, {"cron": {"mirror_delivery": True}}
+        ) is False
+        # Per-job True wins even if global is off/absent.
+        assert _cron_mirror_delivery_enabled(
+            {"attach_to_session": True}, {"cron": {"mirror_delivery": False}}
+        ) is True
+
+    def test_mirror_calls_mirror_to_session_when_enabled(self):
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery(
+                {"id": "j1"}, "telegram", "123", "Daily brief Task #2",
+                thread_id=None, enabled=True,
+            )
+        m.assert_called_once()
+        args, kwargs = m.call_args
+        assert args[0] == "telegram"
+        assert args[1] == "123"
+        assert "Task #2" in args[2]
+        assert kwargs.get("source_label") == "cron"
+
+    def test_mirror_noop_when_disabled(self):
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery(
+                {"id": "j1"}, "telegram", "123", "should not mirror",
+                enabled=False,
+            )
+        m.assert_not_called()
+
+    def test_mirror_noop_on_empty_text(self):
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery({"id": "j1"}, "telegram", "123", "   ", enabled=True)
+        m.assert_not_called()
+
+    def test_mirror_swallows_cold_start_miss(self):
+        """A missing target session (cold start) must NOT raise — delivery
+        already succeeded; the mirror is best-effort."""
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=False) as m:
+            # Should not raise.
+            _maybe_mirror_cron_delivery(
+                {"id": "j1"}, "telegram", "123", "brief", enabled=True
+            )
+        m.assert_called_once()
+
+    def test_mirror_swallows_exceptions(self):
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", side_effect=RuntimeError("boom")):
+            # Must not propagate — a delivery that succeeded is never failed by
+            # a mirror error.
+            _maybe_mirror_cron_delivery(
+                {"id": "j1"}, "telegram", "123", "brief", enabled=True
+            )
+
+    def test_delivery_mirrors_clean_content_not_wrapped(self):
+        """When enabled, the mirror receives the CLEAN agent output, not the
+        cron header/footer-wrapped delivery text."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "attach_to_session": True,
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        mirror_mock.assert_called_once()
+        mirrored_text = mirror_mock.call_args[0][2]
+        # Clean content, no cron wrapper.
+        assert "Here is today's summary." in mirrored_text
+        assert "Cronjob Response:" not in mirrored_text
+        assert "To stop or manage this job" not in mirrored_text
+
+    def test_delivery_does_not_mirror_when_gate_off(self):
+        """Default path: a job with no opt-in must never touch the mirror."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        mirror_mock.assert_not_called()

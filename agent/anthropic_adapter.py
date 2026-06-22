@@ -1175,24 +1175,14 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
 
     try:
         pool = load_pool("anthropic")
+        # Enumerate read-only (clear_expired=False, refresh=False): never persist
+        # to auth.json or trigger a network refresh from a bare resolve. select()
+        # is deliberately NOT used — it runs clear_expired=True, refresh=True,
+        # which would violate this read-only contract.
+        entries = pool._available_entries(clear_expired=False, refresh=False)
     except Exception:
-        logger.debug("Failed to load Anthropic credential_pool", exc_info=True)
+        logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
         return None
-
-    available_entries = getattr(pool, "_available_entries", None)
-    if callable(available_entries):
-        try:
-            entries = available_entries(clear_expired=False, refresh=False)
-        except Exception:
-            logger.debug("Failed to enumerate Anthropic credential_pool entries", exc_info=True)
-            entries = []
-    else:
-        try:
-            selected = pool.select()
-        except Exception:
-            logger.debug("Failed to select Anthropic credential_pool entry", exc_info=True)
-            selected = None
-        entries = [selected] if selected is not None else []
 
     for entry in entries:
         if getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH:

@@ -347,7 +347,6 @@ class TestResolveAnthropicToken:
         )
         pool = SimpleNamespace(
             _available_entries=lambda **_kwargs: [pool_entry],
-            select=lambda: pool_entry,
         )
         monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
 
@@ -369,7 +368,6 @@ class TestResolveAnthropicToken:
         )
         pool = SimpleNamespace(
             _available_entries=lambda **_kwargs: [pool_entry],
-            select=lambda: pool_entry,
         )
         monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
 
@@ -389,7 +387,6 @@ class TestResolveAnthropicToken:
         broken_entry = SimpleNamespace(auth_type="oauth", access_token=None)
         pool = SimpleNamespace(
             _available_entries=lambda **_kwargs: [broken_entry],
-            select=lambda: broken_entry,
         )
         monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
 
@@ -410,7 +407,6 @@ class TestResolveAnthropicToken:
         api_key_entry = SimpleNamespace(auth_type="api_key", access_token="sk-pool-apikey")
         pool = SimpleNamespace(
             _available_entries=lambda **_kwargs: [api_key_entry],
-            select=lambda: api_key_entry,
         )
         monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
 
@@ -454,7 +450,7 @@ class TestResolveAnthropicToken:
             captured.update(kwargs)
             return [pool_entry]
 
-        pool = SimpleNamespace(_available_entries=_available_entries, select=lambda: pool_entry)
+        pool = SimpleNamespace(_available_entries=_available_entries)
         monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
 
         assert resolve_anthropic_token() == "pool-oauth-token"

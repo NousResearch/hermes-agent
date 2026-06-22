@@ -3624,8 +3624,11 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                     try:
                         from tools.process_registry import ProcessRegistry
                         daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
-                        ProcessRegistry._terminate_host_pid(daemon_pid)
-                        logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
+                        if _verify_reapable_browser_daemon(daemon_pid, socket_dir, session_name):
+                            ProcessRegistry._terminate_host_pid(daemon_pid)
+                            logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
+                        else:
+                            logger.debug("Refusing to kill PID %d for session %s: identity check failed", daemon_pid, session_name)
                     except (ProcessLookupError, ValueError, PermissionError, OSError):
                         logger.debug("Could not kill daemon pid for %s (already dead or inaccessible)", session_name)
                 shutil.rmtree(socket_dir, ignore_errors=True)

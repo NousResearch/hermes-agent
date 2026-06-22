@@ -5278,6 +5278,10 @@ function wireCommonWindowHandlers(win) {
     event.preventDefault()
     openExternalUrl(url)
   })
+  // Restore persisted zoom level when window regains focus.  On Windows
+  // high-DPI displays, Chromium may re-evaluate zoom on focus change;
+  // restoring here keeps the user's setting stable across alt-tab.  (#50837)
+  win.on('focus', () => restorePersistedZoomLevel(win))
 }
 
 // Secondary "session windows" — one extra OS window per chat so a user can

@@ -5640,23 +5640,6 @@ def _claude_code_only_status() -> Dict[str, Any]:
     return {"logged_in": False, "source": None}
 
 
-def _gemini_cli_status() -> Dict[str, Any]:
-    """Status for the google-gemini-cli OAuth provider (Code Assist login)."""
-    try:
-        from hermes_cli import auth as hauth
-        raw = hauth.get_gemini_oauth_auth_status()
-    except Exception as e:
-        return {"logged_in": False, "error": str(e)}
-    return {
-        "logged_in": bool(raw.get("logged_in")),
-        "source": raw.get("source") or "google_oauth",
-        "source_label": raw.get("email") or raw.get("auth_file") or "Google Code Assist",
-        "token_preview": _truncate_token(raw.get("api_key")),
-        "expires_at": None,
-        "has_refresh_token": True,
-    }
-
-
 def _copilot_acp_status() -> Dict[str, Any]:
     """Status for copilot-acp — credentials are owned by the Copilot CLI.
 
@@ -5735,14 +5718,6 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "cli_command": "hermes auth add xai-oauth",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth",
         "status_fn": None,  # dispatched via auth.get_xai_oauth_auth_status
-    },
-    {
-        "id": "google-gemini-cli",
-        "name": "Google Gemini (OAuth + Code Assist)",
-        "flow": "external",
-        "cli_command": "hermes auth add google-gemini-cli",
-        "docs_url": "https://ai.google.dev/gemini-api/docs",
-        "status_fn": _gemini_cli_status,
     },
     {
         "id": "copilot-acp",

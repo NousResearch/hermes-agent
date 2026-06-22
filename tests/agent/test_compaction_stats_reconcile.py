@@ -606,9 +606,95 @@ def test_build_inturn_stats_subsplit_survives_fold_signature_fallback():
     assert stats.folded_tool_count + stats.folded_other_count == stats.folded_count
 
 
-# ---------------------------------------------------------------------------
-# Phase 3 — build_hygiene_stats populates the (previously dead) cleared sub-split
-# ---------------------------------------------------------------------------
+def _blockmsg(role, text, n=40):
+    """An API-shaped message whose ``content`` is a LIST of content blocks.
+
+    This is the real shape the IN-TURN compaction path feeds build_inturn_stats
+    (assistant text+tool_use blocks, user tool_result blocks) — NOT the flat
+    string content the hygiene path uses. _is_summary_message must not crash on it.
+    """
+    return {"role": role, "content": [{"type": "text", "text": f"{text} " * n}]}
+
+
+def _toolresult_blockmsg(i, n=60):
+    return {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": f"t{i}", "content": f"tool out {i} " * n},
+    ]}
+
+
+def test_build_inturn_stats_handles_list_content_messages():
+    """REGRESSION: in-turn messages have LIST content (API content blocks), not
+    flat strings. _is_summary_message did `regex.search(content)` which raises
+    TypeError on a list → build_inturn_stats raised → the in-turn announce
+    silently degraded to the single-line form for EVERY real session (which all
+    carry tool-call/block content). This must build + reconcile, not raise.
+    """
+    from agent.compaction_stats import build_inturn_stats
+    # Realistic in-turn population: a system anchor + list-content chat/tool rows.
+    anchor = {"role": "system", "content": "SYSTEM PROMPT " * 50}
+    body = []
+    for i in range(20):
+        if i % 3 == 0:
+            body.append(_toolresult_blockmsg(i))
+        else:
+            body.append(_blockmsg("assistant", f"assistant block {i}"))
+    msgs = [anchor] + body
+    kept = msgs[-4:]  # fresh tail (identity members of msgs)
+    summary = {"role": "assistant",
+               "content": "[Session Arc Summary (d1, node 7)]\nrolled up\n[Expand for details: x]"}
+    compressed = [anchor, summary] + kept
+    # Must NOT raise (the bug was a TypeError from list content), and must reconcile.
+    stats = build_inturn_stats(messages=msgs, compressed=compressed, estimator=_est)
+    ok, reason = stats.validate()
+    assert ok, reason
+    # The summary (string content) is still detected; the anchor counted once.
+    assert stats.summary_messages == 1
+    assert stats.anchor_messages == 1
+    assert stats.kept_messages == 4
+
+
+def test_is_summary_message_tolerates_non_string_content():
+    """_is_summary_message must return False (not raise) on list/dict/None content,
+    and still detect the marker inside a list of text blocks."""
+    from agent.compaction_stats import _is_summary_message
+    # Non-string shapes must not raise.
+    assert _is_summary_message([{"type": "text", "text": "hi"}]) is False
+    assert _is_summary_message({"type": "tool_result", "content": "x"}) is False
+    assert _is_summary_message(None) is False
+    # A marker living inside a text block IS detected.
+    assert _is_summary_message(
+        [{"type": "text", "text": "[Recent Summary (d0, node 1)] body"}]
+    ) is True
+
+
+def test_inturn_tool_breakout_recognizes_content_block_tool_results():
+    """The folded tool/other sub-split must break out tool messages in the LIVE
+    in-turn shape — a tool RESULT is a ``role=user`` message with a ``tool_result``
+    content block (NOT a flat ``role=tool`` row). Without block-awareness the whole
+    folded population reads as 'other' and the 'N tool-result messages' line the
+    design calls for never renders on the real path.
+    """
+    from agent.compaction_stats import build_inturn_stats
+    anchor = {"role": "system", "content": "SYS " * 50}
+    body = []
+    for i in range(30):
+        if i % 2 == 0:
+            body.append(_toolresult_blockmsg(i))            # role=user + tool_result block
+        else:
+            body.append(_blockmsg("assistant", f"chat {i}"))  # role=assistant + text block
+    msgs = [anchor] + body
+    compressed = [anchor,
+                  {"role": "assistant",
+                   "content": "[Session Arc Summary (d1, node 3)]\nx\n[Expand for details: y]"}] + msgs[-4:]
+    stats = build_inturn_stats(messages=msgs, compressed=compressed, estimator=_est)
+    ok, reason = stats.validate()
+    assert ok, reason
+    # tool-result block messages must be counted as tool, not swept into "other".
+    assert stats.folded_tool_count is not None and stats.folded_tool_count > 0
+    assert stats.folded_tool_tokens + stats.folded_other_tokens == stats.folded_tokens
+
+
+
 
 def test_build_hygiene_stats_populates_cleared_subsplit_exact():
     from agent.compaction_stats import build_hygiene_stats

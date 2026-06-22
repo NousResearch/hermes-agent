@@ -206,14 +206,44 @@ def hygiene_eligible_msgs(history: List[dict]) -> List[dict]:
     ]
 
 
-def _is_summary_message(content: str) -> bool:
+def _content_to_text(content) -> str:
+    """Coerce a message ``content`` to a searchable string.
+
+    In-turn compaction feeds API-shaped messages whose ``content`` is a LIST of
+    content blocks (``{"type": "text", "text": …}``, ``tool_use``, ``tool_result``)
+    rather than a flat string (the shape the hygiene path uses). The LCM summary
+    marker only ever lives in text, so extract text-bearing fields and join them;
+    anything non-string/empty yields ``""``. Robust to None/dict/list/str so the
+    caller can never raise on an exotic content shape.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                # Text-bearing block fields across adapters: "text" (Anthropic/text),
+                # "content" (tool_result inner text), "input_text"/"output_text" (Responses).
+                for key in ("text", "input_text", "output_text", "content"):
+                    val = block.get(key)
+                    if isinstance(val, str):
+                        parts.append(val)
+                        break
+        return " ".join(parts)
+    return ""
+
+
+def _is_summary_message(content) -> bool:
     global _LCM_SUMMARY_RE
     if _LCM_SUMMARY_RE is None:
         import re
         _LCM_SUMMARY_RE = re.compile(
             r"\[(?:Recent|Session Arc|Durable|Depth-\d+) Summary \(d\d+, node \d+\)\]"
         )
-    return bool(content) and bool(_LCM_SUMMARY_RE.search(content))
+    text = _content_to_text(content)
+    return bool(text) and bool(_LCM_SUMMARY_RE.search(text))
 
 
 def build_hygiene_stats(
@@ -418,6 +448,31 @@ def _fold_rows(eligible: List[dict], kept: List[dict]) -> List[dict]:
     return out
 
 
+def _is_tool_message(m) -> bool:
+    """True when a message is a tool-result / tool-call carrier.
+
+    Covers BOTH shapes the two compaction paths see:
+      * hygiene path — flat ``role == "tool"`` rows.
+      * in-turn path — API content-block rows where a tool result rides on a
+        ``role == "user"`` message with a ``tool_result`` block, and a tool call
+        rides on a ``role == "assistant"`` message with a ``tool_use`` block.
+    So the "tool-result messages" breakout works on the live in-turn shape, not
+    only the flat hygiene shape.
+    """
+    if not isinstance(m, dict):
+        return False
+    if m.get("role") == "tool":
+        return True
+    content = m.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") in {
+                "tool_result", "tool_use", "tool_call",
+            }:
+                return True
+    return False
+
+
 def _tool_other_split(rows, parent_tokens, estimator):
     """Split a row-list into (tool_count, tool_tokens, other_count, other_tokens).
 
@@ -428,10 +483,11 @@ def _tool_other_split(rows, parent_tokens, estimator):
     the SAME list whose length is the parent bucket's count and whose estimate is
     ``parent_tokens`` (the post-fold list), so counts and tokens both partition by
     construction regardless of which dedup branch produced it. ``estimator`` returns
-    an int, so no ``int()`` wrap is needed.
+    an int, so no ``int()`` wrap is needed. Tool classification is shape-aware
+    (flat ``role==tool`` AND API ``tool_result``/``tool_use`` content blocks).
     """
-    tool = [m for m in rows if m.get("role") == "tool"]
-    other = [m for m in rows if m.get("role") != "tool"]
+    tool = [m for m in rows if _is_tool_message(m)]
+    other = [m for m in rows if not _is_tool_message(m)]
     tool_tokens = estimator(tool) if tool else 0
     other_tokens = parent_tokens - tool_tokens
     return (len(tool), tool_tokens, len(other), other_tokens)

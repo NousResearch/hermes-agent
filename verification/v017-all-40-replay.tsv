@@ -1,0 +1,41 @@
+pr	apply	tests	detail
+48024	CLEAN	181 passed, 118 warnings in 11.42s	
+48057	CLEAN	49 passed in 0.86s	
+48065	CLEAN	8 passed in 0.43s	
+48069	3WAY-CLEAN	5 passed in 0.50s	cherry-pick conflicted [tools/mcp_tool.py ]; net-diff 3way applied clean
+48101	CLEAN	19 passed in 0.43s	
+49184	CLEAN	13 passed in 0.52s	
+49449	CLEAN	15 passed in 0.38s	
+49644	3WAY-CONFLICT	SKIP(apply-conflict)	cherry-pick UU[]; 3way UU[hermes_cli/commands.py ]
+49915	CLEAN	no-test-files	
+49916	3WAY-CONFLICT	SKIP(apply-conflict)	cherry-pick UU[]; 3way UU[tui_gateway/server.py ]
+49917	CLEAN	106 passed, 1 warning in 5.83s	
+50021	CLEAN	no-test-files	
+50022	CLEAN	no-test-files	
+50031	CLEAN	1 failed, 4 passed in 3.73s	
+50032	CLEAN	4 failed in 0.21s	
+50033	3WAY-CONFLICT	SKIP(apply-conflict)	cherry-pick UU[]; 3way UU[agent/gemini_cloudcode_adapter.py ]
+50038	CLEAN	58 passed in 14.36s	
+50040	CLEAN	no-test-files	
+50041	3WAY-CLEAN	68 passed, 1 warning in 14.94s	cherry-pick conflicted []; net-diff 3way applied clean
+50042	CLEAN	77 passed in 1.74s	
+50045	CLEAN	316 passed in 6.67s	
+50046	CLEAN	24 passed in 0.99s	
+50047	CLEAN	no-test-files	
+50048	CLEAN	21 passed in 0.78s	
+50053	CLEAN	no-test-files	
+50054	CLEAN	no-test-files	
+50055	CLEAN	no-test-files	
+50056	3WAY-CONFLICT	SKIP(apply-conflict)	cherry-pick UU[tests/hermes_cli/test_kanban_db.py ]; 3way UU[tests/hermes_cli/test_kanban_db.py ]
+50064	3WAY-CONFLICT	SKIP(apply-conflict)	cherry-pick UU[]; 3way UU[tests/run_agent/test_provider_attribution_headers.py ]
+50066	CLEAN	6 failed, 322 passed, 2 warnings in 39.90s	
+50068	CLEAN	no-test-files	
+50073	3WAY-CONFLICT	SKIP(apply-conflict)	cherry-pick UU[]; 3way UU[hermes_cli/config.py ]
+50078	CLEAN	6 failed, 919 passed, 1 warning in 79.93s (0:01:19)	
+50080	CLEAN	20 passed, 1 warning in 2.51s	
+50086	CLEAN	6 failed, 301 passed, 2 warnings in 29.32s	
+50296	3WAY-CONFLICT	SKIP(apply-conflict)	cherry-pick UU[]; 3way UU[agent/agent_init.py ]
+50555	CLEAN	22 skipped in 0.08s	
+50626	CLEAN	30 passed in 0.62s	
+50657	CLEAN	no-test-files	
+50664	CLEAN	4 passed, 60 skipped, 5 xfailed in 0.68s	

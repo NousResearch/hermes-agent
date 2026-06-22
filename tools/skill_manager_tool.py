@@ -814,7 +814,17 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if unsafe:
         return {"success": False, "error": unsafe}
 
-    shutil.rmtree(skill_dir)
+    try:
+        shutil.rmtree(skill_dir)
+    except PermissionError:
+        return {
+            "success": False,
+            "error": (
+                f"Cannot delete skill '{name}': permission denied. "
+                f"The skill directory is read-only (bundled skill in the base image). "
+                f"Bundled skills cannot be removed."
+            ),
+        }
 
     # Clean up empty category directories (don't remove the skills root itself)
     parent = skill_dir.parent

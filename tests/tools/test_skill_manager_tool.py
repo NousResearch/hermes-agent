@@ -1028,3 +1028,20 @@ class TestDeleteSkillRmtreeGuard:
         assert result["success"] is False
         assert "skills root" in result["error"].lower()
         assert outside.exists()
+
+
+class TestDeleteSkillPermissionError:
+    """Read-only bundled skills must return a clear error, not crash."""
+
+    def test_readonly_skill_returns_error(self, tmp_path):
+        """When shutil.rmtree raises PermissionError, _delete_skill returns
+        a non-retryable error instead of propagating the exception."""
+        with _skill_dir(tmp_path):
+            _create_skill("bundled-skill", VALID_SKILL_CONTENT)
+            import shutil as _shutil
+            with patch.object(_shutil, "rmtree",
+                              side_effect=PermissionError("Permission denied")):
+                result = _delete_skill("bundled-skill", absorbed_into="")
+        assert result["success"] is False
+        assert "permission denied" in result["error"].lower()
+        assert "bundled" in result["error"].lower() or "read-only" in result["error"].lower()

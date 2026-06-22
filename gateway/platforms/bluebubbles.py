@@ -216,13 +216,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return text
 
     async def _api_get(self, path: str) -> Dict[str, Any]:
-        assert self.client is not None
+        if self.client is None:
+            raise RuntimeError("_api_get called before client is initialized")
         res = await self.client.get(self._api_url(path))
         res.raise_for_status()
         return res.json()
 
     async def _api_post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        assert self.client is not None
+        if self.client is None:
+            raise RuntimeError("_api_post called before client is initialized")
         res = await self.client.post(self._api_url(path), json=payload)
         res.raise_for_status()
         return res.json()

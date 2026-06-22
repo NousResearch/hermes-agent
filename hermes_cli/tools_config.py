@@ -516,9 +516,10 @@ TOOL_CATEGORIES = {
         ],
     },
     "computer_use": {
-        "name": "Computer Use (macOS/Windows)",
+        "name": "Computer Use (macOS/Windows/Linux)",
         "icon": "🖱️",
-        # Runtime backends ship for macOS + Windows today; Linux is alpha.
+        # Runtime backends ship for macOS, Windows, and Linux (X11 today,
+        # Wayland via XWayland). Per-host gaps surface via `computer-use doctor`.
         "platform_gate": ["darwin", "win32", "linux"],
         "providers": [
             {

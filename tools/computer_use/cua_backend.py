@@ -1,4 +1,4 @@
-"""Cua-driver backend (macOS + Windows).
+"""Cua-driver backend (macOS, Windows, Linux).
 
 Speaks MCP over stdio to `cua-driver`. The Python `mcp` SDK is async, so we
 run a dedicated asyncio event loop on a background thread and marshal sync
@@ -6,14 +6,16 @@ calls through it.
 
 The same `cua-driver call <tool>` surface (click, type_text, hotkey, drag,
 scroll, screenshot, launch_app, list_apps, list_windows, get_window_state,
-move_cursor, wait) works identically across macOS + Windows — cua-driver's
-PARITY matrix marks every action tool VERIFIED on Windows in the
-cross-platform Rust port (`cua-driver-rs`).
+move_cursor, wait) works identically across macOS, Windows, and Linux —
+cua-driver's PARITY matrix marks the action tools VERIFIED on macOS and
+Windows in the cross-platform Rust port (`cua-driver-rs`).
 
-Linux support exists in cua-driver-rs but is alpha today — Linux PARITY
-rows are mostly OPEN, not VERIFIED — so it's gated off in
-`check_computer_use_requirements` until that flips upstream. The plumbing
-in this file is OS-agnostic, so flipping that gate later is one-line.
+Linux is the most recent runtime (X11 today, Wayland via XWayland; pure-
+Wayland progress tracked upstream). It is enabled in
+`check_computer_use_requirements` alongside macOS and Windows. The plumbing
+in this file is OS-agnostic; per-host gaps (no DISPLAY, missing AT-SPI,
+etc.) surface as specific blocked checks via `hermes computer-use doctor`
+rather than failing silently.
 
 Install:
   - **macOS**:

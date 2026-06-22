@@ -1040,6 +1040,10 @@ class WeComAdapter(BasePlatformAdapter):
             try:
                 decoder = json.JSONDecoder(strict=False)
                 payload = decoder.decode(raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace"))
+                logger.info(
+                    "WeCom payload required strict=False fallback (len=%d)",
+                    len(raw) if isinstance(raw, (str, bytes)) else -1,
+                )
             except Exception as exc2:
                 logger.warning(
                     "Failed to parse WeCom payload (strict=False also failed): "

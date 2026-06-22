@@ -2252,6 +2252,23 @@ class GatewayStreamConsumer:
             visible_without_cursor = visible_without_cursor.replace(self.cfg.cursor, "")
         _visible_stripped = visible_without_cursor.strip()
         if not _visible_stripped:
+            # For native streaming: even when the display text is empty (e.g.
+            # MEDIA-only response cleaned away), we MUST send a finalize frame
+            # to close the thinking bubble. Use placeholder text.
+            if finalize and self._use_native_streaming and self._native_stream_opened:
+                try:
+                    ok = await self.adapter.send_stream_frame(
+                        "✅",
+                        finalize=True,
+                        chat_id=self.chat_id,
+                        reply_to=self._initial_reply_to_id,
+                        turn_id=self._turn_id,
+                    )
+                    if ok:
+                        self._final_response_sent = True
+                        self._final_content_delivered = True
+                except Exception as e:
+                    logger.debug("Finalize empty stream failed: %s", e)
             return True  # cursor-only / whitespace-only update
         if not text.strip():
             return True  # nothing to send is "success"

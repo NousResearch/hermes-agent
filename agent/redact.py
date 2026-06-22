@@ -142,6 +142,24 @@ _SECRET_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Cookie / Set-Cookie headers carry session tokens — account-takeover
+# credentials that the Authorization / x-api-key rules above do not cover, so a
+# logged request or echoed ``curl`` would otherwise leak a live session. Mask
+# every cookie VALUE while preserving the cookie name and the non-secret
+# Set-Cookie attributes (Path/Domain/Expires/Max-Age/SameSite + HttpOnly/Secure
+# flags) so logs stay debuggable.
+_COOKIE_ATTR_NAMES = frozenset({
+    "path", "domain", "expires", "max-age", "samesite",
+    "secure", "httponly", "partitioned", "priority", "version", "comment",
+})
+# Header value runs to end-of-line or a closing quote (so an inline
+# ``curl -H 'Cookie: …' https://host`` doesn't swallow the trailing URL).
+_COOKIE_HEADER_RE = re.compile(
+    r"((?:Set-)?Cookie:\s*)([^\r\n'\"]+)",
+    re.IGNORECASE,
+)
+_COOKIE_PAIR_RE = re.compile(r"([^\s=;,]+)(\s*=\s*)([^;,]+)")
+
 # Telegram bot tokens: bot<digits>:<token> or <digits>:<token>,
 # where token part is restricted to [-A-Za-z0-9_] and length >= 30
 _TELEGRAM_RE = re.compile(
@@ -406,6 +424,18 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
             lambda m: m.group(1) + _mask_token(m.group(2)),
             text,
         )
+
+    # Cookie / Set-Cookie headers — mask each cookie value, keeping the cookie
+    # name and the non-secret Set-Cookie attributes.
+    if ":" in text:
+        def _redact_cookie(m):
+            def _mask_pair(pm):
+                name, eq, val = pm.group(1), pm.group(2), pm.group(3)
+                if name.strip().lower() in _COOKIE_ATTR_NAMES:
+                    return pm.group(0)
+                return f"{name}{eq}{_mask_token(val.strip())}"
+            return m.group(1) + _COOKIE_PAIR_RE.sub(_mask_pair, m.group(2))
+        text = _COOKIE_HEADER_RE.sub(_redact_cookie, text)
 
     # Telegram bot tokens — pattern requires ":<token>" with digits prefix
     if ":" in text:

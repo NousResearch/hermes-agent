@@ -190,6 +190,35 @@ class TestApiKeyHeaders:
         assert "anotherOpaqueSecret" not in result
 
 
+class TestCookieHeaders:
+    """Cookie / Set-Cookie headers carry session tokens (account-takeover
+    credentials) and must be masked like Authorization / x-api-key."""
+
+    def test_cookie_header_values_masked_names_preserved(self):
+        text = "Cookie: sessionid=abcdef123456FAKESESSION7890; csrftoken=xyzFAKECSRF"
+        result = redact_sensitive_text(text)
+        assert "FAKESESSION7890" not in result
+        assert "xyzFAKECSRF" not in result
+        # Cookie names stay for debuggability.
+        assert "sessionid=" in result
+        assert "csrftoken=" in result
+
+    def test_set_cookie_value_masked_attributes_preserved(self):
+        text = "Set-Cookie: session=topFAKEsecretvalue12345; HttpOnly; Path=/; Max-Age=3600"
+        result = redact_sensitive_text(text)
+        assert "topFAKEsecretvalue12345" not in result
+        # Non-secret Set-Cookie attributes survive.
+        assert "HttpOnly" in result
+        assert "Path=/" in result
+        assert "Max-Age=3600" in result
+
+    def test_cookie_in_curl_command_masked_url_preserved(self):
+        text = "curl -H 'Cookie: auth=superFAKEsecrettok123' https://api.example.com/v1/x"
+        result = redact_sensitive_text(text)
+        assert "superFAKEsecrettok123" not in result
+        assert "https://api.example.com/v1/x" in result
+
+
 class TestTelegramTokens:
     def test_bot_token(self):
         text = "bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"

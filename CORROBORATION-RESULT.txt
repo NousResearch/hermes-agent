@@ -1,0 +1,14 @@
+open PRs: 41 | base v0.16.0=3c231eb3979ab9c57d5cd6d02f1d577a3b718b43 | v0.17.0=2bd1977d8fad185c9b4be47884f7e87f1add0ce3 | origin/main=e448b2141
+
+== (A) LEAK SCAN — all 41 PR tips ==
+  TOTAL LEAKS: 0  -> PASS
+
+== (B) COVERAGE — delta(3c231eb..HEAD) decomposed ==
+  delta=1829  in-PR=316  DISCARD=0 (bak=0 intel=0 trans=0)  upstream=0  orphans=1513
+  FAIL
+
+== (C) TEST-MERGE 40 code PRs onto v0.17.0 AND origin/main ==
+  v0.17.0: merged=40 conflicts:[ none] markers=0  PASS
+  origin/main: merged=40 conflicts:[ none] markers=0  PASS
+
+== INDEPENDENT CORROBORATION COMPLETE ==

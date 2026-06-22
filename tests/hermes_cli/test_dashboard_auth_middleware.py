@@ -133,7 +133,7 @@ def test_gated_login_html_is_public_and_lists_providers(gated_app):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
     assert "Stub IdP" in r.text
-    assert 'href="/auth/login?provider=stub"' in r.text
+    assert 'href="auth/login?provider=stub"' in r.text
 
 
 def test_gated_static_asset_path_is_public(gated_app):

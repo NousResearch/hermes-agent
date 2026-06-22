@@ -415,7 +415,7 @@ class TestLoginPageRender:
             assert 'name="password"' in html
             assert 'value="/sessions"' in html
             assert "<script>" in html
-            assert "/auth/password-login" in html
+            assert "auth/password-login" in html
         finally:
             clear_providers()
 
@@ -441,7 +441,7 @@ class TestLoginPageRender:
         try:
             html = render_login_html()
             # OAuth redirect button AND a password form, both present.
-            assert "/auth/login?provider=stub" in html
+            assert "auth/login?provider=stub" in html
             assert 'data-provider="testpw"' in html
             assert "<script>" in html
         finally:

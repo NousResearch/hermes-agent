@@ -452,7 +452,7 @@ class TestAuthCallbackNext:
         # forgets to thread next= through the button will surface here.
         body = r_login.text
         # Each provider button is emitted as an <a class="provider-btn"
-        # href="/auth/login?provider=stub..."> line.
+        # href="auth/login?provider=stub..."> line.
         marker = 'href="'
         i = body.find('class="provider-btn"')
         assert i != -1, "no provider button in /login HTML"
@@ -651,7 +651,7 @@ class TestRenderLoginHtmlNext:
     def test_no_next_emits_plain_button(self):
         from hermes_cli.dashboard_auth.login_page import render_login_html
         html_out = render_login_html()
-        assert 'href="/auth/login?provider=stub"' in html_out
+        assert 'href="auth/login?provider=stub"' in html_out
         assert "next=" not in html_out
 
     def test_next_threaded_url_encoded(self):

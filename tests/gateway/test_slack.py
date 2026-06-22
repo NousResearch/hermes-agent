@@ -118,6 +118,14 @@ def adapter():
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
     """Point document cache to tmp_path so tests don't touch ~/.hermes."""
+    for var in (
+        "SLACK_ALLOWED_CHANNELS",
+        "SLACK_FREE_RESPONSE_CHANNELS",
+        "SLACK_MENTION_USER_IDS",
+        "SLACK_REQUIRE_MENTION",
+        "SLACK_STRICT_MENTION",
+    ):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
@@ -1789,17 +1797,58 @@ class TestMessageRouting:
     @pytest.mark.asyncio
     async def test_channel_mention_strips_bot_id(self, adapter):
         """When mentioned in a channel, the bot mention should be stripped."""
+        adapter._team_bot_user_ids["T123"] = "U_BOT"
         event = {
             "text": "<@U_BOT> what's the weather?",
             "user": "U_USER",
             "channel": "C123",
             "channel_type": "channel",
+            "team": "T123",
             "ts": "1234567890.000001",
         }
         await adapter._handle_slack_message(event)
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.text == "what's the weather?"
         assert "<@U_BOT>" not in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_channel_alias_mention_strips_all_accepted_ids(self, adapter):
+        """Configured mention aliases should route and be stripped in real dispatch."""
+        adapter.config.extra["mention_user_ids"] = ["U_ALIAS"]
+        adapter._team_bot_user_ids["T123"] = "U_BOT"
+        event = {
+            "text": "<@U_ALIAS> <@U_BOT> status",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T123",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "status"
+        assert "<@U_ALIAS>" not in msg_event.text
+        assert "<@U_BOT>" not in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_bot_message_allow_mentions_accepts_alias_mention(self, adapter):
+        """allow_bots=mentions should honor configured mention aliases too."""
+        adapter.config.extra["allow_bots"] = "mentions"
+        adapter.config.extra["mention_user_ids"] = ["U_ALIAS"]
+        adapter._team_bot_user_ids["T123"] = "U_BOT"
+        event = {
+            "text": "<@U_ALIAS> status",
+            "bot_id": "B_OTHER",
+            "user": "U_OTHER_BOT",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T123",
+            "ts": "1234567890.000002",
+        }
+        await adapter._handle_slack_message(event)
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "status"
+        assert "<@U_ALIAS>" not in msg_event.text
 
     @pytest.mark.asyncio
     async def test_bot_messages_ignored(self, adapter):

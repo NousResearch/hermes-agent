@@ -7,6 +7,8 @@ Follows the same pattern as test_whatsapp_group_gating.py.
 import sys
 from unittest.mock import MagicMock
 
+import pytest
+
 from gateway.config import Platform, PlatformConfig
 
 
@@ -46,6 +48,19 @@ _slack_mod.SLACK_AVAILABLE = True
 from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _clear_slack_gating_env(monkeypatch):
+    """Keep mention-gating unit tests isolated from the real Hermes profile env."""
+    for var in (
+        "SLACK_ALLOWED_CHANNELS",
+        "SLACK_FREE_RESPONSE_CHANNELS",
+        "SLACK_MENTION_USER_IDS",
+        "SLACK_REQUIRE_MENTION",
+        "SLACK_STRICT_MENTION",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -55,7 +70,13 @@ CHANNEL_ID = "C0AQWDLHY9M"
 OTHER_CHANNEL_ID = "C9999999999"
 
 
-def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None, allowed_channels=None):
+def _make_adapter(
+    require_mention=None,
+    strict_mention=None,
+    free_response_channels=None,
+    allowed_channels=None,
+    mention_user_ids=None,
+):
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
@@ -65,6 +86,8 @@ def _make_adapter(require_mention=None, strict_mention=None, free_response_chann
         extra["free_response_channels"] = free_response_channels
     if allowed_channels is not None:
         extra["allowed_channels"] = allowed_channels
+    if mention_user_ids is not None:
+        extra["mention_user_ids"] = mention_user_ids
 
     adapter = object.__new__(SlackAdapter)
     adapter.platform = Platform.SLACK
@@ -181,6 +204,49 @@ def test_strict_mention_env_var_fallback(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Tests: _slack_mention_user_ids
+# ---------------------------------------------------------------------------
+
+def test_mention_user_ids_defaults_to_bot_uid(monkeypatch):
+    monkeypatch.delenv("SLACK_MENTION_USER_IDS", raising=False)
+    adapter = _make_adapter()
+    assert adapter._slack_mention_user_ids(BOT_USER_ID) == {BOT_USER_ID}
+
+
+def test_mention_user_ids_includes_config_aliases():
+    adapter = _make_adapter(mention_user_ids=["U_ALIAS", " U_OTHER ", ""])
+    assert adapter._slack_mention_user_ids(BOT_USER_ID) == {
+        BOT_USER_ID,
+        "U_ALIAS",
+        "U_OTHER",
+    }
+
+
+def test_mention_user_ids_env_csv_fallback(monkeypatch):
+    monkeypatch.setenv("SLACK_MENTION_USER_IDS", "U_ALIAS, U_OTHER")
+    adapter = _make_adapter()
+    assert adapter._slack_mention_user_ids(BOT_USER_ID) == {
+        BOT_USER_ID,
+        "U_ALIAS",
+        "U_OTHER",
+    }
+
+
+def test_alias_mention_passes_require_mention_gate():
+    adapter = _make_adapter(require_mention=True, mention_user_ids=["U_ALIAS"])
+    assert _would_process(adapter, text="<@U_ALIAS> status") is True
+
+
+def test_alias_mention_stripping_removes_all_accepted_mentions():
+    adapter = _make_adapter(mention_user_ids=["U_ALIAS"])
+    mention_user_ids = adapter._slack_mention_user_ids(BOT_USER_ID)
+    text = "<@U_ALIAS> <@U_BOT_123> status"
+    for mention_user_id in mention_user_ids:
+        text = text.replace(f"<@{mention_user_id}>", "")
+    assert text.strip() == "status"
+
+
+# ---------------------------------------------------------------------------
 # Tests: _slack_free_response_channels
 # ---------------------------------------------------------------------------
 
@@ -249,7 +315,8 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
     bot_uid = adapter._team_bot_user_ids.get("T1", adapter._bot_user_id)
     if mentioned:
         text = f"<@{bot_uid}> {text}"
-    is_mentioned = bot_uid and f"<@{bot_uid}>" in text
+    mention_user_ids = adapter._slack_mention_user_ids(bot_uid)
+    is_mentioned = any(f"<@{user_id}>" in text for user_id in mention_user_ids)
 
     if not is_dm and bot_uid:
         # allowed_channels check (whitelist — must pass before other gating)
@@ -514,6 +581,48 @@ def test_config_bridges_slack_strict_mention(monkeypatch, tmp_path):
     assert config is not None
     import os as _os
     assert _os.environ["SLACK_STRICT_MENTION"] == "true"
+
+
+def test_config_bridges_slack_mention_user_ids(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  mention_user_ids:\n"
+        "    - U_ALIAS\n"
+        "    - U_OTHER\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("SLACK_MENTION_USER_IDS", raising=False)
+
+    load_gateway_config()
+
+    import os as _os
+    assert _os.environ["SLACK_MENTION_USER_IDS"] == "U_ALIAS,U_OTHER"
+
+
+def test_config_bridges_slack_mention_user_ids_env_takes_precedence(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  mention_user_ids: U_ALIAS\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_MENTION_USER_IDS", "U_ENV")
+
+    load_gateway_config()
+
+    import os as _os
+    assert _os.environ["SLACK_MENTION_USER_IDS"] == "U_ENV"
 
 
 # ---------------------------------------------------------------------------

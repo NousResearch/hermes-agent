@@ -2274,7 +2274,15 @@ class SlackAdapter(BasePlatformAdapter):
                 return
             elif allow_bots == "mentions":
                 text_check = event.get("text", "")
-                if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
+                team_id_check = event.get("team") or event.get("team_id") or ""
+                bot_uid_check = self._team_bot_user_ids.get(
+                    team_id_check, self._bot_user_id
+                )
+                mention_user_ids = self._slack_mention_user_ids(bot_uid_check)
+                if not any(
+                    f"<@{mention_user_id}>" in text_check
+                    for mention_user_id in mention_user_ids
+                ):
                     return
             # "all" falls through to process the message
             # Always ignore our own messages to prevent echo loops
@@ -2483,8 +2491,12 @@ class SlackAdapter(BasePlatformAdapter):
         #   3. The message is in a thread where the bot was previously @mentioned, OR
         #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        mention_user_ids = self._slack_mention_user_ids(bot_uid)
         routing_text = original_text or ""
-        is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
+        is_mentioned = any(
+            f"<@{mention_user_id}>" in routing_text
+            for mention_user_id in mention_user_ids
+        )
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
@@ -2524,8 +2536,10 @@ class SlackAdapter(BasePlatformAdapter):
                     return
 
         if is_mentioned:
-            # Strip the bot mention from the text
-            text = text.replace(f"<@{bot_uid}>", "").strip()
+            # Strip accepted bot/alias mentions from the text.
+            for mention_user_id in mention_user_ids:
+                text = text.replace(f"<@{mention_user_id}>", "")
+            text = text.strip()
             # Register this thread so all future messages auto-trigger the bot.
             # Skipped in strict mode: strict_mention=true bots must be
             # re-mentioned every turn, so remembering the thread would
@@ -3777,6 +3791,23 @@ class SlackAdapter(BasePlatformAdapter):
             "on",
         }
 
+    def _slack_mention_user_ids(self, bot_uid: Optional[str]) -> set:
+        """Return Slack user IDs that count as a direct bot mention."""
+        raw = self.config.extra.get("mention_user_ids")
+        if raw is None:
+            raw = os.getenv("SLACK_MENTION_USER_IDS", "")
+        if isinstance(raw, list):
+            alias_ids = {str(part).strip() for part in raw if str(part).strip()}
+        else:
+            alias_ids = {
+                part.strip()
+                for part in str(raw or "").split(",")
+                if part.strip()
+            }
+        if bot_uid:
+            alias_ids.add(bot_uid)
+        return alias_ids
+
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""
         raw = self.config.extra.get("free_response_channels")
@@ -4036,6 +4067,11 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
     if "strict_mention" in slack_cfg and not os.getenv("SLACK_STRICT_MENTION"):
         os.environ["SLACK_STRICT_MENTION"] = str(slack_cfg["strict_mention"]).lower()
+    mention_ids = slack_cfg.get("mention_user_ids")
+    if mention_ids is not None and not os.getenv("SLACK_MENTION_USER_IDS"):
+        if isinstance(mention_ids, list):
+            mention_ids = ",".join(str(v) for v in mention_ids)
+        os.environ["SLACK_MENTION_USER_IDS"] = str(mention_ids)
     if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
         os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()
     frc = slack_cfg.get("free_response_channels")
@@ -4085,7 +4121,7 @@ def register(ctx) -> None:
         # and the static _PLATFORMS["slack"] dict in hermes_cli/gateway.py.
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of config.yaml slack:
-        # keys (require_mention, strict_mention, allow_bots,
+        # keys (require_mention, strict_mention, mention_user_ids, allow_bots,
         # free_response_channels, reactions, allowed_channels) into SLACK_*
         # env vars that the adapter reads via os.getenv(). Replaces the
         # hardcoded block in gateway/config.py. Hook contract: #24849.

@@ -1,0 +1,37 @@
+# v0.17.0 USABILITY — DELIVERED AS A PULLABLE BRANCH (Council: not asserted)
+# Generated 2026-06-21.
+
+## THE DELIVERABLE
+  Branch: integration/v0.17.0-all-prs  (on fork arminanton/hermes-agent)
+  Head:   fe51a9491
+  Base:   v0.17.0 = 2bd1977d8fad185c9b4be47884f7e87f1add0ce3 (VERIFIED ancestor)
+
+  This is v0.17.0 with ALL 42 open campaign PRs applied in dependency order, with the
+  6 documented conflict resolutions. It is a real, pullable tree — usability against
+  v0.17.0 is now DELIVERED, not asserted. Anyone can:
+    git fetch fork integration/v0.17.0-all-prs && git checkout FETCH_HEAD
+
+## INDEPENDENT VERIFICATION (from a fresh fetch, not the build worktree)
+  - v0.17.0 (2bd1977d8) IS an ancestor of the integration head -> truly built ON v0.17.0.
+  - 0 residual conflict markers across the tree (excl the v0.17.0 syntax-guard fixture).
+  - 82 changed .py files all compile (0 failures); 276 files changed vs v0.17.0.
+  - Campaign features present (spot-checked): agy-cli registration (#50657),
+    max-effort subcommands (#49644), the YOLO-badge fix (#49916).
+
+## DELIVERY-SHAPE OPTIONS (Q3) — BOTH NOW DELIVERED, user picks the preference
+  A. Per-PR branches (the 42 open PRs) + the sidecar APPLY-RESOLUTIONS-ON-v0.17.0.sh
+     script that rebuilds the resolved v0.17.0 tree deterministically. (PRs stay
+     reviewable individually; resolutions are documented patches.)
+  B. This pre-built integration/v0.17.0-all-prs branch (pull-and-go).
+  Both produce the identical resolved tree. Q3 is now a PREFERENCE between two
+  delivered artifacts, NOT a blocker — usability is concretely in hand either way.
+
+## RESOLUTIONS BAKED IN (each preserves 100% PR intent — see V017-RESOLUTION-JUSTIFICATION.txt)
+  #49644 superset (max/full/clamp) · #50033 additive UA import · #50056 keep-both imports
+  · #50064 additive tests · #50073 keep v0.17.0 hygiene_hard_message_limit=400 (PR's 5000
+  was unchanged context) · #50296 additive. #49917 auto-resolves additively in the stack.
+
+## SOURCE OF TRUTH
+  The per-PR branches remain authoritative and stay in draft/review (nothing merged).
+  This integration branch is a reference/convenience artifact, rebuildable any time via
+  APPLY-RESOLUTIONS-ON-v0.17.0.sh.

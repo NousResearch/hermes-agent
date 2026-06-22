@@ -699,33 +699,30 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 _model_metadata_cache_time = time.time() - disk_age
                 return _model_metadata_cache
 
-    try:
-        response = requests.get(OPENROUTER_MODELS_URL, timeout=10, verify=_resolve_requests_verify())
-        response.raise_for_status()
-        data = response.json()
-
-        cache = {}
-        for model in data.get("data", []):
-            model_id = model.get("id", "")
-            entry = {
-                "context_length": model.get("context_length", 128000),
-                "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
-                "name": model.get("name", model_id),
-                "pricing": model.get("pricing", {}),
-            }
-            _add_model_aliases(cache, model_id, entry)
-            canonical = model.get("canonical_slug", "")
-            if canonical and canonical != model_id:
-                _add_model_aliases(cache, canonical, entry)
-
-        _model_metadata_cache = cache
-        _model_metadata_cache_time = time.time()
-        _save_model_metadata_disk_cache(cache)
-        logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
-        return cache
-
-    except Exception as e:
-        logger.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
+    # Retry up to 3 times with exponential backoff for transient SSL/network errors.
+    _max_retries = 3
+    _last_error = None
+    for _attempt in range(_max_retries):
+        try:
+            response = requests.get(OPENROUTER_MODELS_URL, timeout=10, verify=_resolve_requests_verify())
+            response.raise_for_status()
+            data = response.json()
+            break  # Success — exit retry loop
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+            _last_error = e
+            if _attempt < _max_retries - 1:
+                _wait = 2 ** _attempt  # 1s, 2s backoff
+                logger.debug("Model metadata fetch attempt %d/%d failed (SSL/connection), retrying in %ds: %s",
+                             _attempt + 1, _max_retries, _wait, e)
+                time.sleep(_wait)
+            continue
+        except Exception as e:
+            # Non-transient error — don't retry
+            _last_error = e
+            break
+    else:
+        # All retries exhausted
+        logger.warning(f"Failed to fetch model metadata from OpenRouter after {_max_retries} attempts: {_last_error}")
         if _model_metadata_cache:
             return _model_metadata_cache
         disk_cache = _load_model_metadata_disk_cache()
@@ -738,6 +735,26 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 _model_metadata_cache_time = time.time() - _MODEL_CACHE_TTL + 1
             return _model_metadata_cache
         return {}
+
+    cache = {}
+    for model in data.get("data", []):
+        model_id = model.get("id", "")
+        entry = {
+            "context_length": model.get("context_length", 128000),
+            "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
+            "name": model.get("name", model_id),
+            "pricing": model.get("pricing", {}),
+        }
+        _add_model_aliases(cache, model_id, entry)
+        canonical = model.get("canonical_slug", "")
+        if canonical and canonical != model_id:
+            _add_model_aliases(cache, canonical, entry)
+
+    _model_metadata_cache = cache
+    _model_metadata_cache_time = time.time()
+    _save_model_metadata_disk_cache(cache)
+    logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
+    return cache
 
 
 def fetch_endpoint_model_metadata(

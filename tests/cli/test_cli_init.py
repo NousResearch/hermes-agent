@@ -574,6 +574,30 @@ class TestRootLevelProviderOverride:
         assert result["model"]["provider"] == "opencode-go"
         assert result["model"]["base_url"] == "https://example.com/v1"
 
+
+class TestLoadCliConfigCwd:
+    """load_cli_config() must preserve launcher-provided local workspaces."""
+
+    def test_local_backend_prefers_explicit_hermes_cwd(self, tmp_path, monkeypatch):
+        import cli
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_CWD", str(workspace))
+        monkeypatch.chdir(elsewhere)
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+
+        cfg = cli.load_cli_config()
+
+        assert cfg["terminal"]["cwd"] == str(workspace)
+        assert os.environ["TERMINAL_CWD"] == str(workspace)
+
     def test_normalize_root_model_keys_does_not_override_existing(self):
         """Existing model.provider is never overridden by root-level key."""
         from hermes_cli.config import _normalize_root_model_keys

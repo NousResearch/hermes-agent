@@ -1,7 +1,7 @@
 """Tests for CLI/TUI CWD resolution in load_cli_config().
 
 Rules:
-- Local backend CLI/TUI: always os.getcwd(), ignoring config and inherited env.
+- Local backend CLI/TUI: prefer explicit HERMES_CWD, else os.getcwd().
 - Non-local with placeholder: pop cwd for backend default.
 - Non-local with explicit path: keep as-is.
 """
@@ -15,7 +15,7 @@ def _resolve_cwd(terminal_config: dict, defaults: dict, env: dict):
     effective_backend = terminal_config.get("env_type", "local")
 
     if effective_backend == "local":
-        terminal_config["cwd"] = "/fake/getcwd"
+        terminal_config["cwd"] = env.get("HERMES_CWD") or "/fake/getcwd"
         defaults["terminal"]["cwd"] = terminal_config["cwd"]
     elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
         terminal_config.pop("cwd", None)
@@ -32,7 +32,13 @@ def _resolve_cwd(terminal_config: dict, defaults: dict, env: dict):
 
 
 class TestLocalBackendCli:
-    """Local backend always uses os.getcwd()."""
+    """Local backend uses explicit workspace cwd when provided."""
+
+    def test_explicit_hermes_cwd_wins(self):
+        env = {"HERMES_CWD": "/workspace/project"}
+        tc = {"cwd": ".", "env_type": "local"}
+        d = {"terminal": {"cwd": "."}}
+        assert _resolve_cwd(tc, d, env) == "/workspace/project"
 
     def test_explicit_config_ignored(self):
         env = {}

@@ -344,6 +344,89 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     return None
 
 
+def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool:
+    """Whether a cron delivery should also be mirrored into the target chat's
+    gateway session transcript.
+
+    Default OFF — preserves the historical isolation guarantee (cron deliveries
+    live only in the cron job's own session, never the target chat's history)
+    byte-for-byte for everyone who does not opt in.
+
+    Precedence (first decisive value wins):
+      1. Per-job ``attach_to_session`` (bool) — set via the ``cronjob`` tool,
+         lets one briefing job opt in without flipping global behaviour.
+      2. Global ``cron.mirror_delivery`` (bool) in config.yaml.
+      3. False.
+
+    When enabled, the cron's final output is appended to the target session as
+    an assistant turn via the existing ``gateway.mirror.mirror_to_session`` —
+    the same primitive ``send_message`` uses — so the next user reply in that
+    chat sees the brief in context (no "what is Task #2?" amnesia). This is
+    alternation- and cache-safe: the append lands at a turn boundary between
+    user turns, never mid-loop, and never mutates the cached system prompt.
+    """
+    per_job = job.get("attach_to_session")
+    if isinstance(per_job, bool):
+        return per_job
+    try:
+        if cfg is None:
+            cfg = load_config() or {}
+        return bool((cfg.get("cron", {}) or {}).get("mirror_delivery", False))
+    except Exception:
+        return False
+
+
+def _maybe_mirror_cron_delivery(
+    job: dict,
+    platform_name: str,
+    chat_id: str,
+    mirror_text: str,
+    thread_id: Optional[str] = None,
+    *,
+    enabled: bool = False,
+) -> None:
+    """Best-effort mirror of a cron delivery into the target chat's session.
+
+    No-op unless ``enabled`` (resolved once by the caller). Reuses the shipped
+    ``mirror_to_session`` so cron rides exactly the same path that interactive
+    ``send_message`` mirroring already uses. All failures are swallowed — a
+    delivery that succeeded must never be reported as failed because the
+    transcript mirror could not find a session (the cold-start case: the target
+    chat has no gateway session yet, so there is nothing to mirror into).
+    """
+    if not enabled:
+        return
+    text = (mirror_text or "").strip()
+    if not text:
+        return
+    try:
+        from gateway.mirror import mirror_to_session
+
+        ok = mirror_to_session(
+            platform_name,
+            str(chat_id),
+            text,
+            source_label="cron",
+            thread_id=thread_id,
+        )
+        if ok:
+            logger.info(
+                "Job '%s': mirrored delivery into %s:%s session transcript",
+                job.get("id", "?"), platform_name, chat_id,
+            )
+        else:
+            logger.debug(
+                "Job '%s': delivery mirror skipped for %s:%s "
+                "(no matching gateway session — cold start)",
+                job.get("id", "?"), platform_name, chat_id,
+            )
+    except Exception as e:
+        logger.debug(
+            "Job '%s': delivery mirror failed for %s:%s: %s",
+            job.get("id", "?"), platform_name, chat_id, e,
+        )
+
+
 def _cron_job_origin_log_suffix(job: dict) -> str:
     """Return safe provenance details for security warnings about a cron job.
 
@@ -804,6 +887,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
     wrap_response = True
+    user_cfg = None
     try:
         user_cfg = load_config()
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
@@ -822,6 +906,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         )
     else:
         delivery_content = content
+
+    # Resolve the delivery-mirror gate ONCE (default off). When on, each
+    # successful delivery is also appended to the target chat's gateway session
+    # transcript so a user reply in that chat sees the cron output in context.
+    # We mirror the CLEAN, unwrapped agent output (not the cron header/footer) —
+    # that is what the agent "said" in the conversation.
+    try:
+        mirror_enabled = _cron_mirror_delivery_enabled(job, user_cfg)
+    except Exception:
+        mirror_enabled = False
+    mirror_text = ""
+    if mirror_enabled:
+        from gateway.platforms.base import BasePlatformAdapter as _BPA
+        _, mirror_text = _BPA.extract_media(content)
+        mirror_text = (mirror_text or "").strip()
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
@@ -1091,6 +1190,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
+                    _maybe_mirror_cron_delivery(
+                        job, platform_name, chat_id, mirror_text,
+                        thread_id=thread_id, enabled=mirror_enabled,
+                    )
             except Exception as e:
                 err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
                 if not any(err_msg in err for err in target_errors):
@@ -1129,6 +1232,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            _maybe_mirror_cron_delivery(
+                job, platform_name, chat_id, mirror_text,
+                thread_id=thread_id, enabled=mirror_enabled,
+            )
 
     if delivery_errors:
         return "; ".join(delivery_errors)

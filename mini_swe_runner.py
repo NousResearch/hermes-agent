@@ -194,13 +194,9 @@ class MiniSWERunner:
         self.image = image
         self.cwd = cwd
         
-        # Setup logging
-        logging.basicConfig(
-            level=logging.DEBUG if verbose else logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            datefmt='%H:%M:%S'
-        )
         self.logger = logging.getLogger(__name__)
+        if verbose:
+            self.logger.setLevel(logging.DEBUG)
         
         # Initialize LLM client via centralized provider router.
         # If explicit api_key/base_url are provided (e.g. from CLI args),

@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import textwrap
+import types
 from pathlib import Path
 
 import pytest
@@ -196,6 +197,41 @@ class TestRunJobScript:
         assert success is True
         parsed = json.loads(output)
         assert parsed["new_prs"][0]["number"] == 42
+
+    def test_llm_job_empty_script_output_closes_unused_session_db(self, cron_env, monkeypatch):
+        """LLM jobs with empty script output skip the agent without leaking state.db fds."""
+        from cron import scheduler as sched_mod
+
+        class FakeSessionDB:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        fake_db = FakeSessionDB()
+        monkeypatch.setitem(
+            sys.modules,
+            "run_agent",
+            types.SimpleNamespace(AIAgent=object),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_state",
+            types.SimpleNamespace(SessionDB=lambda: fake_db),
+        )
+        monkeypatch.setattr(sched_mod, "_run_job_script", lambda _path: (True, ""))
+
+        success, _doc, final_response, error = sched_mod._run_job_impl({
+            "id": "job123",
+            "name": "empty-script-job",
+            "prompt": "Report only if there is data.",
+            "script": "empty.py",
+        })
+
+        assert success is True
+        assert final_response == sched_mod.SILENT_MARKER
+        assert error is None
+        assert fake_db.closed is True
 
 
 class TestBuildJobPromptWithScript:

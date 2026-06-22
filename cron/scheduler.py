@@ -1732,6 +1732,20 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
 
+    def _close_unstarted_session_db() -> None:
+        """Close the cron SessionDB on paths that return before AIAgent owns it.
+
+        Jobs with a data-collection script can short-circuit before the agent
+        session is created (empty script output, wakeAgent=false, prompt block).
+        Those paths still constructed SessionDB above, so close it explicitly
+        rather than leaking state.db/state.db-wal fds in the long-lived gateway.
+        """
+        if _session_db:
+            try:
+                _session_db.close()
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to close unused SQLite session store: %s", job_id, e)
+
     # Wake-gate: if this job has a pre-check script, run it BEFORE building
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
     # the whole agent run. We pass the result into _build_job_prompt so
@@ -1752,6 +1766,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 "Script gate returned `wakeAgent=false` — agent skipped.\n"
             )
+            _close_unstarted_session_db()
             return True, silent_doc, SILENT_MARKER, None
 
     try:
@@ -1778,9 +1793,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             "and the match is a false positive, rephrase the content to avoid "
             "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
         )
+        _close_unstarted_session_db()
         return False, blocked_doc, "", str(block_exc)
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
+        _close_unstarted_session_db()
         return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"

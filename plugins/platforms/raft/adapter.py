@@ -47,6 +47,7 @@ from gateway.platforms.base import (
     merge_pending_message_event,
 )
 from gateway.session import build_session_key
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -740,7 +741,7 @@ class RaftAdapter(BasePlatformAdapter):
 
 def _is_connected(config: PlatformConfig) -> bool:
     extra = config.extra or {}
-    return bool(extra.get("enabled") or extra.get("bridge_token"))
+    return is_truthy_value(extra.get("enabled")) or bool(extra.get("bridge_token"))
 
 
 def _env_enablement() -> Optional[dict]:

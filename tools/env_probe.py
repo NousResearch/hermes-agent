@@ -50,6 +50,7 @@ _CACHED_LINE: Optional[str] = None  # None = not probed yet; "" = probed, nothin
 # imports nothing from tools).
 _REMOTE_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh", "managed_modal",
+    "cube_sandbox",
 })
 
 

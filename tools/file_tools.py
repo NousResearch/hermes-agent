@@ -193,6 +193,15 @@ def _live_cwd_if_owned(env, task_id: str) -> str | None:
 def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     """Return the task's live terminal cwd for bookkeeping when available."""
     try:
+        from tools.cube_split import live_tracking_cwd_if_split
+
+        split_cwd = live_tracking_cwd_if_split()
+        if split_cwd:
+            return split_cwd
+    except ImportError:
+        pass
+
+    try:
         from tools.terminal_tool import _resolve_container_task_id
         container_key = _resolve_container_task_id(task_id)
     except Exception:
@@ -877,6 +886,20 @@ def _is_internal_file_tool_content(content: str) -> bool:
     )
 
 
+try:
+    from tools.cube_split import file_tool_hook
+except ImportError:
+
+    def file_tool_hook(  # type: ignore[misc]
+        path: str,
+        task_id: str,
+        *,
+        resolved: Path | str | None = None,
+        register: bool = False,
+    ) -> str | None:
+        return None
+
+
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     """Get or create ShellFileOperations for a terminal environment.
 
@@ -892,6 +915,15 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     parent's container and its cached file_ops. RL/benchmark task_ids with
     a registered env override keep their isolation.
     """
+    try:
+        from tools.cube_split import get_split_file_ops
+
+        split_ops = get_split_file_ops(task_id)
+        if split_ops is not None:
+            return split_ops
+    except ImportError:
+        pass
+
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
@@ -1065,6 +1097,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             })
 
         _resolved = _resolve_path_for_task(path, task_id)
+        ws_err = file_tool_hook(path, task_id, resolved=_resolved)
+        if ws_err:
+            return tool_error(ws_err)
 
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
@@ -1184,6 +1219,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                             "already_read": hits + 1,
                         }, ensure_ascii=False)
 
+                    file_tool_hook(path, task_id, resolved=resolved_str, register=True)
                     return json.dumps({
                         "status": "unchanged",
                         "message": _READ_DEDUP_STATUS_MESSAGE,
@@ -1194,7 +1230,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             except OSError:
                 pass  # stat failed — fall through to full read
 
-        # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
@@ -1306,6 +1341,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "If you are stuck in a loop, stop reading and proceed with writing or responding."
             )
 
+        file_tool_hook(path, task_id, resolved=resolved_str, register=True)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
@@ -1512,6 +1548,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         except Exception:
             _resolved = None
 
+        if _resolved is not None:
+            ws_err = file_tool_hook(path, task_id, resolved=Path(_resolved))
+            if ws_err:
+                return tool_error(ws_err)
+
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
             file_ops = _get_file_ops(task_id)
@@ -1553,6 +1594,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             _update_read_timestamp(path, task_id)
             if not result_dict.get("error"):
                 file_state.note_write(task_id, _resolved)
+                file_tool_hook(path, task_id, resolved=_resolved, register=True)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -1659,6 +1701,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 except Exception:
                     _r = None
                 _path_to_resolved[_p] = _r
+                if _r:
+                    ws_err = file_tool_hook(_p, task_id, resolved=Path(_r))
+                    if ws_err:
+                        return tool_error(ws_err)
                 _cross = file_state.check_stale(task_id, _r) if _r else None
                 _sw = _cross or _check_file_staleness(_p, task_id)
                 if not _sw and _r:
@@ -1710,6 +1756,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     _r = _path_to_resolved.get(_p)
                     if _r:
                         file_state.note_write(task_id, _r)
+                        file_tool_hook(_p, task_id, resolved=_r, register=True)
                 # Successful patch: clear any prior consecutive-failure
                 # counters for the touched paths so a future failure on
                 # the same path starts the escalation cycle fresh.

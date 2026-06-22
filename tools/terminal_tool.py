@@ -1152,6 +1152,14 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         overrides = _task_env_overrides[task_id]
         if set(overrides.keys()) & _ISOLATION_KEYS:
             return task_id
+    try:
+        from tools.cube_split import resolve_sandbox_task_id
+
+        session_key = resolve_sandbox_task_id()
+        if session_key:
+            return session_key
+    except ImportError:
+        pass
     return "default"
 
 
@@ -1298,7 +1306,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in _CONTAINER_BACKENDS and cwd:
+    elif (env_type in _CONTAINER_BACKENDS or env_type == "cube_sandbox") and cwd:
         # Host paths and relative paths that won't work inside containers
         if _is_unusable_container_cwd(cwd) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
@@ -1501,6 +1509,41 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent, task_id=task_id,
         )
 
+    elif env_type == "cube_sandbox":
+        from tools.environments.cube_sandbox import CubeSandboxEnvironment as _CubeSandboxEnvironment
+        try:
+            return _CubeSandboxEnvironment(
+                cwd=cwd,
+                timeout=timeout,
+                cpu=int(cpu),
+                memory=memory,
+                disk=disk,
+                persistent_filesystem=persistent,
+                task_id=task_id,
+            )
+        except Exception as exc:
+            fallback = cc.get("cube_fallback_backend") or os.getenv("CUBE_FALLBACK_BACKEND", "")
+            if fallback:
+                logger.warning(
+                    "Cube: backend unavailable, falling back to %s: %s",
+                    fallback,
+                    exc,
+                )
+                return _create_environment(
+                    fallback,
+                    image,
+                    cwd,
+                    timeout,
+                    ssh_config=ssh_config,
+                    container_config=container_config,
+                    local_config=local_config,
+                    task_id=task_id,
+                    host_cwd=host_cwd,
+                )
+            raise RuntimeError(
+                f"CubeSandbox backend unavailable and no fallback configured: {exc}"
+            ) from exc
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1516,8 +1559,77 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'cube_sandbox', or 'ssh'"
         )
+
+
+def _clear_file_ops_cache(task_id: str) -> None:
+    try:
+        from tools.file_tools import clear_file_ops_cache
+
+        clear_file_ops_cache(task_id)
+    except ImportError:
+        pass
+
+
+def _stop_tracked_environment(
+    env,
+    task_id: str,
+    *,
+    inactive: bool,
+    force_remove: bool = False,
+) -> None:
+    """Run backend teardown; order file_ops cache clear around cleanup for cube split."""
+    defer_cache_clear = False
+    try:
+        from tools.cube_split import env_teardown_begin
+
+        defer_cache_clear = env_teardown_begin()
+    except ImportError:
+        pass
+
+    if not defer_cache_clear:
+        _clear_file_ops_cache(task_id)
+
+    try:
+        if hasattr(env, 'cleanup'):
+            import inspect
+
+            sig = inspect.signature(env.cleanup)
+            if "force_remove" in sig.parameters:
+                env.cleanup(force_remove=force_remove)
+            else:
+                env.cleanup()
+        elif hasattr(env, 'stop'):
+            env.stop()
+        elif hasattr(env, 'terminate'):
+            env.terminate()
+
+        if inactive:
+            logger.info("Cleaned up inactive environment for task: %s", task_id)
+        else:
+            logger.info("Manually cleaned up environment for task: %s", task_id)
+
+    except Exception as e:
+        error_str = str(e)
+        if "404" in error_str or "not found" in error_str.lower():
+            logger.info("Environment for task %s already cleaned up", task_id)
+        else:
+            label = "inactive" if inactive else "manual"
+            logger.warning(
+                "Error cleaning up %s environment for task %s: %s",
+                label,
+                task_id,
+                e,
+            )
+
+    if defer_cache_clear:
+        try:
+            from tools.cube_split import env_teardown_end
+
+            env_teardown_end(task_id)
+        except ImportError:
+            pass
 
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
@@ -1556,30 +1668,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     # Phase 2: stop the actual sandboxes OUTSIDE the lock so other tool calls
     # are not blocked while Modal/Docker sandboxes shut down.
     for task_id, env in envs_to_stop:
-        # Invalidate stale file_ops cache entry (Bug fix: prevents
-        # ShellFileOperations from referencing a dead sandbox)
-        try:
-            from tools.file_tools import clear_file_ops_cache
-            clear_file_ops_cache(task_id)
-        except ImportError:
-            pass
-
-        try:
-            if hasattr(env, 'cleanup'):
-                env.cleanup()
-            elif hasattr(env, 'stop'):
-                env.stop()
-            elif hasattr(env, 'terminate'):
-                env.terminate()
-
-            logger.info("Cleaned up inactive environment for task: %s", task_id)
-
-        except Exception as e:
-            error_str = str(e)
-            if "404" in error_str or "not found" in error_str.lower():
-                logger.info("Environment for task %s already cleaned up", task_id)
-            else:
-                logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+        _stop_tracked_environment(env, task_id, inactive=True)
 
 
 def _cleanup_thread_worker():
@@ -1696,48 +1785,33 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock
     # so other tool calls aren't blocked.
-    env = None
-    with _env_lock:
-        env = _active_environments.pop(task_id, None)
-        _last_activity.pop(task_id, None)
-
-    # Clean up per-task creation lock
-    with _creation_locks_lock:
-        _creation_locks.pop(task_id, None)
-
-    # Invalidate stale file_ops cache entry
     try:
-        from tools.file_tools import clear_file_ops_cache
-        clear_file_ops_cache(task_id)
+        from tools.cube_split import env_cache_keys_for_cleanup
     except ImportError:
-        pass
+        env_cache_keys_for_cleanup = lambda tid: [tid] if (tid or "").strip() else []  # type: ignore[misc,assignment]
+
+    lookup_keys = env_cache_keys_for_cleanup(task_id)
+    env = None
+    resolved_key = task_id
+    with _env_lock:
+        for key in lookup_keys:
+            env = _active_environments.pop(key, None)
+            if env is not None:
+                resolved_key = key
+                _last_activity.pop(key, None)
+                break
+
+    # Clean up per-task creation locks for every candidate key
+    with _creation_locks_lock:
+        for key in lookup_keys:
+            _creation_locks.pop(key, None)
 
     if env is None:
         return
 
-    try:
-        if hasattr(env, 'cleanup'):
-            # Pass force_remove only if the env's cleanup() accepts it
-            # (DockerEnvironment after issue #20561; other backends don't).
-            import inspect
-            sig = inspect.signature(env.cleanup)
-            if "force_remove" in sig.parameters:
-                env.cleanup(force_remove=force_remove)
-            else:
-                env.cleanup()
-        elif hasattr(env, 'stop'):
-            env.stop()
-        elif hasattr(env, 'terminate'):
-            env.terminate()
-
-        logger.info("Manually cleaned up environment for task: %s", task_id)
-
-    except Exception as e:
-        error_str = str(e)
-        if "404" in error_str or "not found" in error_str.lower():
-            logger.info("Environment for task %s already cleaned up", task_id)
-        else:
-            logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+    _stop_tracked_environment(
+        env, resolved_key, inactive=False, force_remove=force_remove,
+    )
 
 
 def _atexit_cleanup():
@@ -2844,10 +2918,15 @@ def check_terminal_requirements() -> bool:
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
 
+        elif env_type == "cube_sandbox":
+            from tools.environments.cube_sandbox import check_cube_sandbox_requirements
+
+            return check_cube_sandbox_requirements()
+
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, ssh.",
+                "modal, daytona, cube_sandbox, ssh.",
                 env_type,
             )
             return False

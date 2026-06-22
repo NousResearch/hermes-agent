@@ -45,6 +45,7 @@ BulkUploadFn = Callable[[list[tuple[str, str]]], None]  # [(host_path, remote_pa
 BulkDownloadFn = Callable[[Path], None]  # (dest_tar_path) -> writes tar archive, raises on failure
 DeleteFn = Callable[[list[str]], None]  # (remote_paths) -> raises on failure
 GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_path), ...]
+ResolveUnmappedFn = Callable[[str], str | None]  # remote_path -> host_path or None
 
 
 def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, str]]:
@@ -147,23 +148,32 @@ class FileSyncManager:
         sync_interval: float = _SYNC_INTERVAL_SECONDS,
         bulk_upload_fn: BulkUploadFn | None = None,
         bulk_download_fn: BulkDownloadFn | None = None,
+        resolve_unmapped_remote_path: ResolveUnmappedFn | None = None,
+        sync_back_without_prior_push: bool = False,
+        sync_back_fail_on_oversized_tar: bool = False,
     ):
         self._get_files_fn = get_files_fn
         self._upload_fn = upload_fn
         self._bulk_upload_fn = bulk_upload_fn
         self._bulk_download_fn = bulk_download_fn
         self._delete_fn = delete_fn
+        self._resolve_unmapped_remote_path = resolve_unmapped_remote_path
+        self._sync_back_without_prior_push = sync_back_without_prior_push
+        self._sync_back_fail_on_oversized_tar = sync_back_fail_on_oversized_tar
         self._synced_files: dict[str, tuple[float, int]] = {}  # remote_path -> (mtime, size)
         self._pushed_hashes: dict[str, str] = {}  # remote_path -> sha256 hex digest
         self._upload_only_host_paths: set[str] = set()
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
         self._sync_interval = sync_interval
 
-    def sync(self, *, force: bool = False) -> None:
+    def sync(self, *, force: bool = False, strict: bool = False) -> None:
         """Run a sync cycle: upload changed files, delete removed files.
 
         Rate-limited to once per ``sync_interval`` unless *force* is True
         or ``HERMES_FORCE_FILE_SYNC=1`` is set.
+
+        When *strict* is True, failures propagate to the caller (used by
+        workspace sync before terminal/execute_code).
 
         Transactional: state only committed if ALL operations succeed.
         On failure, state rolls back so the next cycle retries everything.
@@ -234,12 +244,14 @@ class FileSyncManager:
             self._pushed_hashes = prev_hashes
             self._last_sync_time = time.monotonic()
             logger.warning("file_sync: sync failed, rolled back state: %s", exc)
+            if strict:
+                raise
 
     # ------------------------------------------------------------------
     # Sync-back: pull remote changes to host on teardown
     # ------------------------------------------------------------------
 
-    def sync_back(self, hermes_home: Path | None = None) -> None:
+    def sync_back(self, hermes_home: Path | None = None) -> bool:
         """Pull remote changes back to the host filesystem.
 
         Downloads the remote ``.hermes/`` directory as a tar archive,
@@ -248,16 +260,21 @@ class FileSyncManager:
 
         Protected against SIGINT (defers the signal until complete) and
         serialized across concurrent gateway sandboxes via file lock.
+
+        Returns True when sync completed or was intentionally skipped; False
+        when all retry attempts failed.
         """
         if self._bulk_download_fn is None:
-            return
+            return True
 
         # Nothing was ever committed through this manager — the initial
         # push failed or never ran. Skip sync_back to avoid retry storms
         # against an uninitialized remote .hermes/ directory.
+        # Workspace-scope egress may run without prior sync-in (e.g. terminal-only writes).
         if not self._pushed_hashes and not self._synced_files:
-            logger.debug("sync_back: no prior push state — skipping")
-            return
+            if not self._sync_back_without_prior_push:
+                logger.debug("sync_back: no prior push state — skipping")
+                return True
 
         lock_path = (hermes_home or get_hermes_home()) / ".sync.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -266,7 +283,7 @@ class FileSyncManager:
         for attempt in range(_SYNC_BACK_MAX_RETRIES):
             try:
                 self._sync_back_once(lock_path)
-                return
+                return True
             except Exception as exc:
                 last_exc = exc
                 if attempt < _SYNC_BACK_MAX_RETRIES - 1:
@@ -278,6 +295,7 @@ class FileSyncManager:
                     _sleep(delay)
 
         logger.warning("sync_back: all %d attempts failed: %s", _SYNC_BACK_MAX_RETRIES, last_exc)
+        return False
 
     def _sync_back_once(self, lock_path: Path) -> None:
         """Single sync-back attempt with SIGINT protection and file lock."""
@@ -342,6 +360,11 @@ class FileSyncManager:
             except OSError:
                 tar_size = 0
             if tar_size > _SYNC_BACK_MAX_BYTES:
+                if self._sync_back_fail_on_oversized_tar:
+                    raise RuntimeError(
+                        f"sync_back: remote tar is {tar_size} bytes "
+                        f"(cap {_SYNC_BACK_MAX_BYTES}) — refusing extraction"
+                    )
                 logger.warning(
                     "sync_back: remote tar is %d bytes (cap %d) — skipping extraction",
                     tar_size, _SYNC_BACK_MAX_BYTES,
@@ -380,12 +403,16 @@ class FileSyncManager:
                                 file_mapping,
                                 upload_only_host_paths=upload_only_host_paths,
                             )
-                            if host_path is None:
-                                logger.debug(
-                                    "sync_back: skipping %s (no host mapping)",
-                                    remote_path,
-                                )
-                                continue
+                        if host_path is None:
+                            resolver = self._resolve_unmapped_remote_path
+                            if resolver is not None:
+                                host_path = resolver(remote_path)
+                        if host_path is None:
+                            logger.debug(
+                                "sync_back: skipping %s (no host mapping)",
+                                remote_path,
+                            )
+                            continue
 
                         if self._is_upload_only_host_path(host_path, upload_only_host_paths):
                             logger.debug(

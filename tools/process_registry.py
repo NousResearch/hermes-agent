@@ -1701,10 +1701,21 @@ class ProcessRegistry:
 
     def kill_all(self, task_id: str = None) -> int:
         """Kill all running processes, optionally filtered by task_id. Returns count killed."""
+        task_id_filter: set[str] | None = None
+        if task_id is not None:
+            task_id_filter = {task_id}
+            try:
+                from tools.cube_split import env_cache_keys_for_cleanup
+
+                task_id_filter.update(env_cache_keys_for_cleanup(task_id))
+            except ImportError:
+                pass
+
         with self._lock:
             targets = [
                 s for s in self._running.values()
-                if (task_id is None or s.task_id == task_id) and not s.exited
+                if (task_id_filter is None or s.task_id in task_id_filter)
+                and not s.exited
             ]
 
         killed = 0

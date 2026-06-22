@@ -700,6 +700,7 @@ This is resolved by uv alongside core dependencies — no PYTHONPATH patching, n
 | `hindsight` | Hindsight memory provider |
 | `modal` | Modal terminal backend |
 | `daytona` | Daytona terminal backend |
+| `cube` | CubeSandbox terminal backend (E2B-compatible microVM API) |
 | `exa` | Exa web search |
 | `firecrawl` | Firecrawl web search |
 | `fal` | FAL image generation |

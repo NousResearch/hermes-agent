@@ -108,11 +108,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
+Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Singularity/Apptainer container, or a CubeSandbox microVM (E2B-compatible API).
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | singularity
+  backend: local    # local | docker | ssh | modal | daytona | singularity | cube_sandbox
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
@@ -134,6 +134,7 @@ For cloud sandboxes such as Modal and Daytona, `container_persistent: true` mean
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
+| **cube_sandbox** | CubeSandbox microVM (KVM, E2B-compatible API) | Full (hardware VM) | Managed microVM sandboxes, split Pod/VM deployments |
 
 ### Local Backend
 
@@ -387,6 +388,72 @@ terminal:
 
 **Isolation:** Uses `--containall --no-home` for full namespace isolation without mounting the host home directory.
 
+### CubeSandbox Backend
+
+Runs commands in a [CubeSandbox](https://github.com/tencentcloud/CubeSandbox) microVM via the E2B-compatible SDK (`e2b-code-interpreter`). Each sandbox is a KVM-isolated Linux VM with configurable templates and optional filesystem snapshots.
+
+**Install the optional dependency first:**
+
+```bash
+pip install "hermes-agent[cube]"
+# or, from a checkout:
+uv pip install -e ".[cube]"
+```
+
+#### Direct backend mode
+
+Set `terminal.backend` to `cube_sandbox` (or `TERMINAL_ENV=cube_sandbox`) when every terminal and `execute_code` call should run inside the microVM:
+
+```yaml
+terminal:
+  backend: cube_sandbox
+  cwd: "/home/user/workspace"
+  container_persistent: true   # Snapshot VM filesystem on cleanup; restore on reuse
+```
+
+**Required environment variables** (secrets go in `~/.hermes/.env`):
+
+| Variable | Purpose |
+|----------|---------|
+| `CUBE_API_URL` or `E2B_API_URL` | Control-plane API base URL |
+| `CUBE_TEMPLATE_ID` | Sandbox template ID (e.g. `tpl-...`) |
+| `CUBE_API_KEY` or `E2B_API_KEY` | Static API key (when not using the token API) |
+
+**Optional credential flow:** when `SANDBOX_TOKEN_API_URL` (or `CUBE_TOKEN_API_URL`) is set, Hermes POSTs `{task_id, tier}` to mint short-lived keys instead of using a static `CUBE_API_KEY`. Set `CUBE_TOKEN_FAIL_CLOSED=true` to abort when the token API is unreachable.
+
+**Network:** the Hermes process must reach both the control plane (`CUBE_API_URL`, typically port 3000) and the data plane (sandbox hostnames, typically port 443).
+
+**Session isolation:** when `HERMES_SESSION_ID` is present (gateway, cron, delegate), sandboxes are keyed as `{HERMES_INSTANCE_NAME}-{session_id}` so concurrent sessions do not share a VM.
+
+#### Split mode (`SANDBOX_TYPE=cube`)
+
+For Kubernetes-style deployments where the Hermes Pod keeps a persistent workspace volume but high-risk execution must stay in a microVM, enable split mode instead of switching the global terminal backend:
+
+```bash
+SANDBOX_TYPE=cube
+TERMINAL_ENV=local          # file tools stay on the Pod; plugin routes terminal/code to Cube
+HERMES_WORKSPACE_ROOT=/workspace
+HERMES_INSTANCE_NAME=my-agent
+```
+
+With `SANDBOX_TYPE=cube`, the bundled `cube_sandbox` plugin overrides `terminal` and `execute_code` to run in the microVM while low-risk file tools (`read_file`, `patch`, `write_file`, etc.) continue to operate on the Pod workspace at `HERMES_WORKSPACE_ROOT`.
+
+**Workspace sync** (split mode only) copies files the agent touches between the Pod workspace and the VM mount before/after terminal calls:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CUBE_WORKSPACE_SYNC_ENABLED` | `true` when split mode is on | Master switch |
+| `CUBE_REMOTE_WORKSPACE_MOUNT` | `/home/user/workspace` | Path inside the VM |
+| `CUBE_WORKSPACE_SYNC_MODE` | `touched` | Which files to push (`touched` tracks agent edits) |
+| `CUBE_WORKSPACE_SYNC_BACK` | `after_terminal` | When to pull VM changes back to the Pod |
+| `CUBE_WORKSPACE_SYNC_MAX_MB` | inherits `terminal.file_sync_max_mb` | Skip files larger than this |
+
+**Snapshot tier:** `CUBE_DEFAULT_TIER` controls VM reuse scope — `task` (default, per tool task) or `session` (one VM per gateway session).
+
+:::warning
+Do not set `CUBE_FALLBACK_BACKEND` in production. It exists for local development when the control plane is unreachable and silently downgrades high-risk tools to another backend.
+:::
+
 ### Common Terminal Backend Issues
 
 If terminal commands fail immediately or the terminal tool is reported as disabled:
@@ -397,6 +464,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
 - **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
+- **CubeSandbox** — Needs `pip install "hermes-agent[cube]"`, plus `CUBE_API_URL` (or `E2B_API_URL`), `CUBE_TEMPLATE_ID`, and either `CUBE_API_KEY` or `SANDBOX_TOKEN_API_URL`. For split mode, set `SANDBOX_TYPE=cube` and keep `terminal.backend: local`.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 

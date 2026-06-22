@@ -882,6 +882,10 @@ class BaseEnvironment(ABC):
         """
         pass
 
+    def _after_execute(self, result: dict) -> None:
+        """Hook called after each command execution (success or failure)."""
+        pass
+
     # ------------------------------------------------------------------
     # Unified execute()
     # ------------------------------------------------------------------
@@ -931,6 +935,7 @@ class BaseEnvironment(ABC):
         )
         result = self._wait_for_process(proc, timeout=effective_timeout)
         self._update_cwd(result)
+        self._after_execute(result)
 
         return result
 

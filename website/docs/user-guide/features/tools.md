@@ -65,13 +65,14 @@ The terminal tool can execute commands in different environments:
 | `singularity` | HPC containers | Cluster computing, rootless |
 | `modal` | Cloud execution | Serverless, scale |
 | `daytona` | Cloud sandbox workspace | Persistent remote dev environments |
+| `cube_sandbox` | CubeSandbox microVM (E2B-compatible) | KVM-isolated sandboxes, split Pod/VM deployments |
 
 ### Configuration
 
 ```yaml
 # In ~/.hermes/config.yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal, daytona
+  backend: local    # or: docker, ssh, singularity, modal, daytona, cube_sandbox
   cwd: "."          # Working directory
   timeout: 180      # Command timeout in seconds
 ```
@@ -120,6 +121,20 @@ hermes config set terminal.singularity_image ~/python.sif
 uv pip install modal
 modal setup
 hermes config set terminal.backend modal
+```
+
+### CubeSandbox (MicroVM)
+
+Requires the optional `cube` extra and Cube control-plane credentials. See [Configuration → CubeSandbox Backend](../configuration.md#cubesandbox-backend) for direct backend mode and split mode (`SANDBOX_TYPE=cube`).
+
+```bash
+pip install "hermes-agent[cube]"
+# Direct backend:
+hermes config set terminal.backend cube_sandbox
+# Split mode (file tools on Pod, terminal/code in microVM):
+export SANDBOX_TYPE=cube
+export CUBE_API_URL=https://cube.example.com
+export CUBE_TEMPLATE_ID=tpl-...
 ```
 
 ### Container Resources

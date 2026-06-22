@@ -17,6 +17,7 @@ Docker Backend in ``website/docs/user-guide/configuration.md``.
 
 import pytest
 
+from gateway.session_context import set_current_session_id
 from tools import terminal_tool
 
 

@@ -432,10 +432,8 @@ class TestSyncBackSIGINT:
 class TestSyncBackSizeCap:
     """The size cap refuses to extract tars above the configured limit."""
 
-    def test_sync_back_refuses_oversized_tar(self, tmp_path, caplog):
-        """A tar larger than _SYNC_BACK_MAX_BYTES should be skipped with a warning."""
-        # Build a download_fn that writes a small tar, but patch the cap
-        # so the test doesn't need to produce a 2 GiB file.
+    def test_sync_back_skips_oversized_tar_by_default(self, tmp_path, caplog):
+        """SSH/Modal default: skip extraction and log a warning."""
         skill_host = _write_file(tmp_path / "host_skill.md", b"original")
         files = {"root/.hermes/skill.md": b"remote_version"}
         download_fn = _make_download_fn(files)
@@ -446,14 +444,35 @@ class TestSyncBackSizeCap:
             bulk_download_fn=download_fn,
         )
 
-        # Cap at 1 byte so any non-empty tar exceeds it
         with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
             with patch("tools.environments.file_sync._SYNC_BACK_MAX_BYTES", 1):
-                mgr.sync_back(hermes_home=tmp_path / ".hermes")
+                ok = mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
-        # Host file should be untouched because extraction was skipped
+        assert ok is True
         assert Path(skill_host).read_bytes() == b"original"
-        # Warning should mention the cap
+        assert any("cap" in r.message for r in caplog.records)
+
+    def test_sync_back_strict_refuses_oversized_tar(self, tmp_path, caplog):
+        """Cube workspace sync: fail closed when tar exceeds cap."""
+        skill_host = _write_file(tmp_path / "host_skill.md", b"original")
+        files = {"root/.hermes/skill.md": b"remote_version"}
+        download_fn = _make_download_fn(files)
+
+        mgr = FileSyncManager(
+            get_files_fn=lambda: [(skill_host, "/root/.hermes/skill.md")],
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            bulk_download_fn=download_fn,
+            sync_back_fail_on_oversized_tar=True,
+        )
+        mgr._pushed_hashes["/root/.hermes/skill.md"] = _sha256_file(skill_host)
+
+        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+            with patch("tools.environments.file_sync._SYNC_BACK_MAX_BYTES", 1):
+                ok = mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        assert ok is False
+        assert Path(skill_host).read_bytes() == b"original"
         assert any("cap" in r.message for r in caplog.records)
 
     def test_sync_back_applies_when_under_cap(self, tmp_path):

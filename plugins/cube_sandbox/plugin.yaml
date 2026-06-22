@@ -1,0 +1,4 @@
+name: cube_sandbox
+version: "0.1.0"
+description: "Split-mode routing: terminal and execute_code run in CubeSandbox microVMs; file tools stay on the host workspace."
+author: "NousResearch"

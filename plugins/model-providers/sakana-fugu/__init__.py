@@ -12,9 +12,10 @@ class SakanaFuguProfile(ProviderProfile):
     """Provider profile for Sakana AI's Fugu API.
 
     Fugu exposes an OpenAI-compatible endpoint and recommends the Responses API
-    for tooling/agent workflows. Its reasoning-effort dial currently accepts
-    only ``high`` and ``xhigh``/``max``; Hermes clamps lower requested efforts to
-    ``high`` so the Responses request never sends an invalid value.
+    for tooling/agent workflows. The official Fugu model catalog currently
+    lists only ``high`` reasoning effort for both Fugu and Fugu Ultra, so Hermes
+    clamps all requested efforts to ``high`` and avoids forcing reasoning
+    summaries unless Sakana changes the catalog.
     """
 
     def build_api_kwargs_extras(
@@ -27,14 +28,8 @@ class SakanaFuguProfile(ProviderProfile):
             return {}, {}
 
         effort = "high"
-        if isinstance(reasoning_config, dict):
-            raw = str(reasoning_config.get("effort") or "").strip().lower()
-            if raw in {"xhigh", "max"}:
-                effort = "xhigh"
-            elif raw == "high":
-                effort = "high"
 
-        return {}, {"reasoning": {"effort": effort, "summary": "auto"}}
+        return {}, {"reasoning": {"effort": effort}}
 
 
 sakana_fugu = SakanaFuguProfile(
@@ -50,7 +45,7 @@ sakana_fugu = SakanaFuguProfile(
     supports_vision=True,
     default_aux_model="fugu",
     fallback_models=("fugu-ultra", "fugu"),
-    default_stale_timeout_seconds=600.0,
+    default_stale_timeout_seconds=7200.0,
 )
 
 register_provider(sakana_fugu)

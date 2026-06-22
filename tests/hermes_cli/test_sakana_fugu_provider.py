@@ -27,7 +27,7 @@ class TestSakanaFuguProfile:
         assert profile.base_url == "https://api.sakana.ai/v1"
         assert profile.env_vars == ("SAKANA_API_KEY", "SAKANA_BASE_URL")
         assert profile.default_aux_model == "fugu"
-        assert profile.default_stale_timeout_seconds == 600.0
+        assert profile.default_stale_timeout_seconds == 7200.0
         assert profile.fallback_models == ("fugu-ultra", "fugu")
         sakana_alias = get_provider_profile("sakana")
         fugu_alias = get_provider_profile("fugu")
@@ -36,7 +36,7 @@ class TestSakanaFuguProfile:
         assert sakana_alias.name == "sakana-fugu"
         assert fugu_alias.name == "sakana-fugu"
 
-    def test_reasoning_effort_is_never_invalid_for_responses(self):
+    def test_reasoning_effort_uses_official_high_level_for_responses(self):
         from agent.transports.codex import ResponsesApiTransport
 
         profile = get_provider_profile("sakana-fugu")
@@ -49,7 +49,7 @@ class TestSakanaFuguProfile:
             base_url="https://api.sakana.ai/v1",
         )
 
-        assert kwargs["reasoning"] == {"effort": "high", "summary": "auto"}
+        assert kwargs["reasoning"] == {"effort": "high"}
 
         kwargs = ResponsesApiTransport().build_kwargs(
             model="fugu-ultra",
@@ -60,7 +60,7 @@ class TestSakanaFuguProfile:
             base_url="https://api.sakana.ai/v1",
         )
 
-        assert kwargs["reasoning"] == {"effort": "xhigh", "summary": "auto"}
+        assert kwargs["reasoning"] == {"effort": "high"}
 
 
 class TestSakanaFuguRegistries:

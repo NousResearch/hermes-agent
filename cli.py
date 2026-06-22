@@ -9997,14 +9997,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _on_tool_gen_start(self, tool_name: str) -> None:
         """Called when the model begins generating tool-call arguments.
 
-        Closes any open streaming boxes (reasoning / response) exactly once,
-        then prints a short status line so the user sees activity instead of
-        a frozen screen while a large payload (e.g. 45 KB write_file) streams.
+        Prints a short status line when tool-call argument generation starts,
+        but only when we are not already actively streaming visible content.
+
+        Interleaving a transient "preparing …" line onto the same
+        prompt_toolkit output channel while the live reasoning/response box is
+        open can visually displace the streamed content on some terminals
+        (notably Windows + StdoutProxy). Once the user can already see the
+        response streaming, prefer preserving that output; the normal spinner
+        and tool-completed progress lines still surface tool activity.
         """
-        if getattr(self, "_stream_box_opened", False):
-            self._flush_stream()
-            self._stream_box_opened = False
-        self._close_reasoning_box()
+        if (
+            getattr(self, "_stream_box_opened", False)
+            or getattr(self, "_reasoning_box_opened", False)
+        ):
+            return
 
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚡")

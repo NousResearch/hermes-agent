@@ -77,19 +77,40 @@ function fromLocalGit() {
   }
 }
 
+function fromFallback() {
+  // Non-git builds (ZIP download, bootstrap installer without .git) cannot
+  // determine a real commit.  Use a placeholder so local/personal builds
+  // can still complete.  The desktop app treats "0000000" as "unknown"
+  // and skips the commit-pinned bootstrap.
+  return {
+    commit: "0000000000000000000000000000000000000000",
+    branch: null,
+    dirty: false,
+    source: "local"
+  }
+}
+
 function main() {
-  const stamp = fromCI() || fromLocalGit()
+  const stamp = fromCI() || fromLocalGit() || fromFallback()
   if (!stamp || !stamp.commit) {
+    // Should not happen — fromFallback() always provides a commit.
     console.error(
       "[write-build-stamp] ERROR: could not determine git commit.\n" +
         "  - $GITHUB_SHA not set\n" +
         "  - `git rev-parse HEAD` failed at " +
-        REPO_ROOT +
-        "\n" +
+        REPO_ROOT + "\n" +
         "Packaged builds require a git ref to pin first-launch install.ps1\n" +
         "against. Run from a git checkout or set $GITHUB_SHA explicitly."
     )
     process.exit(1)
+  }
+
+  if (stamp.commit === "0000000000000000000000000000000000000000") {
+    console.warn(
+      "[write-build-stamp] WARNING: no git commit found (non-git checkout?).\n" +
+        "  Using placeholder commit — the packaged app will skip commit-pinned\n" +
+        "  first-launch bootstrap.  For production builds, run from a git checkout."
+    )
   }
 
   if (stamp.dirty) {

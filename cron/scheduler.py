@@ -931,13 +931,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             if result and result.get("error"):
                 msg = f"delivery error: {result['error']}"
                 logger.error("Job '%s': %s", job["id"], msg)
-                if "dependencies not installed" in result["error"]:
-                    import traceback
-                    try:
-                        import gateway.platforms.feishu
-                        logger.info("Job '%s': feishu import succeeded at scheduler level", job["id"])
-                    except Exception:
-                        logger.error("Job '%s': feishu import TRACEBACK at scheduler level:\n%s", job["id"], traceback.format_exc())
                 delivery_errors.append(msg)
                 continue
 

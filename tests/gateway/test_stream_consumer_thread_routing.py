@@ -142,7 +142,7 @@ class TestFeishuFallbackThreadRouting:
     @pytest.mark.asyncio
     async def test_create_uses_thread_id_when_available(self):
         """When reply_to=None and metadata has thread_id, message.create
-        should use receive_id_type='thread_id'."""
+        should use chat_id as receive_id and pass thread_id as root_id."""
         from gateway.platforms.feishu import FeishuAdapter
 
         # We test the _send_raw_message method directly by mocking the client
@@ -175,25 +175,31 @@ class TestFeishuFallbackThreadRouting:
         # Verify message.create was called (not message.reply)
         mock_client.im.v1.message.create.assert_called_once()
 
-        # The request should have receive_id_type="thread_id"
+        # The request should have receive_id_type="chat_id"
         call_args = mock_client.im.v1.message.create.call_args[0][0]
         # Lark SDK builder exposes .body; the in-tree fallback exposes .request_body.
         # The contributor's branch had the lark SDK installed, the test environment
         # may not — handle both shapes.
         body = getattr(call_args, "body", None) or getattr(call_args, "request_body", None)
         assert body is not None, "request has neither .body nor .request_body"
-        # receive_id should be the thread_id, not the chat_id
+        # receive_id should be the chat_id, not the thread_id
         receive_id = getattr(body, "receive_id", None)
         if receive_id is None and isinstance(body, str):
             import json as _json
             receive_id = _json.loads(body).get("receive_id")
-        assert receive_id == "omt_topic_abc", (
-            f"Expected receive_id='omt_topic_abc', got '{receive_id}'"
+        assert receive_id == "oc_main_chat", (
+            f"Expected receive_id='oc_main_chat' (chat_id), got '{receive_id}'"
         )
-        # And receive_id_type must be 'thread_id', not 'chat_id'
+        # And receive_id_type must be 'chat_id', not 'thread_id'
         receive_id_type = getattr(call_args, "receive_id_type", None)
-        assert receive_id_type == "thread_id", (
-            f"Expected receive_id_type='thread_id', got '{receive_id_type}'"
+        assert receive_id_type == "chat_id", (
+            f"Expected receive_id_type='chat_id', got '{receive_id_type}'"
+        )
+
+        # thread_id should be passed as root_id, not as receive_id
+        root_id = getattr(body, "root_id", None)
+        assert root_id == "omt_topic_abc", (
+            f"Expected root_id='omt_topic_abc' (thread_id), got '{root_id}'"
         )
 
     @pytest.mark.asyncio

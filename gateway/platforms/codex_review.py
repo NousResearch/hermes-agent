@@ -49,13 +49,28 @@ async def run_review(
     if result["exit_code"] != 0:
         return (
             Path(), Path(), "failure",
-            f"❌ Codex 执行失败 (exit={result['exit_code']})", None,
+            f"❌ Codex 执行失败 (exit={result['exit_code']})\n\n"
+            f"输出:\n```\n{result['stdout']}\n```\n"
+            f"错误:\n```\n{result['stderr']}\n```", None,
         )
 
-    # 2. 提取 diff
-    md_path, patch_path = _extract_diff(CODEX_WORKDIR, project_name)
+    # 2. 提取 diff（git diff + 新文件检测）
+    md_path, patch_path, new_files = _extract_diff(CODEX_WORKDIR, project_name)
     if md_path is None:
-        return Path(), Path(), "success", "✅ Codex 执行完成，无变更", None
+        # 无 git 变更但有新文件 → 列出新文件
+        if new_files:
+            files_list = "\n".join(f"- `{f}`" for f in new_files[:20])
+            return (
+                Path(), Path(), "success",
+                f"✅ Codex 执行完成\n\n"
+                f"新增/修改文件 ({len(new_files)} 个):\n{files_list}\n\n"
+                f"Codex 输出:\n```\n{result['stdout'][:500]}\n```", None,
+            )
+        return (
+            Path(), Path(), "success",
+            f"✅ Codex 执行完成\n\n"
+            f"输出:\n```\n{result['stdout'][:500]}\n```", None,
+        )
 
     # 3. 评分（传用户原始指令，用于相关性检查）
     score = _run_codex_review(md_path, prompt)
@@ -117,13 +132,22 @@ def _run_codex(prompt: str, workdir: str, timeout: int) -> dict:
 
 def _extract_diff(
     project_dir: str, project_name: str
-) -> tuple[Path | None, Path | None]:
+) -> tuple[Path | None, Path | None, list[str]]:
+    # 1. git diff
     result = subprocess.run(
         ["git", "-C", project_dir, "diff", "--stat"],
         capture_output=True, text=True, timeout=10,
     )
-    if not result.stdout.strip():
-        return None, None
+    
+    # 2. 未跟踪的新文件
+    untracked = subprocess.run(
+        ["git", "-C", project_dir, "ls-files", "--others", "--exclude-standard"],
+        capture_output=True, text=True, timeout=10,
+    )
+    new_files = [f.strip() for f in untracked.stdout.strip().split("\n") if f.strip()]
+
+    if not result.stdout.strip() and not new_files:
+        return None, None, []
 
     subprocess.run(
         ["python3", REVIEW_SCRIPT, project_dir],
@@ -143,7 +167,7 @@ def _extract_diff(
     except OSError:
         logger.warning("Failed to write full diff patch: %s", patch_path)
 
-    return (md_path if md_path.exists() else None), patch_path
+    return (md_path if md_path.exists() else None), patch_path, new_files
 
 
 HERMES_BIN = os.path.expanduser("~/hermes-source/venv/bin/hermes")

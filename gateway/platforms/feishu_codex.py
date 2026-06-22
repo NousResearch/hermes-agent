@@ -30,7 +30,7 @@ async def handle_codex_message(
     3. 使用 codex_landing.post_result 将结果回写到飞书。
     """
     # 1️⃣ 立即回复
-    await send_reply("🔎 正在审核，请稍候…")
+    await send_reply("🔎 Codex 正在执行，请稍候…")
 
     # 2️⃣ 调用审查子模块
     from .codex_review import run_review
@@ -39,8 +39,15 @@ async def handle_codex_message(
     project_name = "hermes-source"
     description = text
 
+    # 剥离 /codex 或 codex 前缀，保留用户实际指令
+    user_instruction = description
+    if user_instruction.startswith("/codex"):
+        user_instruction = user_instruction[len("/codex"):].strip()
+    elif user_instruction.lower().startswith("codex"):
+        user_instruction = user_instruction[len("codex"):].strip()
+
     md_path, patch_path, status, result_msg, _score = await run_review(
-        project_name, description
+        project_name, user_instruction
     )
 
     # 3️⃣ 回写飞书

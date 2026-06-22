@@ -3118,10 +3118,12 @@ class FeishuAdapter(BasePlatformAdapter):
             return
 
         # Codex forwarding: smart router (explicit "codex" prefix OR keyword matching)
-        logger.error("[Feishu] CODEX_CHECK: text=%r", text[:50] if text else None)
-        from .codex_router import should_route_to_codex as _should_route_to_codex
+        try:
+            from .codex_router import should_route_to_codex as _should_route_to_codex
+        except ModuleNotFoundError:
+            logger.warning("[Feishu] codex_router module not found, skipping Codex routing")
+            _should_route_to_codex = lambda _: False
         if text and _should_route_to_codex(text):
-            logger.error("[Feishu] CODEX_INTERCEPT: routing to feishu_codex")
             chat_id = getattr(message, "chat_id", "") or ""
             from .feishu_codex import handle_codex_message
 

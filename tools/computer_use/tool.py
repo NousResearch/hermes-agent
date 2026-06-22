@@ -152,6 +152,9 @@ def _get_backend() -> ComputerUseBackend:
             if backend_name in {"cua", "cua-driver", ""}:
                 from tools.computer_use.cua_backend import CuaDriverBackend
                 _backend = CuaDriverBackend()
+            elif backend_name in {"windows", "win32"}:
+                from tools.computer_use.windows_backend import WindowsComputerUseBackend
+                _backend = WindowsComputerUseBackend()
             elif backend_name == "noop":  # pragma: no cover
                 _backend = _NoopBackend()
             else:
@@ -906,6 +909,11 @@ def check_computer_use_requirements() -> bool:
     `hermes computer-use doctor` if their session is incomplete (e.g. no
     DISPLAY set).
     """
+    backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
+    if backend_name in {"windows", "win32"}:
+        from tools.computer_use.windows_backend import windows_backend_available
+        return windows_backend_available()
+
     if sys.platform not in ("darwin", "win32", "linux"):
         return False
     from tools.computer_use.cua_backend import cua_driver_binary_available

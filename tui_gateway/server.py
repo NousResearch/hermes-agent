@@ -983,7 +983,6 @@ def _start_agent_build(sid: str, session: dict) -> None:
             return
 
         worker = None
-        notify_registered = False
         home_token = None
         profile_home = current.get("profile_home")
         try:
@@ -1020,32 +1019,60 @@ def _start_agent_build(sid: str, session: dict) -> None:
             finally:
                 _clear_session_context(tokens)
 
-            # Session DB row deferred to first run_conversation() call.
-            # pending_title applied post-first-message (see cli.exec handler).
-            current["agent"] = agent
-            # Baseline for the per-turn config sync; the profile home
-            # override is still active here.
-            current["config_model_seen"] = _config_model_target()
-
             try:
                 worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
-                _attach_worker(sid, current, worker)
             except Exception:
-                pass
+                worker = None
 
+            register_gateway_notify = None
+            load_permanent_allowlist = None
             try:
                 from tools.approval import (
                     register_gateway_notify,
                     load_permanent_allowlist,
                 )
-
-                register_gateway_notify(
-                    key, lambda data: _emit("approval.request", sid, data)
-                )
-                notify_registered = True
-                load_permanent_allowlist()
             except Exception:
                 pass
+
+            attached = False
+            notify_registered = False
+            with _sessions_lock:
+                if _sessions.get(sid) is current:
+                    # Session DB row deferred to first run_conversation() call.
+                    # pending_title applied post-first-message (see cli.exec handler).
+                    current["agent"] = agent
+                    # Baseline for the per-turn config sync; the profile home
+                    # override is still active here.
+                    current["config_model_seen"] = _config_model_target()
+                    if worker is not None:
+                        current["slash_worker"] = worker
+                    if register_gateway_notify is not None:
+                        try:
+                            register_gateway_notify(
+                                key, lambda data: _emit("approval.request", sid, data)
+                            )
+                            notify_registered = True
+                        except Exception:
+                            pass
+                    attached = True
+            if not attached:
+                if worker is not None:
+                    try:
+                        worker.close()
+                    except Exception:
+                        pass
+                try:
+                    if hasattr(agent, "close"):
+                        agent.close()
+                except Exception:
+                    pass
+                return
+
+            if notify_registered and load_permanent_allowlist is not None:
+                try:
+                    load_permanent_allowlist()
+                except Exception:
+                    pass
 
             _wire_callbacks(sid)
             # Hydrate credits notices at session OPEN (not just on the first
@@ -1058,8 +1085,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
             except Exception:
                 pass
             with _sessions_lock:
-                if sid in _sessions:
-                    _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
+                if _sessions.get(sid) is current:
+                    current["_notif_stop"] = _start_notification_poller(sid, current)
             _notify_session_boundary("on_session_reset", key)
 
             info = _session_info(agent, current)
@@ -1079,18 +1106,6 @@ def _start_agent_build(sid: str, session: dict) -> None:
         finally:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
-            # _attach_worker already closed the worker if this session was
-            # reaped mid-build; only the late notify registration can still
-            # leak (session.close unregistered before _build registered it).
-            with _sessions_lock:
-                replaced = _sessions.get(sid) is not current
-            if replaced and notify_registered:
-                try:
-                    from tools.approval import unregister_gateway_notify
-
-                    unregister_gateway_notify(key)
-                except Exception:
-                    pass
             ready.set()
 
     threading.Thread(target=_build, daemon=True).start()

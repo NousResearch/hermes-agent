@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -515,21 +517,39 @@ def _ensure_sdk_installed() -> bool:
         print("  Skipping install. Run: pip install 'honcho-ai>=2.0.1'\n")
         return False
 
-    import subprocess
     print("  Installing honcho-ai...", flush=True)
+    pip_cmd = [sys.executable, "-m", "pip", "install", "honcho-ai>=2.0.1"]
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "honcho-ai>=2.0.1"],
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
+        pip_cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL
     )
     if result.returncode == 0:
         print("  Installed.\n")
         return True
-    else:
+
+    uv = shutil.which("uv")
+    if uv:
+        uv_cmd = [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "honcho-ai>=2.0.1",
+        ]
+        print("  pip install failed; retrying with uv...", flush=True)
+        result = subprocess.run(
+            uv_cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL
+        )
+        if result.returncode == 0:
+            print("  Installed.\n")
+            return True
         print(f"  Install failed:\n{result.stderr.strip()}")
-        print("  Run manually: pip install 'honcho-ai>=2.0.1'\n")
+        print(f"  Run manually: {' '.join(uv_cmd)}\n")
         return False
+
+    print(f"  Install failed:\n{result.stderr.strip()}")
+    print(f"  Run manually: {' '.join(pip_cmd)}\n")
+    return False
 
 
 def cmd_setup(args) -> None:

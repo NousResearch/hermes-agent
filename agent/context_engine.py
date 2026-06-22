@@ -227,7 +227,7 @@ class ContextEngine(ABC):
 
     # -- Optional: H2 grounding hooks (additive; default no-ops) ------------
     #
-    # These let a retrieval-first engine (e.g. hermes-cmx) (a) inject verbatim
+    # These let a retrieval-first engine (e.g. a retrieval-first engine) (a) inject verbatim
     # evidence just before the request is sent, and (b) audit/enforce the model's
     # reply (citation check, verification, regenerate, refuse) *after* it returns.
     # Built-in ContextCompressor and LCM do not override them, so behaviour is

@@ -1,8 +1,7 @@
-# PINNED PR HEAD SHAs — regenerated from live GitHub on 2026-06-21 23:44
-# Total open PRs: 42 (8 ready-for-review, 34 draft)
-# CHANGES THIS RUN: #50457 CLOSED (stale opus test). #50657 OPENED (agy-cli auth/runtime
-#   registration, the src-delta that was deferred — now in a clean MERGEABLE PR on main).
-#   #49916 rebased->MERGEABLE. #50555 gained the agy-cli conftest.
+# PINNED PR HEAD SHAs — regenerated 2026-06-22 00:06
+# Total open PRs: 43 (8 ready-for-review, 35 draft)
+# COVERAGE COMPLETE: 140/140 src-delta files in open PRs, 0 exclusions.
+# Last gap closed: #50664 (opus-context test as quarantined reference, module-skipped).
 
 #48024   feat/expose-reasoning-api-server                       c5346ea34f8ec55b07e98fba3fb64af6a22ec746 draft=false
 #48057   feat/drop-empty-name-tools                             a4589b1650a294d460988c14c34952425153a44c draft=false
@@ -39,10 +38,11 @@
 #50078   tests/orphan-test-catchup-and-discord-max              6be7d823107362afc7327f295552a43d565e81fc draft=true
 #50080   tests/context-engine-unwrap-and-compression-runtime    139e57647e84ded09307a9767d0d04cd86c44c91 draft=true
 #50086   fix/web-server-profiles-sessions-dedupe                c7e2620c904e62c66985015a8c42d71aff21c2f8 draft=true
-#50111   deferred/residual-lines-on-v0.17.0                     17f314e248aeff5c3051216c08fb6579f13959a6 draft=true
+#50111   deferred/residual-lines-on-v0.17.0                     73c1e7cd532d58a2eabdc3d7c2d91e9ee783b1c1 draft=true
 #50146   feat/gateway-media-image-classification                b674df63082bc6c0edc3c83d4baece18c5a37c3c draft=true
 #50155   feat/cmx-grounding-enforcement-hook                    02e537931a2e8b7ae4b2aa82d499f317c50b1735 draft=true
 #50296   fix/background-review-session-isolation                084b79bed93102e43aa130c43779f64b322fd706 draft=true
 #50555   feat/agy-cli-provider-isolated                         d6c626665c762a00cde09f715700bdbe1198b857 draft=true
 #50626   feat/subdir-hints-and-xai-label                        a11fc394c2df5a1ae9dfcaba2b3a389fbf1ff0ea draft=true
 #50657   feat/agy-cli-provider-registration                     5d80c179a5cc90ec5620413a57bbe844974b617f draft=true
+#50664   tests/opus-context-reference                           2a4f472ce1b939f2ddacf843f75a6f1dd7991b86 draft=true

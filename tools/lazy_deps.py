@@ -186,6 +186,19 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
     "tool.vision": ("Pillow==12.2.0",),
+
+    # ─── Native local LLM serving (hermes-local provider) ──────────────────
+    # Powers zero-config built-in inference using llama.cpp. Much easier
+    # than installing/running Ollama or LM Studio yourself. Supports full
+    # GPU offload (-ngl -1) and best-effort NPU hints.
+    "llm.native": (
+        # Note: llama-cpp-python is intentionally NOT included here because the
+        # primary path uses prebuilt llama-server binary for full GPU offload
+        # without Python bindings (avoids Windows build/CUDA wheel issues).
+        # It is only needed if falling back to in-process llama-cpp-python.
+        "huggingface_hub>=0.23.0,<1",
+        "nvidia-ml-py==12.555.43",
+    ),
 }
 
 

@@ -1604,6 +1604,10 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     # ── LM Studio: preload before probing context length ──
     agent._ensure_lmstudio_runtime_loaded()
+    try:
+        agent._ensure_hermes_local_runtime_loaded()
+    except Exception:
+        pass
 
     # ── Update context compressor ──
     if hasattr(agent, "context_compressor") and agent.context_compressor:

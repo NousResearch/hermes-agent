@@ -699,6 +699,34 @@ class AIAgent:
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
+    def _ensure_hermes_local_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
+        """
+        Start (or reuse) the built-in llama.cpp server for hermes-local.
+        Sets agent.base_url to the managed local endpoint.
+        Full GPU offload is handled inside native_llm.
+        """
+        if (self.provider or "").strip().lower() not in {"hermes-local", "hermes_local", "native"}:
+            return
+        try:
+            from hermes_cli.native_llm import resolve_hermes_local_base_url, get_system_resources
+            model = getattr(self, "model", "") or ""
+            url = resolve_hermes_local_base_url(model)
+            if url:
+                self.base_url = url
+                self.api_key = ""  # no key for local
+                # Helpful log for users
+                res = get_system_resources()
+                logger.info(
+                    "Hermes Native LLM active at %s (RAM %.1f/%.1f GB, VRAM %.1f GB, GPU=%s)",
+                    url,
+                    res.get("ram_available_gb", 0),
+                    res.get("ram_total_gb", 0),
+                    res.get("vram_gb", 0),
+                    res.get("gpu_name", "CPU"),
+                )
+        except Exception as err:
+            logger.debug("Hermes-local native server start skipped: %s", err)
+
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model

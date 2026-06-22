@@ -1286,6 +1286,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
         # LM Studio: preload before probing the fallback's context length.
         agent._ensure_lmstudio_runtime_loaded()
+        try:
+            agent._ensure_hermes_local_runtime_loaded()
+        except Exception:
+            pass
 
         # Update context compressor limits for the fallback model.
         # Without this, compression decisions use the primary model's

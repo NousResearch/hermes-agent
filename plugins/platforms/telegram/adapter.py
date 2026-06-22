@@ -467,6 +467,13 @@ class TelegramAdapter(BasePlatformAdapter):
     # Fixes #25710.
     REQUIRES_EDIT_FINALIZE: bool = True
 
+    # In guest mode (answerGuestQuery), the reply must be a single coherent
+    # answer, not a concatenation of all inter-tool commentary segments.
+    # Setting this True tells stream_consumer._send_fallback_final to deliver
+    # only the last segment's text and tag it with "guest_segment_start" so
+    # the send() buffer replaces instead of appending stale preamble.
+    GUEST_MODE_DROPS_PRIOR_SEGMENTS: bool = True
+
     # Adaptive text-batch ingress: short messages need a tighter delay so the
     # first token reaches the agent fast.  Numbers tuned for "feels instant":
     # ≤320 codepoints (one short paragraph) settles in ~180ms; ≤1024

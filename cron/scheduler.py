@@ -2270,7 +2270,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
                 _session_db.set_session_title(_cron_session_id, _cron_title)
             except (Exception, KeyboardInterrupt) as e:
-                logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
+                # Title conflict or DB error — retry with a unique fallback so
+                # the session is never left blank.  Append the session suffix
+                # (includes seconds) to guarantee uniqueness.
+                logger.warning("Job '%s': failed to set cron session title: %s", job_id, e)
+                try:
+                    _fallback_title = f"{_title_base} · {_cron_session_id.split('_')[-1]}"
+                    _session_db.set_session_title(_cron_session_id, _fallback_title)
+                except Exception:
+                    logger.debug("Job '%s': fallback title also failed", job_id, exc_info=True)
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
             except (Exception, KeyboardInterrupt) as e:

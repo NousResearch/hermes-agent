@@ -26,8 +26,12 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
-from hermes_cli.profile_resolver import resolve_assignee
-from hermes_cli.profiles import get_active_profile_name
+from hermes_cli.profile_resolver import _BYPASS_VALUES, resolve_assignee
+from hermes_cli.profiles import (
+    get_active_profile_name,
+    list_profiles,
+    profile_exists,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +188,177 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
         "default); your task will be picked up on the next tick after "
         "the gateway comes up."
     )
+
+
+# ---------------------------------------------------------------------------
+# --assignee lint (cards t_13660393, t_ddcf16e1; merged reaper + r36)
+# ---------------------------------------------------------------------------
+#
+# Why this lives here, not in hermes_cli/profile_resolver.py:
+#   profile_resolver.resolve_assignee() returns the canonical name (or None).
+#   That's the right primitive for the dispatcher and other programmatic
+#   callers, but the CLI's reject path needs three things a pure resolver
+#   can't give it:
+#     1. A user-facing stderr message — including the operator's original
+#        (possibly mixed-case) input so they can spot their own typo.
+#     2. A "Did you mean: <suggestion>?" hint when a close match exists.
+#        This was the explicit LOW-3 ask in the t_f8afafaa WAGS review
+#        and matches every other CLI tool in this codebase.
+#     3. A precise return code (0 = ok, 2 = argparse-convention reject)
+#        so ``_cmd_create`` can ``raise SystemExit(rc)`` without having
+#        to interpret a None result.
+#
+# The earlier r36-only implementation called resolve_assignee() and
+# emitted a one-line "unknown assignee: <name>" with no suggestion.
+# That's the lint that 9 of the assignee_lint tests rejected on
+# "Did you mean: <x>?" assertions — see the merged-tree verification
+# in t_c0d12aca for the test-by-test breakdown. This module-level
+# implementation is the unified path: it produces the canonical
+# reject message, runs the suggester, and emits the hint.
+#
+# Scope (matches the reaper branch's original LOW-3 carve-out):
+#   - This lint runs ONLY in ``_cmd_create`` (the operator-facing CLI
+#     create path). The agent-facing ``kanban_create`` tool surface
+#     (``tools/kanban_tools.py``) is intentionally untouched to
+#     preserve backwards compat for programmatic task creation —
+#     automated orchestrators may legitimately target a profile
+#     that isn't installed in HERMES_HOME (e.g. cross-host spawn).
+#   - The dispatcher's claim-time silent-self-heal is also untouched.
+#     That's a separate bug, scoped to a follow-up card.
+#
+# Out of scope (deliberately not validated here, follow-up card):
+#   - Platform-agent IDs (``BU-022``, ``CEO``, etc.). Today the
+#     roster is Hermes-profile-only. Operators can ``hermes profile
+#     list`` to confirm what counts.
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Pure-Python Levenshtein edit distance.
+
+    Standard textbook DP — O(len(a) * len(b)). Good enough for the
+    ~15-element profile roster; no need to pull in a library.
+    """
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        cur = [i + 1]
+        for j, cb in enumerate(b):
+            ins = cur[j] + 1          # insertion
+            dele = prev[j + 1] + 1    # deletion
+            sub = prev[j] + (0 if ca == cb else 1)  # substitution
+            cur.append(min(ins, dele, sub))
+        prev = cur
+    return prev[-1]
+
+
+def _suggest_profile(name: str) -> Optional[str]:
+    """Return the closest registered profile to ``name``, or None.
+
+    Suggestion policy (per card t_13660393 acceptance criteria):
+      * Levenshtein distance ``<= 2`` against any roster entry, OR
+      * Unique case-insensitive prefix match of length ``>= 3``.
+
+    "Unique" means exactly one roster entry starts with the prefix —
+    if the prefix is ambiguous (e.g. ``co`` matches both
+    ``code-craftsman`` and ``content-curator``), no suggestion is
+    returned. ``list_profiles`` is deterministic (default first, then
+    alphabetical), so ties on Levenshtein distance resolve to the
+    alphabetically-first match.
+    """
+    try:
+        roster = [p.name for p in list_profiles()]
+    except Exception:
+        return None  # can't enumerate — don't suggest a guess
+    if not roster:
+        return None
+    name_l = name.strip().lower()
+    if not name_l:
+        return None
+
+    # 1. Levenshtein <= 2 (closest match wins; ties go to first hit
+    # in roster order, which is default-then-alphabetical).
+    best: Optional[str] = None
+    best_dist = 99
+    for r in roster:
+        d = _levenshtein(name_l, r.lower())
+        if d <= 2 and d < best_dist:
+            best_dist = d
+            best = r
+    if best is not None:
+        return best
+
+    # 2. Unique prefix match of length >= 3.
+    if len(name_l) >= 3:
+        matches = [r for r in roster if r.lower().startswith(name_l)]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def _validate_assignee(name: Optional[str]) -> int:
+    """Reject ghost assignees at the CLI create boundary.
+
+    Returns ``0`` if the assignee is acceptable (None / empty / a
+    registered profile / the documented ``__any__`` bypass value) and
+    ``2`` (argparse convention, same as ``_parse_workspace_flag`` and
+    the ``--max-retries`` guard) if it should be rejected. On
+    rejection, prints a clear error to stderr and — when a close
+    match exists — a ``Did you mean: …`` hint.
+
+    Note: ``profile_exists`` normalizes case (lowercase for named
+    profiles, case-insensitive for the ``default`` alias), so
+    ``--assignee Code-Craftsman`` is accepted on the same path as
+    ``--assignee code-craftsman``. That matches the existing
+    ingress-point normalization pattern in ``hermes_cli.profiles``
+    (see issue #18498 referenced in ``normalize_profile_name``).
+
+    The ``__any__`` bypass is the documented magic value used by
+    automated/orchestrator tooling that doesn't know the host's
+    profile roster ahead of time (the dispatcher claims tasks with
+    this assignee onto whatever profile is free). It is whitelisted
+    in ``hermes_cli.profile_resolver._BYPASS_VALUES``; we honor the
+    same whitelist here so the lint doesn't reject a value the
+    dispatcher is contractually obligated to accept.
+    """
+    if not name:
+        return 0  # unassigned tasks are valid
+    # Honor the documented __any__ bypass whitelist. Without this
+    # short-circuit, profile_exists("__any__") returns False and the
+    # lint would reject a value the dispatcher is contractually
+    # obligated to accept — see tests/hermes_cli/test_kanban_cli.py
+    # ::test_create_with_assignee_any_bypass_allowed.
+    stripped = name.strip() if isinstance(name, str) else ""
+    if stripped in _BYPASS_VALUES:
+        return 0
+    try:
+        if profile_exists(name):
+            return 0
+    except Exception as exc:
+        # If the profile roster itself can't be read, refuse rather
+        # than silently route. Better to make the operator look than
+        # to dispatch a task to an unintended profile.
+        print(
+            f"kanban: assignee {name!r}: unable to verify against the "
+            f"profile roster ({exc!r}). Refusing to create — run "
+            f"`hermes profile list` to confirm installed profiles.",
+            file=sys.stderr,
+        )
+        return 2
+    # Ghost — print the rejection + optional suggestion.
+    print(
+        f"kanban: assignee {name!r} is not a registered Hermes profile. "
+        f"Run `hermes profile list` to see valid profiles.",
+        file=sys.stderr,
+    )
+    suggestion = _suggest_profile(name)
+    if suggestion:
+        print(f"Did you mean: {suggestion}?", file=sys.stderr)
+    return 2
 
 
 # ---------------------------------------------------------------------------
@@ -1289,28 +1464,27 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
-    # --- Assignee lint (card t_ddcf16e1, root-cause fix) -----------------
-    # Resolve the --assignee value through the canonical profile_resolver
-    # BEFORE any DB write. The dispatcher's claim-time silent self-heal
-    # used to mask typos ("CEO" → some other registered profile), so we
-    # catch them at the CLI entry point with a clear stderr message and
-    # exit code 2. Bypass values (`__any__` and the omitted-flag case) are
-    # handled inside resolve_assignee itself; see hermes_cli/profile_resolver.
-    raw_assignee = getattr(args, "assignee", None)
-    resolved_assignee = resolve_assignee(raw_assignee)
-    if raw_assignee and resolved_assignee is None:
-        # Non-empty --assignee that didn't resolve: typo / ghost profile.
-        # Reject loudly without writing a card.
-        print(
-            f"unknown assignee: {raw_assignee}. "
-            "Run `hermes profile list` for valid options.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+    # --- Assignee lint (cards t_13660393, t_ddcf16e1; unified path) ------
+    # Validate the --assignee value at the CLI entry point. The dispatcher's
+    # claim-time silent self-heal used to mask typos ("CEO" → some other
+    # registered profile), so we catch them here with a clear stderr
+    # message and — when a close match exists — a "Did you mean: …?" hint.
+    # Bypass values (`__any__` and the omitted-flag case) are accepted
+    # by _validate_assignee; see _validate_assignee above for the spec.
+    #
+    # NB: ``main.py`` does ``args.func(args)`` and discards the return
+    # value, so a plain ``return 2`` here would exit 0. We
+    # ``raise SystemExit(rc)`` instead — the same pattern used by
+    # ``hermes_cli/doctor.py`` and ``hermes_cli/fallback_cmd.py`` for
+    # arg-validation errors, and the same pattern used by the reaper
+    # branch's pre-merge version of this function.
+    rc = _validate_assignee(args.assignee)
+    if rc != 0:
+        raise SystemExit(rc)
     # Persist the canonical (lowercased) form so the DB row matches the
     # on-disk profile directory name. Mixed-case input like "Code-Craftsman"
-    # becomes "code-craftsman" here.
-    args.assignee = resolved_assignee
+    # becomes "code-craftsman" via profile_exists's case-insensitive lookup.
+    args.assignee = resolve_assignee(args.assignee)
 
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)

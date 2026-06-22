@@ -758,17 +758,28 @@ def test_create_with_valid_assignee_succeeds(assignee_lint):
 def test_create_with_unknown_assignee_exits_2(assignee_lint):
     """Reject path: ghost profile → rc=2, stderr marker, no DB row.
 
-    Acceptance criterion: ``hermes kanban create --assignee ghostname \"x\"``
-    exits 2 with the exact ``unknown assignee: ghostname`` prefix on stderr
-    and writes no card.
+    Acceptance criterion: ``hermes kanban create --assignee ghostname \\"x\\"``
+    exits 2 with a stderr marker identifying ``ghostname`` as not a
+    registered profile, points at ``hermes profile list``, and writes no
+    card.
+
+    Format assertion (unified with the reaper branch's `_validate_assignee`,
+    per card t_fcad5872): ``kanban: assignee 'ghostname' is not a
+    registered Hermes profile.`` — this is the form produced by
+    ``_validate_assignee`` in ``hermes_cli/kanban.py``.
     """
     rc, out, err = assignee_lint.run_create(
         "Test ghost", "--assignee", "ghostname",
         "--body", "smoke", "--created-by", "test",
     )
     assert rc == 2, f"expected rc=2, got {rc}; stdout={out!r}; stderr={err!r}"
-    assert "unknown assignee: ghostname" in err, (
-        f"expected 'unknown assignee: ghostname' in stderr, got: {err!r}"
+    # Unified format: reaper branch's _validate_assignee uses
+    # `kanban: assignee '<name>' is not a registered Hermes profile.`
+    assert "ghostname" in err, (
+        f"expected 'ghostname' in stderr, got: {err!r}"
+    )
+    assert "is not a registered Hermes profile" in err, (
+        f"expected 'is not a registered Hermes profile' in stderr, got: {err!r}"
     )
     # Stderr should also point the operator at the help command advertised
     # by the codebase (see hermes_cli/profiles.py and existing kanban CLI

@@ -2370,9 +2370,11 @@ function resolveWebDist() {
   if (IS_PACKAGED && /app\.asar(?=$|[\\/])/.test(fallback) && !directoryExists(fallback)) {
     rememberLog(
       `[web-dist] dashboard frontend dir resolved to an asar-internal path that ` +
-        `is not a real directory: ${fallback}. Static routes will 404. ` +
-        `Ensure dist/** is unpacked (asarUnpack) or set HERMES_DESKTOP_WEB_DIST.`
+        `is not a real directory: ${fallback}. ` +
+        `Falling back to Python backend's built-in web_dist. ` +
+        `To suppress this rebuild, set HERMES_DESKTOP_WEB_DIST or ensure dist/** is unpacked.`
     )
+    return ''
   }
   return fallback
 }
@@ -5151,7 +5153,10 @@ async function startHermes() {
           // Marks this dashboard backend as desktop-spawned so it runs the cron
           // scheduler tick loop (the gateway isn't running under the app).
           HERMES_DESKTOP: '1',
-          HERMES_WEB_DIST: webDist
+          // Only pass HERMES_WEB_DIST if it resolves to a real directory; when
+          // empty the Python backend falls through to its own built-in web_dist
+          // (avoiding a redundant npm build or 404s from a fake asar path).
+          ...(webDist ? { HERMES_WEB_DIST: webDist } : {}),
         },
         shell: backend.shell,
         stdio: ['ignore', 'pipe', 'pipe']

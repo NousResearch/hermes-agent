@@ -1,295 +1,392 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>superattention.ai Growth Console</title>
+    <title>superattention.ai | AI Command Center</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Playfair+Display:wght@700;800&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Geist:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div class="noise"></div>
-    <div class="orb orb-a"></div>
-    <div class="orb orb-b"></div>
-    <div class="orb orb-c"></div>
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-icon">
+          <span class="material-symbols-outlined">bolt</span>
+        </div>
+        <div>
+          <strong>superattention.ai</strong>
+          <small>AI Command Center</small>
+        </div>
+      </div>
 
-    <main class="shell">
-      <nav class="nav">
-        <div class="brand-mark">
-          <span class="brand-spark"></span>
-          <div>
-            <strong>superattention.ai</strong>
-            <small>AI growth system for early brands</small>
-          </div>
-        </div>
-        <div class="nav-pills">
-          <button class="pill active" data-jump="setup">Setup</button>
-          <button class="pill" data-jump="command">Command Center</button>
-          <button class="pill" data-jump="content">Content</button>
-          <button class="pill" data-jump="tracker">Tracker</button>
-        </div>
+      <nav class="sidebar-nav" id="sidebarNav">
+        <button class="nav-link active" data-view="dashboard" type="button">
+          <span class="material-symbols-outlined">dashboard</span>
+          Dashboard
+        </button>
+        <button class="nav-link" data-view="setup" type="button">
+          <span class="material-symbols-outlined">settings</span>
+          Brand Setup
+        </button>
+        <button class="nav-link" data-view="campaign" type="button">
+          <span class="material-symbols-outlined">campaign</span>
+          Campaign Console
+        </button>
+        <button class="nav-link" data-view="content" type="button">
+          <span class="material-symbols-outlined">movie_edit</span>
+          Content Studio
+        </button>
+        <button class="nav-link" data-view="tracker" type="button">
+          <span class="material-symbols-outlined">trending_up</span>
+          Growth Tracker
+        </button>
       </nav>
 
-      <section id="setup" class="hero panel product-hero">
-        <div class="hero-copy">
-          <div class="eyebrow">From attention to revenue</div>
-          <h1>Build this week’s growth system.</h1>
-          <p>
-            Enter a real product, audience, and revenue goal. superattention.ai
-            turns it into a focused growth command center, not a document dump.
-          </p>
-          <div class="hero-actions">
-            <button class="primary-action" data-jump="generator">
-              Create growth plan
-            </button>
-            <button class="ghost-action" id="loadSample" type="button">
-              Load pickle example
-            </button>
-          </div>
+      <div class="sidebar-footer">
+        <button class="btn-primary sidebar-cta" data-view="setup" type="button">
+          New Campaign
+        </button>
+        <a class="nav-link muted" href="#"><span class="material-symbols-outlined">help</span> Support</a>
+      </div>
+    </aside>
+
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="topbar-brand-block">
+          <span class="label">Current Brand</span>
+          <strong id="topBrandName">No brand selected</strong>
+        </div>
+        <div class="topbar-divider"></div>
+        <div class="topbar-meta">
+          <span class="goal-chip" id="topGoalChip">Current Goal: --</span>
+          <span class="label muted" id="topDaysRemaining">30 days remaining</span>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <button class="btn-secondary" id="optimizeBtn" type="button">Optimize Now</button>
+        <button class="icon-btn" type="button" aria-label="Notifications">
+          <span class="material-symbols-outlined">notifications</span>
+        </button>
+        <div class="avatar" aria-hidden="true"></div>
+      </div>
+    </header>
+
+    <main class="canvas">
+      <!-- Dashboard -->
+      <section class="view active" id="view-dashboard" data-view="dashboard">
+        <div class="hero-banner glass-card">
+          <h1>superattention.ai</h1>
+          <p>Turn attention into revenue.</p>
         </div>
 
-        <div class="growth-card empty-card" id="heroCard">
-          <div class="card-header">
-            <span id="heroBrandName">No brand selected</span>
-            <strong id="heroProductName">Create a plan</strong>
-          </div>
-          <div class="revenue-ring">
-            <svg viewBox="0 0 160 160" aria-label="Revenue progress">
-              <circle class="ring-bg" cx="80" cy="80" r="68"></circle>
-              <circle class="ring-progress idle" cx="80" cy="80" r="68"></circle>
-            </svg>
-            <div class="ring-copy">
-              <span>Goal</span>
-              <strong id="heroRevenueTarget">--</strong>
-              <small id="heroOrderTarget">Add goal + price</small>
+        <div class="bento-grid">
+          <div class="glass-card progress-card ai-pulse">
+            <div class="progress-ring">
+              <svg viewBox="0 0 192 192" aria-label="Goal progress">
+                <circle class="ring-track" cx="96" cy="96" r="88"></circle>
+                <circle class="ring-fill" cx="96" cy="96" r="88" id="dashboardRing"></circle>
+              </svg>
+              <div class="ring-center">
+                <span class="mono-data" id="dashboardUnits">0</span>
+                <span class="label">Units target</span>
+              </div>
+            </div>
+            <div class="progress-meta">
+              <h4 id="dashboardGoalLabel">Goal: add setup</h4>
+              <p id="dashboardRevenueLabel">Target revenue: --</p>
             </div>
           </div>
-          <div class="metric-grid">
-            <div>
-              <span>Price</span>
-              <strong id="heroPrice">--</strong>
-              <small>per unit</small>
+
+          <div class="metrics-row">
+            <div class="glass-card metric-card">
+              <div class="metric-top">
+                <span class="material-symbols-outlined text-primary">visibility</span>
+                <span class="growth-chip" id="metricViewsDelta">--</span>
+              </div>
+              <span class="label">Total Views</span>
+              <strong class="mono-data" id="metricViews">0</strong>
+              <div class="spark-bars" id="sparkViews"></div>
             </div>
-            <div>
-              <span>Channel</span>
-              <strong id="heroChannel">--</strong>
-              <small>primary</small>
+            <div class="glass-card metric-card">
+              <div class="metric-top">
+                <span class="material-symbols-outlined text-tertiary">chat</span>
+                <span class="growth-chip" id="metricInquiriesDelta">--</span>
+              </div>
+              <span class="label">Inquiries</span>
+              <strong class="mono-data" id="metricInquiries">0</strong>
+              <div class="spark-bars tertiary" id="sparkInquiries"></div>
             </div>
-            <div>
-              <span>Status</span>
-              <strong id="heroStatus">Draft</strong>
-              <small>not generated</small>
+            <div class="glass-card metric-card">
+              <div class="metric-top">
+                <span class="material-symbols-outlined text-secondary">shopping_cart</span>
+                <span class="growth-chip" id="metricOrdersDelta">--</span>
+              </div>
+              <span class="label">Orders</span>
+              <strong class="mono-data" id="metricOrders">0</strong>
+              <div class="spark-bars secondary" id="sparkOrders"></div>
+            </div>
+
+            <div class="glass-card campaign-card wide">
+              <div class="campaign-card-inner">
+                <div class="campaign-visual">
+                  <span class="live-badge" id="dashboardLiveBadge">Draft</span>
+                </div>
+                <div class="campaign-copy">
+                  <div class="campaign-head">
+                    <div>
+                      <h4 id="dashboardProductName">No active campaign</h4>
+                      <p id="dashboardPositioning">Configure brand setup and generate a plan.</p>
+                    </div>
+                    <span class="status-pill" id="dashboardStatusPill">SETUP</span>
+                  </div>
+                  <div class="mini-stats">
+                    <div><span class="label">Goal</span><strong class="mono-data" id="dashStatGoal">--</strong></div>
+                    <div><span class="label">Channel</span><strong class="mono-data" id="dashStatChannel">--</strong></div>
+                    <div><span class="label">Revenue</span><strong class="mono-data" id="dashStatRevenue">₹0</strong></div>
+                    <div><span class="label">Progress</span><strong class="mono-data text-secondary" id="dashStatProgress">0%</strong></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="glass-card ai-insight" id="dashboardInsight">
+            <div class="ai-insight-icon">
+              <span class="material-symbols-outlined">smart_toy</span>
+            </div>
+            <div class="ai-insight-body">
+              <div class="ai-insight-label">
+                <span>AI Strategic Move</span>
+                <div class="line"></div>
+              </div>
+              <h4 id="insightTitle">Start with Brand Setup</h4>
+              <p id="insightBody">
+                Enter your product, audience, and revenue goal. superattention.ai will build a
+                30-day growth command center—not a document dump.
+              </p>
+              <div class="ai-insight-actions">
+                <button class="btn-primary" data-view="setup" type="button">Open Brand Setup</button>
+              </div>
             </div>
           </div>
         </div>
       </section>
 
-      <section class="engine-strip">
-        <article>
-          <span>01</span>
-          <strong>Attention</strong>
-          <p>Choose the moments and channels that create demand.</p>
-        </article>
-        <article>
-          <span>02</span>
-          <strong>Conversion</strong>
-          <p>Turn interest into WhatsApp, website, or store orders.</p>
-        </article>
-        <article>
-          <span>03</span>
-          <strong>Retention</strong>
-          <p>Push repeat orders, referrals, reviews, and community loops.</p>
-        </article>
-        <article>
-          <span>04</span>
-          <strong>Learning</strong>
-          <p>Track signals and decide what to double down on next.</p>
-        </article>
-      </section>
-
-      <section id="generator" class="section generator panel">
-        <div class="section-title">
-          <span>Production V1</span>
-          <h2>Campaign setup</h2>
+      <!-- Brand Setup -->
+      <section class="view" id="view-setup" data-view="setup">
+        <header class="page-header">
+          <h1>Configure Your <span class="gradient-text">Brand Core</span></h1>
           <p>
-            Nothing is hardcoded. Start with any product, from Aam ka Achar to a
-            restaurant lunch offer.
+            Refine your AI focus. Enter a real product, audience, and revenue goal—nothing is
+            hardcoded.
           </p>
-        </div>
+        </header>
 
-        <div class="generator-layout clean-generator">
-          <form class="generator-form" id="generatorForm">
-            <label>
-              Brand name
+        <div class="setup-grid">
+          <form class="glass-card setup-form" id="generatorForm">
+            <div class="form-block">
+              <label class="field-label"><span class="material-symbols-outlined">label</span> Brand Identity</label>
               <input name="brandName" placeholder="e.g. The Pickle Romance" required />
-            </label>
-            <label>
-              Category
+            </div>
+            <div class="form-block">
+              <label class="field-label"><span class="material-symbols-outlined">inventory_2</span> Category</label>
               <input name="category" placeholder="e.g. Homemade Indian pickles" required />
-            </label>
-            <label>
-              Product
-              <input name="product" placeholder="e.g. Teekhi Hari Mirch" required />
-            </label>
-            <label>
-              Price
-              <input name="price" placeholder="e.g. Rs. 300" required />
-            </label>
-            <label class="wide">
-              Offer
-              <input
-                name="offer"
-                placeholder="e.g. 400g non-oily Teekhi Hari Mirch jar"
-                required
-              />
-            </label>
-            <label class="wide">
-              Target customer
-              <textarea
-                name="audience"
-                placeholder="Who exactly should buy this and what hesitation do they have?"
-                required
-              ></textarea>
-            </label>
-            <label>
-              Current monthly revenue
-              <input name="currentRevenue" placeholder="e.g. Rs. 10,000" required />
-            </label>
-            <label>
-              Revenue goal
-              <input name="revenueGoal" placeholder="e.g. Rs. 50,000 in 30 days" required />
-            </label>
-            <label>
-              Order channel
-              <input name="orderChannel" placeholder="e.g. WhatsApp + UPI" required />
-            </label>
-            <label>
-              Delivery area
-              <input name="deliveryArea" placeholder="e.g. Faridabad + Delhi NCR" required />
-            </label>
-            <label>
-              Content capacity
-              <input name="contentCapacity" placeholder="e.g. 4 Reels per week" required />
-            </label>
-            <label>
-              Brand tone
-              <input name="brandTone" placeholder="e.g. bold, homemade, witty" required />
-            </label>
+            </div>
+            <div class="form-block">
+              <label class="field-label"><span class="material-symbols-outlined">inventory_2</span> Main Product</label>
+              <input name="product" placeholder="e.g. Aam ka Achar" required />
+            </div>
+            <div class="form-row">
+              <div class="form-block">
+                <label class="field-label">Price</label>
+                <input name="price" placeholder="e.g. Rs. 399" required />
+              </div>
+              <div class="form-block">
+                <label class="field-label">Current revenue</label>
+                <input name="currentRevenue" placeholder="e.g. Rs. 10,000" required />
+              </div>
+            </div>
+            <div class="form-block">
+              <label class="field-label">Offer</label>
+              <input name="offer" placeholder="e.g. 700g non-oily jar" required />
+            </div>
+            <div class="form-block">
+              <label class="field-label"><span class="material-symbols-outlined">groups</span> Target Audience</label>
+              <textarea name="audience" placeholder="Who buys this and what hesitation do they have?" required></textarea>
+            </div>
+            <div class="form-row">
+              <div class="form-block">
+                <label class="field-label"><span class="material-symbols-outlined">target</span> Revenue Goal</label>
+                <input name="revenueGoal" placeholder="e.g. Rs. 50,000 in 30 days" required />
+              </div>
+              <div class="form-block">
+                <label class="field-label">Order channel</label>
+                <input name="orderChannel" placeholder="e.g. WhatsApp + UPI" required />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-block">
+                <label class="field-label">Delivery area</label>
+                <input name="deliveryArea" placeholder="e.g. Faridabad + Delhi NCR" required />
+              </div>
+              <div class="form-block">
+                <label class="field-label">Content capacity</label>
+                <input name="contentCapacity" placeholder="e.g. 4 Reels per week" required />
+              </div>
+            </div>
+            <div class="form-block">
+              <label class="field-label">Brand tone</label>
+              <input name="brandTone" placeholder="e.g. homemade, nostalgic, trustworthy" required />
+            </div>
 
-            <fieldset class="channel-field wide">
-              <legend>Growth engines</legend>
+            <fieldset class="channel-field">
+              <legend><span class="material-symbols-outlined">hub</span> Marketing Channels</legend>
               <label><input type="checkbox" name="channels" value="Instagram Reels" checked /> Instagram Reels</label>
-              <label><input type="checkbox" name="channels" value="Website conversion" /> Website conversion</label>
-              <label><input type="checkbox" name="channels" value="WhatsApp campaign" checked /> WhatsApp campaign</label>
-              <label><input type="checkbox" name="channels" value="Email campaign" /> Email campaign</label>
-              <label><input type="checkbox" name="channels" value="Founder LinkedIn" /> Founder LinkedIn</label>
+              <label><input type="checkbox" name="channels" value="Website conversion" /> One-page Website</label>
+              <label><input type="checkbox" name="channels" value="WhatsApp campaign" checked /> WhatsApp</label>
+              <label><input type="checkbox" name="channels" value="Email campaign" /> Email</label>
+              <label><input type="checkbox" name="channels" value="Founder LinkedIn" /> LinkedIn</label>
             </fieldset>
 
-            <button class="primary-action wide" type="submit">
-              Generate growth system
-            </button>
+            <div class="form-actions">
+              <button class="btn-ghost" id="loadSample" type="button">Load pickle example</button>
+              <button class="btn-primary" type="submit">Generate growth system</button>
+            </div>
           </form>
 
-          <aside class="operator-panel">
-            <span>Operator brief</span>
+          <aside class="glass-card setup-side">
+            <span class="label">Operator brief</span>
             <h3 id="briefTitle">Waiting for inputs</h3>
-            <p id="briefCopy">
-              Add a product and revenue goal. The command center will unlock
-              after AI generation.
-            </p>
+            <p id="briefCopy">Add a product and revenue goal. The command center unlocks after AI generation.</p>
             <div class="brief-stack" id="briefStack"></div>
+            <div class="goal-card">
+              <span class="label"><span class="material-symbols-outlined">target</span> 30-Day Goal</span>
+              <div class="goal-value" id="sideGoalValue">--</div>
+              <div class="goal-bar"><div id="sideGoalBar" style="width: 0%"></div></div>
+              <p class="goal-tip" id="sideGoalTip">Complete setup to see AI probability insights.</p>
+            </div>
           </aside>
         </div>
       </section>
 
-      <section id="command" class="section">
-        <div class="section-title">
-          <span>Command Center</span>
-          <h2 id="campaignProductName">No active campaign</h2>
-          <p id="campaignSummary">
-            Generate a plan to see diagnosis, weekly sprints, experiments, and
-            next actions.
-          </p>
-        </div>
+      <!-- Campaign Console -->
+      <section class="view" id="view-campaign" data-view="campaign">
+        <header class="page-header row">
+          <div>
+            <span class="label text-primary">Campaign Console</span>
+            <h2 id="campaignProductName">No active campaign</h2>
+            <p id="campaignSummary">Generate a plan to see diagnosis, weekly sprints, and next actions.</p>
+          </div>
+          <div class="page-actions">
+            <span class="ai-projection" id="campaignProjection">AI Projection: pending</span>
+          </div>
+        </header>
+
         <div id="commandCenter" class="command-empty">
+          <span class="material-symbols-outlined empty-icon">campaign</span>
           <h3>No plan generated yet</h3>
-          <p>
-            This area will become your weekly growth operating room after you
-            click Generate growth system.
-          </p>
+          <p>Complete Brand Setup and click Generate growth system to unlock your 30-day roadmap.</p>
+          <button class="btn-primary" data-view="setup" type="button">Go to Brand Setup</button>
         </div>
       </section>
 
-      <section id="content" class="section studio-grid">
-        <div class="section-title sticky-title">
-          <span>Content Studio</span>
-          <h2>Assets to execute</h2>
-          <p>
-            Reels, WhatsApp, website, and LinkedIn assets appear here after a
-            plan is generated.
-          </p>
-          <div class="tab-list" id="assetTabs"></div>
-        </div>
-        <div class="asset-stage">
-          <div class="asset-card empty-state" id="assetCard">
+      <!-- Content Studio -->
+      <section class="view" id="view-content" data-view="content">
+        <header class="page-header row">
+          <div>
+            <h2 id="contentStudioTitle">Content Studio</h2>
+            <div class="studio-meta">
+              <span class="ai-badge" id="contentAiBadge">AI Content pending</span>
+              <span class="muted" id="contentUpdated">Generate a plan first</span>
+            </div>
+          </div>
+        </header>
+
+        <div class="content-bento" id="contentBento">
+          <div class="glass-card empty-studio">
+            <span class="material-symbols-outlined empty-icon">movie_edit</span>
             <h3>No assets yet</h3>
-            <p>Generate a growth system to unlock copy-ready content.</p>
-          </div>
-          <div class="reel-builder panel">
-            <div class="builder-header">
-              <span>V2 preview</span>
-              <strong>Asset-to-Reel Builder</strong>
-            </div>
-            <div class="upload-grid">
-              <div class="upload-slot">Product photo</div>
-              <div class="upload-slot">Food/use case</div>
-              <div class="upload-slot">Founder clip</div>
-              <div class="upload-slot">Review proof</div>
-            </div>
-            <ol class="scene-list">
-              <li>Upload real brand assets</li>
-              <li>Pick the strongest sales angle</li>
-              <li>Generate storyboard and overlays</li>
-              <li>Export a Reel draft</li>
-            </ol>
+            <p>Reels, WhatsApp, website, and LinkedIn copy appear here after plan generation.</p>
           </div>
         </div>
       </section>
 
-      <section id="tracker" class="section tracker panel">
-        <div class="section-title">
-          <span>Growth Tracker</span>
-          <h2>Signals to decisions</h2>
-          <p>
-            Add results manually. superattention.ai turns the numbers into next
-            actions.
-          </p>
-        </div>
-        <div class="tracker-layout">
-          <form class="tracker-form" id="trackerForm">
-            <label>
-              Views / reach
-              <input type="number" name="views" value="0" min="0" />
-            </label>
-            <label>
-              Inquiries
-              <input type="number" name="inquiries" value="0" min="0" />
-            </label>
-            <label>
-              Orders
-              <input type="number" name="orders" value="0" min="0" />
-            </label>
-            <label>
-              Revenue
-              <input type="number" name="revenue" value="0" min="0" />
-            </label>
+      <!-- Growth Tracker -->
+      <section class="view" id="view-tracker" data-view="tracker">
+        <header class="page-header row">
+          <div>
+            <h2>Growth Tracker</h2>
+            <p>Close the feedback loop. Log results manually and let AI steer the next move.</p>
+          </div>
+          <span class="live-indicator"><span class="dot"></span> Predictive Intelligence Active</span>
+        </header>
+
+        <div class="tracker-grid">
+          <form class="glass-card tracker-form" id="trackerForm">
+            <div class="form-header">
+              <h4><span class="material-symbols-outlined text-primary">edit_note</span> Manual Metric Input</h4>
+              <span class="label muted">Current Week</span>
+            </div>
+            <div class="form-row">
+              <label>Views<input type="number" name="views" value="0" min="0" /></label>
+              <label>Saves<input type="number" name="saves" value="0" min="0" /></label>
+            </div>
+            <div class="form-row">
+              <label>Shares<input type="number" name="shares" value="0" min="0" /></label>
+              <label>Inquiries<input type="number" name="inquiries" value="0" min="0" /></label>
+            </div>
+            <label>WhatsApp clicks<input type="number" name="whatsappClicks" value="0" min="0" /></label>
+            <div class="form-row highlight-row">
+              <label>Orders<input type="number" name="orders" value="0" min="0" /></label>
+              <label>Revenue (₹)<input type="number" name="revenue" value="0" min="0" /></label>
+            </div>
+            <button class="btn-secondary full" type="button" id="syncMetrics">Sync Metrics</button>
           </form>
-          <div class="insight-card" id="insightCard"></div>
+
+          <div class="tracker-main">
+            <div class="glass-card chart-card">
+              <div class="chart-header">
+                <div>
+                  <h4>Weekly Performance</h4>
+                  <p class="muted" id="chartGoalLabel">Gap analysis against target</p>
+                </div>
+                <div class="chart-legend">
+                  <span><i class="dot-primary"></i> Goal pace</span>
+                  <span><i class="dot-secondary"></i> Current</span>
+                </div>
+              </div>
+              <div class="chart-bars" id="chartBars"></div>
+              <div class="chart-footer">
+                <div><span class="label">Revenue gap</span><strong class="mono-data" id="revenueGap">--</strong></div>
+                <div><span class="label">Avg. order</span><strong class="mono-data" id="avgOrder">--</strong></div>
+                <div><span class="growth-chip solid" id="revenueGrowthChip">+0% Revenue</span></div>
+              </div>
+            </div>
+
+            <div class="tracker-insights">
+              <div class="glass-card ai-strategy" id="insightCard"></div>
+              <div class="glass-card objection-card">
+                <h4><span class="material-symbols-outlined">forum</span> Top Customer Objection</h4>
+                <blockquote id="objectionQuote">"Price seems high compared to local markets."</blockquote>
+                <div class="objection-tip">
+                  <span class="material-symbols-outlined text-secondary">lightbulb</span>
+                  <div>
+                    <span class="label text-secondary">Recommendation</span>
+                    <p id="objectionTip">Highlight premium ingredients and founder delivery. Use behind-the-scenes content to justify craft pricing.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
     </main>

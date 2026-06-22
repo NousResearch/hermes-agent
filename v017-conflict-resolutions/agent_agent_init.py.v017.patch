@@ -1,0 +1,22 @@
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index 2d4432413..3e9cc825a 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -1095,6 +1095,17 @@ def init_agent(
+     agent._parent_session_id = parent_session_id
+     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
+     agent._session_db_created = False  # DB row deferred to run_conversation()
++    # Most agents own their session row and should finalize it on close().
++    # Some temporary helper agents (manual compression / session-hygiene /
++    # background-review forks) rotate or share the session forward to a
++    # continuation row that must remain open after the helper is torn down;
++    # those callers explicitly set this flag to False.
++    agent._end_session_on_close = True
++    # When True, this agent NEVER persists to the canonical session store
++    # (state.db) or the JSON snapshot, regardless of session_id. Set on the
++    # background skill/memory review fork so its harness turn can't leak into
++    # the user's real session and hijack the next live turn. Default False.
++    agent._persist_disabled = False
+     agent._session_init_model_config = {
+         "max_iterations": agent.max_iterations,
+         "reasoning_config": reasoning_config,

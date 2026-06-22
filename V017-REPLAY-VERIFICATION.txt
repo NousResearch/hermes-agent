@@ -1,0 +1,66 @@
+# v0.17.0 REPLAY VERIFICATION
+# Generated 2026-06-21. Answers the Council demand: prove the PR set is usable on
+# top of v0.17.0 (2bd1977d8), not just coverage-complete vs v0.16.0 (3c231eb3).
+#
+# Method: clean v0.17.0 worktree (git worktree add --detach 2bd1977d8). Each PR's
+# net diff (git diff origin/main...<head>) applied with `git apply`, falling back to
+# `git apply --3way`. The FULL set was also stacked in sequence. The earlier
+# `git apply --check --3way` was unreliable (optimistic) — these numbers come from
+# ACTUAL applies, with conflict markers inspected.
+
+== PER-PR APPLY ONTO v0.17.0 (2bd1977d8) ==
+  Plain `git apply` clean        : 36 / 42 PRs
+  Required conflict resolution   :  6 / 42 PRs (all benign, all resolved below)
+  Hard/unresolvable conflicts    :  0
+
+  The 6 that conflicted (v0.17.0 moved lines these PRs also touch):
+
+  #49644 hermes_cli/commands.py
+     SUPERSET: v0.17.0 has the base /reasoning subcommand list; the PR adds
+     "max"/"full"/"clamp". Resolution: take the PR's superset list.
+
+  #50033 agent/gemini_cloudcode_adapter.py
+     ADDITIVE: v0.17.0 created this file without the google_user_agent import;
+     the PR adds it. Resolution: take the PR's added import (ours-side empty).
+
+  #50056 tests/hermes_cli/test_kanban_db.py
+     BOTH-ADD imports: v0.17.0 added `import sqlite3`, the PR added
+     `import subprocess`. Resolution: keep BOTH imports.
+
+  #50064 tests/run_agent/test_provider_attribution_headers.py
+     ADDITIVE: v0.17.0 added new tests at the same spot the PR adds its tests
+     (ours-side empty). Resolution: keep the PR's added tests.
+
+  #50073 hermes_cli/config.py
+     CONTEXT-DRIFT (no real decision): the PR's actual change is adding 3 keys
+     (max_attempts, chunk_oversized_input, never_413). The conflicting line
+     `hygiene_hard_message_limit` is UNCHANGED context the PR doesn't modify —
+     origin/main has 5000, v0.17.0 deliberately lowered it to 400. Resolution:
+     add the PR's 3 keys, KEEP v0.17.0's value (400). The PR does not revert it.
+
+  #50296 agent/agent_init.py
+     ADDITIVE: ours-side empty; the PR adds its block. Resolution: take theirs.
+
+== FULL STACKED REPLAY (all 42 PRs in sequence onto v0.17.0) ==
+  35 apply plainly, 7 need resolution (the 6 above + #49917 conflicts only in the
+  stacked context, auto-resolves additively), 0 failures.
+  Residual conflict markers across the whole tree : 0
+    (the only `<<<<<<<` strings in v0.17.0 are STRING LITERALS in
+     tests/hermes_cli/test_update_post_pull_syntax_guard.py, a v0.17.0 fixture that
+     tests merge-marker detection — not a real residual.)
+  Changed .py files in the stacked tree           : 82
+  Compile failures                                 : 0
+
+== COVERAGE (exact set equality vs v0.16.0) ==
+  src delta (real) : 140 files   -> ALL in open PRs (FILE-TO-PR-MAP.txt), 0 missing
+  PR-union extras  : 14 files    -> all PR-authored NET-NEW (new tests/docs the PR
+                                    ships; not present in the private overlay), e.g.
+                                    test_reasoning_max_effort.py, FORWARD-COMPAT-v017.md.
+  DISCARD          : 25 files    = 9 .bak + 12 .project-intel/ + 4 transcripts/
+
+== VERDICT ==
+  42/42 PRs replay onto v0.17.0 (36 clean + 6 benign-resolved, 0 hard conflicts).
+  Full stack compiles. Coverage vs v0.16.0 is exact (140 src, 0 orphans). The 6
+  resolutions are mechanical (4 additive, 1 superset, 1 keep-both, 1 context-drift)
+  — documented above so a re-application onto v0.17.0 is deterministic.
+  Reproduce: `bash REPRODUCE.sh <checkout>` (now uses git-diff union, not gh --files).

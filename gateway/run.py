@@ -14733,13 +14733,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
                 # Single-line, capped preview for non-verbose modes.
+                # tool_preview_length == 0 means "no limit" (#51067); only a
+                # positive value caps the preview. Unset resolves to the
+                # platform default (40) upstream, so this preserves the compact
+                # default while honoring an explicit 0. Reuse _truncate_preview,
+                # which already encodes the 0-is-unlimited contract.
+                from agent.display import _truncate_preview
                 _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
                 _lines = _cmd_full.splitlines()
                 _cmd_short = _lines[0] if _lines else _cmd_full
                 _multiline = len(_lines) > 1
-                if len(_cmd_short) > _cap:
-                    _cmd_short = _cmd_short[:_cap - 3] + "..."
+                _capped = _truncate_preview(_cmd_short, _pl)
+                if _capped != _cmd_short:
+                    _cmd_short = _capped
                 elif _multiline:
                     _cmd_short = _cmd_short + " ..."
                 _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
@@ -14777,11 +14783,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 msg = _code_block_short
                 last_was_terminal_block[0] = True
             elif preview:
-                from agent.display import get_tool_preview_max_len
+                # tool_preview_length == 0 means "no limit" (#51067).
+                from agent.display import get_tool_preview_max_len, _truncate_preview
                 _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
+                preview = _truncate_preview(preview, _pl)
                 msg = f"{emoji} {tool_name}: \"{preview}\""
                 last_was_terminal_block[0] = False
             else:

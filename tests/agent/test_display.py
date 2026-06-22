@@ -12,6 +12,7 @@ from agent.display import (
     set_tool_preview_max_len,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
+    _truncate_preview,
     render_edit_diff_with_delta,
 )
 
@@ -21,6 +22,26 @@ def reset_tool_preview_max_len():
     set_tool_preview_max_len(0)
     yield
     set_tool_preview_max_len(0)
+
+
+class TestTruncatePreviewZeroIsUnlimited:
+    """The gateway progress previews reuse _truncate_preview; pin the contract
+    that tool_preview_length == 0 means 'no limit', not a falsy 40-char cap
+    (#51067)."""
+
+    def test_zero_means_unlimited(self):
+        long = "x" * 500
+        assert _truncate_preview(long, 0) == long
+
+    def test_positive_caps_with_ellipsis(self):
+        assert _truncate_preview("hello world", 8) == "hello..."
+
+    def test_short_text_unchanged(self):
+        assert _truncate_preview("short", 40) == "short"
+
+    def test_none_means_unlimited(self):
+        long = "y" * 200
+        assert _truncate_preview(long, None) == long
 
 
 class TestBuildToolPreview:

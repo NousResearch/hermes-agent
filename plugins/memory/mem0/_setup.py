@@ -407,12 +407,13 @@ def _ensure_pgvector(host: str = "localhost", port: int = 5432) -> dict | None:
         try:
             result = subprocess.run(
                 ["docker", "inspect", _PGVECTOR_CONTAINER, "--format", "{{.State.Status}}"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
             )
             if result.returncode == 0 and "exited" in result.stdout:
                 print(f"  Found stopped container '{_PGVECTOR_CONTAINER}', restarting...")
                 subprocess.run(["docker", "start", _PGVECTOR_CONTAINER],
-                               capture_output=True, timeout=15)
+                               capture_output=True, timeout=15,
+                               stdin=subprocess.DEVNULL)
                 _wait_for_port(host, port, timeout=15)
                 ok, _ = _check_pgvector(host, port)
                 if ok:
@@ -438,11 +439,13 @@ def _start_pgvector_docker(host: str, port: int) -> dict | None:
     try:
         print(f"  Pulling {_PGVECTOR_IMAGE}...")
         subprocess.run(["docker", "pull", _PGVECTOR_IMAGE],
-                       capture_output=True, timeout=120)
+                       capture_output=True, timeout=120,
+                       stdin=subprocess.DEVNULL)
 
         # Remove existing container if present
         subprocess.run(["docker", "rm", "-f", _PGVECTOR_CONTAINER],
-                       capture_output=True, timeout=10)
+                       capture_output=True, timeout=10,
+                       stdin=subprocess.DEVNULL)
 
         print(f"  Starting container '{_PGVECTOR_CONTAINER}' on port {port}...")
         subprocess.run([
@@ -451,7 +454,7 @@ def _start_pgvector_docker(host: str, port: int) -> dict | None:
             "-e", f"POSTGRES_PASSWORD={_PGVECTOR_PASSWORD}",
             "-p", f"{port}:5432",
             _PGVECTOR_IMAGE,
-        ], capture_output=True, timeout=30, check=True)
+        ], capture_output=True, timeout=30, check=True, stdin=subprocess.DEVNULL)
 
         _wait_for_port(host, port, timeout=20)
         ok, _ = _check_pgvector(host, port)
@@ -518,7 +521,8 @@ def _ensure_ollama(models: list[str]) -> bool:
         else:
             print(f"  Pulling '{model}'... (this may take a few minutes)")
             try:
-                subprocess.run([ollama_bin or "ollama", "pull", model], timeout=600)
+                subprocess.run([ollama_bin or "ollama", "pull", model], timeout=600,
+                               stdin=subprocess.DEVNULL)
                 print(f"  ✓ Model '{model}' pulled")
             except Exception as e:
                 print(f"  Warning: Could not pull '{model}': {e}")

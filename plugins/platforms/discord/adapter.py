@@ -1472,6 +1472,17 @@ class DiscordAdapter(BasePlatformAdapter):
             mutation_count += 1
             return result
 
+        # CRITICAL: Delete obsolete commands FIRST to stay under Discord's 100-command
+        # limit. If we try to create new commands before deleting old ones, we risk
+        # temporarily exceeding 100 (error 30032), which silently breaks ALL slash
+        # commands. This pass identifies and deletes commands that are in Discord
+        # but no longer in the desired set.
+        obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
+        for key in obsolete_keys:
+            current = existing_by_key.pop(key)
+            await mutate(http.delete_global_command, app_id, current.id)
+            deleted += 1
+
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:
@@ -1494,10 +1505,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
             await mutate(http.edit_global_command, app_id, current.id, desired)
             updated += 1
-
-        for current in existing_by_key.values():
-            await mutate(http.delete_global_command, app_id, current.id)
-            deleted += 1
 
         return {
             "total": len(desired_payloads),

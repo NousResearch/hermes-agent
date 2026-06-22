@@ -1371,6 +1371,25 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
 
+    def build_handoff_summary(
+        self, messages: List[Dict[str, Any]]
+    ) -> Optional[str]:
+        """Produce a structured handoff summary for a runtime that owns its own
+        conversation context (e.g. the Codex app-server thread), so a retired
+        session can be reseeded instead of cold-reset (issue #36801).
+
+        Returns the raw summary string (Goal/Progress/Decisions/Files/...), or
+        None if there is nothing to summarize or summarization is unavailable —
+        the caller should then retire without a seed rather than block.
+        """
+        if not messages:
+            return None
+        try:
+            return self._generate_summary(messages)
+        except Exception:
+            logger.debug("handoff summary generation failed", exc_info=True)
+            return None
+
     def _generate_summary(
         self,
         turns_to_summarize: List[Dict[str, Any]],

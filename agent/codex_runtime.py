@@ -228,6 +228,69 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     }
 
 
+def _maybe_retire_codex_for_context(agent, turn, usage_result, messages) -> None:
+    """Issue #36801: proactively retire the codex app-server thread when its
+    context fills past ``compression.codex_retire_threshold``, seeding the next
+    turn with a structured summary so context survives the reset.
+
+    Codex owns its conversation context inside the subprocess, so Hermes can't
+    compress it in place — the only lever is to retire (close) the thread and
+    reseed a fresh one. This runs AFTER usage recording, where the real prompt
+    token count and the codex-reported context window are both known.
+
+    No-op unless compression is enabled, a session is still live, the threshold
+    is positive, and both the context window and prompt-token count are known.
+    """
+    if not getattr(agent, "compression_enabled", False):
+        return
+    session = getattr(agent, "_codex_session", None)
+    if session is None:
+        return  # already retired this turn (crash / should_retire path above)
+
+    threshold = getattr(agent, "codex_retire_threshold", 0.85)
+    if not threshold or threshold <= 0:
+        return
+
+    context_window = getattr(turn, "model_context_window", None)
+    if not isinstance(context_window, int) or context_window <= 0:
+        return
+    prompt_tokens = int((usage_result or {}).get("prompt_tokens") or 0)
+    if prompt_tokens <= 0:
+        return
+    if prompt_tokens / context_window < threshold:
+        return
+
+    # Build the handoff summary from Hermes' projected `messages` using the
+    # auxiliary summary model — NOT codex — so the summarization itself can't
+    # overflow the already-full codex window.
+    summary = None
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is not None:
+        try:
+            summary = compressor.build_handoff_summary(messages)
+        except Exception:
+            logger.debug("codex handoff summary failed", exc_info=True)
+
+    # Retire the thread regardless: even a summary-less retire beats riding an
+    # over-full window into a hard reset. With a summary the next turn reseeds;
+    # without one it starts clean (documented fallback).
+    try:
+        session.close()
+    except Exception:
+        pass
+    agent._codex_session = None
+    agent._codex_pending_handoff = summary or None
+    logger.warning(
+        "codex app-server: proactively retired thread at %d/%d prompt tokens "
+        "(%.0f%% >= %.0f%% threshold); next turn reseeds %s",
+        prompt_tokens,
+        context_window,
+        100.0 * prompt_tokens / context_window,
+        100.0 * threshold,
+        "with handoff summary" if summary else "clean (summary unavailable)",
+    )
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -288,6 +351,27 @@ def run_codex_app_server_turn(
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    # Reseed a freshly respawned codex thread with the handoff summary stashed
+    # when the previous session was proactively retired for context pressure
+    # (issue #36801). The codex subprocess owns its own context, so a respawn
+    # starts blank; prepend the summary to this first turn so Goal/Discoveries/
+    # Files survive instead of a cold history=0 reset. Only the codex-bound
+    # input is augmented — Hermes' own `messages` projection stays clean.
+    _pending_handoff = getattr(agent, "_codex_pending_handoff", None)
+    if _pending_handoff:
+        user_message = (
+            "[Context handoff] The previous session was compacted and reset to "
+            "stay within the model's context window. Structured summary of the "
+            "conversation so far:\n\n"
+            f"{_pending_handoff}\n\n"
+            "[End of summary — continue from here with the user's next message:]\n"
+            f"{user_message}"
+        )
+        agent._codex_pending_handoff = None
+        logger.info(
+            "codex app-server: reseeded respawned thread with handoff summary"
+        )
+
     try:
         turn = agent._codex_session.run_turn(user_input=user_message)
     except Exception as exc:
@@ -345,6 +429,13 @@ def run_codex_app_server_turn(
     )
     usage_result = _record_codex_app_server_usage(agent, turn)
     api_calls = 1
+
+    # Proactive context-pressure retire + handoff (issue #36801). Codex owns
+    # its thread context; when this turn's prompt occupies too much of the
+    # reported window, summarize → retire the thread → stash the summary so the
+    # next turn respawns codex seeded with it, instead of growing unbounded
+    # until a silent hard reset.
+    _maybe_retire_codex_for_context(agent, turn, usage_result, messages)
 
     # Now check the skill nudge AFTER iters were incremented — same
     # pattern the chat_completions path uses (line ~15432).

@@ -1309,6 +1309,14 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
+        "codex_retire_threshold": 0.85,  # Codex app-server runtime only. When a
+                                      # turn's prompt tokens reach this fraction of
+                                      # the codex-reported context window, Hermes
+                                      # summarizes the conversation, retires the
+                                      # codex thread, and reseeds the next turn with
+                                      # the summary — instead of letting the thread
+                                      # grow unbounded until a silent hard context
+                                      # reset. 0 disables. See issue #36801.
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

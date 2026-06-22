@@ -1578,6 +1578,13 @@ def init_agent(
         )
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place
+    # Codex app-server proactive retire-and-handoff threshold (issue #36801).
+    try:
+        agent.codex_retire_threshold = float(
+            _compression_cfg.get("codex_retire_threshold", 0.85)
+        )
+    except (TypeError, ValueError):
+        agent.codex_retire_threshold = 0.85
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).

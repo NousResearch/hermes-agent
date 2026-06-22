@@ -231,6 +231,25 @@ async def test_final_send_does_not_retrigger_typing(adapter):
 
 
 @pytest.mark.asyncio
+async def test_cron_delivery_does_not_retrigger_typing(adapter):
+    """Cron deliveries carry metadata['job_id'] rather than metadata['notify'].
+
+    They are still final user-visible messages, so re-arming Telegram's typing
+    timer after the send leaves a lingering '...typing' bubble after scheduled
+    jobs complete.
+    """
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_messages_enabled = False
+
+    result = await adapter.send("12345", "Cronjob Response", metadata={"job_id": "job_123"})
+
+    assert result.success is True
+    adapter._bot.send_chat_action.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_intermediate_send_still_retriggers_typing(adapter):
     """Intermediate/progress sends (no notify marker) keep re-triggering typing
     so the '...typing' bubble survives across progress messages while the agent

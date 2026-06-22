@@ -402,7 +402,7 @@ export default function SystemPage() {
               "success",
             );
           } else if (info.behind === 0) {
-            showToast("You're on the {t.system.latest} version", "success");
+            showToast(`You're on the ${t.system.latest} version`, "success");
           } else if (info.message) {
             showToast(info.message, "error");
           }
@@ -708,7 +708,7 @@ export default function SystemPage() {
                       <Badge tone="warning">
                         {updateInfo.behind && updateInfo.behind > 0
                           ? `${updateInfo.behind} behind`
-                          : "{t.system.updateAvailable}"}
+                          : t.system.updateAvailable}
                       </Badge>
                     ) : updateInfo.behind === 0 ? (
                       <Badge tone="success">{t.system.latest}</Badge>
@@ -816,7 +816,7 @@ export default function SystemPage() {
           <CardContent className="flex flex-col gap-3 py-4">
             <div className="flex items-center gap-3">
               <Badge tone={portal?.logged_in ? "success" : "secondary"}>
-                {portal?.logged_in ? "{t.system.loggedIn}" : "not {t.system.loggedIn}"}
+                {portal?.logged_in ? {t.system.loggedIn} : `not ${t.system.loggedIn}`}
               </Badge>
               {portal?.provider && (
                 <span className="text-sm text-muted-foreground">
@@ -863,7 +863,7 @@ export default function SystemPage() {
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
               <Badge tone={curator?.paused ? "warning" : curator?.enabled ? "success" : "secondary"}>
-                {curator?.paused ? {t.system.paused} : curator?.enabled ? {t.system.active} : {t.system.disabled}}
+                {curator?.paused ? t.system.paused : curator?.enabled ? t.system.active : t.system.disabled}
               </Badge>
               <span className="text-sm text-muted-foreground">
                 {curator?.interval_hours ? `every ${curator.interval_hours}h` : ""}
@@ -896,7 +896,7 @@ export default function SystemPage() {
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
               <Badge tone={gatewayRunning ? "success" : "secondary"}>
-                {gatewayRunning ? {t.system.running} : {t.system.stopped}}
+                {gatewayRunning ? t.system.running : t.system.stopped}
               </Badge>
               <span className="text-sm text-muted-foreground">
                 {status?.gateway_state ?? "—"}
@@ -947,7 +947,7 @@ export default function SystemPage() {
               <span>
                 {t.system.externalProvider}{" "}
                 <span className="font-mono text-foreground">
-                  {memory?.active || "{t.system.builtinOnly}"}
+                  {memory?.active || t.system.builtinOnly}
                 </span>
               </span>
               <Link to="/plugins" className="underline">

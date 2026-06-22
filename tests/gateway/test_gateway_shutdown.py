@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -134,6 +135,17 @@ async def test_gateway_stop_interrupts_after_drain_timeout():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason=(
+        "systemd/Linux-only branch: stop() deliberately returns "
+        "GATEWAY_SERVICE_RESTART_EXIT_CODE (75) on darwin (launchd's "
+        "KeepAlive.SuccessfulExit=false needs non-zero to relaunch) and only "
+        "exits 0 under systemd (INVOCATION_ID set AND not darwin) — gateway/run.py "
+        "~6957. The exit==0 assertion is unreachable on macOS by design; the path "
+        "is exercised on Linux CI."
+    ),
+)
 async def test_gateway_stop_systemd_service_restart_exits_cleanly(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, adapter = make_restart_runner()

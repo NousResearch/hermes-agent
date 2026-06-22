@@ -9,11 +9,23 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from hermes_state import SessionDB
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
+
+
+@pytest.fixture(autouse=True)
+def _isolate_gateway_config_from_live(monkeypatch):
+    """Pin gateway config footer-OFF so reply-equality assertions don't pick up
+    the operator's live ``display.runtime_footer`` (enabled on real fleet hosts).
+
+    See the same fixture in test_status_command.py: ``_handle_message`` appends a
+    runtime footer when the live ``~/.hermes/config.yaml`` has it enabled, which in
+    a full single-process run makes ``result`` become ``"<reply>\\n\\n<footer>"`` and
+    breaks ``assert result == "<reply>"``. Isolation hardening.
+    """
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
 
 
 def _make_source(*, thread_id: str | None = None) -> SessionSource:

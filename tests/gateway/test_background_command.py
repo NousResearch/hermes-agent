@@ -298,7 +298,12 @@ class TestRunBackgroundTask:
         # (default mode requires the file to exist as a regular file).
         import os as _os
         import tempfile as _tempfile
-        _tmpdir = _tempfile.mkdtemp(prefix="bg_media_")
+        # realpath the tmpdir so the expected paths match what the production code
+        # emits: on macOS tempfile returns /tmp/... (a symlink) but the delivery
+        # path resolves it to /private/tmp/... — compare resolved-vs-resolved so the
+        # symlink doesn't make the assertion platform-dependent. (The production
+        # side is the REAL emitted path; we resolve the test's expectation to it.)
+        _tmpdir = _os.path.realpath(_tempfile.mkdtemp(prefix="bg_media_"))
         _ogg = _os.path.join(_tmpdir, "clip.ogg")
         _mp4 = _os.path.join(_tmpdir, "render.mp4")
         _png = _os.path.join(_tmpdir, "chart.png")

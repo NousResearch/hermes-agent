@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -152,6 +153,18 @@ class TestFormatters:
 
 class TestSpawnAsyncDiagnostic:
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
+    @pytest.mark.skipif(
+        shutil.which("timeout") is None,
+        reason=(
+            "spawn_async_diagnostic shells `timeout … bash -c …`; when the "
+            "`timeout` binary is absent (bare macOS without coreutils, or a "
+            "PATH-restricted test env) Popen raises FileNotFoundError and the "
+            "function returns None by design. The diagnostic running is a "
+            "host-capability concern, not a unit invariant. (A gtimeout/python "
+            "fallback so the diagnostic also runs on bare macOS is a separate "
+            "product improvement — backlog, exits this test-hygiene scope.)"
+        ),
+    )
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
         log_path = tmp_path / "diag.log"
         pid = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=3.0)

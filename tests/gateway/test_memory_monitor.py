@@ -90,8 +90,13 @@ def test_stop_without_start_is_noop():
 def test_periodic_timer_fires(caplog):
     caplog.set_level(logging.INFO, logger="gateway.memory_monitor")
     # Short interval so we can observe multiple ticks inside the test budget.
+    # Use a generous sleep-to-interval ratio (~8x) so the assertion is robust to
+    # thread-scheduling slop on a loaded CI/single-process host: at interval=0.1s
+    # an 0.85s window should yield ~8 ticks, so requiring >=3 has wide margin.
+    # (A tight 0.45s/0.1s budget yielded only 2 ticks under load — a real flake,
+    # not cross-file pollution; this test fails in isolation too.)
     mm.start_memory_monitoring(interval_seconds=0.1)
-    time.sleep(0.45)
+    time.sleep(0.85)
     mm.stop_memory_monitoring(timeout=1.0)
 
     periodic = [

@@ -21,6 +21,27 @@ from gateway.config import PlatformConfig
 
 
 def _ensure_telegram_mock():
+    # Snapshot the prior sys.modules telegram* state + consumer module so the
+    # module-scoped teardown fixture can restore them (prevents a cross-file
+    # consumer-binding leak: this module pops + reimports gateway.platforms.telegram
+    # against the mock, rebinding its module-global ParseMode to the mock STRING
+    # "MarkdownV2"; without restore, every later gateway test sees that string and
+    # `"MARKDOWN_V2" in repr(parse_mode)` assertions fail single-process).
+    global _PRIOR_SYS_MODULES
+    # Only the telegram.* slots need restoring; the consumer module
+    # (gateway.platforms.telegram) is restored by IN-PLACE attribute mutation in
+    # the teardown fixture (step 2), not slot replacement, so it is intentionally
+    # NOT captured here.
+    _PRIOR_SYS_MODULES = {
+        name: sys.modules.get(name)
+        for name in (
+            "telegram",
+            "telegram.ext",
+            "telegram.constants",
+            "telegram.request",
+        )
+    }
+
     telegram_mod = MagicMock()
     telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
 
@@ -43,9 +64,50 @@ def _ensure_telegram_mock():
     sys.modules.pop("gateway.platforms.telegram", None)
 
 
+_PRIOR_SYS_MODULES: dict = {}
 _ensure_telegram_mock()
 
 from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_telegram_consumer_after_module():
+    """Restore the prior telegram* sys.modules state + re-import the consumer.
+
+    Runs once after THIS module's tests complete. Without it, the module-import
+    mock (above) leaves ``gateway.platforms.telegram.ParseMode`` bound to the
+    mock string "MarkdownV2", which poisons every later gateway test in a
+    single-process run (the cross-file pollution this fix targets).
+
+    Restore order: put the real telegram* slots back FIRST, THEN evict + re-import
+    the consumer so it re-binds ParseMode against the RESTORED real module.
+    """
+    yield
+    # 1. restore (or delete) the telegram* slots to their pre-module state
+    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
+        prior = _PRIOR_SYS_MODULES.get(name)
+        if prior is not None:
+            sys.modules[name] = prior
+        else:
+            sys.modules.pop(name, None)
+    # 2. Re-bind the consumer's ParseMode/ChatType IN PLACE on the LIVE module
+    #    object (the one now in sys.modules, which later tests read from). A fresh
+    #    import would create a NEW module object, but consumers already imported
+    #    (test files that did `from gateway.platforms.telegram import TelegramAdapter`
+    #    at their module top) read ParseMode from whichever module __dict__ was live
+    #    when they imported — so we mutate that live dict, not replace it.
+    consumer = sys.modules.get("gateway.platforms.telegram")
+    if consumer is not None:
+        try:
+            import importlib
+
+            real_constants = importlib.import_module("telegram.constants")
+            consumer.ParseMode = real_constants.ParseMode
+            consumer.ChatType = real_constants.ChatType
+        except Exception:
+            # real telegram not importable here — leave the consumer as-is; the
+            # restored slots mean the next consumer-importing test re-binds correctly
+            pass
 
 
 def _make_adapter(dm_topics_config=None, group_topics_config=None):

@@ -12,6 +12,23 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
+@pytest.fixture(autouse=True)
+def _isolate_gateway_config_from_live(monkeypatch):
+    """Force gateway config to a footer-OFF default for every test in this module.
+
+    These tests assert the agent reply equals ``"ok"`` exactly, but
+    ``_handle_message`` appends a runtime-metadata footer when
+    ``display.runtime_footer.enabled`` is true. ``_load_gateway_config()`` reads
+    the operator's LIVE ``~/.hermes/config.yaml`` (shared mtime-cache via
+    ``hermes_cli.config.read_raw_config``), which on a real fleet host has the
+    footer ENABLED — so in a full single-process run (cache warmed with the real
+    config) the reply becomes ``"ok\\n\\n<footer>"`` and the assertion fails.
+    Pinning the config to ``{}`` makes these tests independent of the host's live
+    config and the shared cache state. (Isolation hardening, RED-proven below.)
+    """
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+
+
 def _make_source(platform: Platform = Platform.TELEGRAM) -> SessionSource:
     return SessionSource(
         platform=platform,

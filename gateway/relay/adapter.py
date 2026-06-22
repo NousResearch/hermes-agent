@@ -22,9 +22,10 @@ import logging
 from typing import Any, Callable, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.transport import RelayTransport
+from gateway.session import SessionSource
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +58,14 @@ class RelayAdapter(BasePlatformAdapter):
         self._transport = transport
         # Capability surface read by stream_consumer (getattr(..., 4096)).
         self.MAX_MESSAGE_LENGTH = descriptor.max_message_length
+        # chat_id -> guild_id (Discord) / workspace scope, learned from inbound
+        # events. The connector's egress guard resolves the owning tenant from
+        # the OUTBOUND action's metadata.guild_id; the gateway's generic delivery
+        # path (run.py _thread_metadata_for_source) only carries thread_id, so we
+        # re-attach the scope here from what we saw inbound. Keyed by chat_id
+        # (channel) since that's what send() receives. See routedEgressGuard.ts.
+        self._scope_by_chat: Dict[str, str] = {}
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
-        # Inbound delivery receiver (signed connector→gateway HTTP POSTs). Built
-        # lazily in connect() when a delivery key + bind port are configured; a
-        # purely-outbound dev gateway runs without it. See inbound_receiver.py.
-        self._inbound_runner: Any = None
 
     # ── capability surface (from descriptor) ─────────────────────────────
     @property
@@ -80,6 +84,19 @@ class RelayAdapter(BasePlatformAdapter):
         if self._transport is None:
             raise RuntimeError("RelayAdapter has no transport configured")
         self._transport.set_inbound_handler(self._on_inbound)
+        # Inbound interrupts (connector -> owning gateway) arrive as
+        # interrupt_inbound frames over the SAME outbound WS; bridge them to the
+        # adapter's interrupt path. WS-only: there is no inbound HTTP receiver.
+        set_interrupt = getattr(self._transport, "set_interrupt_inbound_handler", None)
+        if callable(set_interrupt):
+            set_interrupt(self.on_interrupt)
+        # Passthrough-plane forwards (Discord interactions, Twilio, …) also ride
+        # the SAME outbound WS (Phase 5 §5.1) — the connector edge-ACKed and
+        # forwards the real request here, so a hosted gateway needs no public
+        # inbound port. Bridge them to the adapter's passthrough handler.
+        set_passthrough = getattr(self._transport, "set_passthrough_handler", None)
+        if callable(set_passthrough):
+            set_passthrough(self._on_passthrough)
         ok = await self._transport.connect()
         if not ok:
             return False
@@ -92,39 +109,11 @@ class RelayAdapter(BasePlatformAdapter):
             logger.warning("relay handshake failed: %s", exc)
             return False
         self._apply_descriptor(descriptor)
-        # Start the signed inbound-delivery receiver if configured (the connector
-        # POSTs normalized events to it over HTTP, verified with the tenant
-        # delivery key). Non-fatal: a receiver bind failure must not fail the
-        # outbound connection — the gateway can still send.
-        await self._maybe_start_inbound_receiver()
+        # Inbound (messages + interrupts) is delivered over the outbound WS via
+        # the connector's relay bus — there is NO inbound HTTP endpoint (hosted
+        # gateways have no public IP). The transport's reader already dispatches
+        # `inbound` / `interrupt_inbound` frames to the handlers wired above.
         return True
-
-    async def _maybe_start_inbound_receiver(self) -> None:
-        """Start the inbound HTTP receiver when a delivery key + port are set."""
-        from gateway.relay import relay_inbound_config
-
-        delivery_key, host, port = relay_inbound_config()
-        if not (delivery_key and port):
-            return  # no inbound URL configured -> outbound-only gateway
-        try:
-            from aiohttp import web
-
-            from gateway.relay.inbound_receiver import InboundDeliveryReceiver
-
-            receiver = InboundDeliveryReceiver(
-                delivery_key_verify_list=lambda: [delivery_key],
-                on_message=self._on_inbound,
-                on_interrupt=self.on_interrupt,
-            )
-            runner = web.AppRunner(receiver.build_app(), access_log=None)
-            await runner.setup()
-            site = web.TCPSite(runner, host, port)
-            await site.start()
-            self._inbound_runner = runner
-            logger.info("relay inbound receiver listening on http://%s:%s", host, port)
-        except Exception as exc:  # noqa: BLE001 - inbound bind failure must not kill outbound
-            logger.warning("relay inbound receiver failed to start: %s", exc)
-            self._inbound_runner = None
 
     def _apply_descriptor(self, descriptor: CapabilityDescriptor) -> None:
         """Adopt a (re)negotiated descriptor into the live capability surface."""
@@ -134,7 +123,34 @@ class RelayAdapter(BasePlatformAdapter):
 
     async def _on_inbound(self, event) -> None:
         """Bridge a connector-delivered MessageEvent into the normal adapter path."""
+        self._capture_scope(event)
         await self.handle_message(event)
+
+    def _capture_scope(self, event) -> None:
+        """Remember chat_id -> guild scope from an inbound event so our outbound
+        (the agent's reply) can re-assert it for the connector's egress tenant
+        resolution. Never raises — scope tracking must not break inbound."""
+        try:
+            src = getattr(event, "source", None)
+            scope = getattr(src, "guild_id", None) if src else None
+            chat = getattr(src, "chat_id", None) if src else None
+            if scope and chat:
+                self._scope_by_chat[str(chat)] = str(scope)
+        except Exception:  # noqa: BLE001 - scope tracking must never break inbound
+            pass
+
+    def _with_scope(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Ensure the outbound metadata carries guild_id for the connector's
+        egress tenant resolution. The connector resolves the owning tenant from
+        metadata.guild_id (Discord); without it egress is declined as
+        'target not routed to an onboarded tenant'. No-op when we have no scope
+        for this chat (e.g. DMs) or it's already present."""
+        meta: Dict[str, Any] = dict(metadata or {})
+        if not meta.get("guild_id"):
+            scope = self._scope_by_chat.get(str(chat_id))
+            if scope:
+                meta["guild_id"] = scope
+        return meta
 
     async def on_interrupt(self, session_key: str, chat_id: str) -> None:
         """Bridge a connector-delivered /stop into the adapter's interrupt path.
@@ -147,13 +163,96 @@ class RelayAdapter(BasePlatformAdapter):
         """
         await self.interrupt_session_activity(session_key, chat_id)
 
+    async def _on_passthrough(self, forward, buffer_id: Optional[str] = None) -> None:
+        """Handle a connector-forwarded passthrough request (Phase 5 §5.1).
+
+        The passthrough plane (Discord interactions, Twilio webhooks, …) answers
+        the provider's latency-critical ACK at the connector EDGE, then forwards
+        the real, ALREADY-SANITIZED request to this gateway over the outbound WS.
+        The connector is the trust boundary: it verified the provider signature
+        at the edge and stripped any shared-identity credential (e.g. a Discord
+        interaction follow-up token) into its vault — so this body carries no
+        token, and the agent later acts on it via the token-less ``follow_up``
+        path (``send_follow_up``), never holding the credential.
+
+        For a Discord interaction we decode the (JSON) body and convert it to a
+        normalized ``MessageEvent`` so it flows through the SAME agent path as a
+        chat message (``handle_message``); the agent's reply egresses over the
+        normal outbound/follow_up path. Non-JSON or non-interaction forwards are
+        logged and dropped for now (Twilio/SMS over the relay is a later unit).
+
+        NEVER raises: a malformed forward must not kill the read loop.
+
+        NOTE (open semantic sub-design, flagged for review): the interaction ->
+        MessageEvent mapping below is the v1 default. The exact agent UX for a
+        slash-command / button interaction (vs. a plain message) — command name
+        surfacing, option rendering, deferred-vs-immediate response — is the open
+        piece tracked in the spec; the TRANSPORT + receive mechanism (this whole
+        path) is settled.
+        """
+        try:
+            platform = getattr(forward, "platform", "") or ""
+            if platform == "discord":
+                event = self._discord_interaction_to_event(forward)
+                if event is not None:
+                    self._capture_scope(event)
+                    await self.handle_message(event)
+                    return
+            logger.info(
+                "relay passthrough_forward dropped (no handler): platform=%s method=%s path=%s",
+                platform,
+                getattr(forward, "method", "?"),
+                getattr(forward, "path", "?"),
+            )
+        except Exception:  # noqa: BLE001 - a bad forward must never break the reader
+            logger.warning("relay passthrough_forward handling failed", exc_info=True)
+
+    def _discord_interaction_to_event(self, forward):
+        """Convert a forwarded Discord interaction body to a MessageEvent, or None.
+
+        Builds the session source the same way the connector does for an
+        interaction (``interactionSessionSource`` on the connector side), so the
+        agent's session key matches the one the connector bound the follow-up
+        capability under. Returns None when the body isn't a usable interaction
+        (e.g. a PING, which the connector already answers at the edge and never
+        forwards).
+        """
+        import json
+
+        from gateway.platforms.base import MessageType
+
+        try:
+            payload = json.loads(bytes(getattr(forward, "body", b"")).decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(payload, dict):
+            return None
+        # type 1 = PING (answered at the edge, never forwarded); 2 = APPLICATION_COMMAND;
+        # 3 = MESSAGE_COMPONENT; 5 = MODAL_SUBMIT. Surface a best-effort text.
+        itype = payload.get("type")
+        data = payload.get("data") or {}
+        if itype == 2:
+            text = str(data.get("name") or "")
+        elif itype == 3:
+            text = str(data.get("custom_id") or "")
+        else:
+            text = ""
+        member = payload.get("member") or {}
+        user = (member.get("user") if isinstance(member, dict) else None) or payload.get("user") or {}
+        channel_id = str(payload.get("channel_id") or "")
+        guild_id = payload.get("guild_id")
+        source = SessionSource(
+            platform=Platform.RELAY,
+            chat_id=channel_id,
+            chat_type="channel" if guild_id else "dm",
+            user_id=str(user.get("id")) if isinstance(user, dict) and user.get("id") else None,
+            user_name=str(user.get("username")) if isinstance(user, dict) and user.get("username") else None,
+            guild_id=str(guild_id) if guild_id else None,
+            message_id=str(payload.get("id")) if payload.get("id") else None,
+        )
+        return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
+
     async def disconnect(self) -> None:
-        if self._inbound_runner is not None:
-            try:
-                await self._inbound_runner.cleanup()
-            except Exception:  # noqa: BLE001 - best-effort teardown
-                pass
-            self._inbound_runner = None
         if self._transport is not None:
             await self._transport.disconnect()
 
@@ -172,7 +271,7 @@ class RelayAdapter(BasePlatformAdapter):
                 "chat_id": chat_id,
                 "content": content,
                 "reply_to": reply_to,
-                "metadata": metadata or {},
+                "metadata": self._with_scope(chat_id, metadata),
             }
         )
         return SendResult(

@@ -1459,6 +1459,137 @@ def test_tool_add_resource_sends_git_remote_sources_as_path(url):
     })
 
 
+def test_get_tool_schemas_includes_narrow_forget_tool():
+    provider = OpenVikingMemoryProvider()
+
+    names = [schema["name"] for schema in provider.get_tool_schemas()]
+
+    assert "viking_forget" in names
+
+
+def test_handle_tool_call_forget_deletes_exact_memory_file_uri():
+    uri = "viking://user/peers/hermes/memories/preferences/mem_abc123.md"
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.delete.return_value = {
+        "status": "ok",
+        "result": {"uri": uri, "estimated_deleted_count": 1},
+    }
+
+    result = json.loads(provider.handle_tool_call("viking_forget", {"uri": uri}))
+
+    provider._client.delete.assert_called_once_with(
+        "/api/v1/fs",
+        params={"uri": uri, "recursive": False},
+    )
+    assert result == {
+        "status": "deleted",
+        "uri": uri,
+        "estimated_deleted_count": 1,
+    }
+
+
+def test_handle_tool_call_forget_deletes_exact_memory_file_under_memories_root():
+    uri = "viking://user/default/memories/profile.md"
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.delete.return_value = {
+        "status": "ok",
+        "result": {"uri": uri, "estimated_deleted_count": 1},
+    }
+
+    result = json.loads(provider.handle_tool_call("viking_forget", {"uri": uri}))
+
+    provider._client.delete.assert_called_once_with(
+        "/api/v1/fs",
+        params={"uri": uri, "recursive": False},
+    )
+    assert result == {
+        "status": "deleted",
+        "uri": uri,
+        "estimated_deleted_count": 1,
+    }
+
+
+def test_handle_tool_call_forget_allows_non_generated_dot_md_memory_file():
+    uri = "viking://user/default/memories/preferences/.full.md"
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.delete.return_value = {
+        "status": "ok",
+        "result": {"uri": uri, "estimated_deleted_count": 1},
+    }
+
+    result = json.loads(provider.handle_tool_call("viking_forget", {"uri": uri}))
+
+    provider._client.delete.assert_called_once_with(
+        "/api/v1/fs",
+        params={"uri": uri, "recursive": False},
+    )
+    assert result == {
+        "status": "deleted",
+        "uri": uri,
+        "estimated_deleted_count": 1,
+    }
+
+
+@pytest.mark.parametrize("uri", [
+    "",
+    "https://example.com/mem.md",
+    "viking:/user/memories/preferences/mem_abc123.md",
+    "viking://resources/project/doc.md",
+    "viking://resources/project/memories/mem_abc123.md",
+    "viking://memories/preferences/mem_abc123.md",
+    "viking://agent/hermes/memories/preferences/mem_abc123.md",
+    "viking://user/skills/example/SKILL.md",
+    "viking://user/sessions/session-1/messages.jsonl",
+    "viking://user/memories/preferences/",
+    "viking://user/memories/preferences/.overview.md",
+    "viking://user/memories/preferences/.abstract.md",
+    "viking://user/memories/preferences/mem_abc123.md?recursive=true",
+])
+def test_handle_tool_call_forget_rejects_non_memory_file_uris(uri):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+
+    result = json.loads(provider.handle_tool_call("viking_forget", {"uri": uri}))
+
+    assert "error" in result
+    provider._client.delete.assert_not_called()
+
+
+def test_viking_client_delete_uses_identity_headers(monkeypatch):
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="acct",
+        user="alice",
+        agent="hermes",
+    )
+    captured = {}
+
+    def capture_delete(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"status": "ok", "result": {"uri": "viking://user/memories/x.md"}},
+            raise_for_status=lambda: None,
+        )
+
+    monkeypatch.setattr(client._httpx, "delete", capture_delete)
+
+    assert client.delete("/api/v1/fs", params={"uri": "viking://user/memories/x.md"}) == {
+        "status": "ok",
+        "result": {"uri": "viking://user/memories/x.md"},
+    }
+    assert captured["url"] == "https://example.com/api/v1/fs"
+    assert captured["kwargs"]["params"] == {"uri": "viking://user/memories/x.md"}
+    assert captured["kwargs"]["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["kwargs"]["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+
+
 def test_viking_client_upload_temp_file_uses_multipart_identity_headers(tmp_path, monkeypatch):
     sample = tmp_path / "sample.md"
     sample.write_text("# Local resource\n", encoding="utf-8")
@@ -1975,7 +2106,10 @@ def test_on_session_switch_commits_old_session_and_rotates_id():
 
     provider.on_session_switch("new-sid", parent_session_id="old-sid")
 
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
 
@@ -1998,7 +2132,10 @@ def test_on_session_switch_commits_pending_tokens_without_turn_count():
     provider.on_session_switch("new-sid")
 
     provider._client.get.assert_called_once_with("/api/v1/sessions/old-sid")
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
 
@@ -2051,7 +2188,10 @@ def test_on_session_switch_waits_for_inflight_sync_thread():
     provider.on_session_switch("new-sid")
 
     assert join_calls, "expected on_session_switch to join the in-flight sync thread"
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
 
 
 def test_on_session_switch_noop_on_empty_new_id():
@@ -2186,6 +2326,78 @@ def test_sync_turn_retries_batch_write_with_fresh_client():
     )]
 
 
+def test_sync_turn_structured_messages_include_assistant_peer_id():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+    provider._session_id = "sid-structured"
+
+    captured = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            captured.append((path, payload))
+            return {}
+
+    import plugins.memory.openviking as _mod
+
+    real_client_cls = _mod._VikingClient
+    _mod._VikingClient = StubClient
+    messages = [
+        {"role": "user", "content": [{"type": "input_text", "text": "u"}]},
+        {
+            "role": "assistant",
+            "content": "Looking.",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "shell_command", "arguments": json.dumps({"cmd": "pwd"})},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "name": "shell_command", "content": "ok"},
+        {"role": "assistant", "content": [{"type": "output_text", "text": "a"}]},
+    ]
+    try:
+        provider.sync_turn("u", "a", messages=messages)
+        assert provider._drain_writers("sid-structured", timeout=2.0)
+    finally:
+        _mod._VikingClient = real_client_cls
+
+    assert captured == [(
+        "/api/v1/sessions/sid-structured/messages/batch",
+        {
+            "messages": [
+                {"role": "user", "parts": [{"type": "text", "text": "u"}]},
+                {"role": "assistant", "parts": [{"type": "text", "text": "Looking."}], "peer_id": "hermes"},
+                {
+                    "role": "assistant",
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool_id": "call-1",
+                            "tool_name": "shell_command",
+                            "tool_input": {"cmd": "pwd"},
+                            "tool_output": "ok",
+                            "tool_status": "completed",
+                        }
+                    ],
+                    "peer_id": "hermes",
+                },
+                {"role": "assistant", "parts": [{"type": "text", "text": "a"}], "peer_id": "hermes"},
+            ]
+        },
+    )]
+
+
 def test_sync_turn_noop_when_session_id_blank():
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
@@ -2206,7 +2418,10 @@ def test_on_session_end_marks_session_clean_after_successful_commit():
 
     provider.on_session_end([])
 
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     assert provider._turn_count == 0
 
 
@@ -2228,7 +2443,10 @@ def test_on_session_end_commits_pending_tokens_without_turn_count():
     provider.on_session_end([])
 
     provider._client.get.assert_called_once_with("/api/v1/sessions/old-sid")
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
 
 
 def test_end_then_switch_does_not_double_commit():
@@ -2241,7 +2459,10 @@ def test_end_then_switch_does_not_double_commit():
     provider.on_session_switch("new-sid", parent_session_id="old-sid")
 
     # Exactly one commit call, on the OLD session, fired by on_session_end.
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
 
@@ -2253,7 +2474,10 @@ def test_end_then_switch_with_pending_tokens_does_not_double_commit():
     provider.on_session_end([])
     provider.on_session_switch("new-sid", parent_session_id="old-sid")
 
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
 
@@ -2400,7 +2624,10 @@ def test_on_session_switch_does_not_block_caller_on_slow_drain():
     # Let the finalizer finish so it doesn't leak past the test.
     release_drain.set()
     assert provider._drain_finalizers(timeout=5.0)
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
 
 
 def test_on_session_switch_defers_old_commit_to_finalizer_thread():
@@ -2415,7 +2642,7 @@ def test_on_session_switch_defers_old_commit_to_finalizer_thread():
     committed = threading.Event()
     drain_timeouts = []
 
-    def fake_post(path):
+    def fake_post(path, payload=None):
         committed.set()
         return {}
 
@@ -2433,7 +2660,10 @@ def test_on_session_switch_defers_old_commit_to_finalizer_thread():
     assert provider._turn_count == 0
     # The old-session commit lands on the finalizer thread, not inline.
     assert committed.wait(timeout=5.0), "old session was not finalized off-thread"
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     # The finalizer drains with the deferred (longer) budget, not inline 10s.
     assert drain_timeouts == [_DEFERRED_COMMIT_TIMEOUT]
 
@@ -2536,6 +2766,94 @@ def test_on_memory_write_uses_content_write_independent_of_session_rotation():
     assert captured_payloads[0]["uri"].startswith(
         "viking://user/peers/hermes/memories/preferences/mem_"
     )
+
+
+def test_shutdown_waits_for_memory_write_worker(monkeypatch):
+    import threading
+
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    worker_finished = threading.Event()
+    shutdown_returned = threading.Event()
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            assert path == "/api/v1/content/write"
+            worker_started.set()
+            release_worker.wait(timeout=2.0)
+            worker_finished.set()
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    provider.on_memory_write("add", "user", "remember this")
+    assert worker_started.wait(timeout=2.0), "worker never entered post()"
+
+    shutdown_thread = threading.Thread(
+        target=lambda: (provider.shutdown(), shutdown_returned.set()),
+        daemon=True,
+    )
+    shutdown_thread.start()
+
+    returned_before_worker_finished = shutdown_returned.wait(timeout=0.1)
+    release_worker.set()
+    assert shutdown_returned.wait(timeout=2.0), "shutdown did not return after worker finished"
+    shutdown_thread.join(timeout=2.0)
+
+    assert not returned_before_worker_finished
+    assert worker_finished.is_set()
+    assert provider._memory_write_threads == set()
+
+
+@pytest.mark.parametrize(
+    ("action", "content"),
+    [
+        ("replace", "updated memory"),
+        ("remove", ""),
+        ("forget", ""),
+        ("delete", ""),
+    ],
+)
+def test_on_memory_write_ignores_non_add_actions(action, content, monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "acct"
+    provider._user = "usr"
+    provider._agent = "hermes"
+    uri = "viking://user/peers/hermes/memories/preferences/mem_abc123.md"
+    spawned = []
+
+    class StubThread:
+        def __init__(self, *args, **kwargs):
+            spawned.append((args, kwargs))
+
+        def start(self):
+            raise AssertionError("non-URI remove should not spawn a mirror thread")
+
+    import plugins.memory.openviking as _mod
+    monkeypatch.setattr(_mod.threading, "Thread", StubThread)
+
+    provider.on_memory_write(
+        action,
+        "memory",
+        content,
+        metadata={"uri": uri, "old_text": "stale fact"},
+    )
+
+    assert spawned == []
 
 
 # ---------------------------------------------------------------------------

@@ -126,6 +126,60 @@ class TestToolProgressCallback:
             step_cb(2, [{"name": "terminal", "result": "ok-2"}])
             assert "terminal" not in tool_call_ids
 
+    def test_tool_completed_emits_immediate_update(self, mock_conn, event_loop_fixture):
+        """tool.completed should emit ToolCallUpdate immediately via progress callback."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-complete"), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb("tool.started", "terminal", "$ ls", {"command": "ls"})
+            assert "terminal" in tool_call_ids
+
+            cb("tool.completed", "terminal", None, None, result="file1.txt\nfile2.txt")
+
+        # Queue should be drained and tool removed
+        assert "terminal" not in tool_call_ids
+        assert "tc-complete" not in tool_call_meta
+        # Two calls: one for start, one for complete
+        assert mock_send.call_count == 2
+
+    def test_tool_completed_ignores_unmatched_name(self, mock_conn, event_loop_fixture):
+        """tool.completed for a name with no tracked IDs should be silently ignored."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events._send_update") as mock_send:
+            cb("tool.completed", "unknown_tool", None, None, result="ok")
+
+        mock_send.assert_not_called()
+
+    def test_step_cb_skips_already_completed_tool(self, mock_conn, event_loop_fixture):
+        """Step callback should not double-complete tools finished by progress callback."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        loop = event_loop_fixture
+
+        progress_cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+        step_cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-fifo"), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            progress_cb("tool.started", "terminal", "$ ls", {"command": "ls"})
+            progress_cb("tool.completed", "terminal", None, None, result="ok")
+
+            # Step callback should see empty queue and skip
+            step_cb(1, [{"name": "terminal", "result": "ok"}])
+
+        # Only 2 sends (start + complete), not 3
+        assert mock_send.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # Thinking callback

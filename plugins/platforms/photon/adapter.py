@@ -91,7 +91,18 @@ _SIDECAR_DIR = Path(__file__).parent / "sidecar"
 _PHOTON_RETRYABLE_PATTERNS = (
     "internal sidecar error",
     "upstream connect error",
+    "upstream unavailable",
+    "connection dropped",
     "reset reason: overflow",
+    "upstream_overflow",
+    "upstream_unavailable",
+)
+_PHOTON_PERMANENT_ERROR_PATTERNS = (
+    "auth_failed",
+    "authentication failed",
+    "invalid credentials",
+    "permission_denied",
+    "permission denied",
 )
 
 # Minimum seconds between typing-indicator calls for the same chat.
@@ -111,6 +122,27 @@ _DEFAULT_MENTION_PATTERNS = [
 
 # ---------------------------------------------------------------------------
 # Module-level helpers — also used by check_fn / standalone send
+
+class PhotonSidecarError(RuntimeError):
+    """Safe sidecar failure surfaced over the loopback control API."""
+
+    def __init__(
+        self,
+        path: str,
+        status_code: int,
+        error: str,
+        *,
+        code: Optional[str] = None,
+        retryable: bool = False,
+    ) -> None:
+        self.path = path
+        self.status_code = status_code
+        self.code = code
+        self.retryable = retryable
+        label = f" ({code})" if code else ""
+        super().__init__(
+            f"Photon sidecar {path} returned {status_code}{label}: {error}"
+        )
 
 def _coerce_port(value: Any, default: int) -> int:
     try:
@@ -1232,6 +1264,8 @@ class PhotonAdapter(BasePlatformAdapter):
         if not error:
             return False
         lowered = error.lower()
+        if any(pat in lowered for pat in _PHOTON_PERMANENT_ERROR_PATTERNS):
+            return False
         return any(pat in lowered for pat in _PHOTON_RETRYABLE_PATTERNS)
 
     async def _send_with_retry(
@@ -1318,6 +1352,8 @@ class PhotonAdapter(BasePlatformAdapter):
             body["format"] = "markdown"
         try:
             data = await self._sidecar_call("/send", body)
+        except PhotonSidecarError as e:
+            return SendResult(success=False, error=str(e), retryable=e.retryable)
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
@@ -1367,6 +1403,8 @@ class PhotonAdapter(BasePlatformAdapter):
             body["caption"] = caption
         try:
             data = await self._sidecar_call("/send-attachment", body)
+        except PhotonSidecarError as e:
+            return SendResult(success=False, error=str(e), retryable=e.retryable)
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
@@ -1386,6 +1424,18 @@ class PhotonAdapter(BasePlatformAdapter):
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, json=body, headers=headers)
         if resp.status_code != 200:
+            try:
+                data = resp.json() or {}
+            except Exception:
+                data = {}
+            if isinstance(data, dict) and data.get("error"):
+                raise PhotonSidecarError(
+                    path,
+                    resp.status_code,
+                    str(data.get("error")),
+                    code=data.get("code"),
+                    retryable=bool(data.get("retryable")),
+                )
             raise RuntimeError(
                 f"Photon sidecar {path} returned {resp.status_code}: {resp.text[:200]}"
             )

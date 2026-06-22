@@ -54,6 +54,18 @@ def test_unrelated_error_not_retryable() -> None:
     assert PhotonAdapter._is_retryable_error(None) is False
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        "Photon sidecar /send returned 500 (auth_failed): photon authentication failed",
+        "IMessageError: Invalid credentials",
+        "PERMISSION_DENIED: [upstream] Authentication failed.",
+    ],
+)
+def test_auth_failures_are_not_retryable(error: str) -> None:
+    assert PhotonAdapter._is_retryable_error(error) is False
+
+
 def test_base_network_patterns_still_match() -> None:
     # The override delegates to the base classifier first, so generic
     # network strings keep working.
@@ -173,6 +185,58 @@ async def test_unexpected_sidecar_exit_raises_retryable_fatal(
     assert adapter.fatal_error_retryable is True
     assert adapter._running is False
     assert notified == [True]
+
+
+@pytest.mark.asyncio
+async def test_sidecar_send_preserves_sidecar_retryable_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+
+    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+        from plugins.platforms.photon.adapter import PhotonSidecarError
+
+        raise PhotonSidecarError(
+            path,
+            500,
+            "photon upstream unavailable",
+            code="upstream_unavailable",
+            retryable=True,
+        )
+
+    monkeypatch.setattr(adapter, "_sidecar_call", _fake_call)
+
+    result = await adapter.send("+15551234567", "hello")
+
+    assert result.success is False
+    assert result.retryable is True
+    assert "upstream_unavailable" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_sidecar_send_auth_failure_is_permanent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+
+    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+        from plugins.platforms.photon.adapter import PhotonSidecarError
+
+        raise PhotonSidecarError(
+            path,
+            500,
+            "photon authentication failed",
+            code="auth_failed",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(adapter, "_sidecar_call", _fake_call)
+
+    result = await adapter.send("+15551234567", "hello")
+
+    assert result.success is False
+    assert result.retryable is False
+    assert PhotonAdapter._is_retryable_error(result.error) is False
 
 
 @pytest.mark.asyncio

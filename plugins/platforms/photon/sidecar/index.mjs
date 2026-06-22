@@ -416,13 +416,54 @@ function badRequest(res, msg) {
   res.end(JSON.stringify({ ok: false, error: msg }));
 }
 
-function serverError(res) {
+function classifyHandlerError(e) {
+  const text = e && e.stack ? e.stack : String(e);
+  const lowered = text.toLowerCase();
+  if (
+    lowered.includes("invalid credentials") ||
+    lowered.includes("authentication failed") ||
+    lowered.includes("permission_denied") ||
+    lowered.includes("grpccode: 7") ||
+    lowered.includes("code: 7")
+  ) {
+    return {
+      error: "photon authentication failed",
+      code: "auth_failed",
+      retryable: false,
+    };
+  }
+  if (lowered.includes("reset reason: overflow")) {
+    return {
+      error: "photon upstream overflow",
+      code: "upstream_overflow",
+      retryable: true,
+    };
+  }
+  if (
+    lowered.includes("connection dropped") ||
+    lowered.includes("upstream connect error") ||
+    lowered.includes("unavailable")
+  ) {
+    return {
+      error: "photon upstream unavailable",
+      code: "upstream_unavailable",
+      retryable: true,
+    };
+  }
+  return {
+    error: "internal sidecar error",
+    code: "sidecar_internal_error",
+    retryable: false,
+  };
+}
+
+function serverError(res, classified) {
   res.statusCode = 500;
   res.setHeader("Content-Type", "application/json");
-  // Don't leak stack traces or raw exception text to the caller — even
-  // though we listen on loopback, the supervisor logs the real error
-  // and the client only needs a generic failure signal.
-  res.end(JSON.stringify({ ok: false, error: "internal sidecar error" }));
+  // Don't leak stack traces or raw exception text to the caller. Return a
+  // small safe class so Python can distinguish auth/config failures from
+  // transient upstream outages without scraping stderr.
+  res.end(JSON.stringify({ ok: false, ...classified }));
 }
 
 function ok(res, data) {
@@ -661,13 +702,12 @@ const server = http.createServer(async (req, res) => {
     res.setHeader("Content-Type", "application/json");
     return res.end(JSON.stringify({ ok: false, error: "not found" }));
   } catch (e) {
+    const classified = classifyHandlerError(e);
     console.error(
-      "photon-sidecar: handler error: " +
+      `photon-sidecar: handler error (${classified.code}): ` +
         (e && e.stack ? e.stack : String(e))
     );
-    // serverError() intentionally returns a generic message — see its
-    // body for the rationale.
-    return serverError(res);
+    return serverError(res, classified);
   }
 });
 

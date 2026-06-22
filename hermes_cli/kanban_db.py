@@ -1516,6 +1516,153 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     return candidate
 
 
+# SQLite emits this exact prefix when ``PRAGMA integrity_check`` finds an
+# index whose b-tree has a different row count than its table. The shape
+# is one row per affected index, e.g.
+# ``wrong # of entries in index idx_events_run``.
+_INDEX_DRIFT_ROW_RE = re.compile(
+    r"wrong # of entries in index\s+(?P<name>[A-Za-z_][\w]*)",
+    re.IGNORECASE,
+)
+
+
+def _collect_index_drift_rows(
+    rows: Iterable[Any],
+) -> list[str]:
+    """Extract index names from ``PRAGMA integrity_check`` rows.
+
+    SQLite's integrity_check emits one row per detected problem. The
+    "wrong # of entries in index <name>" class is recoverable via
+    ``REINDEX <name>`` (SQLite rebuilds the index from the table), so we
+    recognise it explicitly here. Returns the unique index names in
+    the order they appeared. Other error shapes (page-level corruption,
+    malformed b-tree, etc.) are NOT returned — REINDEX cannot fix those
+    and they must trip the backup-and-raise path in
+    :func:`_guard_existing_db_is_healthy`.
+    """
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for row in rows:
+        if not row:
+            continue
+        value = row[0]
+        if not isinstance(value, str):
+            continue
+        match = _INDEX_DRIFT_ROW_RE.search(value)
+        if not match:
+            continue
+        name = match.group("name")
+        if name in seen:
+            continue
+        seen.add(name)
+        ordered.append(name)
+    return ordered
+
+
+def _try_repair_index_drift(
+    path: Path,
+) -> tuple[bool, list[str]]:
+    """Attempt ``REINDEX`` repair of recoverable index drift.
+
+    The kanban DB sits behind 7+ active workers + a CLI surface + the
+    dispatcher heartbeat loop, all writing concurrently under WAL. On
+    macOS under burst load, SQLite occasionally surfaces
+    ``wrong # of entries in index <name>`` from
+    ``PRAGMA integrity_check`` — a recoverable corruption class where
+    an index's b-tree has a different row count than its underlying
+    table. ``REINDEX <name>`` rebuilds the index from the table and is
+    SQLite's native fix for this shape; the alternative (refuse to
+    open + force the operator to manually REINDEX) wastes the whole
+    kanban surface for a problem SQLite can repair in milliseconds.
+
+    Strategy:
+
+    1. Open a fresh read/write probe.
+    2. Run ``PRAGMA integrity_check`` and look for the
+       "wrong # of entries in index <name>" prefix across ALL returned
+       rows (the integrity check emits one row per affected index).
+    3. If found, run ``REINDEX <name>`` for each unique name.
+    4. Re-run integrity_check; return ``(True, names)`` on success.
+
+    If the integrity_check error is anything other than recoverable
+    index drift — page-level corruption, malformed b-tree headers,
+    disk image malformed — return ``(False, [])`` so the caller can
+    fall through to the backup-and-raise path.
+
+    ``OperationalError`` (lock/busy) is propagated raw; we cannot
+    safely REINDEX under contention and the caller wants to see the
+    real lock failure, not a corrupt-DB error.
+    """
+    try:
+        probe = _sqlite_connect(path)
+    except sqlite3.OperationalError:
+        raise
+    except sqlite3.DatabaseError:
+        return False, []
+    try:
+        try:
+            rows = probe.execute("PRAGMA integrity_check").fetchall()
+        except sqlite3.OperationalError:
+            raise
+        except sqlite3.DatabaseError:
+            return False, []
+
+        # Healthy DBs come back as a single ``("ok",)`` row.
+        if len(rows) == 1 and isinstance(rows[0][0], str) and rows[0][0].lower() == "ok":
+            return True, []
+
+        drifted = _collect_index_drift_rows(rows)
+        if not drifted:
+            # Some OTHER corruption shape (page-level, malformed
+            # b-tree, etc.). REINDEX cannot fix it; let the caller
+            # back up and raise.
+            return False, []
+
+        repaired: list[str] = []
+        for name in drifted:
+            # ``REINDEX`` does not support parameter binding for the
+            # index name; the name comes from SQLite's own output, so
+            # the injection surface is bounded to ``[A-Za-z_][\w]*``
+            # (enforced by ``_INDEX_DRIFT_ROW_RE``). Validate defensively
+            # anyway so a future regex change can't open an injection
+            # path against the kanban DB.
+            if not re.fullmatch(r"[A-Za-z_][\w]*", name):
+                _log.warning(
+                    "kanban: refusing to REINDEX suspicious index name %r",
+                    name,
+                )
+                return False, drifted
+            try:
+                probe.execute(f"REINDEX {name}")
+            except sqlite3.DatabaseError as exc:
+                _log.warning(
+                    "kanban: REINDEX %s failed during auto-repair: %s",
+                    name, exc,
+                )
+                return False, drifted
+            repaired.append(name)
+
+        # Verify the repair stuck. ``PRAGMA integrity_check`` runs
+        # across the whole DB, so a successful re-repair means the
+        # board is back to a known-good state.
+        try:
+            post_rows = probe.execute("PRAGMA integrity_check").fetchall()
+        except sqlite3.OperationalError:
+            raise
+        except sqlite3.DatabaseError:
+            return False, repaired
+
+        if len(post_rows) == 1 and isinstance(post_rows[0][0], str) \
+                and post_rows[0][0].lower() == "ok":
+            return True, repaired
+        return False, repaired
+    finally:
+        try:
+            probe.close()
+        except Exception:
+            pass
+
+
 def _guard_existing_db_is_healthy(path: Path) -> None:
     """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
 
@@ -1525,6 +1672,19 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     sidecars) to a timestamped backup and raise
     :class:`KanbanDbCorruptError` so callers cannot silently recreate
     the schema on top of a damaged DB.
+
+    **Recoverable index drift auto-repair:** when the integrity
+    check fails specifically with ``wrong # of entries in index
+    <name>``, SQLite's native fix is ``REINDEX <name>`` (rebuilds the
+    index b-tree from the table). This is a known, transient class
+    triggered by concurrent worker writes during dispatcher
+    heartbeats; instead of refusing to open and forcing the operator
+    to manually run ``sqlite3 ~/.hermes/kanban.db REINDEX``, we
+    attempt the repair here, log a WARNING so the operator has
+    audit visibility, and return success if integrity_check comes
+    back clean. Unrecoverable corruption shapes (page-level,
+    malformed b-tree, TLS-overwrite) still trip the backup-and-raise
+    path.
 
     Transient lock/busy errors (``sqlite3.OperationalError``) are NOT
     treated as corruption; they propagate raw so the caller sees a
@@ -1558,19 +1718,66 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     try:
         probe = _sqlite_connect(resolved)
         try:
-            row = probe.execute("PRAGMA integrity_check").fetchone()
+            rows = probe.execute("PRAGMA integrity_check").fetchall()
         finally:
             probe.close()
-        if not row or (row[0] or "").lower() != "ok":
-            reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
+        if not rows:
+            reason = "integrity_check returned no rows"
+        elif len(rows) == 1 and isinstance(rows[0][0], str) \
+                and rows[0][0].lower() == "ok":
+            # Healthy. Nothing to do.
+            return
+        else:
+            reason = f"integrity_check returned {len(rows)} error row(s); " \
+                f"first={rows[0][0]!r}"
     except sqlite3.OperationalError:
         # Lock contention, busy, transient IO — not corruption. Let it propagate.
         raise
     except sqlite3.DatabaseError as exc:
         reason = f"sqlite refused to open file: {exc}"
+
     if reason is None:
         return
+
+    # Before backing up the DB and refusing to open, see if this is the
+    # recoverable "index drift" shape. If so, repair in place and
+    # return success — saves the operator from a manual
+    # ``sqlite3 ~/.hermes/kanban.db REINDEX`` cycle for what is
+    # effectively a transient SQLite write race.
+    try:
+        repaired_ok, repaired_names = _try_repair_index_drift(resolved)
+    except sqlite3.OperationalError:
+        # Lock/busy during repair — propagate; do not corrupt-classify.
+        raise
+    except sqlite3.DatabaseError as exc:
+        _log.warning(
+            "kanban: index drift auto-repair raised %s; falling through "
+            "to backup-and-raise path",
+            exc,
+        )
+        repaired_ok, repaired_names = False, []
+
+    if repaired_ok and repaired_names:
+        _log.warning(
+            "kanban: auto-repaired %d drifted index(es) via REINDEX: %s. "
+            "This is a known transient class under concurrent worker "
+            "heartbeats; if it recurs frequently, file a CNS report "
+            "with the kanban.db path and recent dispatcher load.",
+            len(repaired_names),
+            ", ".join(repaired_names),
+        )
+        return
+
     backup = _backup_corrupt_db(resolved)
+    if repaired_names:
+        # We REINDEXed at least one index but the DB is still not clean.
+        # Surface that in the error so the operator sees the repair was
+        # attempted (and why it wasn't enough).
+        raise KanbanDbCorruptError(
+            resolved, backup,
+            f"{reason}; REINDEX attempted on {repaired_names!r} "
+            "but integrity_check still failing",
+        )
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
@@ -2319,6 +2526,19 @@ def create_task(
         # usually pass several at once (`skills=["web", "browser", "terminal"]`)
         # and serial-correcting one per failure round-trips wastes tokens.
         toolset_typos: list[str] = []
+        # Structural-safety guard (2026-06-21): profile names like
+        # "code-craftsman" leaked into skills columns via orchestrator
+        # templates that copied the assignee into skills. Loading a profile
+        # name as a skill crashes the worker at CLI startup
+        # ("Unknown skill(s):") and produces a crash-loop class
+        # (t_47727c99 / t_ca595dd2 / t_6e6c889a hit 18+ crash runs).
+        # Raise loudly instead of silently persisting bad data.
+        profile_typos: list[str] = []
+        from pathlib import Path as _P
+        _known_profile_names: set[str] = set()
+        _profiles_dir = _P.home() / ".hermes" / "profiles"
+        if _profiles_dir.is_dir():
+            _known_profile_names = {p.name for p in _profiles_dir.iterdir() if p.is_dir()}
         for s in skills:
             if not s:
                 continue
@@ -2333,10 +2553,24 @@ def create_task(
             if name.casefold() in KNOWN_TOOLSET_NAMES:
                 toolset_typos.append(name)
                 continue
+            if name in _known_profile_names:
+                profile_typos.append(name)
+                continue
             if name in seen:
                 continue
             seen.add(name)
             cleaned.append(name)
+        if profile_typos:
+            quoted = ", ".join(repr(n) for n in profile_typos)
+            noun = "is a profile name" if len(profile_typos) == 1 else "are profile names"
+            raise ValueError(
+                f"{quoted} {noun}, not skill name(s). Profiles are runtime "
+                "contexts selected via --profile / -p; they cannot be force-"
+                "loaded as skills. If you want the worker's toolset, pass it "
+                "via the assignee profile's `toolsets:` config. If you want "
+                "a specialist skill, use the skill bundle name (e.g. "
+                "'code-craftsman-toolkit' for the code-craftsman toolkit)."
+            )
         if toolset_typos:
             quoted = ", ".join(repr(n) for n in toolset_typos)
             noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
@@ -5309,6 +5543,25 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# Stranded-in-ready reaper
+# ---------------------------------------------------------------------------
+#
+# A "stranded" task is one that has been sitting in status='ready' for longer
+# than ``DEFAULT_STRANDED_TIMEOUT_SECONDS`` AND whose assignee does not map
+# to a real on-disk Hermes profile. These tasks will never spawn — the
+# dispatcher silently skips them and (per ``has_spawnable_ready``) they are
+# NOT counted as "stuck" because the assignee is not a real profile to begin
+# with. So a typo'd or stale assignee would otherwise linger forever,
+# cluttering the ready queue and masking real failures.
+#
+# The reaper sweeps them out automatically. Operator-configurable via
+# ``kanban.stranded_timeout_seconds`` and ``kanban.stranded_action`` in
+# config.yaml. See :func:`reap_stranded_in_ready` for the full rationale.
+DEFAULT_STRANDED_TIMEOUT_SECONDS = 1800  # 30 minutes
+VALID_STRANDED_ACTIONS = ("auto", "reassign", "archive")
+DEFAULT_STRANDED_ACTION = "auto"
+
 
 @dataclass
 class DispatchResult:
@@ -5368,6 +5621,26 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    stranded_reaped: list[tuple[str, str, str, Optional[str]]] = field(default_factory=list)
+    """Tasks swept by :func:`reap_stranded_in_ready` for sitting too long in
+    ``ready`` with no on-disk profile matching their assignee. Each entry is
+    ``(task_id, action, original_assignee, new_assignee_or_none)`` where
+    ``action`` is ``"reassign"`` or ``"archive"`` and ``new_assignee_or_none``
+    is the fallback profile the task was reassigned to (None when archived)."""
+
+    review_handed_off: list[str] = field(default_factory=list)
+    """Task ids transitioned from ``blocked(review-required)`` to
+    ``status='review', assignee='wags-reviewer'`` by
+    :func:`hermes_cli.kanban_review_handoff.handoff_blocked_to_review`.
+    Empty when no review-required cards were waiting. Idempotent re-runs
+    produce empty lists."""
+
+    review_completed_routed: list[str] = field(default_factory=list)
+    """Task ids wags-reviewer marked ``done`` that
+    :func:`hermes_cli.kanban_review_handoff.completion_route` then routed
+    per the verdict in the last comment (PASS left as-is; FAIL/WAIVER
+    reassigned to the original worker and set back to ``ready``). Empty
+    when no reviewer-done cards had parseable verdicts this tick."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -6379,6 +6652,243 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def reap_stranded_in_ready(
+    conn: sqlite3.Connection,
+    *,
+    timeout_seconds: int = DEFAULT_STRANDED_TIMEOUT_SECONDS,
+    action: str = DEFAULT_STRANDED_ACTION,
+    default_assignee: Optional[str] = None,
+    profile_exists_fn=None,
+) -> list[tuple[str, str, str, Optional[str]]]:
+    """Sweep ready tasks whose assignee maps to no on-disk Hermes profile.
+
+    A "stranded" task is one that has been sitting in ``status='ready'`` for
+    longer than ``timeout_seconds`` seconds AND whose ``assignee`` does not
+    name a real profile directory under ``<HERMES_HOME>/profiles/``.
+
+    Why this matters: the dispatcher's per-tick spawn loop checks
+    ``profile_exists(assignee)`` and routes missing-profile tasks to
+    ``skipped_nonspawnable`` — a non-actionable bucket. ``has_spawnable_ready``
+    also ignores them, so the gateway's "stuck" health warning does NOT fire.
+    Net effect: a typo'd, deleted, or never-existed assignee parks the task
+    in ready forever with no operator signal, crowding the queue and masking
+    real failures on healthy assignees. This reaper is the safety valve.
+
+    "How long has it been ready" is computed from the most recent
+    ``task_events.kind = 'promoted'`` row for the task (the only path into
+    ready; ``recompute_ready`` is the emitter). Falls back to ``created_at``
+    for tasks that were created directly into ready with no parents and
+    therefore never received a separate ``promoted`` event.
+
+    Actions (set via ``action`` or the matching ``kanban.stranded_action``
+    config key):
+
+    * ``"auto"`` (default): re-assign to ``default_assignee`` if one is
+      configured AND that fallback is itself a real on-disk profile;
+      otherwise archive. Maximises the chance a misrouted task still
+      gets worked on.
+    * ``"reassign"``: re-assign to ``default_assignee`` unconditionally. If
+      no default is configured, archive with a clear event payload so
+      the operator can recover via ``hermes kanban unarchive`` if needed.
+    * ``"archive"``: park the task as ``archived`` so it stops cluttering
+      the ready queue. The full task row, comments, and runs are preserved;
+      recovery is one ``hermes kanban unarchive <id>`` away.
+
+    Each reaped task emits a single event so the change is auditable:
+    ``stranded_reassigned`` (with the new assignee) or ``stranded_archived``
+    (with the action reason). The event is emitted inside the same write
+    transaction that mutates the task row, so the audit log and the row
+    state can never disagree.
+
+    Returns a list of ``(task_id, action, original_assignee, new_assignee)``
+    tuples, suitable for the caller to stash in ``DispatchResult``.
+    """
+    if action not in VALID_STRANDED_ACTIONS:
+        # Defensive: a caller passed an unsupported action. Treat as "auto"
+        # rather than crashing the dispatcher loop — the rest of the tick
+        # is more important than the reaper.
+        action = DEFAULT_STRANDED_ACTION
+
+    if timeout_seconds < 1:
+        # Treat <=0 as "disabled" — the operator wants the reaper off
+        # without ripping out the config key.
+        return []
+
+    if profile_exists_fn is None:
+        try:
+            from hermes_cli.profiles import profile_exists as _profile_exists
+        except Exception:
+            # profiles module not importable (test stubs, exotic envs).
+            # No way to decide who's stranded — bail.
+            return []
+        profile_exists_fn = _profile_exists
+
+    fallback = (default_assignee or "").strip() or None
+    # Validate the fallback once: a default_assignee that doesn't exist on
+    # disk would just re-create the same problem on the next tick. We do
+    # not silently fall back to archive here — we let the action string
+    # dictate the behaviour (so an explicit "reassign" + missing default
+    # produces an archive + a clear event, which is the operator's
+    # intended audit trail).
+    fallback_valid = bool(fallback) and bool(profile_exists_fn(fallback))
+
+    now = int(time.time())
+    cutoff = now - int(timeout_seconds)
+    stranded: list[tuple[str, str, str, Optional[str]]] = []
+
+    # The "age in ready" timestamp is the most recent "promoted" event for
+    # this task. We use a correlated subquery so the planner can use the
+    # ``idx_events_task`` index on (task_id, created_at). Fall back to
+    # ``tasks.created_at`` for tasks that never had a promoted event
+    # (typically: created directly into ready with no parents).
+    rows = conn.execute(
+        "SELECT t.id, t.assignee, t.created_at, "
+        "  COALESCE("
+        "    (SELECT MAX(e.created_at) FROM task_events e "
+        "       WHERE e.task_id = t.id AND e.kind = 'promoted'), "
+        "    t.created_at) AS ready_since "
+        "FROM tasks t "
+        "WHERE t.status = 'ready' AND t.assignee IS NOT NULL "
+        "  AND t.claim_lock IS NULL "
+        "  AND COALESCE("
+        "    (SELECT MAX(e.created_at) FROM task_events e "
+        "       WHERE e.task_id = t.id AND e.kind = 'promoted'), "
+        "    t.created_at) <= ?",
+        (cutoff,),
+    ).fetchall()
+
+    for row in rows:
+        task_id = row["id"]
+        original = row["assignee"]
+        # The on-disk profile check. profile_exists handles "default" as a
+        # special case (always True) — stranded detection skips those
+        # tasks, which is correct: "default" is the implicit profile when
+        # no name is given, not a typo'd one.
+        try:
+            exists = bool(profile_exists_fn(original))
+        except Exception:
+            # Don't let a misbehaving custom check kill the reaper.
+            # Treat as "profile exists" so we don't re-classify a task
+            # whose existence we can't even verify.
+            continue
+        if exists:
+            # Not stranded — the assignee IS a real profile. The reason
+            # the task is sitting in ready is a separate problem (maybe
+            # the dispatcher is paused, or all workers are busy). The
+            # reaper's job is the missing-profile case only.
+            continue
+
+        # Decide the action.
+        chosen_action: str
+        new_assignee: Optional[str]
+        if action == "archive":
+            chosen_action = "archive"
+            new_assignee = None
+        elif action == "reassign":
+            if fallback_valid:
+                chosen_action = "reassign"
+                new_assignee = fallback
+            else:
+                # Explicit "reassign" with no usable default — archive
+                # so the loop terminates, but the event payload carries
+                # the reason so the operator sees the misconfiguration.
+                chosen_action = "archive"
+                new_assignee = None
+        else:  # "auto"
+            if fallback_valid:
+                chosen_action = "reassign"
+                new_assignee = fallback
+            else:
+                chosen_action = "archive"
+                new_assignee = None
+
+        try:
+            with write_txn(conn):
+                # CAS guard: only mutate the row if it's still in the
+                # state we observed. A concurrent dispatch tick may have
+                # already claimed or moved the task between our SELECT
+                # and this UPDATE.
+                if chosen_action == "reassign":
+                    cur = conn.execute(
+                        "UPDATE tasks SET assignee = ? "
+                        "WHERE id = ? AND status = 'ready' "
+                        "  AND claim_lock IS NULL AND assignee = ?",
+                        (new_assignee, task_id, original),
+                    )
+                    if cur.rowcount != 1:
+                        continue
+                    _append_event(
+                        conn, task_id, "stranded_reassigned",
+                        {
+                            "original_assignee": original,
+                            "new_assignee": new_assignee,
+                            "ready_since": int(row["ready_since"]),
+                            "timeout_seconds": int(timeout_seconds),
+                        },
+                    )
+                else:  # archive
+                    cur = conn.execute(
+                        "UPDATE tasks SET status = 'archived', "
+                        "  claim_lock = NULL, claim_expires = NULL, "
+                        "  worker_pid = NULL "
+                        "WHERE id = ? AND status = 'ready' "
+                        "  AND claim_lock IS NULL",
+                        (task_id,),
+                    )
+                    if cur.rowcount != 1:
+                        continue
+                    # Mirror archive_task(): if the task has an open
+                    # run, close it as reclaimed so attempt history
+                    # isn't orphaned. There's no real run for a task
+                    # that's been sitting in 'ready', but the path
+                    # is defensive.
+                    run_id = _end_run(
+                        conn, task_id, outcome="reclaimed",
+                        status="reclaimed",
+                        summary="stranded: archived by reap_stranded_in_ready",
+                    )
+                    _append_event(
+                        conn, task_id, "stranded_archived",
+                        {
+                            "original_assignee": original,
+                            "ready_since": int(row["ready_since"]),
+                            "timeout_seconds": int(timeout_seconds),
+                            "reason": (
+                                "no on-disk profile; action=archive"
+                                if action == "archive"
+                                else "no usable default_assignee; fell back to archive"
+                            ),
+                        },
+                        run_id=run_id,
+                    )
+        except Exception:
+            # One task failing should not abort the whole sweep — log
+            # and move on. The caller sees a shorter list than they
+            # would otherwise; better than crashing the dispatch tick.
+            _log.exception(
+                "stranded reaper: failed on task %s (original assignee=%r)",
+                task_id, original,
+            )
+            continue
+
+        stranded.append((task_id, chosen_action, original, new_assignee))
+
+    if stranded:
+        # Newly-archived tasks may have been blocking children's parent
+        # gate (status='done' or 'archived' is the unblock predicate).
+        # Run a single recompute pass so dependent children don't sit
+        # stuck in 'todo' if their only unblock path was the reaper.
+        try:
+            recompute_ready(conn)
+        except Exception:
+            _log.exception(
+                "stranded reaper: recompute_ready failed after sweeping %d tasks",
+                len(stranded),
+            )
+
+    return stranded
+
+
 def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -6566,6 +7076,8 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    stranded_timeout_seconds: int = DEFAULT_STRANDED_TIMEOUT_SECONDS,
+    stranded_action: str = DEFAULT_STRANDED_ACTION,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -6640,6 +7152,10 @@ def _dispatch_once_locked(
       2. Reclaim stale running tasks (no recent heartbeat).
       3. Reclaim crashed running tasks (host-local PID no longer alive).
       3. Promote todo -> ready where all parents are done.
+      3a. Sweep stranded ready tasks (assignee maps to no on-disk
+          profile) older than ``stranded_timeout_seconds``. Re-assigns or
+          archives them per ``stranded_action`` so a typo'd / deleted
+          assignee doesn't park a task forever.
       4. For each ready task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
          return value (if any) is recorded as ``worker_pid`` so subsequent
@@ -6689,6 +7205,34 @@ def _dispatch_once_locked(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+    # Stranded-in-ready reaper: sweep ready tasks whose assignee maps to
+    # no real profile, after the threshold. Runs AFTER recompute_ready so
+    # we don't accidentally re-claim a task that was just promoted (and
+    # therefore has a fresh promoted-event timestamp). When ``dry_run``
+    # is set (e.g. ``hermes kanban dispatch --dry-run``) the reaper is a
+    # pure observer — it returns what it WOULD reap without mutating.
+    if not dry_run:
+        result.stranded_reaped = reap_stranded_in_ready(
+            conn,
+            timeout_seconds=stranded_timeout_seconds,
+            action=stranded_action,
+            default_assignee=default_assignee,
+        )
+        # Review loop — producer + consumer. Both functions are
+        # idempotent so this is safe to call on every tick (the daemon
+        # tick is the de-facto safety net for the cron `*/2 * * * *`
+        # spec'd by IMPLEMENT-KANBAN-REVIEW-HANDOFF). Local import to
+        # avoid the circular dependency kanban_review_handoff → kanban_db.
+        try:
+            from hermes_cli import kanban_review_handoff as _krh
+        except Exception:
+            # Don't let a missing/ broken module kill the dispatcher
+            # tick. The review loop is an enhancement; the rest of the
+            # dispatch is more important.
+            _krh = None
+        if _krh is not None:
+            result.review_handed_off = _krh.handoff_blocked_to_review(conn)
+            result.review_completed_routed = _krh.completion_route(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -7406,10 +7950,36 @@ def _default_spawn(
     # accepts both forms (action='append' + comma-split), but
     # per-name pairs are easier to read in `ps` output and avoid any
     # quoting ambiguity if a skill name ever contains unusual chars.
+    # Dedupe against the built-in so we don't double-load kanban-worker
+    # if a task author asks for it explicitly.
+    #
+    # Structural-safety guard (2026-06-21): some legacy rows have profile
+    # names (e.g. "code-craftsman") in the skills column. Loading those
+    # as skills fails at CLI startup with "Unknown skill(s):" and the
+    # worker exits 1 before doing any work — a loop class observed in
+    # t_47727c99 / t_ca595dd2 / t_6e6c889a (18+ crash runs). Filter
+    # any entry that exactly matches a known profile directory so we
+    # degrade gracefully instead of crashing on bad persisted data.
+    _KNOWN_PROFILES: set[str] = set()  # populated lazily below
     if task.skills:
+        from pathlib import Path as _Path
+        if not _KNOWN_PROFILES:
+            try:
+                _hermes_home = _Path(env.get("HERMES_HOME") or _Path.home() / ".hermes")
+                _profiles_root = _hermes_home / "profiles"
+                if _profiles_root.is_dir():
+                    _KNOWN_PROFILES = {p.name for p in _profiles_root.iterdir() if p.is_dir()}
+            except OSError:
+                pass
         for sk in task.skills:
-            if sk:
-                cmd.extend(["--skills", sk])
+            if not sk or sk == "kanban-worker":
+                continue
+            if sk in _KNOWN_PROFILES:
+                # Profile name leaked into skills column — skip it.
+                # The persisted-row fix script cleans these up at write
+                # time; this is the read-time defense.
+                continue
+            cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))

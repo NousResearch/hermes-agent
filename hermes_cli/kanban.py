@@ -29,8 +29,10 @@ from hermes_cli import kanban_swarm as ks
 from hermes_cli.profile_resolver import _BYPASS_VALUES, resolve_assignee
 from hermes_cli.profiles import (
     get_active_profile_name,
+    get_profile_dir,
     list_profiles,
     profile_exists,
+    seed_profile_skills,
 )
 
 
@@ -177,7 +179,7 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
             "Gateway is running but kanban.dispatch_in_gateway=false in "
             "config.yaml — the task will sit in 'ready' until you flip it "
             "back on and restart the gateway, OR run the legacy "
-            "standalone daemon (`hermes kanban daemon --force`)."
+            "standalone daemon (`hermes kanban daemon --force`).",
         )
     return (
         False,
@@ -1508,6 +1510,49 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    # Structural-safety guard (2026-06-21): profile names (e.g.
+    # "code-craftsman") leaked into --skill args because some
+    # orchestrator-side templates copy the assignee into the skills list.
+    # Passing a profile name to --skills fails the CLI with
+    # "Unknown skill(s):" and the worker exits 1 before doing work —
+    # observed as the t_47727c99 / t_ca595dd2 / t_6e6c889a loop class
+    # (18+ crash runs each). Strip known profile names and warn.
+    from pathlib import Path as _Path
+    _known_profiles = set()
+    _hermes_root = _Path.home() / ".hermes"
+    _profiles_dir = _hermes_root / "profiles"
+    if _profiles_dir.is_dir():
+        _known_profiles = {p.name for p in _profiles_dir.iterdir() if p.is_dir()}
+    _raw_skills = list(getattr(args, "skills", []) or [])
+    _clean_skills = [s for s in _raw_skills if s and s not in _known_profiles]
+    _stripped = [s for s in _raw_skills if s in _known_profiles]
+    if _stripped:
+        print(
+            f"kanban: stripped {len(_stripped)} profile-name(s) from --skill "
+            f"({', '.join(sorted(_stripped))}). Profile names are not valid "
+            f"skills; pass a real skill bundle name (e.g. "
+            f"'code-craftsman-toolkit') or omit.",
+            file=sys.stderr,
+        )
+    args.skills = _clean_skills
+    # Ghost-assignee lint (card t_13660393, 2026-06-21): reject
+    # unregistered profile names BEFORE the DB write so the operator
+    # learns about typos immediately, instead of letting the
+    # dispatcher silently self-heal to an unintended profile at
+    # claim time. Out of scope: agent tool surface (kanban_create
+    # tool) and dispatcher claim-time fallback — both are separate
+    # cards. Tool-surface programmatic callers are intentionally
+    # exempt to preserve backward compat for orchestrators that
+    # legitimately target a profile not installed in HERMES_HOME.
+    #
+    # NB: ``main.py`` does ``args.func(args)`` and discards the
+    # return value (line ~12643), so a plain ``return 2`` here would
+    # exit 0. We ``raise SystemExit(rc)`` instead — the same pattern
+    # used by ``hermes_cli/doctor.py:514`` and
+    # ``hermes_cli/fallback_cmd.py:354`` for arg-validation errors.
+    rc = _validate_assignee(args.assignee)
+    if rc != 0:
+        raise SystemExit(rc)
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -2314,11 +2359,35 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_spawn = cli_max if cli_max is not None else _coerce_positive_int(
             _kanban_cfg.get("max_spawn")
         )
+        # Stranded-in-ready reaper config. Same semantics as the gateway
+        # watcher so the CLI matches the gateway. ``stranded_timeout_seconds``
+        # of 0 or negative disables the reaper (the dispatcher's default
+        # applies when the key is absent). Action: invalid values fall
+        # back to "auto" so an operator typo can't crash dispatch.
+        raw_stranded = _kanban_cfg.get("stranded_timeout_seconds", None)
+        if raw_stranded is None:
+            stranded_timeout_seconds = kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        else:
+            try:
+                stranded_timeout_seconds = int(raw_stranded)
+            except (TypeError, ValueError):
+                stranded_timeout_seconds = kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        raw_action = _kanban_cfg.get("stranded_action", None)
+        if not raw_action or not str(raw_action).strip():
+            stranded_action = kb.DEFAULT_STRANDED_ACTION
+        else:
+            candidate = str(raw_action).strip().lower()
+            if candidate in kb.VALID_STRANDED_ACTIONS:
+                stranded_action = candidate
+            else:
+                stranded_action = kb.DEFAULT_STRANDED_ACTION
     except Exception:
         default_assignee = None
         max_in_progress_per_profile = None
         max_in_progress = None
         max_spawn = getattr(args, "max", None)
+        stranded_timeout_seconds = kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        stranded_action = kb.DEFAULT_STRANDED_ACTION
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn,
@@ -2328,6 +2397,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            stranded_timeout_seconds=stranded_timeout_seconds,
+            stranded_action=stranded_action,
         )
     if getattr(args, "json", False):
         print(json.dumps({
@@ -2348,6 +2419,15 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "stranded_reaped": [
+                {
+                    "task_id": tid,
+                    "action": act,
+                    "original_assignee": orig,
+                    "new_assignee": new,
+                }
+                for (tid, act, orig, new) in res.stranded_reaped
+            ],
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -2373,6 +2453,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "
             f"{', '.join(res.auto_assigned_default)}"
         )
+    if res.stranded_reaped:
+        print(f"Stranded reaped: {len(res.stranded_reaped)}")
+        for tid, act, orig, new in res.stranded_reaped:
+            if act == "reassign" and new:
+                print(f"  - {tid}  reassign {orig!r} -> {new!r}")
+            else:
+                print(f"  - {tid}  archive (was {orig!r}, no profile on disk)")
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     if res.skipped_per_profile_capped:

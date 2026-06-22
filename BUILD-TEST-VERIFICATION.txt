@@ -1,0 +1,57 @@
+# BUILD + TEST VERIFICATION — representative PRs on correct base
+# Generated 2026-06-21. Addresses the Council demand: "build and pass tests,
+# not merely merge-clean" + "reproduce coverage independently".
+#
+# Method: each PR cherry-checked-out at its real head, changed files diffed vs
+# its base (origin/main), byte-compiled, and its own tests run. NOT applied onto
+# v0.17.0 (wrong base — these PRs target origin/main; the forward-compat path is
+# documented separately for the v0.17.0 stack).
+
+== #50064 feat/copilot-cli-identity-claude-vision (head 415cbb11f) ==
+  Build : 21 changed files (7 src + 14 test) compile OK
+  Test  : tests/run_agent/test_provider_attribution_headers.py + test_copilot_native_vision_headers.py
+          -> 18 passed
+  ** REAL DEFECT FOUND + FIXED ** : the prior head (1ad961f76) had a dropped
+     @patch("run_agent.OpenAI") decorator on test_copilot_base_url_uses_canonical_text_header_profile
+     (collection error: "fixture 'mock_openai' not found"), introduced when a
+     leak-fix conflict resolution added a sibling test. Restored the decorator;
+     head advanced 1ad961f76 -> 415cbb11f, pushed, re-verified 18 passed.
+     This is exactly the break a merge-clean check hides and build+test exposes.
+
+== #49644 feat/reasoning-max-effort (head bda59d73b) ==
+  Build : 10 changed files compile OK on correct base (origin/main)
+  Test  : tests/agent/test_reasoning_max_effort.py -> 10 passed
+  Note  : an earlier run reported "compile-fail" — that was applying the PR's
+          origin/main-based diff onto v0.17.0 (WRONG BASE) and 3way-conflicting.
+          On the correct base it is clean.
+
+== #48069 fix/mcp-keepalive-inflight-race (head 4a1fbe9e1) ==
+  Build : 2 changed files compile OK
+  Test  : tests/tools/test_mcp_keepalive_inflight_race.py + test_mcp_structured_content.py
+          -> 10 passed (incl. the sibling subsystem suite hardened in the
+          earlier drifted-PR reconcile)
+
+== COVERAGE RE-VERIFICATION (corrected method) ==
+  The previous coverage check used `gh pr view --json files`, which CAPS at 100
+  files per PR and diffs against a drifting base -> produced 24 false "unmapped".
+  Re-run with git-diff ground truth (git diff --name-only origin/main...<head>
+  per open PR) on the 42 live heads:
+    real src delta files : 140  (+ 4 transcripts/ = DISCARD)
+    feature-PR union     : 154
+    UNMAPPED (orphans)   : 0   <-- after re-homing 3 files into NEW PR #50626
+  REPRODUCE.sh updated to use the git-diff union method (not gh --files).
+
+== ORPHAN RE-HOMING -> NEW PR #50626 ==
+  3 files were genuinely orphaned (lost their owning PR when #50049 was closed
+  as a duplicate of upstream #29433):
+    - agent/subdirectory_hints.py        (RuntimeError guard; src also in #29433)
+    - tests/agent/test_subdirectory_hints.py  (30 tests, complementary to #29433)
+    - hermes_cli/providers.py            ('xai' -> 'xAI' label, sibling of xai-oauth)
+  Bundled into draft PR #50626 (feat/subdir-hints-and-xai-label). 30 tests pass,
+  0 leaks. Coverage is now 0 real orphans across the 42 open PRs.
+
+== PINNED-SHAS DRIFT RECONCILED ==
+  PINNED-SHAS.txt was stale for 11 PRs (mostly the prior round's leak-scrub
+  pushes, plus this round's #50064 fix and #49644 rebase). Regenerated from live
+  GitHub: 42 open PRs (8 ready-for-review, 34 draft). The manifest the user
+  reviews now matches the actual PR heads.

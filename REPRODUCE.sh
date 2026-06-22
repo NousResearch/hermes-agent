@@ -28,10 +28,16 @@ echo "============ 1. DIFF-COVERAGE (overlay vs v0.16.0 ∩ 40 feature PRs) ====
 { git diff --name-only "$V016" HEAD; git diff --name-only "$V016"; } | sort -u \
   | grep -vE '(\.bak$|\.bak\.|^\.project-intel/)' > /tmp/rep_src.txt
 : > /tmp/rep_prunion.txt
+# IMPORTANT: build the feature-PR file union from `git diff --name-only origin/main...<head>`
+# (ground truth) NOT from `gh pr view --json files`. The gh files view CAPS at 100 entries
+# and diffs against a drifting base, which produced false "unmapped" files. We fetch each
+# open PR's head SHA, ensure it's local, then diff it against the PR base (origin/main).
 $GH pr list --repo NousResearch/hermes-agent --author arminanton --state open --limit 100 \
-  --json number -q '.[].number' | while read n; do
+  --json number,headRefOid -q '.[] | "\(.number) \(.headRefOid)"' | while read n sha; do
     [ "$n" = "50111" ] && continue                   # exclude deferred-tracker
-    $GH pr view "$n" --repo NousResearch/hermes-agent --json files -q '.files[].path' 2>/dev/null
+    git cat-file -e "${sha}^{commit}" 2>/dev/null || git fetch fork "$sha" 2>/dev/null
+    git diff --name-only "$MAIN_REF...$sha" 2>/dev/null \
+      | grep -vE '(\.bak$|\.bak\.|^\.project-intel/)'
   done | sort -u > /tmp/rep_prunion.txt
 # deferred-tracker (#50111) coverage: each deferred/**/<flat>.patch encodes a real
 # src path with '/' flattened to '_'. Recover the real paths from the committed delta

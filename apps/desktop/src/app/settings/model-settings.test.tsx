@@ -144,21 +144,33 @@ describe('ModelSettings', () => {
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
   })
 
-  it('assigns an auxiliary task to the main model via setModelAssignment', async () => {
+  it('assigns an auxiliary task to auto via setModelAssignment', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'vision', provider: 'openrouter', model: 'anthropic/claude-opus-4.7', base_url: '' }]
+    })
+
     await renderModelSettings()
 
-    // One "Set to main" button per task slot; the first is Vision.
-    const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
-    fireEvent.click(setToMainButtons[0])
+    // One "Set to auto" button per task slot; the first is Vision.
+    const setToAutoButtons = await screen.findAllByRole('button', { name: 'Set to auto' })
+    fireEvent.click(setToAutoButtons[0])
 
     await waitFor(() =>
       expect(setModelAssignment).toHaveBeenCalledWith({
-        model: 'hermes-4',
-        provider: 'nous',
+        model: '',
+        provider: 'auto',
         scope: 'auxiliary',
         task: 'vision'
       })
     )
+  })
+
+  it('disables Set to auto when an auxiliary task is already auto', async () => {
+    await renderModelSettings()
+
+    const setToAutoButtons = await screen.findAllByRole('button', { name: 'Set to auto' })
+    expect(setToAutoButtons[0]).toHaveProperty('disabled', true)
   })
 
   it('warns when a main switch leaves auxiliary tasks pinned to another provider', async () => {

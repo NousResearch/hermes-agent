@@ -674,10 +674,10 @@ export const ja = defineLocale({
       model: 'モデル',
       applying: '適用中...',
       auxiliaryTitle: '補助モデル',
-      resetAllToMain: 'すべてメインにリセット',
+      resetAllToAuto: 'すべて自動にリセット',
       auxiliaryDesc:
         'ヘルパータスクはデフォルトでメインモデルで実行されます。タスクに専用モデルを割り当てることでオーバーライドできます。',
-      setToMain: 'メインに設定',
+      setToAuto: '自動に設定',
       change: '変更',
       autoUseMain: '自動 · メインモデルを使用',
       providerDefault: '(プロバイダーのデフォルト)',

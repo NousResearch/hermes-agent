@@ -441,9 +441,9 @@ export interface Translations {
       reasoningOff: string
       defaultsFailed: string
       auxiliaryTitle: string
-      resetAllToMain: string
+      resetAllToAuto: string
       auxiliaryDesc: string
-      setToMain: string
+      setToAuto: string
       change: string
       autoUseMain: string
       providerDefault: string

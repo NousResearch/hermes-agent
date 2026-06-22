@@ -532,6 +532,51 @@ def _restart_loop_window_secs() -> float:
     return max(1.0, min(value, 86400.0))
 
 
+# Inspection verbs that READ the safe-restart script without EXECUTING it — a
+# `terminal` command starting with one of these mentions the path but does not
+# initiate a restart, so it must NOT trip the F2 self-loop detector (C1).
+_SAFE_RESTART_INSPECTION_VERBS = (
+    "cat", "grep", "egrep", "rg", "less", "more", "vim", "vi", "nano",
+    "head", "tail", "echo", "ls", "stat", "wc", "diff", "bat", "view",
+)
+
+
+def _command_invokes_safe_restart(cmd: str) -> bool:
+    """True only when a terminal command actually INVOKES the safe-restart skill
+    script (not merely reads/mentions it).
+
+    The safe-gateway-restart skill runs ``<python> .../safe-restart.py ...`` — so
+    we require the literal ``safe-restart.py`` AND that the command isn't a bare
+    inspection of the file (``cat safe-restart.py``, ``grep x safe-restart.py``,
+    ``vim safe-restart.py`` …). This kills the false-positive where the agent
+    merely reads the script in an unrelated turn (which, combined with drain
+    interrupts, could otherwise contribute a spurious replay-mark). False
+    negatives (renamed/aliased/wrapped invocation) are out of scope — the skill's
+    literal invocation shape is a contract (see the call site).
+    """
+    if not cmd or "safe-restart.py" not in cmd:
+        return False
+    # Tokenize loosely; the first meaningful token decides intent. A pipeline or
+    # &&-chain that contains an execution elsewhere still counts (we scan segments).
+    import shlex
+    for segment in cmd.replace("&&", "\n").replace("|", "\n").replace(";", "\n").splitlines():
+        seg = segment.strip()
+        if "safe-restart.py" not in seg:
+            continue
+        try:
+            tokens = shlex.split(seg)
+        except ValueError:
+            tokens = seg.split()
+        if not tokens:
+            continue
+        first = tokens[0].rsplit("/", 1)[-1]  # basename of argv0
+        if first in _SAFE_RESTART_INSPECTION_VERBS:
+            continue  # this segment only reads the file
+        # any non-inspection segment that names the script = an execution
+        return True
+    return False
+
+
 def _float_env(name: str, default: float) -> float:
     """Read an env var as float, falling back to ``default`` on typos/empty.
 
@@ -4696,6 +4741,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         entry["armed"] = False
         counts[session_key] = entry
         self._save_restart_failure_counts(counts)
+
+    def _apply_post_turn_resume_gate(self, session_key: str) -> None:
+        """Post-(clean-turn) replay-loop gate for the F2 circuit-breaker.
+
+        Called when a turn completed cleanly enough to clear ``resume_pending``.
+        Two cases:
+
+        - **The turn itself initiated a restart** (``_session_initiated_restart``
+          set by ``request_restart`` for the ``/restart``/programmatic paths, or
+          by the safe-restart-skill detection in ``progress_callback``): the
+          "clean" completion is NOT forward progress — the turn's only outcome was
+          another restart. **Record a replay-mark** (same call the shutdown drain
+          uses → same ``replay_marks`` threshold → F2 suspends + alerts once at the
+          limit). Do NOT reset the breaker. This closes the self-completing
+          restart-loop gap that escaped F1/F2/F3 (a turn that completes *and*
+          re-restarts every cycle).
+        - **The turn did real work** (no restart initiated): genuine forward
+          progress — clear the replay marks and drop the session from
+          ``_resumed_this_boot`` so a later restart-interrupt isn't miscounted as a
+          relapse. This preserves the parent fix's anti-false-trip behavior for
+          rapid *legitimate* deploys.
+
+        ``_session_initiated_restart`` is popped (one-shot per turn) so it can't
+        bleed into the next turn. ``resume_pending`` is always cleared (recovery
+        completed; the breaker, not the resume flag, is what trips a loop).
+        """
+        initiated_restart = bool(
+            getattr(self, "_session_initiated_restart", {}).pop(session_key, False)
+        )
+        if initiated_restart:
+            try:
+                self._record_restart_replay_mark(session_key)
+            except Exception as exc:
+                logger.debug(
+                    "record_restart_replay_mark failed for %s: %s", session_key, exc
+                )
+            # Do NOT clear replay_marks / _resumed_this_boot — this was loop
+            # progress, not work progress.
+        else:
+            self._clear_restart_replay_marks(session_key)
+            try:
+                self._resumed_this_boot.discard(session_key)
+            except Exception:
+                pass
+        try:
+            self.session_store.clear_resume_pending(session_key)
+        except Exception as exc:
+            logger.debug("clear_resume_pending failed for %s: %s", session_key, exc)
 
     def _clear_restart_failure_count(self, session_key: str) -> None:
         """Clear the restart-failure counter for a session that completed OK.
@@ -9325,24 +9418,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # succeeded and subsequent messages should no longer receive
             # the restart-interruption system note.
             if session_key and _should_clear_resume_pending_after_turn(agent_result):
-                self._clear_restart_replay_marks(session_key)
-                # Forward-progress gate for the replay-loop breaker (F2): a turn
-                # that completed cleanly is REAL progress, not a relapse. Drop the
-                # session from _resumed_this_boot so a LATER restart-interrupt is
-                # not miscounted as resume→re-interrupt. This is what distinguishes
-                # rapid *legitimate* deploys (each resume finishes work → no mark)
-                # from a true loop (resume never makes progress → keeps marking).
-                try:
-                    self._resumed_this_boot.discard(session_key)
-                except Exception:
-                    pass
-                try:
-                    self.session_store.clear_resume_pending(session_key)
-                except Exception as _e:
-                    logger.debug(
-                        "clear_resume_pending failed for %s: %s",
-                        session_key, _e,
-                    )
+                self._apply_post_turn_resume_gate(session_key)
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
@@ -14268,6 +14344,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
             if event_type not in {"tool.started",}:
                 return
+
+            # F2 self-completing-loop detection (C1): the safe-restart SKILL runs
+            # as a `terminal` tool call inside this gateway process. When we observe
+            # it start, set the SAME in-process flag request_restart() sets, so the
+            # clean-turn gate can tell "this turn initiated a restart" for the skill
+            # path too (request_restart covers /restart + programmatic; this covers
+            # the dominant skill path). One flag, no sentinel file, no new tool.
+            #
+            # Contract: the safe-gateway-restart skill invokes the literal
+            # `safe-restart.py` path via a python interpreter — _command_invokes_safe_restart
+            # is keyed to that. If the skill ever changes how it shells out, update
+            # the matcher in lockstep (a renamed/aliased/wrapped invocation escapes).
+            try:
+                if session_key and tool_name == "terminal":
+                    _cmd = ""
+                    if isinstance(args, dict):
+                        _cmd = str(
+                            args.get("command")
+                            or args.get("cmd")
+                            or args.get("script")
+                            or ""
+                        )
+                    if not _cmd:
+                        _cmd = str(args or "")
+                    if _command_invokes_safe_restart(_cmd):
+                        self._session_initiated_restart[session_key] = True
+            except Exception as _sr_err:
+                logger.debug("safe-restart self-loop detection failed: %s", _sr_err)
 
             # Suppress tool-progress bubbles once the user has sent `stop`.
             # When the LLM response carries N parallel tool calls, the agent

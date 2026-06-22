@@ -353,3 +353,171 @@ async def test_stale_marker_after_crash_bounded_by_freshness(tmp_path, monkeypat
     rebooted.session_store._save()
     assert rebooted._schedule_resume_pending_sessions() == 1
     await asyncio.gather(*rebooted._background_tasks)
+
+
+# ───────────── F2 self-completing-loop guard (A′ record-mark-at-gate + C1 skill detection) ─────────────
+
+
+def test_self_completing_restart_loop_is_suspended(tmp_path, monkeypatch):
+    """The bug the parent fix's WONTFIX missed: a turn that completes cleanly AND
+    initiated a restart, every cycle, must be SUSPENDED — it's a loop, not progress.
+    Drives the real post-turn gate (_apply_post_turn_resume_gate) per cycle."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    monkeypatch.setenv("HERMES_RESTART_LOOP_WINDOW_SECS", "300")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "selfloop").session_key
+
+    for _ in range(3):
+        # each cycle: auto-resumed, the resumed turn fires a restart, then "completes"
+        runner._resumed_this_boot.add(sk)
+        runner._session_initiated_restart[sk] = True
+        runner._apply_post_turn_resume_gate(sk)
+
+    assert runner.session_store._entries[sk].suspended is True
+
+
+def test_single_self_restart_then_real_work_not_suspended(tmp_path, monkeypatch):
+    """INV-2: one self-restart, then the next resumed turn does real work (no
+    restart) → the mark clears → never reaches threshold → not suspended."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "onerestart").session_key
+
+    # cycle 1: a self-restart turn → records one mark
+    runner._resumed_this_boot.add(sk)
+    runner._session_initiated_restart[sk] = True
+    runner._apply_post_turn_resume_gate(sk)
+    # cycle 2: real work, no restart → clears
+    runner._resumed_this_boot.add(sk)
+    runner._apply_post_turn_resume_gate(sk)
+    # cycle 3: real work again
+    runner._apply_post_turn_resume_gate(sk)
+
+    assert runner.session_store._entries[sk].suspended is False
+
+
+def test_real_work_turns_never_accrue_marks(tmp_path, monkeypatch):
+    """INV-3 (parent anti-false-trip preserved): a session that only ever does
+    real work (never initiates a restart) is never suspended, no matter how many
+    clean turns — the gate clears every time."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "realwork").session_key
+    for _ in range(6):
+        runner._resumed_this_boot.add(sk)
+        runner._apply_post_turn_resume_gate(sk)
+    assert runner.session_store._entries[sk].suspended is False
+    # and no replay marks accrued
+    counts = runner._load_restart_failure_counts().get(sk, {})
+    assert counts.get("replay_marks", []) == []
+
+
+def test_initiated_flag_is_one_shot_per_turn(tmp_path, monkeypatch):
+    """The initiated flag must be popped per turn — a single restart turn followed
+    by a real-work turn must NOT keep marking (else a one-shot restart would loop
+    the breaker forever)."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "oneshot").session_key
+
+    runner._session_initiated_restart[sk] = True
+    runner._apply_post_turn_resume_gate(sk)          # consumes the flag (1 mark)
+    assert sk not in runner._session_initiated_restart
+    runner._apply_post_turn_resume_gate(sk)          # no flag → clears
+    runner._apply_post_turn_resume_gate(sk)
+    assert runner.session_store._entries[sk].suspended is False
+
+
+def test_skill_path_progress_callback_sets_initiated_flag(tmp_path, monkeypatch):
+    """C1: the gateway must set _session_initiated_restart when it observes a
+    `terminal` tool start INVOKING safe-restart.py — the dominant skill path that
+    F1 (request_restart-only) is blind to — and must NOT trip on a turn that merely
+    READS the script. Drives the REAL matcher (_command_invokes_safe_restart)."""
+    from gateway.run import _command_invokes_safe_restart
+
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "skillpath").session_key
+    cb = _make_progress_callback(runner, sk)
+
+    # a normal terminal command must NOT trip it
+    cb("tool.started", tool_name="terminal", args={"command": "ls -la /tmp"})
+    assert sk not in runner._session_initiated_restart
+
+    # INSPECTION of the script must NOT trip it (the tightened false-positive guard)
+    for inspect_cmd in (
+        "cat ~/.hermes/skills-shared/general/safe-gateway-restart/scripts/safe-restart.py",
+        "grep handoff safe-restart.py",
+        "vim scripts/safe-restart.py",
+    ):
+        assert _command_invokes_safe_restart(inspect_cmd) is False, inspect_cmd
+
+    # the safe-restart skill INVOCATION MUST trip it
+    invoke = "python3 ~/.hermes/skills-shared/general/safe-gateway-restart/scripts/safe-restart.py --handoff x"
+    assert _command_invokes_safe_restart(invoke) is True
+    cb("tool.started", tool_name="terminal", args={"command": invoke})
+    assert runner._session_initiated_restart.get(sk) is True
+
+    # and feeding the gate now records a mark (skill path → loop detectable)
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    runner._apply_post_turn_resume_gate(sk)
+    counts = runner._load_restart_failure_counts().get(sk, {})
+    assert len(counts.get("replay_marks", [])) == 1
+
+
+def test_command_invokes_safe_restart_matcher(tmp_path, monkeypatch):
+    """Direct unit coverage of the REAL C1 matcher — execution vs inspection vs
+    pipeline. Drives gateway.run._command_invokes_safe_restart, not a mirror."""
+    from gateway.run import _command_invokes_safe_restart as m
+
+    # executions → True
+    assert m("python3 a/b/safe-restart.py --handoff 'x'") is True
+    assert m("/usr/bin/python safe-restart.py") is True
+    assert m("cd /tmp && python3 safe-restart.py --full-reload") is True  # &&-chain execution
+    # inspections → False
+    assert m("cat safe-restart.py") is False
+    assert m("grep -n handoff scripts/safe-restart.py") is False
+    assert m("less safe-restart.py") is False
+    assert m("echo safe-restart.py") is False
+    # unrelated / absent → False
+    assert m("ls -la /tmp") is False
+    assert m("") is False
+    # pipeline where the script is executed in a segment → True
+    assert m("echo hi | python3 safe-restart.py") is True
+
+
+def test_c1_detection_present_in_real_progress_callback():
+    """Guard the REAL code, not just the mirror: the progress_callback in
+    gateway/run.py must contain the safe-restart.py → _session_initiated_restart
+    detection. The live callback is a closure inside _run_agent (not unit-callable),
+    so the behavioral test above uses a faithful mirror; this asserts the real
+    branch exists so deleting it fails CI. RED: remove the C1 block → this fails."""
+    import inspect
+    import gateway.run as gr
+
+    src = inspect.getsource(gr)
+    # C1 is uniquely identified by the safe-restart matcher guarding the
+    # initiated-restart flag in the tool-progress callback.
+    assert "_command_invokes_safe_restart" in src, "C1 matcher missing from gateway/run.py"
+    assert "if _command_invokes_safe_restart(_cmd):" in src, (
+        "C1 conditional missing — the skill-path detection branch was removed"
+    )
+
+
+def _make_progress_callback(runner, session_key):
+    """Mirror of the C1 callback branch in _run_agent (the real callback is a
+    closure, not unit-callable). Delegates the match decision to the REAL
+    _command_invokes_safe_restart so the matching logic can't drift from prod."""
+    from gateway.run import _command_invokes_safe_restart
+
+    def cb(event_type, tool_name=None, args=None, **kwargs):
+        if event_type != "tool.started":
+            return
+        if session_key and tool_name == "terminal":
+            cmd = ""
+            if isinstance(args, dict):
+                cmd = str(args.get("command") or args.get("cmd") or args.get("script") or "")
+            if not cmd:
+                cmd = str(args or "")
+            if _command_invokes_safe_restart(cmd):
+                runner._session_initiated_restart[session_key] = True
+    return cb

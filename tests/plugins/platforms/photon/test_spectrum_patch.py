@@ -17,6 +17,15 @@ def test_sidecar_applies_spectrum_patch_before_importing_sdk() -> None:
     assert index.index("patchSpectrumTs();") < index.index('await import("spectrum-ts")')
 
 
+def test_sidecar_healthz_reports_stream_health() -> None:
+    """Local process health must include upstream stream health."""
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
+    assert "function streamHealthSnapshot()" in index
+    assert 'return ok(res, { stream: streamHealthSnapshot() });' in index
+    assert "STREAM_INTERRUPTED_DEGRADE_COUNT" in index
+    assert "process.exit(75);" in index
+
+
 def test_spectrum_patch_preserves_text_when_single_attachment(tmp_path: Path) -> None:
     """The sidecar dependency patch must turn text+one attachment into group content."""
     dist = tmp_path / "node_modules" / "spectrum-ts" / "dist"

@@ -481,13 +481,17 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     # Start a temporary server on the known port
     try:
         server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
-    except OSError:
-        # Port already in use — the server from build_oauth_auth is running.
-        # Fall back to polling the server started by build_oauth_auth.
+    except OSError as exc:
+        # The loopback callback port is genuinely in use: a concurrent OAuth
+        # flow, a leftover listener, or a fixed `oauth.redirect_port` that
+        # collided. build_oauth_auth does not start its own callback server,
+        # so there is nothing to poll here; surface a clear, actionable error
+        # instead of a misleading "timed out".
         raise OAuthNonInteractiveError(
-            "OAuth callback timed out — could not bind callback port. "
-            "Complete the authorization in a browser first, then retry."
-        )
+            f"OAuth callback port {_oauth_port} is already in use ({exc}). "
+            "Close any other in-progress login, or set a free `oauth.redirect_port` "
+            "in the server config, then retry."
+        ) from exc
 
     server_thread = threading.Thread(target=server.handle_request, daemon=True)
     server_thread.start()

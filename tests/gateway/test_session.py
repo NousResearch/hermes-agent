@@ -25,22 +25,36 @@ class TestSessionSourceRoundtrip:
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="12345",
-            chat_name="My Group",
+            chat_name="Group",
             chat_type="group",
-            user_id="99",
-            user_name="alice",
-            thread_id="t1",
+            user_id="42",
+            user_name="Alice",
+            thread_id="99",
+            chat_topic="Topic A",
+            user_id_alt="alt-user",
+            chat_id_alt="alt-chat",
+            guild_id="guild-1",
+            parent_chat_id="parent-1",
+            message_id="m-123",
+            guest_query_id="guest-query-999",
         )
         d = source.to_dict()
         restored = SessionSource.from_dict(d)
 
         assert restored.platform == Platform.TELEGRAM
         assert restored.chat_id == "12345"
-        assert restored.chat_name == "My Group"
+        assert restored.chat_name == "Group"
         assert restored.chat_type == "group"
-        assert restored.user_id == "99"
-        assert restored.user_name == "alice"
-        assert restored.thread_id == "t1"
+        assert restored.user_id == "42"
+        assert restored.user_name == "Alice"
+        assert restored.thread_id == "99"
+        assert restored.chat_topic == "Topic A"
+        assert restored.user_id_alt == "alt-user"
+        assert restored.chat_id_alt == "alt-chat"
+        assert restored.guild_id == "guild-1"
+        assert restored.parent_chat_id == "parent-1"
+        assert restored.message_id == "m-123"
+        assert restored.guest_query_id == "guest-query-999"
 
     def test_full_roundtrip_with_chat_topic(self):
         """chat_topic should survive to_dict/from_dict roundtrip."""

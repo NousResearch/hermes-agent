@@ -143,32 +143,37 @@ Gateway 从多个来源读取配置：
 
 ## 平台适配器
 
-每个消息平台在 `gateway/platforms/` 下均有对应适配器：
+大多数消息平台以插件适配器形式位于 `plugins/platforms/<name>/adapter.py`；少数旧适配器仍直接位于 `gateway/platforms/`。它们都继承 `gateway/platforms/base.py` 中的 `BasePlatformAdapter`：
 
 ```text
-gateway/platforms/
-├── base.py              # BaseAdapter — 所有平台的共享逻辑
-├── telegram.py          # Telegram Bot API（长轮询或 webhook）
-├── discord.py           # Discord bot（通过 discord.py）
-├── slack.py             # Slack Socket Mode
-├── whatsapp.py          # WhatsApp Business Cloud API
+plugins/platforms/                  # 插件打包的适配器（每个一个目录）
+├── telegram/adapter.py     # Telegram Bot API（长轮询或 webhook）
+├── discord/adapter.py      # Discord bot（通过 discord.py）
+├── slack/adapter.py        # Slack Socket Mode
+├── whatsapp/adapter.py     # WhatsApp Business Cloud API
+├── matrix/adapter.py       # Matrix（通过 mautrix，可选 E2EE）
+├── mattermost/adapter.py   # Mattermost WebSocket API
+├── email/adapter.py        # 电子邮件（通过 IMAP/SMTP）
+├── sms/adapter.py          # 短信（通过 Twilio）
+├── dingtalk/adapter.py     # 钉钉 WebSocket
+├── feishu/adapter.py       # 飞书/Lark WebSocket 或 webhook
+├── wecom/adapter.py        # 企业微信（WeCom）回调
+├── line/adapter.py         # LINE Messaging API
+├── teams/adapter.py        # Microsoft Teams
+├── irc/adapter.py          # IRC（作用域锁的标准示例）
+├── homeassistant/adapter.py # Home Assistant 对话集成
+└── …                       # google_chat、ntfy、photon、raft、simplex 等
+
+gateway/platforms/                  # 核心 base 与旧的直接适配器
+├── base.py              # BasePlatformAdapter — 所有平台的共享逻辑
 ├── signal.py            # Signal（通过 signal-cli REST API）
-├── matrix.py            # Matrix（通过 mautrix，可选 E2EE）
-├── mattermost.py        # Mattermost WebSocket API
-├── email.py             # 电子邮件（通过 IMAP/SMTP）
-├── sms.py               # 短信（通过 Twilio）
-├── dingtalk.py          # 钉钉 WebSocket
-├── feishu.py            # 飞书/Lark WebSocket 或 webhook
-├── wecom.py             # 企业微信（WeCom）回调
 ├── weixin.py            # 微信（个人版，通过 iLink Bot API）
 ├── bluebubbles.py       # Apple iMessage（通过 BlueBubbles macOS 服务端）
-├── qqbot/               # QQ Bot（腾讯 QQ，通过官方 API v2，子包：adapter.py、crypto.py、keyboards.py 等）
+├── qqbot/               # QQ Bot（腾讯 QQ，通过官方 API v2，子包）
 ├── yuanbao.py           # 元宝（腾讯）私信/群组适配器
-├── feishu_comment.py    # 飞书文档/云盘评论回复处理器
 ├── msgraph_webhook.py   # Microsoft Graph 变更通知 webhook（Teams、Outlook 等）
 ├── webhook.py           # 入站/出站 webhook 适配器
-├── api_server.py        # REST API 服务器适配器
-└── homeassistant.py     # Home Assistant 对话集成
+└── api_server.py        # REST API 服务器适配器
 ```
 
 适配器实现统一接口：

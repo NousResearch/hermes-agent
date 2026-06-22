@@ -47,6 +47,12 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 AUTHOR_MAP = {
     "lomliev@gmail.com": "lomliev",
     "daniel.laforce@argobox.com": "KeyArgo",
+    "rrandqua@gmail.com": "TutkuEroglu",  # PR #50481 salvage (AGENTS.md stale token-lock adapter path)
+    "pedro.m.simoes@gmail.com": "pmos69",  # PR #29474 salvage (native Antigravity OAuth provider; Gemini CLI sunset #29294/#49701)
+    "mediratta01.pally@gmail.com": "orbisai0security",  # PR #9560 salvage (session.py path-traversal guard, V-009)
+    "panghuer023@users.noreply.github.com": "panghuer023",  # PR #37994 salvage (interrupt unblocks pending gateway approval; #8697)
+    "w.a.t.s.o.n.mk10@gmail.com": "natehale",  # PR #48678 salvage (typing indicator lingers after final reply)
+    "0x0sec@gmail.com": "kn8-codes",  # PR #48422 salvage (rich messages opt-in default off)
     "liaoshiwu@gmail.com": "de1tydev",  # PR #10158 salvage (poll read-only for notify_on_complete watcher; #10156)
     "szzhoujiarui@gmail.com": "szzhoujiarui-sketch",  # cron model.default salvage co-author (#45550)
     "rayjun0412@gmail.com": "rayjun",  # cron model.default salvage co-author (#43952)
@@ -120,6 +126,11 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "tkwong@inspiresynergy.com": "tkwong",
+    "buihongduc132@gmail.com": "buihongduc132",
+    "etheraura@protonmail.com": "EtherAura",  # PR #45205 salvage (Linux in-app update relaunch / GUI-skew terminal state)
+    "valentt@users.noreply.github.com": "valentt",
+    "devran.an12@gmail.com": "devorun",
     "xtpeeps@qq.com": "x7peeps",
     "sommerhoff@gmail.com": "andressommerhoff",
     "pwnda.zhang@dbappsecurity.com.cn": "x7peeps",
@@ -1652,6 +1663,7 @@ AUTHOR_MAP = {
     "philip.a.dsouza@gmail.com": "PhilipAD",  # direct email match
     "qs2816661685@gmail.com": "qingshan89",  # PR #46895 co-author (desktop remote artifact download)
     "yspdev@gmail.com": "AJ",  # PR #44510 co-author (desktop named-profile boot loop)
+    "steveonjava@gmail.com": "steveonjava",  # PR #29669 (redact secrets in kanban tool payloads)
 }
 
 

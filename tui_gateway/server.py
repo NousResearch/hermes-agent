@@ -2344,13 +2344,27 @@ def _apply_model_switch(
             }
 
     if agent:
-        agent.switch_model(
-            new_model=result.new_model,
-            new_provider=result.target_provider,
-            api_key=result.api_key,
-            base_url=result.base_url,
-            api_mode=result.api_mode,
-        )
+        try:
+            agent.switch_model(
+                new_model=result.new_model,
+                new_provider=result.target_provider,
+                api_key=result.api_key,
+                base_url=result.base_url,
+                api_mode=result.api_mode,
+            )
+        except Exception as exc:
+            # The in-place swap rolled the agent back to the old working
+            # model/client and re-raised.  Abort the commit: do NOT restart the
+            # slash worker, persist runtime, append the switch marker, set a
+            # session model_override, or persist to config — all of which would
+            # otherwise leave the session pinned to a broken model and kill the
+            # conversation on the next turn (#50163).  A failed switch is a
+            # no-op; surface a clean error to the client.
+            logger.warning("In-place model switch failed for TUI agent: %s", exc)
+            raise ValueError(
+                f"Model switch to {result.new_model} failed ({exc}); "
+                f"staying on {getattr(agent, 'model', current_model)}."
+            ) from exc
         _restart_slash_worker(sid, session)
         _persist_live_session_runtime(session)
         _persist_live_session_system_prompt(session)
@@ -7966,6 +7980,45 @@ def _(rid, params: dict) -> dict:
                 if session:
                     session["show_reasoning"] = False
                 return _ok(rid, {"key": key, "value": "hide"})
+
+            # /reasoning full | clamp — parity with the classic CLI's
+            # reasoning_full toggle. The TUI renders thinking as an
+            # expand/collapse section rather than a fixed 10-line recap, so
+            # full maps to sections.thinking=expanded and clamp to collapsed.
+            # display.reasoning_full is persisted too so the config key stays
+            # consistent across the CLI and TUI surfaces.
+            if arg in {"full", "all"}:
+                cfg = _load_cfg()
+                display = (
+                    cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                )
+                sections = (
+                    display.get("sections")
+                    if isinstance(display.get("sections"), dict)
+                    else {}
+                )
+                display["reasoning_full"] = True
+                sections["thinking"] = "expanded"
+                display["sections"] = sections
+                cfg["display"] = display
+                _save_cfg(cfg)
+                return _ok(rid, {"key": key, "value": "full"})
+            if arg in {"clamp", "collapse", "short"}:
+                cfg = _load_cfg()
+                display = (
+                    cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                )
+                sections = (
+                    display.get("sections")
+                    if isinstance(display.get("sections"), dict)
+                    else {}
+                )
+                display["reasoning_full"] = False
+                sections["thinking"] = "collapsed"
+                display["sections"] = sections
+                cfg["display"] = display
+                _save_cfg(cfg)
+                return _ok(rid, {"key": key, "value": "clamp"})
 
             parsed = parse_reasoning_effort(arg)
             if parsed is None:

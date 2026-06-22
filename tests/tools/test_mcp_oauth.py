@@ -1470,3 +1470,22 @@ class TestPoisonClientRegistration:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("srv")
         assert storage.poison_client_registration() is False
+
+
+def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):
+    """A busy loopback callback port surfaces a clear 'already in use' error,
+    not a misleading 'timed out'. Guards the stale-comment fix where the branch
+    also wrongly claimed build_oauth_auth had started a server to poll."""
+    import tools.mcp_oauth as mo
+
+    monkeypatch.setattr(mo, "_is_interactive", lambda: True)
+    with patch.object(mo, "_oauth_port", 54321), patch.object(
+        mo, "HTTPServer", side_effect=OSError("address already in use")
+    ):
+        with pytest.raises(mo.OAuthNonInteractiveError) as excinfo:
+            asyncio.run(mo._wait_for_callback())
+
+    msg = str(excinfo.value)
+    assert "54321" in msg
+    assert "already in use" in msg
+    assert "timed out" not in msg

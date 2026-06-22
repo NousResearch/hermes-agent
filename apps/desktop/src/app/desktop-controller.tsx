@@ -83,6 +83,7 @@ import {
   setSessionsTotal
 } from '../store/session'
 import { onSessionsChanged } from '../store/session-sync'
+import { installSessionBadgeSync } from '../store/session-badge'
 import { clearSessionTodos, setSessionTodos, todoListActive } from '../store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
@@ -267,6 +268,11 @@ export function DesktopController() {
   useEffect(() => {
     window.hermesDesktop?.setPreviewShortcutActive?.(Boolean(chatOpen && (filePreviewTarget || previewTarget)))
   }, [chatOpen, filePreviewTarget, previewTarget])
+
+  // Keep the OS dock/taskbar badge + window-title prefix in sync with the
+  // unread + needs-input session count (see store/session-badge.ts). Installed
+  // once for the lifetime of the main window.
+  useEffect(() => installSessionBadgeSync(), [])
 
   useEffect(() => {
     startUpdatePoller()

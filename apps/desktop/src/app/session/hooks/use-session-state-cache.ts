@@ -8,6 +8,7 @@ import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $busy,
   $messages,
+  clearSessionUnread,
   noteSessionActivity,
   setCurrentFastMode,
   setCurrentModel,
@@ -85,6 +86,17 @@ export function useSessionStateCache({
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId
+  }, [activeSessionId])
+
+  // The moment a session becomes active is "the user opened it" — clear any
+  // unread marker so the dot drops from steady-accent back to idle/working.
+  // A single effect here enforces active ⇒ not unread regardless of how the
+  // active id changed (resume, new chat, switch, branch), instead of clearing
+  // at each of the seven setActiveSessionId call sites.
+  useEffect(() => {
+    if (activeSessionId) {
+      clearSessionUnread(activeSessionId)
+    }
   }, [activeSessionId])
 
   useEffect(() => {

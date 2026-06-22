@@ -5849,6 +5849,51 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   return true
 })
 
+// Dock / taskbar badge for unread + needs-input session counts. macOS uses
+// app.dock.setBadge (the numeric red dot); Windows uses an overlay icon on the
+// taskbar button + a window-title prefix (no native badge). Linux has no
+// universal badge API, so it gets the title prefix only.
+ipcMain.handle('hermes:set-badge', (_event, count) => {
+  const n = Math.max(0, Math.floor(Number(count) || 0))
+  const label = n > 0 ? String(n > 999 ? '999+' : n) : ''
+
+  // macOS dock badge
+  if (process.platform === 'darwin' && typeof app.dock?.setBadge === 'function') {
+    app.dock.setBadge(label)
+  }
+
+  // Window title prefix + Windows taskbar overlay icon. The overlay is a tiny
+  // rendered badge image; nativeImage.createFromBuffer would need a canvas, so
+  // we use the title prefix as the cross-platform signal and the overlay only
+  // on Windows where a setOverlayIcon is available and the title alone is easy
+  // to miss (taskbar buttons show the icon, not the title).
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    // Capture the un-prefixed base title once. Subsequent calls read getTitle()
+    // which may already carry our "(N) " prefix, so we must not re-capture it.
+    if (!mainWindow.__hermesBaseTitle) {
+      mainWindow.__hermesBaseTitle = mainWindow.getTitle()
+    }
+    const baseTitle = mainWindow.__hermesBaseTitle
+
+    const nextTitle = n > 0 ? `(${n}) ${baseTitle}` : baseTitle
+
+    if (mainWindow.getTitle() !== nextTitle) {
+      mainWindow.setTitle(nextTitle)
+    }
+
+    if (process.platform === 'win32' && typeof mainWindow.setOverlayIcon === 'function') {
+      // null clears the overlay; a real count needs an icon. We skip the icon
+      // for now (title prefix is the cue) and only clear on zero so a stale
+      // overlay from a prior run can't persist.
+      if (n === 0) {
+        mainWindow.setOverlayIcon(null, '')
+      }
+    }
+  }
+
+  return true
+})
+
 ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
   const { resolvedPath } = await resolveReadableFileForIpc(filePath, {
     maxBytes: DATA_URL_READ_MAX_BYTES,

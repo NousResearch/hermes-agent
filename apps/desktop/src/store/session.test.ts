@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
@@ -7,13 +7,18 @@ import {
   $attentionSessionIds,
   $connection,
   $currentCwd,
+  $sessions,
+  $unreadSessionIds,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
+  clearSessionUnread,
   getRecentlySettledSessionIds,
+  isSessionUnread,
   mergeSessionPage,
   sessionPinId,
   setCurrentCwd,
   setSessionAttention,
+  setSessionUnread,
   setSessionWorking,
   workspaceCwdForNewSession
 } from './session'
@@ -298,5 +303,59 @@ describe('getRecentlySettledSessionIds', () => {
     // settled set so it's tracked as working, not recently-finished.
     setSessionWorking('s2', true)
     expect(getRecentlySettledSessionIds()).toEqual([])
+  })
+})
+
+describe('setSessionUnread', () => {
+  beforeEach(() => {
+    $unreadSessionIds.set([])
+    $sessions.set([])
+  })
+
+  it('adds and removes a session id without duplicating it', () => {
+    setSessionUnread('s1', true)
+    setSessionUnread('s1', true)
+    expect($unreadSessionIds.get()).toEqual(['s1'])
+
+    setSessionUnread('s2', true)
+    expect($unreadSessionIds.get()).toEqual(['s1', 's2'])
+
+    setSessionUnread('s1', false)
+    expect($unreadSessionIds.get()).toEqual(['s2'])
+  })
+
+  it('ignores empty ids and no-op clears', () => {
+    setSessionUnread(null, true)
+    setSessionUnread(undefined, true)
+    setSessionUnread('', true)
+    setSessionUnread('missing', false)
+    expect($unreadSessionIds.get()).toEqual([])
+  })
+
+  it('keys on the lineage root so a compression rotation does not drop the marker', () => {
+    // A session whose live id is a compression tip, with a stable lineage root.
+    $sessions.set([session({ id: 'tip-2', _lineage_root_id: 'root' })])
+
+    // Mark unread via the tip id — it should be stored on the root.
+    setSessionUnread('tip-2', true)
+    expect($unreadSessionIds.get()).toEqual(['root'])
+
+    // A rotation gives the session a new tip id, same root. isSessionUnread
+    // must still resolve it (the marker survives the rotation).
+    $sessions.set([session({ id: 'tip-3', _lineage_root_id: 'root' })])
+    expect(isSessionUnread('tip-3')).toBe(true)
+
+    // Clearing via the new tip id clears the root entry.
+    clearSessionUnread('tip-3')
+    expect($unreadSessionIds.get()).toEqual([])
+    expect(isSessionUnread('tip-3')).toBe(false)
+  })
+
+  it('isSessionUnread checks the live id directly when the session is not in the loaded page', () => {
+    // A brand-new or off-page session has no $sessions entry — fall back to
+    // the id itself so unread still works (just not rotation-stable).
+    $sessions.set([])
+    setSessionUnread('off-page', true)
+    expect(isSessionUnread('off-page')).toBe(true)
   })
 })

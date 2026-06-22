@@ -2533,6 +2533,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
+    _external_drain_active: bool = False
     _restart_requested: bool = False
     _restart_task_started: bool = False
     _restart_detached: bool = False
@@ -2593,6 +2594,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._exit_reason: Optional[str] = None
         self._exit_code: Optional[int] = None
         self._draining = False
+        # External (NAS-driven) drain state — distinct from the shutdown
+        # ``_draining`` flag above. Set by ``_drain_control_watcher`` when the
+        # ``.drain_request.json`` marker is present: the gateway flips
+        # ``gateway_state -> draining`` and refuses NEW turns, but the process
+        # does NOT exit (the whole point — quiesce-without-restart, D4a). It is
+        # fully reversible: removing the marker reverts to ``running`` and
+        # re-accepts turns. ``_draining`` (shutdown) is one-way and ends in
+        # process exit; this one is a steady state NAS polls during its
+        # request -> poll -> proceed loop.
+        self._external_drain_active = False
         self._restart_requested = False
         # Set by shutdown_signal_handler when a SIGTERM/SIGINT arrived
         # WITHOUT a planned-stop / takeover marker — i.e. an unexpected
@@ -4002,6 +4013,85 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             write_runtime_status(active_agents=self._running_agent_count())
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # External drain control (NAS-driven quiesce-without-restart, Phase 2).
+    # The dashboard's begin/cancel-drain endpoint writes/removes the
+    # ``.drain_request.json`` marker (gateway/drain_control.py); this watcher
+    # observes the marker and flips the gateway between accepting and refusing
+    # NEW turns, WITHOUT exiting the process. Reversible by design (D4a): NAS
+    # POSTs begin-drain, polls /api/status until active_agents hits 0, proceeds
+    # with its lifecycle action, then (on cancel/abort) the marker is removed
+    # and the gateway re-accepts turns.
+    # ------------------------------------------------------------------
+    def _enter_external_drain(self) -> None:
+        """Begin external drain: stop accepting new turns, flip state.
+
+        Idempotent — re-entering while already draining is a no-op beyond a
+        best-effort status re-write. In-flight turns are NOT interrupted (the
+        whole point is to let them finish); only NEW turns are refused.
+        """
+        if self._external_drain_active:
+            return
+        self._external_drain_active = True
+        logger.info(
+            "External drain ENGAGED (.drain_request.json present) — refusing "
+            "new turns; %d in-flight turn(s) will finish. Process stays up.",
+            self._running_agent_count(),
+        )
+        # Flip the persisted lifecycle state so /api/status.gateway_busy /
+        # gateway_drainable track the drain. Preserve active_agents (the
+        # read-merge keeps the live count); only the state changes.
+        self._update_runtime_status("draining")
+
+    def _exit_external_drain(self) -> None:
+        """Cancel external drain: revert state, re-accept new turns.
+
+        Idempotent. Only reverts to ``running`` when we are actually mid-drain
+        AND not also shutting down (a real shutdown ``_draining`` must win —
+        never resurrect a stopping gateway to ``running``).
+        """
+        if not self._external_drain_active:
+            return
+        self._external_drain_active = False
+        if self._draining or not self._running:
+            # A shutdown drain is in progress / the loop has stopped — do not
+            # clobber the terminal state back to running.
+            logger.info(
+                "External drain marker cleared during shutdown — not reverting "
+                "to running (shutdown takes precedence)."
+            )
+            return
+        logger.info(
+            "External drain RELEASED (.drain_request.json removed) — "
+            "re-accepting new turns; gateway_state -> running."
+        )
+        self._update_runtime_status("running")
+
+    async def _drain_control_watcher(self, interval: float = 1.0) -> None:
+        """Background task: reconcile gateway accept-state with the drain marker.
+
+        Polls ``.drain_request.json`` (presence-based contract,
+        gateway/drain_control.py). Marker present -> ``_enter_external_drain``;
+        marker absent -> ``_exit_external_drain``. The 1s cadence bounds the
+        observe-the-marker latency the live-validation gate checks (point a).
+        Reconciles once at startup so a marker that survived a restart is
+        honoured immediately. Best-effort: any tick error is logged and the
+        loop continues (a transient stat() failure must not wedge the gateway).
+        """
+        from gateway.drain_control import drain_requested
+
+        while self._running:
+            try:
+                if drain_requested():
+                    self._enter_external_drain()
+                else:
+                    self._exit_external_drain()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Drain-control watcher tick error: %s", exc, exc_info=True)
+            await asyncio.sleep(interval)
 
     def _update_platform_runtime_status(
         self,
@@ -6249,6 +6339,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._log_scale_to_zero_not_armed_reason()
         except Exception:  # noqa: BLE001 - arming must never block startup
             logger.debug("scale-to-zero: arm check failed at startup", exc_info=True)
+
+        # Start background drain-control watcher — reconciles the gateway's
+        # new-turn accept-state with the external ``.drain_request.json`` marker
+        # the dashboard begin/cancel-drain endpoint writes (Phase 2). Honours a
+        # marker that survived a restart on its first tick.
+        asyncio.create_task(self._drain_control_watcher())
 
         logger.info("Press Ctrl+C to stop")
         
@@ -8859,6 +8955,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if self._should_send_telegram_lobby_reminder(source):
                 return self._telegram_topic_root_lobby_message()
             return None
+
+        # ── External-drain new-turn gate (Phase 2) ────────────────────
+        # When NAS has engaged an external drain (.drain_request.json present,
+        # observed by _drain_control_watcher), refuse to START a new turn so
+        # the in-flight set can only fall to zero — eliminating the TOCTOU race
+        # (D4a: stop accepting new turns FIRST, then NAS polls until
+        # active_agents==0). In-flight turns are untouched; this only blocks the
+        # claim of a NEW session slot. Internal/system events (restart-recovery
+        # replays, background-process completions) bypass the gate — they are
+        # not user-initiated new work and must still flow during a drain.
+        # Reversible: once the marker is removed the gate opens again.
+        if self._external_drain_active and not is_internal:
+            logger.info(
+                "Refusing new turn for session %s — external drain active.",
+                _quick_key,
+            )
+            return (
+                "⏳ This agent is draining for a maintenance action and isn't "
+                "accepting new turns right now. It'll be back in a moment — "
+                "please resend shortly."
+            )
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there

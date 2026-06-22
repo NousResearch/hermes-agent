@@ -1,6 +1,6 @@
 # PRD — send_message origin-leak v3: the `HERMES_CRON_SESSION` process-global latch
 
-**Status:** v0.2 — Opus Pass-1 review complete; all findings folded (B1 security-regression blocker → Phase 5 fix; B2 fake-green → AC2b real proof; RC-3 registration gate → AC9; RC-4 ordering constraint). Ready for build.
+**Status:** ✅ SHIPPED & CLOSED (2026-06-22) — built, Opus-reviewed (B1 security regression caught + fixed), 65 tests green, merged via fork PR #88 (squash `d12ac4895`), deployed + restarted (gateway PID 30513), and **live-verified**: a real cron job ran to completion and left `HERMES_CRON_SESSION` un-latched in the gateway os.environ; a bare interactive `send_message` resolved to the current channel, not home. Closeout below. (v0.2 → Opus Pass-1 folded: B1 → Phase 5 rebind, B2 → AC2b real proof, RC-3 → AC9 registration gate, RC-4 → ordering constraint.)
 **Author:** Apollo
 **Date:** 2026-06-22
 **Supersedes-as-dominant-cause:** v1 (PR #71, main-turn bare target) and v2 (PR #83, subagent context-loss) — both real but **secondary**. This v3 is the dominant, proven cause of the recurring leak.

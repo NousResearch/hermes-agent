@@ -1022,13 +1022,36 @@ class TeamsAdapter(BasePlatformAdapter):
             confirm_id = data.get("confirm_id", "")
             result_text = await _slash_confirm.resolve(session_key, confirm_id, slash_choice)
             if result_text is None:
-                result_text = "⚠️ Confirmation already resolved or expired."
+                return InvokeResponse(
+                    status=200,
+                    body=AdaptiveCardActionCardResponse(
+                        value=AdaptiveCard()
+                        .with_version("1.4")
+                        .with_body([
+                            TextBlock(text="⚠️ Confirmation already resolved or expired.", wrap=True)
+                        ])
+                    ),
+                )
+            # Action.Execute card-refresh responses are unreliable on some Teams
+            # desktop clients (the in-place card update silently no-ops, so the
+            # clicker sees nothing), so deliver the outcome as a real
+            # conversation message too — that renders on every client. The
+            # refreshed card just collapses the buttons.
+            try:
+                await ctx.send(result_text)
+            except Exception as e:
+                logger.warning("[teams] slash-confirm follow-up message failed: %s", e)
+            status = {
+                "once": "✅ Approved (once)",
+                "always": "🔒 Always approved",
+                "cancel": "❌ Cancelled",
+            }.get(slash_choice, "Done")
             return InvokeResponse(
                 status=200,
                 body=AdaptiveCardActionCardResponse(
                     value=AdaptiveCard()
                     .with_version("1.4")
-                    .with_body([TextBlock(text=result_text, wrap=True)])
+                    .with_body([TextBlock(text=status, wrap=True, weight="Bolder")])
                 ),
             )
 

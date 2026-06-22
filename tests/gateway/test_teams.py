@@ -508,6 +508,7 @@ class TestTeamsSlashConfirm:
         action = SimpleNamespace(data=data)
         ctx = MagicMock()
         ctx.activity.value.action = action
+        ctx.send = AsyncMock()
         return ctx
 
     @pytest.mark.anyio
@@ -563,6 +564,9 @@ class TestTeamsSlashConfirm:
 
         await adapter._on_card_action(ctx)
         resolve_mock.assert_awaited_once_with("sess-1", "c1", "once")
+        # Outcome must also be posted as a real conversation message so it
+        # renders on Teams desktop clients that drop the card-refresh response.
+        ctx.send.assert_awaited_once_with("🔄 Started a new session.")
 
 
 def _make_summary_payload():

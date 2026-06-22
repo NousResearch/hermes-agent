@@ -1003,13 +1003,16 @@ class CuaDriverBackend(ComputerUseBackend):
         window_title = ""
 
         if mode == "vision":
-            # screenshot tool: just the PNG, no AX walk.
+            # Newer cua-driver releases no longer expose a standalone
+            # `screenshot` MCP tool. Request a screenshot-only capture via
+            # get_window_state instead; this keeps vision mode working while
+            # avoiding the AX walk used by som/ax captures.
             sc_out = self._session.call_tool(
-                "screenshot",
+                "get_window_state",
                 {
+                    "pid": self._active_pid,
                     "window_id": self._active_window_id,
-                    "format": "jpeg",
-                    "quality": 85,
+                    "capture_mode": "vision",
                     "session": self._session_id,
                 },
             )

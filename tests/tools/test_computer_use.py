@@ -2139,6 +2139,50 @@ class TestStructuredElementsConsumption:
         # Markdown surface doesn't carry bounds — lossy by design.
         assert cap.elements[0].bounds == (0, 0, 0, 0)
 
+    def test_vision_capture_uses_get_window_state_not_removed_screenshot_tool(self):
+        """cua-driver 0.6.x returns vision screenshots from
+        get_window_state(capture_mode="vision"); the old standalone
+        screenshot tool is no longer available."""
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+
+        windows_payload = {
+            "windows": [{
+                "app_name": "Demo", "pid": 9, "window_id": 1,
+                "is_on_screen": True, "title": "Demo", "z_index": 0,
+            }],
+        }
+        png_b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42m"
+            "NkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        )
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [],
+                        "structuredContent": windows_payload, "isError": False}
+            if name == "get_window_state":
+                assert args["capture_mode"] == "vision"
+                return {"data": "", "images": [png_b64],
+                        "image_mime_types": ["image/png"],
+                        "structuredContent": None, "isError": False}
+            if name == "screenshot":
+                raise AssertionError("vision capture must not call removed screenshot tool")
+            return {"data": "", "images": [], "image_mime_types": [],
+                    "structuredContent": None, "isError": False}
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        cap = backend.capture(mode="vision")
+
+        tool_names = [call.args[0] for call in backend._session.call_tool.call_args_list]
+        assert tool_names == ["list_windows", "get_window_state"]
+        assert cap.png_b64 == png_b64
+        assert cap.image_mime_type == "image/png"
+        assert cap.width == 1
+        assert cap.height == 1
+
 
 class TestCapabilityDiscovery:
     """Surface 4 (NousResearch/hermes-agent#47072): the wrapper learns

@@ -4495,7 +4495,9 @@ def run_conversation(
                 
                 if agent.verbose_logging:
                     for tc in assistant_message.tool_calls:
-                        logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
+                        raw_args = tc.function.arguments
+                        args_preview = raw_args[:200] if isinstance(raw_args, str) else repr(raw_args)[:200]
+                        logging.debug("Tool call: %s with args: %s...", tc.function.name, args_preview)
                 
                 # Validate tool call names - detect model hallucinations
                 # Repair mismatched tool names before validating

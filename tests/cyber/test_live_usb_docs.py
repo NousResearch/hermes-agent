@@ -91,3 +91,13 @@ def test_direct_build_script_rejects_dev_or_block_output_targets() -> None:
     assert '[[ -b "$output" ]]' in build_script
     assert "canonicalize under /dev" in lowered
     assert "write_usb.sh only during an approved removable-media operation" in lowered
+
+
+def test_direct_build_completion_guidance_does_not_imply_sudo_is_enough() -> None:
+    build_script = (LIVE_USB_DIR / "build_iso.sh").read_text(encoding="utf-8")
+    lowered = build_script.lower()
+
+    assert "operator-approved removable media only" in lowered
+    assert "root/sudo alone is not sufficient" in lowered
+    assert "canonical whole removable /dev disk" in lowered
+    assert "write to usb:  sudo ./write_usb.sh" not in lowered

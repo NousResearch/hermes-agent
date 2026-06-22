@@ -1033,8 +1033,27 @@ class WeComAdapter(BasePlatformAdapter):
     def _parse_json(raw: Any) -> Optional[Dict[str, Any]]:
         try:
             payload = json.loads(raw)
-        except Exception:
-            logger.debug("Failed to parse WeCom payload: %r", raw)
+        except json.JSONDecodeError:
+            # WeCom sometimes sends unescaped control characters (e.g. raw
+            # newlines) inside JSON string values. Retry with strict=False
+            # which accepts control chars in strings per the JSON decoder.
+            try:
+                decoder = json.JSONDecoder(strict=False)
+                payload = decoder.decode(raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace"))
+            except Exception as exc2:
+                logger.warning(
+                    "Failed to parse WeCom payload (strict=False also failed): "
+                    "error=%s len=%d tail=%r",
+                    exc2,
+                    len(raw) if isinstance(raw, (str, bytes)) else -1,
+                    raw[-100:] if isinstance(raw, (str, bytes)) and len(raw) > 100 else raw,
+                )
+                return None
+        except Exception as exc:
+            logger.warning(
+                "Failed to parse WeCom payload: error=%s len=%d",
+                exc, len(raw) if isinstance(raw, (str, bytes)) else -1,
+            )
             return None
         return payload if isinstance(payload, dict) else None
 

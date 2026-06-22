@@ -1,0 +1,7 @@
+name: openrouter
+version: 1.0.0
+description: "OpenRouter image generation backend (Nano Banana / FLUX via /chat/completions + modalities + image_config). Supports text-to-image and image-to-image."
+author: Hermes Agent Team
+kind: backend
+requires_env:
+  - OPENROUTER_API_KEY

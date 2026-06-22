@@ -368,50 +368,6 @@ async def test_short_output_never_truncated(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_env_override_changes_truncation_threshold(tmp_path, monkeypatch):
-    """HERMES_DELIVERY_MAX_PLATFORM_OUTPUT env var overrides the default 4000."""
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_DELIVERY_MAX_PLATFORM_OUTPUT", "200")
-    adapter = NonChunkingAdapter()
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
-    target = DeliveryTarget.parse("discord:123")
-
-    content = "x" * 300  # over the env-override threshold of 200
-    await router._deliver_to_platform(target, content, metadata={"job_id": "job4"})
-
-    delivered = adapter.calls[0]["content"]
-    assert len(delivered) < 300  # truncated because env lowered the bar
-    assert "truncated" in delivered.lower()
-    # Audit file saved (truncation path always saves when it truncates)
-    saved_files = list(tmp_path.glob("cron/output/job4_*.txt"))
-    assert len(saved_files) == 1
-    assert saved_files[0].read_text() == content
-
-
-@pytest.mark.asyncio
-async def test_env_override_disable_truncation(tmp_path, monkeypatch):
-    """Setting HERMES_DELIVERY_MAX_PLATFORM_OUTPUT=0 disables truncation entirely."""
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_DELIVERY_MAX_PLATFORM_OUTPUT", "0")
-    adapter = NonChunkingAdapter()
-    router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
-    target = DeliveryTarget.parse("discord:123")
-
-    content = "x" * 10000
-    await router._deliver_to_platform(target, content, metadata={"job_id": "job5"})
-
-    # With max_output=0, truncation is disabled — even non-chunking adapters
-    # receive the full content (they may error at the platform API level, but
-    # that's the user's explicit choice).
-    assert adapter.calls[0]["content"] == content
-    # Audit file STILL saved — the audit threshold (4000) is independent of
-    # the truncation setting.  Content (10000) exceeds it.
-    saved_files = list(tmp_path.glob("cron/output/job5_*.txt"))
-    assert len(saved_files) == 1
-    assert saved_files[0].read_text() == content
-
-
-@pytest.mark.asyncio
 async def test_audit_save_failure_does_not_break_chunking_delivery(tmp_path, monkeypatch):
     """If the audit save fails (disk full, permissions), chunking adapters
     still receive the full content — the save is best-effort."""
@@ -431,24 +387,21 @@ async def test_audit_save_failure_does_not_break_chunking_delivery(tmp_path, mon
 
     monkeypatch.setattr(router, "_save_full_output", failing_save)
 
-    # Should NOT raise — audit failure is caught
+    # Should NOT raise — audit failure is caught for chunking adapters
     await router._deliver_to_platform(target, long_content, metadata={"job_id": "job6"})
 
     # Adapter still got the full content
     assert adapter.calls[0]["content"] == long_content
-    # Save was attempted
+    # Save was attempted (best-effort, swallowed)
     assert call_count["n"] == 1
 
 
 @pytest.mark.asyncio
-async def test_audit_save_failure_does_not_break_non_chunking_delivery(tmp_path, monkeypatch):
-    """If the audit save fails AND truncation is needed, the fallback save
-    in Step 2 is NOT caught — the footer needs a valid path, so this is a
-    real failure. But if content exceeds the audit threshold AND truncation
-    is disabled (max_output=0), the caught Step 1 failure lets delivery
-    proceed."""
+async def test_save_failure_during_truncation_raises_for_non_chunking_adapter(tmp_path, monkeypatch):
+    """For a non-chunking adapter, the truncation footer needs a valid saved
+    path. If the save fails there, that is a real delivery problem and the
+    error propagates (not swallowed like the chunking best-effort save)."""
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_DELIVERY_MAX_PLATFORM_OUTPUT", "0")
 
     adapter = NonChunkingAdapter()
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
@@ -461,8 +414,10 @@ async def test_audit_save_failure_does_not_break_non_chunking_delivery(tmp_path,
 
     monkeypatch.setattr(router, "_save_full_output", failing_save)
 
-    # max_output=0 → no truncation → Step 1 failure is caught → delivery proceeds
-    await router._deliver_to_platform(target, long_content, metadata={"job_id": "job7"})
+    # Non-chunking adapter must truncate → needs a valid saved path → the
+    # Step 1 best-effort catch swallows the first attempt, but the Step 2
+    # retry (footer needs the path) re-raises.
+    with pytest.raises(OSError, match="No space left on device"):
+        await router._deliver_to_platform(target, long_content, metadata={"job_id": "job7"})
 
-    # Non-chunking adapter still got the full content (truncation disabled)
-    assert adapter.calls[0]["content"] == long_content
+

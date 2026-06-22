@@ -1768,10 +1768,16 @@ def list_authenticated_providers(
             # custom_providers entries use, so accept either.
             default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
 
-            # Build models list from both default_model and full models array
+            # Build models list from both default_model and full models array.
+            # ``default_model`` may be a comma-separated fallback chain (e.g.
+            # volcengine-agent-plan: "deepseek-v4-flash,deepseek-v4-pro,...").
+            # Split it into individual selectable entries so the picker offers
+            # each model on its own rather than one comma-joined blob (#50557).
             models_list = []
-            if default_model:
-                models_list.append(default_model)
+            for _dm in str(default_model).split(","):
+                _dm = _dm.strip()
+                if _dm and _dm not in models_list:
+                    models_list.append(_dm)
             # Also include the full models list from config.
             # Hermes writes ``models:`` as a dict keyed by model id
             # (see hermes_cli/main.py::_save_custom_provider); older

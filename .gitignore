@@ -112,6 +112,11 @@ docs/superpowers/*
 # logs, and per-session caches are never artifacts of the codebase.
 .hermes/
 
+# Ouroboros local evaluation/runtime artifacts. The MCP/evaluate smoke path can
+# create these in a checkout; they are run-local evidence, not source files.
+.ouroboros/
+.ouroboros_eval_artifact.md
+
 # Desktop/bootstrap install marker written into the managed checkout root by the
 # bootstrap installer. It is Hermes-managed runtime state, never a code change —
 # ignore it so `hermes update`'s `git stash push --include-untracked` does not

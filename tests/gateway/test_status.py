@@ -246,6 +246,47 @@ class TestGatewayPidState:
 
 
 class TestGatewayRuntimeStatus:
+    def test_runtime_status_running_pid_accepts_live_restart_serving_process(self, tmp_path, monkeypatch):
+        """Manual `hermes gateway restart` can become the serving gateway process.
+
+        The live process command line still says `gateway restart`, but the
+        runtime status file is written by that same process after Discord is
+        connected. Status should trust live PID + matching start_time + running
+        gateway_state instead of reporting a false stop.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        current_pid = os.getpid()
+        (tmp_path / "gateway_state.json").write_text(json.dumps({
+            "pid": current_pid,
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "restart"],
+            "start_time": 12345,
+            "gateway_state": "running",
+        }))
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == current_pid)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 12345)
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
+        monkeypatch.setattr(status, "_record_looks_like_gateway", lambda record: False)
+
+        assert status.get_runtime_status_running_pid() == current_pid
+
+    def test_runtime_status_running_pid_rejects_restart_record_without_start_match(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        current_pid = os.getpid()
+        (tmp_path / "gateway_state.json").write_text(json.dumps({
+            "pid": current_pid,
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "restart"],
+            "start_time": 12345,
+            "gateway_state": "running",
+        }))
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: pid == current_pid)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 99999)
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
+        monkeypatch.setattr(status, "_record_looks_like_gateway", lambda record: False)
+
+        assert status.get_runtime_status_running_pid() is None
+
     def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         calls = []

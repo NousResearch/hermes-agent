@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from gateway.ouroboros_commands import OOO_SUBCOMMANDS
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -198,6 +199,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                             "archive", "tail", "dispatch", "stats", "notify-subscribe",
                             "notify-list", "notify-unsubscribe", "log", "runs",
                             "heartbeat", "assignees", "context", "specify", "gc")),
+    CommandDef("ooo", "Run an Ouroboros command through the /ooo namespace",
+               "Tools & Skills", args_hint="[command] [args]",
+               subcommands=OOO_SUBCOMMANDS),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
@@ -360,6 +364,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "deny",
         "help",
         "new",
+        "ooo",
         "profile",
         "queue",
         "restart",

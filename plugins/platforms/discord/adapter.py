@@ -3608,6 +3608,35 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
 
+        _app_commands = getattr(discord, "app_commands")
+        _ooo_group = _app_commands.Group(
+            name="ooo",
+            description="Run Ouroboros commands",
+        )
+        from gateway.ouroboros_commands import OOO_SUBCOMMAND_DEFINITIONS
+
+        _ooo_subcommands = OOO_SUBCOMMAND_DEFINITIONS
+
+        def _build_ooo_subcommand(_name: str, _description: str):
+            @_app_commands.describe(args="Optional arguments for this Ouroboros command")
+            async def _handler(interaction, args: str = ""):
+                await self._run_simple_slash(
+                    interaction,
+                    f"/ooo {_name} {args}".strip(),
+                )
+            _handler.__name__ = f"slash_ooo_{_name.replace('-', '_')}"
+            return _app_commands.Command(
+                name=_name,
+                description=_description[:100],
+                callback=_handler,
+            )
+
+        for _ooo_name, _ooo_description in _ooo_subcommands:
+            _ooo_group.add_command(
+                _build_ooo_subcommand(_ooo_name, _ooo_description)
+            )
+        tree.add_command(_ooo_group)
+
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
         # hermes_cli/commands.py automatically appear as Discord slash
@@ -4008,6 +4037,20 @@ class DiscordAdapter(BasePlatformAdapter):
         # For forum threads, inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
 
+        guild_id = getattr(interaction, "guild_id", None)
+        if guild_id is None:
+            guild_id = getattr(getattr(interaction, "guild", None), "id", None)
+
+        parent_chat_id = None
+        if is_thread:
+            channel = getattr(interaction, "channel", None)
+            parent_chat_id = getattr(channel, "parent_id", None)
+            if parent_chat_id is None:
+                parent_chat_id = getattr(getattr(channel, "parent", None), "id", None)
+
+        interaction_id = getattr(interaction, "id", None)
+        message_id = str(interaction_id) if interaction_id is not None else None
+
         source = self.build_source(
             chat_id=str(interaction.channel_id),
             chat_name=chat_name,
@@ -4016,6 +4059,9 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=guild_id,
+            parent_chat_id=parent_chat_id,
+            message_id=message_id,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -4026,6 +4072,7 @@ class DiscordAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=interaction,
+            message_id=message_id,
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
         )
 

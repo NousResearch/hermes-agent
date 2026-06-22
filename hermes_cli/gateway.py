@@ -560,9 +560,10 @@ def find_gateway_pids(
     pids: list[int] = []
     if not all_profiles:
         try:
-            from gateway.status import get_running_pid
+            from gateway.status import get_running_pid, get_runtime_status_running_pid
 
             _append_unique_pid(pids, get_running_pid(), _exclude)
+            _append_unique_pid(pids, get_runtime_status_running_pid(), _exclude)
         except Exception:
             pass
     for pid in _get_service_pids():

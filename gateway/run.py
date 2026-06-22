@@ -7803,6 +7803,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Gateway-handled info/control commands with dedicated
             # running-agent handlers.
+            if _cmd_def_inner and _cmd_def_inner.name == "ooo":
+                return await self._handle_ooo_command(
+                    event,
+                    session_key=_quick_key,
+                    allow_agent_fallthrough=False,
+                )
+
             if _cmd_def_inner and _cmd_def_inner.name in _DEDICATED_HANDLERS:
                 if _cmd_def_inner.name == "help":
                     return await self._handle_help_command(event)
@@ -8077,6 +8084,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "ooo":
+            return await self._handle_ooo_command(
+                event,
+                session_key=_quick_key,
+                allow_agent_fallthrough=False,
+            )
 
         if canonical == "agents":
             return await self._handle_agents_command(event)

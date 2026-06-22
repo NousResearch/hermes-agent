@@ -1244,6 +1244,15 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
+    def test_find_gateway_pids_uses_runtime_status_fallback(self, monkeypatch):
+        """Status should see a live gateway when pidfile/process scan miss it."""
+        monkeypatch.setattr(status, "get_running_pid", lambda: None)
+        monkeypatch.setattr(status, "get_runtime_status_running_pid", lambda: 7777)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "_scan_gateway_pids", lambda exclude_pids, all_profiles=False: [])
+
+        assert gateway_cli.find_gateway_pids() == [7777]
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 

@@ -736,6 +736,20 @@ def get_runtime_status_running_pid(
 
     if _looks_like_gateway_process(pid) or _record_looks_like_gateway(payload):
         return pid
+
+    # Manual `hermes gateway restart` can hand off into the serving gateway
+    # inside the same process.  Its OS command line and recorded argv still say
+    # `gateway restart`, so the strict command-line matcher above rejects it.
+    # For the runtime status file only, a live PID + matching process start time
+    # + hermes-gateway kind + non-terminal gateway_state is enough identity to
+    # avoid a false "stopped" status while still rejecting PID reuse.
+    if (
+        payload.get("kind") == _GATEWAY_KIND
+        and recorded_start is not None
+        and current_start is not None
+        and current_start == recorded_start
+    ):
+        return pid
     return None
 
 

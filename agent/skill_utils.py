@@ -615,6 +615,9 @@ def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
             skill_name = frontmatter.get("name") or skill_file.parent.name
             if str(skill_name) in disabled:
                 continue
+            # inline_only skills must not appear in the agent's chat-mode context
+            if frontmatter.get("inline_only"):
+                continue
             if not skill_matches_platform(frontmatter):
                 continue
 

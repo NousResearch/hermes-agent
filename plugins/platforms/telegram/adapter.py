@@ -31,6 +31,7 @@ try:
         Application,
         CommandHandler,
         CallbackQueryHandler,
+        InlineQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         filters,
@@ -49,6 +50,7 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
+    InlineQueryHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
     filters = None
@@ -110,6 +112,9 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 
 MAX_COMMANDS_PER_SCOPE = 30
 
+# Hard deadline for answerInlineQuery — Telegram drops responses after ~10 s empirically.
+INLINE_RESPONSE_DEADLINE = 6.5
+
 
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
@@ -121,7 +126,7 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -140,6 +145,7 @@ def check_telegram_requirements() -> bool:
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
+            InlineQueryHandler as _IQH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
@@ -156,6 +162,7 @@ def check_telegram_requirements() -> bool:
     Application = _App
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
+    InlineQueryHandler = _IQH
     TelegramMessageHandler = _MH
     ContextTypes = _CT
     filters = _filters
@@ -604,6 +611,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # inline query router (initialised in connect() once self._bot is available)
+        self._inline_router: Optional[Any] = None
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -2204,27 +2213,39 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
-            
+
+            # Inline router — reads inline_tools.yaml from the Hermes config directory
+            try:
+                from gateway.platforms.telegram_inline_router import TelegramInlineRouter
+                self._inline_router = TelegramInlineRouter(self._bot)
+            except Exception as _irt_err:
+                logger.warning("[%s] inline router init failed: %s", self.name, _irt_err)
+
             # Register handlers
-            self._app.add_handler(TelegramMessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                self._handle_text_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.COMMAND,
-                self._handle_command
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                self._handle_location_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                self._handle_media_message
-            ))
-            # Handle inline keyboard button callbacks (update prompts)
-            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            
+            _inline_only = self.config.extra.get("inline_only_mode", False) if getattr(self.config, "extra", None) else False
+            if not _inline_only:
+                self._app.add_handler(TelegramMessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    self._handle_text_message
+                ))
+                self._app.add_handler(TelegramMessageHandler(
+                    filters.COMMAND,
+                    self._handle_command
+                ))
+                self._app.add_handler(TelegramMessageHandler(
+                    filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+                    self._handle_location_message
+                ))
+                self._app.add_handler(TelegramMessageHandler(
+                    filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+                    self._handle_media_message
+                ))
+                # Handle inline keyboard button callbacks (update prompts)
+                self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Handle inline queries (@botname <query>)
+            self._app.add_handler(InlineQueryHandler(self._handle_inline_query))
+
+
             # Start polling — retry initialize() for transient TLS resets
             try:
                 from telegram.error import NetworkError, TimedOut
@@ -6096,6 +6117,37 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    async def _handle_inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Deadline-enforced dispatch wrapper for inline queries."""
+        import asyncio as _asyncio
+        iq = getattr(update, "inline_query", None)
+        if not iq:
+            return
+
+        _inline_cfg = self.config.extra.get("inline", {}) if getattr(self.config, "extra", None) else {}
+        if isinstance(_inline_cfg, dict) and not _inline_cfg.get("enabled", True):
+            logger.debug("[%s] inline queries disabled in config — dropping", self.name)
+            return
+
+        query = (iq.query or "").strip()
+        if not query or not self._inline_router:
+            await iq.answer([], cache_time=0)
+            return
+
+        try:
+            results = await _asyncio.wait_for(
+                self._inline_router.dispatch(iq.from_user.id, query),
+                timeout=INLINE_RESPONSE_DEADLINE,
+            )
+            await iq.answer(results or [], cache_time=0)
+        except _asyncio.TimeoutError:
+            logger.debug("[%s] inline dispatch timed out for %r", self.name, query[:60])
+            await iq.answer([], cache_time=0)
+        except Exception as exc:
+            logger.warning("[%s] inline dispatch error: %s", self.name, exc)
+            await iq.answer([], cache_time=0)
+
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -7143,6 +7195,21 @@ def _build_adapter(config):
     return adapter
 
 
+def _build_inline_adapter(config):
+    """Factory for the inline-only Telegram adapter (TELEGRAM_BOT_TOKEN_INLINE).
+
+    Creates a TelegramAdapter with inline_only_mode=True so connect() only
+    registers InlineQueryHandler — no chat, command, or callback handlers.
+    """
+    config.extra["inline_only_mode"] = True
+    adapter = TelegramAdapter(config)
+    try:
+        adapter._notifications_mode = _resolve_notifications_mode()
+    except Exception:
+        adapter._notifications_mode = "important"
+    return adapter
+
+
 def _is_connected(config) -> bool:
     """Telegram is connected when a bot token is configured.
 
@@ -7317,4 +7384,15 @@ def register(ctx) -> None:
         max_message_length=4096,
         emoji="✈️",
         allow_update_command=True,
+    )
+    ctx.register_platform(
+        name="telegram_inline",
+        label="Telegram Inline Bot",
+        adapter_factory=_build_inline_adapter,
+        check_fn=check_telegram_requirements,
+        is_connected=_is_connected,
+        required_env=["TELEGRAM_BOT_TOKEN_INLINE"],
+        install_hint="Set TELEGRAM_BOT_TOKEN_INLINE in your Hermes .env file",
+        max_message_length=4096,
+        emoji="🎵",
     )

@@ -165,6 +165,7 @@ class Platform(Enum):
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
+    TELEGRAM_INLINE = "telegram_inline"  # inline-only Telegram bot (separate token)
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -997,6 +998,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["exclusive_bot_mentions"] = platform_cfg["exclusive_bot_mentions"]
                 if plat == Platform.TELEGRAM and "observe_unmentioned_group_messages" in platform_cfg:
                     bridged["observe_unmentioned_group_messages"] = platform_cfg["observe_unmentioned_group_messages"]
+                if plat == Platform.TELEGRAM and "inline" in platform_cfg:
+                    bridged["inline"] = platform_cfg["inline"]
                 if "dm_policy" in platform_cfg:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
                 if "allow_from" in platform_cfg:
@@ -1172,6 +1175,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
     # won't connect and the cause can be confusing without a log line.
     _token_env_names = {
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
+        Platform.TELEGRAM_INLINE: "TELEGRAM_BOT_TOKEN_INLINE",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
         Platform.SLACK: "SLACK_BOT_TOKEN",
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
@@ -1241,7 +1245,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if telegram_token:
         telegram_config = _enable_from_env(Platform.TELEGRAM)
         telegram_config.token = telegram_token
-    
+
+    # Telegram inline-only bot (separate token, handles only inline_query updates)
+    telegram_inline_token = os.getenv("TELEGRAM_BOT_TOKEN_INLINE")
+    if telegram_inline_token:
+        _tgi_cfg = _enable_from_env(Platform.TELEGRAM_INLINE)
+        _tgi_cfg.token = telegram_inline_token
+        _tgi_cfg.extra["inline_only_mode"] = True
+
     # Reply threading mode for Telegram (off/first/all)
     telegram_reply_mode = os.getenv("TELEGRAM_REPLY_TO_MODE", "").lower()
     if telegram_reply_mode in {"off", "first", "all"}:

@@ -117,6 +117,11 @@ _XAI_STATIC_FALLBACK: list[str] = [
     "grok-4.20-multi-agent-0309",
 ]
 
+# Callable via xAI OAuth but omitted from models.dev and /v1/models listings.
+_XAI_CURATED_EXTRAS: list[str] = [
+    "grok-composer-2.5-fast",
+]
+
 
 _XAI_TOP_MODEL = "grok-build-0.1"
 
@@ -126,6 +131,18 @@ def _xai_promote_top(ids: list[str]) -> list[str]:
     if _XAI_TOP_MODEL in ids:
         return [_XAI_TOP_MODEL] + [m for m in ids if m != _XAI_TOP_MODEL]
     return ids
+
+
+def _xai_merge_curated_extras(ids: list[str]) -> list[str]:
+    """Append Hermes-curated xAI models that are missing from models.dev."""
+    out = list(ids)
+    for extra in _XAI_CURATED_EXTRAS:
+        if extra in out:
+            continue
+        # Keep the headline model pinned; slot extras immediately after it.
+        insert_at = 1 if out and out[0] == _XAI_TOP_MODEL else len(out)
+        out.insert(insert_at, extra)
+    return out
 
 
 def _xai_curated_models() -> list[str]:
@@ -147,12 +164,12 @@ def _xai_curated_models() -> list[str]:
         if isinstance(models, dict) and models:
             ids = [mid for mid in models.keys() if isinstance(mid, str)]
             if ids:
-                return _xai_promote_top(sorted(ids))
+                return _xai_merge_curated_extras(_xai_promote_top(sorted(ids)))
     except Exception:
         # Any failure (missing file, malformed JSON, import error)
         # falls through to the static list.
         pass
-    return list(_XAI_STATIC_FALLBACK)
+    return _xai_merge_curated_extras(list(_XAI_STATIC_FALLBACK))
 
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
@@ -258,6 +275,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # aren't stuck with a slug cloudcode-pa 404s for them.
         "gemini-3-flash-preview",
         "gemini-3.5-flash",
+    ],
+    "google-antigravity": [
+        "gemini-3-flash-agent",
+        "gemini-3.5-flash-low",
+        "gemini-pro-agent",
+        "gemini-3.1-pro-low",
+        "claude-sonnet-4-6",
+        "claude-opus-4-6-thinking",
+        "gpt-oss-120b-medium",
     ],
     "zai": [
         "glm-5.2",
@@ -1012,6 +1038,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
     ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (Code Assist OAuth flow)"),
+    ProviderEntry("google-antigravity", "Google Antigravity (OAuth)", "Google Antigravity via OAuth + Code Assist (Gemini 3.5/3.1, Claude, GPT-OSS where entitled)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (V3, R1, coder, direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI Grok (Direct API)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu direct API)"),
@@ -1205,6 +1232,12 @@ _PROVIDER_ALIASES = {
     "qwen-portal": "qwen-oauth",
     "gemini-cli": "google-gemini-cli",
     "gemini-oauth": "google-gemini-cli",
+    "antigravity": "google-antigravity",
+    "antigravity-oauth": "google-antigravity",
+    "antigravity-cli": "google-antigravity",
+    "google-antigravity-oauth": "google-antigravity",
+    "agy": "google-antigravity",
+    "agy-cli": "google-antigravity",
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
@@ -1771,6 +1804,15 @@ _AGGREGATOR_PROVIDERS = frozenset(
     {"nous", "openrouter", "copilot", "kilocode"}
 )
 
+# Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models
+# (e.g. google-antigravity serves Claude / Gemini / GPT-OSS where the account
+# is entitled). For bare short-alias resolution (`sonnet`, `opus`, ...) these
+# must NOT hijack the alias away from the model's native vendor provider
+# (`anthropic`, `gemini`, ...). They're tried only as a last resort, after
+# every native-vendor catalog. They are NOT aggregators (an explicit switch TO
+# them is still valid), so they stay out of _AGGREGATOR_PROVIDERS.
+_BORROWED_MODEL_PROVIDERS = frozenset({"google-antigravity"})
+
 
 def _resolve_static_model_alias(
     name_lower: str,
@@ -1808,12 +1850,23 @@ def _resolve_static_model_alias(
             return provider, matched
 
     for provider in _PROVIDER_MODELS:
-        if provider in current_keys or provider in _AGGREGATOR_PROVIDERS:
+        if (
+            provider in current_keys
+            or provider in _AGGREGATOR_PROVIDERS
+            or provider in _BORROWED_MODEL_PROVIDERS
+        ):
             continue
         if matched := _match(provider):
             return provider, matched
 
     for provider in _AGGREGATOR_PROVIDERS:
+        if provider in current_keys and (matched := _match(provider)):
+            return provider, matched
+
+    # Last resort: providers that re-expose other vendors' models (e.g.
+    # google-antigravity serving Claude). Only reached when no native-vendor
+    # catalog matched — so `sonnet` resolves to anthropic, not antigravity.
+    for provider in _BORROWED_MODEL_PROVIDERS:
         if provider in current_keys and (matched := _match(provider)):
             return provider, matched
 
@@ -1863,9 +1916,21 @@ def detect_static_provider_for_model(
 
     # --- Step 1: check static provider catalogs for a direct match ---
     for pid, models in _PROVIDER_MODELS.items():
-        if pid in current_keys or pid in _AGGREGATOR_PROVIDERS:
+        if (
+            pid in current_keys
+            or pid in _AGGREGATOR_PROVIDERS
+            or pid in _BORROWED_MODEL_PROVIDERS
+        ):
             continue
         if any(name_lower == m.lower() for m in models):
+            return (pid, name)
+
+    # Borrow-list providers (re-expose other vendors' models) only after every
+    # native-vendor catalog, and only when one is the current provider.
+    for pid in _BORROWED_MODEL_PROVIDERS:
+        if pid in current_keys:
+            continue
+        if any(name_lower == m.lower() for m in _PROVIDER_MODELS.get(pid, [])):
             return (pid, name)
 
     return None
@@ -2175,6 +2240,32 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     return merged
 
 
+def _fetch_antigravity_models(*, force_refresh: bool = False) -> list[str]:
+    try:
+        from agent import antigravity_oauth
+        from agent.antigravity_code_assist import (
+            fetch_available_models_with_fallbacks,
+            load_code_assist,
+            parse_agent_model_ids,
+        )
+        from hermes_cli.auth import resolve_antigravity_oauth_runtime_credentials
+
+        creds = resolve_antigravity_oauth_runtime_credentials(force_refresh=force_refresh)
+        access_token = str(creds.get("api_key") or "").strip()
+        project_id = str(creds.get("project_id") or "").strip()
+        if not access_token:
+            return []
+        if not project_id:
+            info = load_code_assist(access_token)
+            project_id = info.project_id
+            if project_id:
+                antigravity_oauth.update_project_ids(project_id=project_id, managed_project_id=project_id)
+        payload = fetch_available_models_with_fallbacks(access_token, project_id=project_id)
+        return parse_agent_model_ids(payload)
+    except Exception:
+        return []
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Return the best known model catalog for a provider.
 
@@ -2205,6 +2296,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         return get_codex_model_ids(access_token=access_token)
     if normalized == "xai-oauth":
         return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
+    if normalized == "google-antigravity":
+        live = _fetch_antigravity_models(force_refresh=force_refresh)
+        if live:
+            return live
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())

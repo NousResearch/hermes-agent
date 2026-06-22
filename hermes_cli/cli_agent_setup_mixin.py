@@ -398,9 +398,17 @@ class CLIAgentSetupMixin:
                 notice_callback=self._on_notice,
                 notice_clear_callback=self._on_notice_clear,
             )
-            # Store reference for atexit memory provider shutdown
-            global _active_agent_ref
-            _active_agent_ref = self.agent
+            # Store reference for atexit memory provider shutdown.
+            # NOTE: this MUST write to the ``cli`` module's global, not a
+            # local module global. ``_run_cleanup`` (in cli.py) reads
+            # ``cli._active_agent_ref`` to decide whether to fire the memory
+            # provider's ``on_session_end`` hook. When this code lived in
+            # cli.py a bare ``global _active_agent_ref`` worked; after the
+            # god-file extraction into this mixin a ``global`` here would bind
+            # *this module's* namespace, leaving ``cli._active_agent_ref`` None
+            # forever — so memory shutdown never ran on /exit (#49287).
+            import cli as _cli
+            _cli._active_agent_ref = self.agent
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint

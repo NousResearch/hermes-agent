@@ -1529,3 +1529,53 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 - Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
 - Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If no upstream drift or new Live USB gap is found, continue treating the lane as verification/no-op.
+
+### 2026-06-22T07:14:59Z — recover and verify direct Live USB approval-gate changes
+
+**Commands / status**
+
+- Read this ledger and `docs/AGENTCYBER_STANDALONE_RUNBOOK.md` before acting.
+- `git status --short --branch && git remote -v && git branch --show-current && git rev-parse HEAD`: started on `agentcyber/upstream-sync-20260621-194355...origin/agentcyber/upstream-sync-20260621-194355` at `c98ce7c3d7c022f3f16921247af1af220c7d1c2b` with a dirty worktree from an already-scoped Live USB recovery/follow-up lane; no `MERGE_HEAD` or unmerged files.
+- `git fetch upstream main --prune --no-tags && git fetch origin main --prune --no-tags && git fetch origin agentcyber/upstream-sync-20260621-194355 --prune --no-tags`: fetched read-only.
+- Drift after fetch: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `116`; `HEAD..origin/main` -> `0`; `origin/main..HEAD` -> `317`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`; `upstream/main` is an ancestor of `HEAD`.
+- `scripts/agentcyber status --json` before ledger edit summarized: `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, local runtime health `ok: true`, git `dirty: true` only because this direct-approval recovery lane was in progress, head `c98ce7c3d7c022f3f16921247af1af220c7d1c2b`, and secret fields summarized as booleans/presence only.
+- `scripts/agentcyber hermes tools list` showed `cyber` enabled and `live_usb` disabled.
+- Required AgentCyber/Live USB files were tracked with executable modes preserved for `scripts/agentcyber` and `live-usb/{build_iso.sh,write_usb.sh,provision.sh}`.
+- Conflict marker scan for lines starting `<<<<<<< ` or `>>>>>>> ` returned `0` matches.
+
+**Changed files**
+
+- `live-usb/build_iso.sh`, `live-usb/write_usb.sh`, and `live-usb/provision.sh`: added exact direct-script operator approval gates using `HERMES_AGENTCYBER_LIVE_USB_APPROVAL`, `--operator-approval`, `--operator-approval-stdin`, or an interactive silent prompt; the scripts clear approval material after a successful gate and before long-running/destructive work. `write_usb.sh --list` remains approval-free/read-only.
+- `tools/cyber_live_usb.py`: changed the Python tool wrapper to keep its own exact operator approval check and pass the already-approved value to direct scripts through stdin with `--operator-approval-stdin`, not argv/logs.
+- `README.md` and `docs/AGENTCYBER_STANDALONE_RUNBOOK.md`: documented direct-script operator approval, token handling, silent prompt use, default-off `live_usb`, and that root/sudo alone is not sufficient for build/write/provision.
+- `tests/cyber/test_live_usb_docs.py` and `tests/cyber/test_live_usb_tool.py`: added direct-script approval-gate, no-token-disclosure, stdin-approval, and mocked positive/negative path coverage without touching real USB/block devices.
+- `docs/AGENTCYBER_LIVE_USB_UPSTREAM_LEDGER.md`: added this recovery/verification entry.
+
+**Verification**
+
+- `bash -n live-usb/build_iso.sh live-usb/write_usb.sh live-usb/provision.sh` -> passed.
+- `uv run --frozen python -m pytest tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py -q -o addopts= --tb=short` -> `72 passed in 1.01s`.
+- `uv run --frozen python -m ruff check tests/cyber/test_live_usb_docs.py tools/cyber_live_usb.py tests/cyber/test_live_usb_tool.py` -> `All checks passed!`.
+- Focused wrapper acceptance: `scripts/run_tests.sh tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py` -> `322 tests passed, 0 failed`.
+- Direct non-root token-leak probe with a dummy approval value for `build_iso.sh`, `write_usb.sh`, and `provision.sh` -> no dummy approval token appeared in the emitted errors.
+- `git diff --check && git diff --cached --check` -> passed with no output before the ledger edit.
+- Read-only spec/safety review: `PASS`; `status`/`list_usb` remain read-only, build/write/provision are root plus exact-operator-approval gated, direct scripts enforce comparable gates, and token material is not logged or echoed by the reviewed paths.
+- Read-only quality review: `APPROVED`; wrappers pass approval via stdin after their own gate, direct scripts clear approval material before long-running/destructive children, docs/errors do not imply root alone is sufficient, and tests cover negative/positive paths without real device writes.
+
+**Blockers / boundaries**
+
+- No upstream drift on `upstream/main` was present, so no upstream merge was needed this run.
+- No cron jobs were scheduled, created, updated, paused, resumed, or removed.
+- No default `~/.hermes`, default gateway, default cron, or default profiles were modified.
+- No files were deleted by this cron run.
+- No USB/block-device writes, ISO builds as root, `sudo`, package installs, hardware actions, external security actions, cloud spend, credential access/disclosure, or public disclosure were performed.
+- Status commands contacted only the configured local Ollama health endpoint and printed booleans/status fields, not secrets.
+
+**Commit / push**
+
+- This scoped direct Live USB approval-gate recovery plus ledger entry should be committed and pushed to `origin/agentcyber/upstream-sync-20260621-194355` without force. After pushing, final verification should check local `HEAD` equals the remote sync branch tip and stop rather than amending this ledger solely to mention the commit SHA.
+
+**Next lane**
+
+- Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
+- Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If no upstream drift or new Live USB gap is found, continue treating the lane as verification/no-op.

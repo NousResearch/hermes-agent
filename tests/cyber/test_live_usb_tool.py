@@ -582,12 +582,48 @@ class TestLiveUsbTool:
             "reason": "Linux removable flag is missing or unreadable",
         }
 
+    def test_build_approved_path_uses_stdin_approval(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd: list[str], timeout: int = 300, input_text: str | None = None) -> dict:
+            captured["cmd"] = cmd
+            captured["timeout"] = timeout
+            captured["input_text"] = input_text
+            return {"rc": 0, "stdout": "mocked build ok", "stderr": ""}
+
+        monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
+        monkeypatch.setattr(live_usb, "_running_as_root", lambda: True)
+        monkeypatch.setattr(live_usb, "_run", fake_run)
+
+        out = json.loads(_handle({
+            "action": "build",
+            "operator_approval": "approved-live-usb-lane",
+            "arch": "arm64",
+            "output": "/tmp/hermes.iso",
+            "headless_scan": True,
+        }))
+
+        assert out["success"] is True
+        assert captured["timeout"] == 1800
+        assert captured["input_text"] == "approved-live-usb-lane\n"
+        assert captured["cmd"] == [
+            "bash",
+            str(live_usb._SCRIPTS_DIR / "build_iso.sh"),
+            "--arch",
+            "arm64",
+            "--output",
+            "/tmp/hermes.iso",
+            "--headless-scan",
+            "--operator-approval-stdin",
+        ]
+
     def test_provision_approved_path_is_mocked_and_explicit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}
 
-        def fake_run(cmd: list[str], timeout: int = 300) -> dict:
+        def fake_run(cmd: list[str], timeout: int = 300, input_text: str | None = None) -> dict:
             captured["cmd"] = cmd
             captured["timeout"] = timeout
+            captured["input_text"] = input_text
             return {"rc": 0, "stdout": "mocked provision ok", "stderr": ""}
 
         monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
@@ -608,11 +644,13 @@ class TestLiveUsbTool:
 
         assert out["success"] is True
         assert captured["timeout"] == 60
+        assert captured["input_text"] == "approved-live-usb-lane\n"
         assert captured["cmd"] == [
             "bash",
             str(live_usb._SCRIPTS_DIR / "provision.sh"),
             "--usb",
             "/dev/sdz",
+            "--operator-approval-stdin",
             "--config",
             "/tmp/hermes-config.tar.gz",
             "--allowed-users",
@@ -625,9 +663,10 @@ class TestLiveUsbTool:
     def test_write_approved_path_is_mocked_and_explicit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}
 
-        def fake_run(cmd: list[str], timeout: int = 300) -> dict:
+        def fake_run(cmd: list[str], timeout: int = 300, input_text: str | None = None) -> dict:
             captured["cmd"] = cmd
             captured["timeout"] = timeout
+            captured["input_text"] = input_text
             return {"rc": 0, "stdout": "mocked write ok", "stderr": ""}
 
         monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
@@ -647,6 +686,7 @@ class TestLiveUsbTool:
 
         assert out["success"] is True
         assert captured["timeout"] == 600
+        assert captured["input_text"] == "approved-live-usb-lane\n"
         assert captured["cmd"] == [
             "bash",
             str(live_usb._SCRIPTS_DIR / "write_usb.sh"),
@@ -655,6 +695,7 @@ class TestLiveUsbTool:
             "--device",
             "/dev/sdz",
             "--yes",
+            "--operator-approval-stdin",
             "--verify",
         ]
 
@@ -705,9 +746,10 @@ class TestLiveUsbTool:
                 return live_usb.Path(canonical_device)
             raise AssertionError(f"unexpected resolve path: {path}")
 
-        def fake_run(cmd: list[str], timeout: int = 300) -> dict:
+        def fake_run(cmd: list[str], timeout: int = 300, input_text: str | None = None) -> dict:
             captured["cmd"] = cmd
             captured["timeout"] = timeout
+            captured["input_text"] = input_text
             return {"rc": 0, "stdout": f"mocked {action} ok", "stderr": ""}
 
         monkeypatch.setenv("HERMES_AGENTCYBER_LIVE_USB_APPROVAL", "approved-live-usb-lane")
@@ -728,6 +770,8 @@ class TestLiveUsbTool:
         cmd = captured["cmd"]
         assert isinstance(cmd, list)
         assert out["success"] is True
+        assert captured["input_text"] == "approved-live-usb-lane\n"
         assert cmd[:2] == ["bash", str(live_usb._SCRIPTS_DIR / script_name)]
+        assert "--operator-approval-stdin" in cmd
         assert cmd[cmd.index(device_flag) + 1] == canonical_device
         assert alias not in cmd

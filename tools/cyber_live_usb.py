@@ -75,6 +75,15 @@ def _running_as_root() -> bool:
     return hasattr(os, "geteuid") and os.geteuid() == 0
 
 
+def _operator_approval_value(args: dict) -> str | None:
+    """Return the caller-provided high-consequence approval token, if present."""
+    for key in _APPROVAL_ARG_KEYS:
+        value = args.get(key)
+        if isinstance(value, str):
+            return value
+    return None
+
+
 def _script(name: str) -> str:
     """Return absolute path to a live-usb/ script, verified to exist."""
     path = _SCRIPTS_DIR / name
@@ -83,12 +92,13 @@ def _script(name: str) -> str:
     return str(path)
 
 
-def _run(cmd: list[str], timeout: int = 300) -> dict:
+def _run(cmd: list[str], timeout: int = 300, input_text: str | None = None) -> dict:
     """Run a command, stream output to logger, return {rc, stdout, stderr}."""
     logger.info("live_usb: running %s", " ".join(_redacted_command_for_log(cmd)))
     try:
         result = subprocess.run(
             cmd,
+            input=input_text,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -146,12 +156,7 @@ def _require_operator_approval(args: dict, action: str) -> dict | None:
     if not expected:
         return _operator_approval_error(action, f"missing {_APPROVAL_ENV_VAR}")
 
-    provided = None
-    for key in _APPROVAL_ARG_KEYS:
-        value = args.get(key)
-        if isinstance(value, str) and value:
-            provided = value
-            break
+    provided = _operator_approval_value(args)
     if provided is None:
         return _operator_approval_error(action, "missing operator_approval")
     if not hmac.compare_digest(provided, expected):
@@ -403,8 +408,10 @@ def _build(args: dict, **_kw: Any) -> dict:
     if args.get("source_dir"):   cmd += ["--source-dir", args["source_dir"]]
     if args.get("headless_scan"): cmd += ["--headless-scan"]
     if args.get("verbose"):      cmd += ["--verbose"]
+    cmd += ["--operator-approval-stdin"]
+    approval_input = f"{_operator_approval_value(args) or ''}\n"
 
-    result = _run(cmd, timeout=int(args.get("timeout", 1800)))  # 30 min default
+    result = _run(cmd, timeout=int(args.get("timeout", 1800)), input_text=approval_input)  # 30 min default
 
     if result["rc"] == 0:
         iso_size = Path(output_path).stat().st_size if Path(output_path).exists() else 0
@@ -445,12 +452,13 @@ def _write(args: dict, **_kw: Any) -> dict:
         return {"error": f"ISO not found: {iso}. Build it first with the build action."}
 
     script = _script("write_usb.sh")
-    cmd = ["bash", script, "--iso", iso, "--device", canonical_device, "--yes"]
+    cmd = ["bash", script, "--iso", iso, "--device", canonical_device, "--yes", "--operator-approval-stdin"]
 
     if args.get("provision"):  cmd += ["--provision", args["provision"]]
     if args.get("verify"):     cmd += ["--verify"]
 
-    result = _run(cmd, timeout=int(args.get("timeout", 600)))  # 10 min default
+    approval_input = f"{_operator_approval_value(args) or ''}\n"
+    result = _run(cmd, timeout=int(args.get("timeout", 600)), input_text=approval_input)  # 10 min default
 
     return {
         "success": result["rc"] == 0,
@@ -482,7 +490,7 @@ def _provision(args: dict, **_kw: Any) -> dict:
         return canonical_device
 
     script = _script("provision.sh")
-    cmd = ["bash", script, "--usb", canonical_device]
+    cmd = ["bash", script, "--usb", canonical_device, "--operator-approval-stdin"]
 
     if args.get("config"):          cmd += ["--config", args["config"]]
     if args.get("telegram_token"):  cmd += ["--telegram-token", args["telegram_token"]]
@@ -491,7 +499,8 @@ def _provision(args: dict, **_kw: Any) -> dict:
     if args.get("model_provider"):  cmd += ["--model-provider", args["model_provider"]]
     if args.get("audit"):           cmd += ["--audit"]
 
-    result = _run(cmd, timeout=60)
+    approval_input = f"{_operator_approval_value(args) or ''}\n"
+    result = _run(cmd, timeout=60, input_text=approval_input)
     return {
         "success": result["rc"] == 0,
         "output":  result["stdout"],

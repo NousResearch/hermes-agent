@@ -41,6 +41,10 @@
 #   --source-dir PATH     Path to hermes-agentcyber source (default: parent dir)
 #   --no-bundle-source    Don't bundle source; install from pip on first boot
 #   --headless-scan       Enable auto-scan on boot (requires config.yaml present)
+#   --operator-approval T Exact token matching HERMES_AGENTCYBER_LIVE_USB_APPROVAL
+#                        (omit in an interactive terminal to enter a silent prompt)
+#   --operator-approval-stdin
+#                        Read exact approval token from stdin (non-interactive)
 #   --verbose             Verbose debootstrap output
 #
 # =============================================================================
@@ -59,6 +63,9 @@ OUTPUT="${SCRIPT_DIR}/hermes-cyber-live.iso"
 SOURCE_DIR="${REPO_DIR}"
 BUNDLE_SOURCE=true
 HEADLESS_SCAN=false
+OPERATOR_APPROVAL=""
+OPERATOR_APPROVAL_PROVIDED=false
+OPERATOR_APPROVAL_STDIN=false
 VERBOSE=false
 
 WORK_DIR=""   # set after arg parsing; cleaned up on exit
@@ -74,10 +81,60 @@ while [[ $# -gt 0 ]]; do
     --source-dir)      SOURCE_DIR="$2";   shift 2 ;;
     --no-bundle-source) BUNDLE_SOURCE=false; shift ;;
     --headless-scan)   HEADLESS_SCAN=true; shift ;;
+    --operator-approval)
+      if [[ $# -lt 2 ]]; then
+        echo "❌  --operator-approval requires a value" >&2
+        exit 1
+      fi
+      OPERATOR_APPROVAL="$2"
+      OPERATOR_APPROVAL_PROVIDED=true
+      shift 2 ;;
+    --operator-approval-stdin)
+      OPERATOR_APPROVAL_STDIN=true
+      shift ;;
     --verbose)         VERBOSE=true;      shift ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
+
+require_operator_approval() {
+  local action="$1"
+  if [[ -z "${HERMES_AGENTCYBER_LIVE_USB_APPROVAL:-}" ]]; then
+    echo "❌  ${action} requires exact operator approval." >&2
+    echo "    Set HERMES_AGENTCYBER_LIVE_USB_APPROVAL for the approved maintenance session." >&2
+    echo "    Pass --operator-approval with the exact same value or enter it at the silent prompt." >&2
+    echo "    Root/sudo alone is not sufficient." >&2
+    return 1
+  fi
+
+  if [[ "$OPERATOR_APPROVAL_PROVIDED" != "true" ]]; then
+    if [[ "$OPERATOR_APPROVAL_STDIN" == "true" ]]; then
+      IFS= read -r OPERATOR_APPROVAL || true
+      OPERATOR_APPROVAL_PROVIDED=true
+    elif [[ -t 0 ]]; then
+      printf "Operator approval token: " >&2
+      IFS= read -r -s OPERATOR_APPROVAL
+      printf "\n" >&2
+      OPERATOR_APPROVAL_PROVIDED=true
+    else
+      echo "❌  ${action} requires --operator-approval or --operator-approval-stdin in non-interactive mode." >&2
+      echo "    It must exactly match HERMES_AGENTCYBER_LIVE_USB_APPROVAL; no trimming or case normalization is applied." >&2
+      echo "    Root/sudo alone is not sufficient." >&2
+      return 1
+    fi
+  fi
+
+  if [[ "$OPERATOR_APPROVAL" != "$HERMES_AGENTCYBER_LIVE_USB_APPROVAL" ]]; then
+    echo "❌  Operator approval did not match exactly for ${action}." >&2
+    echo "    No trimming, case normalization, or aliases are accepted." >&2
+    echo "    Root/sudo alone is not sufficient." >&2
+    return 1
+  fi
+
+  unset HERMES_AGENTCYBER_LIVE_USB_APPROVAL
+  OPERATOR_APPROVAL=""
+  OPERATOR_APPROVAL_PROVIDED=false
+}
 
 reject_unsafe_output_target() {
   local output="$1"
@@ -132,8 +189,10 @@ case "$ARCH" in
 esac
 
 # ---- Privilege check --------------------------------------------------------
+require_operator_approval "build" || exit 1
 if [[ $EUID -ne 0 ]]; then
   echo "❌  This script must run as root (required for debootstrap + mount)."
+  echo "    Root/sudo alone is not sufficient; exact operator approval is also required."
   echo "    Use: sudo $0 $*"
   exit 1
 fi
@@ -515,6 +574,7 @@ echo "  📏  Size:   $(du -sh "${OUTPUT}" | cut -f1)"
 echo ""
 echo "  Next steps (operator-approved removable media only):"
 echo "    Root/sudo alone is not sufficient; target must be a canonical whole removable /dev disk with removable=1."
-echo "    Write to USB after verifying target:  sudo ./write_usb.sh --iso ${OUTPUT} --device /dev/sdX"
-echo "    Provision after verifying target:     sudo ./provision.sh --usb /dev/sdX --config config.yaml"
+echo "    Direct write/provision scripts also require HERMES_AGENTCYBER_LIVE_USB_APPROVAL and will prompt silently for the matching token."
+echo "    Write to USB after verifying target:  sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL ./write_usb.sh --iso ${OUTPUT} --device /dev/sdX"
+echo "    Provision after verifying target:     sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL ./provision.sh --usb /dev/sdX --config config.yaml"
 echo "═══════════════════════════════════════════════════════════"

@@ -179,7 +179,9 @@ Exact spacing and icons may vary by terminal skin.
 
 AgentCyber `write` and `provision` tool calls also require the target to be a verifiably whole removable `/dev` disk via Linux block-device metadata; edge-case media that cannot be verified should be handled manually outside unattended tool control.
 
-The direct `live-usb/write_usb.sh` and `live-usb/provision.sh` scripts enforce the same removable-media boundary before destructive work: the operator-supplied path must resolve to a canonical whole-disk `/dev/...` device and Linux must report `removable = 1`. Root/sudo alone is not sufficient for non-removable, partition, mapper, symlink-only, or unverifiable targets.
+The direct `live-usb/build_iso.sh`, `live-usb/write_usb.sh`, and `live-usb/provision.sh` scripts enforce exact operator approval too. Set `HERMES_AGENTCYBER_LIVE_USB_APPROVAL` for the approved maintenance session, then omit `--operator-approval` in an interactive terminal to enter the token at the silent prompt. Use `--operator-approval` or `--operator-approval-stdin` only for audited non-interactive operator procedures because command-line tokens can appear in shell history and process listings. The token match is exact: no trimming, case normalization, or aliases are accepted.
+
+The direct `live-usb/write_usb.sh` and `live-usb/provision.sh` scripts also enforce the same removable-media boundary before destructive work: the operator-supplied path must resolve to a canonical whole-disk `/dev/...` device and Linux must report `removable = 1`. Root/sudo alone is not sufficient for build/write/provision operations or for non-removable, partition, mapper, symlink-only, or unverifiable targets.
 
 For an explicitly approved live USB maintenance session only, the operator can set a token in the standalone AgentCyber environment and provide the same value as `operator_approval` in the `live_usb` tool call. The value must match exactly; AgentCyber does not trim whitespace or normalize case for high-consequence approval tokens:
 

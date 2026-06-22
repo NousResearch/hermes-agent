@@ -169,24 +169,38 @@ sudo apt-get install -y \
 
 ### Step 2 — Build the ISO
 
+Builds are gated because they create bootable security media. For an explicitly
+approved maintenance session, set a one-time approval token; in an interactive
+terminal, omit `--operator-approval` and enter the matching token at the silent
+prompt. Use `--operator-approval` or `--operator-approval-stdin` only for audited
+non-interactive operator procedures because command-line tokens can appear in
+shell history and process listings. Root/sudo alone is not sufficient.
+
 ```bash
+export HERMES_AGENTCYBER_LIVE_USB_APPROVAL="<operator-approved one-time token>"
+
 # Default: Kali Rolling + kali-linux-headless (~5 GB ISO)
-sudo live-usb/build_iso.sh
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL \
+  live-usb/build_iso.sh
 
 # Smaller ISO — top 10 tools only (~3 GB)
-sudo live-usb/build_iso.sh --kali-meta kali-tools-top10
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL \
+  live-usb/build_iso.sh --kali-meta kali-tools-top10
 
 # Full Kali including GUI tools (~8 GB)
-sudo live-usb/build_iso.sh --kali-meta kali-linux-default
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL \
+  live-usb/build_iso.sh --kali-meta kali-linux-default
 
 # ARM64 — EFI-only (Raspberry Pi 4/5, ARM servers)
-sudo live-usb/build_iso.sh --arch arm64
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL \
+  live-usb/build_iso.sh --arch arm64
 
 # Debian base instead of Kali (no metapackage, lighter)
-sudo live-usb/build_iso.sh --suite bookworm --mirror http://deb.debian.org/debian
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL \
+  live-usb/build_iso.sh --suite bookworm --mirror http://deb.debian.org/debian
 
 # All options
-sudo live-usb/build_iso.sh \
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL live-usb/build_iso.sh \
   --arch amd64 \                         # amd64 (default) or arm64
   --suite kali-rolling \                 # default; use bookworm for Debian
   --kali-meta kali-linux-headless \      # default Kali metapackage
@@ -213,21 +227,29 @@ The build bundles the current repo into the ISO so the target PC needs no intern
 # Find your USB drive (read-only; no sudo required)
 live-usb/write_usb.sh --list
 
+# Approved write/provision steps require the same one-time token used above.
+# Omit --operator-approval in an interactive terminal to enter it silently.
+
 # Basic write (will prompt for confirmation)
-sudo live-usb/write_usb.sh --device /dev/sdb
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL \
+  live-usb/write_usb.sh --device /dev/sdb
 
 # Write + SHA-256 verify
-sudo live-usb/write_usb.sh --device /dev/sdb --verify
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL \
+  live-usb/write_usb.sh --device /dev/sdb --verify
 
 # Write with a persistence partition (changes survive reboots)
-sudo live-usb/write_usb.sh --device /dev/sdb --persistence      # 4 GB (default)
-sudo live-usb/write_usb.sh --device /dev/sdb --persistence 8G   # custom size
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL \
+  live-usb/write_usb.sh --device /dev/sdb --persistence      # 4 GB (default)
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL \
+  live-usb/write_usb.sh --device /dev/sdb --persistence 8G      # custom size
 
 # Write + inject pre-configured credentials (skip first-boot wizard)
-sudo live-usb/write_usb.sh --device /dev/sdb --provision ~/.hermes
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL \
+  live-usb/write_usb.sh --device /dev/sdb --provision ~/.hermes
 
 # All at once
-sudo live-usb/write_usb.sh \
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL live-usb/write_usb.sh \
   --iso live-usb/hermes-cyber-live.iso \
   --device /dev/sdb \
   --persistence 8G \
@@ -306,10 +328,11 @@ Skip the first-boot wizard entirely by injecting credentials before shipping the
 
 ```bash
 # From a ~/.hermes config directory
-sudo live-usb/provision.sh --usb /dev/sdb --config ~/.hermes
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL \
+  live-usb/provision.sh --usb /dev/sdb --config ~/.hermes
 
 # From individual flags
-sudo live-usb/provision.sh --usb /dev/sdb \
+sudo --preserve-env=HERMES_AGENTCYBER_LIVE_USB_APPROVAL live-usb/provision.sh --usb /dev/sdb \
   --telegram-token "7xxx:AAA..." \
   --allowed-users "123456789,987654321" \
   --model-key "sk-ant-..." \
@@ -317,7 +340,7 @@ sudo live-usb/provision.sh --usb /dev/sdb \
   --audit
 ```
 
-The provisioned config is written to the `HERMESCFG` FAT32 partition. Config directories are repacked under a top-level `.hermes/` directory before first boot, so a standalone `.agentcyber-home` can be used as the source directory; prebuilt tarballs must already contain that `.hermes/` top-level directory. On first boot, the wizard detects the archive and starts the gateway automatically — no keyboard input needed.
+The provisioned config is written to the `HERMESCFG` FAT32 partition. Direct provisioning requires root plus exact operator approval, and root/sudo alone is not sufficient. Config directories are repacked under a top-level `.hermes/` directory before first boot, so a standalone `.agentcyber-home` can be used as the source directory; prebuilt tarballs must already contain that `.hermes/` top-level directory. On first boot, the wizard detects the archive and starts the gateway automatically — no keyboard input needed.
 
 ---
 

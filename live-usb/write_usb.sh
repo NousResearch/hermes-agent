@@ -25,6 +25,10 @@
 #   --verify             Verify the write with SHA-256 after completion
 #   --list               List removable block devices and exit
 #   --yes                Skip confirmation prompt (non-interactive mode)
+#   --operator-approval T Exact token matching HERMES_AGENTCYBER_LIVE_USB_APPROVAL
+#                        (omit in an interactive terminal to enter a silent prompt)
+#   --operator-approval-stdin
+#                        Read exact approval token from stdin (non-interactive)
 #
 # Partition layout after write:
 #   p1+p2  ISO hybrid MBR/EFI (written by dd from ISO)
@@ -46,6 +50,9 @@ ENCRYPT_PERSIST=false
 VERIFY=false
 LIST_ONLY=false
 AUTO_YES=false
+OPERATOR_APPROVAL=""
+OPERATOR_APPROVAL_PROVIDED=false
+OPERATOR_APPROVAL_STDIN=false
 
 # ---- Argument parsing -------------------------------------------------------
 while [[ $# -gt 0 ]]; do
@@ -65,17 +72,59 @@ while [[ $# -gt 0 ]]; do
     --verify)      VERIFY=true;           shift ;;
     --list)        LIST_ONLY=true;        shift ;;
     --yes)         AUTO_YES=true;         shift ;;
+    --operator-approval)
+      if [[ $# -lt 2 ]]; then
+        echo "❌  --operator-approval requires a value" >&2
+        exit 1
+      fi
+      OPERATOR_APPROVAL="$2"
+      OPERATOR_APPROVAL_PROVIDED=true
+      shift 2 ;;
+    --operator-approval-stdin)
+      OPERATOR_APPROVAL_STDIN=true
+      shift ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
 
-# ---- Privilege check --------------------------------------------------------
-if [[ $EUID -ne 0 && "$LIST_ONLY" == "false" ]]; then
-  echo "❌  Writing to a block device requires root."
-  echo "    Root/sudo alone is not sufficient; the target must canonicalize to a whole removable /dev disk with removable=1."
-  echo "    Use: sudo $0 $*"
-  exit 1
-fi
+require_operator_approval() {
+  local action="$1"
+  if [[ -z "${HERMES_AGENTCYBER_LIVE_USB_APPROVAL:-}" ]]; then
+    echo "❌  ${action} requires exact operator approval." >&2
+    echo "    Set HERMES_AGENTCYBER_LIVE_USB_APPROVAL for the approved maintenance session." >&2
+    echo "    Pass --operator-approval with the exact same value or enter it at the silent prompt." >&2
+    echo "    Root/sudo alone is not sufficient; --list is the only approval-free path." >&2
+    return 1
+  fi
+
+  if [[ "$OPERATOR_APPROVAL_PROVIDED" != "true" ]]; then
+    if [[ "$OPERATOR_APPROVAL_STDIN" == "true" ]]; then
+      IFS= read -r OPERATOR_APPROVAL || true
+      OPERATOR_APPROVAL_PROVIDED=true
+    elif [[ -t 0 ]]; then
+      printf "Operator approval token: " >&2
+      IFS= read -r -s OPERATOR_APPROVAL
+      printf "\n" >&2
+      OPERATOR_APPROVAL_PROVIDED=true
+    else
+      echo "❌  ${action} requires --operator-approval or --operator-approval-stdin in non-interactive mode." >&2
+      echo "    It must exactly match HERMES_AGENTCYBER_LIVE_USB_APPROVAL; no trimming or case normalization is applied." >&2
+      echo "    Root/sudo alone is not sufficient; --list is the only approval-free path." >&2
+      return 1
+    fi
+  fi
+
+  if [[ "$OPERATOR_APPROVAL" != "$HERMES_AGENTCYBER_LIVE_USB_APPROVAL" ]]; then
+    echo "❌  Operator approval did not match exactly for ${action}." >&2
+    echo "    No trimming, case normalization, or aliases are accepted." >&2
+    echo "    Root/sudo alone is not sufficient; --list is the only approval-free path." >&2
+    return 1
+  fi
+
+  unset HERMES_AGENTCYBER_LIVE_USB_APPROVAL
+  OPERATOR_APPROVAL=""
+  OPERATOR_APPROVAL_PROVIDED=false
+}
 
 # ---- List removable drives --------------------------------------------------
 list_removable() {
@@ -128,6 +177,16 @@ _canonical_removable_device() {
 if [[ "$LIST_ONLY" == "true" ]]; then
   list_removable
   exit 0
+fi
+
+require_operator_approval "write" || exit 1
+
+# ---- Privilege check --------------------------------------------------------
+if [[ $EUID -ne 0 ]]; then
+  echo "❌  Writing to a block device requires root."
+  echo "    Root/sudo alone is not sufficient; exact operator approval plus a canonical whole removable /dev disk with removable=1 are also required."
+  echo "    Use: sudo $0 $*"
+  exit 1
 fi
 
 # ---- Validate ISO -----------------------------------------------------------

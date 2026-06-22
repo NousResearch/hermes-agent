@@ -15,6 +15,13 @@
 #   sudo ./provision.sh --usb /dev/sdb --env-file /path/to/.env \
 #                       --telegram-token "xxx" --allowed-users "123,456" \
 #                       --model-key "sk-ant-..."
+#
+# High-consequence gate:
+#   build/write/provision scripts require root plus exact operator approval.
+#   Set HERMES_AGENTCYBER_LIVE_USB_APPROVAL for the approved maintenance
+#   session, then pass --operator-approval with the exact same value, pass
+#   --operator-approval-stdin and write the token to stdin, or omit both in an
+#   interactive terminal to enter a silent prompt.
 # =============================================================================
 
 set -euo pipefail
@@ -29,6 +36,9 @@ MODEL_KEY=""
 MODEL_PROVIDER="anthropic"
 MODEL_NAME="claude-opus-4-7-20251101"
 AUDIT=false
+OPERATOR_APPROVAL=""
+OPERATOR_APPROVAL_PROVIDED=false
+OPERATOR_APPROVAL_STDIN=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -44,9 +54,59 @@ while [[ $# -gt 0 ]]; do
     --model-provider)   MODEL_PROVIDER="$2"; shift 2 ;;
     --model-name)       MODEL_NAME="$2";     shift 2 ;;
     --audit)            AUDIT=true;          shift   ;;
+    --operator-approval)
+      if [[ $# -lt 2 ]]; then
+        echo "❌  --operator-approval requires a value" >&2
+        exit 1
+      fi
+      OPERATOR_APPROVAL="$2"
+      OPERATOR_APPROVAL_PROVIDED=true
+      shift 2 ;;
+    --operator-approval-stdin)
+      OPERATOR_APPROVAL_STDIN=true
+      shift ;;
     *) echo "Unknown: $1"; exit 1 ;;
   esac
 done
+
+require_operator_approval() {
+  local action="$1"
+  if [[ -z "${HERMES_AGENTCYBER_LIVE_USB_APPROVAL:-}" ]]; then
+    echo "❌  ${action} requires exact operator approval." >&2
+    echo "    Set HERMES_AGENTCYBER_LIVE_USB_APPROVAL for the approved maintenance session." >&2
+    echo "    Pass --operator-approval with the exact same value or enter it at the silent prompt." >&2
+    echo "    Root/sudo alone is not sufficient." >&2
+    return 1
+  fi
+
+  if [[ "$OPERATOR_APPROVAL_PROVIDED" != "true" ]]; then
+    if [[ "$OPERATOR_APPROVAL_STDIN" == "true" ]]; then
+      IFS= read -r OPERATOR_APPROVAL || true
+      OPERATOR_APPROVAL_PROVIDED=true
+    elif [[ -t 0 ]]; then
+      printf "Operator approval token: " >&2
+      IFS= read -r -s OPERATOR_APPROVAL
+      printf "\n" >&2
+      OPERATOR_APPROVAL_PROVIDED=true
+    else
+      echo "❌  ${action} requires --operator-approval or --operator-approval-stdin in non-interactive mode." >&2
+      echo "    It must exactly match HERMES_AGENTCYBER_LIVE_USB_APPROVAL; no trimming or case normalization is applied." >&2
+      echo "    Root/sudo alone is not sufficient." >&2
+      return 1
+    fi
+  fi
+
+  if [[ "$OPERATOR_APPROVAL" != "$HERMES_AGENTCYBER_LIVE_USB_APPROVAL" ]]; then
+    echo "❌  Operator approval did not match exactly for ${action}." >&2
+    echo "    No trimming, case normalization, or aliases are accepted." >&2
+    echo "    Root/sudo alone is not sufficient." >&2
+    return 1
+  fi
+
+  unset HERMES_AGENTCYBER_LIVE_USB_APPROVAL
+  OPERATOR_APPROVAL=""
+  OPERATOR_APPROVAL_PROVIDED=false
+}
 
 _canonical_removable_device() {
   local input="$1"
@@ -96,9 +156,10 @@ _partition_path() {
 }
 
 [[ -z "$DEVICE" ]]    && { echo "❌  --usb required";   exit 1; }
+require_operator_approval "provision" || exit 1
 if [[ $EUID -ne 0 ]]; then
   echo "❌  Run as root."
-  echo "    Root/sudo alone is not sufficient; the target must canonicalize to a whole removable /dev disk with removable=1."
+  echo "    Root/sudo alone is not sufficient; exact operator approval plus a canonical whole removable /dev disk with removable=1 are also required."
   exit 1
 fi
 DEVICE="$(_canonical_removable_device "$DEVICE")" || exit 1

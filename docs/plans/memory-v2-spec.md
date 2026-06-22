@@ -4,6 +4,8 @@
 
 **Goal:** Build a robust, low-compute, source-grounded memory system for Hermes that keeps short-term task state sharp and long-term memory more reliable than context-window accumulation.
 
+**Eval docs:** See [`../memory-v2-evals.md`](../memory-v2-evals.md) for local deterministic eval purpose, metrics, fixtures, and regression commands.
+
 **Architecture:** Memory v2 is a profile-scoped external memory provider with human-readable canonical files, SQLite indexes, optional embeddings, and lightweight temporal graph links. It should retrieve small routed memory packets per turn, not dump a large memory blob into the prompt.
 
 **Primary insight:** Raw logs are evidence. Summaries are indexes. Semantic memories are current beliefs. Skills are procedures. The prompt receives only a small selected packet.
@@ -224,11 +226,11 @@ source_ref:
 ```yaml
 id: mem_...
 type: fact | preference | belief | constraint | environment | project_state | episode | procedure_ref
-subject: "Dylan"
+subject: "user"
 predicate: "prefers_response_style"
 value: "direct, no-BS, tool-grounded help"
 body: null
-summary: "Dylan prefers direct, tool-grounded help."
+summary: "The user prefers direct, tool-grounded help."
 status: active  # active | superseded | uncertain | archived | rejected
 confidence: 0.95
 importance: 0.9
@@ -265,7 +267,7 @@ next_actions:
 source_refs:
   - source_...
 related_entities:
-  - Dylan
+  - user
   - Hermes
   - Attention Residuals
 injection_policy:
@@ -289,7 +291,7 @@ focus:
     - "source-grounded recall"
     - "human-inspectable files"
   active_entities:
-    - Dylan
+    - user
     - Hermes
     - memory_v2
   decisions_made: []
@@ -307,7 +309,7 @@ scratchpad:
 id: cand_...
 created_at: "2026-05-26T00:00:00Z"
 type: project_state
-claim: "Dylan wants Memory v2 to be robust, low-compute, and source-grounded."
+claim: "The user wants Memory v2 to be robust, low-compute, and source-grounded."
 proposed_destination: "semantic/projects/hermes-memory-v2.yaml"
 importance: 0.8
 confidence: 0.9

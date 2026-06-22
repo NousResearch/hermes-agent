@@ -1,0 +1,42 @@
+version: 1
+name: local_memory_eval_project_v1
+description: Project continuity, stale status, decisions, open questions.
+events:
+  - id: event_project_goal
+    session_id: sess_project
+    role: user
+    text: "Project Memory v2 goal: build source-grounded, low-compute long-term memory."
+    expected_candidate_type: project_state
+  - id: event_project_decision
+    session_id: sess_project
+    role: user
+    text: "Project Memory v2 decision: keep raw events as evidence and promoted memories as current beliefs."
+    expected_candidate_type: project_state
+  - id: event_project_next
+    session_id: sess_project
+    role: user
+    text: "Project Memory v2 next action: implement scientific eval harness."
+    expected_candidate_type: project_state
+  - id: event_project_status_old
+    session_id: sess_project
+    role: user
+    text: "Project Memory v2 status: paused."
+    expected_candidate_type: project_state
+  - id: event_project_status_new
+    session_id: sess_project
+    role: user
+    text: "Project Memory v2 status: active."
+    expected_candidate_type: project_state
+queries:
+  - id: q_project_where_left
+    route: project_continuity
+    text: "Where did we leave Memory v2?"
+    expected_answer_contains: ["scientific eval harness", "active", "raw events", "current beliefs"]
+    expected_source_refs: [event_project_goal, event_project_decision, event_project_next, event_project_status_new]
+    should_retrieve: true
+  - id: q_project_status
+    route: project_continuity
+    text: "Is Memory v2 paused or active?"
+    expected_answer_contains: ["active"]
+    expected_source_refs: [event_project_status_new]
+    should_retrieve: true

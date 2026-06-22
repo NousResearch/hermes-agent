@@ -226,6 +226,9 @@ plugins = [
   "*/dashboard/manifest.json",
   "*/dashboard/dist/*",
   "*/dashboard/dist/**/*",
+  "memory/memory_v2/plugin.yaml",
+  "memory/memory_v2/README.md",
+  "memory/memory_v2/evals/fixtures/*.yaml",
 ]
 
 [tool.setuptools.packages.find]

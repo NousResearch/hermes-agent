@@ -36,7 +36,7 @@ Memory writes should be source-grounded and gated.
 """.strip(),
         encoding="utf-8",
     )
-    (source_home / "TOOLS.md").write_text("ffmpeg is installed user-local at ~/.local/bin/ffmpeg.\n", encoding="utf-8")
+    (source_home / "TOOLS.md").write_text("example-cli is installed in the project toolchain.\n", encoding="utf-8")
     (source_home / "MEMORY.md").write_text("Hermes runs in WSL for this profile.\n", encoding="utf-8")
 
 
@@ -115,3 +115,54 @@ def test_fresh_dogfood_scenario_runs_start_from_clean_state_each_time(tmp_path: 
     persisted = json.loads(report_files[0].read_text(encoding="utf-8"))
     assert persisted["success"] is True
     assert persisted["fresh_reset"] is True
+
+
+def test_fresh_dogfood_allows_preexisting_default_memory_v2_store(tmp_path: Path):
+    source_home = tmp_path / "source"
+    target_home = tmp_path / "dogfood"
+    default_home = tmp_path / "default"
+    _write_source_context(source_home)
+    (default_home / "memory_v2" / "inbox").mkdir(parents=True)
+    sentinel = default_home / "memory_v2" / "inbox" / "sentinel.txt"
+    sentinel.write_text("preexisting default profile memory_v2 store", encoding="utf-8")
+
+    report = run_dogfood_scenario_tests(
+        target_hermes_home=target_home,
+        source_hermes_home=source_home,
+        default_hermes_home=default_home,
+        fresh=True,
+        core_budget=8,
+        category_minimums={"user": 2, "assistant_identity": 2, "operating_rule": 2, "environment": 1},
+    )
+
+    assert report["success"] is True
+    assert sentinel.read_text(encoding="utf-8") == "preexisting default profile memory_v2 store"
+
+
+def test_dogfood_can_run_local_eval_and_persist_summary(tmp_path: Path):
+    source_home = tmp_path / "source"
+    target_home = tmp_path / "dogfood"
+    _write_source_context(source_home)
+
+    report = run_dogfood_scenario_tests(
+        target_hermes_home=target_home,
+        source_hermes_home=source_home,
+        default_hermes_home=tmp_path / "default",
+        fresh=True,
+        core_budget=8,
+        category_minimums={"user": 2, "assistant_identity": 2, "operating_rule": 2, "environment": 1},
+        run_local_eval=True,
+    )
+
+    assert report["success"] is True
+    assert report["local_eval"]["dataset"] == "local_memory_eval_v1"
+    assert report["local_eval"]["external_baselines"] == []
+    assert set(report["local_eval"]["baselines"]) == {"memory_v2", "no_memory", "raw_fts"}
+    assert report["local_eval"]["summary"]["memory_v2"]["query_count"] == 3
+    assert any(
+        result["name"] == "local_eval_fixture_runs" and result["ok"]
+        for result in report["results"]
+    )
+
+    persisted = json.loads(Path(report["report_path"]).read_text(encoding="utf-8"))
+    assert persisted["local_eval"]["summary"] == report["local_eval"]["summary"]

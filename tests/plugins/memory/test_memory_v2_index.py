@@ -56,10 +56,10 @@ def test_initialize_rebuilds_legacy_fts_table_with_missing_columns(tmp_path):
     item = MemoryItem(
         id="pref_response_style",
         type="preference",
-        subject="Dylan",
+        subject="Alex",
         predicate="prefers_response_style",
         value="direct answers",
-        summary="Dylan prefers direct answers.",
+        summary="Alex prefers direct answers.",
         source_refs=["event_1"],
     )
     index.index_memory_item(item)
@@ -96,7 +96,7 @@ def test_index_candidate_is_searchable(tmp_path):
     candidate = CandidateMemory(
         id="cand_memory_v2_goal",
         type=MemoryType.PROJECT_STATE,
-        claim="Dylan wants Memory v2 to stay low-compute and source-grounded.",
+        claim="Alex wants Memory v2 to stay low-compute and source-grounded.",
         source_refs=["event_123"],
     )
     index = MemoryV2Index(store.base_dir / "indexes" / "memory.sqlite")
@@ -172,10 +172,10 @@ def test_rebuild_from_store_indexes_memory_items_with_structured_fields(tmp_path
     item = MemoryItem(
         id="pref_response_style",
         type="preference",
-        subject="Dylan",
+        subject="Alex",
         predicate="prefers_response_style",
         value="direct no-BS tool-grounded help",
-        summary="Dylan prefers direct, no-BS, tool-grounded help.",
+        summary="Alex prefers direct, no-BS, tool-grounded help.",
         confidence=0.98,
         importance=0.95,
         source_refs=["source_user_profile"],
@@ -193,7 +193,7 @@ def test_rebuild_from_store_indexes_memory_items_with_structured_fields(tmp_path
     result = results[0]
     assert result["id"] == "pref_response_style"
     assert result["type"] == "preference"
-    assert result["subject"] == "Dylan"
+    assert result["subject"] == "Alex"
     assert result["predicate"] == "prefers_response_style"
     assert result["value"] == "direct no-BS tool-grounded help"
     assert result["confidence"] == 0.98
@@ -206,7 +206,7 @@ def test_memory_item_supersession_fields_survive_index_search(tmp_path):
     old = MemoryItem(
         id="pref_tts_voice_old",
         type="preference",
-        subject="Dylan",
+        subject="Alex",
         predicate="preferred_tts_voice",
         value="en-US-ChristopherNeural",
         summary="Old voice preference.",
@@ -218,7 +218,7 @@ def test_memory_item_supersession_fields_survive_index_search(tmp_path):
     current = MemoryItem(
         id="pref_tts_voice_current",
         type="preference",
-        subject="Dylan",
+        subject="Alex",
         predicate="preferred_tts_voice",
         value="en-US-AndrewNeural",
         summary="Current voice preference.",
@@ -245,10 +245,10 @@ def test_rebuild_from_store_indexes_source_refs_for_packet_expansion(tmp_path):
     source = SourceRef(
         id="source_memory_v2_thread",
         type="session",
-        uri="discord://thread/1508915896054452264",
+        uri="discord://thread/memory-v2-thread",
         title="Memory v2 design thread",
         observed_at="2026-05-26T00:00:00Z",
-        quote="Dylan asked for robust low-compute memory.",
+        quote="Alex asked for robust low-compute memory.",
     )
     store.write_source_ref(source)
     store.write_project_card(
@@ -327,8 +327,8 @@ def test_search_excludes_expired_and_not_yet_valid_active_memories(tmp_path):
         MemoryItem(
             id="pref_expired",
             type="preference",
-            subject="Dylan",
-            value="Dylan prefers expired retrieval behavior.",
+            subject="Alex",
+            value="Alex prefers expired retrieval behavior.",
             summary="Expired retrieval behavior.",
             expires_at="2000-01-01T00:00:00Z",
             source_refs=["event_expired"],
@@ -338,8 +338,8 @@ def test_search_excludes_expired_and_not_yet_valid_active_memories(tmp_path):
         MemoryItem(
             id="pref_future",
             type="preference",
-            subject="Dylan",
-            value="Dylan prefers future retrieval behavior.",
+            subject="Alex",
+            value="Alex prefers future retrieval behavior.",
             summary="Future retrieval behavior.",
             valid_from="2999-01-01T00:00:00Z",
             source_refs=["event_future"],
@@ -349,8 +349,8 @@ def test_search_excludes_expired_and_not_yet_valid_active_memories(tmp_path):
         MemoryItem(
             id="pref_current",
             type="preference",
-            subject="Dylan",
-            value="Dylan prefers current retrieval behavior.",
+            subject="Alex",
+            value="Alex prefers current retrieval behavior.",
             summary="Current retrieval behavior.",
             source_refs=["event_current"],
         )
@@ -376,6 +376,116 @@ def test_search_orders_candidate_gate_decisions_explicitly(tmp_path):
     results = index.search("shared candidate ordering", limit=10)
 
     assert [result["id"] for result in results] == ["cand_pending", "cand_promoted", "cand_archived", "cand_rejected"]
+
+
+def test_index_raw_event_preserves_event_timestamps(tmp_path):
+    store = _store(tmp_path)
+    index = MemoryV2Index(store.base_dir / "indexes" / "memory.sqlite")
+    index.initialize()
+
+    index.index_raw_event(
+        {
+            "id": "event_old",
+            "type": "turn",
+            "session_id": "session-1",
+            "user_content": "Memory v2 historical timestamp evidence.",
+            "created_at": "2001-01-01T00:00:00Z",
+            "updated_at": "2001-01-02T00:00:00Z",
+        }
+    )
+
+    result = index.search("historical timestamp evidence", route="past_conversation_exact", limit=1)[0]
+
+    assert result["created_at"] == "2001-01-01T00:00:00Z"
+    assert result["updated_at"] == "2001-01-02T00:00:00Z"
+
+
+def test_hybrid_search_uses_field_overlap_to_rerank_relaxed_fts_matches(tmp_path):
+    store = _store(tmp_path)
+    index = MemoryV2Index(store.base_dir / "indexes" / "memory.sqlite")
+    index.initialize()
+    index.index_raw_event(
+        {
+            "id": "event_noise",
+            "type": "turn",
+            "session_id": "session-1",
+            "user_content": "Memory retrieval routing mentioned a generic benchmark note.",
+        }
+    )
+    index.index_raw_event(
+        {
+            "id": "event_target",
+            "type": "turn",
+            "session_id": "session-1",
+            "user_content": "LoCoMo evidence retrieval recall benchmark improved hybrid Memory v2 ranking.",
+        }
+    )
+
+    results = index.search("LoCoMo evidence retrieval benchmark missing", route="research_recall", limit=2)
+
+    assert [result["id"] for result in results] == ["event_target", "event_noise"]
+    assert results[0]["hybrid_score"] > results[1]["hybrid_score"]
+    assert results[0]["score_components"]["token_overlap"] > results[1]["score_components"]["token_overlap"]
+
+
+def test_hybrid_search_boosts_project_cards_for_project_continuity_route(tmp_path):
+    store = _store(tmp_path)
+    index = MemoryV2Index(store.base_dir / "indexes" / "memory.sqlite")
+    index.initialize()
+    index.index_raw_event(
+        {
+            "id": "event_raw_project",
+            "type": "turn",
+            "session_id": "session-1",
+            "user_content": "Project Memory v2 status raw note: old exploratory benchmark chatter.",
+        }
+    )
+    index.index_project_card(
+        ProjectCard(
+            id="Memory v2",
+            name="Memory v2",
+            goal="Build robust memory.",
+            current_state="Project Memory v2 status: hybrid retrieval implementation is current.",
+            source_refs=["source_project_current"],
+        )
+    )
+
+    results = index.search("Project Memory v2 status", route="project_continuity", limit=2)
+
+    assert results[0]["id"] == "project:memory-v2"
+    assert results[0]["type"] == "project_state"
+    assert results[0]["score_components"]["route_type_boost"] > 0
+
+
+def test_hybrid_search_boosts_preferences_for_preference_recall_route(tmp_path):
+    store = _store(tmp_path)
+    index = MemoryV2Index(store.base_dir / "indexes" / "memory.sqlite")
+    index.initialize()
+    index.index_raw_event(
+        {
+            "id": "event_pref_raw",
+            "type": "turn",
+            "session_id": "session-1",
+            "user_content": "Alex prefers concise answers was mentioned in raw chat.",
+        }
+    )
+    index.index_memory_item(
+        MemoryItem(
+            id="pref_concise_answers",
+            type="preference",
+            subject="Alex",
+            predicate="prefers_response_style",
+            value="concise answers",
+            summary="Alex prefers concise answers.",
+            source_refs=["event_pref_raw"],
+        )
+    )
+
+    results = index.search("what does Alex prefer for answers", route="preference_recall", limit=2)
+
+    assert results[0]["id"] == "pref_concise_answers"
+    assert results[0]["type"] == "preference"
+    assert results[0]["score_components"]["route_type_boost"] > 0
 
 
 def test_rebuild_from_store_skips_raw_events_missing_ids(tmp_path):

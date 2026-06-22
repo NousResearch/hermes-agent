@@ -1,4 +1,7 @@
 graft skills
 graft optional-skills
+include plugins/memory/memory_v2/plugin.yaml
+include plugins/memory/memory_v2/README.md
+recursive-include plugins/memory/memory_v2/evals/fixtures *.yaml
 global-exclude __pycache__
 global-exclude *.py[cod]

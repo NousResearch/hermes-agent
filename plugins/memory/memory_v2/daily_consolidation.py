@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     hermes_home = Path(args.hermes_home).expanduser().resolve()
     store = MemoryV2Store(hermes_home / "memory_v2")
     store.initialize()
-    index = MemoryV2Index(store.base_dir / "indexes" / "memory_v2.sqlite")
+    index = MemoryV2Index(store.base_dir / "indexes" / "memory.sqlite")
     index.initialize()
     index.rebuild_from_store(store)
     report = run_daily_consolidation_report(store, index, date=args.date)

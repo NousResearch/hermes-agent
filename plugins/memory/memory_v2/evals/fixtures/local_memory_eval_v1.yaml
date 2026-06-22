@@ -1,0 +1,33 @@
+version: 1
+name: local_memory_eval_v1
+description: Deterministic local Memory v2 benchmark.
+events:
+  - id: event_pref_001
+    session_id: sess_pref
+    role: user
+    text: "Remember that Alex prefers concise direct answers for simple tasks."
+    expected_candidate_type: preference
+  - id: event_project_001
+    session_id: sess_project
+    role: user
+    text: "Project Memory v2 next action: add source-grounded evals."
+    expected_candidate_type: project_state
+queries:
+  - id: q_pref_001
+    route: preference_recall
+    text: "How should you answer simple tasks for Alex?"
+    expected_answer_contains: ["concise", "direct"]
+    expected_source_refs: [event_pref_001]
+    should_retrieve: true
+  - id: q_project_001
+    route: project_continuity
+    text: "Where did we leave Memory v2?"
+    expected_answer_contains: ["source-grounded evals"]
+    expected_source_refs: [event_project_001]
+    should_retrieve: true
+  - id: q_irrelevant_001
+    route: no_memory_needed
+    text: "What is 2 + 2?"
+    expected_answer_contains: ["4"]
+    expected_source_refs: []
+    should_retrieve: false

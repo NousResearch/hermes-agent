@@ -1,0 +1,32 @@
+{
+  "dataset_id": "locomo_tiny_sample",
+  "description": "Tiny local LoCoMo-shaped fixture for importer tests only; not real LoCoMo data.",
+  "conversations": [
+    {
+      "conversation_id": "locomo_conv_tiny_001",
+      "messages": [
+        {
+          "id": "locomo_msg_001",
+          "speaker": "user",
+          "text": "I moved to Seattle in 2024 and keep my coffee grinder in storage."
+        },
+        {
+          "id": "locomo_msg_002",
+          "speaker": "assistant",
+          "text": "Got it: Seattle move in 2024 and the coffee grinder is in storage."
+        }
+      ]
+    }
+  ],
+  "qa_pairs": [
+    {
+      "id": "locomo_qa_001",
+      "conversation_id": "locomo_conv_tiny_001",
+      "question": "Where did the user move in 2024?",
+      "answer_contains": ["Seattle"],
+      "source_message_ids": ["locomo_msg_001"],
+      "route": "past_conversation_exact",
+      "should_retrieve": true
+    }
+  ]
+}

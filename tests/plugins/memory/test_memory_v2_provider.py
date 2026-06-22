@@ -83,7 +83,7 @@ def test_system_prompt_block_renders_formal_core_memory_records(tmp_path):
         CoreMemoryRecord(
             id="core_user_style",
             category="user",
-            statement="Dylan prefers direct, grounded answers over performative friendliness.",
+            statement="Alex prefers direct, grounded answers over performative friendliness.",
             priority=0.95,
             source_refs=["source_user_profile"],
         )
@@ -101,7 +101,7 @@ def test_system_prompt_block_renders_formal_core_memory_records(tmp_path):
     block = provider.system_prompt_block()
 
     assert "Memory v2 core memory" in block
-    assert "Dylan prefers direct" in block
+    assert "Alex prefers direct" in block
     assert "Hermes should be intellectually honest" in block
     assert "source_refs" in block
     assert "session-1" not in block
@@ -139,7 +139,7 @@ def test_sync_turn_appends_raw_event_without_candidate_for_ordinary_turn(tmp_pat
     provider = _new_provider()
     provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
 
-    provider.sync_turn("hello", "Hey Dylan — I’m here.", session_id="session-override")
+    provider.sync_turn("hello", "Hey Alex — I’m here.", session_id="session-override")
 
     events = provider.store.read_raw_events()
     candidates = provider.store.list_candidates()
@@ -150,7 +150,7 @@ def test_sync_turn_appends_raw_event_without_candidate_for_ordinary_turn(tmp_pat
     assert events[0]["provider_session_id"] == "session-1"
     assert events[0]["platform"] == "discord"
     assert events[0]["user_content"] == "hello"
-    assert events[0]["assistant_content"] == "Hey Dylan — I’m here."
+    assert events[0]["assistant_content"] == "Hey Alex — I’m here."
     assert candidates == []
 
 
@@ -169,7 +169,7 @@ def test_sync_turn_creates_pending_candidate_for_explicit_remember_request(tmp_p
     provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
 
     provider.sync_turn(
-        "Remember that Dylan prefers Memory v2 to be source-grounded and low-compute.",
+        "Remember that Alex prefers Memory v2 to be source-grounded and low-compute.",
         "Got it — I’ll treat that as a candidate memory.",
         session_id="session-1",
     )
@@ -195,8 +195,8 @@ def test_sync_turn_dedupes_repeat_pending_candidates_but_keeps_raw_evidence(tmp_
     provider = _new_provider()
     provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
 
-    provider.sync_turn("Remember that Dylan prefers source backed memory.", "Queued.")
-    provider.sync_turn("remember that Dylan prefers source backed memory", "Queued again.")
+    provider.sync_turn("Remember that Alex prefers source backed memory.", "Queued.")
+    provider.sync_turn("remember that Alex prefers source backed memory", "Queued again.")
 
     events = provider.store.read_raw_events()
     candidates = provider.store.list_candidates()
@@ -205,7 +205,7 @@ def test_sync_turn_dedupes_repeat_pending_candidates_but_keeps_raw_evidence(tmp_
     assert len(events) == 2
     assert len(candidates) == 1
     assert candidates[0].gate_decision.value == "pending"
-    assert candidates[0].source_refs == [events[0]["id"]]
+    assert candidates[0].source_refs == [events[0]["id"], events[1]["id"]]
     assert status["counts"]["pending_candidates"] == 1
 
 
@@ -230,6 +230,23 @@ def test_sync_turn_auto_archives_obvious_redacted_secret_candidates(tmp_path):
     assert search_result["status"] == "archived_only"
 
 
+def test_sync_turn_redacts_and_auto_archives_credential_private_key_and_client_secret_candidates(tmp_path):
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
+
+    provider.sync_turn("Remember that the production credential is cred_12345", "Queued.")
+    provider.sync_turn("Remember that the production private key is key_12345", "Queued.")
+    provider.sync_turn("Remember that the production client secret is client_12345", "Queued.")
+
+    raw_json = json.dumps(provider.store.read_raw_events())
+    candidate_json = json.dumps([candidate.to_dict() for candidate in provider.store.list_candidates()])
+    for leaked in ("cred_12345", "key_12345", "client_12345"):
+        assert leaked not in raw_json
+        assert leaked not in candidate_json
+    assert {candidate.gate_decision.value for candidate in provider.store.list_candidates()} == {"archived_only"}
+    assert provider.store.count_pending_candidates() == 0
+
+
 def test_sync_turn_write_gate_routes_procedures_to_procedure_ref_candidate(tmp_path):
     provider = _new_provider()
     provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
@@ -244,6 +261,23 @@ def test_sync_turn_write_gate_routes_procedures_to_procedure_ref_candidate(tmp_p
     assert candidate.type.value == "procedure_ref"
     assert candidate.proposed_destination == "skills"
     assert "skill_candidate" in candidate.promotion_reason
+
+
+def test_manual_promote_rejects_procedure_ref_candidates(tmp_path):
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
+    provider.sync_turn(
+        "Remember that when modifying Hermes providers, load the hermes-agent skill first.",
+        "Queued for review.",
+        session_id="session-1",
+    )
+    candidate = provider.store.list_candidates()[0]
+
+    result = json.loads(provider.handle_tool_call("memory_v2_promote", {"candidate_id": candidate.id}))
+
+    assert result["success"] is False
+    assert "skills" in result["error"].lower()
+    assert provider.store.list_memory_items() == []
 
 
 def test_sync_turn_write_gate_archives_ephemeral_remember_request_without_candidate(tmp_path):
@@ -315,6 +349,23 @@ def test_sync_turn_redacts_obvious_sensitive_values_in_raw_archive(tmp_path):
     assert "[REDACTED]" in raw_json
 
 
+def test_sync_turn_redacts_private_key_env_format_and_multiline_key_body(tmp_path):
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+
+    provider.sync_turn(
+        "PRIVATE_KEY=pk_test_12345\n-----BEGIN PRIVATE KEY-----\nFAKEKEYBODY123\n-----END PRIVATE KEY-----",
+        "ok",
+    )
+
+    raw_json = json.dumps(provider.store.read_raw_events())
+    indexed_json = json.dumps(provider.index.search("REDACTED private key", limit=10))
+    for leaked in ("pk_test_12345", "FAKEKEYBODY123"):
+        assert leaked not in raw_json
+        assert leaked not in indexed_json
+    assert "[REDACTED]" in raw_json
+
+
 def test_sync_turn_redacts_common_credential_formats_in_raw_archive_and_index(tmp_path):
     provider = _new_provider()
     provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
@@ -336,11 +387,11 @@ def test_sync_turn_redacts_natural_language_api_key_secret_and_env_key_formats(t
     provider = _new_provider()
     provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
 
-    provider.sync_turn("api key sk-test-123 secret dontsave OPENAI_API_KEY sk-live-456", "ok")
+    provider.sync_turn("api key sk-test-fixture-123 secret dontsave OPENAI_API_KEY sk-test-fixture-456", "ok")
 
     raw_json = json.dumps(provider.store.read_raw_events())
     indexed_json = json.dumps(provider.index.search("REDACTED", limit=10))
-    for leaked in ("sk-test-123", "dontsave", "sk-live-456"):
+    for leaked in ("sk-test-fixture-123", "dontsave", "sk-test-fixture-456"):
         assert leaked not in raw_json
         assert leaked not in indexed_json
     assert raw_json.count("[REDACTED]") >= 3
@@ -422,13 +473,275 @@ def test_manual_control_tool_schemas_are_exposed(tmp_path):
         "memory_v2_reject",
         "memory_v2_show_source",
         "memory_v2_resolve_open_loop",
+        "memory_v2_contradictions",
     }.issubset(schemas)
+
+
+def test_contradictions_tool_reports_conflicts_and_generates_review_candidates_without_mutating_memories(tmp_path):
+    from plugins.memory.memory_v2.schemas import MemoryItem, SourceRef
+
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
+    provider.store.write_source_ref(
+        SourceRef(
+            id="source_old_lab",
+            type="message",
+            uri="raw_event:source_old_lab",
+            title="Old lab schedule",
+            quote="Alex said lab starts 8:30.",
+        )
+    )
+    provider.store.write_source_ref(
+        SourceRef(
+            id="source_new_lab",
+            type="message",
+            uri="raw_event:source_new_lab",
+            title="New lab schedule",
+            quote="Alex corrected lab start time to 9:00.",
+        )
+    )
+    old_item = MemoryItem(
+        id="env_lab_830",
+        type="environment",
+        subject="Alex lab",
+        predicate="starts_at",
+        value="8:30",
+        status="active",
+        source_refs=["source_old_lab"],
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+    )
+    new_item = MemoryItem(
+        id="env_lab_900",
+        type="environment",
+        subject="Alex lab",
+        predicate="starts_at",
+        value="9:00",
+        status="active",
+        source_refs=["source_new_lab"],
+        created_at="2026-06-01T00:00:00Z",
+        updated_at="2026-06-01T00:00:00Z",
+    )
+    for item in (old_item, new_item):
+        path = provider.store.write_memory_item(item)
+        provider.index.index_memory_item(item, file_path=path)
+
+    result = json.loads(provider.handle_tool_call("memory_v2_contradictions", {"create_candidates": True}))
+
+    assert result["success"] is True
+    assert result["mode"] == "dashboard_and_candidate_generator"
+    assert result["mutated_memories"] == 0
+    conflict = result["conflicts"][0]
+    assert conflict["memory_a"]["id"] == "env_lab_830"
+    assert conflict["memory_b"]["id"] == "env_lab_900"
+    assert conflict["classification"] == "true_contradiction"
+    assert conflict["proposed_action"] == "manual_review_supersession_candidate"
+    assert conflict["proposed_superseded_id"] == "env_lab_830"
+    assert conflict["proposed_superseded_by"] == "env_lab_900"
+    assert conflict["source_refs"] == ["source_old_lab", "source_new_lab"]
+    assert len(result["created_candidate_ids"]) == 1
+
+    candidate = provider.store.list_candidates()[0]
+    assert candidate.id == result["created_candidate_ids"][0]
+    assert candidate.gate_decision.value == "pending"
+    assert candidate.type.value == "fact"
+    assert candidate.proposed_destination == "review/contradictions"
+    assert "supersede env_lab_830 with env_lab_900" in candidate.claim
+    assert "dashboard_only" in candidate.promotion_reason
+    assert provider.store.read_memory_item("env_lab_830").status.value == "active"
+    assert provider.store.read_memory_item("env_lab_900").status.value == "active"
+
+
+def test_contradictions_tool_auto_supersedes_only_high_confidence_explicit_corrections(tmp_path):
+    from plugins.memory.memory_v2.schemas import MemoryItem, SourceRef
+
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
+    provider.store.write_source_ref(
+        SourceRef(
+            id="source_old_lab",
+            type="message",
+            uri="raw_event:source_old_lab",
+            title="Old lab schedule",
+            quote="Alex said lab starts 8:30.",
+        )
+    )
+    provider.store.write_source_ref(
+        SourceRef(
+            id="source_new_lab",
+            type="message",
+            uri="raw_event:source_new_lab",
+            title="New lab schedule correction",
+            quote="Alex explicitly corrected the lab start time: it starts 9:00 now, not 8:30.",
+        )
+    )
+    old_item = MemoryItem(
+        id="env_lab_auto_830",
+        type="environment",
+        subject="Alex lab auto",
+        predicate="starts_at",
+        value="8:30",
+        status="active",
+        source_refs=["source_old_lab"],
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+    )
+    new_item = MemoryItem(
+        id="env_lab_auto_900",
+        type="environment",
+        subject="Alex lab auto",
+        predicate="starts_at",
+        value="9:00",
+        status="active",
+        source_refs=["source_new_lab"],
+        created_at="2026-06-01T00:00:00Z",
+        updated_at="2026-06-01T00:00:00Z",
+    )
+    for item in (old_item, new_item):
+        path = provider.store.write_memory_item(item)
+        provider.index.index_memory_item(item, file_path=path)
+
+    result = json.loads(provider.handle_tool_call("memory_v2_contradictions", {"auto_supersede": True}))
+
+    old_after = provider.store.read_memory_item("env_lab_auto_830")
+    new_after = provider.store.read_memory_item("env_lab_auto_900")
+    assert result["success"] is True
+    assert result["auto_supersede"] is True
+    assert result["mutated_memories"] == 1
+    assert result["auto_superseded"][0]["superseded_id"] == "env_lab_auto_830"
+    assert result["auto_superseded"][0]["superseded_by"] == "env_lab_auto_900"
+    assert old_after.status.value == "superseded"
+    assert old_after.superseded_by == "env_lab_auto_900"
+    assert old_after.supersession_reason.startswith("Automatic high-confidence supersession")
+    assert old_after.superseded_at
+    assert new_after.status.value == "active"
+    assert "env_lab_auto_830" in new_after.supersedes
+    assert provider.index.search("Alex lab auto", route="environment_fact", limit=5)[0]["status"] == "active"
+
+
+def test_contradictions_tool_refuses_auto_supersession_without_explicit_correction_source(tmp_path):
+    from plugins.memory.memory_v2.schemas import MemoryItem, SourceRef
+
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
+    provider.store.write_source_ref(SourceRef(id="source_old", type="message", uri="raw_event:source_old", quote="School starts 8:30."))
+    provider.store.write_source_ref(SourceRef(id="source_new", type="message", uri="raw_event:source_new", quote="School starts 9:00."))
+    old_item = MemoryItem(
+        id="env_lab_no_auto_830",
+        type="environment",
+        subject="Alex lab no auto",
+        predicate="starts_at",
+        value="8:30",
+        status="active",
+        source_refs=["source_old"],
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+    )
+    new_item = MemoryItem(
+        id="env_lab_no_auto_900",
+        type="environment",
+        subject="Alex lab no auto",
+        predicate="starts_at",
+        value="9:00",
+        status="active",
+        source_refs=["source_new"],
+        created_at="2026-06-01T00:00:00Z",
+        updated_at="2026-06-01T00:00:00Z",
+    )
+    for item in (old_item, new_item):
+        path = provider.store.write_memory_item(item)
+        provider.index.index_memory_item(item, file_path=path)
+
+    result = json.loads(provider.handle_tool_call("memory_v2_contradictions", {"auto_supersede": True}))
+
+    assert result["success"] is True
+    assert result["mutated_memories"] == 0
+    assert result["conflicts"][0]["auto_supersede_eligible"] is False
+    assert "explicit newer correction" in result["conflicts"][0]["auto_supersede_blockers"]
+    assert provider.store.read_memory_item("env_lab_no_auto_830").status.value == "active"
+    assert provider.store.read_memory_item("env_lab_no_auto_900").status.value == "active"
+
+
+def test_contradictions_tool_refuses_auto_supersession_with_dangling_sources_even_if_value_says_now_not(tmp_path):
+    from plugins.memory.memory_v2.schemas import MemoryItem
+
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
+    old_item = MemoryItem(
+        id="env_lab_dangling_830",
+        type="environment",
+        subject="Alex lab dangling",
+        predicate="starts_at",
+        value="8:30",
+        status="active",
+        source_refs=["source_missing_old"],
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+    )
+    new_item = MemoryItem(
+        id="env_lab_dangling_900",
+        type="environment",
+        subject="Alex lab dangling",
+        predicate="starts_at",
+        value="9:00 now not 8:30",
+        status="active",
+        source_refs=["source_missing_new"],
+        created_at="2026-06-01T00:00:00Z",
+        updated_at="2026-06-01T00:00:00Z",
+    )
+    for item in (old_item, new_item):
+        path = provider.store.write_memory_item(item)
+        provider.index.index_memory_item(item, file_path=path)
+
+    result = json.loads(provider.handle_tool_call("memory_v2_contradictions", {"auto_supersede": True, "min_confidence": 0.1}))
+
+    assert result["success"] is True
+    assert result["mutated_memories"] == 0
+    blockers = result["conflicts"][0]["auto_supersede_blockers"]
+    assert "both memories need resolvable source evidence" in blockers
+    assert "explicit newer correction" in blockers
+    assert provider.store.read_memory_item("env_lab_dangling_830").status.value == "active"
+    assert provider.store.read_memory_item("env_lab_dangling_900").status.value == "active"
+
+
+def test_contradictions_tool_treats_scoped_preferences_as_scope_difference_not_auto_candidate(tmp_path):
+    from plugins.memory.memory_v2.schemas import MemoryItem
+
+    provider = _new_provider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
+    concise = MemoryItem(
+        id="pref_concise_default",
+        type="preference",
+        subject="Alex",
+        predicate="answer_detail",
+        value="prefers concise answers by default",
+        status="active",
+    )
+    detailed = MemoryItem(
+        id="pref_detailed_complex",
+        type="preference",
+        subject="Alex",
+        predicate="answer_detail",
+        value="wants extremely detailed answers for complex architecture questions",
+        status="active",
+    )
+    for item in (concise, detailed):
+        path = provider.store.write_memory_item(item)
+        provider.index.index_memory_item(item, file_path=path)
+
+    result = json.loads(provider.handle_tool_call("memory_v2_contradictions", {"create_candidates": True}))
+
+    assert result["success"] is True
+    assert result["conflicts"][0]["classification"] == "scope_difference"
+    assert result["conflicts"][0]["proposed_action"] == "keep_both_scoped"
+    assert result["created_candidate_ids"] == []
+    assert provider.store.list_candidates() == []
 
 
 def test_candidates_tool_lists_and_filters_candidates(tmp_path):
     provider = _new_provider()
     provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
-    provider.sync_turn("Remember that Dylan prefers source backed memory.", "Queued.")
+    provider.sync_turn("Remember that Alex prefers source backed memory.", "Queued.")
     provider.sync_turn("Remember to follow up on memory evals tomorrow.", "Tracked.")
 
     all_result = json.loads(provider.handle_tool_call("memory_v2_candidates", {}))
@@ -445,7 +758,7 @@ def test_candidates_tool_lists_and_filters_candidates(tmp_path):
 def test_manual_reject_updates_candidate_status_and_index(tmp_path):
     provider = _new_provider()
     provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
-    provider.sync_turn("Remember that Dylan prefers noisy landfill memory.", "Queued.")
+    provider.sync_turn("Remember that Alex prefers noisy landfill memory.", "Queued.")
     candidate_id = provider.store.list_candidates()[0].id
 
     result = json.loads(
@@ -466,7 +779,7 @@ def test_manual_reject_updates_candidate_status_and_index(tmp_path):
 def test_manual_promote_promotes_specific_candidate_and_show_source_uses_canonical_source_ref(tmp_path):
     provider = _new_provider()
     provider.initialize("session-1", hermes_home=str(tmp_path), platform="discord")
-    provider.sync_turn("Remember that Dylan prefers manual memory controls.", "Queued.", session_id="session-1")
+    provider.sync_turn("Remember that Alex prefers manual memory controls.", "Queued.", session_id="session-1")
     candidate = provider.store.list_candidates()[0]
     event_id = provider.store.read_raw_events()[0]["id"]
 

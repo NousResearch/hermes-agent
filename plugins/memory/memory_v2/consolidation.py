@@ -89,6 +89,20 @@ class RuleBasedConsolidator:
                 index.index_candidate(rejected)
                 continue
 
+            dangling_source_refs = self._dangling_source_refs(candidate, store)
+            if dangling_source_refs and not self._should_reject(candidate) and not self._should_archive_only(candidate):
+                rejected = self._with_decision(
+                    candidate,
+                    GateDecision.REJECTED,
+                    f"Semantic promotion has dangling source_refs: {', '.join(dangling_source_refs)}.",
+                )
+                store.append_rejected_candidate(rejected)
+                updated_candidates.append(rejected)
+                report.rejected += 1
+                report.rejected_ids.append(candidate.id)
+                index.index_candidate(rejected)
+                continue
+
             if self._should_reject(candidate):
                 rejected = self._with_decision(
                     candidate,
@@ -180,6 +194,15 @@ class RuleBasedConsolidator:
     def _should_reject(candidate: CandidateMemory) -> bool:
         candidate_type = cast(MemoryType, candidate.type).value
         return candidate_type == MemoryType.PROCEDURE_REF.value or candidate.proposed_destination == "skills"
+
+    @staticmethod
+    def _dangling_source_refs(candidate: CandidateMemory, store: MemoryV2Store) -> List[str]:
+        raw_event_ids = {str(event.get("id") or "") for event in store.read_raw_events()}
+        missing: List[str] = []
+        for source_id in candidate.source_refs:
+            if store.read_source_ref(source_id) is None and source_id not in raw_event_ids:
+                missing.append(source_id)
+        return missing
 
     @staticmethod
     def _should_archive_only(candidate: CandidateMemory) -> bool:
@@ -317,9 +340,9 @@ class RuleBasedConsolidator:
     def _subject_predicate_for(candidate: CandidateMemory) -> tuple[str, str]:
         memory_type = cast(MemoryType, candidate.type).value
         claim = candidate.claim.strip()
-        lowered = claim.lower()
         if memory_type == MemoryType.PREFERENCE.value:
-            subject = "Dylan" if lowered.startswith("dylan") else "user"
+            subject_match = re.match(r"^([A-Z][\w.-]{1,40})\s+prefers\b", claim)
+            subject = subject_match.group(1) if subject_match else "user"
             return subject, "prefers"
         if memory_type == MemoryType.ENVIRONMENT.value:
             return "Hermes runtime", "has_environment_fact"
@@ -362,7 +385,7 @@ class RuleBasedConsolidator:
             "a",
             "an",
             "and",
-            "dylan",
+            "alex",
             "for",
             "i",
             "is",

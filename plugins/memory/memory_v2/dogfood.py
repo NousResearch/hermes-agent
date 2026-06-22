@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,9 @@ import yaml
 
 from . import MemoryV2Provider
 from .core_importer import import_core_memory_from_context_files
+from .evals.baselines import MemoryV2Baseline, NoMemoryBaseline, RawFTSBaseline
+from .evals.datasets import load_eval_dataset
+from .evals.runners import run_eval
 
 DEFAULT_CORE_BUDGET = 24
 DEFAULT_CATEGORY_MINIMUMS = {
@@ -91,10 +95,12 @@ def run_dogfood_scenario_tests(
     fresh: bool = False,
     core_budget: int = DEFAULT_CORE_BUDGET,
     category_minimums: dict[str, int] | None = None,
+    run_local_eval: bool = False,
 ) -> dict[str, Any]:
     """Run high-signal dogfood scenarios against a real profile-local store."""
     target_home = Path(target_hermes_home).expanduser().resolve()
     default_home = Path(default_hermes_home).expanduser().resolve() if default_hermes_home else Path.home() / ".hermes"
+    default_memory_v2_signature = _tree_signature(default_home / "memory_v2")
     prepare_report = prepare_dogfood_profile(
         target_hermes_home=target_home,
         source_hermes_home=source_hermes_home,
@@ -122,6 +128,7 @@ def run_dogfood_scenario_tests(
     provider = MemoryV2Provider()
     provider.initialize(session_id, hermes_home=target_home, platform="dogfood-test", agent_context="primary")
     initial_counts = _scenario_counts(provider)
+    local_eval_report: dict[str, Any] | None = None
 
     try:
         config = _read_config(target_home / "config.yaml")
@@ -130,7 +137,11 @@ def run_dogfood_scenario_tests(
         status = tool(provider, "memory_v2_status")
         check("provider_initialized_in_dogfood_profile", status["success"] and status["initialized"], status)
         check("provider_base_dir_is_profile_local", str(target_home / "memory_v2") == status["base_dir"], status["base_dir"])
-        check("default_profile_not_given_memory_v2_store", not (default_home / "memory_v2").exists(), str(default_home / "memory_v2"))
+        check(
+            "default_profile_memory_v2_store_unchanged",
+            _tree_signature(default_home / "memory_v2") == default_memory_v2_signature,
+            str(default_home / "memory_v2"),
+        )
 
         core_counts = _core_counts(provider)
         check("core_import_record_budget", len(provider.store.list_core_memory_records()) == core_budget, core_counts)
@@ -168,7 +179,7 @@ def run_dogfood_scenario_tests(
         promoted_id = promoted["promoted_ids"][0]
         search = tool(provider, "memory_v2_search", {"query": "source-grounding checks concrete failure IDs", "limit": 5})
         check("promoted_preference_is_searchable", any(r["id"] == promoted_id and r.get("status") == "active" for r in search["results"]), search)
-        recalled = provider.prefetch("What does Dylan prefer about Memory v2 dogfood reports?")
+        recalled = provider.prefetch("What does Alex prefer about Memory v2 dogfood reports?")
         check("promoted_preference_prefetch_recall", promoted_id in recalled and "type: preference" in recalled, recalled)
         shown = tool(provider, "memory_v2_show_source", {"id": promoted_id})
         check("promoted_memory_has_resolvable_sources", shown["success"] and shown["sources"] and not shown.get("missing_source_refs"), shown)
@@ -220,6 +231,15 @@ def run_dogfood_scenario_tests(
         episodic_files = list((target_home / "memory_v2" / "episodic" / "sessions").glob("*.yaml"))
         check("session_end_archives_episode", bool(episodic_files), [p.name for p in episodic_files[-5:]])
 
+        if run_local_eval:
+            local_eval_report = _run_local_eval_fixture()
+            check(
+                "local_eval_fixture_runs",
+                local_eval_report["dataset"] == "local_memory_eval_v1"
+                and bool(local_eval_report.get("summary", {}).get("memory_v2")),
+                local_eval_report.get("summary"),
+            )
+
         report = {
             "success": all(item["ok"] for item in results),
             "session_id": session_id,
@@ -233,6 +253,8 @@ def run_dogfood_scenario_tests(
             "open_loop_id": loop_id,
             "results": results,
         }
+        if local_eval_report is not None:
+            report["local_eval"] = local_eval_report
     except Exception as exc:
         report = {
             "success": False,
@@ -245,6 +267,8 @@ def run_dogfood_scenario_tests(
             "error": repr(exc),
             "results": results,
         }
+        if local_eval_report is not None:
+            report["local_eval"] = local_eval_report
         _write_report(target_home, report, failed=True)
         raise
 
@@ -287,6 +311,39 @@ def _scenario_counts(provider: MemoryV2Provider) -> dict[str, int]:
     }
 
 
+def _run_local_eval_fixture() -> dict[str, Any]:
+    """Run the packaged local eval fixture with deterministic local baselines only."""
+    fixture_path = Path(__file__).parent / "evals" / "fixtures" / "local_memory_eval_v1.yaml"
+    dataset = load_eval_dataset(fixture_path)
+    with tempfile.TemporaryDirectory(prefix="memory-v2-dogfood-eval-") as temp_dir:
+        workdir = Path(temp_dir)
+        report = run_eval(
+            dataset,
+            baselines=[
+                NoMemoryBaseline(),
+                RawFTSBaseline(workdir / "raw_fts" / "raw.sqlite"),
+                MemoryV2Baseline(workdir / "memory_v2"),
+            ],
+        )
+    payload = report.to_dict()
+    payload["fixture_path"] = fixture_path.as_posix()
+    payload["baselines"] = sorted(payload.get("summary", {}).keys())
+    payload["external_baselines"] = []
+    return payload
+
+
+def _tree_signature(path: Path) -> list[tuple[str, int]]:
+    if not path.exists():
+        return []
+    if path.is_file():
+        return [(path.name, path.stat().st_size)]
+    signature: list[tuple[str, int]] = []
+    for child in sorted(path.rglob("*")):
+        if child.is_file():
+            signature.append((child.relative_to(path).as_posix(), child.stat().st_size))
+    return signature
+
+
 def _write_report(target_home: Path, report: dict[str, Any], *, failed: bool) -> Path:
     reports_dir = target_home / "memory_v2" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -303,6 +360,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--default-home", default="~/.hermes", help="Default profile path used only for isolation checks.")
     parser.add_argument("--fresh", action="store_true", help="Delete target memory_v2 before importing core/running scenarios.")
     parser.add_argument("--core-budget", type=int, default=DEFAULT_CORE_BUDGET, help="Prompt-core import budget.")
+    parser.add_argument(
+        "--run-local-eval",
+        action="store_true",
+        help="Run the packaged local deterministic eval fixture and include its summary in the dogfood report.",
+    )
     args = parser.parse_args(argv)
 
     report = run_dogfood_scenario_tests(
@@ -311,8 +373,20 @@ def main(argv: list[str] | None = None) -> int:
         default_hermes_home=args.default_home,
         fresh=args.fresh,
         core_budget=args.core_budget,
+        run_local_eval=args.run_local_eval,
     )
-    print(json.dumps({"success": report["success"], "report_path": report["report_path"], "final_counts": report["final_counts"]}, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "success": report["success"],
+                "report_path": report["report_path"],
+                "final_counts": report["final_counts"],
+                "local_eval_summary": report.get("local_eval", {}).get("summary"),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0 if report["success"] else 1
 
 

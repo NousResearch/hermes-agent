@@ -68,7 +68,7 @@ class RuleBasedWriteGate:
         "temporarily",
     )
     _PREFERENCE_TERMS = ("prefer", "prefers", "like", "likes", "want", "wants")
-    _PROJECT_TERMS = ("project", "memory v2", "qwen", "stock-scout", "current plan", "current state", "next step")
+    _PROJECT_TERMS = ("project", "memory v2", "qwen", "research-project", "current plan", "current state", "next step")
     _ENVIRONMENT_TERMS = ("hermes is running", "host", "wsl", "macos", "linux", "windows", "environment", "installed", "path")
     _PROCEDURE_TERMS = ("when ", "workflow", "procedure", "steps", "how to", "load the", "skill", "runbook", "troubleshoot")
     _OPEN_LOOP_TERMS = ("todo", "to-do", "follow up", "remind me", "open loop", "need to")
@@ -204,15 +204,18 @@ class RuleBasedWriteGate:
 
     @staticmethod
     def _project_destination_for_claim(claim: str) -> str:
-        match = re.search(
-            r"^\s*project\s+(.+?)\s+(?:current\s+state|decision|open\s+question|next\s+action|status|goal|why\s+it\s+matters)\s*:",
-            claim,
-            flags=re.IGNORECASE,
-        )
-        if not match:
-            return "semantic/items"
-        slug = re.sub(r"[^a-z0-9]+", "-", match.group(1).lower()).strip("-")
-        return f"semantic/projects/{slug or 'project'}.yaml"
+        field_pattern = r"(?:current\s+state|decision|open\s+question|next\s+action|status|goal|why\s+it\s+matters)"
+        patterns = [
+            rf"^\s*project\s+(.+?)\s+{field_pattern}\s*:",
+            rf"^\s*for\s+project\s+(.+?)\s*,?\s*{field_pattern}\s*:",
+            rf"^\s*(memory\s+v2|memory_v2|qwen|research-project)\s+{field_pattern}\s*:",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, claim, flags=re.IGNORECASE)
+            if match:
+                slug = re.sub(r"[^a-z0-9]+", "-", match.group(1).lower()).strip("-")
+                return f"semantic/projects/{slug or 'project'}.yaml"
+        return "semantic/items"
 
     @staticmethod
     def _project_update_kind_for_claim(claim: str) -> str:

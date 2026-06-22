@@ -16,12 +16,18 @@ def _store_and_index(tmp_path):
     return store, index
 
 
+def _seed_sources(store: MemoryV2Store, *event_ids: str) -> None:
+    for event_id in event_ids:
+        store.append_raw_event({"id": event_id, "type": "turn", "user_content": f"source evidence {event_id}"})
+
+
 def test_consolidation_promotes_pending_preference_to_canonical_memory_item(tmp_path):
     store, index = _store_and_index(tmp_path)
+    _seed_sources(store, "event_123")
     candidate = CandidateMemory(
         id="cand_response_style",
         type="preference",
-        claim="Dylan prefers concise direct answers for simple tasks.",
+        claim="Alex prefers concise direct answers for simple tasks.",
         proposed_destination="semantic/items",
         confidence=0.92,
         importance=0.86,
@@ -39,7 +45,7 @@ def test_consolidation_promotes_pending_preference_to_canonical_memory_item(tmp_
     assert len(promoted) == 1
     item = promoted[0]
     assert item.id.startswith("mem_preference_")
-    assert item.subject == "Dylan"
+    assert item.subject == "Alex"
     assert item.predicate == "prefers"
     assert item.value == candidate.claim
     assert item.summary == candidate.claim
@@ -98,13 +104,14 @@ def test_consolidation_archives_open_loop_candidates_without_semantic_memory(tmp
 
 def test_consolidation_supersedes_existing_same_type_subject_and_predicate(tmp_path):
     store, index = _store_and_index(tmp_path)
+    _seed_sources(store, "event_new")
     old = MemoryItem(
         id="mem_preference_old_voice",
         type="preference",
-        subject="Dylan",
+        subject="Alex",
         predicate="prefers",
-        value="Dylan prefers en-US-ChristopherNeural for TTS.",
-        summary="Dylan prefers en-US-ChristopherNeural for TTS.",
+        value="Alex prefers en-US-ChristopherNeural for TTS.",
+        summary="Alex prefers en-US-ChristopherNeural for TTS.",
         source_refs=["event_old"],
         tags=["preference"],
     )
@@ -113,7 +120,7 @@ def test_consolidation_supersedes_existing_same_type_subject_and_predicate(tmp_p
     candidate = CandidateMemory(
         id="cand_new_voice",
         type="preference",
-        claim="Dylan prefers en-US-AndrewNeural for TTS now, not en-US-ChristopherNeural.",
+        claim="Alex prefers en-US-AndrewNeural for TTS now, not en-US-ChristopherNeural.",
         proposed_destination="semantic/items",
         promotion_reason="supersede_existing: explicit conflict",
         confidence=0.88,
@@ -139,23 +146,24 @@ def test_consolidation_supersedes_existing_same_type_subject_and_predicate(tmp_p
 
 def test_consolidation_does_not_supersede_unrelated_preference_with_broad_predicate(tmp_path):
     store, index = _store_and_index(tmp_path)
+    _seed_sources(store, "event_new_voice")
     response_style = MemoryItem(
         id="pref_response_style",
         type="preference",
-        subject="Dylan",
+        subject="Alex",
         predicate="prefers",
-        value="Dylan prefers concise direct answers.",
-        summary="Dylan prefers concise direct answers.",
+        value="Alex prefers concise direct answers.",
+        summary="Alex prefers concise direct answers.",
         source_refs=["event_style"],
         tags=["preference", "response_style"],
     )
     old_voice = MemoryItem(
         id="pref_old_voice",
         type="preference",
-        subject="Dylan",
+        subject="Alex",
         predicate="prefers",
-        value="Dylan prefers en-US-ChristopherNeural for TTS.",
-        summary="Dylan prefers en-US-ChristopherNeural for TTS.",
+        value="Alex prefers en-US-ChristopherNeural for TTS.",
+        summary="Alex prefers en-US-ChristopherNeural for TTS.",
         source_refs=["event_old_voice"],
         tags=["preference", "tts_voice"],
     )
@@ -165,7 +173,7 @@ def test_consolidation_does_not_supersede_unrelated_preference_with_broad_predic
     candidate = CandidateMemory(
         id="cand_new_voice",
         type="preference",
-        claim="Dylan prefers en-US-AndrewNeural for TTS now, not en-US-ChristopherNeural.",
+        claim="Alex prefers en-US-AndrewNeural for TTS now, not en-US-ChristopherNeural.",
         proposed_destination="semantic/items",
         promotion_reason="supersede_existing: explicit conflict",
         source_refs=["event_new_voice"],
@@ -201,6 +209,7 @@ def test_consolidation_rejects_source_less_semantic_candidate(tmp_path):
 
 def test_consolidation_merges_project_state_candidate_into_project_card(tmp_path):
     store, index = _store_and_index(tmp_path)
+    _seed_sources(store, "event_new")
     store.write_project_card(
         ProjectCard(
             id="Memory v2",
@@ -246,6 +255,7 @@ def test_consolidation_merges_project_state_candidate_into_project_card(tmp_path
 
 def test_consolidation_project_updates_merge_lists_status_and_dedupe_sources(tmp_path):
     store, index = _store_and_index(tmp_path)
+    _seed_sources(store, "event_decision", "event_question", "event_pause")
     candidates = [
         CandidateMemory(
             id="cand_decision",
@@ -317,6 +327,27 @@ def test_consolidation_rejects_project_update_without_source_refs(tmp_path):
     assert store.list_candidates()[0].gate_decision == GateDecision.REJECTED
 
 
+def test_consolidation_rejects_dangling_source_refs(tmp_path):
+    store, index = _store_and_index(tmp_path)
+    store.append_candidate(
+        CandidateMemory(
+            id="cand_dangling_source",
+            type="preference",
+            claim="Alex prefers source-backed automatic consolidation.",
+            proposed_destination="semantic/items",
+            source_refs=["event_missing"],
+        )
+    )
+
+    report = RuleBasedConsolidator().consolidate(store, index)
+
+    assert report.promoted == 0
+    assert report.rejected == 1
+    assert store.list_memory_items() == []
+    assert store.list_candidates()[0].gate_decision == GateDecision.REJECTED
+    assert "dangling" in store.list_candidates()[0].decision_reason.lower()
+
+
 def test_provider_project_updates_land_in_project_card_and_prefetch_renders_fields(tmp_path):
     from plugins.memory.memory_v2 import MemoryV2Provider
 
@@ -338,6 +369,7 @@ def test_provider_project_updates_land_in_project_card_and_prefetch_renders_fiel
     assert card.next_actions == ["improve project-card continuity recall."]
     assert "next_actions" in packet
     assert "improve project-card continuity recall" in packet
+    assert "project_update: project_update" not in provider.store.list_candidates()[0].promotion_reason
 
 
 def test_provider_consolidation_tool_reports_counts_and_updates_status(tmp_path):
@@ -346,7 +378,7 @@ def test_provider_consolidation_tool_reports_counts_and_updates_status(tmp_path)
     provider = MemoryV2Provider()
     provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
     provider.sync_turn(
-        "Remember that Dylan prefers Memory v2 promotion to preserve source refs.",
+        "Remember that Alex prefers Memory v2 promotion to preserve source refs.",
         "Queued.",
         session_id="session-1",
     )

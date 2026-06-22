@@ -1,4 +1,4 @@
-"""Import OpenClaw-style context files into formal Memory v2 core records.
+"""Import profile context files into formal Memory v2 core records.
 
 This module is intentionally deterministic and local-only. It reads profile
 context files from a source Hermes home, writes formal ``CoreMemoryRecord`` YAML
@@ -136,7 +136,8 @@ def import_core_memory_from_context_files(
         core_budget=core_budget,
         category_minimums=category_minimums or {},
     )
-    _rewrite_core_categories(store, selected)
+    import_categories = {getattr(record.category, "value", str(record.category)) for record in candidates}
+    _rewrite_core_categories(store, selected, import_categories=import_categories)
     if archive_pruned:
         for record in pruned:
             store._append_jsonl(
@@ -210,14 +211,17 @@ def _record_sort_key(record: CoreMemoryRecord) -> tuple[float, str, str]:
     return (-record.priority, record.category.value, record.id)
 
 
-def _rewrite_core_categories(store: MemoryV2Store, records: List[CoreMemoryRecord]) -> None:
+def _rewrite_core_categories(store: MemoryV2Store, records: List[CoreMemoryRecord], *, import_categories: set[str]) -> None:
     by_category: Dict[str, List[CoreMemoryRecord]] = {}
     for record in records:
         by_category.setdefault(record.category.value, []).append(record)
-    touched = {record.category.value for record in store.list_core_memory_records()}
-    touched.update(by_category)
-    for category in touched:
-        category_records = sorted(by_category.get(category, []), key=_record_sort_key)
+    for category in import_categories:
+        preserved = [
+            record
+            for record in store.list_core_memory_records(category=category)
+            if "imported_context" not in record.tags
+        ]
+        category_records = sorted([*preserved, *by_category.get(category, [])], key=_record_sort_key)
         path = store._core_category_path(category)
         if category_records:
             store._atomic_write_yaml(
@@ -341,7 +345,7 @@ def _looks_like_plain_statement(text: str) -> bool:
         lowered.startswith(prefix)
         for prefix in (
             "prefers ",
-            "dylan ",
+            "user ",
             "hermes ",
             "be ",
             "do ",
@@ -352,7 +356,8 @@ def _looks_like_plain_statement(text: str) -> bool:
             "when ",
             "current ",
             "host",
-            "ffmpeg",
+            "tool ",
+            "example-cli",
         )
     )
 

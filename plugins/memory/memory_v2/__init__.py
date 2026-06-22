@@ -1,10 +1,10 @@
-"""Memory v2 provider skeleton.
+"""Memory v2 provider.
 
-Local, profile-scoped memory provider intended to grow into the Memory v2
-architecture described in ``docs/plans/memory-v2-spec.md``.  This initial
-skeleton deliberately avoids network calls and only establishes the provider
-identity, profile-scoped directory tree, a small stable system-prompt block,
-empty recall behavior, and a status tool.
+Local, profile-scoped memory provider for routed, source-grounded,
+low-compute long-term memory. It stores raw turn evidence, gated candidates,
+semantic/core/episodic records, open loops, and a rebuildable SQLite FTS index.
+Dynamic recall is returned through bounded memory packets rather than by
+inflating the stable system prompt.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from .consolidation import RuleBasedConsolidator
 from .daily_consolidation import run_daily_consolidation_report
 from .index import MemoryV2Index
 from .retrieval import MemoryPacketComposer
-from .schemas import CandidateMemory, GateDecision, WorkingMemory, utc_now_iso
+from .schemas import CandidateMemory, GateDecision, MemoryItem, WorkingMemory, utc_now_iso
 from .store import MemoryV2Store
 from .write_gate import RuleBasedWriteGate
 
@@ -135,9 +135,33 @@ RESOLVE_OPEN_LOOP_SCHEMA = {
     },
 }
 
+CONTRADICTIONS_SCHEMA = {
+    "name": "memory_v2_contradictions",
+    "description": "Build a Memory v2 contradiction/supersession dashboard. Default and candidate modes do not mutate memories; auto_supersede=true may mutate only high-confidence explicit corrections with source evidence.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "create_candidates": {
+                "type": "boolean",
+                "description": "If true, append pending contradiction review candidates without superseding or mutating memories.",
+            },
+            "auto_supersede": {
+                "type": "boolean",
+                "description": "If true, automatically supersede only high-confidence explicit corrections with source evidence and audit metadata.",
+            },
+            "min_confidence": {
+                "type": "number",
+                "description": "Minimum dashboard confidence for automatic supersession (default 0.9).",
+            },
+            "limit": {"type": "integer", "description": "Maximum conflicts to return (default 50)."},
+        },
+        "required": [],
+    },
+}
+
 
 class MemoryV2Provider(MemoryProvider):
-    """Local profile-scoped Memory v2 provider skeleton."""
+    """Local profile-scoped Memory v2 provider."""
 
     def __init__(self) -> None:
         self._session_id = ""
@@ -293,11 +317,21 @@ class MemoryV2Provider(MemoryProvider):
                     GateDecision.ARCHIVED_ONLY,
                     "Archived automatically: obvious redacted secret candidate; raw evidence retained without pending promotion.",
                 )
-            if self._find_duplicate_candidate(candidate) is None:
+            duplicate = self._find_duplicate_candidate(candidate)
+            if duplicate is None:
                 self.store.append_candidate(candidate)
                 self.index.index_candidate(candidate)
             else:
-                candidate = None
+                merged_refs = list(duplicate.source_refs)
+                for source_ref in candidate.source_refs:
+                    if source_ref not in merged_refs:
+                        merged_refs.append(source_ref)
+                if merged_refs != list(duplicate.source_refs):
+                    duplicate.source_refs = merged_refs
+                    updated_candidates = [duplicate if existing.id == duplicate.id else existing for existing in self.store.list_candidates()]
+                    self.store.rewrite_candidates(updated_candidates)
+                    self.index.index_candidate(duplicate)
+                candidate = duplicate
         self._update_working_after_turn(user_text, assistant_text, event_id=str(event["id"]), candidate=candidate)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -311,6 +345,7 @@ class MemoryV2Provider(MemoryProvider):
             REJECT_SCHEMA,
             SHOW_SOURCE_SCHEMA,
             RESOLVE_OPEN_LOOP_SCHEMA,
+            CONTRADICTIONS_SCHEMA,
         ]
 
     def _working_prefetch_block(self, query: str, *, session_id: str = "") -> str:
@@ -366,6 +401,11 @@ class MemoryV2Provider(MemoryProvider):
     @staticmethod
     def _redact_sensitive_text(text: str) -> str:
         redacted = text
+        redacted = re.sub(
+            r"(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+            "[REDACTED PRIVATE KEY]",
+            redacted,
+        )
         patterns = [
             r"(?i)(password\s*(?:is|=|:)\s*)\S+",
             r"(?i)(password\s+)\S+",
@@ -375,6 +415,14 @@ class MemoryV2Provider(MemoryProvider):
             r"(?i)(token\s+)\S+",
             r"(?i)(secret\s*(?:is|=|:)\s*)\S+",
             r"(?i)(secret\s+)\S+",
+            r"(?i)(client\s+secret\s*(?:is|=|:)\s*)\S+",
+            r"(?i)(client\s+secret\s+)\S+",
+            r"(?i)(credential\s*(?:is|=|:)\s*)\S+",
+            r"(?i)(credential\s+)\S+",
+            r"(?i)(private\s+key\s*(?:is|=|:)\s*)\S+",
+            r"(?i)(private\s+key\s+)\S+",
+            r"(?i)([A-Z0-9_]*PRIVATE[_-]?KEY\s*=\s*)\S+",
+            r"(?i)([A-Z0-9_]*PRIVATE[_-]?KEY\s+)\S+",
             r"(?i)(api[_ -]?key\s*(?:is|=|:)\s*)\S+",
             r"(?i)(api[_ -]?key\s+)\S+",
             r"(?i)(authorization\s*:\s*bearer\s+)\S+",
@@ -390,6 +438,9 @@ class MemoryV2Provider(MemoryProvider):
         decision = RuleBasedWriteGate().classify(user_text)
         if not decision.should_create_candidate:
             return None
+        reason = decision.reason
+        if not reason.lower().startswith(f"{decision.outcome.value}:"):
+            reason = f"{decision.outcome.value}: {reason}"
         return CandidateMemory(
             id=f"cand_{uuid.uuid4().hex}",
             type=decision.memory_type,
@@ -397,7 +448,7 @@ class MemoryV2Provider(MemoryProvider):
             proposed_destination=decision.proposed_destination,
             confidence=decision.confidence,
             importance=decision.importance,
-            promotion_reason=f"{decision.outcome.value}: {decision.reason}",
+            promotion_reason=reason,
             source_refs=[event_id],
         )
 
@@ -433,6 +484,8 @@ class MemoryV2Provider(MemoryProvider):
             "authorization",
             "bearer",
             "credential",
+            "private key",
+            "client secret",
         )
         return any(term in claim for term in secret_terms)
 
@@ -490,7 +543,357 @@ class MemoryV2Provider(MemoryProvider):
             return json.dumps(self._show_source(args))
         if tool_name == "memory_v2_resolve_open_loop":
             return json.dumps(self._resolve_open_loop(args))
+        if tool_name == "memory_v2_contradictions":
+            return json.dumps(self._contradictions_payload(args))
         return json.dumps({"success": False, "error": f"Unknown Memory v2 tool: {tool_name}"})
+
+    def _contradictions_payload(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            limit = max(1, min(int(args.get("limit") or 50), 200))
+        except (TypeError, ValueError):
+            return {"success": False, "error": "limit must be an integer"}
+        create_candidates = bool(args.get("create_candidates") or False)
+        auto_supersede = bool(args.get("auto_supersede") or False)
+        try:
+            min_confidence = float(args.get("min_confidence") or 0.9)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "min_confidence must be a number"}
+        min_confidence = max(0.0, min(min_confidence, 1.0))
+        conflicts = self._detect_memory_conflicts(limit=limit)
+        auto_superseded: List[Dict[str, Any]] = []
+        if auto_supersede:
+            auto_superseded = self._apply_auto_supersessions(conflicts, min_confidence=min_confidence)
+        auto_superseded_ids = {item["superseded_id"] for item in auto_superseded}
+        created_candidate_ids: List[str] = []
+        if create_candidates:
+            for conflict in conflicts:
+                if conflict.get("proposed_superseded_id") in auto_superseded_ids:
+                    continue
+                if conflict.get("proposed_action") != "manual_review_supersession_candidate":
+                    continue
+                candidate = self._candidate_from_conflict(conflict)
+                if candidate is None:
+                    continue
+                duplicate = self._find_duplicate_candidate(candidate)
+                if duplicate is not None:
+                    continue
+                self.store.append_candidate(candidate)
+                self.index.index_candidate(candidate)
+                created_candidate_ids.append(candidate.id)
+        return {
+            "success": True,
+            "mode": "dashboard_and_candidate_generator",
+            "note": "Dashboard by default; automatic supersession only runs when auto_supersede=true and high-confidence source gates pass.",
+            "mutated_memories": len(auto_superseded),
+            "create_candidates": create_candidates,
+            "auto_supersede": auto_supersede,
+            "min_confidence": min_confidence,
+            "count": len(conflicts),
+            "created_candidate_ids": created_candidate_ids,
+            "auto_superseded": auto_superseded,
+            "conflicts": conflicts,
+        }
+
+    def _detect_memory_conflicts(self, *, limit: int) -> List[Dict[str, Any]]:
+        active_items = self.store.list_memory_items(status="active")
+        grouped: Dict[tuple[str, str, str], List[MemoryItem]] = {}
+        for item in active_items:
+            item_type = getattr(item.type, "value", str(item.type))
+            if item_type not in {"preference", "fact", "environment", "constraint"}:
+                continue
+            predicate = str(item.predicate or "").strip()
+            if not predicate:
+                continue
+            key = (
+                item_type,
+                self._normalize_conflict_text(item.subject),
+                self._normalize_conflict_text(predicate),
+            )
+            grouped.setdefault(key, []).append(item)
+        conflicts: List[Dict[str, Any]] = []
+        for (item_type, subject_key, predicate_key), items in grouped.items():
+            if len(items) < 2:
+                continue
+            sorted_items = sorted(items, key=lambda item: (str(item.updated_at or item.created_at or ""), item.id))
+            for index, first in enumerate(sorted_items):
+                for second in sorted_items[index + 1 :]:
+                    first_value = self._memory_item_value(first)
+                    second_value = self._memory_item_value(second)
+                    if self._normalize_conflict_text(first_value) == self._normalize_conflict_text(second_value):
+                        continue
+                    conflict = self._conflict_payload(
+                        first,
+                        second,
+                        item_type=item_type,
+                        subject_key=subject_key,
+                        predicate_key=predicate_key,
+                    )
+                    if conflict is not None:
+                        conflicts.append(conflict)
+                    if len(conflicts) >= limit:
+                        return conflicts
+        return conflicts
+
+    def _conflict_payload(
+        self,
+        first: MemoryItem,
+        second: MemoryItem,
+        *,
+        item_type: str,
+        subject_key: str,
+        predicate_key: str,
+    ) -> Dict[str, Any] | None:
+        classification = self._classify_conflict(first, second)
+        older, newer = self._older_newer_memory(first, second)
+        proposed_action = "manual_review_possible_conflict"
+        proposed_superseded_id = ""
+        proposed_superseded_by = ""
+        if classification == "scope_difference":
+            proposed_action = "keep_both_scoped"
+        elif classification in {"true_contradiction", "preference_update"}:
+            proposed_action = "manual_review_supersession_candidate"
+            proposed_superseded_id = older.id
+            proposed_superseded_by = newer.id
+        source_refs = self._combined_source_refs(first, second)
+        payload = {
+            "id": f"conflict_{first.id}_{second.id}",
+            "type": "contradiction_candidate",
+            "classification": classification,
+            "proposed_action": proposed_action,
+            "subject": first.subject,
+            "predicate": first.predicate or "",
+            "group_key": {"type": item_type, "subject": subject_key, "predicate": predicate_key},
+            "memory_a": self._compact_conflict_memory(first),
+            "memory_b": self._compact_conflict_memory(second),
+            "proposed_superseded_id": proposed_superseded_id,
+            "proposed_superseded_by": proposed_superseded_by,
+            "reason": self._conflict_reason(first, second, classification),
+            "source_refs": source_refs,
+            "sources": [source for source_id in source_refs if (source := self._source_payload(source_id)) is not None],
+            "confidence": self._conflict_confidence(classification, bool(source_refs)),
+        }
+        eligible, blockers = self._auto_supersede_gate(payload)
+        payload["auto_supersede_eligible"] = eligible
+        payload["auto_supersede_blockers"] = blockers
+        return payload
+
+    def _apply_auto_supersessions(self, conflicts: List[Dict[str, Any]], *, min_confidence: float) -> List[Dict[str, Any]]:
+        applied: List[Dict[str, Any]] = []
+        already_superseded: set[str] = set()
+        for conflict in conflicts:
+            if float(conflict.get("confidence") or 0.0) < min_confidence:
+                conflict.setdefault("auto_supersede_blockers", []).append(f"confidence below min_confidence {min_confidence:.2f}")
+                conflict["auto_supersede_eligible"] = False
+                continue
+            eligible, blockers = self._auto_supersede_gate(conflict)
+            conflict["auto_supersede_eligible"] = eligible
+            conflict["auto_supersede_blockers"] = blockers
+            if not eligible:
+                continue
+            old_id = str(conflict.get("proposed_superseded_id") or "")
+            new_id = str(conflict.get("proposed_superseded_by") or "")
+            if not old_id or not new_id or old_id in already_superseded:
+                continue
+            old_item = self.store.read_memory_item(old_id)
+            new_item = self.store.read_memory_item(new_id)
+            if old_item is None or new_item is None:
+                continue
+            now = utc_now_iso()
+            reason = (
+                "Automatic high-confidence supersession: newer explicit correction from source evidence; "
+                f"conflict={conflict.get('id')}; classification={conflict.get('classification')}; "
+                f"superseded_by={new_id}."
+            )
+            old_item.status = "superseded"
+            old_item.superseded_by = new_id
+            old_item.superseded_at = now
+            old_item.supersession_reason = reason
+            old_item.updated_at = now
+            if "auto_superseded" not in old_item.tags:
+                old_item.tags.append("auto_superseded")
+            if old_id not in new_item.supersedes:
+                new_item.supersedes.append(old_id)
+            new_item.updated_at = now
+            old_path = self.store.write_memory_item(old_item)
+            new_path = self.store.write_memory_item(new_item)
+            self.index.index_memory_item(old_item, file_path=old_path)
+            self.index.index_memory_item(new_item, file_path=new_path)
+            applied.append(
+                {
+                    "conflict_id": conflict.get("id"),
+                    "superseded_id": old_id,
+                    "superseded_by": new_id,
+                    "reason": reason,
+                    "superseded_at": now,
+                }
+            )
+            already_superseded.add(old_id)
+        return applied
+
+    def _auto_supersede_gate(self, conflict: Dict[str, Any]) -> tuple[bool, List[str]]:
+        blockers: List[str] = []
+        if conflict.get("proposed_action") != "manual_review_supersession_candidate":
+            blockers.append("not a supersession candidate")
+        if conflict.get("classification") not in {"true_contradiction", "preference_update"}:
+            blockers.append("classification is not auto-supersedable")
+        old_id = str(conflict.get("proposed_superseded_id") or "")
+        new_id = str(conflict.get("proposed_superseded_by") or "")
+        if not old_id or not new_id:
+            blockers.append("missing supersession target ids")
+        memory_a = conflict.get("memory_a") or {}
+        memory_b = conflict.get("memory_b") or {}
+        old_payload = memory_a if memory_a.get("id") == old_id else memory_b if memory_b.get("id") == old_id else {}
+        new_payload = memory_a if memory_a.get("id") == new_id else memory_b if memory_b.get("id") == new_id else {}
+        old_sources = self._resolved_sources_for_conflict_memory(old_payload)
+        new_sources = self._resolved_sources_for_conflict_memory(new_payload)
+        if not old_payload.get("source_refs") or not new_payload.get("source_refs"):
+            blockers.append("both memories need source refs")
+        if not old_sources or not new_sources:
+            blockers.append("both memories need resolvable source evidence")
+        if self._looks_like_scoped_pair(
+            self._normalize_conflict_text(old_payload.get("value") or ""),
+            self._normalize_conflict_text(new_payload.get("value") or ""),
+        ):
+            blockers.append("scoped wording")
+        if not self._has_explicit_newer_correction(new_sources):
+            blockers.append("explicit newer correction")
+        return not blockers, blockers
+
+    def _resolved_sources_for_conflict_memory(self, memory_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+        sources: List[Dict[str, Any]] = []
+        for source_id in memory_payload.get("source_refs") or []:
+            source = self._source_payload(str(source_id))
+            if source is not None:
+                sources.append(source)
+        return sources
+
+    @staticmethod
+    def _has_explicit_newer_correction(sources: List[Dict[str, Any]]) -> bool:
+        source_text_parts: List[str] = []
+        for source in sources:
+            source_text_parts.extend(str(source.get(field) or "") for field in ("title", "quote", "uri"))
+            maybe_event = source.get("event")
+            event = maybe_event if isinstance(maybe_event, dict) else {}
+            source_text_parts.extend(str(event.get(field) or "") for field in ("user_content", "assistant_content"))
+        combined = " ".join(source_text_parts).lower()
+        correction_terms = (
+            "corrected",
+            "correction",
+            "explicit correction",
+            "instead",
+            "not ",
+            "no longer",
+            "now",
+            "new preference",
+            "current preference",
+            "replaces",
+            "supersedes",
+        )
+        return any(term in combined for term in correction_terms)
+
+    def _candidate_from_conflict(self, conflict: Dict[str, Any]) -> CandidateMemory | None:
+        memory_a = conflict.get("memory_a") or {}
+        memory_b = conflict.get("memory_b") or {}
+        old_id = str(conflict.get("proposed_superseded_id") or "")
+        new_id = str(conflict.get("proposed_superseded_by") or "")
+        if not old_id or not new_id:
+            return None
+        claim = (
+            f"Review possible Memory v2 supersession: supersede {old_id} with {new_id}. "
+            f"Conflict between {memory_a.get('id')}={memory_a.get('value')!r} and "
+            f"{memory_b.get('id')}={memory_b.get('value')!r}."
+        )
+        return CandidateMemory(
+            id=f"cand_conflict_{uuid.uuid4().hex}",
+            type="fact",
+            claim=claim,
+            proposed_destination="review/contradictions",
+            confidence=float(conflict.get("confidence") or 0.7),
+            importance=0.8,
+            promotion_reason=(
+                "dashboard_only: contradiction/supersession candidate generated for manual review; "
+                f"classification={conflict.get('classification')}; reason={conflict.get('reason')}"
+            ),
+            source_refs=list(conflict.get("source_refs") or []),
+        )
+
+    @staticmethod
+    def _normalize_conflict_text(value: Any) -> str:
+        normalized = re.sub(r"[^a-z0-9:./+-]+", " ", str(value or "").lower())
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    @staticmethod
+    def _memory_item_value(item: MemoryItem) -> str:
+        return str(item.value or item.summary or item.body or "")
+
+    @staticmethod
+    def _older_newer_memory(first: MemoryItem, second: MemoryItem) -> tuple[MemoryItem, MemoryItem]:
+        first_time = str(first.updated_at or first.created_at or "")
+        second_time = str(second.updated_at or second.created_at or "")
+        if (first_time, first.id) <= (second_time, second.id):
+            return first, second
+        return second, first
+
+    @staticmethod
+    def _combined_source_refs(first: MemoryItem, second: MemoryItem) -> List[str]:
+        refs: List[str] = []
+        for ref in list(first.source_refs) + list(second.source_refs):
+            if ref not in refs:
+                refs.append(ref)
+        return refs
+
+    def _compact_conflict_memory(self, item: MemoryItem) -> Dict[str, Any]:
+        return {
+            "id": item.id,
+            "type": getattr(item.type, "value", str(item.type)),
+            "subject": item.subject,
+            "predicate": item.predicate,
+            "value": self._memory_item_value(item),
+            "status": getattr(item.status, "value", str(item.status)),
+            "created_at": item.created_at,
+            "updated_at": item.updated_at,
+            "source_refs": list(item.source_refs),
+        }
+
+    def _classify_conflict(self, first: MemoryItem, second: MemoryItem) -> str:
+        first_value = self._normalize_conflict_text(self._memory_item_value(first))
+        second_value = self._normalize_conflict_text(self._memory_item_value(second))
+        if self._looks_like_scoped_pair(first_value, second_value):
+            return "scope_difference"
+        item_type = getattr(first.type, "value", str(first.type))
+        if item_type == "preference":
+            return "preference_update" if self._looks_like_update_pair(first, second) else "possible_conflict"
+        return "true_contradiction"
+
+    @staticmethod
+    def _looks_like_scoped_pair(first_value: str, second_value: str) -> bool:
+        scoped_terms = {"default", "usually", "simple", "short", "concise", "complex", "detailed", "architecture", "research"}
+        return any(term in first_value for term in scoped_terms) and any(term in second_value for term in scoped_terms)
+
+    @staticmethod
+    def _looks_like_update_pair(first: MemoryItem, second: MemoryItem) -> bool:
+        combined = f"{first.value or ''} {second.value or ''}".lower()
+        return any(term in combined for term in ("previously", "formerly", "old", "new", "current", "now", "instead"))
+
+    def _conflict_reason(self, first: MemoryItem, second: MemoryItem, classification: str) -> str:
+        first_value = self._memory_item_value(first)
+        second_value = self._memory_item_value(second)
+        if classification == "scope_difference":
+            return "Same subject/predicate has different values, but wording suggests scoped preferences rather than a direct contradiction."
+        older, newer = self._older_newer_memory(first, second)
+        if classification in {"true_contradiction", "preference_update"}:
+            return f"Same subject/predicate has mutually different active values; newer record {newer.id} may supersede older record {older.id}."
+        return f"Same subject/predicate has different active values requiring manual review: {first_value!r} vs {second_value!r}."
+
+    @staticmethod
+    def _conflict_confidence(classification: str, has_sources: bool) -> float:
+        base = {
+            "true_contradiction": 0.82,
+            "preference_update": 0.76,
+            "possible_conflict": 0.62,
+            "scope_difference": 0.45,
+        }.get(classification, 0.5)
+        return round(min(0.95, base + (0.08 if has_sources else 0.0)), 2)
 
     def _candidates_payload(self, args: Dict[str, Any]) -> Dict[str, Any]:
         type_filter = str(args.get("type") or "").strip()
@@ -541,6 +944,8 @@ class MemoryV2Provider(MemoryProvider):
         target = next((candidate for candidate in candidates if candidate.id == candidate_id), None)
         if target is None:
             return {"success": False, "error": f"candidate not found: {candidate_id}"}
+        if target.proposed_destination.strip().lower() == "skills" or str(getattr(target.type, "value", target.type)) == "procedure_ref":
+            return {"success": False, "error": "procedure/skills candidates require skill authoring or manual rejection, not semantic promotion"}
         if not force:
             if not target.source_refs:
                 return {"success": False, "error": "candidate source_refs are required for manual promotion"}

@@ -21,11 +21,11 @@ def test_write_gate_archives_ordinary_or_ephemeral_turns_without_candidate():
 
 
 def test_write_gate_classifies_explicit_user_preference_as_core_update_candidate():
-    decision = classify("Remember that Dylan prefers direct, no-BS, tool-grounded help.")
+    decision = classify("Remember that Alex prefers direct, no-BS, tool-grounded help.")
 
     assert decision.outcome == WriteGateOutcome.CORE_UPDATE
     assert decision.memory_type == "preference"
-    assert decision.claim == "Dylan prefers direct, no-BS, tool-grounded help."
+    assert decision.claim == "Alex prefers direct, no-BS, tool-grounded help."
     assert decision.proposed_destination == "semantic/items"
     assert decision.should_create_candidate is True
     assert decision.importance >= 0.8
@@ -47,6 +47,18 @@ def test_write_gate_routes_labeled_project_updates_to_project_card_destination()
     assert decision.memory_type == "project_state"
     assert decision.proposed_destination == "semantic/projects/memory-v2.yaml"
     assert "next_action" in decision.reason
+
+
+def test_write_gate_routes_common_project_update_phrasings_to_project_cards():
+    examples = {
+        "Remember that Memory v2 next action: improve recall.": "semantic/projects/memory-v2.yaml",
+        "Remember that for Project Memory v2, next action: improve recall.": "semantic/projects/memory-v2.yaml",
+    }
+
+    for text, destination in examples.items():
+        decision = classify(text)
+        assert decision.outcome == WriteGateOutcome.PROJECT_UPDATE
+        assert decision.proposed_destination == destination
 
 
 def test_write_gate_classifies_environment_conflict_as_review_candidate():

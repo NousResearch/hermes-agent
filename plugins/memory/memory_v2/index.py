@@ -290,6 +290,8 @@ class MemoryV2Index:
             summary=card.current_state or card.goal,
             status=cast(ProjectStatus, card.status).value,
             value=json.dumps(structured_value, ensure_ascii=False, sort_keys=True),
+            importance=card.importance,
+            updated_at=card.updated_at,
             source_refs=card.source_refs,
             tags=["project", card.id],
             file_path=str(file_path) if file_path else "",
@@ -338,6 +340,8 @@ class MemoryV2Index:
             body=body,
             summary=str(event.get("user_content") or event.get("content") or ""),
             status="archived",
+            created_at=str(event.get("created_at") or ""),
+            updated_at=str(event.get("updated_at") or ""),
             source_refs=[event_id] if event_id else [],
             tags=["raw_event", str(event.get("type") or "")],
             file_path="inbox/raw_events.jsonl",
@@ -448,6 +452,26 @@ class MemoryV2Index:
                 ),
             )
 
+    def active_project_cards(self, *, limit: int = 5) -> List[Dict[str, Any]]:
+        """Return active project-card records for broad continuity recall."""
+        safe_limit = self._coerce_limit(limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                  id, type, title, subject, predicate, value, body, summary, status,
+                  confidence, importance, created_at, updated_at, valid_from, valid_until, expires_at,
+                  source_refs, supersedes, superseded_by, tags, file_path,
+                  0.0 AS rank
+                FROM memories
+                WHERE type = 'project_state' AND status = 'active'
+                ORDER BY COALESCE(importance, 0.0) DESC, updated_at DESC, title ASC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+        return [result for result in (self._row_to_result(row) for row in rows) if self._is_temporally_visible(result)]
+
     def search(self, query: str, *, route: str = "", limit: int = 10) -> List[Dict[str, Any]]:
         query_text = str(query or "").strip()
         if not query_text:
@@ -455,7 +479,7 @@ class MemoryV2Index:
         safe_limit = self._coerce_limit(limit)
         fts_queries = self._fts_queries(query_text)
         rows = []
-        sql_limit = min(50, max(safe_limit, safe_limit * 5))
+        sql_limit = min(100, max(safe_limit * 4, safe_limit + 10))
         with self._connect() as conn:
             for fts_query in fts_queries:
                 rows = conn.execute(
@@ -468,29 +492,186 @@ class MemoryV2Index:
                     FROM memories_fts
                     JOIN memories m ON m.id = memories_fts.id
                     WHERE memories_fts MATCH ?
-                    ORDER BY
-                      CASE m.status
-                        WHEN 'active' THEN 0
-                        WHEN 'uncertain' THEN 1
-                        WHEN 'pending' THEN 2
-                        WHEN 'promoted' THEN 3
-                        WHEN 'archived_only' THEN 4
-                        WHEN 'archived' THEN 5
-                        WHEN 'superseded' THEN 6
-                        WHEN 'rejected' THEN 7
-                        ELSE 8
-                      END,
-                      rank
+                    ORDER BY rank
                     LIMIT ?
                     """,
                     (fts_query, sql_limit),
                 ).fetchall()
+                # Preserve the old high-precision strict -> relaxed fallback
+                # behavior. Hybrid scoring reranks within the first plausible
+                # candidate pool rather than flooding precise queries with
+                # broad OR matches.
                 if rows:
                     break
         results = [result for result in (self._row_to_result(row) for row in rows) if self._is_temporally_visible(result)]
+        if str(route or "").strip().lower() in {"deep_recall", "past_conversation_exact"}:
+            results = self._annotate_hybrid_scores(query_text, route=route, results=results)
+        else:
+            results = self._hybrid_rank_results(query_text, route=route, results=results)
         results = results[:safe_limit]
         self.log_retrieval(query_text, route=route, retrieved_ids=[result["id"] for result in results])
         return results
+
+    @classmethod
+    def _annotate_hybrid_scores(cls, query: str, *, route: str = "", results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        query_terms = cls._content_terms(query)
+        query_phrase = " ".join(query_terms)
+        annotated: List[Dict[str, Any]] = []
+        for result in results:
+            components = cls._score_components(result, query_terms=query_terms, query_phrase=query_phrase, route=route)
+            enriched = dict(result)
+            enriched["hybrid_score"] = sum(components.values())
+            enriched["score_components"] = components
+            annotated.append(enriched)
+        return annotated
+
+    @classmethod
+    def _hybrid_rank_results(cls, query: str, *, route: str = "", results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        query_terms = cls._content_terms(query)
+        query_phrase = " ".join(query_terms)
+        ranked: List[Dict[str, Any]] = []
+        for result in results:
+            components = cls._score_components(result, query_terms=query_terms, query_phrase=query_phrase, route=route)
+            score = sum(components.values())
+            enriched = dict(result)
+            enriched["hybrid_score"] = score
+            enriched["score_components"] = components
+            ranked.append(enriched)
+        ranked.sort(
+            key=lambda item: (
+                float(item.get("hybrid_score") or 0.0),
+                -cls._status_order(str(item.get("status") or "")),
+                str(item.get("updated_at") or ""),
+                str(item.get("id") or ""),
+            ),
+            reverse=True,
+        )
+        return ranked
+
+    @classmethod
+    def _score_components(
+        cls,
+        result: Dict[str, Any],
+        *,
+        query_terms: List[str],
+        query_phrase: str,
+        route: str,
+    ) -> Dict[str, float]:
+        rank = result.get("rank")
+        try:
+            # SQLite FTS5 bm25() returns smaller/more-negative scores for
+            # stronger lexical matches. Keep that signal dominant for raw
+            # evidence retrieval (for example LoCoMo), while still allowing
+            # route/type and structured-field boosts to break close ties.
+            fts_score = min(20.0, max(0.0, -float(rank or 0.0) * 5_000_000.0))
+        except (TypeError, ValueError):
+            fts_score = 0.0
+        token_overlap = cls._token_overlap_score(result, query_terms)
+        phrase_boost = cls._phrase_boost(result, query_phrase)
+        route_type_boost = cls._route_type_boost(str(route or ""), str(result.get("type") or ""))
+        status_boost = cls._status_boost(str(result.get("status") or ""))
+        confidence_boost = cls._bounded_float(result.get("confidence"), default=0.5) * 0.15
+        importance_boost = cls._bounded_float(result.get("importance"), default=0.5) * 0.25
+        return {
+            "fts": round(fts_score, 6),
+            "token_overlap": round(token_overlap, 6),
+            "phrase": round(phrase_boost, 6),
+            "route_type_boost": round(route_type_boost, 6),
+            "status": round(status_boost, 6),
+            "confidence": round(confidence_boost, 6),
+            "importance": round(importance_boost, 6),
+        }
+
+    @classmethod
+    def _token_overlap_score(cls, result: Dict[str, Any], query_terms: List[str]) -> float:
+        if not query_terms:
+            return 0.0
+        query_set = set(query_terms)
+        field_weights = {
+            "title": 1.25,
+            "subject": 1.1,
+            "predicate": 1.0,
+            "value": 1.2,
+            "summary": 1.0,
+            "body": 0.75,
+            "tags": 0.8,
+        }
+        matched_weight = 0.0
+        max_weight = sum(field_weights.values())
+        for field, weight in field_weights.items():
+            value = result.get(field)
+            if isinstance(value, list):
+                text = " ".join(str(part) for part in value)
+            else:
+                text = str(value or "")
+            field_terms = set(cls._content_terms(text))
+            if field_terms:
+                matched_weight += weight * (len(query_set & field_terms) / len(query_set))
+        return 4.0 * (matched_weight / max_weight)
+
+    @classmethod
+    def _phrase_boost(cls, result: Dict[str, Any], query_phrase: str) -> float:
+        if not query_phrase or len(query_phrase) < 6:
+            return 0.0
+        haystack = " ".join(
+            str(result.get(field) or "")
+            for field in ("title", "subject", "predicate", "value", "summary", "body")
+        ).lower()
+        if query_phrase in " ".join(cls._content_terms(haystack)):
+            return 1.0
+        return 0.0
+
+    @staticmethod
+    def _route_type_boost(route: str, memory_type: str) -> float:
+        route_key = route.strip().lower()
+        type_key = memory_type.strip().lower()
+        preferred: Dict[str, Dict[str, float]] = {
+            "project_continuity": {"project_state": 2.0, "preference": 0.25, "fact": 0.2, "raw_event": 0.1},
+            "preference_recall": {"preference": 2.0, "fact": 0.35, "project_state": 0.15, "raw_event": 0.1},
+            "environment_fact": {"environment": 2.0, "fact": 0.8, "raw_event": 0.1},
+            "procedure_lookup": {"procedure_ref": 2.0, "fact": 0.3, "raw_event": 0.1},
+            "deep_recall": {"raw_event": 0.25, "project_state": 0.15, "fact": 0.1, "preference": 0.1},
+            "past_conversation_exact": {"raw_event": 0.5},
+        }
+        return preferred.get(route_key, {}).get(type_key, 0.0)
+
+    @staticmethod
+    def _status_boost(status: str) -> float:
+        return {
+            "active": 0.8,
+            "uncertain": 0.45,
+            "pending": 0.35,
+            "promoted": 0.3,
+            "archived_only": 0.1,
+            "archived": 0.0,
+            "superseded": -1.0,
+            "rejected": -1.5,
+        }.get(status, 0.0)
+
+    @staticmethod
+    def _status_order(status: str) -> int:
+        return {
+            "active": 0,
+            "uncertain": 1,
+            "pending": 2,
+            "promoted": 3,
+            "archived_only": 4,
+            "archived": 5,
+            "superseded": 6,
+            "rejected": 7,
+        }.get(status, 8)
+
+    @staticmethod
+    def _bounded_float(value: Any, *, default: float = 0.0) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            numeric = default
+        return max(0.0, min(1.0, numeric))
+
+    @classmethod
+    def _content_terms(cls, text: str) -> List[str]:
+        return [term.lower() for term in cls._fts_terms(text) if term.lower() not in cls._STOPWORDS]
 
     def rebuild_from_store(self, store: MemoryV2Store) -> Dict[str, int]:
         """Clear and rebuild the index from the current file-store contents."""
@@ -582,12 +763,22 @@ class MemoryV2Index:
             r"(?i)token\s+\S+",
             r"(?i)secret\s*(?:is|=|:)\s*\S+",
             r"(?i)secret\s+\S+",
+            r"(?i)client\s+secret\s*(?:is|=|:)\s*\S+",
+            r"(?i)client\s+secret\s+\S+",
+            r"(?i)credential\s*(?:is|=|:)\s*\S+",
+            r"(?i)credential\s+\S+",
+            r"(?i)private\s+key\s*(?:is|=|:)\s*\S+",
+            r"(?i)private\s+key\s+\S+",
             r"(?i)api[_ -]?key\s*(?:is|=|:)\s*\S+",
             r"(?i)api[_ -]?key\s+\S+",
             r"(?i)authorization\s*:\s*bearer\s+\S+",
             r"(?i)bearer\s+\S+",
             r"(?i)[A-Z0-9_]*API[_-]?KEY\s*=\s*\S+",
             r"(?i)[A-Z0-9_]*API[_-]?KEY\s+\S+",
+            r"(?i)\bsk-[A-Za-z0-9][A-Za-z0-9_-]{8,}\b",
+            r"(?i)\bgh[pousr]_[A-Za-z0-9_]{8,}\b",
+            r"(?i)\bxox[baprs]-[A-Za-z0-9-]{8,}\b",
+            r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b",
         )
         if any(re.search(pattern, query) for pattern in sensitive_patterns):
             return "[REDACTED sensitive query]"

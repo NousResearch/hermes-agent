@@ -178,6 +178,8 @@ class MemoryItem:
     source_refs: List[str] = field(default_factory=list)
     supersedes: List[str] = field(default_factory=list)
     superseded_by: Optional[str] = None
+    superseded_at: Optional[str] = None
+    supersession_reason: Optional[str] = None
     tags: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -196,17 +198,21 @@ class MemoryItem:
             raise ValidationError("active memories cannot set superseded_by")
         if self.superseded_by is not None:
             self.superseded_by = str(self.superseded_by)
+        if self.superseded_at is not None:
+            self.superseded_at = str(self.superseded_at)
+        if self.supersession_reason is not None:
+            self.supersession_reason = str(self.supersession_reason)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
-            "type": cast(MemoryType, self.type).value,
+            "type": getattr(self.type, "value", str(self.type)),
             "subject": self.subject,
             "predicate": self.predicate,
             "value": self.value,
             "body": self.body,
             "summary": self.summary,
-            "status": cast(MemoryStatus, self.status).value,
+            "status": getattr(self.status, "value", str(self.status)),
             "confidence": self.confidence,
             "importance": self.importance,
             "created_at": self.created_at,
@@ -217,6 +223,8 @@ class MemoryItem:
             "source_refs": list(self.source_refs),
             "supersedes": list(self.supersedes),
             "superseded_by": self.superseded_by,
+            "superseded_at": self.superseded_at,
+            "supersession_reason": self.supersession_reason,
             "tags": list(self.tags),
         }
 
@@ -403,6 +411,8 @@ class MemoryPacket:
     token_budget: int
     items: List[Dict[str, Any]] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    sections: Dict[str, Any] = field(default_factory=dict)
+    retrieval_plan: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.route = _require_nonblank(self.route, "route")
@@ -415,6 +425,8 @@ class MemoryPacket:
             raise ValidationError("token_budget must be a non-negative integer")
         self.items = [dict(item) for item in (self.items or [])]
         self.warnings = _list_of_strings(self.warnings)
+        self.sections = dict(self.sections or {})
+        self.retrieval_plan = dict(self.retrieval_plan or {})
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -423,6 +435,8 @@ class MemoryPacket:
             "token_budget": self.token_budget,
             "items": [dict(item) for item in self.items],
             "warnings": list(self.warnings),
+            "sections": dict(self.sections),
+            "retrieval_plan": dict(self.retrieval_plan),
         }
 
     @classmethod

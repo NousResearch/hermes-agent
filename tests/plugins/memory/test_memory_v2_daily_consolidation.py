@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import yaml
 
 from plugins.memory.memory_v2 import MemoryV2Provider
 from plugins.memory.memory_v2.daily_consolidation import run_daily_consolidation_report
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _new_provider(tmp_path):
@@ -20,7 +24,7 @@ def _new_provider(tmp_path):
 
 def test_daily_consolidation_report_promotes_pending_candidates_and_writes_report_files(tmp_path):
     provider = _new_provider(tmp_path)
-    provider.sync_turn("Remember that Dylan prefers daily memory reports with concrete IDs.", "Queued.")
+    provider.sync_turn("Remember that Alex prefers daily memory reports with concrete IDs.", "Queued.")
     provider.sync_turn("Remember to follow up on Memory v2 report UX tomorrow.", "Tracked.")
 
     report = run_daily_consolidation_report(provider.store, provider.index, date="2026-06-01")
@@ -48,7 +52,7 @@ def test_daily_consolidation_report_promotes_pending_candidates_and_writes_repor
 
 def test_daily_report_provider_tool_is_exposed_and_returns_json(tmp_path):
     provider = _new_provider(tmp_path)
-    provider.sync_turn("Remember that Dylan prefers report commands to be auditable.", "Queued.")
+    provider.sync_turn("Remember that Alex prefers report commands to be auditable.", "Queued.")
 
     schemas = {schema["name"] for schema in provider.get_tool_schemas()}
     result = json.loads(provider.handle_tool_call("memory_v2_daily_report", {"date": "2026-06-02"}))
@@ -77,7 +81,7 @@ def test_daily_consolidation_module_cli_runs_against_profile_home(tmp_path):
             "daily-cli-test",
         ],
         check=False,
-        cwd="/home/dylan_kinsman/.hermes/hermes-agent",
+        cwd=PROJECT_ROOT,
         text=True,
         capture_output=True,
     )
@@ -88,3 +92,30 @@ def test_daily_consolidation_module_cli_runs_against_profile_home(tmp_path):
     assert payload["date"] == "2026-06-03"
     assert payload["after_counts"]["pending_candidates"] == 0
     assert (tmp_path / "memory_v2" / payload["report_path"]).is_file()
+
+
+def test_daily_consolidation_cli_updates_provider_index_path(tmp_path):
+    provider = _new_provider(tmp_path)
+    provider.sync_turn("Remember that Alex prefers daily reports to stay unified.", "Queued.")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "plugins.memory.memory_v2.daily_consolidation",
+            "--hermes-home",
+            str(tmp_path),
+            "--date",
+            "2026-06-04",
+        ],
+        check=False,
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+    )
+    reloaded = _new_provider(tmp_path)
+
+    assert completed.returncode == 0
+    results = reloaded.index.search("daily reports stay unified", route="preference_recall", limit=5)
+    assert results[0]["type"] == "preference"
+    assert results[0]["status"] == "active"

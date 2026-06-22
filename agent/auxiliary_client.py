@@ -2326,6 +2326,11 @@ def _is_payment_error(exc: Exception) -> bool:
             "credits", "insufficient funds",
             "can only afford", "billing",
             "payment required",
+            # z.ai returns 429 code 1311 when the plan lacks access to the
+            # requested model (e.g. GLM-5V-Turbo on the coding plan). Permanent,
+            # not transient -- treat as billing so the payment-fallback chain
+            # picks a different backend instead of a useless cooldown.
+            "subscription plan", "does not yet include", "plan does not include",
             "out of funds", "run out of funds",
             "balance_depleted", "no usable credits",
             "model_not_supported_on_free_tier",

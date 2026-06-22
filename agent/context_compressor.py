@@ -163,6 +163,16 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
+# Transient connection blips to the summarizer endpoint (dropped Codex/Envoy
+# stream, brief network hiccup) are common on long-lived gateway sessions.
+# call_llm retries once *immediately*; that does not help a blip lasting longer
+# than an instant, and when the auxiliary model IS the main model there is no
+# distinct fallback target. So _generate_summary retries a bounded number of
+# times WITH backoff for connection errors only, before falling through to the
+# existing fallback/cooldown handling.
+_SUMMARY_CONNECTION_MAX_ATTEMPTS = 3
+_SUMMARY_CONNECTION_BACKOFF_SECONDS = 0.5
+
 # Hard ceiling for the deterministic summary-failure handoff.  The fallback is
 # only meant to preserve continuity anchors from the dropped window, not to
 # become another unbounded transcript copy after the LLM summarizer failed.
@@ -1581,12 +1591,48 @@ This compaction should PRIORITISE preserving all information related to the focu
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
             # Compression is atomic: protect the in-flight summary call from a
-            # mid-turn gateway interrupt. Without this, an incoming user message
-            # aborts the summary and compression falls back to a degraded static
-            # marker, losing the real handoff (#23975). Re-entrant: a main-model
-            # retry (_generate_summary recursion) re-enters harmlessly.
-            with aux_interrupt_protection():
-                response = call_llm(**call_kwargs)
+            # mid-turn gateway interrupt, or an incoming user message would abort
+            # the summary and force a degraded static marker, losing the real
+            # handoff (#23975). Re-entrant: a main-model retry (_generate_summary
+            # recursion) re-enters harmlessly.
+            #
+            # Retry transient connection blips here WITH backoff (see
+            # _SUMMARY_CONNECTION_* above): call_llm only retries once and
+            # immediately, and for aux==main the recovery path below is a no-op,
+            # so without this a single blip drops the turns and shows a
+            # "Compression summary failed" banner. Connection errors only; every
+            # other error (auth, 4xx, model-not-found, empty body) is re-raised
+            # untouched into the existing fallback/cooldown handling.
+            # Only retry-with-backoff here when there is NO distinct fallback
+            # model (aux == main): with a distinct summary_model a connection
+            # error should fall through immediately to the existing main-model
+            # fallback below — switching endpoints beats hammering the same dead
+            # aux endpoint. Mirrors the fallback gate (summary_model and != model).
+            _no_distinct_fallback = (not self.summary_model) or (self.summary_model == self.model)
+            response = None
+            for _conn_attempt in range(_SUMMARY_CONNECTION_MAX_ATTEMPTS):
+                try:
+                    with aux_interrupt_protection():
+                        response = call_llm(**call_kwargs)
+                    break
+                except Exception as _conn_err:
+                    if (
+                        _no_distinct_fallback
+                        and _is_connection_error(_conn_err)
+                        and _conn_attempt < _SUMMARY_CONNECTION_MAX_ATTEMPTS - 1
+                    ):
+                        logger.warning(
+                            "Context compression: transient connection error on "
+                            "summary attempt %d/%d (%s); retrying after backoff.",
+                            _conn_attempt + 1,
+                            _SUMMARY_CONNECTION_MAX_ATTEMPTS,
+                            _conn_err.__class__.__name__,
+                        )
+                        time.sleep(
+                            _SUMMARY_CONNECTION_BACKOFF_SECONDS * (_conn_attempt + 1)
+                        )
+                        continue
+                    raise
             content = response.choices[0].message.content
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):

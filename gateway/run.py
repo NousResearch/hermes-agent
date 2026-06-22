@@ -353,16 +353,40 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
-def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
-    """Sanitize final gateway replies before sending them to high-noise chats.
+def _is_quiet_chat_platform(platform: Any) -> bool:
+    """True for mobile / non-interactive inboxes that should not receive internal
+    status noise (compaction, auxiliary, retry banners) or raw provider error
+    bodies — Telegram plus every TIER_LOW / TIER_MINIMAL platform (Photon/iMessage,
+    BlueBubbles, Signal, WhatsApp Cloud, WeChat, SMS, email, ...). Discord, CLI,
+    and editable team channels (Slack/Mattermost) keep full diagnostics. Driven by
+    the platform's *default* display tier, so any future low-tier platform is
+    covered automatically.
+    """
+    platform_value = _gateway_platform_value(platform)
+    if platform_value == "telegram":
+        return True
+    if not platform_value:
+        return False
+    from gateway.display_config import resolve_display_setting
 
-    Telegram is Bob's mobile inbox, so it should receive concise, safe provider
-    failure categories instead of raw HTTP bodies, request IDs, or policy text.
-    Other platforms keep the existing behaviour for now.
+    return (
+        resolve_display_setting({}, platform_value, "tool_progress") == "off"
+        and resolve_display_setting({}, platform_value, "interim_assistant_messages") is False
+        and resolve_display_setting({}, platform_value, "long_running_notifications") is False
+    )
+
+
+def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
+    """Sanitize final gateway replies before sending them to mobile inboxes.
+
+    Telegram and other low-tier mobile inboxes (Photon/iMessage, BlueBubbles,
+    Signal, ...) should receive concise, safe provider failure categories instead
+    of raw HTTP bodies, request IDs, policy text, or leaked secrets. Discord/CLI
+    and team channels keep the raw behaviour.
     """
     if not text:
         return text
-    if _gateway_platform_value(platform) != "telegram":
+    if not _is_quiet_chat_platform(platform):
         return text
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
@@ -372,11 +396,18 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
-    """Filter/sanitize agent status callbacks before platform delivery."""
+    """Filter/sanitize agent status callbacks before platform delivery.
+
+    On mobile inboxes (Telegram + TIER_LOW/TIER_MINIMAL platforms like
+    Photon/iMessage) internal status noise — compaction / auxiliary / retry
+    banners — is dropped, and raw provider errors are replaced with a safe
+    category. The warning is still emitted to the logs; only the chat delivery is
+    suppressed. Discord/CLI and team channels keep the full status text.
+    """
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
+    if not _is_quiet_chat_platform(platform):
         return text
 
     text = _redact_gateway_user_facing_secrets(text)

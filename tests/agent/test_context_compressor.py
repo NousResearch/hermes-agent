@@ -2577,3 +2577,75 @@ class TestPreflightSentinelGuard:
         compressor.last_prompt_tokens = 50_000
         result = self._seed(compressor.last_prompt_tokens, 10_000)
         assert result == 50_000
+
+
+class TestSummaryConnectionRetry:
+    """Change C: bounded retry WITH backoff around transient summarizer
+    connection errors. Targets the aux==main case (summary_model is None, so no
+    distinct fallback model), where a single Codex/Envoy stream blip would
+    otherwise drop the turns and surface a 'Compression summary failed' banner.
+    call_llm already retries once *immediately*; the value added here is the
+    backoff that lets a brief blip clear."""
+
+    @staticmethod
+    def _messages():
+        return [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "working on it"},
+            {"role": "user", "content": "and another thing"},
+            {"role": "assistant", "content": "done"},
+        ]
+
+    @staticmethod
+    def _ok_response():
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = "[CONTEXT SUMMARY]: the user asked for things."
+        return resp
+
+    def test_retries_transient_connection_error_then_succeeds(self):
+        """A blip that clears within the bounded attempts yields a real summary."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test/model", quiet_mode=True)  # summary_model None => aux==main
+
+        call_llm_mock = MagicMock(side_effect=[
+            ConnectionError("connection reset by peer"),
+            ConnectionError("connection reset by peer"),
+            self._ok_response(),
+        ])
+        with patch("agent.context_compressor.call_llm", call_llm_mock), \
+             patch("agent.context_compressor.time.sleep") as sleep_mock:
+            summary = c._generate_summary(self._messages())
+
+        assert isinstance(summary, str)
+        assert summary.startswith(SUMMARY_PREFIX)
+        assert call_llm_mock.call_count == 3   # 1 initial + 2 backoff retries
+        assert sleep_mock.call_count == 2      # slept between retries (backoff)
+
+    def test_gives_up_after_bounded_attempts(self):
+        """Persistent connection failure stops after the bound (no infinite loop)
+        and degrades gracefully without raising."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test/model", quiet_mode=True)
+
+        call_llm_mock = MagicMock(side_effect=ConnectionError("connection reset by peer"))
+        with patch("agent.context_compressor.call_llm", call_llm_mock), \
+             patch("agent.context_compressor.time.sleep"):
+            summary = c._generate_summary(self._messages())
+
+        assert call_llm_mock.call_count == 3   # == _SUMMARY_CONNECTION_MAX_ATTEMPTS
+        assert summary is None or isinstance(summary, str)  # graceful, never raises
+
+    def test_non_connection_error_is_not_retried(self):
+        """Auth/4xx/etc. must NOT be retried by the connection-blip loop — they
+        fall straight through to the existing fallback/abort handling."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test/model", quiet_mode=True)
+
+        call_llm_mock = MagicMock(side_effect=RuntimeError("Invalid API key provided"))
+        with patch("agent.context_compressor.call_llm", call_llm_mock), \
+             patch("agent.context_compressor.time.sleep") as sleep_mock:
+            c._generate_summary(self._messages())
+
+        assert call_llm_mock.call_count == 1   # not retried by the connection-blip loop
+        assert sleep_mock.call_count == 0

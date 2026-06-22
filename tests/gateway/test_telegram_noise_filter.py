@@ -81,3 +81,69 @@ def test_telegram_final_response_keeps_normal_answers():
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+# --- Low-tier mobile inboxes (Photon/iMessage, BlueBubbles, Signal, ...) ---
+# These are permanent-message mobile inboxes, so they get the same quieting as
+# Telegram: internal compaction/auxiliary/retry banners never leak into chat,
+# raw provider error bodies are replaced with a safe category, but normal final
+# replies still pass through untouched. Discord/CLI keep full diagnostics.
+
+
+def test_low_tier_status_suppresses_internal_banners():
+    """Compaction/auxiliary/retry status noise must not reach low-tier inboxes."""
+    noisy_messages = [
+        "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
+        "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
+        "⏳ Retrying in 4.2s (attempt 1/3)...",
+        "⚠️ Max retries (3) exhausted — trying fallback...",
+    ]
+    for platform in ("photon", Platform.BLUEBUBBLES, Platform.SIGNAL):
+        for message in noisy_messages:
+            assert (
+                _prepare_gateway_status_message(platform, "warn", message) is None
+            ), (platform, message)
+
+
+def test_low_tier_status_sanitizes_raw_provider_errors():
+    """Real provider errors still reach low-tier inboxes, as a safe category."""
+    raw = (
+        "❌ API failed after 3 retries — HTTP 400: request blocked because "
+        "Operation contains cybersecurity risk. request_id=req_123"
+    )
+
+    sanitized = _prepare_gateway_status_message("photon", "lifecycle", raw)
+
+    assert sanitized is not None
+    assert "provider rejected" in sanitized.lower()
+    assert "cybersecurity risk" not in sanitized.lower()
+    assert "HTTP 400" not in sanitized
+    assert "req_123" not in sanitized
+
+
+def test_low_tier_final_response_redacts_secrets_and_raw_errors():
+    """Final low-tier replies redact secrets and raw provider error bodies."""
+    raw = (
+        "⚠️ Provider authentication failed: Incorrect API key provided: "
+        "sk-live_abcdefghijklmnopqrstuvwxyz1234567890"
+    )
+
+    sanitized = _sanitize_gateway_final_response("photon", raw)
+
+    assert "authentication failed" in sanitized.lower()
+    assert "sk-live" not in sanitized
+
+
+def test_low_tier_final_response_keeps_normal_answers():
+    """Normal assistant content is never rewritten for low-tier platforms."""
+    answer = "Here is the clean summary you asked for."
+
+    assert _sanitize_gateway_final_response("photon", answer) == answer
+
+
+def test_high_tier_and_cli_still_see_internal_banners():
+    """Regression guard: Discord/CLI keep full diagnostics; banners NOT suppressed."""
+    banner = "⚠ Compression summary failed: upstream error. Inserted a fallback context marker."
+
+    assert _prepare_gateway_status_message(Platform.DISCORD, "warn", banner) == banner
+    assert _prepare_gateway_status_message("local", "warn", banner) == banner

@@ -18,6 +18,7 @@ from enum import Enum
 
 from hermes_cli.config import get_hermes_home
 from utils import env_int, is_truthy_value
+from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -1237,7 +1238,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         return platform_config
     
     # Telegram
-    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    telegram_token = get_secret("TELEGRAM_BOT_TOKEN")
     if telegram_token:
         telegram_config = _enable_from_env(Platform.TELEGRAM)
         telegram_config.token = telegram_token
@@ -1267,7 +1268,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
     
     # Discord
-    discord_token = os.getenv("DISCORD_BOT_TOKEN")
+    discord_token = get_secret("DISCORD_BOT_TOKEN")
     if discord_token:
         discord_config = _enable_from_env(Platform.DISCORD)
         discord_config.token = discord_token
@@ -1315,7 +1316,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # outbound, public webhook inbound. Both adapters can run in parallel
     # against different phone numbers.
     whatsapp_cloud_phone_id = os.getenv("WHATSAPP_CLOUD_PHONE_NUMBER_ID")
-    whatsapp_cloud_token = os.getenv("WHATSAPP_CLOUD_ACCESS_TOKEN")
+    whatsapp_cloud_token = get_secret("WHATSAPP_CLOUD_ACCESS_TOKEN")
     if whatsapp_cloud_phone_id and whatsapp_cloud_token:
         if Platform.WHATSAPP_CLOUD not in config.platforms:
             config.platforms[Platform.WHATSAPP_CLOUD] = PlatformConfig()
@@ -1328,7 +1329,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         wa_cloud_app_id = os.getenv("WHATSAPP_CLOUD_APP_ID")
         if wa_cloud_app_id:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["app_id"] = wa_cloud_app_id
-        wa_cloud_app_secret = os.getenv("WHATSAPP_CLOUD_APP_SECRET")
+        wa_cloud_app_secret = get_secret("WHATSAPP_CLOUD_APP_SECRET")
         if wa_cloud_app_secret:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["app_secret"] = wa_cloud_app_secret
         # Optional: WABA id (analytics, future use)
@@ -1336,7 +1337,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if wa_cloud_waba_id:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["waba_id"] = wa_cloud_waba_id
         # Webhook verify token — Meta hub.verify_token shared secret
-        wa_cloud_verify_token = os.getenv("WHATSAPP_CLOUD_VERIFY_TOKEN")
+        wa_cloud_verify_token = get_secret("WHATSAPP_CLOUD_VERIFY_TOKEN")
         if wa_cloud_verify_token:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["verify_token"] = wa_cloud_verify_token
         # Webhook server bind config (defaults baked into the adapter)
@@ -1366,7 +1367,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # Slack
-    slack_token = os.getenv("SLACK_BOT_TOKEN")
+    slack_token = get_secret("SLACK_BOT_TOKEN")
     if slack_token:
         if Platform.SLACK not in config.platforms:
             # No yaml config for Slack — env-only setup, enable it
@@ -1418,7 +1419,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # Mattermost
-    mattermost_token = os.getenv("MATTERMOST_TOKEN")
+    mattermost_token = get_secret("MATTERMOST_TOKEN")
     if mattermost_token:
         mattermost_url = os.getenv("MATTERMOST_URL", "")
         if not mattermost_url:
@@ -1436,9 +1437,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # Matrix
-    matrix_token = os.getenv("MATRIX_ACCESS_TOKEN")
+    matrix_token = get_secret("MATRIX_ACCESS_TOKEN")
     matrix_homeserver = os.getenv("MATRIX_HOMESERVER", "")
-    if matrix_token or os.getenv("MATRIX_PASSWORD"):
+    if matrix_token or get_secret("MATRIX_PASSWORD"):
         if not matrix_homeserver:
             logger.warning("MATRIX_ACCESS_TOKEN/MATRIX_PASSWORD set but MATRIX_HOMESERVER is missing")
         matrix_config = _enable_from_env(Platform.MATRIX)
@@ -1448,7 +1449,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         matrix_user = os.getenv("MATRIX_USER_ID", "")
         if matrix_user:
             matrix_config.extra["user_id"] = matrix_user
-        matrix_password = os.getenv("MATRIX_PASSWORD", "")
+        matrix_password = get_secret("MATRIX_PASSWORD", "")
         if matrix_password:
             matrix_config.extra["password"] = matrix_password
         matrix_e2ee_mode = os.getenv("MATRIX_E2EE_MODE", "").strip().lower()
@@ -1472,7 +1473,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # Home Assistant
-    hass_token = os.getenv("HASS_TOKEN")
+    hass_token = get_secret("HASS_TOKEN")
     if hass_token:
         if Platform.HOMEASSISTANT not in config.platforms:
             config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
@@ -1484,7 +1485,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
     # Email
     email_addr = os.getenv("EMAIL_ADDRESS")
-    email_pwd = os.getenv("EMAIL_PASSWORD")
+    email_pwd = get_secret("EMAIL_PASSWORD")
     email_imap = os.getenv("EMAIL_IMAP_HOST")
     email_smtp = os.getenv("EMAIL_SMTP_HOST")
     if all([email_addr, email_pwd, email_imap, email_smtp]):
@@ -1511,7 +1512,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.SMS not in config.platforms:
             config.platforms[Platform.SMS] = PlatformConfig()
         config.platforms[Platform.SMS].enabled = True
-        config.platforms[Platform.SMS].api_key = os.getenv("TWILIO_AUTH_TOKEN", "")
+        config.platforms[Platform.SMS].api_key = get_secret("TWILIO_AUTH_TOKEN", "")
     sms_home = os.getenv("SMS_HOME_CHANNEL")
     if sms_home and Platform.SMS in config.platforms:
         config.platforms[Platform.SMS].home_channel = HomeChannel(
@@ -1523,7 +1524,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
     # API Server
     api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in {"true", "1", "yes"}
-    api_server_key = os.getenv("API_SERVER_KEY", "")
+    api_server_key = get_secret("API_SERVER_KEY", "")
     api_server_cors_origins = os.getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = os.getenv("API_SERVER_PORT")
     api_server_host = os.getenv("API_SERVER_HOST")
@@ -1551,7 +1552,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Webhook platform
     webhook_enabled = os.getenv("WEBHOOK_ENABLED", "").lower() in {"true", "1", "yes"}
     webhook_port = os.getenv("WEBHOOK_PORT")
-    webhook_secret = os.getenv("WEBHOOK_SECRET", "")
+    webhook_secret = get_secret("WEBHOOK_SECRET", "")
     if webhook_enabled:
         if Platform.WEBHOOK not in config.platforms:
             config.platforms[Platform.WEBHOOK] = PlatformConfig()

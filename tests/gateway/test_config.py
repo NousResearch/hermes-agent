@@ -1064,3 +1064,98 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+class TestApplyEnvOverridesUsesSecretScope:
+    """Verify _apply_env_overrides reads platform tokens through get_secret
+    (honoring the profile secret scope) instead of raw os.getenv, so that
+    multiplexed secondary profiles pick up their own credentials rather than
+    the default profile's values from os.environ.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/51029
+    """
+
+    def test_telegram_token_reads_from_scope_not_environ(self):
+        """When a secret scope is active, TELEGRAM_BOT_TOKEN should come from
+        the scope, not from os.environ."""
+        from agent.secret_scope import set_secret_scope, reset_secret_scope, set_multiplex_active
+
+        set_multiplex_active(True)
+        # Scope has the secondary profile's token; os.environ has the default's
+        scope = {"TELEGRAM_BOT_TOKEN": "scope-token-telegram"}
+        token = set_secret_scope(scope)
+        try:
+            with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "env-token-telegram"}, clear=False):
+                config = GatewayConfig(platforms={})
+                _apply_env_overrides(config)
+            assert Platform.TELEGRAM in config.platforms
+            assert config.platforms[Platform.TELEGRAM].token == "scope-token-telegram"
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+
+    def test_discord_token_reads_from_scope_not_environ(self):
+        """When a secret scope is active, DISCORD_BOT_TOKEN should come from
+        the scope, not from os.environ."""
+        from agent.secret_scope import set_secret_scope, reset_secret_scope, set_multiplex_active
+
+        set_multiplex_active(True)
+        scope = {"DISCORD_BOT_TOKEN": "scope-token-discord"}
+        token = set_secret_scope(scope)
+        try:
+            with patch.dict(os.environ, {"DISCORD_BOT_TOKEN": "env-token-discord"}, clear=False):
+                config = GatewayConfig(platforms={})
+                _apply_env_overrides(config)
+            assert Platform.DISCORD in config.platforms
+            assert config.platforms[Platform.DISCORD].token == "scope-token-discord"
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+
+    def test_slack_token_reads_from_scope_not_environ(self):
+        """When a secret scope is active, SLACK_BOT_TOKEN should come from
+        the scope, not from os.environ."""
+        from agent.secret_scope import set_secret_scope, reset_secret_scope, set_multiplex_active
+
+        set_multiplex_active(True)
+        scope = {"SLACK_BOT_TOKEN": "scope-token-slack"}
+        token = set_secret_scope(scope)
+        try:
+            with patch.dict(os.environ, {"SLACK_BOT_TOKEN": "env-token-slack"}, clear=False):
+                config = GatewayConfig(platforms={})
+                _apply_env_overrides(config)
+            assert Platform.SLACK in config.platforms
+            assert config.platforms[Platform.SLACK].token == "scope-token-slack"
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+
+    def test_non_secret_env_vars_still_read_from_environ(self):
+        """Non-credential env vars (HOME_CHANNEL, reply modes, etc.) should
+        still read from os.environ, not the secret scope."""
+        from agent.secret_scope import set_secret_scope, reset_secret_scope, set_multiplex_active
+
+        set_multiplex_active(True)
+        # Scope does NOT contain non-secret config vars
+        scope = {"TELEGRAM_BOT_TOKEN": "scope-token"}
+        token = set_secret_scope(scope)
+        try:
+            env = {
+                "TELEGRAM_BOT_TOKEN": "env-token",
+                "TELEGRAM_HOME_CHANNEL": "12345",
+                "TELEGRAM_HOME_CHANNEL_NAME": "TestHome",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                config = GatewayConfig(platforms={})
+                _apply_env_overrides(config)
+            assert Platform.TELEGRAM in config.platforms
+            # Token from scope
+            assert config.platforms[Platform.TELEGRAM].token == "scope-token"
+            # Home channel from environ (non-secret)
+            hc = config.platforms[Platform.TELEGRAM].home_channel
+            assert hc is not None
+            assert hc.chat_id == "12345"
+            assert hc.name == "TestHome"
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)

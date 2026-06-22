@@ -22,10 +22,12 @@ Defense against context-window overflow operates at three levels:
    where many medium-sized results combine to overflow context.
 """
 
+import json
 import logging
 import os
 import shlex
 import uuid
+from typing import Any
 
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
@@ -66,6 +68,26 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     if last_nl > max_chars // 2:
         truncated = truncated[:last_nl + 1]
     return truncated, True
+
+
+def _serialize_content_for_budget(content: Any) -> str:
+    """Return the string form used for budget accounting and persistence."""
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False, default=str)
+    except Exception:
+        return str(content)
+
+
+def _content_budget_size(content: Any) -> int:
+    """Return the real inline size of string or structured tool content."""
+    return len(_serialize_content_for_budget(content))
+
+
+def _is_persisted_content(content: Any) -> bool:
+    """True when content is already a persisted-output replacement block."""
+    return isinstance(content, str) and PERSISTED_OUTPUT_TAG in content
 
 
 def _heredoc_marker(content: str) -> str:
@@ -195,9 +217,9 @@ def enforce_turn_budget(
     total_size = 0
     for i, msg in enumerate(tool_messages):
         content = msg.get("content", "")
-        size = len(content)
+        size = _content_budget_size(content)
         total_size += size
-        if PERSISTED_OUTPUT_TAG not in content:
+        if not _is_persisted_content(content):
             candidates.append((i, size))
 
     if total_size <= config.turn_budget:
@@ -210,17 +232,18 @@ def enforce_turn_budget(
             break
         msg = tool_messages[idx]
         content = msg["content"]
+        storage_content = _serialize_content_for_budget(content)
         tool_use_id = msg.get("tool_call_id", f"budget_{idx}")
 
         replacement = maybe_persist_tool_result(
-            content=content,
+            content=storage_content,
             tool_name=_BUDGET_TOOL_NAME,
             tool_use_id=tool_use_id,
             env=env,
             config=config,
             threshold=0,
         )
-        if replacement != content:
+        if replacement != storage_content:
             total_size -= size
             total_size += len(replacement)
             tool_messages[idx]["content"] = replacement

@@ -188,14 +188,26 @@ export function ChatBar({
   // Safe setText: when the assistant-ui composer core binding is not yet
   // established (e.g. during boot or session switch), setText throws
   // "Composer is not available".  In those cases defer to the next frame
-  // so the binding has a chance to resolve.
+  // so the binding has a chance to resolve.  After a small number of
+  // retries give up and warn — the component will re-render once the
+  // binding arrives and the next call will succeed normally.
   const safeSetText = useCallback(
     (text: string) => {
+      let retries = 0
+      const MAX_RETRIES = 5
       const trySet = () => {
         try {
           aui.composer().setText(text)
         } catch (e) {
           if (e instanceof Error && e.message === 'Composer is not available') {
+            retries++
+            if (retries > MAX_RETRIES) {
+              console.warn(
+                'Composer setText: core still unbound after ' +
+                  MAX_RETRIES + ' retries, deferring to next render',
+              )
+              return
+            }
             window.requestAnimationFrame(trySet)
           } else {
             throw e as Error

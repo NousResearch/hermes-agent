@@ -2021,6 +2021,8 @@ class CLICommandsMixin:
             /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
             /reasoning show|on      Show model thinking/reasoning in output
             /reasoning hide|off     Hide model thinking/reasoning from output
+            /reasoning full         Show complete thinking (no 10-line clamp)
+            /reasoning clamp        Collapse long thinking to the first 10 lines
         """
         from cli import _ACCENT, _DIM, _RST, _cprint, _parse_reasoning_config, save_config_value
         parts = cmd.strip().split(maxsplit=1)
@@ -2035,9 +2037,10 @@ class CLICommandsMixin:
             else:
                 level = rc.get("effort", "medium")
             display_state = "on ✓" if self.show_reasoning else "off"
+            full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
-            _cprint(f"  {_ACCENT}Reasoning display: {display_state}{_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide>{_RST}")
+            _cprint(f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide|full|clamp>{_RST}")
             return
 
         arg = parts[1].strip().lower()
@@ -2057,6 +2060,21 @@ class CLICommandsMixin:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", False)
             _cprint(f"  {_ACCENT}✓ Reasoning display: OFF (saved){_RST}")
+            return
+
+        # Full / clamped recap toggle
+        if arg in {"full", "all"}:
+            self.reasoning_full = True
+            save_config_value("display.reasoning_full", True)
+            _cprint(f"  {_ACCENT}✓ Reasoning display: FULL (saved){_RST}")
+            _cprint(f"  {_DIM}  The post-response recap box will print complete thinking.{_RST}")
+            if not self.show_reasoning:
+                _cprint(f"  {_DIM}  Note: reasoning display is OFF — run /reasoning show to see it.{_RST}")
+            return
+        if arg in {"clamp", "collapse", "short"}:
+            self.reasoning_full = False
+            save_config_value("display.reasoning_full", False)
+            _cprint(f"  {_ACCENT}✓ Reasoning display: CLAMPED to 10 lines (saved){_RST}")
             return
 
         # Effort level change

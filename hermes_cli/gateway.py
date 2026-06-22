@@ -4026,7 +4026,30 @@ def _guard_official_docker_root_gateway() -> None:
     if _truthy_env(os.getenv("HERMES_ALLOW_ROOT_GATEWAY")):
         return
 
-    # Case 2: workspace owned by a non-root user. Check the resolved HERMES_HOME.
+    # Case 1 (legacy, most specific): official Docker checkout where the image
+    # entrypoint should have dropped privileges. Checked FIRST so that inside the
+    # official image the Docker-specific guidance wins over the general
+    # workspace-owner message below.
+    if _is_official_docker_checkout():
+        print_error(
+            "Refusing to run the Hermes gateway as root inside the official Docker image."
+        )
+        print(
+            "  The image entrypoint normally drops privileges to the 'hermes' user. "
+            "If you override entrypoint in Docker Compose, include "
+            "/opt/hermes/docker/entrypoint.sh before the Hermes command."
+        )
+        print(
+            "  Running the gateway as root can leave root-owned files in "
+            "$HERMES_HOME and break later non-root dashboard/gateway runs."
+        )
+        print(
+            "  Set HERMES_ALLOW_ROOT_GATEWAY=1 only if you intentionally accept this risk."
+        )
+        sys.exit(1)
+
+    # Case 2 (general): workspace owned by a non-root user. Check the resolved
+    # HERMES_HOME.
     home = None
     home_uid = 0
     try:
@@ -4064,28 +4087,6 @@ def _guard_official_docker_root_gateway() -> None:
             "root-owned workspace files."
         )
         sys.exit(1)
-
-    # Case 1 (legacy): official Docker checkout where entrypoint should have
-    # dropped privileges.
-    if not _is_official_docker_checkout():
-        return
-
-    print_error(
-        "Refusing to run the Hermes gateway as root inside the official Docker image."
-    )
-    print(
-        "  The image entrypoint normally drops privileges to the 'hermes' user. "
-        "If you override entrypoint in Docker Compose, include "
-        "/opt/hermes/docker/entrypoint.sh before the Hermes command."
-    )
-    print(
-        "  Running the gateway as root can leave root-owned files in "
-        "$HERMES_HOME and break later non-root dashboard/gateway runs."
-    )
-    print(
-        "  Set HERMES_ALLOW_ROOT_GATEWAY=1 only if you intentionally accept this risk."
-    )
-    sys.exit(1)
 
 
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False):

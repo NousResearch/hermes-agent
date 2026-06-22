@@ -34,6 +34,7 @@ interface CreatedWebhook {
 }
 
 function CopyButton({ value }: { value: string }) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const handleCopy = useCallback(() => {
     navigator.clipboard
@@ -453,7 +454,7 @@ export default function WebhooksPage() {
                     disabled={creating}
                     prefix={creating ? <Spinner /> : undefined}
                   >
-                    {creating ? {t.webhooks.creating} : {t.webhooks.create}}
+                    {creating ? t.webhooks.creating : t.webhooks.create}
                   </Button>
                 </div>
               </div>

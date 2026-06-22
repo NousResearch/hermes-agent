@@ -260,9 +260,22 @@ def reset_session_vars() -> None:
     own via ``set_session_vars`` a few steps later.  See
     tests/tools/test_local_env_session_leak.py and
     tests/gateway/test_session_context_inheritance.py.
+
+    Note ``_SESSION_ASYNC_DELIVERY`` lives outside ``_VAR_MAP`` (it is a bool
+    capability flag read via :func:`async_delivery_supported`, not a string
+    ``HERMES_SESSION_*`` env var read via :func:`get_session_env`), so it is
+    reset explicitly below. Without it, a task spawned from a context where a
+    sibling adapter bound ``async_delivery=False`` (the stateless API server)
+    inherits that ``False`` through the pre-bind window, and
+    ``async_delivery_supported`` wrongly reports the new turn's channel as
+    unable to route a background completion until ``set_session_vars`` runs.
     """
     for var in _VAR_MAP.values():
         var.set(_UNSET)
+    # Reset the async-delivery capability to "never bound here" (_UNSET) for the
+    # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
+    # which resets this var on the handler-exit path for the symmetric concern.
+    _SESSION_ASYNC_DELIVERY.set(_UNSET)
     try:
         from agent.runtime_cwd import clear_session_cwd
 

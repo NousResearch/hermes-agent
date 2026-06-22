@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from agent.memory_write_bridge import collect_memory_write_notifications
 
 
@@ -43,6 +45,20 @@ def test_collect_notifications_skips_staged_memory_write():
             "action": "remove",
             "target": "memory",
             "old_text": "stale preference entry",
+        },
+    )
+
+    assert notifications == []
+
+
+@pytest.mark.parametrize("tool_result", [None, [], object()])
+def test_collect_notifications_skips_unrecognized_tool_result_shape(tool_result):
+    notifications = collect_memory_write_notifications(
+        tool_result,
+        {
+            "action": "add",
+            "target": "memory",
+            "content": "new fact",
         },
     )
 

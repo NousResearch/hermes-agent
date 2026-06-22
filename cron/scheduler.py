@@ -415,6 +415,7 @@ def _maybe_mirror_cron_delivery(
     chat_id: str,
     mirror_text: str,
     thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
     *,
     enabled: bool = False,
 ) -> None:
@@ -423,9 +424,11 @@ def _maybe_mirror_cron_delivery(
     No-op unless ``enabled`` (resolved once by the caller, and already scoped to
     the origin target — see ``_target_matches_origin``). Reuses the shipped
     ``mirror_to_session`` so cron rides exactly the same path that interactive
-    ``send_message`` mirroring already uses. All failures are swallowed — a
-    delivery that succeeded must never be reported as failed because the
-    transcript mirror hit a problem.
+    ``send_message`` mirroring already uses, including passing ``user_id`` so a
+    per-user-isolated group chat resolves to the exact member who scheduled the
+    job (parity with ``send_message``). All failures are swallowed — a delivery
+    that succeeded must never be reported as failed because the transcript
+    mirror hit a problem.
 
     Because the caller only enables this for the target that equals the job's
     origin conversation, the session is expected to exist (the job was born in
@@ -447,6 +450,7 @@ def _maybe_mirror_cron_delivery(
             text,
             source_label="cron",
             thread_id=thread_id,
+            user_id=user_id,
         )
         if ok:
             logger.info(
@@ -1001,6 +1005,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         mirror_this_target = mirror_enabled and _target_matches_origin(
             origin, platform_name, chat_id, thread_id
         )
+        # Pass the origin's user_id so a per-user-isolated group chat resolves to
+        # the exact member who scheduled the job — parity with send_message.
+        origin_user_id = origin.get("user_id") if mirror_this_target else None
 
         # Built-in names resolve to their enum member; plugin platform names
         # create dynamic members via Platform._missing_().
@@ -1238,7 +1245,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     delivered = True
                     _maybe_mirror_cron_delivery(
                         job, platform_name, chat_id, mirror_text,
-                        thread_id=thread_id, enabled=mirror_this_target,
+                        thread_id=thread_id, user_id=origin_user_id,
+                        enabled=mirror_this_target,
                     )
             except Exception as e:
                 err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
@@ -1280,7 +1288,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
             _maybe_mirror_cron_delivery(
                 job, platform_name, chat_id, mirror_text,
-                thread_id=thread_id, enabled=mirror_this_target,
+                thread_id=thread_id, user_id=origin_user_id,
+                enabled=mirror_this_target,
             )
 
     if delivery_errors:

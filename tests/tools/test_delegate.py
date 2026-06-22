@@ -1744,14 +1744,20 @@ class TestDelegateHeartbeat(unittest.TestCase):
         }
 
         # Make run_conversation block long enough for heartbeats to fire
+        # reliably even on a loaded host (a 0.25s window at 0.05s interval can
+        # yield ZERO wakeups under GIL/scheduler contention — this test only
+        # needs the desc CONTENT, not a count).
         def slow_run(**kwargs):
-            time.sleep(0.25)
+            time.sleep(0.6)
             return {"final_response": "done", "completed": True, "api_calls": 3}
 
         child.run_conversation.side_effect = slow_run
 
-        # Patch the heartbeat interval to fire quickly
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+        # Patch the heartbeat interval to fire quickly; pin the in-tool stale
+        # threshold high so the constant-api-count child isn't flagged stale
+        # before we observe a heartbeat.
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05), \
+                patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IN_TOOL", 1000):
             _run_single_child(
                 task_index=0,
                 goal="Test heartbeat",
@@ -1855,12 +1861,21 @@ class TestDelegateHeartbeat(unittest.TestCase):
         }
 
         def slow_run(**kwargs):
-            time.sleep(0.15)
+            # Long enough that the heartbeat thread reliably wakes at least once
+            # even on a loaded host (a 0.15s window at 0.05s interval can yield
+            # ZERO wakeups under GIL/scheduler contention — this test only needs
+            # the desc CONTENT, not a precise count, so give it ample headroom).
+            time.sleep(0.6)
             return {"final_response": "done", "completed": True, "api_calls": 5}
 
         child.run_conversation.side_effect = slow_run
 
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+        # Pin the idle stale threshold high so the (legitimately idle-looking)
+        # constant api_call_count=5 child is not flagged stale and stopped
+        # before we observe a heartbeat — this test is about the desc fallback,
+        # not staleness.
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05), \
+                patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 1000):
             _run_single_child(
                 task_index=0,
                 goal="Test desc fallback",
@@ -1901,34 +1916,63 @@ class TestDelegateHeartbeat(unittest.TestCase):
         }
 
         def slow_run(**kwargs):
-            # Long enough to exceed the OLD idle threshold (5 cycles) at
-            # the patched interval, but shorter than the new in-tool
-            # threshold.
-            time.sleep(0.4)
+            # Run long enough that, at the patched interval, the heartbeat
+            # would cross the OLD tight idle threshold several times over — so
+            # if the in-tool branch were NOT taking effect, the heartbeat would
+            # have stopped early and later touches would be missing.
+            time.sleep(0.6)
             return {"final_response": "done", "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = slow_run
 
-        # Patch both the interval AND the idle ceiling so the test proves
-        # the in-tool branch takes effect: with a 0.05s interval and the
-        # default _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
-        # trip after 0.25s and stop firing. We should see heartbeats
-        # continuing through the full 0.4s run.
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+        # Pin BOTH the interval and the thresholds so the test is self-contained
+        # and deterministic regardless of the production constants or machine
+        # load. With idle=2 and in-tool=1000: if the in-tool branch were broken
+        # (child treated as idle), the heartbeat would hit the idle limit after
+        # ~2 cycles and STOP — so we'd see no touches in the back half of the
+        # run. With the correct in-tool branch it never trips, so touches keep
+        # landing right up to child completion.
+        #
+        # We assert the BEHAVIOR CONTRACT, not a wall-clock-derived count: the
+        # heartbeat thread's wake cadence is at the mercy of GIL/scheduler under
+        # load (a busy host yields far fewer wakeups than interval math predicts),
+        # so asserting "> N touches" is inherently flaky. Instead we record WHEN
+        # the last touch fired and assert it landed in the LATER part of the run —
+        # proving the heartbeat was still alive late, which is exactly what the
+        # idle-stop bug (#13041) would prevent.
+        touch_times = []
+        parent._touch_activity = lambda desc: touch_times.append(time.monotonic())
+
+        start = time.monotonic()
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05), \
+                patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 2), \
+                patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IN_TOOL", 1000):
             _run_single_child(
                 task_index=0,
                 goal="Test long-running tool",
                 child=child,
                 parent_agent=parent,
             )
+        run_duration = time.monotonic() - start
 
-        # With the old idle threshold (5 cycles = 0.25s), touch_calls
-        # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
-        # we should see substantially more heartbeats over 0.4s.
+        # At least one heartbeat must have fired (sanity: the thread ran).
+        self.assertGreaterEqual(
+            len(touch_times), 1,
+            "Heartbeat never fired while the child was inside a tool.",
+        )
+        # The contract: the heartbeat was still alive in the LATER half of the
+        # run. If the in-tool child had been mis-flagged idle (the bug), the
+        # heartbeat would have stopped after ~2 idle cycles (~0.1s) and the last
+        # touch would sit in the first fraction of a 0.6s run. We require the
+        # last touch to land after the run's midpoint — load-robust because it
+        # depends on the heartbeat *not stopping*, not on how many times it woke.
+        last_touch_offset = touch_times[-1] - start
         self.assertGreater(
-            len(touch_calls), 6,
-            f"Heartbeat stopped too early while child was inside a tool; "
-            f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
+            last_touch_offset, run_duration * 0.5,
+            f"Heartbeat stopped early while the child was inside a tool: last "
+            f"touch at {last_touch_offset:.3f}s of a {run_duration:.3f}s run "
+            f"({len(touch_times)} touches). The in-tool staleness branch should "
+            f"keep it firing for the whole run (bug #13041).",
         )
 
 

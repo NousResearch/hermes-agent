@@ -22,6 +22,24 @@ from tools.approval import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_reboot_optout(monkeypatch):
+    """Clear HERMES_ALLOW_REBOOT around every test in this module.
+
+    The reboot/shutdown family downgrades out of the hardline floor when
+    HERMES_ALLOW_REBOOT is truthy (env-gated opt-out for fleet/ops agents that
+    legitimately reboot hosts — `74ed8a85c`). The default-behavior tests here
+    (`test_hardline_detection_blocks`, `test_yolo_env_var_cannot_bypass_hardline`,
+    etc.) assert the *unconditional* hardline block, so they must not inherit a
+    truthy value from the ambient process env (the live gateway/fleet sets
+    HERMES_ALLOW_REBOOT=1, which leaks into pytest and silently flips all 24
+    reboot/shutdown cases to "downgraded" → spurious failures). Tests that
+    exercise the opt-out set the var explicitly via monkeypatch, which overrides
+    this default-clear.
+    """
+    monkeypatch.delenv("HERMES_ALLOW_REBOOT", raising=False)
+
+
 # -------------------------------------------------------------------------
 # Pattern detection
 # -------------------------------------------------------------------------

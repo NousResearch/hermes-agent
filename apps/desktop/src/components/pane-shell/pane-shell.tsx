@@ -15,7 +15,7 @@ import {
 } from 'react'
 
 import { cn } from '@/lib/utils'
-import { $paneStates, ensurePaneRegistered, setPaneWidthOverride } from '@/store/panes'
+import { $paneHoverRevealSuppressed, $paneStates, ensurePaneRegistered, setPaneWidthOverride } from '@/store/panes'
 
 import { PaneShellContext, type PaneShellContextValue, type PaneSlot } from './context'
 
@@ -250,6 +250,7 @@ export function Pane({
 }: PaneProps) {
   const ctx = useContext(PaneShellContext)
   const paneStates = useStore($paneStates)
+  const hoverRevealSuppressed = useStore($paneHoverRevealSuppressed)
   const registered = useRef(false)
   const paneRef = useRef<HTMLDivElement | null>(null)
   // Keyboard (mod+b / mod+j) pins the reveal open while collapsed; hover is CSS.
@@ -378,7 +379,10 @@ export function Pane({
       >
         <div
           aria-hidden="true"
-          className="pointer-events-auto absolute inset-y-0 z-30 [-webkit-app-region:no-drag]"
+          className={cn(
+            'absolute inset-y-0 z-30 [-webkit-app-region:no-drag]',
+            hoverRevealSuppressed ? 'pointer-events-none' : 'pointer-events-auto'
+          )}
           style={{ [edge]: HOVER_REVEAL_EDGE_GUTTER, width: HOVER_REVEAL_TRIGGER_WIDTH }}
         />
 
@@ -388,7 +392,8 @@ export function Pane({
           className={cn(
             'pointer-events-none absolute inset-y-0 z-30 overflow-hidden transition-transform delay-0',
             offscreen,
-            'group-hover/reveal:pointer-events-auto group-hover/reveal:translate-x-0 group-hover/reveal:delay-[var(--reveal-enter-delay)] group-hover/reveal:shadow-[var(--reveal-shadow)]',
+            !hoverRevealSuppressed &&
+              'group-hover/reveal:pointer-events-auto group-hover/reveal:translate-x-0 group-hover/reveal:delay-[var(--reveal-enter-delay)] group-hover/reveal:shadow-[var(--reveal-shadow)]',
             'group-data-[forced]/reveal:pointer-events-auto group-data-[forced]/reveal:translate-x-0 group-data-[forced]/reveal:delay-0 group-data-[forced]/reveal:shadow-[var(--reveal-shadow)]'
           )}
           key={edge}

@@ -109,6 +109,38 @@ def generate_title(
         return None
 
 
+def _persist_session_title(session_db, session_id, title):
+    """Persist a generated title, recovering from duplicate-title collisions.
+
+    set_session_title() raises ValueError when title would collide with another
+    session (the unique-title index). Rather than swallow it and leave the
+    session untitled (#50537), append a #N suffix via get_next_title_in_lineage()
+    when the store supports lineage dedup; otherwise re-raise so the caller can
+    decide. set_session_title() returning False means the session vanished
+    between generation and storage -> surface that as a RuntimeError instead of
+    silently dropping the title.
+
+    Returns the title actually persisted.
+    """
+    def _set(t):
+        ok = session_db.set_session_title(session_id, t)
+        if ok is False:
+            raise RuntimeError(
+                f"session {session_id} not found when storing title"
+            )
+        return t
+    try:
+        return _set(title)
+    except ValueError:
+        next_title_fn = getattr(session_db, "get_next_title_in_lineage", None)
+        if next_title_fn is None:
+            raise
+        deduped = next_title_fn(title)
+        if not deduped or deduped == title:
+            raise
+        return _set(deduped)
+
+
 def auto_title_session(
     session_db,
     session_id: str,
@@ -144,11 +176,11 @@ def auto_title_session(
         return
 
     try:
-        session_db.set_session_title(session_id, title)
-        logger.debug("Auto-generated session title: %s", title)
+        persisted = _persist_session_title(session_db, session_id, title)
+        logger.debug("Auto-generated session title: %s", persisted)
         if title_callback is not None:
             try:
-                title_callback(title)
+                title_callback(persisted)
             except Exception:
                 logger.debug("Auto-title callback failed", exc_info=True)
     except Exception as e:

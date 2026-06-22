@@ -1,5 +1,6 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
+import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -273,3 +274,46 @@ class TestMaybeAutoTitle:
 
     def test_skips_if_no_session_db(self):
         maybe_auto_title(None, "sess-1", "hello", "response", [])  # no db
+
+
+class TestAutoTitleDuplicateHandling:
+    """Duplicate auto-title handling and not-found hardening (#50537)."""
+
+    def test_dedupes_duplicate_title_via_lineage(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        db.set_session_title.side_effect = [ValueError("in use"), True]
+        db.get_next_title_in_lineage.return_value = "Debugging Import Error #2"
+        with patch(
+            "agent.title_generator.generate_title",
+            return_value="Debugging Import Error",
+        ):
+            seen = []
+            auto_title_session(db, "sess-1", "hi", "hello", title_callback=seen.append)
+        db.get_next_title_in_lineage.assert_called_once_with("Debugging Import Error")
+        assert db.set_session_title.call_args_list[-1][0] == (
+            "sess-1",
+            "Debugging Import Error #2",
+        )
+        # callback fires with the actually-persisted (deduped) title
+        assert seen == ["Debugging Import Error #2"]
+
+    def test_swallows_value_error_without_lineage_support(self):
+        # No get_next_title_in_lineage -> ValueError propagates out of the
+        # persist helper but auto_title_session still swallows it (no crash).
+        db = MagicMock(spec=["get_session_title", "set_session_title"])
+        db.get_session_title.return_value = None
+        db.set_session_title.side_effect = ValueError("in use")
+        with patch(
+            "agent.title_generator.generate_title", return_value="Dup Title"
+        ):
+            auto_title_session(db, "sess-1", "hi", "hello")  # must not raise
+
+    def test_not_found_raises_runtime_error_internally(self):
+        # set_session_title returning False (session vanished) -> RuntimeError
+        # in the persist helper, swallowed by auto_title_session, no callback.
+        from agent.title_generator import _persist_session_title
+        db = MagicMock()
+        db.set_session_title.return_value = False
+        with pytest.raises(RuntimeError):
+            _persist_session_title(db, "missing", "Some Title")

@@ -46,6 +46,45 @@ from hermes_time import now as _hermes_now
 logger = logging.getLogger(__name__)
 
 
+def _set_cron_session_title(session_db, session_id, base_title):
+    """Robustly title a finished cron session before it is closed.
+
+    Centralizes the title write so the cron finally block can guarantee a
+    non-blank, unique title is persisted before end_session()/close() tear
+    the connection down (issues #50535, #50536, #50537):
+
+    - #50535: never leaves the session blank. base_title already carries a
+      cron-id fallback for nameless jobs; this also guards a failed write.
+    - #50537: a duplicate title makes set_session_title raise ValueError (the
+      unique-title index). Recover by appending a #N suffix via
+      get_next_title_in_lineage() when supported, instead of swallowing the
+      error and ending up untitled. If lineage dedup is unavailable, raise.
+    - #50536: this runs synchronously in the cron finally block ahead of the
+      session close, so no in-flight title write can race the close.
+
+    Returns the title actually persisted, or None if nothing could be set.
+    """
+    if not session_db or not session_id:
+        return None
+    title = (base_title or "").strip()
+    if not title:
+        return None
+    try:
+        session_db.set_session_title(session_id, title)
+        return title
+    except ValueError:
+        # Title collision against the unique-title index. Fall back to the
+        # next title in the lineage (base #2, base #3, ...) when supported.
+        next_title_fn = getattr(session_db, "get_next_title_in_lineage", None)
+        if next_title_fn is None:
+            raise
+        deduped = next_title_fn(title)
+        if not deduped or deduped == title:
+            raise
+        session_db.set_session_title(session_id, deduped)
+        return deduped
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -2218,18 +2257,39 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
-            # Title the cron session from the job (name → short prompt → id) so
-            # sidebars/history show a meaningful label instead of the injected
-            # "[IMPORTANT: …]" hint that is the session's first message. Set here
-            # (not at create time) so the agent's own INSERT keeps model /
-            # system_prompt; this only UPDATEs the title column. The run-time
-            # suffix keeps it unique against the sessions.title index across runs.
+            # Title the cron session from the job (name -> id) and PERSIST it
+            # BEFORE end_session()/close() tear the connection down, so the
+            # close can never run over an in-flight title write (#50536). The
+            # run-time suffix keeps it unique against the sessions.title index
+            # across runs; _set_cron_session_title dedupes (#50537) and the
+            # except-fallback below guarantees a non-blank title (#50535).
             try:
                 _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
                 _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
-                _session_db.set_session_title(_cron_session_id, _cron_title)
+                if not _set_cron_session_title(_session_db, _cron_session_id, _cron_title):
+                    # Helper returned None (blank base) -> use the id fallback.
+                    _set_cron_session_title(
+                        _session_db, _cron_session_id, f"cron {job_id}"
+                    )
             except (Exception, KeyboardInterrupt) as e:
-                logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
+                logger.debug(
+                    "Job '%s': failed to set cron session title: %s", job_id, e
+                )
+                # Last-resort: never leave the session blank (#50535). Try the
+                # next free title in the lineage, then a bare id-stamped title.
+                for _fallback in (
+                    getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(
+                        f"cron {job_id}"
+                    ),
+                    f"cron {job_id} {_cron_session_id[-6:]}",
+                ):
+                    try:
+                        if _set_cron_session_title(
+                            _session_db, _cron_session_id, _fallback
+                        ):
+                            break
+                    except (Exception, KeyboardInterrupt):
+                        continue
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
             except (Exception, KeyboardInterrupt) as e:

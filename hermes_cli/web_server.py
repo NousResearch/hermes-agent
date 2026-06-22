@@ -4511,7 +4511,7 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     "yuanbao": {
         "name": "Yuanbao (元宝)",
         "description": "Connect Hermes to Tencent Yuanbao.",
-        "docs_url": "",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/yuanbao/",
         "required_env": (),
     },
     "api_server": {

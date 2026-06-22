@@ -339,7 +339,7 @@ function PlatformRow({
   )
 }
 
-function PlatformDetail({
+export function PlatformDetail({
   edits,
   onClear,
   onEdit,
@@ -359,6 +359,7 @@ function PlatformDetail({
   const { t } = useI18n()
   const m = t.messaging
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const docsUrl = platform.docs_url.trim()
 
   const hasEdits = Object.keys(trimEdits(edits)).length > 0
   const requiredFields = platform.env_vars.filter(field => field.required)
@@ -401,14 +402,16 @@ function PlatformDetail({
             <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
               {introCopy(platform, m)}
             </p>
-            <div className="mt-3">
-              <Button asChild size="sm" variant="textStrong">
-                <a href={platform.docs_url} rel="noreferrer" target="_blank">
-                  {m.openSetupGuide}
-                  <ExternalLink className="size-3.5" />
-                </a>
-              </Button>
-            </div>
+            {docsUrl && (
+              <div className="mt-3">
+                <Button asChild size="sm" variant="textStrong">
+                  <a href={docsUrl} rel="noreferrer" target="_blank">
+                    {m.openSetupGuide}
+                    <ExternalLink className="size-3.5" />
+                  </a>
+                </Button>
+              </div>
+            )}
           </section>
 
           <section>

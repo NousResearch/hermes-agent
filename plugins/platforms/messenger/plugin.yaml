@@ -1,0 +1,58 @@
+name: messenger-platform
+label: Messenger
+kind: platform
+version: 1.0.0
+description: >
+  Facebook Messenger gateway adapter for Hermes Agent. Runs an aiohttp webhook
+  server for Meta Messenger webhooks, verifies X-Hub-Signature-256, and relays
+  Page DMs between Messenger and Hermes.
+author: Hermes Agent contributors
+requires_env:
+  - name: MESSENGER_PAGE_ACCESS_TOKEN
+    description: "Facebook Page access token with Messenger permissions"
+    prompt: "Messenger Page access token"
+    url: "https://developers.facebook.com/apps/"
+    password: true
+  - name: MESSENGER_APP_SECRET
+    description: "Facebook app secret used for webhook HMAC-SHA256 verification"
+    prompt: "Messenger app secret"
+    url: "https://developers.facebook.com/apps/"
+    password: true
+  - name: MESSENGER_VERIFY_TOKEN
+    description: "Webhook verify token you configure in the Meta app dashboard"
+    prompt: "Messenger webhook verify token"
+    url: "https://developers.facebook.com/apps/"
+    password: true
+optional_env:
+  - name: MESSENGER_HOST
+    description: "Webhook bind host (default: 0.0.0.0)"
+    prompt: "Webhook host"
+    password: false
+  - name: MESSENGER_PORT
+    description: "Webhook listen port (default: 8650)"
+    prompt: "Webhook port"
+    password: false
+  - name: MESSENGER_WEBHOOK_PATH
+    description: "Webhook path (default: /messenger/webhook)"
+    prompt: "Webhook path"
+    password: false
+  - name: MESSENGER_API_VERSION
+    description: "Meta Graph API version (default: v21.0)"
+    prompt: "Graph API version"
+    password: false
+  - name: MESSENGER_ALLOWED_USERS
+    description: "Comma-separated Messenger PSIDs allowed to DM Hermes; blank uses gateway pairing"
+    prompt: "Allowed PSIDs"
+    password: false
+  - name: MESSENGER_ALLOW_ALL_USERS
+    description: "Allow any Messenger user to talk to Hermes (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: MESSENGER_HOME_CHANNEL
+    description: "Default Messenger PSID for cron / notification delivery"
+    prompt: "Home channel PSID"
+    password: false
+  - name: MESSENGER_DM_POLICY
+    description: "Unauthorized DM behavior: pairing sends pairing codes; disabled drops inbound DMs (default: pairing)"
+    prompt: "DM policy"
+    password: false

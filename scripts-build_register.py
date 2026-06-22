@@ -1,9 +1,9 @@
 import subprocess, json, re
 from collections import Counter, defaultdict
-SRC="/mnt/devvm/custom/hermes/src"
+SRC="<REPO_ROOT>"
 V016="3c231eb3979ab9c57d5cd6d02f1d577a3b718b43"
 def git(a): return subprocess.run(["git","-C",SRC]+a,capture_output=True,text=True).stdout
-real=json.load(open("/mnt/devvm/custom/tmp/truly_absent.json"))  # file -> [truly-absent code lines]
+real=json.load(open("<LOCAL_PATH>"))  # file -> [truly-absent code lines]
 
 # Per-file deferral category — determined ONCE per file by its dominant introducing-commit author +
 # the file's role. This resolves EVERY truly-absent line (incl. the 454 auth-failed) to a category.
@@ -52,5 +52,5 @@ lines_out=["# DEFERRAL REGISTER — every truly-absent line resolved to a catego
 for path in sorted(register):
     for cat,n in register[path].items():
         lines_out.append(f"{path}  ::  {cat}  ::  {n} lines")
-open("/mnt/devvm/custom/tmp/DEFERRAL-REGISTER.txt","w").write("\n".join(lines_out)+"\n")
+open("<LOCAL_PATH>","w").write("\n".join(lines_out)+"\n")
 print(f"\nregister -> DEFERRAL-REGISTER.txt ({sum(len(v) for v in register.values())} entries)")

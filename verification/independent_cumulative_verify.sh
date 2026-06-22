@@ -18,7 +18,7 @@ V016="3c231eb3979ab9c57d5cd6d02f1d577a3b718b43"
 V017="2bd1977d8fad185c9b4be47884f7e87f1add0ce3"
 SRC="$(git rev-parse --show-toplevel)"
 PY="$SRC/venv/bin/python"; [ -x "$PY" ] || PY="python3"
-OUT="${1:-/mnt/devvm/custom/hermes/reconcile-tmp/independent-verify.out}"
+OUT="${1:-<LOCAL_PATH>"
 : > "$OUT"
 log(){ echo "$@" | tee -a "$OUT"; }
 

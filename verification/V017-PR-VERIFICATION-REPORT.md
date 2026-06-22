@@ -40,7 +40,7 @@ Stacked #49644 + #50064 + #50078 → **647 passed, 0 failed**. Proven this sessi
 ## 3. The 6 `test_web_server.py` "failures" — shared-venv editable-install artifact
 
 Root cause: the venv at `src/venv` has an editable install whose finder HARD-MAPS
-`'cron' -> /mnt/devvm/custom/hermes/src/cron`. So `from cron.scheduler import
+`'cron' -> <REPO_ROOT>/cron`. So `from cron.scheduler import
 cron_delivery_targets` ALWAYS resolves to the **src overlay** (which lacks that
 function), regardless of which worktree's tests run.
 

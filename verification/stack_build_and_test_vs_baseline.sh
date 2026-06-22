@@ -10,7 +10,7 @@
 set -uo pipefail
 FORK="fork"; V017="2bd1977d8fad185c9b4be47884f7e87f1add0ce3"
 SRC="$(git rev-parse --show-toplevel)"; PY="$SRC/venv/bin/python"; [ -x "$PY" ] || PY="python3"
-OUT="${1:-/mnt/devvm/custom/hermes/reconcile-tmp/stack-build-test.out}"; : > "$OUT"
+OUT="${1:-<LOCAL_PATH>"; : > "$OUT"
 log(){ echo "$@" | tee -a "$OUT"; }
 
 # A FIXED, representative slice that exercises the PRs' touched areas without running the

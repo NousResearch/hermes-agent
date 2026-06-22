@@ -9,7 +9,7 @@
 set -uo pipefail
 FORK="fork"; V017="2bd1977d8fad185c9b4be47884f7e87f1add0ce3"
 SRC="$(git rev-parse --show-toplevel)"; PY="$SRC/venv/bin/python"; [ -x "$PY" ] || PY="python3"
-OUTDIR="${1:-/mnt/devvm/custom/hermes/reconcile-tmp/full-matrix}"
+OUTDIR="${1:-<LOCAL_PATH>"
 mkdir -p "$OUTDIR/logs"
 JSONL="$OUTDIR/matrix.jsonl"; : > "$JSONL"
 

@@ -14,7 +14,7 @@ none load-bearing, all in comments or test-harness path strings:
 |-------|------|------------|----------|
 | `copilot-limits/agent_model_metadata.py` | `# token (account <account-id-redacted>): gpt-5.4 ...` | account ID in a provenance comment | "a ChatGPT Pro account" |
 | `private-feature-mixed/agent_models_dev.py` | `#   <review-workspace>/AUTHORITATIVE_LIMITS.md` | personal path in a comment | drop the path |
-| `cmx/tests_test_context_engine_tool_wrap.py` | `cmx_path = "/mnt/devvm/.../hermes-cmx/...hermes_engine.py"` | personal path in a test | env var / relative |
+| `cmx/tests_test_context_engine_tool_wrap.py` | `cmx_path = "<LOCAL_PATH>"` | personal path in a test | env var / relative |
 | `private-feature-mixed/tests_..._opus_context_fix_...py` | `review at <review-workspace>` | personal path in a docstring | drop |
 | `private-feature-mixed/tests_probe_prelude_e2e.py` | `WT = "<review-workspace>"` | personal worktree path in a dev-probe | env var |
 

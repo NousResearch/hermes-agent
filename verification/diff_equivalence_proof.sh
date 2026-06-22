@@ -13,7 +13,7 @@
 set -uo pipefail
 FORK="fork"; V016="3c231eb3979ab9c57d5cd6d02f1d577a3b718b43"
 SRC="$(git rev-parse --show-toplevel)"; PY="$SRC/venv/bin/python"; [ -x "$PY" ] || PY="python3"
-OUT="${1:-/mnt/devvm/custom/hermes/reconcile-tmp/diff-equivalence.out}"; : > "$OUT"
+OUT="${1:-<LOCAL_PATH>"; : > "$OUT"
 
 env -u GITHUB_TOKEN -u GH_TOKEN git fetch -q "$FORK" 2>/dev/null || true
 PRNUMS="$(env -u GITHUB_TOKEN -u GH_TOKEN gh pr list --repo NousResearch/hermes-agent \

@@ -78,6 +78,6 @@ v0.17.0). So CMX "lives in a separate PR," satisfying the goal for that category
 
 What remains in the `cmx/` deferred category is only
 `test_cmx_hermes_engine_schemas_are_bare`, which hardcodes the PRIVATE path
-`/mnt/devvm/.../hermes-cmx/src/cmx/hermes_engine.py` and therefore cannot be
+`<LOCAL_PATH> and therefore cannot be
 public — it stays deferred (it guards the private cmx engine source, which is a
 separate repo).

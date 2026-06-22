@@ -45,9 +45,9 @@ cherry-pick: clean=37 resolved=3
 identical=52  differ-but-upstream-drift=74  REAL-RESIDUAL=5
 --- real-residual files (stacked clone != src, NOT explained by upstream drift) ---
   agent/gemini_cloudcode_adapter.py
-diff --git a/mnt/devvm/custom/hermes/src/agent/gemini_cloudcode_adapter.py b/agent/gemini_cloudcode_adapter.py
+diff --git a<REPO_ROOT>/agent/gemini_cloudcode_adapter.py b/agent/gemini_cloudcode_adapter.py
 index 971e48d52..27392bb05 100644
---- a/mnt/devvm/custom/hermes/src/agent/gemini_cloudcode_adapter.py
+--- a<REPO_ROOT>/agent/gemini_cloudcode_adapter.py
 +++ b/agent/gemini_cloudcode_adapter.py
 @@ -713,13 +713,6 @@ class GeminiCloudCodeClient:
              "X-Goog-Api-Client": gemini_cli_x_goog_api_client(),
@@ -64,9 +64,9 @@ index 971e48d52..27392bb05 100644
  
          if stream:
   agent/models_dev.py
-diff --git a/mnt/devvm/custom/hermes/src/agent/models_dev.py b/agent/models_dev.py
+diff --git a<REPO_ROOT>/agent/models_dev.py b/agent/models_dev.py
 index 3762e9097..cefe29248 100644
---- a/mnt/devvm/custom/hermes/src/agent/models_dev.py
+--- a<REPO_ROOT>/agent/models_dev.py
 +++ b/agent/models_dev.py
 @@ -689,7 +689,7 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
  
@@ -85,9 +85,9 @@ index 3762e9097..cefe29248 100644
 -#
 -#   <review-workspace>/AUTHORITATIVE_LIMITS.md
   hermes_cli/prompt_size.py
-diff --git a/mnt/devvm/custom/hermes/src/hermes_cli/prompt_size.py b/hermes_cli/prompt_size.py
+diff --git a<REPO_ROOT>/hermes_cli/prompt_size.py b/hermes_cli/prompt_size.py
 index 9db0edc77..913beb18b 100644
---- a/mnt/devvm/custom/hermes/src/hermes_cli/prompt_size.py
+--- a<REPO_ROOT>/hermes_cli/prompt_size.py
 +++ b/hermes_cli/prompt_size.py
 @@ -63,7 +63,6 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
      parts = build_system_prompt_parts(agent)
@@ -106,9 +106,9 @@ index 9db0edc77..913beb18b 100644
          ("context (AGENTS.md/cwd files)", len(context), _bytes(context)),
          ("volatile (memory/profile/timestamp)", len(volatile), _bytes(volatile)),
   tests/probe_prelude_e2e.py
-diff --git a/mnt/devvm/custom/hermes/src/tests/probe_prelude_e2e.py b/tests/probe_prelude_e2e.py
+diff --git a<REPO_ROOT>/tests/probe_prelude_e2e.py b/tests/probe_prelude_e2e.py
 index a872cffd1..d7061ea4e 100644
---- a/mnt/devvm/custom/hermes/src/tests/probe_prelude_e2e.py
+--- a<REPO_ROOT>/tests/probe_prelude_e2e.py
 +++ b/tests/probe_prelude_e2e.py
 @@ -6,9 +6,11 @@ Not a unit test — an integration probe. Run:
  """
@@ -125,9 +125,9 @@ index a872cffd1..d7061ea4e 100644
      sys.path.insert(0, WT)
  
   tests/test_context_engine_tool_wrap.py
-diff --git a/mnt/devvm/custom/hermes/src/tests/test_context_engine_tool_wrap.py b/tests/test_context_engine_tool_wrap.py
+diff --git a<REPO_ROOT>/tests/test_context_engine_tool_wrap.py b/tests/test_context_engine_tool_wrap.py
 index 7628e2b35..581a1936c 100644
---- a/mnt/devvm/custom/hermes/src/tests/test_context_engine_tool_wrap.py
+--- a<REPO_ROOT>/tests/test_context_engine_tool_wrap.py
 +++ b/tests/test_context_engine_tool_wrap.py
 @@ -100,30 +100,6 @@ def test_no_empty_names_emitted():
          assert nm and nm.strip(), f"tools[{i}].function.name is empty -> would HTTP 400"

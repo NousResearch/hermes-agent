@@ -5,7 +5,7 @@
 # working tree. Emits the raw `git diff --stat` so residual is visible, not summarized.
 set -uo pipefail
 CLONE="$(git rev-parse --show-toplevel)"
-SRC="/mnt/devvm/custom/hermes/src"
+SRC="<REPO_ROOT>"
 V017="2bd1977d8fad185c9b4be47884f7e87f1add0ce3"
 PY="$SRC/venv/bin/python"; [ -x "$PY" ] || PY="python3"
 

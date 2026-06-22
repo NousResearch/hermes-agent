@@ -3,11 +3,11 @@
 The goal says "all the changes we have in ./src/ when compared to version v0.16.0".
 
 **Finding (evidence-backed):** `./src/` is the user's source *checkout directory*
-`/mnt/devvm/custom/hermes/src`, which **IS the git repo root** — not a subdirectory
+`<REPO_ROOT>`, which **IS the git repo root** — not a subdirectory
 named `src/` inside the repo.
 
 Proof:
-- `git rev-parse --show-toplevel` → `/mnt/devvm/custom/hermes/src` (the `.git` dir lives there).
+- `git rev-parse --show-toplevel` → `<REPO_ROOT>` (the `.git` dir lives there).
 - `git ls-files | grep '^src/'` → 0 files (no tracked path starts with `src/`).
 - `git diff --name-only v0.16.0..HEAD -- src/` → 0 files (no such subdir to filter on).
 - `git diff --name-only v0.16.0..HEAD` (repo root) → 160 files.

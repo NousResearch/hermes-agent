@@ -26,7 +26,7 @@ deferred lines are private-infra glue.
 
 ### cmx (2) — CMX context-engine coupling
 `agent_conversation_loop.py` + `tests_test_context_engine_tool_wrap.py` portions that
-reference the private CMX engine (`/mnt/.../hermes-cmx/...`). Runtime: CMX is a private
+reference the private CMX engine (`/mnt/.../context-engine/...`). Runtime: CMX is a private
 context engine; the public context-engine hooks shipped in #50053/#50080/#50155. The
 deferred lines are CMX-specific test/glue, not required for v0.17.0 runtime.
 

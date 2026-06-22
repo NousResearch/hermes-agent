@@ -5,7 +5,7 @@
 #   author of the introducing overlay commit. 0 unexplained remainder is the goal.
 import subprocess, json, re
 from collections import defaultdict
-SRC="/mnt/devvm/custom/hermes/src"
+SRC="<REPO_ROOT>"
 V016="3c231eb3979ab9c57d5cd6d02f1d577a3b718b43"
 MAIN="f57ff7aef1d3d447e159511f3a3e9ed8ae0c7298"
 def git(a): return subprocess.run(["git","-C",SRC]+a,capture_output=True,text=True).stdout
@@ -21,10 +21,10 @@ def wsset_blob(ref,path):
     return set(wsk(l) for l in r.stdout.splitlines() if l.split()) if r.returncode==0 else set()
 
 br={}
-for line in open("/mnt/devvm/custom/tmp/pr_branches.txt"):
+for line in open("<LOCAL_PATH>"):
     n,b,o=line.split(); br[int(n)]=o
 def prtip(n): return "4a1fbe9e1" if n==48069 else br[n]
-om=json.load(open("/mnt/devvm/custom/tmp/ownership_map.json"))
+om=json.load(open("<LOCAL_PATH>"))
 PRIV=re.compile(r"agy[-_]?cli|agy://|antigravity|auto_rout|copilot_auto|_maybe_apply_copilot_auto|autopilot|_autopilot|\bcmx\b|_cmx|prefetch_all|_materialize_data_url|Phase A[0-9]|/mnt/devvm|review-sysprompt|antigravity-core|copilot_inventory|opus.context|mythos|fable|codex_version|hermes_source|project_source|tool_trace|stable_update|google_user_agent|_CODEX_OAUTH_CONTEXT_EMPIRICAL|_COPILOT_HIDDEN_USABLE|resolve_copilot_identity_audit|_ANTHROPIC_OUTPUT_LIMITS_COPILOT|_AsyncSyncCompletionsAdapter|AsyncCopilotACP|_is_missing_trigram|_HONCHO_CACHE|HERMES_PREFETCH",re.I)
 
 # all-PR full content cache (whitespace-normalized) per file
@@ -62,4 +62,4 @@ for k in ["covered-owning-PR-diff","covered-some-PR-fullcontent","already-upstre
 print(f"\nUNEXPLAINED remainder: {buckets['UNEXPLAINED']} across {len(unexplained)} files")
 for f,ls in sorted(unexplained.items(),key=lambda x:-len(x[1]))[:25]:
     print(f"  {f}: {len(ls)}")
-json.dump({f:ls for f,ls in unexplained.items()}, open("/mnt/devvm/custom/tmp/unexplained_final.json","w"))
+json.dump({f:ls for f,ls in unexplained.items()}, open("<LOCAL_PATH>","w"))

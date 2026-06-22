@@ -14,7 +14,7 @@
 # Requires: gh (authed to read NousResearch/hermes-agent), git, python3, the fork remote.
 # ============================================================================
 set -u
-SRC="${1:-/mnt/devvm/custom/hermes/src}"
+SRC="${1:-<REPO_ROOT>}"
 V016=3c231eb3979ab9c57d5cd6d02f1d577a3b718b43       # v0.16.0
 V017=2bd1977d8fad185c9b4be47884f7e87f1add0ce3       # v0.17.0
 MAIN_REF=origin/main                                 # PR base

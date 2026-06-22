@@ -3,7 +3,7 @@
 # == full ./src/ added lines vs v0.16.0, with unmapped == 0.
 # Stronger than file/hunk closure: compares every non-blank ADDED line by content.
 set -uo pipefail
-SRC="${1:-/mnt/devvm/custom/hermes/src}"
+SRC="${1:-<REPO_ROOT>}"
 DEFDIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"   # the #50111 checkout root
 V016=3c231eb3979ab9c57d5cd6d02f1d577a3b718b43
 GH="env -u GITHUB_TOKEN -u GH_TOKEN gh"

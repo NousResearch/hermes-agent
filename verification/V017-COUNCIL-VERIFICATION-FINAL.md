@@ -5,9 +5,9 @@ Base = v0.17.0 `2bd1977d8fad185c9b4be47884f7e87f1add0ce3`. Fork = arminanton.
 
 ## Reproduce
 ```
-cd /mnt/devvm/custom/hermes/src
-bash /mnt/devvm/custom/hermes/reconcile-tmp/rebase_all_prs_on_v017.sh fork > report.jsonl
-bash /mnt/devvm/custom/hermes/reconcile-tmp/reconcile_campaign.sh fork   # coverage: 0 unaccounted
+cd <REPO_ROOT>
+bash <LOCAL_PATH> fork > report.jsonl
+bash <LOCAL_PATH> fork   # coverage: 0 unaccounted
 ```
 Raw output: `rebase-report.jsonl` (one JSON line per PR + summary).
 Classified verdicts: `rebase-report-classified.jsonl`.
@@ -37,7 +37,7 @@ files on PRISTINE v0.17.0 (zero PRs):
 | #50031 | 1 | live-credential smoke test | `test_auto_router_live` hits the real Copilot billing endpoint; needs a discount-eligible session; other 4 tests pass; #50031 is the deferred auto_router draft |
 
 The 6 `test_web_server.py` failures (#50056/#50066/#50086) share ONE root cause: the dev
-box's editable-install finder hard-maps `cron -> /mnt/devvm/custom/hermes/src/cron`, which
+box's editable-install finder hard-maps `cron -> <REPO_ROOT>/cron`, which
 lacks `cron_delivery_targets`. They reproduce identically on a pristine v0.17.0 checkout
 with NO PRs applied → upstream/harness, not ours. Absent on a clean CI checkout (its own
 install maps `cron` to v0.17.0 code, which HAS the function).

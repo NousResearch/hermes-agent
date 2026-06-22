@@ -806,6 +806,11 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
 
 
+def _emit_agent_status(sid: str, status: str, **payload):
+    body = {"status": status, **{k: v for k, v in payload.items() if v is not None}}
+    _emit("agent.status.changed", sid, body)
+
+
 def _status_update(sid: str, kind: str, text: str | None = None):
     body = (text if text is not None else kind).strip()
     if not body:
@@ -1040,7 +1045,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 )
 
                 register_gateway_notify(
-                    key, lambda data: _emit("approval.request", sid, data)
+                    key, lambda data: (_emit_agent_status(sid, "waiting_approval"), _emit("approval.request", sid, data))[-1]
                 )
                 notify_registered = True
                 load_permanent_allowlist()
@@ -2554,7 +2559,7 @@ def _sync_session_key_after_compress(
         try:
             register_gateway_notify(
                 new_session_id,
-                lambda data: _emit("approval.request", sid, data),
+                lambda data: (_emit_agent_status(sid, "waiting_approval"), _emit("approval.request", sid, data))[-1],
             )
         except Exception:
             pass
@@ -2949,6 +2954,8 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
                 payload["args_text"] = args_text
         # tool.complete is the source of truth for todos (full list from the
         # tool result). args.todos here may be a partial merge update.
+        _emit_agent_status(sid, "running_tool", tool_id=tool_call_id, tool_name=name)
+        _emit("tool_call.started", sid, payload)
         _emit("tool.start", sid, payload)
 
 
@@ -2996,6 +3003,8 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     except Exception:
         pass
     if _tool_progress_enabled(sid) or payload.get("inline_diff"):
+        _emit_agent_status(sid, "completed", tool_id=tool_call_id, tool_name=name)
+        _emit("tool_call.completed", sid, payload)
         _emit("tool.complete", sid, payload)
 
 
@@ -3079,6 +3088,33 @@ def _on_tool_progress(
         if preview and event_type == "subagent.tool":
             payload["tool_preview"] = str(preview)
             payload["text"] = str(preview)
+        if event_type == "subagent.start":
+            _emit(
+                "handoff.created",
+                sid,
+                {
+                    "confidence": "explicit",
+                    "source_session_id": sid,
+                    "target_session_id": payload.get("child_session_id"),
+                    "subagent_id": payload.get("subagent_id"),
+                    "parent_id": payload.get("parent_id"),
+                    "goal": payload.get("goal"),
+                    "text": payload.get("text"),
+                },
+            )
+        elif event_type == "subagent.complete":
+            _emit(
+                "handoff.completed",
+                sid,
+                {
+                    "confidence": "explicit",
+                    "source_session_id": sid,
+                    "target_session_id": payload.get("child_session_id"),
+                    "subagent_id": payload.get("subagent_id"),
+                    "parent_id": payload.get("parent_id"),
+                    "summary": payload.get("summary") or payload.get("text"),
+                },
+            )
         # subagent.text is the child's per-token reply, relayed solely to feed a
         # watch window's live mirror. It is meaningless on the parent session
         # (which shows the child via the spawn tree, not its reply body), so
@@ -3190,12 +3226,21 @@ def _agent_cbs(sid: str) -> dict:
             sid, event_type, name, preview, args, **kwargs
         ),
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
-        and _emit("tool.generating", sid, {"name": name}),
-        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
-        "reasoning_callback": lambda text: _emit(
-            "reasoning.delta",
-            sid,
-            {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
+        and (
+            _emit_agent_status(sid, "running_tool", tool_name=name),
+            _emit("tool.generating", sid, {"name": name}),
+        ),
+        "thinking_callback": lambda text: (
+            _emit_agent_status(sid, "thinking"),
+            _emit("thinking.delta", sid, {"text": text}),
+        ),
+        "reasoning_callback": lambda text: (
+            _emit_agent_status(sid, "reasoning"),
+            _emit(
+                "reasoning.delta",
+                sid,
+                {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
+            ),
         ),
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
@@ -3203,24 +3248,39 @@ def _agent_cbs(sid: str) -> dict:
         # Credits/notice spine (L1): an AgentNotice fired by the agent becomes a
         # notification.show WS event; a recovery clear becomes notification.clear.
         # Snake_case payload to match the existing gateway-event convention.
-        "notice_callback": lambda n: _emit(
-            "notification.show",
-            sid,
-            {
-                "text": n.text,
-                "level": n.level,
-                "kind": n.kind,
-                "ttl_ms": n.ttl_ms,
-                "key": n.key,
-                "id": n.id,
-            },
+        "notice_callback": lambda n: (
+            _emit_agent_status(sid, "warning" if n.level == "warning" else "active"),
+            _emit(
+                "warning.emitted" if n.level == "warning" else "notification.emitted",
+                sid,
+                {
+                    "text": n.text,
+                    "level": n.level,
+                    "kind": n.kind,
+                    "key": n.key,
+                    "id": n.id,
+                },
+            ),
+            _emit(
+                "notification.show",
+                sid,
+                {
+                    "text": n.text,
+                    "level": n.level,
+                    "kind": n.kind,
+                    "ttl_ms": n.ttl_ms,
+                    "key": n.key,
+                    "id": n.id,
+                },
+            ),
         ),
         "notice_clear_callback": lambda key: _emit(
             "notification.clear", sid, {"key": key}
         ),
-        "clarify_callback": lambda q, c: _block(
-            "clarify.request", sid, {"question": q, "choices": c}
-        ),
+        "clarify_callback": lambda q, c: (
+            _emit_agent_status(sid, "waiting_user"),
+            _block("clarify.request", sid, {"question": q, "choices": c}),
+        )[-1],
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.
         "read_terminal_callback": lambda start=None, count=None: _block(
@@ -3901,7 +3961,7 @@ def _init_session(
     try:
         from tools.approval import register_gateway_notify, load_permanent_allowlist
 
-        register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
+        register_gateway_notify(key, lambda data: (_emit_agent_status(sid, "waiting_approval"), _emit("approval.request", sid, data))[-1])
         load_permanent_allowlist()
     except Exception:
         pass
@@ -4378,6 +4438,16 @@ def _(rid, params: dict) -> dict:
     build_timer = threading.Timer(0.05, _deferred_build)
     build_timer.daemon = True
     build_timer.start()
+    _emit(
+        "session.started",
+        sid,
+        {
+            "session_id": sid,
+            "stored_session_id": key,
+            "profile_name": _current_profile_name(),
+            "cwd": _sessions[sid]["cwd"],
+        },
+    )
 
     return _ok(
         rid,
@@ -6457,6 +6527,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
     agent = session["agent"]
+    _emit_agent_status(sid, "generating")
+    _emit("generation.started", sid, {"session_key": session.get("session_key")})
     _emit("message.start", sid)
 
     def run():
@@ -6670,6 +6742,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 payload["rendered"] = rendered
             with session["history_lock"]:
                 _clear_inflight_turn(session)
+            _emit_agent_status(sid, "error" if status == "error" else "completed")
+            _emit("generation.completed", sid, payload)
+            if status == "complete":
+                _emit("task.completed", sid, {"summary": raw, "usage": payload.get("usage")})
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────

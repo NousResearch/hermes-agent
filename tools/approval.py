@@ -517,6 +517,14 @@ DANGEROUS_PATTERNS = [
     # into a single -X token. Catches the same threat class.
     (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b',
      "sudo with combined-flag privilege escalation"),
+    # Data exfiltration prevention: curl/wget uploading data to remote hosts,
+    # or baking file contents into a URL via command substitution.
+    # These bypass smart approval and always escalate to the user (see
+    # Phase 2.5 no-smart-approve guard).
+    (r'\b(curl|wget)\b.*\s(-d|--data(-raw|-binary|-urlencode)?|-F|-T|--upload-file|--post-file)\b',
+     "curl/wget with data/upload payload (DATA EXFILTRATION)"),
+    (r'\b(curl|wget)\b.*\$\s*\(',
+     "curl/wget with command substitution (DATA EXFILTRATION)"),
 ]
 
 
@@ -1442,7 +1450,11 @@ def check_all_command_guards(command: str, env_type: str,
     # (openai/codex#13860).
     if approval_mode == "smart":
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
-        verdict = _smart_approve(command, combined_desc_for_llm)
+        # Never smart-approve exfil patterns — always escalate to user.
+        if any("DATA EXFILTRATION" in desc for _, desc, _ in warnings):
+            verdict = "escalate"
+        else:
+            verdict = _smart_approve(command, combined_desc_for_llm)
         if verdict == "approve":
             # Auto-approve and grant session-level approval for these patterns
             for key, _, _ in warnings:

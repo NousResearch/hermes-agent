@@ -56,6 +56,8 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, Session
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../types'
 
+const DESKTOP_SESSION_SOURCE = 'desktop'
+
 interface SessionActionsOptions {
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
@@ -461,6 +463,7 @@ export function useSessionActions({
 
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
+          source: DESKTOP_SESSION_SOURCE,
           ...(cwd && { cwd }),
           ...(newChatProfile ? { profile: newChatProfile } : {}),
           ...(uiModel ? { model: uiModel, ...(uiProvider ? { provider: uiProvider } : {}) } : {}),
@@ -706,9 +709,11 @@ export function useSessionActions({
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
+          source: DESKTOP_SESSION_SOURCE,
           ...(watchWindow ? { lazy: true } : {}),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
+
         // The rejection is consumed by the `await` below; this guard only
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)
@@ -898,6 +903,7 @@ export function useSessionActions({
 
         const branched = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
+          source: DESKTOP_SESSION_SOURCE,
           ...(cwd && { cwd }),
           messages: branchMessages.map(({ content, role }) => ({ content, role })),
           title: copy.branchTitle

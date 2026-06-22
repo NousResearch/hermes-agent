@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages } from '@/hermes'
+import { textPart } from '@/lib/chat-messages'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $currentCwd, $messages, $resumeFailedSessionId, setMessages, setResumeFailedSessionId } from '@/store/session'
 
@@ -116,6 +117,15 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ profile: 'default' })
+  })
+
+  it('marks new sessions as desktop-owned', async () => {
+    const params = await createWith(() => {
+      $activeGatewayProfile.set('default')
+      $newChatProfile.set(null)
+    })
+
+    expect(params).toMatchObject({ source: 'desktop' })
   })
 })
 
@@ -241,9 +251,12 @@ describe('resumeSession failure recovery', () => {
   it('leaves the failure latch clear when resume succeeds', async () => {
     // Pre-arm to prove a successful resume clears it (entry-clear path).
     setResumeFailedSessionId('stored-1')
+    let resumeParams: Record<string, unknown> | undefined
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'session.resume') {
+        resumeParams = params
+
         return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
       }
 
@@ -255,5 +268,74 @@ describe('resumeSession failure recovery', () => {
     await runResume(requestGateway)
 
     expect($resumeFailedSessionId.get()).toBeNull()
+    expect(resumeParams).toMatchObject({ session_id: 'stored-1', source: 'desktop' })
+  })
+})
+
+function BranchHarness({
+  onReady,
+  requestGateway
+}: {
+  onReady: (branch: (messageId?: string) => Promise<boolean>) => void
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+}) {
+  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
+  const actions = useSessionActions({
+    activeSessionId: RUNTIME_SESSION_ID,
+    activeSessionIdRef: ref<string | null>(RUNTIME_SESSION_ID),
+    busyRef: ref(false),
+    creatingSessionRef: ref(false),
+    ensureSessionState: () => ({}) as ClientSessionState,
+    getRouteToken: () => 'token',
+    navigate: vi.fn() as never,
+    requestGateway,
+    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    selectedStoredSessionId: 'stored-1',
+    selectedStoredSessionIdRef: ref<string | null>('stored-1'),
+    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: (_sessionId, updater) => updater({} as ClientSessionState)
+  })
+
+  useEffect(() => {
+    onReady(actions.branchCurrentSession)
+  }, [actions.branchCurrentSession, onReady])
+
+  return null
+}
+
+describe('branchCurrentSession source metadata', () => {
+  afterEach(() => {
+    cleanup()
+    setMessages([])
+    vi.restoreAllMocks()
+  })
+
+  it('marks branched sessions as desktop-owned', async () => {
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored', info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    setMessages([{ id: 'u1', role: 'user', parts: [textPart('branch from here')] }])
+
+    let branch: ((messageId?: string) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={b => (branch = b)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branch).not.toBeNull())
+
+    await expect(branch!()).resolves.toBe(true)
+
+    expect(createParams).toMatchObject({
+      messages: [{ content: 'branch from here', role: 'user' }],
+      source: 'desktop'
+    })
   })
 })

@@ -552,6 +552,324 @@ def resolve_topic_session_key(
     return build_topic_session_key(principal, topic_id=topic_id, profile=profile)
 
 
+# ── Legacy mode (step 8) ───────────────────────────────────────────────
+#
+# HRM-T0a step 8: existing Telegram/forum-thread sessions and any session
+# that predates the ``hrm_t0a_applied_at`` migration marker stay in place
+# under their original (legacy thread-derived) session key. The routing
+# pre-pass already falls through for them automatically because no pointer
+# row is set; this section adds:
+#
+#   - :func:`is_legacy_principal_route` — read-only detection for a single
+#     inbound principal/source. Used by the ``/topic`` slash mutator family
+#     to refuse state-mutating subcommands with a user-visible banner so
+#     a pre-HRM session is never silently migrated.
+#
+#   - :func:`legacy_inventory` — metadata-only inventory (counts +
+#     principal/chat/thread/session ids). MUST NOT include message content
+#     by construction so an inventory dump cannot leak transcript data.
+#
+#   - :data:`LEGACY_READONLY_MESSAGE` — the standard refusal banner.
+#
+# Policy (owner-approved):
+#   * Existing sessions stay in place; no automatic migration.
+#   * Legacy normal routing continues (the pre-pass returns ``None`` so
+#     the legacy ``build_session_key`` is used as before).
+#   * Legacy ``/topic`` mutators (switch/move-last/move-range/clear/
+#     bind-thread/unbind-thread) are refused with a clear warning.
+#   * Read-only subcommands (``list``/``show``/``help``) still work so a
+#     user can inspect the state of their legacy chat.
+
+
+LEGACY_READONLY_MESSAGE = (
+    "gateway.topic.legacy_thread_readonly: this chat is in legacy thread-"
+    "derived routing mode. Existing transcripts will not be migrated and "
+    "/topic state-mutating subcommands are disabled here. Read-only "
+    "subcommands (`/topic`, `/topic list`, `/topic help`) still work."
+)
+
+
+_LEGACY_BANNER_LOGGED = False
+
+
+def _maybe_log_legacy_banner_once(reason: str) -> None:
+    """Emit a single per-process log line when legacy mode is first hit.
+
+    The owner-facing surface banner is the responsibility of the
+    platform adapter — there is no shared one-time-per-thread emit
+    surface inside this module. This logger pings give operators a
+    breadcrumb that legacy mode is active; the user-visible banner
+    is the slash refusal text from :data:`LEGACY_READONLY_MESSAGE`.
+
+    Adapter hook (deferred): a per-adapter "first inbound under legacy
+    mode" greeting can call into this module's banner constant; that
+    hook is NOT implemented in v1 because the gateway has no shared
+    emit channel that's safe to fire without an adapter context. See
+    step-8 residual risks.
+    """
+    global _LEGACY_BANNER_LOGGED
+    if _LEGACY_BANNER_LOGGED:
+        return
+    _LEGACY_BANNER_LOGGED = True
+    logger.info(
+        "HRM-T0a legacy mode engaged (reason=%s). Pointer mutators refused; "
+        "legacy routing continues unchanged.",
+        reason,
+    )
+
+
+def _reset_legacy_banner_for_tests() -> None:
+    """TEST-ONLY: clear the one-time banner latch between cases."""
+    global _LEGACY_BANNER_LOGGED
+    _LEGACY_BANNER_LOGGED = False
+
+
+def is_legacy_principal_route(
+    session_db: Any,
+    source: Any,
+    *,
+    app_id: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Return ``(is_legacy, reason)`` for the given inbound source.
+
+    The principal is in *legacy* mode iff one of these holds (checked in
+    order; the first true short-circuits):
+
+    1. The chat is in legacy Telegram-DM forum-thread topic mode
+       (``telegram_dm_topic_mode.enabled = 1``). ``reason`` →
+       ``"telegram_forum_thread"``.
+    2. A pre-HRM-T0a session exists for this (platform, user_id, chat_id):
+       ``sessions.started_at < hrm_t0a_applied_at`` AND no
+       ``active_topic_pointer`` row is set for this principal/app yet.
+       ``reason`` → ``"pre_migration_session"``.
+
+    Returns ``(False, "")`` when neither holds — that is the default
+    post-HRM state and the case where a pointer is already established.
+
+    Read-only: never triggers the HRM-T0a migration; never reads message
+    content. Safe to call on the slash hot path.
+    """
+    if session_db is None or source is None:
+        return False, ""
+
+    platform_attr = getattr(source, "platform", None)
+    platform_str = getattr(platform_attr, "value", None) or (
+        str(platform_attr) if platform_attr is not None else ""
+    )
+    user_id = getattr(source, "user_id", None)
+    chat_id = getattr(source, "chat_id", None)
+    chat_type = getattr(source, "chat_type", None)
+
+    # 1) Telegram-DM forum-thread legacy path.
+    if (
+        platform_str == "telegram"
+        and chat_type == "dm"
+        and user_id
+        and chat_id
+    ):
+        try:
+            tm = session_db.is_telegram_topic_mode_enabled(
+                chat_id=str(chat_id), user_id=str(user_id)
+            )
+        except Exception:  # noqa: BLE001 — defensive
+            tm = False
+        if tm:
+            return True, "telegram_forum_thread"
+
+    # 2) Pre-HRM session marker — uses the migration high-water-mark stamp.
+    if not user_id or not chat_id or not platform_str:
+        return False, ""
+    try:
+        marker_raw = session_db.get_meta("hrm_t0a_applied_at")
+    except Exception:  # noqa: BLE001
+        marker_raw = None
+    if not marker_raw:
+        # Migration never ran. We can't classify by marker; default to
+        # not-legacy so a fresh post-step-7 install stays usable.
+        return False, ""
+    try:
+        marker = float(marker_raw)
+    except (TypeError, ValueError):
+        return False, ""
+
+    # If a pointer already exists for this principal/app, the user has
+    # opted into the new mode — legacy guard no longer applies.
+    if app_id:
+        try:
+            row = session_db.read_active_topic(
+                platform=str(platform_str),
+                user_id=str(user_id),
+                chat_id=str(chat_id),
+                app_id=str(app_id),
+            )
+        except Exception:  # noqa: BLE001
+            row = None
+        if row:
+            return False, ""
+
+    try:
+        with session_db._lock:
+            pre_row = session_db._conn.execute(
+                """
+                SELECT 1 FROM sessions
+                WHERE source = ?
+                  AND user_id = ?
+                  AND started_at IS NOT NULL
+                  AND started_at < ?
+                LIMIT 1
+                """,
+                (str(platform_str), str(user_id), float(marker)),
+            ).fetchone()
+    except Exception:  # noqa: BLE001 — defensive: any DB error falls through
+        logger.debug("legacy-detect: pre-migration session query failed", exc_info=True)
+        return False, ""
+    if pre_row is not None:
+        return True, "pre_migration_session"
+    return False, ""
+
+
+def legacy_inventory(session_db: Any) -> Dict[str, Any]:
+    """Metadata-only legacy session inventory.
+
+    Returns a dict shaped::
+
+        {
+            "hrm_t0a_applied_at": <float|None>,
+            "pre_migration_session_count": <int>,
+            "telegram_forum_thread_chat_count": <int>,
+            "pre_migration_principals": [
+                {"platform": str, "user_id": str},
+                ...
+            ],
+            "telegram_forum_thread_chats": [
+                {"chat_id": str, "user_id": str},
+                ...
+            ],
+            "telegram_forum_thread_bindings": [
+                {"chat_id": str, "thread_id": str, "session_id": str},
+                ...
+            ],
+        }
+
+    Contract: NEVER includes message content, prompts, responses, titles,
+    or any free-form user text. Only structural ids/counts. The principal
+    list is deduplicated by ``(platform, user_id)``; chats by ``chat_id``.
+    Bindings expose ``session_id`` because that's the routing-key handle,
+    not transcript content.
+
+    Caller responsibilities (operator surface): pipe this through any
+    redaction step before publishing externally; the metadata IS still
+    identifying for the owner's own principals.
+    """
+    if session_db is None:
+        return {
+            "hrm_t0a_applied_at": None,
+            "pre_migration_session_count": 0,
+            "telegram_forum_thread_chat_count": 0,
+            "pre_migration_principals": [],
+            "telegram_forum_thread_chats": [],
+            "telegram_forum_thread_bindings": [],
+        }
+    try:
+        marker_raw = session_db.get_meta("hrm_t0a_applied_at")
+    except Exception:  # noqa: BLE001
+        marker_raw = None
+    try:
+        marker = float(marker_raw) if marker_raw else None
+    except (TypeError, ValueError):
+        marker = None
+
+    pre_count = 0
+    principals: list = []
+    if marker is not None:
+        try:
+            with session_db._lock:
+                rows = session_db._conn.execute(
+                    """
+                    SELECT source, user_id, COUNT(*) AS c
+                    FROM sessions
+                    WHERE started_at IS NOT NULL AND started_at < ?
+                    GROUP BY source, user_id
+                    """,
+                    (float(marker),),
+                ).fetchall()
+        except Exception:  # noqa: BLE001
+            rows = []
+        for r in rows:
+            if isinstance(r, dict):
+                src = r.get("source")
+                uid = r.get("user_id")
+                cnt = r.get("c") or 0
+            else:
+                # sqlite3.Row supports mapping access; fall back to index.
+                try:
+                    src = r["source"]
+                    uid = r["user_id"]
+                    cnt = r["c"] or 0
+                except Exception:
+                    src, uid, cnt = r[0], r[1], (r[2] or 0)
+            pre_count += int(cnt)
+            if src is not None and uid is not None:
+                principals.append({"platform": str(src), "user_id": str(uid)})
+
+    chats: list = []
+    chat_count = 0
+    bindings: list = []
+    try:
+        with session_db._lock:
+            chat_rows = session_db._conn.execute(
+                """
+                SELECT chat_id, user_id
+                FROM telegram_dm_topic_mode
+                WHERE enabled = 1
+                """
+            ).fetchall()
+    except Exception:  # noqa: BLE001
+        chat_rows = []
+    for r in chat_rows:
+        try:
+            cid = r["chat_id"] if not isinstance(r, tuple) else r[0]
+            uid = r["user_id"] if not isinstance(r, tuple) else r[1]
+        except Exception:
+            cid, uid = r[0], r[1]
+        chats.append({"chat_id": str(cid), "user_id": str(uid)})
+    chat_count = len(chats)
+
+    try:
+        with session_db._lock:
+            binding_rows = session_db._conn.execute(
+                """
+                SELECT chat_id, thread_id, session_id
+                FROM telegram_dm_topic_bindings
+                """
+            ).fetchall()
+    except Exception:  # noqa: BLE001
+        binding_rows = []
+    for r in binding_rows:
+        try:
+            cid = r["chat_id"] if not isinstance(r, tuple) else r[0]
+            tid = r["thread_id"] if not isinstance(r, tuple) else r[1]
+            sid = r["session_id"] if not isinstance(r, tuple) else r[2]
+        except Exception:
+            cid, tid, sid = r[0], r[1], r[2]
+        bindings.append(
+            {
+                "chat_id": str(cid),
+                "thread_id": str(tid),
+                "session_id": str(sid),
+            }
+        )
+
+    return {
+        "hrm_t0a_applied_at": marker,
+        "pre_migration_session_count": pre_count,
+        "telegram_forum_thread_chat_count": chat_count,
+        "pre_migration_principals": principals,
+        "telegram_forum_thread_chats": chats,
+        "telegram_forum_thread_bindings": bindings,
+    }
+
+
 async def resolve_topic_session_key_async(
     source: Any,
     session_db: Any,

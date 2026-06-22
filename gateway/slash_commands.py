@@ -2805,6 +2805,71 @@ class GatewaySlashCommandsMixin:
         except ValueError:
             return None
 
+    # ── HRM-T0a step 8: legacy mode + missing-app_id guards ────────────
+
+    # Set of subcommands that mutate the active-topic-pointer or move
+    # transcript rows. Refused in legacy mode; require topic_default_app_id.
+    _TOPIC_MUTATOR_SUBCOMMANDS = frozenset(
+        {
+            "new",
+            "switch",
+            "clear",
+            "bind-thread",
+            "unbind-thread",
+            "move-last",
+            "move-range",
+        }
+    )
+
+    def _topic_missing_app_id_message(self) -> str:
+        """User-visible setup-required message when topic_default_app_id is unset.
+
+        Returned by mutator subcommands so the slash UX fails closed with
+        a clear instruction rather than a confusing "no principal" error.
+        Routing is already config-driven: the inbound pre-pass short-
+        circuits with ``app_id=None`` (config.py§topic_default_app_id).
+        """
+        return (
+            "/topic: setup required — gateway has no `topic.default_app_id` "
+            "configured, so the active-topic pointer cannot be written. "
+            "Set `topic.default_app_id` in config.yaml (or via "
+            "`hermes config set topic.default_app_id <repo-slug>`) and "
+            "restart the gateway, then retry."
+        )
+
+    def _topic_legacy_refusal(self, source, reason: str) -> str:
+        """Return the legacy read-only banner; log once per process.
+
+        Mutators routed through here when ``is_legacy_principal_route``
+        flags the inbound source. The pointer table is never touched.
+        """
+        from gateway.active_topic import (
+            LEGACY_READONLY_MESSAGE,
+            _maybe_log_legacy_banner_once,
+        )
+        _maybe_log_legacy_banner_once(reason)
+        return LEGACY_READONLY_MESSAGE
+
+    def _topic_legacy_state_for_source(self, source):
+        """Return ``(is_legacy, reason)`` for the inbound source.
+
+        Defensive wrapper around :func:`gateway.active_topic.is_legacy_principal_route`
+        so the slash handler doesn't raise on transient SessionDB errors —
+        we default to non-legacy (allow) so a DB hiccup doesn't lock the
+        user out of pointer commands; the migration marker + Telegram-
+        topic-mode read are both nullable and read-only.
+        """
+        from gateway.active_topic import is_legacy_principal_route
+        try:
+            return is_legacy_principal_route(
+                self._session_db,
+                source,
+                app_id=getattr(self.config, "topic_default_app_id", None),
+            )
+        except Exception:
+            logger.debug("legacy-detect: is_legacy_principal_route failed", exc_info=True)
+            return False, ""
+
     async def _emit_topic_pointer_banner(self, source, banner_text: str) -> None:
         """Emit the topic-switch banner via the platform adapter.
 
@@ -2896,6 +2961,32 @@ class GatewaySlashCommandsMixin:
             except Exception:
                 logger.debug("topic-pointer auth check failed", exc_info=True)
 
+        # Step 8: app_id fail-closed for mutator surface. Read-only
+        # subcommands (show/list/help) still work — they require a
+        # principal but not necessarily a configured default app_id,
+        # because there's nothing to write. We compute the app_id-
+        # dependent principal lazily so the early read-only paths can
+        # answer without forcing the user to set up app_id first.
+        raw_args = (event.get_command_args() or "").strip()
+        try:
+            parts = shlex.split(raw_args) if raw_args else []
+        except ValueError as exc:
+            return f"/topic: failed to parse args: {exc}"
+        sub = (parts[0].lower() if parts else "")
+        rest = parts[1:]
+
+        configured_app_id = getattr(self.config, "topic_default_app_id", None)
+        is_mutator = sub in self._TOPIC_MUTATOR_SUBCOMMANDS
+
+        if is_mutator and not configured_app_id:
+            return self._topic_missing_app_id_message()
+
+        # Step 8: refuse mutators in legacy mode; read-only still works.
+        if is_mutator:
+            is_legacy, reason = self._topic_legacy_state_for_source(source)
+            if is_legacy:
+                return self._topic_legacy_refusal(source, reason)
+
         principal = self._topic_principal_for_source(source)
         if principal is None:
             return (
@@ -2903,17 +2994,10 @@ class GatewaySlashCommandsMixin:
                 "principal — refused."
             )
 
-        raw_args = (event.get_command_args() or "").strip()
         if not raw_args:
             return await self._handle_topic_subcommand_show(principal)
-        try:
-            parts = shlex.split(raw_args)
-        except ValueError as exc:
-            return f"/topic: failed to parse args: {exc}"
         if not parts:
             return await self._handle_topic_subcommand_show(principal)
-        sub = parts[0].lower()
-        rest = parts[1:]
 
         if sub in {"help", "?", "-h", "--help"}:
             return self._topic_help_text()
@@ -3464,10 +3548,15 @@ class GatewaySlashCommandsMixin:
         Legacy compatibility).
         """
         source = event.source
+        # HRM-T0a step 5 + step 8: route to the pointer handler whenever
+        # slash UX + pointer mode are on, even if ``topic_default_app_id``
+        # is missing — the pointer handler returns a user-visible
+        # setup-required message for mutators so the failure mode is
+        # clear, rather than silently falling back to the legacy
+        # Telegram-DM forum-thread handler.
         if (
             getattr(self.config, "topic_slash_ux_enabled", False)
             and getattr(self.config, "topic_pointer_mode_enabled", True)
-            and getattr(self.config, "topic_default_app_id", None)
         ):
             return await self._handle_topic_pointer_command(event)
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":

@@ -21,7 +21,6 @@ listed for transparency but do not double-count.
 | `.project-intel/indexes/project-index.sqlite` | DISCARD (project-intel) | — | — |
 | `agent/agent_init.py` | PR | #48065 | #49184, #49917, #50073, #50296 |
 | `agent/agent_runtime_helpers.py` | PR | #49184 | — |
-| `agent/agy_cli_client.py` | PR | #50555 | — |
 | `agent/anthropic_adapter.py` | PR | #48024 | #50064 |
 | `agent/anthropic_adapter.py.bak.20260603100620` | DISCARD (bak) | — | — |
 | `agent/auto_router.py` | PR | #50031 | — |
@@ -38,9 +37,7 @@ listed for transparency but do not double-count.
 | `agent/conversation_loop.py` | PR | #49184 | #49917, #50073, #50155 |
 | `agent/conversation_loop.py.bak.20260607_231325` | DISCARD (bak) | — | — |
 | `agent/copilot_acp_client.py` | PR | #50064 | — |
-| `agent/gemini_cloudcode_adapter.py` | PR | #50033 | — |
-| `agent/gemini_native_adapter.py` | PR | #50033 | — |
-| `agent/google_user_agent.py` | PR | #50033 | — |
+| `agent/gemini_cloudcode_adapter.py` | PR | #49644 | — |
 | `agent/model_metadata.py` | PR | #50064 | — |
 | `agent/model_metadata.py.bak.20260603100620` | DISCARD (bak) | — | — |
 | `agent/models_dev.py` | PR | #49449 | — |
@@ -62,7 +59,7 @@ listed for transparency but do not double-count.
 | `gateway/run.py` | PR | #49644 | #50146 |
 | `gateway/status.py` | PR | #50047 | — |
 | `hermes_cli/_parser.py` | PR | #49917 | — |
-| `hermes_cli/auth.py` | PR | #50657 | — |
+| `hermes_cli/auth.py` | PR | #49644 | — |
 | `hermes_cli/banner.py` | PR | #50046 | — |
 | `hermes_cli/codex_models.py` | PR | #50038 | — |
 | `hermes_cli/commands.py` | PR | #49644 | #49917 |
@@ -77,7 +74,7 @@ listed for transparency but do not double-count.
 | `hermes_cli/models.py.bak.20260603100620` | DISCARD (bak) | — | — |
 | `hermes_cli/plugins.py` | PR | #50054 | — |
 | `hermes_cli/prompt_size.py` | PR | #48101 | — |
-| `hermes_cli/runtime_provider.py` | PR | #50657 | — |
+| `hermes_cli/runtime_provider.py` | PR | #49644 | — |
 | `hermes_cli/send_cmd.py` | PR | #50048 | — |
 | `hermes_cli/skills_hub.py` | PR | #50045 | — |
 | `hermes_cli/source.py` | PR | #50032 | — |
@@ -85,14 +82,9 @@ listed for transparency but do not double-count.
 | `hermes_cli/web_server.py` | PR | #50086 | — |
 | `hermes_constants.py` | PR | #49644 | — |
 | `hermes_state.py` | PR | #50056 | #50296 |
-| `plugins/model-providers/agy-cli/__init__.py` | PR | #50555 | — |
-| `plugins/model-providers/agy-cli/plugin.yaml` | PR | #50555 | — |
 | `plugins/model-providers/copilot/__init__.py` | PR | #50064 | — |
 | `plugins/platforms/discord/adapter.py` | PR | #50078 | — |
 | `run_agent.py` | PR | #49644 | #50073, #50296 |
-| `tests/agent/conftest.py` | PR | #50555 | — |
-| `tests/agent/test_agy_cli_client_v2.py` | PR | #50555 | — |
-| `tests/agent/test_agy_cli_client_v3.py` | PR | #50555 | — |
 | `tests/agent/test_anthropic_adapter.py` | PR | #50064 | — |
 | `tests/agent/test_autopilot_council_gate.py` | PR | #49917 | — |
 | `tests/agent/test_autopilot_driver.py` | PR | #49917 | — |
@@ -123,7 +115,6 @@ listed for transparency but do not double-count.
 | `tests/hermes_cli/test_stable_update.py` | PR | #50046 | — |
 | `tests/hermes_cli/test_update_check.py` | PR | #50046 | — |
 | `tests/hermes_cli/test_web_server.py` | PR | #50066 | #50086 |
-| `tests/plugins/test_agy_cli_plugin_v2.py` | PR | #50555 | — |
 | `tests/probe_prelude_e2e.py` | PR | #50078 | — |
 | `tests/run_agent/test_agent_guardrails.py` | PR | #50078 | — |
 | `tests/run_agent/test_compression_feasibility.py` | PR | #50080 | — |

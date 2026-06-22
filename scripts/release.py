@@ -1512,6 +1512,7 @@ AUTHOR_MAP = {
     "zccyman@163.com": "zccyman",  # PR #25294 (custom provider api_key_env alias)
     # xAI cluster batch salvage (May 2026)
     "lgndscntn@gmail.com": "Fewmanism",  # PR #27420 (threaded xAI OAuth callback)
+    "lgndscntn@googlemail.com": "Fewmanism",  # PR #28830 (computer_use app target drift)
     "slimydog@Faisals-Mac-mini.local": "Slimydog21",  # PR #28021 (strip slash enums xAI Responses)
     "194121339+Slimydog21@users.noreply.github.com": "Slimydog21",  # PR #28021 salvage (noreply form)
     "bitkyc08@gmail.com": "lidge-jun",  # PR #26814 (api server browser security headers)

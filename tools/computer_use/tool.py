@@ -53,6 +53,7 @@ from tools.computer_use.backend import (
     CaptureResult,
     ComputerUseBackend,
     UIElement,
+    app_matches_requested,
 )
 
 logger = logging.getLogger(__name__)
@@ -124,12 +125,46 @@ _BLOCKED_TYPE_PATTERNS = [
     re.compile(r":\s*\(\)\s*\{\s*:\|:\s*&\s*\}", re.IGNORECASE),  # fork bomb
 ]
 
-
 def _is_blocked_type(text: str) -> Optional[str]:
     for pat in _BLOCKED_TYPE_PATTERNS:
         if pat.search(text):
             return pat.pattern
     return None
+
+
+def _app_matches_requested(requested_app: str, actual_app: str) -> bool:
+    """Backward-compatible internal wrapper used by tests and callers."""
+    return app_matches_requested(requested_app, actual_app)
+
+
+def _target_mismatch_response(
+    *,
+    requested_app: str,
+    actual_app: str = "",
+    actual_window: str = "",
+    action: str,
+    phase: str,
+    message: str = "",
+    action_ok: Optional[bool] = None,
+    available_apps: Optional[List[str]] = None,
+) -> str:
+    payload: Dict[str, Any] = {
+        "error": "target_mismatch",
+        "action": action,
+        "phase": phase,
+        "requested_app": requested_app,
+        "actual_app": actual_app,
+        "actual_window": actual_window,
+        "message": message or (
+            f"Requested app {requested_app!r} did not match returned app "
+            f"{actual_app!r}. Stopping computer_use automation."
+        ),
+    }
+    if action_ok is not None:
+        payload["action_ok"] = action_ok
+    if available_apps is not None:
+        payload["available_apps"] = available_apps
+    return json.dumps(payload, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -342,12 +377,32 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
 
 def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
     capture_after = bool(args.get("capture_after"))
+    requested_app = args.get("app")
+
+    if requested_app and action in _DESTRUCTIVE_ACTIONS and action != "focus_app":
+        preflight = backend.capture(mode="ax", app=requested_app)
+        if not _app_matches_requested(requested_app, preflight.app):
+            return _target_mismatch_response(
+                requested_app=requested_app,
+                actual_app=preflight.app,
+                actual_window=preflight.window_title,
+                action=action,
+                phase="before_action",
+            )
 
     if action == "capture":
         mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-        cap = backend.capture(mode=mode, app=args.get("app"))
+        cap = backend.capture(mode=mode, app=requested_app)
+        if requested_app and not _app_matches_requested(requested_app, cap.app):
+            return _target_mismatch_response(
+                requested_app=requested_app,
+                actual_app=cap.app,
+                actual_window=cap.window_title,
+                action=action,
+                phase="capture",
+            )
         return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
 
     if action == "wait":
@@ -360,11 +415,22 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         return json.dumps({"apps": apps, "count": len(apps)})
 
     if action == "focus_app":
-        app = args.get("app")
+        app = requested_app
         if not app:
             return json.dumps({"error": "focus_app requires `app`"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
-        return _maybe_follow_capture(backend, res, capture_after)
+        if res.meta.get("error") == "target_mismatch":
+            return _target_mismatch_response(
+                requested_app=app,
+                actual_app=str(res.meta.get("actual_app", "")),
+                actual_window=str(res.meta.get("actual_window", "")),
+                action=action,
+                phase="before_action",
+                message=res.message,
+                action_ok=res.ok,
+                available_apps=res.meta.get("available_apps"),
+            )
+        return _maybe_follow_capture(backend, res, capture_after, requested_app=app)
 
     if action in {"click", "double_click", "right_click", "middle_click"}:
         button = args.get("button")
@@ -385,7 +451,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             x=x, y=y, button=button or "left", click_count=click_count,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, requested_app=requested_app)
 
     if action == "drag":
         has_elements = args.get("from_element") is not None and args.get("to_element") is not None
@@ -402,7 +468,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             button=args.get("button", "left"),
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, requested_app=requested_app)
 
     if action == "scroll":
         coord = args.get("coordinate") or (None, None)
@@ -414,22 +480,22 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             y=coord[1] if coord and coord[1] is not None else None,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, requested_app=requested_app)
 
     if action == "type":
         res = backend.type_text(args.get("text", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, requested_app=requested_app)
 
     if action == "key":
         res = backend.key(args.get("keys", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, requested_app=requested_app)
 
     if action == "set_value":
         value = args.get("value")
         if value is None:
             return json.dumps({"error": "set_value requires `value`"})
         res = backend.set_value(value=str(value), element=args.get("element"))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, requested_app=requested_app)
 
     return json.dumps({"error": f"unknown action {action!r}"})
 
@@ -834,7 +900,10 @@ def _route_capture_through_aux_vision(
 
 
 def _maybe_follow_capture(
-    backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
+    backend: ComputerUseBackend,
+    res: ActionResult,
+    do_capture: bool,
+    requested_app: Optional[str] = None,
 ) -> Any:
     if not do_capture:
         return _text_response(res)
@@ -847,11 +916,20 @@ def _maybe_follow_capture(
         # Preserve the app context established by the preceding capture/focus_app so
         # that capture_after=True re-captures the same app rather than the frontmost
         # window (which may have changed if the action caused a focus shift).
-        last_app = getattr(backend, "_last_app", None)
-        cap = backend.capture(mode="som", app=last_app)
+        follow_app = requested_app or getattr(backend, "_last_app", None)
+        cap = backend.capture(mode="som", app=follow_app)
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
+    if requested_app and not _app_matches_requested(requested_app, cap.app):
+        return _target_mismatch_response(
+            requested_app=requested_app,
+            actual_app=cap.app,
+            actual_window=cap.window_title,
+            action=res.action,
+            phase="after_action",
+            action_ok=res.ok,
+        )
     # Combine action summary with the capture.
     resp = _capture_response(cap)
     if isinstance(resp, dict) and resp.get("_multimodal"):

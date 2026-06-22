@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+import re
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 @dataclass
@@ -79,6 +80,93 @@ class ActionResult:
     capture: Optional[CaptureResult] = None
     # Arbitrary extra fields for debugging / telemetry.
     meta: Dict[str, Any] = field(default_factory=dict)
+
+
+# Conservative macOS app-name alias matching shared by the safety wrapper and
+# concrete backends. A false positive could route input to the wrong process;
+# keep aliases explicit rather than broad/fuzzy.
+_APP_ALIASES: Dict[str, Set[str]] = {
+    "システム設定": {
+        "system settings",
+        "system preferences",
+        "システム環境設定",
+        "com.apple.systemsettings",
+        "com.apple.systempreferences",
+    },
+    "システム環境設定": {
+        "system settings",
+        "system preferences",
+        "システム設定",
+        "com.apple.systemsettings",
+        "com.apple.systempreferences",
+    },
+    "system settings": {
+        "システム設定",
+        "システム環境設定",
+        "system preferences",
+        "com.apple.systemsettings",
+        "com.apple.systempreferences",
+    },
+    "system preferences": {
+        "システム設定",
+        "システム環境設定",
+        "system settings",
+        "com.apple.systemsettings",
+        "com.apple.systempreferences",
+    },
+    "com.apple.systemsettings": {
+        "システム設定",
+        "システム環境設定",
+        "system settings",
+        "system preferences",
+        "com.apple.systempreferences",
+    },
+    "com.apple.systempreferences": {
+        "システム設定",
+        "システム環境設定",
+        "system settings",
+        "system preferences",
+        "com.apple.systemsettings",
+    },
+}
+
+
+def _normalize_app_name(value: str) -> str:
+    normalized = (value or "").casefold().strip()
+    if normalized.endswith(".app"):
+        normalized = normalized[:-4]
+    return re.sub(r"[\s_\-.]+", " ", normalized).strip()
+
+
+def _app_name_variants(value: str) -> Set[str]:
+    normalized = _normalize_app_name(value)
+    if not normalized:
+        return set()
+    variants = {normalized}
+    for alias in _APP_ALIASES.get(normalized, set()):
+        variants.add(_normalize_app_name(alias))
+    return variants
+
+
+def app_matches_requested(requested_app: str, actual_app: str) -> bool:
+    """Return True when an actual app/window matches a requested app name.
+
+    Prefer exact names and explicit localized aliases. Allow only conservative
+    one-way containment for multi-word app names so short/generic requests like
+    ``Mail`` or ``Settings`` cannot accidentally match unrelated apps.
+    """
+    requested = _app_name_variants(requested_app)
+    actual = _app_name_variants(actual_app)
+    if not requested or not actual:
+        return False
+    if requested & actual:
+        return True
+    for req in requested:
+        if " " not in req or len(req) < 10:
+            continue
+        if any(req in act for act in actual):
+            return True
+    return False
 
 
 class ComputerUseBackend(ABC):

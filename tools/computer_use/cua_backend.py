@@ -54,6 +54,7 @@ from tools.computer_use.backend import (
     CaptureResult,
     ComputerUseBackend,
     UIElement,
+    app_matches_requested,
 )
 
 logger = logging.getLogger(__name__)
@@ -1023,24 +1024,22 @@ class CuaDriverBackend(ComputerUseBackend):
             return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
                                  elements=[], app="", window_title="", png_bytes_len=0)
 
-        # Filter by app name (case-insensitive substring) if requested.
-        # When the filter matches nothing, surface that explicitly instead of
-        # silently capturing the frontmost window — on macOS the `app_name`
-        # returned by list_windows is the localized name (e.g. "計算機"), so
-        # `app="Calculator"` legitimately matches no windows on a non-English
-        # system and the caller needs to retry with the localized name.
+        # Filter by app name (case-insensitive substring plus conservative
+        # localized macOS aliases) if requested. Never fall back to frontmost
+        # when an app was explicitly requested; that is target drift.
         if app:
-            app_lower = app.lower()
-            filtered = [w for w in windows if app_lower in w["app_name"].lower()]
+            filtered = [w for w in windows if app_matches_requested(app, w["app_name"])]
             if not filtered:
                 return CaptureResult(
-                    mode=mode, width=0, height=0, png_b64=None,
-                    elements=[], app="",
+                    mode=mode,
+                    width=0,
+                    height=0,
+                    png_b64=None,
+                    elements=[],
+                    app="",
                     window_title=(
-                        f"<no on-screen window matched app={app!r}; "
-                        f"call list_apps to see available app names "
-                        f"(macOS reports localized names, e.g. '計算機' "
-                        f"instead of 'Calculator')>"
+                        f"No on-screen window found for app {app!r}; "
+                        "call list_apps to see available app names"
                     ),
                     png_bytes_len=0,
                 )
@@ -1385,24 +1384,32 @@ class CuaDriverBackend(ComputerUseBackend):
         ]
         windows.sort(key=lambda w: w["z_index"])
 
-        app_lower = app.lower()
-        matched = [w for w in windows if app_lower in w["app_name"].lower()]
-        # Don't silently fall back to the frontmost window when the filter
-        # matches nothing — that hides the real failure (often a localized
-        # macOS app name mismatch, e.g. caller passed "Calculator" but
-        # list_windows returns "計算機").
-        target = matched[0] if matched else None
-        if target:
-            self._active_pid = target["pid"]
-            self._active_window_id = target["window_id"]
-            self._last_app = target["app_name"]  # preserve for capture_after= follow-ups
+        matched = [w for w in windows if app_matches_requested(app, w["app_name"])]
+        if not matched:
+            actual_app = windows[0]["app_name"] if windows else ""
             return ActionResult(
-                ok=True, action="focus_app",
-                message=f"Targeted {target['app_name']} (pid {self._active_pid}, "
-                        f"window {self._active_window_id}) without raising window.",
+                ok=False,
+                action="focus_app",
+                message=(
+                    f"target_mismatch: requested app {app!r} did not match "
+                    f"any on-screen window; not targeting {actual_app!r}."
+                ),
+                meta={
+                    "error": "target_mismatch",
+                    "requested_app": app,
+                    "actual_app": actual_app,
+                    "available_apps": sorted({w["app_name"] for w in windows if w.get("app_name")}),
+                },
             )
-        return ActionResult(ok=False, action="focus_app",
-                            message=f"No on-screen window found for app '{app}'.")
+        target = matched[0]
+        self._active_pid = target["pid"]
+        self._active_window_id = target["window_id"]
+        self._last_app = target["app_name"]
+        return ActionResult(
+            ok=True, action="focus_app",
+            message=f"Targeted {target['app_name']} (pid {self._active_pid}, "
+                    f"window {self._active_window_id}) without raising window.",
+        )
 
     # ── App lifecycle ────────────────────────────────────────────────
     #

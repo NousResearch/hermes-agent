@@ -301,6 +301,317 @@ class TestDispatch:
 
 
 # ---------------------------------------------------------------------------
+# Target app drift guard
+# ---------------------------------------------------------------------------
+
+class TestTargetAppDriftGuard:
+    def test_state_changing_action_stops_on_requested_app_mismatch_before_scroll(self):
+        from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import ActionResult, CaptureResult
+
+        class DriftBackend:
+            def __init__(self):
+                self.calls = []
+            def capture(self, mode="som", app=None):
+                self.calls.append(("capture", mode, app))
+                return CaptureResult(
+                    mode=mode, width=1, height=1,
+                    app="QuickTime Player", window_title="Movie Recording",
+                )
+            def scroll(self, **kw):
+                self.calls.append(("scroll", kw))
+                return ActionResult(ok=True, action="scroll")
+
+        backend = DriftBackend()
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            out = cu_tool.handle_computer_use({
+                "action": "scroll",
+                "app": "システム設定",
+                "direction": "down",
+            })
+
+        parsed = json.loads(out)
+        assert parsed["error"] == "target_mismatch"
+        assert parsed["requested_app"] == "システム設定"
+        assert parsed["actual_app"] == "QuickTime Player"
+        assert backend.calls == [("capture", "ax", "システム設定")]
+
+    def test_localized_system_settings_name_matches_english_returned_app(self):
+        from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import ActionResult, CaptureResult
+
+        class SystemSettingsBackend:
+            def __init__(self):
+                self.calls = []
+            def capture(self, mode="som", app=None):
+                self.calls.append(("capture", mode, app))
+                return CaptureResult(
+                    mode=mode, width=1, height=1,
+                    app="System Settings", window_title="Sharing",
+                )
+            def scroll(self, **kw):
+                self.calls.append(("scroll", kw))
+                return ActionResult(ok=True, action="scroll")
+
+        backend = SystemSettingsBackend()
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            out = cu_tool.handle_computer_use({
+                "action": "scroll",
+                "app": "システム設定",
+                "direction": "down",
+            })
+
+        parsed = json.loads(out)
+        assert parsed["ok"] is True
+        assert parsed["action"] == "scroll"
+        assert backend.calls[0] == ("capture", "ax", "システム設定")
+        assert backend.calls[1][0] == "scroll"
+
+    def test_capture_after_reuses_requested_app_for_followup_capture(self):
+        from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import ActionResult, CaptureResult
+
+        class SafariBackend:
+            def __init__(self):
+                self.calls = []
+            def capture(self, mode="som", app=None):
+                self.calls.append(("capture", mode, app))
+                return CaptureResult(
+                    mode=mode, width=1, height=1,
+                    app="Safari", window_title="Example",
+                )
+            def scroll(self, **kw):
+                self.calls.append(("scroll", kw))
+                return ActionResult(ok=True, action="scroll")
+
+        backend = SafariBackend()
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            out = cu_tool.handle_computer_use({
+                "action": "scroll",
+                "app": "Safari",
+                "direction": "down",
+                "capture_after": True,
+            })
+
+        parsed = json.loads(out)
+        assert parsed["ok"] is True
+        assert parsed["app"] == "Safari"
+        assert backend.calls == [
+            ("capture", "ax", "Safari"),
+            ("scroll", {"direction": "down", "amount": 3, "element": None, "x": None, "y": None, "modifiers": None}),
+            ("capture", "som", "Safari"),
+        ]
+
+    def test_capture_with_requested_app_preserves_max_elements_cap(self):
+        from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import CaptureResult, UIElement
+
+        elements = [
+            UIElement(index=i + 1, role="AXButton", label=f"el-{i}", bounds=(0, 0, 1, 1))
+            for i in range(25)
+        ]
+
+        class SafariBackend:
+            def __init__(self):
+                self.calls = []
+            def capture(self, mode="som", app=None):
+                self.calls.append(("capture", mode, app))
+                return CaptureResult(
+                    mode=mode, width=1, height=1,
+                    elements=list(elements),
+                    app="Safari", window_title="Example",
+                )
+
+        backend = SafariBackend()
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            out = cu_tool.handle_computer_use({
+                "action": "capture",
+                "mode": "ax",
+                "app": "Safari",
+                "max_elements": 5,
+            })
+
+        parsed = json.loads(out)
+        assert len(parsed["elements"]) == 5
+        assert parsed["total_elements"] == 25
+        assert parsed["truncated_elements"] == 20
+        assert backend.calls == [("capture", "ax", "Safari")]
+
+    def test_failed_action_with_requested_app_skips_capture_after(self):
+        from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import ActionResult, CaptureResult
+
+        class FailingSafariBackend:
+            def __init__(self):
+                self.calls = []
+            def capture(self, mode="som", app=None):
+                self.calls.append(("capture", mode, app))
+                return CaptureResult(
+                    mode=mode, width=1, height=1,
+                    app="Safari", window_title="Example",
+                )
+            def scroll(self, **kw):
+                self.calls.append(("scroll", kw))
+                return ActionResult(ok=False, action="scroll", message="element not found")
+
+        backend = FailingSafariBackend()
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            out = cu_tool.handle_computer_use({
+                "action": "scroll",
+                "app": "Safari",
+                "direction": "down",
+                "capture_after": True,
+            })
+
+        parsed = json.loads(out)
+        assert parsed["ok"] is False
+        assert parsed["action"] == "scroll"
+        assert backend.calls == [
+            ("capture", "ax", "Safari"),
+            ("scroll", {"direction": "down", "amount": 3, "element": None, "x": None, "y": None, "modifiers": None}),
+        ]
+
+    def test_app_matcher_accepts_common_localized_macos_names(self):
+        from tools.computer_use.tool import _app_matches_requested
+
+        assert _app_matches_requested("システム設定", "System Settings")
+        assert _app_matches_requested("システム環境設定", "System Preferences")
+        assert not _app_matches_requested("システム設定", "QuickTime Player")
+
+    def test_app_matcher_rejects_short_substring_false_positives(self):
+        from tools.computer_use.tool import _app_matches_requested
+
+        assert not _app_matches_requested("Mail", "Airmail")
+        assert not _app_matches_requested("Settings", "System Settings")
+
+    def test_focus_app_mismatch_includes_available_apps_for_diagnostics(self):
+        from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import ActionResult
+
+        class FocusMismatchBackend:
+            def focus_app(self, app, raise_window=False):
+                return ActionResult(
+                    ok=False,
+                    action="focus_app",
+                    message="target_mismatch",
+                    meta={
+                        "error": "target_mismatch",
+                        "actual_app": "QuickTime Player",
+                        "available_apps": ["QuickTime Player", "System Settings"],
+                    },
+                )
+
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=FocusMismatchBackend()):
+            out = cu_tool.handle_computer_use({
+                "action": "focus_app",
+                "app": "システム設定",
+            })
+
+        parsed = json.loads(out)
+        assert parsed["error"] == "target_mismatch"
+        assert parsed["available_apps"] == ["QuickTime Player", "System Settings"]
+
+    def test_cua_capture_app_filter_uses_localized_alias_without_frontmost_fallback(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+            def call_tool(self, name, args):
+                self.calls.append((name, args))
+                if name == "list_windows":
+                    return {
+                        "data": None,
+                        "images": [],
+                        "structuredContent": {
+                            "windows": [
+                                {
+                                    "app_name": "QuickTime Player",
+                                    "pid": 1076,
+                                    "window_id": 66,
+                                    "is_on_screen": True,
+                                    "title": "Movie Recording",
+                                    "z_index": 0,
+                                },
+                                {
+                                    "app_name": "System Settings",
+                                    "pid": 1043,
+                                    "window_id": 35,
+                                    "is_on_screen": True,
+                                    "title": "Sharing",
+                                    "z_index": 1,
+                                },
+                            ]
+                        },
+                        "isError": False,
+                    }
+                if name == "get_window_state":
+                    return {
+                        "data": '✅ System Settings — 0 elements\nAXWindow "Sharing"',
+                        "images": [],
+                        "structuredContent": None,
+                        "isError": False,
+                    }
+                raise AssertionError(f"unexpected tool call {name}")
+
+        backend = CuaDriverBackend()
+        fake_session = FakeSession()
+        setattr(backend, "_session", fake_session)
+
+        cap = backend.capture(mode="ax", app="システム設定")
+
+        assert cap.app == "System Settings"
+        assert cap.window_title == "Sharing"
+        assert backend._active_pid == 1043
+        assert backend._active_window_id == 35
+        assert fake_session.calls == [
+            ("list_windows", {"on_screen_only": True}),
+            ("get_window_state", {"pid": 1043, "window_id": 35}),
+        ]
+
+    def test_cua_focus_app_mismatch_does_not_target_frontmost_window(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        class FakeSession:
+            def call_tool(self, name, args):
+                assert name == "list_windows"
+                return {
+                    "data": None,
+                    "images": [],
+                    "structuredContent": {
+                        "windows": [
+                            {
+                                "app_name": "QuickTime Player",
+                                "pid": 1076,
+                                "window_id": 66,
+                                "is_on_screen": True,
+                                "z_index": 0,
+                            },
+                        ]
+                    },
+                    "isError": False,
+                }
+
+        backend = CuaDriverBackend()
+        setattr(backend, "_session", FakeSession())
+
+        result = backend.focus_app("システム設定")
+
+        assert result.ok is False
+        assert result.meta["error"] == "target_mismatch"
+        assert result.meta["actual_app"] == "QuickTime Player"
+        assert result.meta["available_apps"] == ["QuickTime Player"]
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+
+
+# ---------------------------------------------------------------------------
 # Safety guards (type / key block lists)
 # ---------------------------------------------------------------------------
 

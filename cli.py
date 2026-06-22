@@ -2950,6 +2950,17 @@ def _disable_prompt_toolkit_cpr_warning(app) -> None:
         pass
 
 
+def _is_warp_terminal() -> bool:
+    """Return True when running under Warp (``TERM_PROGRAM=WarpTerminal``).
+
+    Warp is a block-based renderer: it re-renders the whole active block on
+    each repaint, so the ~10 Hz bottom-chrome invalidation the spinner uses in
+    non-fullscreen mode shows up as whole-screen flicker. Callers throttle the
+    work-time repaint under Warp to keep output stable (#51039).
+    """
+    return (os.environ.get("TERM_PROGRAM") or "").strip().lower() == "warpterminal"
+
+
 def _strip_leaked_terminal_responses_with_meta(text: str) -> tuple[str, bool]:
     """Strip leaked terminal control-response sequences from user input.
 
@@ -14111,14 +14122,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         app._on_resize = _resize_clear_ghosts
 
+        # Warp re-renders the whole active block on every repaint, so the
+        # default ~10 Hz work-time chrome invalidation flickers the screen.
+        # Throttle to ~2 Hz under Warp — output stays stable; the only cost is
+        # a slower spinner animation for Warp users (#51039). TERM_PROGRAM is
+        # fixed for the process, so resolve the interval once.
+        _work_invalidate_interval = 0.5 if _is_warp_terminal() else 0.1
+
         def spinner_loop():
             while not self._should_exit:
                 if not self._app:
                     time.sleep(0.1)
                     continue
                 if self._command_running:
-                    self._invalidate(min_interval=0.1)
-                    time.sleep(0.1)
+                    self._invalidate(min_interval=_work_invalidate_interval)
+                    time.sleep(_work_invalidate_interval)
                 else:
                     # Do not repaint the idle prompt every second. In non-full-screen
                     # prompt_toolkit mode, background redraws can fight tmux/Ghostty/cmux

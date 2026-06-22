@@ -2132,11 +2132,35 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_spawn = cli_max if cli_max is not None else _coerce_positive_int(
             _kanban_cfg.get("max_spawn")
         )
+        # Stranded-in-ready reaper config. Same semantics as the gateway
+        # watcher so the CLI matches the gateway. ``stranded_timeout_seconds``
+        # of 0 or negative disables the reaper (the dispatcher's default
+        # applies when the key is absent). Action: invalid values fall
+        # back to "auto" so an operator typo can't crash dispatch.
+        raw_stranded = _kanban_cfg.get("stranded_timeout_seconds", None)
+        if raw_stranded is None:
+            stranded_timeout_seconds = kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        else:
+            try:
+                stranded_timeout_seconds = int(raw_stranded)
+            except (TypeError, ValueError):
+                stranded_timeout_seconds = kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        raw_action = _kanban_cfg.get("stranded_action", None)
+        if not raw_action or not str(raw_action).strip():
+            stranded_action = kb.DEFAULT_STRANDED_ACTION
+        else:
+            candidate = str(raw_action).strip().lower()
+            if candidate in kb.VALID_STRANDED_ACTIONS:
+                stranded_action = candidate
+            else:
+                stranded_action = kb.DEFAULT_STRANDED_ACTION
     except Exception:
         default_assignee = None
         max_in_progress_per_profile = None
         max_in_progress = None
         max_spawn = getattr(args, "max", None)
+        stranded_timeout_seconds = kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        stranded_action = kb.DEFAULT_STRANDED_ACTION
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn,
@@ -2146,6 +2170,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            stranded_timeout_seconds=stranded_timeout_seconds,
+            stranded_action=stranded_action,
         )
     if getattr(args, "json", False):
         print(json.dumps({
@@ -2166,6 +2192,15 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "stranded_reaped": [
+                {
+                    "task_id": tid,
+                    "action": act,
+                    "original_assignee": orig,
+                    "new_assignee": new,
+                }
+                for (tid, act, orig, new) in res.stranded_reaped
+            ],
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -2191,6 +2226,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "
             f"{', '.join(res.auto_assigned_default)}"
         )
+    if res.stranded_reaped:
+        print(f"Stranded reaped: {len(res.stranded_reaped)}")
+        for tid, act, orig, new in res.stranded_reaped:
+            if act == "reassign" and new:
+                print(f"  - {tid}  reassign {orig!r} -> {new!r}")
+            else:
+                print(f"  - {tid}  archive (was {orig!r}, no profile on disk)")
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     if res.skipped_per_profile_capped:

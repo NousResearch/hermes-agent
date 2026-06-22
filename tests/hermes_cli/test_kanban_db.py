@@ -1724,6 +1724,354 @@ def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawna
         assert kb.get_task(conn, t).claim_lock is None
 
 
+# ---------------------------------------------------------------------------
+# Stranded-in-ready reaper
+# ---------------------------------------------------------------------------
+
+def test_reap_stranded_in_ready_archives_missing_profile(
+    kanban_home, monkeypatch,
+):
+    """A ready task whose assignee has no on-disk profile, sitting longer
+    than the timeout, must be archived (action='auto' with no usable
+    default_assignee)."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stranded", assignee="ghost-profile")
+        # Push the task's "ready since" past the timeout.
+        old_ts = int(time.time()) - (kb.DEFAULT_STRANDED_TIMEOUT_SECONDS + 60)
+        # create_task emits a "created" event. There is no "promoted" event
+        # for a no-parent task — it goes directly to ready. So the
+        # fallback "ready_since" is tasks.created_at.
+        conn.execute("UPDATE tasks SET created_at = ? WHERE id = ?", (old_ts, t))
+        conn.execute(
+            "UPDATE task_events SET created_at = ? "
+            "WHERE task_id = ? AND kind = 'created'",
+            (old_ts, t),
+        )
+
+        reaped = kb.reap_stranded_in_ready(
+            conn, timeout_seconds=kb.DEFAULT_STRANDED_TIMEOUT_SECONDS,
+        )
+
+    assert len(reaped) == 1
+    assert reaped[0][0] == t
+    assert reaped[0][1] == "archive"
+    assert reaped[0][2] == "ghost-profile"
+    assert reaped[0][3] is None
+
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t).status == "archived"
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        assert "stranded_archived" in kinds
+
+
+def test_reap_stranded_in_ready_reassigns_with_default(
+    kanban_home, monkeypatch,
+):
+    """With action='auto' and a real default_assignee on disk, the
+    stranded task is reassigned (not archived)."""
+    from hermes_cli import profiles
+    profiles_seen = {"default-profile"}
+    monkeypatch.setattr(
+        profiles, "profile_exists",
+        lambda name: name in profiles_seen,
+    )
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stranded", assignee="ghost")
+        old_ts = int(time.time()) - (kb.DEFAULT_STRANDED_TIMEOUT_SECONDS + 60)
+        conn.execute("UPDATE tasks SET created_at = ? WHERE id = ?", (old_ts, t))
+        conn.execute(
+            "UPDATE task_events SET created_at = ? "
+            "WHERE task_id = ? AND kind = 'created'",
+            (old_ts, t),
+        )
+
+        reaped = kb.reap_stranded_in_ready(
+            conn, default_assignee="default-profile", action="auto",
+        )
+
+    assert len(reaped) == 1
+    assert reaped[0] == (t, "reassign", "ghost", "default-profile")
+
+    with kb.connect() as conn:
+        # Still in 'ready' — the dispatcher will pick it up next tick.
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.assignee == "default-profile"
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        assert "stranded_reassigned" in kinds
+
+
+def test_reap_stranded_in_ready_ignores_real_profile(
+    kanban_home, monkeypatch,
+):
+    """Tasks whose assignee IS a real on-disk profile are NEVER touched
+    by the reaper, even if they have been ready for a long time. A long
+    ready time on a real profile is a different problem (dispatcher
+    paused, all workers busy) — the reaper is for missing-profile only."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(
+        profiles, "profile_exists", lambda name: name == "alice",
+    )
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="busy", assignee="alice")
+        old_ts = int(time.time()) - (kb.DEFAULT_STRANDED_TIMEOUT_SECONDS + 600)
+        conn.execute("UPDATE tasks SET created_at = ? WHERE id = ?", (old_ts, t))
+
+        reaped = kb.reap_stranded_in_ready(
+            conn, timeout_seconds=kb.DEFAULT_STRANDED_TIMEOUT_SECONDS,
+        )
+
+    assert reaped == []
+    with kb.connect() as conn:
+        # Untouched.
+        assert kb.get_task(conn, t).status == "ready"
+        assert kb.get_task(conn, t).assignee == "alice"
+
+
+def test_reap_stranded_in_ready_respects_timeout(
+    kanban_home, monkeypatch,
+):
+    """A stranded task younger than the timeout is left alone — we don't
+    want to archive a task that was just promoted, even if its assignee
+    is a typo."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="fresh", assignee="ghost")
+        # created_at is "now" — well within the timeout.
+        reaped = kb.reap_stranded_in_ready(
+            conn, timeout_seconds=kb.DEFAULT_STRANDED_TIMEOUT_SECONDS,
+        )
+
+    assert reaped == []
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t).status == "ready"
+
+
+def test_reap_stranded_in_ready_disabled_with_zero_timeout(
+    kanban_home, monkeypatch,
+):
+    """timeout_seconds <= 0 disables the reaper. Operator escape hatch
+    without ripping out the config key."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="never", assignee="ghost")
+        old_ts = int(time.time()) - 10_000_000
+        conn.execute("UPDATE tasks SET created_at = ? WHERE id = ?", (old_ts, t))
+
+        reaped_off = kb.reap_stranded_in_ready(conn, timeout_seconds=0)
+        reaped_neg = kb.reap_stranded_in_ready(conn, timeout_seconds=-5)
+
+    assert reaped_off == []
+    assert reaped_neg == []
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t).status == "ready"
+
+
+def test_reap_stranded_in_ready_action_archive_forces_archive(
+    kanban_home, monkeypatch,
+):
+    """Explicit action='archive' archives even when a valid default_assignee
+    is set — operators use this to enforce "never auto-reassign, just
+    prune the queue"."""
+    from hermes_cli import profiles
+    profiles_seen = {"default-profile"}
+    monkeypatch.setattr(
+        profiles, "profile_exists",
+        lambda name: name in profiles_seen,
+    )
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stranded", assignee="ghost")
+        old_ts = int(time.time()) - (kb.DEFAULT_STRANDED_TIMEOUT_SECONDS + 60)
+        conn.execute("UPDATE tasks SET created_at = ? WHERE id = ?", (old_ts, t))
+        conn.execute(
+            "UPDATE task_events SET created_at = ? "
+            "WHERE task_id = ? AND kind = 'created'",
+            (old_ts, t),
+        )
+
+        reaped = kb.reap_stranded_in_ready(
+            conn, default_assignee="default-profile", action="archive",
+        )
+
+    assert len(reaped) == 1
+    assert reaped[0][1] == "archive"
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t).status == "archived"
+        assert kb.get_task(conn, t).assignee == "ghost"  # not touched
+
+
+def test_reap_stranded_in_ready_reassign_falls_back_when_default_missing(
+    kanban_home, monkeypatch,
+):
+    """action='reassign' with no usable default_assignee archives the
+    task. The audit event payload makes the fall-back explicit so the
+    operator sees the misconfiguration."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stranded", assignee="ghost")
+        old_ts = int(time.time()) - (kb.DEFAULT_STRANDED_TIMEOUT_SECONDS + 60)
+        conn.execute("UPDATE tasks SET created_at = ? WHERE id = ?", (old_ts, t))
+
+        reaped = kb.reap_stranded_in_ready(
+            conn, default_assignee="also-ghost", action="reassign",
+        )
+
+    assert len(reaped) == 1
+    assert reaped[0][1] == "archive"
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t).status == "archived"
+        ev = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'stranded_archived'",
+            (t,),
+        ).fetchone()
+        assert ev is not None
+        import json
+        payload = json.loads(ev["payload"])
+        assert "no usable default_assignee" in payload["reason"]
+
+
+def test_reap_stranded_in_ready_dry_run_safe(
+    kanban_home, monkeypatch,
+):
+    """``dispatch_once(dry_run=True)`` must NOT touch stranded tasks —
+    the reaper is gated by ``dry_run`` so the dry-run output reflects
+    state but never mutates."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="dry", assignee="ghost")
+        old_ts = int(time.time()) - (kb.DEFAULT_STRANDED_TIMEOUT_SECONDS + 60)
+        conn.execute("UPDATE tasks SET created_at = ? WHERE id = ?", (old_ts, t))
+
+        res = kb.dispatch_once(
+            conn, dry_run=True,
+            stranded_timeout_seconds=kb.DEFAULT_STRANDED_TIMEOUT_SECONDS,
+        )
+
+    # Result reports what it WOULD do (per the existing dry_run contract
+    # for spawned — for the reaper we follow the same rule and skip
+    # mutation; result.stranded_reaped stays empty in dry-run mode).
+    assert res.stranded_reaped == []
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_once_includes_stranded_reaped(
+    kanban_home, monkeypatch,
+):
+    """``dispatch_once`` wires the reaper in: with a real missing-profile
+    stranded task, the result's ``stranded_reaped`` field reports the
+    sweep. End-to-end proof that the new step is part of the dispatch
+    contract, not a one-off CLI command."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="wired", assignee="ghost")
+        old_ts = int(time.time()) - (kb.DEFAULT_STRANDED_TIMEOUT_SECONDS + 60)
+        conn.execute("UPDATE tasks SET created_at = ? WHERE id = ?", (old_ts, t))
+        conn.execute(
+            "UPDATE task_events SET created_at = ? "
+            "WHERE task_id = ? AND kind = 'created'",
+            (old_ts, t),
+        )
+
+        res = kb.dispatch_once(
+            conn, spawn_fn=lambda task, workspace: None,
+            stranded_timeout_seconds=kb.DEFAULT_STRANDED_TIMEOUT_SECONDS,
+        )
+
+    assert len(res.stranded_reaped) == 1
+    assert res.stranded_reaped[0][0] == t
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t).status == "archived"
+
+
+def test_reap_stranded_unblocks_dependent_children(
+    kanban_home, monkeypatch,
+):
+    """When the reaper archives a stranded parent, dependent children
+    that were blocked on it must auto-promote so the queue doesn't
+    freeze. Same unblock rule as ``archive_task`` — reuses the
+    recompute pass inside the reaper."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="stranded-parent", assignee="ghost")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        # Make parent look old enough to be reaped.
+        old_ts = int(time.time()) - (kb.DEFAULT_STRANDED_TIMEOUT_SECONDS + 60)
+        conn.execute("UPDATE tasks SET created_at = ? WHERE id = ?", (old_ts, parent))
+        # Child is in 'todo' because parent isn't done yet.
+
+        reaped = kb.reap_stranded_in_ready(
+            conn, timeout_seconds=kb.DEFAULT_STRANDED_TIMEOUT_SECONDS,
+        )
+
+    assert reaped[0][0] == parent
+    with kb.connect() as conn:
+        # Parent archived → child auto-promoted to ready.
+        assert kb.get_task(conn, parent).status == "archived"
+        assert kb.get_task(conn, child).status == "ready"
+
+
+def test_reap_stranded_uses_most_recent_promoted_event(
+    kanban_home, monkeypatch,
+):
+    """A task that was promoted MORE recently than its created_at
+    (todo → ready → blocked → ready round-trip) should use the most
+    recent promoted-event timestamp, not the original created_at.
+    Otherwise the reaper would fire on a task that just came back
+    from a brief blocked stint."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="round-trip", assignee="ghost")
+        # Original created_at is ancient.
+        very_old = int(time.time()) - 10_000_000
+        conn.execute("UPDATE tasks SET created_at = ? WHERE id = ?", (very_old, t))
+        # But a "promoted" event was emitted recently.
+        now_ts = int(time.time())
+        conn.execute(
+            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+            "VALUES (?, NULL, 'promoted', NULL, ?)",
+            (t, now_ts),
+        )
+
+        reaped = kb.reap_stranded_in_ready(
+            conn, timeout_seconds=kb.DEFAULT_STRANDED_TIMEOUT_SECONDS,
+        )
+
+    # The fresh promoted event makes the task "young" — must not be reaped.
+    assert reaped == []
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t).status == "ready"
+
+
 def test_dispatch_max_spawn_counts_existing_running_tasks(
     kanban_home, all_assignees_spawnable
 ):

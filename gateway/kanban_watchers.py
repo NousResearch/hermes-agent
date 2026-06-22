@@ -796,6 +796,50 @@ class GatewayKanbanWatchersMixin:
                         max_in_progress_per_profile,
                     )
 
+        # Read kanban.stranded_timeout_seconds — threshold (in seconds)
+        # for the stranded-in-ready reaper. Ready tasks whose assignee
+        # maps to no on-disk Hermes profile for at least this long are
+        # re-assigned (to ``default_assignee``) or archived per
+        # ``stranded_action``. Set to 0 or a negative value to disable.
+        raw_stranded = kanban_cfg.get("stranded_timeout_seconds", None)
+        if raw_stranded is None:
+            stranded_timeout_seconds = _kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        else:
+            try:
+                stranded_timeout_seconds = int(raw_stranded)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.stranded_timeout_seconds=%r; "
+                    "using default %d",
+                    raw_stranded, _kb.DEFAULT_STRANDED_TIMEOUT_SECONDS,
+                )
+                stranded_timeout_seconds = _kb.DEFAULT_STRANDED_TIMEOUT_SECONDS
+        # Read kanban.stranded_action — one of "auto" (reassign to
+        # default_assignee when possible, otherwise archive), "reassign"
+        # (force the default_assignee, archive on miss), "archive" (always
+        # archive). Whitespace and case are normalised; anything else logs
+        # a warning and falls back to "auto" so the dispatcher keeps moving.
+        raw_action = kanban_cfg.get("stranded_action", None)
+        if raw_action is None or not str(raw_action).strip():
+            stranded_action = _kb.DEFAULT_STRANDED_ACTION
+        else:
+            candidate = str(raw_action).strip().lower()
+            if candidate in _kb.VALID_STRANDED_ACTIONS:
+                stranded_action = candidate
+            else:
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.stranded_action=%r "
+                    "(valid: %s); using default %r",
+                    raw_action,
+                    ", ".join(_kb.VALID_STRANDED_ACTIONS),
+                    _kb.DEFAULT_STRANDED_ACTION,
+                )
+                stranded_action = _kb.DEFAULT_STRANDED_ACTION
+        logger.info(
+            "kanban dispatcher: stranded_timeout_seconds=%d stranded_action=%r",
+            stranded_timeout_seconds, stranded_action,
+        )
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -889,6 +933,8 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    stranded_timeout_seconds=stranded_timeout_seconds,
+                    stranded_action=stranded_action,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):

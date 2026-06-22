@@ -4877,6 +4877,25 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# Stranded-in-ready reaper
+# ---------------------------------------------------------------------------
+#
+# A "stranded" task is one that has been sitting in status='ready' for longer
+# than ``DEFAULT_STRANDED_TIMEOUT_SECONDS`` AND whose assignee does not map
+# to a real on-disk Hermes profile. These tasks will never spawn — the
+# dispatcher silently skips them and (per ``has_spawnable_ready``) they are
+# NOT counted as "stuck" because the assignee is not a real profile to begin
+# with. So a typo'd or stale assignee would otherwise linger forever,
+# cluttering the ready queue and masking real failures.
+#
+# The reaper sweeps them out automatically. Operator-configurable via
+# ``kanban.stranded_timeout_seconds`` and ``kanban.stranded_action`` in
+# config.yaml. See :func:`reap_stranded_in_ready` for the full rationale.
+DEFAULT_STRANDED_TIMEOUT_SECONDS = 1800  # 30 minutes
+VALID_STRANDED_ACTIONS = ("auto", "reassign", "archive")
+DEFAULT_STRANDED_ACTION = "auto"
+
 
 @dataclass
 class DispatchResult:
@@ -4930,6 +4949,26 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    stranded_reaped: list[tuple[str, str, str, Optional[str]]] = field(default_factory=list)
+    """Tasks swept by :func:`reap_stranded_in_ready` for sitting too long in
+    ``ready`` with no on-disk profile matching their assignee. Each entry is
+    ``(task_id, action, original_assignee, new_assignee_or_none)`` where
+    ``action`` is ``"reassign"`` or ``"archive"`` and ``new_assignee_or_none``
+    is the fallback profile the task was reassigned to (None when archived)."""
+
+    review_handed_off: list[str] = field(default_factory=list)
+    """Task ids transitioned from ``blocked(review-required)`` to
+    ``status='review', assignee='wags-reviewer'`` by
+    :func:`hermes_cli.kanban_review_handoff.handoff_blocked_to_review`.
+    Empty when no review-required cards were waiting. Idempotent re-runs
+    produce empty lists."""
+
+    review_completed_routed: list[str] = field(default_factory=list)
+    """Task ids wags-reviewer marked ``done`` that
+    :func:`hermes_cli.kanban_review_handoff.completion_route` then routed
+    per the verdict in the last comment (PASS left as-is; FAIL/WAIVER
+    reassigned to the original worker and set back to ``ready``). Empty
+    when no reviewer-done cards had parseable verdicts this tick."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5938,6 +5977,243 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def reap_stranded_in_ready(
+    conn: sqlite3.Connection,
+    *,
+    timeout_seconds: int = DEFAULT_STRANDED_TIMEOUT_SECONDS,
+    action: str = DEFAULT_STRANDED_ACTION,
+    default_assignee: Optional[str] = None,
+    profile_exists_fn=None,
+) -> list[tuple[str, str, str, Optional[str]]]:
+    """Sweep ready tasks whose assignee maps to no on-disk Hermes profile.
+
+    A "stranded" task is one that has been sitting in ``status='ready'`` for
+    longer than ``timeout_seconds`` seconds AND whose ``assignee`` does not
+    name a real profile directory under ``<HERMES_HOME>/profiles/``.
+
+    Why this matters: the dispatcher's per-tick spawn loop checks
+    ``profile_exists(assignee)`` and routes missing-profile tasks to
+    ``skipped_nonspawnable`` — a non-actionable bucket. ``has_spawnable_ready``
+    also ignores them, so the gateway's "stuck" health warning does NOT fire.
+    Net effect: a typo'd, deleted, or never-existed assignee parks the task
+    in ready forever with no operator signal, crowding the queue and masking
+    real failures on healthy assignees. This reaper is the safety valve.
+
+    "How long has it been ready" is computed from the most recent
+    ``task_events.kind = 'promoted'`` row for the task (the only path into
+    ready; ``recompute_ready`` is the emitter). Falls back to ``created_at``
+    for tasks that were created directly into ready with no parents and
+    therefore never received a separate ``promoted`` event.
+
+    Actions (set via ``action`` or the matching ``kanban.stranded_action``
+    config key):
+
+    * ``"auto"`` (default): re-assign to ``default_assignee`` if one is
+      configured AND that fallback is itself a real on-disk profile;
+      otherwise archive. Maximises the chance a misrouted task still
+      gets worked on.
+    * ``"reassign"``: re-assign to ``default_assignee`` unconditionally. If
+      no default is configured, archive with a clear event payload so
+      the operator can recover via ``hermes kanban unarchive`` if needed.
+    * ``"archive"``: park the task as ``archived`` so it stops cluttering
+      the ready queue. The full task row, comments, and runs are preserved;
+      recovery is one ``hermes kanban unarchive <id>`` away.
+
+    Each reaped task emits a single event so the change is auditable:
+    ``stranded_reassigned`` (with the new assignee) or ``stranded_archived``
+    (with the action reason). The event is emitted inside the same write
+    transaction that mutates the task row, so the audit log and the row
+    state can never disagree.
+
+    Returns a list of ``(task_id, action, original_assignee, new_assignee)``
+    tuples, suitable for the caller to stash in ``DispatchResult``.
+    """
+    if action not in VALID_STRANDED_ACTIONS:
+        # Defensive: a caller passed an unsupported action. Treat as "auto"
+        # rather than crashing the dispatcher loop — the rest of the tick
+        # is more important than the reaper.
+        action = DEFAULT_STRANDED_ACTION
+
+    if timeout_seconds < 1:
+        # Treat <=0 as "disabled" — the operator wants the reaper off
+        # without ripping out the config key.
+        return []
+
+    if profile_exists_fn is None:
+        try:
+            from hermes_cli.profiles import profile_exists as _profile_exists
+        except Exception:
+            # profiles module not importable (test stubs, exotic envs).
+            # No way to decide who's stranded — bail.
+            return []
+        profile_exists_fn = _profile_exists
+
+    fallback = (default_assignee or "").strip() or None
+    # Validate the fallback once: a default_assignee that doesn't exist on
+    # disk would just re-create the same problem on the next tick. We do
+    # not silently fall back to archive here — we let the action string
+    # dictate the behaviour (so an explicit "reassign" + missing default
+    # produces an archive + a clear event, which is the operator's
+    # intended audit trail).
+    fallback_valid = bool(fallback) and bool(profile_exists_fn(fallback))
+
+    now = int(time.time())
+    cutoff = now - int(timeout_seconds)
+    stranded: list[tuple[str, str, str, Optional[str]]] = []
+
+    # The "age in ready" timestamp is the most recent "promoted" event for
+    # this task. We use a correlated subquery so the planner can use the
+    # ``idx_events_task`` index on (task_id, created_at). Fall back to
+    # ``tasks.created_at`` for tasks that never had a promoted event
+    # (typically: created directly into ready with no parents).
+    rows = conn.execute(
+        "SELECT t.id, t.assignee, t.created_at, "
+        "  COALESCE("
+        "    (SELECT MAX(e.created_at) FROM task_events e "
+        "       WHERE e.task_id = t.id AND e.kind = 'promoted'), "
+        "    t.created_at) AS ready_since "
+        "FROM tasks t "
+        "WHERE t.status = 'ready' AND t.assignee IS NOT NULL "
+        "  AND t.claim_lock IS NULL "
+        "  AND COALESCE("
+        "    (SELECT MAX(e.created_at) FROM task_events e "
+        "       WHERE e.task_id = t.id AND e.kind = 'promoted'), "
+        "    t.created_at) <= ?",
+        (cutoff,),
+    ).fetchall()
+
+    for row in rows:
+        task_id = row["id"]
+        original = row["assignee"]
+        # The on-disk profile check. profile_exists handles "default" as a
+        # special case (always True) — stranded detection skips those
+        # tasks, which is correct: "default" is the implicit profile when
+        # no name is given, not a typo'd one.
+        try:
+            exists = bool(profile_exists_fn(original))
+        except Exception:
+            # Don't let a misbehaving custom check kill the reaper.
+            # Treat as "profile exists" so we don't re-classify a task
+            # whose existence we can't even verify.
+            continue
+        if exists:
+            # Not stranded — the assignee IS a real profile. The reason
+            # the task is sitting in ready is a separate problem (maybe
+            # the dispatcher is paused, or all workers are busy). The
+            # reaper's job is the missing-profile case only.
+            continue
+
+        # Decide the action.
+        chosen_action: str
+        new_assignee: Optional[str]
+        if action == "archive":
+            chosen_action = "archive"
+            new_assignee = None
+        elif action == "reassign":
+            if fallback_valid:
+                chosen_action = "reassign"
+                new_assignee = fallback
+            else:
+                # Explicit "reassign" with no usable default — archive
+                # so the loop terminates, but the event payload carries
+                # the reason so the operator sees the misconfiguration.
+                chosen_action = "archive"
+                new_assignee = None
+        else:  # "auto"
+            if fallback_valid:
+                chosen_action = "reassign"
+                new_assignee = fallback
+            else:
+                chosen_action = "archive"
+                new_assignee = None
+
+        try:
+            with write_txn(conn):
+                # CAS guard: only mutate the row if it's still in the
+                # state we observed. A concurrent dispatch tick may have
+                # already claimed or moved the task between our SELECT
+                # and this UPDATE.
+                if chosen_action == "reassign":
+                    cur = conn.execute(
+                        "UPDATE tasks SET assignee = ? "
+                        "WHERE id = ? AND status = 'ready' "
+                        "  AND claim_lock IS NULL AND assignee = ?",
+                        (new_assignee, task_id, original),
+                    )
+                    if cur.rowcount != 1:
+                        continue
+                    _append_event(
+                        conn, task_id, "stranded_reassigned",
+                        {
+                            "original_assignee": original,
+                            "new_assignee": new_assignee,
+                            "ready_since": int(row["ready_since"]),
+                            "timeout_seconds": int(timeout_seconds),
+                        },
+                    )
+                else:  # archive
+                    cur = conn.execute(
+                        "UPDATE tasks SET status = 'archived', "
+                        "  claim_lock = NULL, claim_expires = NULL, "
+                        "  worker_pid = NULL "
+                        "WHERE id = ? AND status = 'ready' "
+                        "  AND claim_lock IS NULL",
+                        (task_id,),
+                    )
+                    if cur.rowcount != 1:
+                        continue
+                    # Mirror archive_task(): if the task has an open
+                    # run, close it as reclaimed so attempt history
+                    # isn't orphaned. There's no real run for a task
+                    # that's been sitting in 'ready', but the path
+                    # is defensive.
+                    run_id = _end_run(
+                        conn, task_id, outcome="reclaimed",
+                        status="reclaimed",
+                        summary="stranded: archived by reap_stranded_in_ready",
+                    )
+                    _append_event(
+                        conn, task_id, "stranded_archived",
+                        {
+                            "original_assignee": original,
+                            "ready_since": int(row["ready_since"]),
+                            "timeout_seconds": int(timeout_seconds),
+                            "reason": (
+                                "no on-disk profile; action=archive"
+                                if action == "archive"
+                                else "no usable default_assignee; fell back to archive"
+                            ),
+                        },
+                        run_id=run_id,
+                    )
+        except Exception:
+            # One task failing should not abort the whole sweep — log
+            # and move on. The caller sees a shorter list than they
+            # would otherwise; better than crashing the dispatch tick.
+            _log.exception(
+                "stranded reaper: failed on task %s (original assignee=%r)",
+                task_id, original,
+            )
+            continue
+
+        stranded.append((task_id, chosen_action, original, new_assignee))
+
+    if stranded:
+        # Newly-archived tasks may have been blocking children's parent
+        # gate (status='done' or 'archived' is the unblock predicate).
+        # Run a single recompute pass so dependent children don't sit
+        # stuck in 'todo' if their only unblock path was the reaper.
+        try:
+            recompute_ready(conn)
+        except Exception:
+            _log.exception(
+                "stranded reaper: recompute_ready failed after sweeping %d tasks",
+                len(stranded),
+            )
+
+    return stranded
+
+
 def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -6125,6 +6401,8 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    stranded_timeout_seconds: int = DEFAULT_STRANDED_TIMEOUT_SECONDS,
+    stranded_action: str = DEFAULT_STRANDED_ACTION,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -6133,6 +6411,10 @@ def dispatch_once(
       2. Reclaim stale running tasks (no recent heartbeat).
       3. Reclaim crashed running tasks (host-local PID no longer alive).
       3. Promote todo -> ready where all parents are done.
+      3a. Sweep stranded ready tasks (assignee maps to no on-disk
+          profile) older than ``stranded_timeout_seconds``. Re-assigns or
+          archives them per ``stranded_action`` so a typo'd / deleted
+          assignee doesn't park a task forever.
       4. For each ready task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
          return value (if any) is recorded as ``worker_pid`` so subsequent
@@ -6182,6 +6464,19 @@ def dispatch_once(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+    # Stranded-in-ready reaper: sweep ready tasks whose assignee maps to
+    # no real profile, after the threshold. Runs AFTER recompute_ready so
+    # we don't accidentally re-claim a task that was just promoted (and
+    # therefore has a fresh promoted-event timestamp). When ``dry_run``
+    # is set (e.g. ``hermes kanban dispatch --dry-run``) the reaper is a
+    # pure observer — it returns what it WOULD reap without mutating.
+    if not dry_run:
+        result.stranded_reaped = reap_stranded_in_ready(
+            conn,
+            timeout_seconds=stranded_timeout_seconds,
+            action=stranded_action,
+            default_assignee=default_assignee,
+        )
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -6926,10 +7221,34 @@ def _default_spawn(
     # quoting ambiguity if a skill name ever contains unusual chars.
     # Dedupe against the built-in so we don't double-load kanban-worker
     # if a task author asks for it explicitly.
+    #
+    # Structural-safety guard (2026-06-21): some legacy rows have profile
+    # names (e.g. "code-craftsman") in the skills column. Loading those
+    # as skills fails at CLI startup with "Unknown skill(s):" and the
+    # worker exits 1 before doing any work — a loop class observed in
+    # t_47727c99 / t_ca595dd2 / t_6e6c889a (18+ crash runs). Filter
+    # any entry that exactly matches a known profile directory so we
+    # degrade gracefully instead of crashing on bad persisted data.
+    _KNOWN_PROFILES: set[str] = set()  # populated lazily below
     if task.skills:
+        from pathlib import Path as _Path
+        if not _KNOWN_PROFILES:
+            try:
+                _hermes_home = _Path(env.get("HERMES_HOME") or _Path.home() / ".hermes")
+                _profiles_root = _hermes_home / "profiles"
+                if _profiles_root.is_dir():
+                    _KNOWN_PROFILES = {p.name for p in _profiles_root.iterdir() if p.is_dir()}
+            except OSError:
+                pass
         for sk in task.skills:
-            if sk and sk != "kanban-worker":
-                cmd.extend(["--skills", sk])
+            if not sk or sk == "kanban-worker":
+                continue
+            if sk in _KNOWN_PROFILES:
+                # Profile name leaked into skills column — skip it.
+                # The persisted-row fix script cleans these up at write
+                # time; this is the read-time defense.
+                continue
+            cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))

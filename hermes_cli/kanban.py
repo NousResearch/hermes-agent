@@ -434,6 +434,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         metavar="VALUE",
         help="With --state-type: keep runs whose column equals this value",
     )
+    p_show.add_argument(
+        "--full", action="store_true",
+        help="Print full comment bodies in text mode (default: truncate to 200 chars)",
+    )
 
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
@@ -1589,7 +1593,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print()
         print(f"Comments ({len(comments)}):")
         for c in comments:
-            print(f"  [{_fmt_ts(c.created_at)}] {c.author}: {c.body}")
+            body = c.body
+            if not args.full and body and len(body) > 200:
+                body = body[:197] + "..."
+            print(f"  [{_fmt_ts(c.created_at)}] {c.author}: {body}")
     if events:
         print()
         print(f"Events ({len(events)}):")

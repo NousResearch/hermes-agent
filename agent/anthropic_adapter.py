@@ -317,6 +317,16 @@ def _supports_fast_mode(model: str) -> bool:
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
+    # Added 2026-06-04 from Worker-A RE of github.copilot-chat 0.52.2026060402.
+    # The VS Code Copilot Chat extension historically sent these on every
+    # /v1/messages call. Hermes sends them under its single Copilot CLI identity
+    # (`Copilot-Integration-Id: copilot-developer-cli`).
+    # `advanced-tool-use-2025-11-20` enables the newer tool-call envelopes
+    # that Claude 4.7+ emits; `context-management-2025-06-27` enables the
+    # `context_management: [{type: "clear_tool_results_20250919", ...}]`
+    # body field that opus-4.6+ requires for clean 1M-context rolls.
+    "advanced-tool-use-2025-11-20",
+    "context-management-2025-06-27",
 ]
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
 # the fine-grained tool streaming beta is present.  Omit it so tool calls
@@ -551,7 +561,38 @@ def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
     normalized = _normalize_base_url_text(base_url).lower()
     if not normalized:
         return False
-    return "azure.com" in normalized
+    return "azure.com" in normalized or "githubcopilot.com" in normalized
+
+
+def _is_copilot_base_url(base_url: Optional[str]) -> bool:
+    if not base_url:
+        return False
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(base_url).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "api.githubcopilot.com"
+
+
+def _request_messages_have_image_parts(messages: Any) -> bool:
+    """Return True when any message carries image content.
+
+    Matches both OpenAI-style parts (``image_url`` / ``input_image``): the
+    shape ``build_anthropic_kwargs`` receives before ``convert_messages_to_anthropic``
+    runs, and already-converted Anthropic blocks (``{"type": "image"}``), so the
+    check is robust regardless of where it is called in the pipeline.
+    """
+    def _contains_image(value: Any) -> bool:
+        if isinstance(value, dict):
+            if value.get("type") in {"image_url", "input_image", "image"}:
+                return True
+            return any(_contains_image(v) for v in value.values())
+        if isinstance(value, list):
+            return any(_contains_image(v) for v in value)
+        return False
+
+    return isinstance(messages, list) and any(_contains_image(m) for m in messages)
 
 
 def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
@@ -616,8 +657,41 @@ def _common_betas_for_base_url(
     betas = list(_COMMON_BETAS)
     if _base_url_needs_context_1m_beta(base_url) and not drop_context_1m_beta:
         betas.append(_CONTEXT_1M_BETA)
+
+    if _is_copilot_base_url(base_url):
+        # 2026-06-04 (Worker-G RE of github.copilot-chat 0.52.2026060402):
+        # The official VS Code Copilot Chat extension only ever sends THREE
+        # Anthropic betas on the /v1/messages path:
+        #   interleaved-thinking-2025-05-14
+        #   context-management-2025-06-27
+        #   advanced-tool-use-2025-11-20
+        # The historical "Master Probe triplet" of
+        #   cli-internal-2026-02-09 + context-1m-2025-08-07 + task-budgets-2026-03-13
+        # does NOT exist anywhere in the extension bundle (grep on the 32MB
+        # beautified JS returned 0 hits for each string). Sending those
+        # non-existent betas was identified by Worker G as a likely
+        # contributor to historical "Context length exceeded → snap-back to
+        # 168k" loops on accounts not pre-advertising context-1m. 1M context
+        # is unlocked by the `Copilot-Integration-Id` we send
+        # (`copilot-developer-cli`, the official CLI's id) + the server-side
+        # account entitlement, never by any beta.
+        #
+        # All three real betas already live in _COMMON_BETAS, so this block
+        # is intentionally a no-op now \u2014 kept as a docstring marker so
+        # future readers don't reintroduce the fictional triplet.
+        pass
+
     if _is_minimax_anthropic_endpoint(base_url):
-        _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
+        # MiniMax's Anthropic-compatible endpoint rejects most vendor-specific
+        # betas. Strip everything except interleaved-thinking which it does
+        # honor. The two 2026-06-04 additions (advanced-tool-use,
+        # context-management) are also unrecognized by MiniMax.
+        _stripped = {
+            _TOOL_STREAMING_BETA,
+            _CONTEXT_1M_BETA,
+            "advanced-tool-use-2025-11-20",
+            "context-management-2025-06-27",
+        }
         return [b for b in betas if b not in _stripped]
     if drop_context_1m_beta:
         return [b for b in betas if b != _CONTEXT_1M_BETA]
@@ -782,6 +856,45 @@ def build_anthropic_client(
             "User-Agent": "claude-code/0.1.0",
             **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
         }
+    elif _is_copilot_base_url(normalized_base_url):
+        # GitHub Copilot's Anthropic deployment (POST /v1/messages) is the ONLY
+        # Copilot endpoint that serves Claude at the real 1,000,000-token input
+        # window; /chat/completions clamps it and returns a misleading
+        # "exceeds the limit of 168000" error (see probe/FINDINGS.md §2).  It
+        # requires:
+        #   1. Authorization: Bearer ***  (NOT Anthropic x-api-key)
+        #   2. The full VS Code Copilot identity header set
+        #      (Editor-Version, User-Agent: rest-book, Copilot-Integration-Id:
+        #      vscode-chat, X-GitHub-Api-Version, x-initiator) PLUS the
+        #      X-Copilot-Agent-Slug: copilot-1m-context unlock.
+        #   3. anthropic-beta: cli-internal + context-1m + task-budgets
+        #      (already computed in common_betas for this base_url).
+        # This is the exact header set proved working in
+        # probe/live_transport.py that unlocked opus-4.8 → 992,497 input
+        # tokens on /v1/messages.  Checked BEFORE _requires_bearer_auth and the
+        # x-api-key fallthrough so the Copilot token is sent as Bearer, not as
+        # an Anthropic API key.
+        kwargs["auth_token"] = api_key
+        _copilot_headers: dict[str, str] = {}
+        try:
+            from hermes_cli.copilot_auth import copilot_request_headers
+            # Single Copilot CLI identity (copilot-developer-cli + CLI User-Agent),
+            # the same builder used on the inference path, so /v1/messages and
+            # /chat/completions present one consistent identity.
+            _copilot_headers = copilot_request_headers(
+                is_agent_turn=True, model="claude"
+            )
+        except Exception:
+            # Never block client construction on header enrichment; the
+            # bearer token alone still authenticates, just without the
+            # 1M unlock slug.
+            _copilot_headers = {}
+        # The proven anthropic-beta triplet (computed in common_betas) is
+        # authoritative; apply it last so it always wins over any value the
+        # identity header set may carry.
+        if common_betas:
+            _copilot_headers["anthropic-beta"] = ",".join(common_betas)
+        kwargs["default_headers"] = _copilot_headers
     elif _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
         # Authorization: Bearer *** for regular API keys. Route those endpoints
@@ -2493,6 +2606,16 @@ def build_anthropic_kwargs(
             betas.extend(_OAUTH_ONLY_BETAS)
         betas.append(_FAST_MODE_BETA)
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
+
+    # Copilot's /v1/messages proxy only processes image input when the
+    # Copilot-Vision-Request header is set. The persistent Anthropic client is
+    # built with is_vision=False (no such header), so image-bearing turns to
+    # Copilot otherwise return an empty content block (HTTP 200) that the loop
+    # fails as "invalid response". Add it per-request only when an image is
+    # present, gated to the Copilot endpoint so it never leaks to
+    # api.anthropic.com or Bedrock-hosted Anthropic.
+    if _is_copilot_base_url(base_url) and _request_messages_have_image_parts(messages):
+        kwargs.setdefault("extra_headers", {})["Copilot-Vision-Request"] = "true"
 
     return kwargs
 

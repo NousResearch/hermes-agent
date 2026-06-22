@@ -93,12 +93,38 @@ def _resolve_home_dir() -> str:
     return "/tmp"
 
 
-def _build_subprocess_env() -> dict[str, str]:
+def _build_subprocess_env(client: "CopilotACPClient" | None = None) -> dict[str, str]:
     env = os.environ.copy()
     home = _resolve_home_dir()
     env["HOME"] = home
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
+    if client is not None:
+        provider = str(getattr(client, "_provider", "") or "").strip()
+        model = str(getattr(client, "_model_hint", "") or "").strip()
+        auth_facts = getattr(client, "_auth_facts", {}) or {}
+        session_id = str(getattr(client, "_session_id", "") or "").strip()
+        if provider:
+            env["HERMES_COPILOT_ACP_PROVIDER"] = provider
+        if model:
+            env["HERMES_COPILOT_ACP_MODEL"] = model
+        if session_id:
+            env["HERMES_COPILOT_ACP_SESSION_ID"] = session_id
+        base_url = str(getattr(client, "base_url", "") or "").strip()
+        if base_url:
+            env["HERMES_COPILOT_ACP_BASE_URL"] = base_url
+        auth_source = str(auth_facts.get("source") or "").strip()
+        if auth_source:
+            env["HERMES_COPILOT_ACP_AUTH_SOURCE"] = auth_source
+        auth_provider = str(auth_facts.get("provider") or provider or "").strip()
+        if auth_provider:
+            env["HERMES_COPILOT_ACP_AUTH_PROVIDER"] = auth_provider
+        command = str(getattr(client, "_acp_command", "") or "").strip()
+        if command:
+            env["HERMES_COPILOT_ACP_COMMAND"] = command
+        args = list(getattr(client, "_acp_args", []) or [])
+        if args:
+            env["HERMES_COPILOT_ACP_ARGS"] = " ".join(args)
     return env
 
 
@@ -336,6 +362,10 @@ class CopilotACPClient:
         acp_command: str | None = None,
         acp_args: list[str] | None = None,
         acp_cwd: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        auth_facts: dict[str, Any] | None = None,
+        session_id: str | None = None,
         command: str | None = None,
         args: list[str] | None = None,
         **_: Any,
@@ -343,6 +373,10 @@ class CopilotACPClient:
         self.api_key = api_key or "copilot-acp"
         self.base_url = base_url or ACP_MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
+        self._provider = provider or "copilot-acp"
+        self._model_hint = str(model or "").strip()
+        self._auth_facts = dict(auth_facts or {})
+        self._session_id = str(session_id or self._auth_facts.get("session_id") or "").strip()
         self._acp_command = acp_command or command or _resolve_command()
         self._acp_args = list(acp_args or args or _resolve_args())
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
@@ -380,7 +414,7 @@ class CopilotACPClient:
     ) -> Any:
         prompt_text = _format_messages_as_prompt(
             messages or [],
-            model=model,
+            model=model or self._model_hint or None,
             tools=tools,
             tool_choice=tool_choice,
         )
@@ -425,7 +459,7 @@ class CopilotACPClient:
         return SimpleNamespace(
             choices=[choice],
             usage=usage,
-            model=model or "copilot-acp",
+            model=model or self._model_hint or "copilot-acp",
         )
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
@@ -438,7 +472,7 @@ class CopilotACPClient:
                 text=True,
                 bufsize=1,
                 cwd=self._acp_cwd,
-                env=_build_subprocess_env(),
+                env=_build_subprocess_env(self),
             )
         except FileNotFoundError as exc:
             raise RuntimeError(

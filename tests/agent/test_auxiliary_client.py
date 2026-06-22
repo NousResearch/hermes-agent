@@ -1219,6 +1219,32 @@ class TestAuxiliaryPoolAwareness:
         assert fresh_async_client.chat.completions.create.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_copilot_acp_async_wrapper_is_awaitable(self):
+        """Async auxiliary users need Copilot ACP to expose awaitable create()."""
+        import agent.auxiliary_client as aux
+        from agent.copilot_acp_client import CopilotACPClient
+
+        sync_client = CopilotACPClient(
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            command="copilot",
+            args=["--acp", "--stdio"],
+        )
+
+        async_client, model = aux._to_async_client(sync_client, "gpt-5-mini")
+
+        with patch.object(sync_client, "_run_prompt", return_value=("OK", "")) as mock_run:
+            result = await async_client.chat.completions.create(
+                model="gpt-5-mini",
+                messages=[{"role": "user", "content": "reply OK"}],
+                timeout=5,
+            )
+
+        assert model == "gpt-5-mini"
+        assert result.choices[0].message.content == "OK"
+        assert mock_run.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_async_call_llm_refreshes_nous_after_free_tier_block_when_account_paid(self):
         from hermes_cli.nous_account import NousPortalAccountInfo
 

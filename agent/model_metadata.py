@@ -933,6 +933,17 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     Cache key is ``model@base_url`` so the same model name served from
     different providers can have different limits.
     """
+    # Never persist a sub-1M context length for Copilot Claude-Opus: Copilot /v1/messages
+    # serves Opus at 1M; a sub-1M value is the /chat/completions misroute artifact (168k)
+    # that poisons every future session via the step-1 cache read. (root-caused 2026-06-16)
+    try:
+        if ("githubcopilot.com" in (base_url or "").lower()
+                and "claude-opus" in (model or "").lower() and int(length) < 1_000_000):
+            logger.info("Refusing to cache misroute context length %s@%s = %s "
+                        "(Copilot Opus is 1M)", model, base_url, length)
+            return
+    except Exception:
+        pass
     key = f"{model}@{base_url}"
     cache = _load_context_cache()
     if cache.get(key) == length:

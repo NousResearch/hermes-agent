@@ -17,13 +17,21 @@ from gateway.session_context import (
 
 @pytest.fixture(autouse=True)
 def _reset_contextvars():
-    """Reset all session contextvars to _UNSET between tests.
+    """Reset all session contextvars to _UNSET around each test.
 
     In production each asyncio.Task gets a fresh context copy where the
     defaults are _UNSET.  In tests all functions share the same thread
     context, so a clear_session_vars() from test A (which sets vars to "")
     would leak into test B.  This fixture ensures each test starts clean.
+
+    Reset at BOTH setup and teardown: teardown alone leaves the FIRST test in a
+    single-process / random-order run exposed to a session contextvar leaked by
+    an EARLIER test file (e.g. a gateway test that calls set_session_vars() and
+    doesn't reset) — which makes get_session_env() read the leaked contextvar
+    instead of falling back to os.environ as the test expects.
     """
+    for var in _VAR_MAP.values():
+        var.set(_UNSET)
     yield
     for var in _VAR_MAP.values():
         # Can't use var.reset() without a token; just set back to sentinel.

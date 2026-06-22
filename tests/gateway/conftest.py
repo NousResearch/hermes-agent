@@ -32,11 +32,223 @@ incident.
 """
 
 import ast
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_os_environ_after_test(_hermetic_environment):
+    """Snapshot ``os.environ`` at setup and diff-restore it at teardown.
+
+    **Why:** ``load_gateway_config()`` (``gateway/config.py``) bridges
+    ``config.yaml`` platform settings into the process environment via *raw
+    assignment* — ``os.environ["TELEGRAM_ALLOWED_TOPICS"] = ...``,
+    ``os.environ["SLACK_ALLOWED_CHANNELS"] = ...`` and ~40 sibling keys across 7
+    platforms. A raw ``os.environ[...] =`` write is **NOT** reverted by
+    ``monkeypatch`` (monkeypatch only undoes what *it* set), so any test body that
+    calls the loader leaks those values into every later test in the same
+    process. A later test that builds a real ``SlackAdapter``/``TelegramAdapter``
+    then reads the leaked gating var and silently changes behavior (e.g. a leaked
+    ``TELEGRAM_ALLOWED_TOPICS=8`` makes a general-topic guest message fail the
+    allowed-topics gate; a leaked ``SLACK_ALLOWED_CHANNELS`` drops a mention
+    before ``handle_message``). These only bite single-process / random-order
+    runs (the per-file CI runner gets a fresh interpreter), so CI is green while
+    a local ``-p randomly`` run fails.
+
+    **The fix is by construction and immune to *how* the bridge codes the write
+    (literal, loop, ``update``, ``setdefault``, computed key):** snapshot the
+    whole environment at setup and re-establish it exactly at teardown. There is
+    no enumerated var list anywhere — the source of truth is the live
+    ``os.environ`` — so the fix can never drift as the bridge adds vars, and it
+    fails *closed* (anything a test mutates is reverted).
+
+    **Scope & ordering:** gateway-scoped (this conftest), so the blast radius
+    equals the suite whose evidence we run. It explicitly depends on the root
+    ``_hermetic_environment`` fixture (requested as a parameter) so it is
+    guaranteed to snapshot the *already-clean* env (after the root fixture's
+    HERMES_HOME redirect + credential/behavioral strip) and to finalize *before*
+    the root fixture's monkeypatch undo — the dependency is explicit so a future
+    autouse-ordering change can't silently invert it.
+
+    **What this does NOT do (honest scope):** it reverts only *test-induced*
+    mutations. A bridge-gating var inherited from the CI/dev shell at session
+    start is faithfully *preserved* (not stripped) — ambient-env hygiene is the
+    root ``_hermetic_environment`` strip list's job, not this fixture's.
+    """
+    snapshot = dict(os.environ)
+    try:
+        yield
+    finally:
+        # Re-establish the exact snapshot: revert test-added, test-removed, and
+        # test-changed keys in one shot. (clear()+update() over the live mapping
+        # so the same os.environ object identity is preserved for any code
+        # holding a reference.)
+        if os.environ != snapshot:
+            os.environ.clear()
+            os.environ.update(snapshot)
+
+
+# Module slots whose identity several gateway test files mutate at import (by
+# installing a mock ``telegram``/``discord`` into ``sys.modules`` — often via
+# ``setdefault`` so the FIRST file to run wins the slot — and by popping +
+# reimporting the consumer). A file that does this without restoring leaks two
+# things into every later single-process test:
+#   1. the ``sys.modules`` slot itself (a foreign mock with different type
+#      objects — e.g. ``discord.DMChannel`` is a different class than the one a
+#      later test patches, so its ``isinstance`` checks silently mismatch);
+#   2. the CONSUMER module's early-bound globals — ``gateway.platforms.telegram``
+#      caches ``ParseMode``/``ChatType`` from whatever ``telegram.constants`` was
+#      live at its import; ``plugins.platforms.discord.adapter`` caches the
+#      ``discord`` module object — so a rebind during one test poisons the
+#      identity every later test reads (the PR #89 ParseMode-plain-string leak,
+#      reappearing under random order via a different leaker than the one #89
+#      fixed; and the discord-mock-identity leak).
+_GUARDED_SYS_MODULE_SLOTS = (
+    "telegram",
+    "telegram.ext",
+    "telegram.constants",
+    "telegram.request",
+    "telegram.error",
+    "discord",
+    "discord.ext",
+    "discord.ext.commands",
+)
+
+# Consumer modules + the attribute names they early-bind from the slots above.
+# We snapshot/restore these attributes IN PLACE on the live module object (NOT by
+# re-import — a fresh import makes a NEW module object, but consumers that did
+# ``from gateway.platforms.telegram import X`` at their module top read X from the
+# ORIGINAL module __dict__, so the live dict is what must be reverted).
+_GUARDED_CONSUMER_BINDINGS = {
+    "gateway.platforms.telegram": ("ParseMode",),
+    "plugins.platforms.discord.adapter": ("discord",),
+}
+
+
+@pytest.fixture(autouse=True)
+def _restore_mock_module_slots_after_test(_hermetic_environment):
+    """Snapshot + restore the ``sys.modules`` mock slots and consumer bindings.
+
+    By construction (no per-file fixture to forget): any test that mutates a
+    guarded ``telegram``/``discord`` ``sys.modules`` slot, or rebinds a consumer
+    module's early-bound ``ParseMode``/``ChatType``/``discord`` global, has that
+    mutation reverted at teardown — so it cannot poison a later test in a
+    single-process / random-order run. Mirrors the ``os.environ`` snapshot/restore
+    fixture above, applied to ``sys.modules`` + the consumer bindings.
+
+    Only reverts state that actually CHANGED during the test (identity compare),
+    so the steady-state shared mocks the suite relies on are untouched on the
+    overwhelming majority of tests that don't mutate these slots.
+
+    **Setup-time normalization (the collection-time-poison case):** some leaker
+    files install a plain-STRING ParseMode mock (``ParseMode.MARKDOWN_V2 =
+    "MarkdownV2"``) at *module import / collection* time — BEFORE any test setup
+    runs — via ``setdefault`` (so they win the slot only when it's empty). A
+    snapshot-then-restore can't fix that: by this test's setup the consumer is
+    ALREADY poisoned, so the snapshot captures the poison. So at setup we also
+    *detect the poison signature* (consumer ``ParseMode.MARKDOWN_V2`` is a plain
+    ``str`` whose repr lost the ``MARKDOWN_V2`` member name) and re-bind the
+    consumer's ``ParseMode``/``ChatType`` to the canonical conftest telegram mock,
+    so every test starts from a good binding regardless of collection order. (The
+    canonical mock's members are MagicMock attributes whose repr DOES carry the
+    member name — what the real ``StringEnum`` and the telegram tests rely on.)
+    """
+    _normalize_poisoned_telegram_consumer_binding()
+    sentinel = object()
+    slot_snapshot = {name: sys.modules.get(name, sentinel) for name in _GUARDED_SYS_MODULE_SLOTS}
+    binding_snapshot = {}
+    for mod_name, attrs in _GUARDED_CONSUMER_BINDINGS.items():
+        mod = sys.modules.get(mod_name)
+        if mod is not None:
+            binding_snapshot[mod_name] = {a: getattr(mod, a, sentinel) for a in attrs}
+    try:
+        yield
+    finally:
+        # 1. Restore the sys.modules slots to their pre-test identity.
+        for name, prior in slot_snapshot.items():
+            current = sys.modules.get(name, sentinel)
+            if current is prior:
+                continue
+            if prior is sentinel:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = prior
+        # 2. Restore consumer early-bound globals IN PLACE on the live module.
+        for mod_name, attrs in binding_snapshot.items():
+            mod = sys.modules.get(mod_name)
+            if mod is None:
+                continue
+            for attr, prior in attrs.items():
+                if getattr(mod, attr, sentinel) is prior:
+                    continue
+                if prior is sentinel:
+                    if hasattr(mod, attr):
+                        try:
+                            delattr(mod, attr)
+                        except AttributeError:
+                            pass
+                else:
+                    setattr(mod, attr, prior)
+
+
+def _parse_mode_is_poisoned(parse_mode) -> bool:
+    """True when a ParseMode object is the leaked plain-string poison.
+
+    The poison signature: ``MARKDOWN_V2`` is a plain ``str`` (``"MarkdownV2"``)
+    whose repr LOST the member name. A real ``StringEnum`` member and the gateway
+    test env's ``MagicMock`` member both keep ``MARKDOWN_V2`` in their repr — only
+    the leaked plain string does not. (Asserting on repr, not ``==``: ParseMode is
+    a ``str`` subclass so ``MARKDOWN_V2 == "MarkdownV2"`` is True for BOTH the real
+    enum and the poison — a ``==`` check can't tell them apart.)
+    """
+    member = getattr(parse_mode, "MARKDOWN_V2", None)
+    return isinstance(member, str) and "MARKDOWN_V2" not in repr(member)
+
+
+def _normalize_poisoned_telegram_consumer_binding() -> None:
+    """If the telegram consumer's ParseMode is the leaked plain string, re-bind it.
+
+    Corrects a collection-time poison (a leaker file that installed a plain-string
+    ParseMode mock via ``setdefault`` before any test setup ran) so each test
+    starts from a good binding. No-op when the binding is already healthy or the
+    real telegram library is installed.
+
+    The healthy replacement is a ``MagicMock`` ParseMode whose members keep their
+    name in ``repr`` (``<MagicMock name='...ParseMode.MARKDOWN_V2'>``) — matching
+    what the real ``StringEnum`` member and the normal gateway-test mock provide,
+    and what the telegram tests assert via ``"MARKDOWN_V2" in repr(parse_mode)``.
+    """
+    consumer = sys.modules.get("gateway.platforms.telegram")
+    if consumer is None:
+        return
+    # If the real telegram library is installed, never touch the binding.
+    tg = sys.modules.get("telegram")
+    if tg is not None and hasattr(tg, "__file__"):
+        return
+    parse_mode = getattr(consumer, "ParseMode", None)
+    if parse_mode is None or not _parse_mode_is_poisoned(parse_mode):
+        return
+    # Build a healthy ParseMode whose members keep their name in repr. ONLY
+    # ParseMode is normalized — ChatType is NOT touched: ChatType carries
+    # meaningful string values (PRIVATE="private", GROUP="group", …) that tests
+    # compare against (chat_type == "group"), so replacing it with a generic
+    # MagicMock whose members return arbitrary mocks would BREAK those tests. The
+    # poison only ever affects ParseMode (the plain-string MARKDOWN_V2), so the
+    # repair is scoped to it.
+    healthy_parse_mode = MagicMock(name="ParseMode")
+    consumer.ParseMode = healthy_parse_mode
+    # Keep the sys.modules telegram.constants slot's ParseMode consistent so a
+    # later consumer re-import also sees a healthy binding.
+    constants = sys.modules.get("telegram.constants")
+    if constants is not None:
+        try:
+            constants.ParseMode = healthy_parse_mode
+        except Exception:
+            pass
 
 
 def _ensure_telegram_mock() -> None:

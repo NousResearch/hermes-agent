@@ -25,6 +25,7 @@ if _repo not in sys.path:
 
 # Triggers the shared discord mock from tests/gateway/conftest.py before
 # importing the production module.
+import plugins.platforms.discord.adapter as _discord_adapter  # noqa: E402
 from plugins.platforms.discord.adapter import (  # noqa: E402
     ClarifyChoiceView,
     DiscordAdapter,
@@ -320,7 +321,18 @@ class TestDiscordSendClarify:
         kwargs = channel.send.call_args.kwargs
         assert "embed" in kwargs
         assert "view" in kwargs
-        assert isinstance(kwargs["view"], ClarifyChoiceView)
+        # Resolve ClarifyChoiceView via the LIVE module attribute, not the
+        # import-time-bound name. `send_clarify` builds the view via a bare-name
+        # reference (adapter.py: `view = ClarifyChoiceView(...)`), which resolves
+        # at call time against the module's __globals__ — so if any test triggers
+        # `_define_discord_view_classes()` (which rebinds the global to a fresh
+        # class object), production builds the NEW class while an import-time
+        # binding here would still point at the OLD one (identical repr, different
+        # identity → isinstance False). Reading the live module attr guarantees
+        # consumer and production reference the same class object, immune to any
+        # leaker. (See the matching leaker-restore fixture in
+        # test_discord_lazy_install_views.py.)
+        assert isinstance(kwargs["view"], _discord_adapter.ClarifyChoiceView)
         # 3 choice buttons + 1 Other
         assert len(kwargs["view"].children) == 4
 

@@ -5,7 +5,36 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from gateway import status
+
+
+@pytest.fixture(autouse=True)
+def _reset_gateway_runtime_lock_handle():
+    """Reset the module-global ``_gateway_lock_handle`` around each test.
+
+    ``gateway.status`` caches the acquired runtime lock in a module global
+    (``_gateway_lock_handle``); ``acquire_gateway_runtime_lock()`` short-circuits
+    to ``True`` whenever it's non-None. These tests acquire/release the lock
+    in-body, but if a test fails between acquire and release — or, under
+    single-process / random-order runs, leaves the handle set against a now-gone
+    per-test ``tmp_path`` HERMES_HOME — a later test inherits a STALE non-None
+    handle and ``get_running_pid()`` mis-reports the lock as held. Reset at setup
+    and teardown so every test starts from a clean lock state regardless of
+    order. (The OS releases the underlying file lock when the handle is closed /
+    the fd is dropped; here we additionally null the global so the short-circuit
+    can't fire on a stale handle.)
+    """
+    status._gateway_lock_handle = None
+    yield
+    handle = status._gateway_lock_handle
+    status._gateway_lock_handle = None
+    if handle is not None:
+        try:
+            handle.close()
+        except Exception:
+            pass
 
 
 class TestGatewayPidState:

@@ -17,6 +17,8 @@ UpdatePromptView, ModelPickerView, ClarifyChoiceView.
 import importlib
 from unittest.mock import patch
 
+import pytest
+
 
 _VIEW_NAMES = [
     "ExecApprovalView",
@@ -25,6 +27,43 @@ _VIEW_NAMES = [
     "ModelPickerView",
     "ClarifyChoiceView",
 ]
+
+
+@pytest.fixture(autouse=True)
+def _restore_discord_view_class_globals():
+    """Snapshot + restore the 5 Discord view-class module globals (function scope).
+
+    ``_define_discord_view_classes()`` (called by ``check_discord_requirements()``
+    after a lazy install) does ``global ExecApprovalView, …, ClarifyChoiceView``
+    and **re-defines** those classes as fresh class objects each call. The tests
+    in this file deliberately exercise that path — which REBINDS the module
+    globals to new class objects. ``monkeypatch`` reverts the spies/flags these
+    tests set, but it does NOT restore the rebound view-class globals (the
+    production call, not monkeypatch, rebound them), so a later test that captured
+    the ORIGINAL class identity at its import time fails
+    ``isinstance(view, ClarifyChoiceView)`` against a now-stale binding (same name,
+    different class object — identical repr).
+
+    This fixture snapshots the 5 globals at setup and restores them at teardown so
+    a rebind can't escape the test that caused it. **Function-scoped** (NOT module)
+    so it also reverts an intra-file rebind between two tests in this module under
+    item-level shuffling. (The matching consumer-side guarantee — reading the class
+    identity LIVE via the module attribute — lives in
+    ``test_discord_clarify_buttons.py``; this restore + that live-ref are belt and
+    suspenders.)
+    """
+    dp = importlib.import_module("plugins.platforms.discord.adapter")
+    sentinel = object()
+    snapshot = {name: getattr(dp, name, sentinel) for name in _VIEW_NAMES}
+    try:
+        yield
+    finally:
+        for name, original in snapshot.items():
+            if original is sentinel:
+                if hasattr(dp, name):
+                    delattr(dp, name)
+            else:
+                setattr(dp, name, original)
 
 
 class TestDefineDiscordViewClasses:

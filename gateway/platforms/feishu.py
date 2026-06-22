@@ -951,7 +951,7 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
     if actions:
         lines.append(f"Actions: {', '.join(actions)}")
 
-    text_content = "\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT
+    text_content = "\n".join(lines[:100]).strip() or FALLBACK_INTERACTIVE_TEXT
     return FeishuNormalizedMessage(
         raw_type=message_type,
         text_content=text_content,
@@ -4461,7 +4461,7 @@ class FeishuAdapter(BasePlatformAdapter):
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        reply_in_thread = False
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
@@ -4707,7 +4707,10 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_get_message_request(message_id: str) -> Any:
         if "GetMessageRequest" in globals():
-            return GetMessageRequest.builder().message_id(message_id).build()
+            builder = GetMessageRequest.builder().message_id(message_id)
+            if hasattr(builder, "add_query"):
+                builder.add_query("card_msg_content_type", "user_card_content")
+            return builder.build()
         return SimpleNamespace(message_id=message_id)
 
     @staticmethod

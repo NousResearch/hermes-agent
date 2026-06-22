@@ -390,6 +390,8 @@ class FeishuAdapterSettings:
     ws_reconnect_interval: int = 120
     ws_ping_interval: Optional[int] = None
     ws_ping_timeout: Optional[int] = None
+    ws_idle_threshold: int = 300
+    ws_watchdog_interval: int = 180
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
@@ -1341,7 +1343,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             loop.close()
         except Exception:
             pass
-        adapter._ws_thread_loop = None
+        if adapter._ws_thread_loop is loop:
+            adapter._ws_thread_loop = None
 
 
 def check_feishu_requirements() -> bool:
@@ -1433,6 +1436,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_future: Optional[asyncio.Future] = None
         self._ws_thread_loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._last_ws_event_time: float = 0.0
+        self._ws_watchdog_task: Optional[asyncio.Task] = None
+        self._ws_reconnect_in_progress: bool = False
         self._webhook_runner: Optional[Any] = None
         self._webhook_site: Optional[Any] = None
         self._event_handler: Optional[Any] = None
@@ -1572,6 +1578,8 @@ class FeishuAdapter(BasePlatformAdapter):
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
+            ws_idle_threshold=_coerce_required_int(extra.get("ws_idle_threshold"), default=300, min_value=30),
+            ws_watchdog_interval=_coerce_required_int(extra.get("ws_watchdog_interval"), default=180, min_value=10),
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
@@ -1609,37 +1617,119 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_reconnect_interval = settings.ws_reconnect_interval
         self._ws_ping_interval = settings.ws_ping_interval
         self._ws_ping_timeout = settings.ws_ping_timeout
+        self._ws_idle_threshold = settings.ws_idle_threshold
+        self._ws_watchdog_interval = settings.ws_watchdog_interval
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+
+    def _ws_event_wrapper(self, fn):
+        """Wrap an event callback to track WS activity for the idle watchdog."""
+        def wrapper(*args, **kwargs):
+            self._last_ws_event_time = time.monotonic()
+            return fn(*args, **kwargs)
+        return wrapper
+
+    def _start_ws_watchdog(self) -> None:
+        """Start an asyncio task that monitors WS idle time."""
+        self._stop_ws_watchdog()
+        self._last_ws_event_time = time.monotonic()
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+
+        async def _watchdog_loop() -> None:
+            while True:
+                await asyncio.sleep(self._ws_watchdog_interval)
+                if self._connection_mode != "websocket" or self._ws_client is None:
+                    continue
+                idle = time.monotonic() - self._last_ws_event_time
+                if idle < self._ws_idle_threshold:
+                    continue
+                logger.warning(
+                    "[Feishu] WS idle watchdog: no events for %.0fs (threshold %ds), forcing reconnect",
+                    idle,
+                    self._ws_idle_threshold,
+                )
+                try:
+                    await self._reconnect_websocket()
+                except Exception:
+                    logger.error("[Feishu] WS idle watchdog: reconnect failed", exc_info=True)
+
+        self._ws_watchdog_task = loop.create_task(_watchdog_loop())
+
+    def _stop_ws_watchdog(self) -> None:
+        """Cancel the idle watchdog task if running."""
+        task = self._ws_watchdog_task
+        if task is not None:
+            task.cancel()
+            self._ws_watchdog_task = None
+
+    async def _reconnect_websocket(self) -> None:
+        """Tear down the current WS connection and rebuild it."""
+        if self._ws_reconnect_in_progress:
+            logger.debug("[Feishu] WS reconnect already in progress, skipping")
+            return
+        self._ws_reconnect_in_progress = True
+        try:
+            await self._do_reconnect_websocket()
+        finally:
+            self._ws_reconnect_in_progress = False
+
+    async def _do_reconnect_websocket(self) -> None:
+        self._disable_websocket_auto_reconnect()
+
+        ws_thread_loop = self._ws_thread_loop
+        if ws_thread_loop is not None and not ws_thread_loop.is_closed():
+            def cancel_all_tasks() -> None:
+                tasks = [t for t in asyncio.all_tasks(ws_thread_loop) if not t.done()]
+                for t in tasks:
+                    t.cancel()
+                ws_thread_loop.call_later(0.1, ws_thread_loop.stop)
+            ws_thread_loop.call_soon_threadsafe(cancel_all_tasks)
+
+        ws_future = self._ws_future
+        if ws_future is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(ws_future), timeout=10.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pass
+
+        self._ws_future = None
+        self._ws_thread_loop = None
+
+        await self._connect_websocket()
+        self._last_ws_event_time = time.monotonic()
+        logger.info("[Feishu] WS idle watchdog: reconnected successfully")
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
             return None
+        w = self._ws_event_wrapper
         return (
             EventDispatcherHandler.builder(
                 self._encrypt_key,
                 self._verification_token,
             )
-            .register_p2_im_message_message_read_v1(self._on_message_read_event)
-            .register_p2_im_message_receive_v1(self._on_message_event)
+            .register_p2_im_message_message_read_v1(w(self._on_message_read_event))
+            .register_p2_im_message_receive_v1(w(self._on_message_event))
             .register_p2_im_message_reaction_created_v1(
-                lambda data: self._on_reaction_event("im.message.reaction.created_v1", data)
+                w(lambda data: self._on_reaction_event("im.message.reaction.created_v1", data))
             )
             .register_p2_im_message_reaction_deleted_v1(
-                lambda data: self._on_reaction_event("im.message.reaction.deleted_v1", data)
+                w(lambda data: self._on_reaction_event("im.message.reaction.deleted_v1", data))
             )
-            .register_p2_card_action_trigger(self._on_card_action_trigger)
-            .register_p2_im_chat_member_bot_added_v1(self._on_bot_added_to_chat)
-            .register_p2_im_chat_member_bot_deleted_v1(self._on_bot_removed_from_chat)
-            .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(self._on_p2p_chat_entered)
-            .register_p2_im_message_recalled_v1(self._on_message_recalled)
+            .register_p2_card_action_trigger(w(self._on_card_action_trigger))
+            .register_p2_im_chat_member_bot_added_v1(w(self._on_bot_added_to_chat))
+            .register_p2_im_chat_member_bot_deleted_v1(w(self._on_bot_removed_from_chat))
+            .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(w(self._on_p2p_chat_entered))
+            .register_p2_im_message_recalled_v1(w(self._on_message_recalled))
             .register_p2_customized_event(
                 "drive.notice.comment_add_v1",
-                self._on_drive_comment_event,
+                w(self._on_drive_comment_event),
             )
             .register_p2_customized_event(
                 "vc.bot.meeting_invited_v1",
-                self._on_meeting_invited_event,
+                w(self._on_meeting_invited_event),
             )
             .build()
         )
@@ -1697,6 +1787,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+        self._stop_ws_watchdog()
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
@@ -4722,6 +4813,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._ws_client,
             self,
         )
+        self._start_ws_watchdog()
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:

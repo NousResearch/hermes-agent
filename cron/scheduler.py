@@ -2200,6 +2200,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                         "api_key": runtime.get("api_key"),
                         "api_mode": runtime.get("api_mode"),
                     },
+                    fallback_title=job_name,
                 )
             except Exception:
                 pass

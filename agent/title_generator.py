@@ -112,13 +112,21 @@ def generate_title(
 def _set_generated_title(session_db, session_id: str, title: str) -> str:
     """Persist a generated title, suffixing on collisions when supported."""
     try:
-        session_db.set_session_title(session_id, title)
+        persisted = session_db.set_session_title(session_id, title)
+        if persisted is False:
+            raise RuntimeError(
+                f"Session {session_id} was not found; generated title was not persisted"
+            )
         return title
     except ValueError:
         if not hasattr(session_db, "get_next_title_in_lineage"):
             raise
         unique_title = session_db.get_next_title_in_lineage(title)
-        session_db.set_session_title(session_id, unique_title)
+        persisted = session_db.set_session_title(session_id, unique_title)
+        if persisted is False:
+            raise RuntimeError(
+                f"Session {session_id} was not found; generated title was not persisted"
+            )
         return unique_title
 
 
@@ -131,42 +139,56 @@ def auto_title_session(
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
-) -> None:
+    fallback_title: Optional[str] = None,
+) -> Optional[str]:
     """Generate and set a session title if one doesn't already exist.
 
     Called in a background thread after the first exchange completes.
     Silently skips if:
     - session_db is None
     - session already has a title (user-set or previously auto-generated)
-    - title generation fails
+    - title generation fails and no fallback_title is provided
+
+    When ``fallback_title`` is given and auto-generation yields nothing
+    (or yields the same value as the fallback), the fallback is used
+    instead.  This ensures headless cron sessions always get a title
+    even when the generation model is unavailable.
     """
     if not session_db or not session_id:
-        return
+        return None
 
     # Check if title already exists (user may have set one via /title before first response)
     try:
         existing = session_db.get_session_title(session_id)
         if existing:
-            return
+            return existing
     except Exception:
-        return
+        return None
 
     title = generate_title(
         user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime
     )
-    if not title:
-        return
+    candidates = []
+    if title:
+        candidates.append((title, "auto-generated"))
+    if fallback_title:
+        if not title or fallback_title.strip() != title.strip():
+            candidates.append((fallback_title, "fallback"))
 
-    try:
-        applied_title = _set_generated_title(session_db, session_id, title)
-        logger.debug("Auto-generated session title: %s", applied_title)
-        if title_callback is not None:
-            try:
-                title_callback(applied_title)
-            except Exception:
-                logger.debug("Auto-title callback failed", exc_info=True)
-    except Exception as e:
-        logger.debug("Failed to set auto-generated title: %s", e)
+    for candidate, source in candidates:
+        try:
+            applied_title = _set_generated_title(session_db, session_id, candidate)
+            logger.debug("%s session title: %s", source.capitalize(), applied_title)
+            if title_callback is not None:
+                try:
+                    title_callback(applied_title)
+                except Exception:
+                    logger.debug("Auto-title callback failed", exc_info=True)
+            return applied_title
+        except Exception as e:
+            logger.debug("Failed to set %s session title: %s", source, e)
+
+    return None
 
 
 def maybe_auto_title(
@@ -200,10 +222,11 @@ def maybe_auto_title(
         target=auto_title_session,
         args=(session_db, session_id, user_message, assistant_response),
         kwargs={
-            "failure_callback": failure_callback,
-            "main_runtime": main_runtime,
-            "title_callback": title_callback,
-        },
+                "failure_callback": failure_callback,
+                "main_runtime": main_runtime,
+                "title_callback": title_callback,
+                "fallback_title": None,
+            },
         daemon=True,
         name="auto-title",
     )

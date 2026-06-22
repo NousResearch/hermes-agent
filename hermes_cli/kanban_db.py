@@ -2257,6 +2257,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    model_override: Optional[str] = None,
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
@@ -2302,6 +2303,8 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    if model_override is not None:
+        model_override = str(model_override).strip() or None
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -2425,8 +2428,9 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, model_override, goal_mode, goal_max_turns,
+                        session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2445,6 +2449,7 @@ def create_task(
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
+                        model_override,
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
@@ -2466,6 +2471,7 @@ def create_task(
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
+                        "model_override": model_override,
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )

@@ -89,6 +89,48 @@ def test_no_idempotency_key_never_collides(kanban_home):
         conn.close()
 
 
+def test_create_task_persists_model_override(kanban_home):
+    """kb.create_task(model_override=...) should persist the worker model pin."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="model-pinned task",
+            model_override="openrouter/anthropic/claude-3.5-sonnet",
+        )
+
+        task = kb.get_task(conn, tid)
+
+        assert task is not None
+        assert task.model_override == "openrouter/anthropic/claude-3.5-sonnet"
+    finally:
+        conn.close()
+
+
+def test_create_task_defaults_model_override_to_none(kanban_home):
+    """Existing callers that omit model_override keep using profile defaults."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="default model task")
+
+        task = kb.get_task(conn, tid)
+
+        assert task is not None
+        assert task.model_override is None
+    finally:
+        conn.close()
+
+
+def test_cli_create_model_override_json(kanban_home):
+    """`hermes kanban create --model ... --json` should persist the override."""
+    out = run_slash(
+        "create 'model task' --assignee worker --model openrouter/qwen/qwen3 --json"
+    )
+    data = json.loads(out)
+
+    assert data["model_override"] == "openrouter/qwen/qwen3"
+
+
 # ---------------------------------------------------------------------------
 # Spawn-failure circuit breaker
 # ---------------------------------------------------------------------------

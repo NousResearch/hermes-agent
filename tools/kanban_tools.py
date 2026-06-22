@@ -788,6 +788,20 @@ def _handle_create(args: dict, **kw) -> str:
     if goal_bool_error:
         return tool_error(goal_bool_error)
     goal_max_turns = args.get("goal_max_turns")
+    model_override = args.get("model_override")
+    model_arg = args.get("model")
+    if model_arg is not None:
+        if not isinstance(model_arg, dict):
+            return tool_error(
+                f"model must be an object with a model field, got {type(model_arg).__name__}"
+            )
+        model_name = str(model_arg.get("model") or "").strip()
+        if not model_name:
+            return tool_error("model.model is required when model is provided")
+        provider = str(model_arg.get("provider") or "").strip()
+        model_override = f"{provider}/{model_name}" if provider else model_name
+    elif model_override is not None:
+        model_override = str(model_override).strip() or None
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):
@@ -824,6 +838,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                model_override=model_override,
                 goal_mode=goal_mode,
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
@@ -1388,6 +1403,28 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "model": {
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "description": (
+                            "Optional provider prefix. When set, the "
+                            "dispatcher passes '<provider>/<model>' via "
+                            "`hermes -m` to the worker."
+                        ),
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Model name to pass to the dispatched worker.",
+                    },
+                },
+                "required": ["model"],
+                "description": (
+                    "Optional per-task model override for the dispatched "
+                    "worker. Omit to use the assignee profile's default model."
                 ),
             },
             "goal_mode": {

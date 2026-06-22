@@ -1,0 +1,83 @@
+schema: factory.task-activity.v1
+task:
+  id: t_cd7ce752
+  title: "Recovery lane A: wire Kanban model_override creation paths"
+  tenant: software-factory
+agent:
+  profile: dev-backend-2
+  branch: factory/t_cd7ce752-wire-kanban-model-override
+  workspace: /Users/sanbox-user/.hermes/worktrees/t_cd7ce752-wire-kanban-model-override
+timeline:
+  started_at: "2026-06-22T15:42:23Z"
+  completed_at: "2026-06-22T16:13:23Z"
+summary: >-
+  Wired per-task model overrides through Kanban creation plumbing: kb.create_task
+  now persists tasks.model_override, hermes kanban create exposes --model and JSON
+  output includes model_override, and model-facing kanban_create accepts a model object.
+rationale:
+  - decision: "Use the existing tasks.model_override TEXT column as the single persisted value."
+    why: "Dispatcher/run behavior already consumes task.model_override by appending -m <model> to the worker command, so creation paths only needed to populate the existing field."
+    rejected_alternative: "Add a new provider/model JSON column."
+    why_rejected: "The dispatcher currently accepts one CLI -m value; adding a second storage shape would duplicate state and exceed the code-plumbing scope."
+  - decision: "Expose CLI creation as --model and model-tool creation as a cron-style model object."
+    why: "CLI users need a compact string flag, while model-facing tool calls already represent model overrides as {provider, model} objects."
+    rejected_alternative: "Expose only a raw model_override string in the tool schema."
+    why_rejected: "That would be less consistent with existing model-facing tool conventions."
+files_touched:
+  - path: hermes_cli/kanban_db.py
+    reason: "Added create_task(model_override=...) normalization, persistence, and created-event audit payload."
+  - path: hermes_cli/kanban.py
+    reason: "Added hermes kanban create --model and surfaced model_override in JSON task output."
+  - path: tools/kanban_tools.py
+    reason: "Added kanban_create model object schema and handler propagation to kb.create_task."
+  - path: tests/hermes_cli/test_kanban_core_functionality.py
+    reason: "Added RED/GREEN coverage for create_task persistence/backcompat and CLI creation JSON."
+  - path: tests/tools/test_kanban_tools.py
+    reason: "Added RED/GREEN coverage for model-facing kanban_create schema and persistence."
+verification:
+  - command: "bash smoke.sh"
+    result: "pass before changes: ok: pyproject -> hermes-agent; ok: default config validates; ok: state.db quick_check -> ok; ok: smoke passed"
+  - command: "PYTHONPATH=. pytest tests/hermes_cli/test_kanban_core_functionality.py::test_create_task_persists_model_override tests/hermes_cli/test_kanban_core_functionality.py::test_create_task_defaults_model_override_to_none tests/hermes_cli/test_kanban_core_functionality.py::test_cli_create_model_override_json tests/tools/test_kanban_tools.py::test_create_model_object_persists_model_override tests/tools/test_kanban_tools.py::test_create_model_schema_exposes_model_override -q"
+    result: "RED observed: 4 failed, 1 passed before implementation (create_task unexpected keyword, CLI --model unrecognized, tool schema/handler missing; two tool imports also hit missing yaml in non-venv runner)."
+  - command: "/Users/sanbox-user/.hermes/hermes-agent/.venv/bin/python -m pytest tests/hermes_cli/test_kanban_core_functionality.py::test_create_task_persists_model_override tests/hermes_cli/test_kanban_core_functionality.py::test_create_task_defaults_model_override_to_none tests/hermes_cli/test_kanban_core_functionality.py::test_cli_create_model_override_json tests/tools/test_kanban_tools.py::test_create_model_object_persists_model_override tests/tools/test_kanban_tools.py::test_create_model_schema_exposes_model_override -q"
+    result: "pass: 5 passed in 1.35s"
+  - command: "/Users/sanbox-user/.hermes/hermes-agent/.venv/bin/python -m pytest tests/hermes_cli/test_kanban_core_functionality.py tests/tools/test_kanban_tools.py -q"
+    result: "pass: 261 passed, 1 skipped, 3 warnings in 61.71s"
+  - command: "/Users/sanbox-user/.hermes/hermes-agent/.venv/bin/python -m pytest tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_core_functionality.py tests/tools/test_kanban_tools.py -q"
+    result: "pass: 484 passed, 1 skipped, 3 warnings in 110.71s"
+  - command: "/Users/sanbox-user/.hermes/hermes-agent/.venv/bin/python -m pytest -q"
+    result: "failed during collection because optional acp dependency is absent: 9 errors importing acp modules."
+  - command: "/Users/sanbox-user/.hermes/hermes-agent/.venv/bin/python -m pytest -q --ignore=tests/acp --ignore=tests/acp_adapter"
+    result: "failed: 119 failed, 5995 passed, 57 skipped, 59 deselected, 19 warnings, 134 errors; broad suite has unrelated failures/logging resource issues outside this task scope."
+  - command: "bash smoke.sh"
+    result: "pass after changes: ok: pyproject -> hermes-agent; ok: default config validates; ok: state.db quick_check -> ok; ok: smoke passed"
+  - command: "/Users/sanbox-user/.hermes/hermes-agent/.venv/bin/python -m pytest tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_core_functionality.py tests/tools/test_kanban_tools.py -q"
+    result: "pass: 484 passed, 1 skipped, 3 warnings in 112.26s"
+  - command: "bash smoke.sh"
+    result: "pass re-run before handoff: ok: pyproject -> hermes-agent; ok: default config validates; ok: state.db quick_check -> ok; ok: smoke passed"
+  - command: "git diff --check"
+    result: "pass: no whitespace errors"
+acceptance_criteria:
+  - criterion: "Make per-task model overrides usable through kanban_db.create_task."
+    status: met
+    evidence: "tests/hermes_cli/test_kanban_core_functionality.py::test_create_task_persists_model_override"
+  - criterion: "Make per-task model overrides usable through model-facing kanban_create."
+    status: met
+    evidence: "tests/tools/test_kanban_tools.py::test_create_model_object_persists_model_override and schema test"
+  - criterion: "Make per-task model overrides usable through hermes kanban create/equivalent."
+    status: met
+    evidence: "tests/hermes_cli/test_kanban_core_functionality.py::test_cli_create_model_override_json"
+  - criterion: "Preserve backward compatibility when model_override is unset."
+    status: met
+    evidence: "test_create_task_defaults_model_override_to_none and existing Kanban suites pass"
+  - criterion: "Dispatcher/run behavior still consumes tasks.model_override and audit surfaces retain/expose value where practical."
+    status: met
+    evidence: "Existing dispatcher code still appends -m task.model_override; created events now include model_override and CLI JSON includes model_override."
+  - criterion: "Run baseline smoke plus targeted tests."
+    status: met
+    evidence: "baseline smoke passed before and after; targeted Kanban tests passed."
+follow_ups: []
+git:
+  base_commit: 3cfe4d47cf1047fb63cd785abefd218968997ab5
+  branch: factory/t_cd7ce752-wire-kanban-model-override
+  commit: null

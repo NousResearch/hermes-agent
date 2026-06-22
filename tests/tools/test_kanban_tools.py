@@ -768,6 +768,38 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_model_object_persists_model_override(worker_env):
+    """Model-facing kanban_create should accept a cron-style model object."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "model child",
+        "assignee": "peer",
+        "model": {"provider": "openrouter", "model": "anthropic/claude-3.5-sonnet"},
+    })
+    d = json.loads(out)
+
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child is not None
+        assert child.model_override == "openrouter/anthropic/claude-3.5-sonnet"
+    finally:
+        conn.close()
+
+
+def test_create_model_schema_exposes_model_override():
+    from tools.kanban_tools import KANBAN_CREATE_SCHEMA
+
+    model_schema = KANBAN_CREATE_SCHEMA["parameters"]["properties"]["model"]
+
+    assert model_schema["type"] == "object"
+    assert "provider" in model_schema["properties"]
+    assert "model" in model_schema["required"]
+
+
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
     """A worker scoped to a dir: task that spawns a child without a
     workspace arg inherits the dir, not scratch (so follow-up code-gen

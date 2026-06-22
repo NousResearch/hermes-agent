@@ -380,6 +380,7 @@ def _handle_send(args):
     force_document_attachments = "[[as_document]]" in message
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    media_files = _translate_docker_workspace_paths(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
@@ -551,6 +552,93 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     if platform_name == "xmpp" and "@" in target_ref:
         return target_ref, None, True
     return None, None, False
+
+
+def _get_docker_mount_table() -> tuple[list[tuple[str, str]], str | None]:
+    """Return ([(container_dest, host_src), ...], container_id) for the active Docker env.
+
+    Mounts are sorted longest-destination-first so the most specific prefix wins.
+    Returns ([], None) if no active Docker environment is found.
+    """
+    try:
+        import json
+        import subprocess
+        from tools.terminal_tool import _active_environments  # type: ignore[import]
+        for env in list(_active_environments.values()):
+            cid = getattr(env, "_container_id", None)
+            if not cid:
+                continue
+            result = subprocess.run(
+                ["docker", "inspect", "--format", "{{json .Mounts}}", cid],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                continue
+            mounts = [
+                (m["Destination"].rstrip("/"), m["Source"].rstrip("/"))
+                for m in json.loads(result.stdout)
+                if m.get("Type") == "bind"
+            ]
+            mounts.sort(key=lambda x: len(x[0]), reverse=True)
+            return mounts, cid
+    except Exception:
+        pass
+    return [], None
+
+
+def _translate_docker_workspace_paths(media_files: list) -> list:
+    """Translate container paths to host equivalents for Docker terminal backends.
+
+    send_message runs on the HOST; files written by the agent inside the Docker
+    container are only reachable if the path falls under a bind-mount or can be
+    copied out.  Strategy:
+      1. Build the mount table from `docker inspect`.
+      2. For each media path, walk mounts longest-first to find a matching prefix
+         and rewrite to the host source path.
+      3. For paths not covered by any mount (e.g. /tmp/), use `docker cp` to
+         extract the file to a temp location the host can read.
+    """
+    import os
+    from pathlib import Path
+
+    if not media_files:
+        return media_files
+
+    mounts, container_id = _get_docker_mount_table()
+    if not mounts and not container_id:
+        return media_files
+
+    translated = []
+    for path, is_voice in media_files:
+        host_path = path
+
+        # Try to map via a bind-mount prefix.
+        for dest, src in mounts:
+            if path == dest:
+                host_path = src
+                break
+            if path.startswith(dest + "/"):
+                host_path = src + path[len(dest):]
+                break
+
+        # If still unmapped (e.g. /tmp/) and doesn't exist on host, docker cp it.
+        if host_path == path and not Path(path).exists() and container_id:
+            try:
+                import hashlib
+                import subprocess
+                tag = hashlib.md5(path.encode()).hexdigest()[:8]
+                dest_path = f"/tmp/hermes_docker_media_{tag}{os.path.splitext(path)[1]}"
+                r = subprocess.run(
+                    ["docker", "cp", f"{container_id}:{path}", dest_path],
+                    capture_output=True, timeout=30,
+                )
+                if r.returncode == 0:
+                    host_path = dest_path
+            except Exception:
+                pass
+
+        translated.append((host_path, is_voice))
+    return translated
 
 
 def _describe_media_for_mirror(media_files):

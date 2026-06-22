@@ -2678,6 +2678,23 @@ class TestHandleMaxIterations:
         ]
 
 
+class TestIterationBudgetPressureMessage:
+    def test_two_tier_pressure_message_thresholds(self):
+        from agent.chat_completion_helpers import build_iteration_budget_pressure_message
+
+        assert build_iteration_budget_pressure_message(10, 6) is None
+
+        caution = build_iteration_budget_pressure_message(10, 7)
+        assert caution is not None
+        assert "Start consolidating" in caution
+        assert "7/10" in caution
+
+        warning = build_iteration_budget_pressure_message(10, 9)
+        assert warning is not None
+        assert "MUST provide your final response now" in warning
+        assert "9/10" in warning
+
+
 class TestRunConversation:
     """Tests for the main run_conversation method.
 

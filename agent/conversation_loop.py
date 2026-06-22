@@ -32,6 +32,7 @@ from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.chat_completion_helpers import build_iteration_budget_pressure_message
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
@@ -901,6 +902,14 @@ def run_conversation(
                 cache_ttl=agent._cache_ttl,
                 native_anthropic=agent._use_native_cache_layout,
             )
+
+        budget_pressure_message = build_iteration_budget_pressure_message(
+            agent.max_iterations,
+            api_call_count,
+        )
+        if budget_pressure_message:
+            insert_at = 1 if (api_messages and api_messages[0].get("role") == "system") else 0
+            api_messages.insert(insert_at, {"role": "system", "content": budget_pressure_message})
 
         # Safety net: strip orphaned tool results / add stubs for missing
         # results before sending to the API.  Runs unconditionally — not

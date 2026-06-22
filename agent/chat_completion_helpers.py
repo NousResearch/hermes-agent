@@ -20,6 +20,7 @@ import contextvars
 import copy
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -1142,6 +1143,34 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
         return agent._try_activate_fallback()  # try next in chain
 
+
+
+def build_iteration_budget_pressure_message(max_iterations: int, api_call_count: int) -> Optional[str]:
+    """Return an ephemeral warning when the agent is nearing max iterations."""
+    if not isinstance(max_iterations, int) or max_iterations <= 0:
+        return None
+    if not isinstance(api_call_count, int) or api_call_count < 0:
+        return None
+
+    caution_at = max(1, math.ceil(max_iterations * 0.7))
+    warning_at = max(1, math.ceil(max_iterations * 0.9))
+    remaining = max(0, max_iterations - api_call_count)
+
+    if api_call_count >= warning_at:
+        return (
+            f"[BUDGET: Iteration {api_call_count}/{max_iterations}. "
+            f"You have {remaining} iterations left. You MUST provide your final response now. "
+            "Do not call any more tools unless absolutely critical.]"
+        )
+
+    if api_call_count >= caution_at:
+        return (
+            f"[BUDGET: Iteration {api_call_count}/{max_iterations}. "
+            f"You have {remaining} iterations left. Start consolidating your work and prepare "
+            "to provide a final response.]"
+        )
+
+    return None
 
 
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:

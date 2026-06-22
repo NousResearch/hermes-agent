@@ -1,0 +1,5 @@
+name: pleumrouter-provider
+kind: model-provider
+version: 1.0.0
+description: PleumRouter — Korea-region OpenAI-compatible LLM gateway
+author: AIrouter Dev

@@ -68,6 +68,177 @@
     return str;
   }
 
+  // -------------------------------------------------------------------------
+  // In-app dialogs (#50547)
+  //
+  // The host exposes the Radix-based ConfirmDialog on the plugin SDK. We wrap
+  // it in a tiny promise-based provider so the imperative call sites below can
+  // await dlg.confirm(...) / dlg.prompt(...) instead of calling the OS-styled
+  // window.confirm / window.alert / window.prompt. The prompt variant uses a
+  // multi-line textarea with inline validation (no second alert), auto-focus,
+  // and Cmd/Ctrl+Enter to submit.
+  //
+  // Older hosts that predate the SDK exposure fall back to native dialogs so
+  // the bundle still works (same graceful-degradation pattern as the Checkbox
+  // and useI18n shims above).
+  // -------------------------------------------------------------------------
+  const SDKButton = SDK.components.Button;
+  const HostConfirmDialog = SDK.components.ConfirmDialog || null;
+
+  const DialogContext = React.createContext(null);
+
+  // Native fallbacks: used when no DialogHost is mounted (defensive) or the
+  // host SDK is too old to expose ConfirmDialog. Preserve the prior behaviour.
+  function nativeConfirm(opts) {
+    const msg = (opts && opts.description) ? opts.description : ((opts && opts.title) || "");
+    return Promise.resolve(window.confirm(msg));
+  }
+  function nativePrompt(opts) {
+    const label = (opts && opts.description) || (opts && opts.title) || "";
+    const value = window.prompt(label, (opts && opts.defaultValue) || "");
+    if (value === null) return Promise.resolve(null);
+    const trimmed = String(value).trim();
+    if ((opts && opts.required) && !trimmed) {
+      if (opts && opts.requiredMessage) window.alert(opts.requiredMessage);
+      return Promise.resolve(null);
+    }
+    return Promise.resolve(trimmed);
+  }
+
+  // A self-contained modal mirroring web/src/components/ConfirmDialog.tsx
+  // (overlay + card + title/description + Cancel/Confirm). Used for the prompt
+  // variant, which the host ConfirmDialog cannot express (needs a textarea).
+  function PromptModal(props) {
+    const { useState, useEffect, useRef } = SDK.hooks;
+    const [value, setValue] = useState(props.defaultValue || "");
+    const ref = useRef(null);
+    useEffect(function () {
+      const ta = ref.current;
+      if (ta) {
+        ta.focus();
+        try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (_e) {}
+        if (ta.scrollIntoView) ta.scrollIntoView({ block: "center" });
+      }
+      const onKey = function (e) {
+        if (e.key === "Escape") { e.preventDefault(); props.onCancel(); }
+      };
+      document.addEventListener("keydown", onKey);
+      const prevOverflow = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      return function () {
+        document.removeEventListener("keydown", onKey);
+        document.body.style.overflow = prevOverflow;
+      };
+    }, []);
+    const trimmed = String(value).trim();
+    const invalid = !!props.required && !trimmed;
+    const submit = function () { if (!invalid) props.onConfirm(trimmed); };
+    return h("div", {
+      role: "dialog",
+      "aria-modal": "true",
+      className: "fixed inset-0 z-[200] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4",
+      onClick: function (e) { if (e.target === e.currentTarget) props.onCancel(); },
+    },
+      h("div", { className: cn("relative w-full max-w-md border border-border bg-card shadow-2xl") },
+        h("div", { className: "flex items-start gap-3 p-4 border-b border-border" },
+          h("div", { className: "flex-1 min-w-0 flex flex-col gap-1" },
+            h("h2", { className: "font-mondwest text-display text-base tracking-wider" }, props.title),
+            props.description
+              ? h("p", { className: "text-xs text-muted-foreground leading-relaxed whitespace-pre-line" }, props.description)
+              : null,
+          ),
+        ),
+        h("div", { className: "p-4" },
+          h("textarea", {
+            ref: ref,
+            value: value,
+            rows: 4,
+            placeholder: props.placeholder || "",
+            className: "w-full resize-y border border-border bg-background p-2 text-sm",
+            onChange: function (e) { setValue(e.target.value); },
+            onKeyDown: function (e) {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(); }
+            },
+          }),
+        ),
+        h("div", { className: "flex items-center justify-end gap-2 p-3" },
+          h(SDKButton, { type: "button", outlined: true, onClick: props.onCancel }, props.cancelLabel || "Cancel"),
+          h(SDKButton, { type: "button", onClick: submit, disabled: invalid }, props.confirmLabel || "OK"),
+        ),
+      ),
+    );
+  }
+
+  // Provider: renders the active dialog and resolves the pending promise on
+  // confirm/cancel. Exposes { confirm, prompt } via context.
+  function DialogHost(props) {
+    const { useState, useCallback, useMemo, useRef } = SDK.hooks;
+    const [active, setActive] = useState(null);
+    const pendingRef = useRef(null);
+
+    const close = useCallback(function (result) {
+      const pend = pendingRef.current;
+      pendingRef.current = null;
+      setActive(null);
+      if (pend) pend(result);
+    }, []);
+
+    const dialogApi = useMemo(function () {
+      return {
+        confirm: function (opts) {
+          if (!HostConfirmDialog) return nativeConfirm(opts);
+          return new Promise(function (resolve) {
+            pendingRef.current = resolve;
+            setActive({ kind: "confirm", opts: opts || {} });
+          });
+        },
+        prompt: function (opts) {
+          return new Promise(function (resolve) {
+            pendingRef.current = resolve;
+            setActive({ kind: "prompt", opts: opts || {} });
+          });
+        },
+      };
+    }, []);
+
+    let modal = null;
+    if (active && active.kind === "confirm" && HostConfirmDialog) {
+      const o = active.opts;
+      modal = h(HostConfirmDialog, {
+        open: true,
+        title: o.title || "",
+        description: o.description || "",
+        confirmLabel: o.confirmLabel,
+        cancelLabel: o.cancelLabel,
+        destructive: !!o.destructive,
+        onConfirm: function () { close(true); },
+        onCancel: function () { close(false); },
+      });
+    } else if (active && active.kind === "prompt") {
+      const o = active.opts;
+      modal = h(PromptModal, {
+        title: o.title || "",
+        description: o.description || "",
+        placeholder: o.placeholder,
+        defaultValue: o.defaultValue,
+        required: o.required,
+        confirmLabel: o.confirmLabel,
+        cancelLabel: o.cancelLabel,
+        onConfirm: function (v) { close(v); },
+        onCancel: function () { close(null); },
+      });
+    }
+
+    return h(DialogContext.Provider, { value: dialogApi }, props.children, modal);
+  }
+
+  // Hook for call sites inside the provider. Falls back to native dialogs if
+  // somehow rendered outside a DialogHost (keeps old behaviour, never throws).
+  function useDialogs() {
+    const ctx = React.useContext(DialogContext);
+    return ctx || { confirm: nativeConfirm, prompt: nativePrompt };
+  }
+
   // ``fetchJSON`` throws ``Error("<status>: <raw body>")`` on non-2xx, and
   // FastAPI bodies look like ``{"detail":"<message>"}``.  Pull the
   // human-readable message out so banners/toasts don't have to leak HTTP
@@ -145,6 +316,21 @@
     if (!key) return null;
     return tx(t, key, FALLBACK_DESTRUCTIVE[status]);
   }
+  // Bulk-many variants of the destructive transition copy (#50547): when
+  // more than one task is selected, pluralize so we never show singular
+  // copy for a 3-task action. Falls back to the singular key.
+  const DESTRUCTIVE_MANY_KEYS = {
+    done: "confirmDoneMany",
+    archived: "confirmArchiveMany",
+    blocked: "confirmBlockedMany",
+  };
+  function getDestructiveConfirmN(t, status, n) {
+    if (!n || n <= 1) return getDestructiveConfirm(t, status);
+    const manyKey = DESTRUCTIVE_MANY_KEYS[status];
+    const singular = getDestructiveConfirm(t, status);
+    if (!manyKey) return singular;
+    return tx(t, manyKey, singular, { n: n });
+  }
   function getDiagnosticEventLabel(t, kind) {
     const key = DIAGNOSTIC_EVENT_KIND_KEYS[kind];
     if (!key) return null;
@@ -171,24 +357,29 @@
     return p.phantom_cards || p.phantom_refs || [];
   }
 
-  // Takes an optional `t` so the prompt/alert text is localised. Callers
-  // outside React components can pass null and fall through to English.
-  function withCompletionSummary(patch, count, t) {
+  // Takes the dialogs api (dlg) + an optional `t` so the prompt text is
+  // localised. Async: resolves to the augmented patch, or null if the user
+  // cancels. The in-app prompt enforces a non-empty summary inline (the
+  // confirm button stays disabled), so there is no second required alert.
+  // `dlg` may be omitted (callers outside the provider) -> native fallback.
+  async function withCompletionSummary(patch, count, t, dlg) {
     if (!patch || patch.status !== "done") return patch;
     const label = count && count > 1 ? `${count} selected task(s)` : "this task";
-    const value = window.prompt(
-      tx(t, "completionSummary",
+    const ask = (dlg && dlg.prompt) || nativePrompt;
+    const value = await ask({
+      title: tx(t, "markDoneTitle", "Mark done"),
+      description: tx(t, "completionSummary",
         "Completion summary for {label}. This is stored as the task result.",
         { label: label }),
-      "",
-    );
+      placeholder: tx(t, "completionSummaryPlaceholder", "Summary of what was done."),
+      confirmLabel: tx(t, "markDoneConfirm", "Mark done"),
+      required: true,
+      requiredMessage: tx(t, "completionSummaryRequired",
+        "Completion summary is required before marking a task done."),
+    });
     if (value === null) return null;
-    const summary = value.trim();
-    if (!summary) {
-      window.alert(tx(t, "completionSummaryRequired",
-        "Completion summary is required before marking a task done."));
-      return null;
-    }
+    const summary = String(value).trim();
+    if (!summary) return null;
     return Object.assign({}, patch, { result: summary, summary });
   }
 
@@ -504,8 +695,16 @@
   // Root page
   // -------------------------------------------------------------------------
 
+  // The registered root just mounts the in-app dialog provider (#50547)
+  // around the real app, so every component can await dlg.confirm /
+  // dlg.prompt instead of using native browser dialogs.
   function KanbanPage() {
+    return h(DialogHost, null, h(KanbanApp, null));
+  }
+
+  function KanbanApp() {
     const { t } = useI18n();
+    const dlg = useDialogs();
     const [board, setBoard] = useState(() => readSelectedBoard() || null);
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
@@ -715,10 +914,10 @@
     }, [boardData, tenantFilter, assigneeFilter, search]);
 
     // --- actions ------------------------------------------------------------
-    const moveTask = useCallback(function (taskId, newStatus) {
+    const moveTask = useCallback(async function (taskId, newStatus) {
       const confirmMsg = getDestructiveConfirm(t, newStatus);
-      if (confirmMsg && !window.confirm(confirmMsg)) return;
-      const patch = withCompletionSummary({ status: newStatus }, 1, t);
+      if (confirmMsg && !(await dlg.confirm({ title: tx(t, "confirmTitle", "Please confirm"), description: confirmMsg, destructive: true }))) return;
+      const patch = await withCompletionSummary({ status: newStatus }, 1, t, dlg);
       if (!patch) return;
       setBoardData(function (b) {
         if (!b) return b;
@@ -744,18 +943,18 @@
         setError(tx(t, "moveFailed", "Move failed: ") + parseApiErrorMessage(err));
         loadBoard();
       });
-    }, [loadBoard, board, t]);
+    }, [loadBoard, board, t, dlg]);
 
     const clearSelected = useCallback(function () {
       setSelectedIds(new Set());
       setLastSelectedId(null);
       setFailedIds(new Set());
     }, []);
-    const moveSelected = useCallback(function (newStatus) {
-      const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
-      if (confirmMsg && !window.confirm(confirmMsg)) return;
+    const moveSelected = useCallback(async function (newStatus) {
       if (selectedIds.size === 0) return;
-      const patch = withCompletionSummary({ status: newStatus }, selectedIds.size);
+      const confirmMsg = getDestructiveConfirmN(t, newStatus, selectedIds.size);
+      if (confirmMsg && !(await dlg.confirm({ title: tx(t, "confirmTitle", "Please confirm"), description: confirmMsg, destructive: true }))) return;
+      const patch = await withCompletionSummary({ status: newStatus }, selectedIds.size, t, dlg);
       if (!patch) return;
       const ids = Array.from(selectedIds);
       // Optimistic UI: remove selected from all columns and prepend to target.
@@ -794,7 +993,7 @@
         setFailedIds(new Set(selectedIds));
         loadBoard();
       });
-    }, [selectedIds, loadBoard, board]);
+    }, [selectedIds, loadBoard, board, t, dlg]);
 
     const createTask = useCallback(function (body) {
       return SDK.fetchJSON(withBoard(`${API}/tasks`, board), {
@@ -889,10 +1088,10 @@
       if (col.tasks && col.tasks.length > 0) setLastSelectedId(col.tasks[0].id);
     }, [filteredBoard, selectedIds]);
 
-    const applyBulk = useCallback(function (patch, confirmMsg) {
+    const applyBulk = useCallback(async function (patch, confirmMsg) {
       if (selectedIds.size === 0) return;
-      if (confirmMsg && !window.confirm(confirmMsg)) return;
-      const finalPatch = withCompletionSummary(patch, selectedIds.size, t);
+      if (confirmMsg && !(await dlg.confirm({ title: tx(t, "confirmTitle", "Please confirm"), description: confirmMsg, destructive: true }))) return;
+      const finalPatch = await withCompletionSummary(patch, selectedIds.size, t, dlg);
       if (!finalPatch) return;
       const body = Object.assign({ ids: Array.from(selectedIds) }, finalPatch);
       // Optimistic UI for status moves (same pattern as moveSelected).
@@ -937,7 +1136,7 @@
           setFailedIds(new Set(selectedIds));
           loadBoard();
         });
-    }, [selectedIds, loadBoard, board, t]);
+    }, [selectedIds, loadBoard, board, t, dlg]);
 
     // --- board switching ----------------------------------------------------
     const switchBoard = useCallback(function (nextSlug) {
@@ -981,8 +1180,8 @@
       });
     }, [board, loadBoardList, switchBoard]);
 
-   const deleteTask = useCallback(function (taskId) {
-     if (!window.confirm(tx(t, "trash.confirm", FALLBACK_TRASH.confirm))) return Promise.resolve();
+   const deleteTask = useCallback(async function (taskId) {
+     if (!(await dlg.confirm({ title: tx(t, "trash.title", "Delete task"), description: tx(t, "trash.confirm", FALLBACK_TRASH.confirm), confirmLabel: tx(t, "delete", "Delete"), destructive: true }))) return;
      return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(taskId)}`, {
        method: "DELETE",
      }).then(function () {
@@ -993,11 +1192,12 @@
          return next;
        });
      }).catch(function (e) { setError(String(e.message || e)); });
-   }, [board, loadBoard, t]);
+   }, [board, loadBoard, t, dlg]);
 
-    const deleteSelected = useCallback(function (count) {
-      if (selectedIds.size === 0) return Promise.resolve();
-      if (!window.confirm(tx(t, "trash.confirmMany", "Permanently delete {n} selected tasks? This cannot be undone.", { n: count }))) return Promise.resolve();
+    const deleteSelected = useCallback(async function (count) {
+      if (selectedIds.size === 0) return;
+      const n = count != null ? count : selectedIds.size;
+      if (!(await dlg.confirm({ title: tx(t, "trash.titleMany", "Delete {n} tasks", { n: n }), description: tx(t, "trash.confirmMany", "Permanently delete {n} selected tasks? This cannot be undone.", { n: n }), confirmLabel: tx(t, "deleteMany", "Delete {n} tasks", { n: n }), destructive: true }))) return;
       const ids = Array.from(selectedIds);
       setSelectedIds(new Set());
       return Promise.all(ids.map(function (id) {
@@ -1005,7 +1205,7 @@
       })).then(function () {
         loadBoard();
       }).catch(function (e) { setError(String(e.message || e)); });
-    }, [selectedIds, board, loadBoard, t]);
+    }, [selectedIds, board, loadBoard, t, dlg]);
 
     // --- render -------------------------------------------------------------
     if (loading && !boardData) {
@@ -1280,6 +1480,7 @@
 
   function DiagnosticCard(props) {
     const { t } = useI18n();
+    const dlg = useDialogs();
     const { diag, task, boardSlug, assignees, onRefresh } = props;
     const [busy, setBusy] = useState(false);
     const [msg, setMsg] = useState(null);
@@ -1290,7 +1491,7 @@
       if (busy) return;
       if (action.kind === "cli_hint") {
         const cmd = (action.payload && action.payload.command) || action.label;
-        const fallback = function () { window.prompt("Copy this command:", cmd); };
+        const fallback = function () { dlg.prompt({ title: tx(t, "copyCommandTitle", "Copy command"), description: tx(t, "copyCommand", "Copy this command:"), defaultValue: cmd, confirmLabel: tx(t, "done", "Done") }); };
         try {
           const p = navigator.clipboard && navigator.clipboard.writeText(cmd);
           if (p && p.then) {
@@ -1806,6 +2007,7 @@
 
   function BoardSwitcher(props) {
     const { t } = useI18n();
+    const dlg = useDialogs();
     const list = props.boardList || [];
     const current = list.find(function (b) { return b.slug === props.board; });
     const currentName = current && current.name ? current.name : props.board;
@@ -1866,11 +2068,11 @@
         }, tx(t, "newBoard", "+ New board")),
         props.board !== "default"
           ? h(Button, {
-            onClick: function () {
+            onClick: async function () {
               const msg = tx(t, "archiveBoardConfirm",
                 "Archive board '{name}'? It will be moved to boards/_archived/ so you can recover it later. Tasks on this board will no longer appear anywhere in the UI.",
                 { name: currentName });
-              if (window.confirm(msg)) props.onDeleteBoard(props.board);
+              if (await dlg.confirm({ title: tx(t, "archiveBoardTitle", "Archive this board"), description: msg, confirmLabel: tx(t, "archive", "Archive"), destructive: true })) props.onDeleteBoard(props.board);
             },
             size: "sm",
             className: "h-8",
@@ -2215,6 +2417,7 @@
 
   function TrashDropZone(props) {
     const { t } = useI18n();
+    const dlg = useDialogs();
     const [dragOver, setDragOver] = useState(false);
     const zoneRef = useRef(null);
 
@@ -2241,10 +2444,12 @@
       const taskId = e.dataTransfer.getData(MIME_TASK);
       if (!taskId) return;
       if (props.selectedIds && props.selectedIds.has(taskId) && props.selectedIds.size > 1) {
-        if (window.confirm(tx(t, "trash.confirmMany", "Permanently delete {n} selected tasks? This cannot be undone.", { n: props.selectedIds.size }))) {
+        const n = props.selectedIds.size;
+        dlg.confirm({ title: tx(t, "trash.titleMany", "Delete {n} tasks", { n: n }), description: tx(t, "trash.confirmMany", "Permanently delete {n} selected tasks? This cannot be undone.", { n: n }), confirmLabel: tx(t, "deleteMany", "Delete {n} tasks", { n: n }), destructive: true }).then(function (ok) {
+          if (!ok) return;
           const ids = Array.from(props.selectedIds);
           Promise.all(ids.map(function (id) { return props.onDelete(id); })).catch(function () {});
-        }
+        });
       } else {
         props.onDelete(taskId);
       }
@@ -2824,6 +3029,7 @@
 
   function TaskDrawer(props) {
     const { t } = useI18n();
+    const dlg = useDialogs();
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [err, setErr] = useState(null);
@@ -2928,12 +3134,12 @@
         .catch(function (e) { setUploadErr(String(e.message || e)); });
     };
 
-    const doPatch = function (patch, opts) {
-      if (opts && opts.confirm && !window.confirm(opts.confirm)) {
-        return Promise.resolve();
+    const doPatch = async function (patch, opts) {
+      if (opts && opts.confirm && !(await dlg.confirm({ title: tx(t, "confirmTitle", "Please confirm"), description: opts.confirm, destructive: true }))) {
+        return;
       }
-      const finalPatch = withCompletionSummary(patch, 1);
-      if (!finalPatch) return Promise.resolve();
+      const finalPatch = await withCompletionSummary(patch, 1, t, dlg);
+      if (!finalPatch) return;
       setPatchErr(null);
       return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug), {
         method: "PATCH",
@@ -3125,6 +3331,7 @@
   // can read them with the file/terminal tools.
   function AttachmentsSection(props) {
     const i18n = props.i18n;
+    const dlg = useDialogs();
     const atts = props.attachments || [];
     const fileRef = useRef(null);
     const [dlErr, setDlErr] = useState(null);
@@ -3207,10 +3414,9 @@
                 className: "hermes-kanban-drawer-close",
                 title: tx(i18n, "removeAttachment", "Remove attachment"),
                 onClick: function () {
-                  if (window.confirm(tx(i18n, "confirmRemoveAttachment",
-                      "Remove this attachment?"))) {
-                    if (props.onDelete) props.onDelete(a.id);
-                  }
+                  dlg.confirm({ title: tx(i18n, "removeAttachment", "Remove attachment"), description: tx(i18n, "confirmRemoveAttachment", "Remove this attachment?"), confirmLabel: tx(i18n, "remove", "Remove"), destructive: true }).then(function (ok) {
+                    if (ok && props.onDelete) props.onDelete(a.id);
+                  });
                 },
               }, "×"),
             );

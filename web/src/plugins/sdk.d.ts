@@ -133,6 +133,12 @@ export interface HermesPluginSDK {
    * requirements (props are contravariant).
    */
   components: Record<string, ComponentType<never>>;
+  // Available component keys include the shadcn/Nous primitives
+  // (Card, Button, Input, Label, Badge, Checkbox, Select, Tabs, ...)
+  // plus the in-app dialog stack so plugins render host-styled modals
+  // instead of native browser dialogs:
+  //   Dialog, DialogContent, DialogHeader, DialogTitle,
+  //   DialogDescription, DialogFooter, DialogClose, ConfirmDialog.
 
   utils: {
     cn: (...classes: Array<string | false | null | undefined>) => string;
@@ -148,6 +154,15 @@ export interface HermesPluginSDK {
    * ``I18nContextValue`` shape. Plugins typically call ``useI18n().t(...)``.
    */
   useI18n: () => unknown;
+
+  /**
+   * Toast hook for transient notifications. Returns the host toast
+   * context; typed loosely at the boundary so the contract does not
+   * couple to the host toaster shape. Plugins typically call
+   * ``useToast().toast({ title, description })``. Use this instead of
+   * ``window.alert`` for non-blocking feedback.
+   */
+  useToast: () => unknown;
 }
 
 declare global {

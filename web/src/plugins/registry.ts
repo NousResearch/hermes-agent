@@ -28,6 +28,17 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Separator } from "@nous-research/ui/ui/components/separator";
 import { Tabs, TabsList, TabsTrigger } from "@nous-research/ui/ui/components/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+  DialogClose,
+} from "@nous-research/ui/ui/components/dialog";
+import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useI18n } from "@/i18n";
 import { registerSlot, PluginSlot } from "./slots";
 
@@ -157,6 +168,18 @@ export function exposePluginSDK() {
       TabsList,
       TabsTrigger,
       PluginSlot,
+      // Radix dialog primitives + the app ConfirmDialog wrapper, so
+      // plugins render in-app modals instead of native browser dialogs
+      // (window.confirm / window.alert / window.prompt). Additive -- see
+      // sdk.d.ts; does not require an SDK_CONTRACT_VERSION bump.
+      Dialog,
+      DialogContent,
+      DialogHeader,
+      DialogTitle,
+      DialogDescription,
+      DialogFooter,
+      DialogClose,
+      ConfirmDialog,
     },
 
     // Utilities
@@ -164,5 +187,8 @@ export function exposePluginSDK() {
 
     // Hooks
     useI18n,
+    // Toast hook (transient notifications) -- lets plugins surface
+    // feedback through the host toaster instead of window.alert.
+    useToast,
   };
 }

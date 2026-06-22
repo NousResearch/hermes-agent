@@ -790,6 +790,13 @@ export const en: Translations = {
       "Archive this task? It disappears from the default board view.",
     confirmBlocked:
       "Mark this task as blocked? The worker's claim is released.",
+    confirmDoneMany:
+      "Mark {n} selected tasks as done? Each worker's claim is released "
+      + "and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} selected tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} selected tasks as blocked? Each worker's claim is released.",
     confirmScheduled:
       "Move this task to Scheduled? Use this for known time delays rather than human blockers.",
     completionSummary:

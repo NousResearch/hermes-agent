@@ -12,19 +12,47 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 
-def test_install_script_skips_playwright_download_when_system_browser_exists() -> None:
+def test_install_script_does_not_autodetect_system_browser_on_path() -> None:
+    """The installer must not scan PATH/well-known locations for a browser.
+
+    Auto-detection silently bound the install to whatever ``command -v
+    chromium`` resolved to — most damagingly a Snap Chromium, whose sandbox
+    blocks agent-browser's control socket and hangs every browser_navigate. The
+    fallback was dropped in favor of always using the bundled Playwright
+    Chromium, so the old PATH-scan and "use the system browser" path are gone.
+    """
     text = INSTALL_SH.read_text()
 
     assert "find_system_browser()" in text
-    assert "google-chrome google-chrome-stable chromium chromium-browser chrome" in text
-    assert "Skipping Playwright browser download; Hermes will use the system browser." in text
+    assert "google-chrome google-chrome-stable chromium chromium-browser chrome" not in text
+    assert "Skipping Playwright browser download; Hermes will use the system browser." not in text
 
 
-def test_install_script_persists_system_browser_for_agent_browser() -> None:
+def test_install_script_honors_explicit_browser_override_only() -> None:
+    """find_system_browser consults only an explicit AGENT_BROWSER_EXECUTABLE_PATH."""
     text = INSTALL_SH.read_text()
 
-    assert "configure_browser_env_from_system_browser()" in text
-    assert "AGENT_BROWSER_EXECUTABLE_PATH=$browser_path" in text
+    assert 'override="${AGENT_BROWSER_EXECUTABLE_PATH:-}"' in text
+    # An explicit override still skips the bundled download (override, not fallback).
+    assert "Skipping bundled Chromium download" in text
+
+
+def test_install_script_strips_stale_snap_browser_override() -> None:
+    """Already-affected installs must auto-recover.
+
+    A pre-existing AGENT_BROWSER_EXECUTABLE_PATH pointing at a Snap Chromium is
+    the exact value that hangs the browser tool, and the runtime reads it from
+    .env — so the installer strips it (and a Snap override is rejected even when
+    set explicitly) so the bundled Chromium download runs on update.
+    """
+    text = INSTALL_SH.read_text()
+
+    assert "strip_snap_browser_override()" in text
+    assert "^AGENT_BROWSER_EXECUTABLE_PATH=/snap/" in text
+    # Both install paths invoke the migration before resolving a browser.
+    assert text.count("strip_snap_browser_override") >= 3
+    # A snap path is rejected by find_system_browser itself.
+    assert "/snap/*) return 1 ;;" in text
 
 
 def test_playwright_installs_are_timeout_guarded() -> None:

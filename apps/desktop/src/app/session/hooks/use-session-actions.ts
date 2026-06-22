@@ -46,6 +46,7 @@ import {
   setSessionsTotal,
   setTurnStartedAt,
   setYoloActive,
+  setSessionUnread,
   workspaceCwdForNewSession
 } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
@@ -989,6 +990,9 @@ export function useSessionActions({
 
         await deleteSession(storedSessionId, removed?.profile)
         clearQueuedPrompts(storedSessionId)
+        // A deleted session can't be unread — drop the marker so it doesn't
+        // linger in the badge count or survive a same-id resurrection.
+        setSessionUnread(storedSessionId, false)
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
@@ -1065,6 +1069,9 @@ export function useSessionActions({
 
       try {
         await setSessionArchived(storedSessionId, true, archived?.profile)
+        // An archived session is out of the sidebar — clear its unread marker
+        // so it doesn't keep the badge count alive from off-screen.
+        setSessionUnread(storedSessionId, false)
         // A sidebar refresh can race the optimistic removal while the PATCH is
         // in flight and briefly reinsert the still-unarchived backend row. Win
         // that race after the mutation succeeds so right-click → Archive does

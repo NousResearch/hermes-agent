@@ -45,6 +45,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setSessionUnread,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -661,6 +662,15 @@ export function useMessageStream({
         sessionId,
         title: translateNow('notifications.native.turnDoneTitle')
       })
+
+      // Mark the session unread so the sidebar shows a persistent "new output"
+      // cue — but only if the user isn't already viewing it. The active
+      // session's own dot already reflects working→idle live; an unread marker
+      // there would just immediately clear (and churn the dot). This mirrors
+      // the off-screen predicate native-notifications.ts uses for shouldFire.
+      if (sessionId !== activeSessionIdRef.current) {
+        setSessionUnread(sessionId, true)
+      }
     },
     [hydrateFromStoredSession, refreshSessions, updateSessionState]
   )
@@ -972,6 +982,14 @@ export function useMessageStream({
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
 
+          // A background clarify/approval is the highest-value "unread" event —
+          // the session is blocked until the user acts. Mark it so the sidebar
+          // shows the persistent steady-accent weight in addition to the amber
+          // attention dot (the dot is easy to miss in a long sidebar).
+          if (sessionId && sessionId !== activeSessionIdRef.current) {
+            setSessionUnread(sessionId, true)
+          }
+
           dispatchNativeNotification({
             body: question,
             kind: 'input',
@@ -1001,6 +1019,10 @@ export function useMessageStream({
           updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
         }
 
+        if (sessionId && sessionId !== activeSessionIdRef.current) {
+          setSessionUnread(sessionId, true)
+        }
+
         dispatchNativeNotification({
           actions: [
             { id: 'approve', text: translateNow('notifications.native.approveAction') },
@@ -1021,6 +1043,10 @@ export function useMessageStream({
 
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+          }
+
+          if (sessionId && sessionId !== activeSessionIdRef.current) {
+            setSessionUnread(sessionId, true)
           }
 
           dispatchNativeNotification({
@@ -1048,6 +1074,10 @@ export function useMessageStream({
 
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+          }
+
+          if (sessionId && sessionId !== activeSessionIdRef.current) {
+            setSessionUnread(sessionId, true)
           }
 
           dispatchNativeNotification({
@@ -1126,6 +1156,13 @@ export function useMessageStream({
           sessionId,
           title: translateNow('notifications.native.turnErrorTitle')
         })
+
+        // A failed turn is still "new output" the user hasn't seen — mark it
+        // unread so a backgrounded error doesn't go unnoticed. The toast above
+        // is transient; this is the persistent cue.
+        if (sessionId && sessionId !== activeSessionIdRef.current) {
+          setSessionUnread(sessionId, true)
+        }
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)

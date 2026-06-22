@@ -191,6 +191,28 @@ def test_directory_without_marker_file_is_skipped(tmp_path: Path) -> None:
     assert not (scandir / "gateway-stray").exists()
 
 
+def test_template_dir_with_marker_is_skipped_not_fatal(tmp_path: Path) -> None:
+    """A scaffold dir like '_template' carries a SOUL.md but its name is not a
+    valid s6-slot/profile name. It must be skipped, NOT crash the reconcile —
+    otherwise it aborts before later, valid profiles are registered."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    # '_template' sorts before lowercase names, so it is iterated first.
+    _make_profile(tmp_path, "_template", state="running")
+    _make_profile(tmp_path, "coder", state="running")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    # The invalid-named dir is skipped (no slot, no action) ...
+    assert not (scandir / "gateway-_template").exists()
+    # ... and the valid profile after it is still registered + started.
+    assert _named_actions(actions) == [ReconcileAction(
+        profile="coder", prior_state="running", action="started",
+    )]
+    assert (scandir / "gateway-coder" / "run").exists()
+
+
 def test_corrupt_state_file_treated_as_no_prior_state(tmp_path: Path) -> None:
     """If gateway_state.json is malformed JSON, don't blow up the whole
     reconciliation — register the slot in the down state."""

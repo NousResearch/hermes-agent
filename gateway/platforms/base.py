@@ -1787,6 +1787,59 @@ def resolve_channel_skills(
     return None
 
 
+def resolve_channel_profile(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> str | None:
+    """Resolve a profile route for a channel/thread from platform config.
+
+    Looks up ``channel_profile_bindings`` in the adapter's ``config.extra`` dict.
+
+    Supported formats::
+
+        channel_profile_bindings:
+          "1518643081354936400": "peniby-pm"
+
+        channel_profile_bindings:
+          - id: "1518643081354936400"
+            profile: "peniby-pm"
+
+    Prefers an exact match on *channel_id*; falls back to *parent_id* so
+    Discord/Slack threads can inherit a parent channel's profile route. Returns
+    the profile name, or None if no binding is found.
+    """
+    bindings = config_extra.get("channel_profile_bindings") or {}
+    ids_to_check: list[str] = []
+    for raw in (channel_id, parent_id):
+        if raw:
+            val = str(raw)
+            if val not in ids_to_check:
+                ids_to_check.append(val)
+    if not ids_to_check:
+        return None
+
+    if isinstance(bindings, dict):
+        for key in ids_to_check:
+            profile = bindings.get(key)
+            if isinstance(profile, str) and profile.strip():
+                return profile.strip()
+        return None
+
+    if isinstance(bindings, list):
+        for key in ids_to_check:
+            for entry in bindings:
+                if not isinstance(entry, dict):
+                    continue
+                entry_id = str(entry.get("id", ""))
+                if entry_id != key:
+                    continue
+                profile = entry.get("profile") or entry.get("profile_name")
+                if isinstance(profile, str) and profile.strip():
+                    return profile.strip()
+    return None
+
+
 def _strip_media_directives(text: str) -> str:
     """Strip internal delivery directives ([[audio_as_voice]], [[as_document]],
     MEDIA:<path>) so they never render as visible text.

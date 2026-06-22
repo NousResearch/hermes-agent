@@ -3052,18 +3052,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         config = getattr(self, "config", None)
         # Mirror SessionStore._resolve_profile_for_key so this fallback path
-        # produces the same namespace as the primary path: None (legacy
-        # agent:main) unless multiplexing is on, then the active profile.
+        # produces the same namespace as the primary path: explicitly routed
+        # sources use their profile even without full adapter multiplexing;
+        # otherwise None (legacy agent:main) unless multiplexing is on, then the
+        # active profile.
         _profile = None
-        if getattr(config, "multiplex_profiles", False):
-            if source.profile:
-                _profile = source.profile
-            else:
-                try:
-                    from hermes_cli.profiles import get_active_profile_name
-                    _profile = get_active_profile_name() or "default"
-                except Exception:
-                    _profile = None
+        if source.profile:
+            _profile = source.profile
+        elif getattr(config, "multiplex_profiles", False):
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                _profile = get_active_profile_name() or "default"
+            except Exception:
+                _profile = None
         return build_session_key(
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
@@ -7190,6 +7191,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    def _apply_channel_profile_binding(self, event: MessageEvent) -> None:
+        """Stamp ``event.source.profile`` from per-channel profile bindings.
+
+        This lets a shared platform bot route one specific channel/thread to a
+        specialist profile (config/skills/memory/credentials) without starting a
+        second adapter with the same Discord/Slack token.
+        """
+        source = getattr(event, "source", None)
+        if source is None or getattr(source, "profile", None):
+            return
+        platform = getattr(source, "platform", None)
+        if platform is None:
+            return
+        try:
+            platform_cfg = self.config.platforms.get(platform)
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg is not None else None
+            if not isinstance(extra, dict):
+                return
+            from gateway.platforms.base import resolve_channel_profile
+            profile = resolve_channel_profile(
+                extra,
+                str(getattr(source, "chat_id", "") or ""),
+                str(getattr(source, "parent_chat_id", "") or "") or None,
+            )
+            if not profile:
+                return
+            from hermes_cli.profiles import get_profile_dir, validate_profile_name
+            validate_profile_name(profile)
+            profile_home = get_profile_dir(profile)
+            if not profile_home.is_dir():
+                logger.warning(
+                    "Ignoring channel_profile_bindings route to missing profile '%s' "
+                    "for %s chat %s",
+                    profile,
+                    platform.value,
+                    getattr(source, "chat_id", ""),
+                )
+                return
+            source.profile = profile
+            logger.info(
+                "Routed %s chat %s to profile '%s' via channel_profile_bindings",
+                platform.value,
+                getattr(source, "chat_id", ""),
+                profile,
+            )
+        except Exception as exc:
+            logger.warning("Failed to apply channel profile binding: %s", exc)
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -7203,6 +7252,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         6. Run agent conversation
         7. Return response
         """
+        source = event.source
+        self._apply_channel_profile_binding(event)
         source = event.source
 
         if (
@@ -14256,7 +14307,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         multiplexing is off this is a transparent pass-through — zero behavior
         change for single-profile gateways.
         """
-        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+        if not (
+            getattr(getattr(self, "config", None), "multiplex_profiles", False)
+            or getattr(source, "profile", None)
+        ):
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,

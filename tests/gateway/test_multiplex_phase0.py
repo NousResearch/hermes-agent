@@ -146,6 +146,20 @@ class TestSessionStoreProfileResolution:
         assert store._generate_session_key(s) == "agent:main:telegram:dm:99"
         assert store._generate_session_key(s) == build_session_key(s)
 
+    def test_explicit_source_profile_is_honored_even_when_flag_off(self, tmp_path):
+        store = self._store(tmp_path)  # no full adapter multiplexing required
+        s = _src(
+            platform=Platform.DISCORD,
+            chat_id="g1",
+            chat_type="group",
+            user_id="alice",
+            profile="peniby-pm",
+        )
+        assert (
+            store._generate_session_key(s)
+            == "agent:peniby-pm:discord:group:g1:alice"
+        )
+
     def test_flag_off_resolve_profile_is_none(self, tmp_path):
         store = self._store(tmp_path)
         assert store._resolve_profile_for_key() is None

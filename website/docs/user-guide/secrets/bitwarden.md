@@ -88,6 +88,8 @@ secrets:
     cache_ttl_seconds: 300
     override_existing: true
     auto_install: true
+    key_prefix: ""
+    strip_prefix: false
 ```
 
 | Key | Default | What it does |
@@ -99,6 +101,23 @@ secrets:
 | `cache_ttl_seconds` | `300` | How long an in-process fetch result is reused. Set to `0` to disable caching. Cache is per-process; new `hermes` invocations start fresh. |
 | `override_existing` | `true` | When true, Bitwarden values overwrite anything already in env (so rotation in the web app actually takes effect). Flip to `false` if you want `.env` / shell exports to win locally. |
 | `auto_install` | `true` | When true, `bws` is auto-downloaded into `~/.hermes/bin/` on first use. |
+| `key_prefix` | `""` | Optional filter for shared Bitwarden projects. When set, Hermes loads only secrets whose names start with this prefix. |
+| `strip_prefix` | `false` | When true and `key_prefix` is set, Hermes removes the prefix before exporting the env var. Example: `PROFILE_PM_OPENAI_API_KEY` becomes `OPENAI_API_KEY` with `key_prefix: PROFILE_PM_`. |
+
+### Profile-prefixed secrets
+
+If several Hermes profiles share one Bitwarden Secrets Manager project, avoid storing profile-specific values under the same exact env-var name. Use a profile namespace instead:
+
+```yaml
+secrets:
+  bitwarden:
+    enabled: true
+    project_id: "..."
+    key_prefix: PROFILE_PM_
+    strip_prefix: true
+```
+
+With that config, a Bitwarden secret named `PROFILE_PM_TELEGRAM_BOT_TOKEN` is exported to the process as `TELEGRAM_BOT_TOKEN`, while `PROFILE_SOCIAL_TELEGRAM_BOT_TOKEN` is ignored by this profile.
 
 ## Failure modes
 

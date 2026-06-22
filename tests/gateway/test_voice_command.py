@@ -717,6 +717,48 @@ class TestVoiceReceiver:
         completed = receiver.check_silence()
         assert len(completed) == 0
 
+    def test_custom_silence_threshold_finishes_utterance_sooner(self):
+        from plugins.platforms.discord.adapter import VoiceReceiver
+
+        mock_vc = MagicMock()
+        mock_vc._connection.secret_key = [0] * 32
+        mock_vc._connection.dave_session = None
+        mock_vc._connection.ssrc = 9999
+        mock_vc._connection.add_socket_listener = MagicMock()
+        mock_vc._connection.remove_socket_listener = MagicMock()
+        mock_vc._connection.hook = None
+        receiver = VoiceReceiver(mock_vc, silence_threshold=0.4)
+        receiver.map_ssrc(100, 42)
+        receiver._buffers[100] = bytearray(b"\x00" * 96000)
+        receiver._last_packet_time[100] = time.monotonic() - 0.45
+
+        completed = receiver.check_silence()
+
+        assert len(completed) == 1
+        assert completed[0][0] == 42
+
+    def test_max_chunk_duration_finishes_without_waiting_for_silence(self):
+        from plugins.platforms.discord.adapter import VoiceReceiver
+
+        mock_vc = MagicMock()
+        mock_vc._connection.secret_key = [0] * 32
+        mock_vc._connection.dave_session = None
+        mock_vc._connection.ssrc = 9999
+        mock_vc._connection.add_socket_listener = MagicMock()
+        mock_vc._connection.remove_socket_listener = MagicMock()
+        mock_vc._connection.hook = None
+        receiver = VoiceReceiver(mock_vc, max_chunk_duration=0.75)
+        receiver.map_ssrc(100, 42)
+        # 1.0s of PCM; last packet is current, so only max_chunk can fire.
+        receiver._buffers[100] = bytearray(b"\x00" * 192000)
+        receiver._last_packet_time[100] = time.monotonic()
+
+        completed = receiver.check_silence()
+
+        assert len(completed) == 1
+        assert completed[0][0] == 42
+        assert len(completed[0][1]) == 192000
+
     def test_check_silence_unknown_user_discarded(self):
         receiver = self._make_receiver()
         # No SSRC mapping — user_id will be 0
@@ -1202,6 +1244,32 @@ class TestDiscordVoiceChannelMethods:
         adapter._client.get_guild = MagicMock(return_value=mock_guild)
         result = await adapter.get_user_voice_channel(111, "42")
         assert result is mock_vc
+
+    @pytest.mark.asyncio
+    async def test_join_voice_channel_passes_receiver_chunk_config(self):
+        adapter = self._make_adapter()
+        adapter._voice_receiver_cfg = {
+            "silence_threshold": 0.45,
+            "max_chunk_duration": 6.0,
+        }
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_channel = MagicMock()
+        mock_channel.guild.id = 111
+        mock_channel.id = 222
+        mock_channel.connect = AsyncMock(return_value=mock_vc)
+        receiver = MagicMock()
+
+        with patch("plugins.platforms.discord.adapter.VoiceReceiver", return_value=receiver) as receiver_cls:
+            assert await adapter.join_voice_channel(mock_channel) is True
+
+        receiver_cls.assert_called_once_with(
+            mock_vc,
+            allowed_user_ids=adapter._allowed_user_ids,
+            silence_threshold=0.45,
+            max_chunk_duration=6.0,
+        )
+        receiver.start.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_play_in_voice_channel_not_connected(self):

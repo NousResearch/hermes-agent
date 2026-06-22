@@ -243,6 +243,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
             use_cache=False,
             server_url=server_url,
         )
+        secrets, mapping_warnings = bw.map_secrets_for_env(
+            secrets,
+            key_prefix=str(secrets_cfg.get("key_prefix", "") or ""),
+            strip_prefix=bool(secrets_cfg.get("strip_prefix", False)),
+        )
+        warnings.extend(mapping_warnings)
     except Exception as exc:  # noqa: BLE001
         console.print(f"  [red]✗ Fetch failed: {exc}[/red]")
         return 1
@@ -310,6 +316,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         "Server URL",
         server_url or "[dim]default (US Cloud, https://vault.bitwarden.com)[/dim]",
     )
+    table.add_row("Key prefix",       bw_cfg.get("key_prefix") or "[dim](none)[/dim]")
+    table.add_row("Strip prefix",     _yn(bool(bw_cfg.get("strip_prefix", False))))
     table.add_row("Override existing", _yn(bool(bw_cfg.get("override_existing", False))))
     table.add_row("Cache TTL (s)",   str(bw_cfg.get("cache_ttl_seconds", 300)))
     table.add_row("Auto-install",    _yn(bool(bw_cfg.get("auto_install", True))))
@@ -368,6 +376,12 @@ def cmd_sync(args: argparse.Namespace) -> int:
             use_cache=False,
             server_url=server_url,
         )
+        secrets, mapping_warnings = bw.map_secrets_for_env(
+            secrets,
+            key_prefix=str(bw_cfg.get("key_prefix", "") or ""),
+            strip_prefix=bool(bw_cfg.get("strip_prefix", False)),
+        )
+        warnings.extend(mapping_warnings)
     except Exception as exc:  # noqa: BLE001
         console.print(f"[red]Fetch failed: {exc}[/red]")
         return 1

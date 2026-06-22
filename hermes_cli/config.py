@@ -2120,6 +2120,15 @@ DEFAULT_CONFIG = {
         # real memory cost. Default 32 MiB matches the historical hardcoded
         # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
+        # Voice-channel input chunking. Lower silence threshold reduces how
+        # long the user waits after they stop speaking before STT starts. Forced
+        # max chunks are disabled by default to avoid prematurely dispatching
+        # incomplete action requests; set >0 to transcribe long continuous speech
+        # or noisy streams in bounded chunks.
+        "voice_receiver": {
+            "silence_threshold": 0.75,      # Seconds of packet silence before STT
+            "max_chunk_duration": 0.0,      # Seconds of buffered audio; 0 disables
+        },
         # Voice-channel audio effects (the continuous mixer). OFF by default.
         # When enabled, the bot installs a software mixer on the outgoing voice
         # stream so a low ambient "thinking" bed, verbal acknowledgements, and
@@ -2751,6 +2760,15 @@ DEFAULT_CONFIG = {
             # as BWS_SERVER_URL.  Prompted for during
             # `hermes secrets bitwarden setup`.
             "server_url": "",
+            # Optional namespace filter for shared Bitwarden projects. When
+            # set, only secrets whose names start with this prefix are loaded.
+            # This prevents one profile from accidentally importing another
+            # profile's tokens from the same project.
+            "key_prefix": "",
+            # If key_prefix is set, strip it before exporting matching secrets
+            # into os.environ. Example: PROFILE_PM_OPENAI_API_KEY ->
+            # OPENAI_API_KEY for a PM profile with key_prefix=PROFILE_PM_.
+            "strip_prefix": False,
         },
     },
 

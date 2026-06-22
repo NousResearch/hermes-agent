@@ -564,6 +564,85 @@ def test_apply_override_existing(monkeypatch, tmp_path):
     assert os.environ["OPENAI_API_KEY"] == "fresh"
 
 
+def test_apply_filters_by_key_prefix_and_strips_prefix(monkeypatch, tmp_path):
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("PROFILE_OTHER_OPENAI_API_KEY", raising=False)
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([
+        {"key": "PROFILE_MAIN_OPENAI_API_KEY", "value": "main-value"},
+        {"key": "PROFILE_OTHER_OPENAI_API_KEY", "value": "other-value"},
+    ])
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+    monkeypatch.setattr(bw, "find_bws", lambda **kw: fake_binary)
+
+    result = bw.apply_bitwarden_secrets(
+        enabled=True, project_id="p", auto_install=False,
+        key_prefix="PROFILE_MAIN_", strip_prefix=True,
+    )
+
+    assert result.ok
+    assert result.secrets == {"OPENAI_API_KEY": "main-value"}
+    assert result.applied == ["OPENAI_API_KEY"]
+    assert os.environ["OPENAI_API_KEY"] == "main-value"
+    assert "PROFILE_OTHER_OPENAI_API_KEY" not in os.environ
+
+
+def test_apply_key_prefix_without_strip_filters_only(monkeypatch, tmp_path):
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
+    monkeypatch.delenv("PROFILE_MAIN_OPENAI_API_KEY", raising=False)
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([
+        {"key": "PROFILE_MAIN_OPENAI_API_KEY", "value": "main-value"},
+        {"key": "UNRELATED_KEY", "value": "ignored"},
+    ])
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+    monkeypatch.setattr(bw, "find_bws", lambda **kw: fake_binary)
+
+    result = bw.apply_bitwarden_secrets(
+        enabled=True, project_id="p", auto_install=False,
+        key_prefix="PROFILE_MAIN_", strip_prefix=False,
+    )
+
+    assert result.ok
+    assert result.secrets == {"PROFILE_MAIN_OPENAI_API_KEY": "main-value"}
+    assert result.applied == ["PROFILE_MAIN_OPENAI_API_KEY"]
+    assert os.environ["PROFILE_MAIN_OPENAI_API_KEY"] == "main-value"
+    assert "UNRELATED_KEY" not in os.environ
+
+
+def test_apply_warns_when_stripped_env_name_is_invalid(monkeypatch, tmp_path):
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([
+        {"key": "PROFILE_MAIN_1INVALID", "value": "ignored"},
+    ])
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+    monkeypatch.setattr(bw, "find_bws", lambda **kw: fake_binary)
+
+    result = bw.apply_bitwarden_secrets(
+        enabled=True, project_id="p", auto_install=False,
+        key_prefix="PROFILE_MAIN_", strip_prefix=True,
+    )
+
+    assert result.ok
+    assert result.secrets == {}
+    assert result.applied == []
+    assert any("mapped env-var name '1INVALID' is invalid" in w for w in result.warnings)
+
+
 def test_apply_never_overrides_bootstrap_token(monkeypatch, tmp_path):
     """Even with override_existing=True, the access-token var is preserved."""
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.original")
@@ -633,6 +712,8 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
         "    cache_ttl_seconds: 0\n"
         "    override_existing: false\n"
         "    auto_install: false\n"
+        "    key_prefix: 'PROFILE_MAIN_'\n"
+        "    strip_prefix: true\n"
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
@@ -643,6 +724,8 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
         called["n"] += 1
         assert kwargs["enabled"] is True
         assert kwargs["project_id"] == "proj-1"
+        assert kwargs["key_prefix"] == "PROFILE_MAIN_"
+        assert kwargs["strip_prefix"] is True
         os.environ["MY_BSM_KEY"] = "from-bsm"
         return bw.FetchResult(
             secrets={"MY_BSM_KEY": "from-bsm"},

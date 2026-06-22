@@ -335,15 +335,37 @@ class VoiceReceiver:
     completed utterances via a callback.
     """
 
-    SILENCE_THRESHOLD = 1.5    # seconds of silence → end of utterance
+    SILENCE_THRESHOLD = 0.75   # seconds of silence → end of utterance
     MIN_SPEECH_DURATION = 0.5  # minimum seconds to process (skip noise)
+    MAX_CHUNK_DURATION = 0.0   # seconds of audio before forced chunk; 0 disables
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
 
-    def __init__(self, voice_client, allowed_user_ids: set = None):
+    def __init__(
+        self,
+        voice_client,
+        allowed_user_ids: Optional[set] = None,
+        *,
+        silence_threshold: Optional[float] = None,
+        max_chunk_duration: Optional[float] = None,
+    ):
         self._vc = voice_client
         self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
+        self._silence_threshold = self._coerce_seconds(
+            silence_threshold,
+            default=self.SILENCE_THRESHOLD,
+            min_value=0.2,
+            max_value=5.0,
+            allow_zero=False,
+        )
+        self._max_chunk_duration = self._coerce_seconds(
+            max_chunk_duration,
+            default=self.MAX_CHUNK_DURATION,
+            min_value=self.MIN_SPEECH_DURATION,
+            max_value=120.0,
+            allow_zero=True,
+        )
 
         # Decryption
         self._secret_key: Optional[bytes] = None
@@ -370,6 +392,30 @@ class VoiceReceiver:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _coerce_seconds(
+        value: Optional[float],
+        *,
+        default: float,
+        min_value: float,
+        max_value: float,
+        allow_zero: bool,
+    ) -> float:
+        """Return a safe seconds value for voice chunking settings."""
+        if value is None or isinstance(value, bool):
+            return default
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            return default
+        if allow_zero and seconds <= 0:
+            return 0.0
+        if seconds < min_value:
+            return min_value
+        if seconds > max_value:
+            return max_value
+        return seconds
 
     def start(self):
         """Start listening for voice packets."""
@@ -634,7 +680,15 @@ class VoiceReceiver:
                 # 48kHz, 16-bit, stereo = 192000 bytes/sec
                 buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
 
-                if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
+                silence_finished = silence_duration >= self._silence_threshold
+                max_chunk_finished = (
+                    self._max_chunk_duration > 0
+                    and buf_duration >= self._max_chunk_duration
+                )
+                if (
+                    buf_duration >= self.MIN_SPEECH_DURATION
+                    and (silence_finished or max_chunk_finished)
+                ):
                     user_id = ssrc_user_map.get(ssrc, 0)
                     if not user_id:
                         # SSRC not mapped (SPEAKING event missing after bot rejoin).
@@ -644,7 +698,7 @@ class VoiceReceiver:
                         completed.append((user_id, bytes(buf)))
                     self._buffers[ssrc] = bytearray()
                     self._last_packet_time.pop(ssrc, None)
-                elif silence_duration >= self.SILENCE_THRESHOLD * 2:
+                elif silence_duration >= self._silence_threshold * 2:
                     # Stale buffer with no valid user — discard
                     self._buffers.pop(ssrc, None)
                     self._last_packet_time.pop(ssrc, None)
@@ -769,6 +823,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_mixers: Dict[int, Any] = {}  # guild_id -> VoiceMixer
         self._ambient_pcm_cache: Optional[bytes] = None  # decoded ambient bed
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
+        self._voice_receiver_cfg: Dict[str, float] = self._load_voice_receiver_config()
         # Track threads where the bot has participated so follow-up messages
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
@@ -2196,6 +2251,44 @@ class DiscordAdapter(BasePlatformAdapter):
     # Voice channel methods (join / leave / play)
     # ------------------------------------------------------------------
 
+    def _load_voice_receiver_config(self) -> Dict[str, float]:
+        """Read Discord voice input chunking settings from config.yaml.
+
+        Behavioral settings live under ``discord.voice_receiver`` (not .env):
+        ``silence_threshold`` controls how quickly a packet gap ends an
+        utterance, and ``max_chunk_duration`` optionally emits a chunk during
+        continuous speech/noise.  ``max_chunk_duration: 0`` disables forced
+        chunking to avoid premature action triggers by default.
+        """
+        defaults: Dict[str, float] = {
+            "silence_threshold": VoiceReceiver.SILENCE_THRESHOLD,
+            "max_chunk_duration": VoiceReceiver.MAX_CHUNK_DURATION,
+        }
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            raw = (cfg.get("discord") or {}).get("voice_receiver") or {}
+            if isinstance(raw, dict):
+                silence_raw = raw.get("silence_threshold", raw.get("silence_threshold_seconds"))
+                max_raw = raw.get("max_chunk_duration", raw.get("max_chunk_duration_seconds"))
+                defaults["silence_threshold"] = VoiceReceiver._coerce_seconds(
+                    silence_raw,
+                    default=defaults["silence_threshold"],
+                    min_value=0.2,
+                    max_value=5.0,
+                    allow_zero=False,
+                )
+                defaults["max_chunk_duration"] = VoiceReceiver._coerce_seconds(
+                    max_raw,
+                    default=defaults["max_chunk_duration"],
+                    min_value=VoiceReceiver.MIN_SPEECH_DURATION,
+                    max_value=120.0,
+                    allow_zero=True,
+                )
+        except Exception as e:
+            logger.debug("Could not load discord.voice_receiver config: %s", e)
+        return defaults
+
     def _load_voice_fx_config(self) -> Dict[str, Any]:
         """Read voice mixer / ambient / ack settings from config.yaml.
 
@@ -2373,7 +2466,12 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Start voice receiver (Phase 2: listen to users)
             try:
-                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                receiver = VoiceReceiver(
+                    vc,
+                    allowed_user_ids=self._allowed_user_ids,
+                    silence_threshold=self._voice_receiver_cfg.get("silence_threshold"),
+                    max_chunk_duration=self._voice_receiver_cfg.get("max_chunk_duration"),
+                )
                 receiver.start()
                 self._voice_receivers[guild_id] = receiver
                 self._voice_listen_tasks[guild_id] = asyncio.ensure_future(

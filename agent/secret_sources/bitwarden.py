@@ -583,6 +583,37 @@ def _is_valid_env_name(name: str) -> bool:
     return all(c.isalnum() or c == "_" for c in name)
 
 
+def map_secrets_for_env(
+    secrets: Dict[str, str],
+    *,
+    key_prefix: str = "",
+    strip_prefix: bool = False,
+) -> Tuple[Dict[str, str], List[str]]:
+    """Filter and optionally rename BSM secrets before applying to env.
+
+    ``key_prefix`` lets one Bitwarden project hold several profile-specific
+    values (for example ``PROFILE_FRONTEND_OPENAI_API_KEY``).  When
+    ``strip_prefix`` is true, only the matching prefix is removed before the
+    value is exported, so the example above becomes ``OPENAI_API_KEY``.
+    """
+    if not key_prefix:
+        return dict(secrets), []
+
+    mapped: Dict[str, str] = {}
+    warnings: List[str] = []
+    for key, value in secrets.items():
+        if not key.startswith(key_prefix):
+            continue
+        env_key = key[len(key_prefix):] if strip_prefix else key
+        if not _is_valid_env_name(env_key):
+            warnings.append(
+                f"Skipping secret {key!r}: mapped env-var name {env_key!r} is invalid"
+            )
+            continue
+        mapped[env_key] = value
+    return mapped, warnings
+
+
 # ---------------------------------------------------------------------------
 # Public entry point — called from hermes_cli.env_loader
 # ---------------------------------------------------------------------------
@@ -598,6 +629,8 @@ def apply_bitwarden_secrets(
     auto_install: bool = True,
     server_url: str = "",
     home_path: Optional[Path] = None,
+    key_prefix: str = "",
+    strip_prefix: bool = False,
 ) -> FetchResult:
     """Pull secrets from BSM and set them on ``os.environ``.
 
@@ -654,8 +687,15 @@ def apply_bitwarden_secrets(
         result.error = str(exc)
         return result
 
+    secrets, mapping_warnings = map_secrets_for_env(
+        secrets,
+        key_prefix=key_prefix,
+        strip_prefix=strip_prefix,
+    )
+
     result.secrets = secrets
     result.warnings.extend(warnings)
+    result.warnings.extend(mapping_warnings)
 
     for key, value in secrets.items():
         if key == access_token_env:

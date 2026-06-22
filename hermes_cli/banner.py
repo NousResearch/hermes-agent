@@ -199,14 +199,42 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         return _check_via_rev(head_rev) if head_rev else None
 
+    # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
+    # clone the history stops at a single commit, so a plain `git fetch` would
+    # unshallow the repo (dragging in the whole history) and
+    # `rev-list --count HEAD..origin/main` would report a huge bogus "behind"
+    # number (e.g. "12492 commits behind"). Detect shallow up front: fetch with
+    # --depth 1 to preserve the boundary and compare tip SHAs instead of
+    # counting. Full clones (developers, Docker dev images) keep the exact
+    # count path unchanged. Mirrors the desktop fix in apps/desktop/electron/main.cjs.
+    shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
+    is_shallow = shallow == "true"
+
     try:
+        fetch_args = ["git", "fetch", "origin"]
+        if is_shallow:
+            fetch_args += ["--depth", "1"]
+        fetch_args.append("--quiet")
         subprocess.run(
-            ["git", "fetch", "origin", "--quiet"],
+            fetch_args,
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
+
+    if is_shallow:
+        # No history to count across the shallow boundary. `origin/main` may not
+        # be a tracking ref in a `clone --depth 1`, so prefer FETCH_HEAD (just
+        # updated by the fetch above) and fall back to origin/main.
+        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+        target_rev = (
+            _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
+            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir)
+        )
+        if not head_rev or not target_rev:
+            return None
+        return 0 if head_rev == target_rev else UPDATE_AVAILABLE_NO_COUNT
 
     try:
         result = subprocess.run(

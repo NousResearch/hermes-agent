@@ -482,6 +482,11 @@ async def _dashboard_auth_gate(request: Request, call_next):
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
+    # A request already authenticated by the token-auth seam (a service caller
+    # presenting a bearer token on a registered token route) carries
+    # ``token_authenticated`` — never bounce it through the cookie/session gate.
+    if getattr(request.state, "token_authenticated", False):
+        return await call_next(request)
     # When the OAuth gate is active, cookie-based auth (gated_auth_middleware
     # above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only
     # and is skipped here so the gate's session attachment isn't overridden.
@@ -495,6 +500,20 @@ async def auth_middleware(request: Request, call_next):
                 content={"detail": "Unauthorized"},
             )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _token_auth_seam(request: Request, call_next):
+    """Outermost auth seam: non-interactive bearer-token auth for opted-in routes.
+
+    Registered LAST so it runs FIRST (Starlette middleware is outermost-last).
+    A registered token route is fully owned here — authenticate by token,
+    attach the principal + ``token_authenticated`` flag, and let the downstream
+    cookie/session gates skip enforcement. Non-token routes pass straight
+    through untouched.
+    """
+    from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
+    return await token_auth_middleware(request, call_next)
 
 
 # ---------------------------------------------------------------------------

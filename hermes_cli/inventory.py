@@ -163,21 +163,21 @@ def build_models_payload(
         refresh=refresh,
     )
 
-    # --- Deduplicate: remove models from aggregators that overlap with
-    # user-defined providers.  When a local proxy (e.g. litellm-proxy)
-    # serves a model whose name also appears in an aggregator's curated
-    # catalog, the picker would show the model under both providers.
-    # Selecting it from the aggregator row sets model.provider to the
-    # aggregator (e.g. openrouter) instead of the user's proxy — silently
-    # breaking the call.  Filtering at the payload level keeps the
-    # aggregator rows honest: they only show models the user can't get
-    # from a more-specific provider.  (#45954)
+    # --- Deduplicate: remove models from routing aggregators that overlap
+    # with user-defined providers.  When a local proxy (e.g. litellm-proxy)
+    # serves a model whose name also appears in a pure routing aggregator's
+    # catalog (e.g. openrouter), the picker would show the model under both
+    # providers.  Selecting it from the aggregator row sets model.provider
+    # to the aggregator instead of the user's proxy — silently breaking the
+    # call.  Only pure routing aggregators (dedup_on_overlap=True) are
+    # filtered; curated catalogs like opencode-go, huggingface, novita
+    # serve models directly and must NOT be filtered.  (#45954, #47704)
     try:
-        from hermes_cli.providers import is_aggregator as _is_aggregator
+        from hermes_cli.providers import is_overlap_dedup as _is_overlap_dedup
     except Exception:
-        _is_aggregator = None  # type: ignore[assignment]
+        _is_overlap_dedup = None  # type: ignore[assignment]
 
-    if _is_aggregator is not None:
+    if _is_overlap_dedup is not None:
         user_models: set[str] = set()
         for row in rows:
             if row.get("is_user_defined"):
@@ -185,15 +185,11 @@ def build_models_payload(
         if user_models:
             for row in rows:
                 # A user's own configured provider is never an "aggregator
-                # duplicate" of itself: user_models is built from these very
-                # rows, and is_aggregator() reports True for every custom:*
-                # slug.  Without this guard the dedup strips a user-defined
-                # custom provider's entire model list (all of it lives in
-                # user_models), emptying its picker row.
+                # duplicate" of itself.
                 if row.get("is_user_defined"):
                     continue
                 slug = row.get("slug", "")
-                if not _is_aggregator(slug):
+                if not _is_overlap_dedup(slug):
                     continue
                 original = row.get("models") or []
                 filtered = [m for m in original if m.lower() not in user_models]

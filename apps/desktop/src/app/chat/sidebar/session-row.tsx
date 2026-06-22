@@ -13,7 +13,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session'
+import { $attentionSessionIds, sessionPinId } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
@@ -81,6 +81,7 @@ export function SidebarSessionRow({
 
   return (
     <SessionContextMenu
+      folderKey={sessionPinId(session)}
       onArchive={onArchive}
       onBranch={onBranch}
       onDelete={onDelete}
@@ -99,6 +100,7 @@ export function SidebarSessionRow({
               </span>
             )}
             <SessionActionsMenu
+              folderKey={sessionPinId(session)}
               onArchive={onArchive}
               onBranch={onBranch}
               onDelete={onDelete}

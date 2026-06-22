@@ -6,10 +6,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { KbdGroup } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
+import { Tip } from '@/components/ui/tooltip'
 import {
   Sidebar,
   SidebarContent,
@@ -59,6 +61,7 @@ import {
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
+import { notify } from '@/store/notifications'
 import { $newChatProfile, $profiles, $profileScope, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import {
   $activeProjectId,
@@ -94,12 +97,25 @@ import {
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
+import {
+  $sidebarFolders,
+  createFolder,
+  deleteFolder,
+  folderKeySet,
+  renameFolder,
+  reorderFolders,
+  reorderFolderSessions,
+  type SidebarFolder,
+  toggleFolderOpen
+} from '@/store/sidebar-folders'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 
 import { countLabel } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
+import { FolderNameDialog } from './folder-dialogs'
+import { filterUnfiledSessions, resolveFolderSessions } from './folders'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { ProfileRail } from './profile-switcher'
@@ -119,6 +135,7 @@ import {
   StartWorkButton,
   useRepoWorktreeMap
 } from './projects'
+import { ReorderableList, useSortableBindings } from './reorderable-list'
 import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 
@@ -250,6 +267,7 @@ export function ChatSidebar({
   const sessionsTotal = useStore($sessionsTotal)
   const sessionProfileTotals = useStore($sessionProfileTotals)
   const workingSessionIds = useStore($workingSessionIds)
+  const folders = useStore($sidebarFolders)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
   // Only surface the profile switcher when more than one profile exists, so
@@ -893,9 +911,52 @@ export function ChatSidebar({
     sessionProfileTotals
   ])
 
-  // The flat Sessions list always shows ALL recent sessions; Projects is a
-  // parallel grouped view, not a filter on this one — nothing is hidden here.
-  const displayAgentSessions = agentSessions
+  const displayAgentGroups = showAllProfiles ? profileGroups : undefined
+
+  const folderedKeys = useMemo(() => folderKeySet(folders), [folders])
+  const displayAgentSessions = useMemo(
+    () =>
+      showAllProfiles
+        ? agentSessions
+        : filterUnfiledSessions(agentSessions, folderedKeys, session => sessionPinId(session)),
+    [agentSessions, folderedKeys, showAllProfiles]
+  )
+  const folderSections = useMemo(
+    () => folders.map(folder => ({ folder, sessions: resolveFolderSessions(folder, sessionByAnyId) })),
+    [folders, sessionByAnyId]
+  )
+  const [folderNameDialog, setFolderNameDialog] = useState<{
+    id?: string
+    mode: 'create' | 'rename'
+    name: string
+  } | null>(null)
+  const [folderToDelete, setFolderToDelete] = useState<SidebarFolder | null>(null)
+
+  const submitFolderName = (name: string) => {
+    if (!folderNameDialog) {
+      return
+    }
+
+    if (folderNameDialog.mode === 'create') {
+      createFolder(name)
+      notify({ durationMs: 2_000, kind: 'success', message: s.folderCreated })
+    } else if (folderNameDialog.id) {
+      renameFolder(folderNameDialog.id, name)
+      notify({ durationMs: 2_000, kind: 'success', message: s.folderRenamed })
+    }
+
+    setFolderNameDialog(null)
+  }
+
+  const reorderFolderRows = (folderId: string, ids: string[]) =>
+    reorderFolderSessions(
+      folderId,
+      ids.map(id => {
+        const session = sessionByAnyId.get(id)
+
+        return session ? sessionPinId(session) : id
+      })
+    )
 
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
   // unified set. When scoped to one profile it must compare that profile's own
@@ -956,8 +1017,6 @@ export function ChatSidebar({
       setRecentsLoadMorePending(false)
     }
   }, [onLoadMoreSessions, recentsLoadMorePending])
-
-  const displayAgentGroups = showAllProfiles ? profileGroups : undefined
 
   // The recents list owns its own (virtualized) scroll container only when it's a
   // long flat list. In that case it must keep its scroller even in short mode, so
@@ -1176,6 +1235,28 @@ export function ChatSidebar({
               />
             )}
 
+            {!trimmedQuery && !showAllProfiles && folderSections.length > 0 && (
+              <ReorderableList ids={folders.map(folder => folder.id)} onReorder={reorderFolders} sensors={dndSensors}>
+                {folderSections.map(({ folder, sessions: folderSessions }) => (
+                  <FolderSection
+                    activeSessionId={activeSidebarSessionId}
+                    folder={folder}
+                    key={folder.id}
+                    onArchiveSession={onArchiveSession}
+                    onBranchSession={onBranchSession}
+                    onDeleteFolder={setFolderToDelete}
+                    onDeleteSession={onDeleteSession}
+                    onRenameFolder={f => setFolderNameDialog({ id: f.id, mode: 'rename', name: f.name })}
+                    onReorderSessions={reorderFolderRows}
+                    onResumeSession={onResumeSession}
+                    reorderable={folderSections.length > 1}
+                    sessions={folderSessions}
+                    workingSessionIdSet={workingSessionIdSet}
+                  />
+                ))}
+              </ReorderableList>
+            )}
+
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeProjectId={activeProjectId}
@@ -1247,6 +1328,22 @@ export function ChatSidebar({
                     </div>
                   ) : (
                     <div className="flex shrink-0 items-center gap-0.5">
+                      {!showAllProfiles ? (
+                        <Tip label={s.createFolder}>
+                          <Button
+                            aria-label={s.createFolder}
+                            className={HEADER_ACTION_BTN}
+                            onClick={event => {
+                              event.stopPropagation()
+                              setFolderNameDialog({ mode: 'create', name: s.customFolderDefaultName })
+                            }}
+                            size="icon-xs"
+                            variant="ghost"
+                          >
+                            <Codicon name="new-folder" size="0.75rem" />
+                          </Button>
+                        </Tip>
+                      ) : null}
                       {!showAllProfiles ? (
                         <Button
                           aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
@@ -1401,6 +1498,33 @@ export function ChatSidebar({
         )}
       </SidebarContent>
       <ProjectDialog />
+
+      <FolderNameDialog
+        initialName={folderNameDialog?.name ?? ''}
+        mode={folderNameDialog?.mode ?? 'create'}
+        onOpenChange={open => {
+          if (!open) {
+            setFolderNameDialog(null)
+          }
+        }}
+        onSubmit={submitFolderName}
+        open={folderNameDialog !== null}
+      />
+
+      <ConfirmDialog
+        confirmLabel={s.deleteFolderAction}
+        description={folderToDelete ? s.deleteFolderConfirm(folderToDelete.name) : ''}
+        destructive
+        onClose={() => setFolderToDelete(null)}
+        onConfirm={() => {
+          if (folderToDelete) {
+            deleteFolder(folderToDelete.id)
+            notify({ durationMs: 2_000, kind: 'success', message: s.folderDeleted })
+          }
+        }}
+        open={folderToDelete !== null}
+        title={s.deleteFolderTitle}
+      />
     </Sidebar>
   )
 }
@@ -1411,4 +1535,120 @@ interface MessagingSection {
   sessions: SessionInfo[]
   total: number
   hasMore: boolean
+}
+
+interface FolderSectionProps {
+  folder: SidebarFolder
+  sessions: SessionInfo[]
+  reorderable: boolean
+  activeSessionId: null | string
+  workingSessionIdSet: Set<string>
+  onResumeSession: (sessionId: string) => void
+  onDeleteSession: (sessionId: string) => void
+  onArchiveSession: (sessionId: string) => void
+  onBranchSession: (sessionId: string, profile?: string) => void
+  onReorderSessions: (folderId: string, ids: string[]) => void
+  onRenameFolder: (folder: SidebarFolder) => void
+  onDeleteFolder: (folder: SidebarFolder) => void
+}
+
+function FolderSection({
+  folder,
+  sessions,
+  reorderable,
+  activeSessionId,
+  workingSessionIdSet,
+  onResumeSession,
+  onDeleteSession,
+  onArchiveSession,
+  onBranchSession,
+  onReorderSessions,
+  onRenameFolder,
+  onDeleteFolder
+}: FolderSectionProps) {
+  const { t } = useI18n()
+  const s = t.sidebar
+  const { dragging, dragHandleProps, ref, style } = useSortableBindings(folder.id)
+
+  const headerButtonClass =
+    'text-(--ui-text-tertiary) opacity-0 transition group-hover/section:opacity-100 hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100'
+
+  return (
+    <div className={cn('shrink-0', dragging && 'opacity-80')} ref={ref} style={style}>
+      <SidebarSessionsSection
+        activeSessionId={activeSessionId}
+        contentClassName={cn('flex flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
+        emptyState={
+          <div className="flex min-h-7 items-center rounded-lg px-2 text-[0.75rem] text-(--ui-text-tertiary)">
+            {s.folderEmpty}
+          </div>
+        }
+        headerAction={
+          <div className="flex items-center gap-0.5">
+            <Tip label={s.renameFolderAction}>
+              <Button
+                aria-label={s.renameFolderAction}
+                className={headerButtonClass}
+                onClick={event => {
+                  event.stopPropagation()
+                  onRenameFolder(folder)
+                }}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <Codicon name="edit" size="0.75rem" />
+              </Button>
+            </Tip>
+            <Tip label={s.deleteFolderAction}>
+              <Button
+                aria-label={s.deleteFolderAction}
+                className={headerButtonClass}
+                onClick={event => {
+                  event.stopPropagation()
+                  onDeleteFolder(folder)
+                }}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <Codicon name="trash" size="0.75rem" />
+              </Button>
+            </Tip>
+            {reorderable && (
+              <Button
+                aria-label={s.folderActionsFor(folder.name)}
+                className={cn(headerButtonClass, 'cursor-grab active:cursor-grabbing')}
+                size="icon-xs"
+                variant="ghost"
+                {...dragHandleProps}
+              >
+                <Codicon name="grabber" size="0.75rem" />
+              </Button>
+            )}
+          </div>
+        }
+        label={folder.name}
+        labelIcon={
+          <Codicon
+            className="text-(--ui-text-tertiary)"
+            name={folder.open ? 'folder-opened' : 'folder'}
+            size="0.75rem"
+          />
+        }
+        labelMeta={String(sessions.length)}
+        onArchiveSession={onArchiveSession}
+        onBranchSession={onBranchSession}
+        onDeleteSession={onDeleteSession}
+        onReorderSessions={ids => onReorderSessions(folder.id, ids)}
+        onResumeSession={onResumeSession}
+        onToggle={() => toggleFolderOpen(folder.id)}
+        onTogglePin={pinSession}
+        open={folder.open}
+        pinned={false}
+        rootClassName="shrink-0 p-0 pb-1"
+        sessions={sessions}
+        sortable={sessions.length > 1}
+        workingSessionIdSet={workingSessionIdSet}
+      />
+    </div>
+  )
 }

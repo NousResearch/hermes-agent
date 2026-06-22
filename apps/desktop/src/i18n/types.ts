@@ -1296,6 +1296,20 @@ export interface Translations {
     loading: string
     loadMore: string
     loadCount: (step: number) => string
+    createFolder: string
+    customFolderDefaultName: string
+    newFolderTitle: string
+    renameFolderTitle: string
+    folderNamePlaceholder: string
+    renameFolderAction: string
+    deleteFolderAction: string
+    deleteFolderTitle: string
+    deleteFolderConfirm: (name: string) => string
+    folderEmpty: string
+    folderActionsFor: (name: string) => string
+    folderCreated: string
+    folderRenamed: string
+    folderDeleted: string
     row: {
       pin: string
       unpin: string
@@ -1304,6 +1318,8 @@ export interface Translations {
       branchFrom: string
       rename: string
       archive: string
+      moveToFolder: string
+      removeFromFolder: string
       newWindow: string
       copyIdFailed: string
       actionsFor: (title: string) => string

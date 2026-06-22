@@ -186,143 +186,6 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_args_not_duplicated_on_cumulative_growing_resend(self, mock_close, mock_create):
-        """DeepSeek / Baidu Qianfan stream args in cumulative mode (#35592).
-
-        Each chunk resends the full arguments-so-far (monotonic growth)
-        instead of the new fragment.  Blind += produced a duplicated
-        '{...}{...}' string that failed json.loads and got nuked to '{}'.
-        The per-slot cumulative latch must replace (not append) so the
-        final arguments are a single valid object.
-        """
-        import json as _json
-        from run_agent import AIAgent
-
-        full = '{"pattern": "def handle", "path": "gateway", "output_mode": "content"}'
-        # Growing prefixes, then identical full resends at the tail.
-        steps = [full[:12], full[:30], full[:48], full, full, full]
-        chunks = [_make_stream_chunk(tool_calls=[
-            _make_tool_call_delta(index=0, tc_id="call_qf", name="search_files")
-        ])]
-        for s in steps:
-            chunks.append(_make_stream_chunk(tool_calls=[
-                _make_tool_call_delta(index=0, tc_id="call_qf", name="search_files", arguments=s)
-            ]))
-        chunks.append(_make_stream_chunk(finish_reason="tool_calls"))
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = iter(chunks)
-        mock_create.return_value = mock_client
-
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://qianfan.baidubce.com/v2",
-            model="deepseek-v4-pro",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-        agent.api_mode = "chat_completions"
-        agent._interrupt_requested = False
-
-        response = agent._interruptible_streaming_api_call({})
-
-        tc = response.choices[0].message.tool_calls
-        assert tc is not None and len(tc) == 1
-        assert _json.loads(tc[0].function.arguments) == _json.loads(full)
-        # Not flagged as truncated (which would set finish_reason='length').
-        assert response.choices[0].finish_reason == "tool_calls"
-
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_args_identical_full_resend_collapsed_by_backstop(self, mock_close, mock_create):
-        """Provider resends the COMPLETE object identically from chunk 1.
-
-        There is never a strict superset to latch on, so the per-chunk
-        guard appends — but the post-loop _collapse_repeated_json_arguments
-        backstop must collapse the K-repeat to one valid object (#35592).
-        """
-        import json as _json
-        from run_agent import AIAgent
-
-        full = '{"action": "replace", "old_text": "a", "new_text": "b"}'
-        chunks = [_make_stream_chunk(tool_calls=[
-            _make_tool_call_delta(index=0, tc_id="call_id", name="memory")
-        ])]
-        for _ in range(5):
-            chunks.append(_make_stream_chunk(tool_calls=[
-                _make_tool_call_delta(index=0, tc_id="call_id", name="memory", arguments=full)
-            ]))
-        chunks.append(_make_stream_chunk(finish_reason="tool_calls"))
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = iter(chunks)
-        mock_create.return_value = mock_client
-
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://qianfan.baidubce.com/v2",
-            model="deepseek-v4-pro",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-        agent.api_mode = "chat_completions"
-        agent._interrupt_requested = False
-
-        response = agent._interruptible_streaming_api_call({})
-
-        tc = response.choices[0].message.tool_calls
-        assert tc is not None and len(tc) == 1
-        assert _json.loads(tc[0].function.arguments) == _json.loads(full)
-
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_incremental_args_with_duplicate_leading_fragment(self, mock_close, mock_create):
-        """Genuine incremental stream whose 2nd fragment equals the 1st.
-
-        Safety guard: an exact-equal delta on a NON-latched slot must be
-        treated as a real fragment and appended, never silently dropped.
-        Verifies the cumulative-resend fix does not corrupt nested-key
-        objects (the false-positive class flagged in review of #35592).
-        """
-        from run_agent import AIAgent
-
-        # Fragments deliberately repeat the leading '{"command":' substring.
-        frags = ['{"command":', '{"command":', ' "x"}', '}']
-        chunks = [_make_stream_chunk(tool_calls=[
-            _make_tool_call_delta(index=0, tc_id="c3", name="t")
-        ])]
-        for f in frags:
-            chunks.append(_make_stream_chunk(tool_calls=[
-                _make_tool_call_delta(index=0, tc_id="c3", name="t", arguments=f)
-            ]))
-        chunks.append(_make_stream_chunk(finish_reason="tool_calls"))
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = iter(chunks)
-        mock_create.return_value = mock_client
-
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            model="test/model",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-        agent.api_mode = "chat_completions"
-        agent._interrupt_requested = False
-
-        response = agent._interruptible_streaming_api_call({})
-
-        tc = response.choices[0].message.tool_calls
-        assert tc is not None and len(tc) == 1
-        # All four fragments concatenated — nothing dropped.
-        assert tc[0].function.arguments == '{"command":{"command": "x"}}'
-
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_tool_call_extra_content_preserved(self, mock_close, mock_create):
         """Streamed tool calls preserve provider-specific extra_content metadata."""
         from run_agent import AIAgent
@@ -1712,143 +1575,85 @@ class TestCopilotACPStreamingDecision:
         assert _use_streaming is True
 
 
-class TestCodexFallbackErrorEvent:
-    """Provider ``error`` SSE frames must surface the real message,
-    not the generic "did not emit a terminal response" RuntimeError.
+class TestBedrockIamStreamingFallback:
+    """bedrock_converse streaming branch: IAM denial of
+    InvokeModelWithResponseStream falls back to converse() inline and sets
+    _disable_streaming for the rest of the session."""
 
-    xAI emits ``type=error`` as the FIRST frame on the Responses stream
-    when an OAuth account is unsubscribed/exhausted (May 2026
-    SuperGrok rollout).  The SDK helper raises
-    ``RuntimeError("Expected to have received response.created before
-    error")`` which the caller catches and routes to
-    ``_run_codex_create_stream_fallback``.  The fallback then opens a
-    NEW stream that emits the same ``type=error`` frame; before this
-    fix it ignored the event entirely and raised a useless RuntimeError.
-    """
-
-    def _make_agent(self):
+    def _make_bedrock_agent(self):
         from run_agent import AIAgent
+
         agent = AIAgent(
             api_key="test-key",
-            base_url="https://api.x.ai/v1",
-            provider="xai-oauth",
-            model="grok-4.3",
+            base_url="https://openrouter.ai/api/v1",
+            model="anthropic.claude-3-sonnet-20240229-v1:0",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
         )
-        agent.api_mode = "codex_responses"
-        agent._touch_activity = lambda desc: None
+        agent.api_mode = "bedrock_converse"
+        agent._interrupt_requested = False
         return agent
 
-    def test_fallback_raises_synthesized_error_with_xai_subscription_message(self):
-        from run_agent import _StreamErrorEvent
+    def test_iam_denial_falls_back_inline_and_disables_streaming(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        from botocore.exceptions import ClientError
 
-        agent = self._make_agent()
+        agent = self._make_bedrock_agent()
 
-        error_event = SimpleNamespace(
-            type="error",
-            message=(
-                "Forbidden: The caller does not have permission to execute the specified operation. "
-                "'You have either run out of available resources or do not have an active Grok subscription.'"
-            ),
-            code="permission_denied",
-            param=None,
-            sequence_number=1,
+        client = MagicMock()
+        client.converse_stream.side_effect = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User is not authorized to perform: "
+                        "bedrock:InvokeModelWithResponseStream"
+                    ),
+                }
+            },
+            operation_name="ConverseStream",
         )
-
-        class _FakeStream:
-            def __iter__(self_inner):
-                return iter([error_event])
-            def close(self_inner):
-                return None
-
-        mock_client = MagicMock()
-        mock_client.responses.create.return_value = _FakeStream()
-
-        with pytest.raises(_StreamErrorEvent) as excinfo:
-            agent._run_codex_create_stream_fallback(
-                {"model": "grok-4.3", "instructions": "hi", "input": []},
-                client=mock_client,
-            )
-
-        exc = excinfo.value
-        assert "active Grok subscription" in str(exc)
-        assert exc.code == "permission_denied"
-        assert isinstance(exc.body, dict)
-        assert exc.body["error"]["message"] == error_event.message
-        # _extract_api_error_context reads .body["error"]["message"] — make sure
-        # the entitlement detector will find the subscription phrase there.
-        assert "active Grok subscription" in exc.body["error"]["message"]
-
-    def test_fallback_dict_event_payload_is_also_handled(self):
-        """Some relays deliver events as plain dicts instead of model
-        objects; the dict branch in the loop must surface them too."""
-        from run_agent import _StreamErrorEvent
-
-        agent = self._make_agent()
-
-        error_event = {
-            "type": "error",
-            "message": "rate_limited",
-            "code": "rate_limit_exceeded",
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
         }
 
-        class _FakeStream:
-            def __iter__(self_inner):
-                return iter([error_event])
-            def close(self_inner):
-                return None
-
-        mock_client = MagicMock()
-        mock_client.responses.create.return_value = _FakeStream()
-
-        with pytest.raises(_StreamErrorEvent) as excinfo:
-            agent._run_codex_create_stream_fallback(
-                {"model": "grok-4.3", "instructions": "hi", "input": []},
-                client=mock_client,
+        with patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=client,
+        ):
+            response = agent._interruptible_streaming_api_call(
+                {"modelId": agent.model, "messages": []}
             )
 
-        assert "rate_limited" in str(excinfo.value)
-        assert excinfo.value.code == "rate_limit_exceeded"
+        client.converse.assert_called_once()
+        assert response.choices[0].message.content == "hi"
+        assert getattr(agent, "_disable_streaming", False) is True
 
-    def test_fallback_surfaces_message_useful_to_summarizer(self):
-        """The synthesized exception must be readable by
-        ``_summarize_api_error`` so the user-facing log line shows the
-        real provider message instead of a generic class name."""
-        from run_agent import AIAgent, _StreamErrorEvent
+    def test_other_bedrock_errors_still_propagate(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        from botocore.exceptions import ClientError
 
-        agent = self._make_agent()
-        exc = _StreamErrorEvent(
-            "You have either run out of available resources or do not have an active Grok subscription.",
-            code="permission_denied",
+        agent = self._make_bedrock_agent()
+
+        client = MagicMock()
+        client.converse_stream.side_effect = ClientError(
+            error_response={
+                "Error": {"Code": "ThrottlingException", "Message": "slow down"}
+            },
+            operation_name="ConverseStream",
         )
 
-        summary = AIAgent._summarize_api_error(exc)
-        assert "active Grok subscription" in summary
+        with patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=client,
+        ):
+            with pytest.raises(ClientError):
+                agent._interruptible_streaming_api_call(
+                    {"modelId": agent.model, "messages": []}
+                )
 
-    def test_fallback_still_raises_terminal_error_when_no_error_event(self):
-        """Streams that simply end without any terminal event (and no
-        ``error`` frame) must continue to raise the original
-        ``"did not emit a terminal response"`` RuntimeError so callers
-        can distinguish "stream truncated mid-flight" from "provider
-        rejected the call"."""
-        agent = self._make_agent()
-
-        # Empty stream — no events at all
-        class _FakeStream:
-            def __iter__(self_inner):
-                return iter([])
-            def close(self_inner):
-                return None
-
-        mock_client = MagicMock()
-        mock_client.responses.create.return_value = _FakeStream()
-
-        with pytest.raises(RuntimeError) as excinfo:
-            agent._run_codex_create_stream_fallback(
-                {"model": "grok-4.3", "instructions": "hi", "input": []},
-                client=mock_client,
-            )
-
-        assert "did not emit a terminal response" in str(excinfo.value)
+        client.converse.assert_not_called()
+        assert getattr(agent, "_disable_streaming", False) is False

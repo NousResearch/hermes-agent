@@ -411,7 +411,7 @@ class TestUnionWithPortalFreeRecommendations:
         }
 
     def test_adds_portal_free_model_missing_from_curated(self):
-        """A Portal-advertised free model not in curated is prepended + priced free."""
+        """A Portal-advertised free model not in curated is appended + priced free."""
         curated = ["anthropic/claude-opus-4.6"]
         pricing = {"anthropic/claude-opus-4.6": self._PAID}
         with patch(
@@ -420,8 +420,9 @@ class TestUnionWithPortalFreeRecommendations:
         ):
             ids, p = union_with_portal_free_recommendations(curated, pricing, "")
 
-        assert ids[0] == "qwen/qwen3.6-plus"  # prepended
-        assert "anthropic/claude-opus-4.6" in ids
+        # Curated ("HA") models stay first; Portal-only picks follow.
+        assert ids[0] == "anthropic/claude-opus-4.6"
+        assert ids[-1] == "qwen/qwen3.6-plus"  # appended
         # Synthetic free pricing entry created
         assert p["qwen/qwen3.6-plus"] == self._FREE
         # Existing pricing untouched
@@ -509,7 +510,7 @@ class TestUnionWithPortalFreeRecommendations:
             },
         ):
             ids, p = union_with_portal_free_recommendations(curated, pricing, "")
-        assert ids == ["qwen/qwen3.6-plus", "a"]
+        assert ids == ["a", "qwen/qwen3.6-plus"]
         assert p["qwen/qwen3.6-plus"] == self._FREE
 
 
@@ -535,7 +536,7 @@ class TestUnionWithPortalPaidRecommendations:
         }
 
     def test_adds_portal_paid_model_missing_from_curated(self):
-        """A Portal-advertised paid model not in curated is prepended."""
+        """A Portal-advertised paid model not in curated is appended."""
         curated = ["anthropic/claude-opus-4.6"]
         pricing = {"anthropic/claude-opus-4.6": self._PAID}
         with patch(
@@ -544,8 +545,9 @@ class TestUnionWithPortalPaidRecommendations:
         ):
             ids, p = union_with_portal_paid_recommendations(curated, pricing, "")
 
-        assert ids[0] == "openai/gpt-5.4"  # prepended
-        assert "anthropic/claude-opus-4.6" in ids
+        # Curated ("HA") models stay first; Portal-only picks follow.
+        assert ids[0] == "anthropic/claude-opus-4.6"
+        assert ids[-1] == "openai/gpt-5.4"  # appended
         # Existing pricing untouched
         assert p["anthropic/claude-opus-4.6"] == self._PAID
 
@@ -634,12 +636,12 @@ class TestUnionWithPortalPaidRecommendations:
             },
         ):
             ids, p = union_with_portal_paid_recommendations(curated, pricing, "")
-        assert ids == ["openai/gpt-5.4", "a"]
+        assert ids == ["a", "openai/gpt-5.4"]
         # No synthetic entry — pricing is untouched.
         assert "openai/gpt-5.4" not in p
 
     def test_preserves_relative_order_of_new_paid_models(self):
-        """Multiple new paid models are prepended in payload order."""
+        """Multiple new paid models are appended in payload order, after curated."""
         curated = ["anthropic/claude-opus-4.6"]
         pricing = {"anthropic/claude-opus-4.6": self._PAID}
         with patch(
@@ -648,9 +650,9 @@ class TestUnionWithPortalPaidRecommendations:
         ):
             ids, _ = union_with_portal_paid_recommendations(curated, pricing, "")
         assert ids == [
+            "anthropic/claude-opus-4.6",
             "openai/gpt-5.4",
             "openai/gpt-5.5",
-            "anthropic/claude-opus-4.6",
         ]
 
 

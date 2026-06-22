@@ -219,6 +219,11 @@ gateway:
 
   resume:
     db_unavailable:        "Base de datos de sesiones no disponible."
+    parse_error:           "⚠️ No se pudo analizar los argumentos de `/resume`: {error}.\nUsa comillas alrededor de títulos con espacios, por ejemplo: `/resume \"Proyecto A Plan\"`."
+    matrix_no_named_sessions: "No se encontraron sesiones con nombre para esta sala de Matrix.\nUsa `/title Mi Sesión` para nombrar la sesión de la sala actual, `/resume --all` para listar todas las sesiones de Matrix, o `/resume --cross-room <nombre de sesión>` para cruzar límites de sala explícitamente."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume bloqueado: esta sesión con nombre no tiene sala de origen registrada, por lo que Hermes no la reanudará dentro de la sala actual por defecto. Usa `/resume --cross-room {name}` si quieres cruzar los límites de sala intencionadamente."
+    matrix_blocked_other_room: "⚠️ Matrix /resume bloqueado: esa sesión pertenece a una sala de Matrix diferente ({room}). Usa `/resume --cross-room {name}` si quieres reanudarla aquí intencionadamente."
+    matrix_cross_room_success: "⚠️ Reanudación entre salas: **{title}** reanudada dentro de la sala de Matrix **{room}**.\nLos próximos mensajes en esta sala usarán esa transcripción hasta `/reset` u otro `/resume`.{msg_part}"
     no_named_sessions:     "No se encontraron sesiones con nombre.\nUsa `/title Mi sesión` para nombrar la sesión actual y luego `/resume Mi sesión` para volver a ella."
     list_header:           "📋 **Sesiones con nombre**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -251,10 +256,20 @@ gateway:
 
   status:
     header:                "📊 **Estado de Hermes Gateway**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**ID de sesión:** `{session_id}`"
     title:                 "**Título:** {title}"
     created:               "**Creado:** {timestamp}"
     last_activity:         "**Última actividad:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Tokens de API acumulados (reenviados en cada llamada):** {tokens}"
     agent_running:         "**Agente activo:** {state}"
     state_yes:             "Sí ⚡"
@@ -290,7 +305,8 @@ gateway:
 
   undo:
     nothing:               "Nada que deshacer."
-    removed:               "↩️ {count} mensaje(s) deshecho(s).\nEliminado: \"{preview}\""
+    removed:               "↩️ {turns} turno(s) deshecho(s) ({count} mensaje(s)).\nRespaldado en: \"{preview}\"\nCopia/edita el texto de arriba y envíalo para volver a preguntar desde aquí."
+    invalid_count:         "Cantidad no válida \"{arg}\" — usa /undo o /undo N."
 
   update:
     platform_not_messaging:  "✗ /update solo está disponible en plataformas de mensajería. Ejecuta `hermes update` desde la terminal."
@@ -319,6 +335,9 @@ gateway:
     detailed_after_first:     "_(Uso detallado disponible tras la primera respuesta del agente)_"
     no_data:                  "No hay datos de uso disponibles para esta sesión."
 
+  credits:
+    not_logged_in:            "No has iniciado sesión en Nous Portal. Inicia sesión para ver tu saldo de créditos y recargar."
+
   verbose:
     not_enabled:           "El comando `/verbose` no está habilitado para plataformas de mensajería.\n\nHabilítalo en `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Progreso de herramientas: **OFF** — no se muestra actividad de herramientas."
@@ -342,6 +361,8 @@ gateway:
     label_off:             "Desactivado (solo texto)"
     label_voice_only:      "Activado (responder con voz a mensajes de voz)"
     label_all:             "TTS (responder con voz a todos los mensajes)"
+    help:                  "{toggle}\n\n**Cómo funciona /voice**\n• `/voice on` — respuesta de voz cuando envías un mensaje de voz\n• `/voice tts` — respuesta de voz a *cada* mensaje\n• `/voice off` — volver a respuestas solo de texto\n• `/voice status` — mostrar el modo actual\n• `/voice` (sin argumento) — alternar rápido entre activado y desactivado{channels}"
+    help_channels:         "\n\n**Canales de voz en vivo (Discord)**\n• Únete primero a un canal de voz, luego `/voice channel` — me uno, escucho y digo mis respuestas\n• `/voice leave` — desconectar del canal de voz"
 
   yolo:
     disabled:                   "⚠️ Modo YOLO **DESACTIVADO** en esta sesión — los comandos peligrosos requerirán aprobación."

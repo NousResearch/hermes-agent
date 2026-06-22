@@ -1,0 +1,6 @@
+### PR #49449  head=cd27defe2
+## build: compileall agent/ hermes_cli/ tools/ run_agent.py
+build-exit=0
+## test: tests/agent/test_models_dev_probe_overrides.py 
+
+============================== 15 passed in 0.37s ==============================

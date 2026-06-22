@@ -1,0 +1,6 @@
+### PR #48101  head=af2016d1e
+## build: compileall agent/ hermes_cli/ tools/ run_agent.py
+build-exit=0
+## test: tests/agent/test_system_prompt_prelude.py 
+
+============================== 19 passed in 0.42s ==============================

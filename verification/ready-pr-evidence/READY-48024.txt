@@ -1,0 +1,6 @@
+### PR #48024  head=c5346ea34
+## build: compileall agent/ hermes_cli/ tools/ run_agent.py
+build-exit=0
+## test: tests/gateway/test_api_server.py tests/test_anthropic_thinking_display.py 
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+====================== 180 passed, 118 warnings in 8.61s =======================

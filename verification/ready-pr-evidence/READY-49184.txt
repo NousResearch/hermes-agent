@@ -1,0 +1,6 @@
+### PR #49184  head=d684ef808
+## build: compileall agent/ hermes_cli/ tools/ run_agent.py
+build-exit=0
+## test: tests/agent/test_copilot_claude_endpoint_routing.py 
+
+============================== 13 passed in 0.40s ==============================

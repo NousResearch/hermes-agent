@@ -86,6 +86,7 @@ _DEDUP_WINDOW_SECONDS = 48 * 3600
 _FFFC_WAIT_SECONDS = 15.0  # Timeout for waiting on an attachment after a U+FFFC placeholder.
 
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
+_NPM_ERROR_LOG = _SIDECAR_DIR / ".photon-npm-error.log"
 
 # Cap on a self-heal `npm ci`/`npm install` of the sidecar deps. A cold
 # install of the pinned spectrum-ts tree normally takes well under a minute;
@@ -134,13 +135,43 @@ def _coerce_port(value: Any, default: int) -> int:
 def check_requirements() -> bool:
     """Return True when both Python deps and the Node sidecar are available."""
     if not HTTPX_AVAILABLE:
+        logger.warning("photon: httpx not installed — pip install httpx")
         return False
     if not shutil.which(os.getenv("PHOTON_NODE_BIN") or "node"):
+        logger.warning(
+            "photon: node binary '%s' not found on PATH",
+            os.getenv("PHOTON_NODE_BIN") or "node",
+        )
         return False
-    if not (_SIDECAR_DIR / "node_modules").exists():
-        # spectrum-ts not installed yet — `hermes photon setup` will
-        # install it.  check_fn still returns False so the gateway
-        # surfaces the missing-deps state in `hermes setup` / status.
+    if not (_SIDECAR_DIR / "node_modules" / "spectrum-ts").exists():
+        # spectrum-ts not installed yet, or node_modules/ was partially created
+        # by an aborted npm install (ENOSPC, network timeout, EACCES).
+        # Checking spectrum-ts presence — not just node_modules/ existence —
+        # prevents a false positive where an empty/broken node_modules/ dir
+        # causes check_requirements() to return True while the sidecar crashes
+        # at runtime with an unrelated-looking missing-module error.
+        # DEBUG (not WARNING): this is the normal pre-setup state.
+        # check_fn() is called from multiple hot paths in the core
+        # (load_gateway_config, hermes status, GET /api/status polling) —
+        # WARNING here would spam logs on every probe for unconfigured photon.
+        npm_error = ""
+        try:
+            if _NPM_ERROR_LOG.exists():
+                npm_error = _NPM_ERROR_LOG.read_text(encoding="utf-8").strip()[:300]
+        except OSError:
+            pass
+        if npm_error:
+            logger.debug(
+                "photon: spectrum-ts not installed at %s "
+                "(last npm error: %s) — run: hermes photon setup",
+                _SIDECAR_DIR,
+                npm_error,
+            )
+        else:
+            logger.debug(
+                "photon: spectrum-ts not installed at %s — run: hermes photon setup",
+                _SIDECAR_DIR,
+            )
         return False
     return True
 

@@ -76,7 +76,7 @@ from gateway.status import (
     parse_active_agents,
     read_runtime_status,
 )
-from utils import env_var_enabled
+from utils import env_var_enabled, is_truthy_value
 
 try:
     from fastapi import (
@@ -4920,7 +4920,7 @@ def _messaging_platform_payload(
             plat_cfg = platforms_cfg.get(platform_id)
             if not isinstance(plat_cfg, dict):
                 plat_cfg = {}
-            enabled = bool(plat_cfg.get("enabled"))
+            enabled = is_truthy_value(plat_cfg.get("enabled"))
             hc = plat_cfg.get("home_channel")
             home_channel = hc if isinstance(hc, dict) else None
         except Exception:

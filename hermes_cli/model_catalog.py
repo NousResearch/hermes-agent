@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_cli import __version__ as _HERMES_VERSION
-from utils import atomic_replace
+from utils import atomic_replace, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ def _load_catalog_config() -> dict[str, Any]:
         raw = {}
 
     return {
-        "enabled": bool(raw.get("enabled", True)),
+        "enabled": is_truthy_value(raw.get("enabled"), default=True),
         "url": str(raw.get("url") or DEFAULT_CATALOG_URL),
         "ttl_hours": float(raw.get("ttl_hours") or DEFAULT_TTL_HOURS),
         "providers": raw.get("providers") if isinstance(raw.get("providers"), dict) else {},

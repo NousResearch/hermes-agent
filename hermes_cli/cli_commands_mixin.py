@@ -33,6 +33,7 @@ from hermes_cli.browser_connect import (
     is_browser_debug_ready,
     manual_chrome_debug_command,
 )
+from utils import is_truthy_value
 
 
 class CLICommandsMixin:
@@ -1983,7 +1984,7 @@ class CLICommandsMixin:
 
         cfg = load_config() or {}
         footer_cfg = ((cfg.get("display") or {}).get("runtime_footer") or {})
-        current = bool(footer_cfg.get("enabled", False))
+        current = is_truthy_value(footer_cfg.get("enabled"), default=False)
         fields = footer_cfg.get("fields") or ["model", "context_pct", "cwd"]
 
         if arg in {"status", "?"}:

@@ -2575,7 +2575,11 @@ async def get_status(profile: Optional[str] = None):
         # Try local PID check first (same-host).  If that fails and a remote
         # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
         # dashboard works when the gateway runs in a separate container.
-        gateway_pid = get_running_pid_cached()
+        try:
+            gateway_pid = get_running_pid_cached()
+        except Exception:
+            _log.warning("Failed to probe local gateway PID", exc_info=True)
+            gateway_pid = None
         gateway_running = gateway_pid is not None
         remote_health_body: dict | None = None
 

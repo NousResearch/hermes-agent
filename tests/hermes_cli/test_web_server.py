@@ -5388,6 +5388,40 @@ class TestStatusRemoteGateway:
         assert data["gateway_pid"] is None
         assert data["gateway_state"] == "running"
 
+    def test_status_falls_back_to_remote_probe_when_cached_pid_probe_raises(
+        self, monkeypatch
+    ):
+        """Cached local PID probe errors must not block remote health fallback."""
+        import hermes_cli.web_server as ws
+
+        def raise_probe_error():
+            raise SystemError("OSError returned a result with an exception set")
+
+        monkeypatch.setattr(ws, "get_running_pid_cached", raise_probe_error)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(
+            ws,
+            "_probe_gateway_health",
+            lambda: (
+                True,
+                {
+                    "status": "ok",
+                    "gateway_state": "running",
+                    "platforms": {"discord": {"state": "connected"}},
+                    "pid": 999,
+                },
+            ),
+        )
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is True
+        assert data["gateway_pid"] == 999
+        assert data["gateway_state"] == "running"
+        assert data["gateway_health_url"] == "http://gw:8642"
 
 class TestGatewayBusyReadout:
     """Tests for the NAS busy/drainable readout on /api/status.

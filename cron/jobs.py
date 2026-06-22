@@ -12,6 +12,7 @@ import logging
 import shutil
 import tempfile
 import threading
+import time
 import os
 import re
 import uuid
@@ -30,7 +31,7 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -48,9 +49,23 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = get_hermes_home().resolve()
+HERMES_DIR = get_default_hermes_root().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
+# Heartbeat file the in-process ticker touches on every loop iteration. The
+# gateway process and the (separate) ``hermes cron status`` process share it
+# so status can tell whether the ticker THREAD is alive, not just whether the
+# gateway PROCESS exists — a ticker that dies silently inside a live gateway
+# would otherwise report healthy (#32612, #32895).
+TICKER_HEARTBEAT_FILE = CRON_DIR / "ticker_heartbeat"
+# Last tick that completed WITHOUT raising. Distinguishing this from the plain
+# heartbeat lets status detect a ticker that is alive but failing every tick.
+TICKER_SUCCESS_FILE = CRON_DIR / "ticker_last_success"
+# Default ticker loop interval (seconds). The single source of truth shared by
+# the in-process ticker (cron/scheduler_provider.py) and the staleness
+# threshold in `hermes cron status` (hermes_cli/cron.py), so the two never
+# drift apart.
+TICKER_INTERVAL_SECONDS = 60
 
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
@@ -233,6 +248,12 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
+    # Legacy jobs (created before per-job profile scoping) have no profile
+    # field. Default them to "default" so the scheduler treats them as
+    # root-profile jobs — matching their pre-existing behaviour.
+    prof = normalized.get("profile")
+    normalized["profile"] = (str(prof).strip() if isinstance(prof, str) and prof.strip() else "default")
+
     return normalized
 
 
@@ -251,6 +272,43 @@ def _secure_file(path: Path):
             os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
+
+
+def current_profile_name() -> str:
+    """Return the active profile name for the process creating a job.
+
+    ``~/.hermes``              -> ``"default"``
+    ``~/.hermes/profiles/X``   -> ``"X"``
+
+    Used at create time to tag a job with the profile whose environment
+    (.env / config.yaml / credentials) it should execute under, so the
+    job runs as its owning profile regardless of which profile's ticker
+    picks it up from the shared root store (#32091).
+    """
+    try:
+        from agent.file_safety import _resolve_active_profile_name
+        return _resolve_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
+def resolve_profile_home(profile_name: Optional[str]) -> Optional[Path]:
+    """Map a job's ``profile`` name to the HERMES_HOME it should run under.
+
+    ``"default"`` / empty / ``None`` -> the root home (``get_default_hermes_root()``).
+    ``"<name>"``                      -> ``<root>/profiles/<name>``.
+
+    Returns ``None`` when the named profile directory does not exist, so the
+    scheduler can fall back to the ticker's own home and log a warning rather
+    than pointing a job at a missing profile.
+    """
+    name = (profile_name or "").strip()
+    if not name or name == "default":
+        return get_default_hermes_root().resolve()
+    candidate = (get_default_hermes_root() / "profiles" / name).resolve()
+    if candidate.is_dir():
+        return candidate
+    return None
 
 
 def ensure_dirs():
@@ -394,6 +452,31 @@ def _ensure_aware(dt: datetime) -> datetime:
     return dt.astimezone(target_tz)
 
 
+def _timezone_offset_mismatch(stored: datetime, current: datetime) -> bool:
+    """Return True when a stored aware timestamp uses a different UTC offset.
+
+    Naive stored timestamps return False: they carry no offset to compare, and
+    are normalized by ``_ensure_aware`` instead — they intentionally never take
+    the offset-repair path.
+    """
+    if stored.tzinfo is None or current.tzinfo is None:
+        return False
+    return stored.utcoffset() != current.utcoffset()
+
+
+def _stored_wall_clock_is_future(stored: datetime, current: datetime) -> bool:
+    """Return True when the stored local wall-clock time has not arrived yet.
+
+    Cron schedules express local wall-clock intent. If Hermes/system local time
+    changes after next_run_at was persisted, an old offset can make a future
+    wall-clock run look due at the converted absolute time (for example
+    21:00+10 becomes 13:00+02). Comparing naive wall-clock values lets us
+    distinguish that migration case from a genuinely missed run whose scheduled
+    wall time has already passed.
+    """
+    return stored.replace(tzinfo=None) > current.replace(tzinfo=None)
+
+
 def _recoverable_oneshot_run_at(
     schedule: Dict[str, Any],
     now: datetime,
@@ -500,13 +583,119 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
 
 # =============================================================================
+# Ticker heartbeat (liveness signal for `hermes cron status`)
+# =============================================================================
+
+def _atomic_write_epoch(path: Path) -> None:
+    """Atomically write the current epoch time to ``path``.
+
+    Uses the same tmpfile + ``atomic_replace`` pattern as ``save_jobs`` so a
+    concurrent reader in another process (``hermes cron status``) never sees a
+    torn/truncated file. Best-effort: failures are swallowed by callers.
+    """
+    ensure_dirs()
+    fd, tmp_path = tempfile.mkstemp(dir=str(CRON_DIR), suffix=".tmp", prefix=".hb_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def record_ticker_heartbeat(success: bool = False) -> None:
+    """Record a ticker liveness signal, and optionally a successful-tick signal.
+
+    The ticker calls this once per loop iteration. ``success=True`` additionally
+    bumps the *last successful tick* marker. We track two distinct signals so
+    `hermes cron status` can tell a thread that is merely *alive and looping*
+    (heartbeat fresh, success stale) from one that is actually *firing jobs*
+    (both fresh) — a ticker stuck failing every tick would otherwise keep the
+    plain heartbeat fresh and falsely report healthy (#32612, #32895).
+
+    Best-effort: a write failure must never disrupt the tick loop.
+    """
+    try:
+        _atomic_write_epoch(TICKER_HEARTBEAT_FILE)
+    except Exception:
+        pass
+    if success:
+        try:
+            _atomic_write_epoch(TICKER_SUCCESS_FILE)
+        except Exception:
+            pass
+
+
+def _epoch_file_age(path: Path) -> Optional[float]:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+        return max(0.0, time.time() - float(raw))
+    except Exception:
+        return None
+
+
+def get_ticker_heartbeat_age() -> Optional[float]:
+    """Seconds since the ticker loop last iterated, or None if unknown.
+
+    None = heartbeat file missing/unreadable (older build, never ran, or a
+    torn read). Callers treat None as "cannot determine", not "dead".
+    """
+    return _epoch_file_age(TICKER_HEARTBEAT_FILE)
+
+
+def get_ticker_success_age() -> Optional[float]:
+    """Seconds since the ticker last completed a tick WITHOUT raising, or None."""
+    return _epoch_file_age(TICKER_SUCCESS_FILE)
+
+
+# =============================================================================
 # Job CRUD Operations
 # =============================================================================
+
+_WARNED_ORPHAN_STORE = False
+
+
+def _warn_if_orphaned_profile_store() -> None:
+    """Loudly warn (once) if the root store is empty but a profile-local
+    jobs.json exists from before #32091's root-anchoring fix.
+
+    Such a file is now unreachable (the store anchors at the default root, not
+    the active profile). The jobs in it were already orphaned pre-fix (the
+    profile-less gateway never read them), so this is not a regression — but a
+    user who could SEE them in `cron list` under their profile would otherwise
+    find them silently gone. Point them at the path instead of failing silent.
+    """
+    global _WARNED_ORPHAN_STORE
+    if _WARNED_ORPHAN_STORE:
+        return
+    try:
+        active = get_hermes_home().resolve()
+        if active == HERMES_DIR:
+            return  # not in a profile; nothing could be orphaned
+        legacy = active / "cron" / "jobs.json"
+        if legacy.exists():
+            _WARNED_ORPHAN_STORE = True
+            logger.warning(
+                "Cron jobs now live at %s (shared across profiles). A legacy "
+                "profile-local store exists at %s and is no longer read; "
+                "re-create those jobs or move them into the root store. (#32091)",
+                JOBS_FILE, legacy,
+            )
+    except Exception:
+        pass  # best-effort advisory; never block load_jobs
+
 
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
     if not JOBS_FILE.exists():
+        _warn_if_orphaned_profile_store()
         return []
 
     _strict_retry = False  # track whether we used the strict=False fallback
@@ -626,6 +815,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -670,6 +860,13 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        profile: Optional Hermes profile name the job should EXECUTE under
+                (its .env / config.yaml / credentials). Defaults to the active
+                profile of the session creating the job. The shared root store
+                holds every profile's jobs (#32091); this field is what scopes
+                a job's runtime environment to its owning profile so it runs
+                with that profile's permissions regardless of which ticker
+                picks it up.
 
     Returns:
         The created job dict
@@ -704,6 +901,11 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    # Tag the job with the profile whose environment it should execute under.
+    # When the caller does not pass one explicitly, capture the active profile
+    # of the session creating the job so a job created under `hermes -p donna`
+    # runs as donna even though it now lives in the shared root store (#32091).
+    normalized_profile = (str(profile).strip() if isinstance(profile, str) else "") or current_profile_name()
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -757,6 +959,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "profile": normalized_profile,
     }
 
     with _jobs_lock():
@@ -1128,10 +1331,16 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
 def get_due_jobs() -> List[Dict[str, Any]]:
     """Get all jobs that are due to run now.
 
-    For recurring jobs (cron/interval), if the scheduled time is stale
-    (more than one period in the past, e.g. because the gateway was down),
-    the job is fast-forwarded to the next future run instead of firing
-    immediately.  This prevents a burst of missed jobs on gateway restart.
+    For recurring jobs (cron/interval), if the scheduled time is stale (more
+    than one period in the past, e.g. because the gateway was down OR because a
+    long-running previous execution overran the interval), the accumulated
+    missed runs are collapsed — ``next_run_at`` is fast-forwarded to the next
+    future occurrence so a backlog does NOT burst-fire on restart — but the job
+    still fires ONCE now. This prevents the perpetual-defer loop (#33315) where
+    a job whose runtime exceeds ``interval + grace`` would be skipped forever.
+
+    Note: firing once on catch-up flows through ``mark_job_run``, so a job with
+    a ``repeat.times`` limit consumes one of its runs on that catch-up fire.
     """
     with _jobs_lock():
         return _get_due_jobs_locked()
@@ -1189,35 +1398,84 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     needs_save = True
                     break
 
-        next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
+        raw_next_run_dt = datetime.fromisoformat(next_run)
+        schedule = job.get("schedule", {})
+        kind = schedule.get("kind")
+
+        next_run_dt = _ensure_aware(raw_next_run_dt)
+        # Migration repair: a cron job persists next_run_at as an absolute
+        # instant, but the cron expr describes local wall-clock intent. If the
+        # configured/system timezone changed after persistence, the stored
+        # instant's offset no longer matches now's, and its converted time can
+        # look due hours early (21:00+10 -> 13:00+02). When the stored *wall
+        # clock* is still in the future, recompute from the schedule so we fire
+        # at the intended local time instead of early-then-again.
+        #
+        # TRADE-OFF: this cannot distinguish a config/host TZ migration from a
+        # legitimate DST offset change. A DST boundary that satisfies all four
+        # conditions will recompute (and thus SKIP the pending occurrence, no
+        # catch-up) rather than fire it. Accepted: in the pure-migration case
+        # the recompute lands on the same wall-clock time later the same period,
+        # and DST-boundary collisions with a still-future stored wall clock are
+        # rare relative to the double-fire bug this prevents (#28934).
+        if (
+            kind == "cron"
+            and next_run_dt <= now
+            and _timezone_offset_mismatch(raw_next_run_dt, now)
+            and _stored_wall_clock_is_future(raw_next_run_dt, now)
+        ):
+            new_next = compute_next_run(schedule, now.isoformat())
+            if new_next:
+                logger.info(
+                    "Job '%s' next_run_at offset changed (%s -> %s). "
+                    "Recomputing cron run to preserve local wall-clock intent: %s",
+                    job.get("name", job["id"]),
+                    raw_next_run_dt.utcoffset(),
+                    now.utcoffset(),
+                    new_next,
+                )
+                for rj in raw_jobs:
+                    if rj["id"] == job["id"]:
+                        rj["next_run_at"] = new_next
+                        needs_save = True
+                        break
+                continue
+
         if next_run_dt <= now:
-            schedule = job.get("schedule", {})
-            kind = schedule.get("kind")
 
             # For recurring jobs, check if the scheduled time is stale
             # (gateway was down and missed the window). Fast-forward to
             # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
             if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
-                # Job is past its catch-up grace window — this is a stale missed run.
-                # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
+                # Job is past its catch-up grace window — skip accumulated
+                # missed runs but still execute once now to avoid deferring
+                # indefinitely (e.g. a long-running job just finished).
                 new_next = compute_next_run(schedule, now.isoformat())
                 if new_next:
                     logger.info(
                         "Job '%s' missed its scheduled time (%s, grace=%ds). "
-                        "Fast-forwarding to next run: %s",
+                        "Running now; next run provisionally set to: %s "
+                        "(re-anchored on completion)",
                         job.get("name", job["id"]),
                         next_run,
                         grace,
                         new_next,
                     )
-                    # Update the job in storage
+                    # Persist the fast-forward to storage now (skip accumulated
+                    # slots). In the built-in ticker path this is shortly
+                    # overwritten by advance_next_run + mark_job_run, but it is
+                    # NOT redundant: it (a) protects the crash window between
+                    # here and mark_job_run, and (b) covers the external
+                    # fire_due provider path, which does not call
+                    # advance_next_run. mark_job_run re-anchors next_run_at off
+                    # the actual completion time, so this value is provisional.
                     for rj in raw_jobs:
                         if rj["id"] == job["id"]:
                             rj["next_run_at"] = new_next
                             needs_save = True
                             break
-                    continue  # Skip this run
+                    # Fall through to due.append(job) — execute once now
 
             due.append(job)
 

@@ -299,8 +299,11 @@
       'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     /* Key caps always use the native UI face — never theme typography overrides. */
     --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+    /* JetBrains Mono first — the face we bundle (@font-face above) and the
+       terminal's primary — so code/diff match the terminal on every platform
+       instead of drifting to a system Cascadia Code where it's installed. */
     --dt-font-mono:
-      'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
+      'JetBrains Mono', 'Cascadia Code', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
       'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
@@ -1214,19 +1217,56 @@ canvas {
   background: transparent !important;
 }
 
-[data-slot='aui_assistant-message-content'] > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
+/* Fade scaffolding so the prose reading column stays primary. Two targets:
+   a thinking disclosure fades as one block, and each *individual* tool row
+   (`[data-tool-row]`) fades on its own. We deliberately do NOT fade the tool
+   group wrapper (`[data-tool-group]`): opacity on a parent opens a stacking
+   context, so a child row can never be more opaque than the group — that made
+   it impossible to keep one row lit (an open diff) while its siblings faded.
+   With the fade per-row, each row hovers/focuses independently. */
+[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'],
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row] {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
 }
 
-[data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']):is(:hover, :focus-within) {
+/* Lift on hover or *keyboard* focus only. `:focus-within` also matches the
+   focus a mouse click leaves on the disclosure toggle, which kept a row lit
+   after you clicked to collapse it; `:has(:focus-visible)` excludes that. */
+[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure']:is(:hover, :has(:focus-visible)),
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row]:is(:hover, :has(:focus-visible)) {
   opacity: 1;
 }
 
-/* A generated image is the deliverable, not scaffolding — keep it at full
-   strength instead of dimming it until hover. */
-[data-slot='aui_assistant-message-content'] > [data-slot='tool-block']:has([data-slot='aui_generated-image']) {
+/* Syntax-highlighted inline diff (Shiki): strip the theme's own surface +
+   default margins so context lines stay transparent and each changed line owns
+   its tint. `display: grid` on the code puts one `.line` per row and drops the
+   whitespace-only `\n` nodes between them — without it, full-width block lines
+   double up with the literal newlines (phantom blank rows). */
+[data-slot='file-diff-panel'] .shiki,
+[data-slot='file-diff-panel'] .shiki code {
+  margin: 0;
+  background: transparent !important;
+}
+
+[data-slot='file-diff-panel'] .shiki code {
+  display: grid;
+}
+
+/* The github-dark token palette reads candy-bright at our small code size.
+   `github-dark-dimmed` only dims the *background* (which we strip), so soften
+   the token *foregrounds* directly — a small saturation + brightness pullback,
+   hues preserved — for both code blocks and inline diffs. Dark mode only. */
+.dark .shiki {
+  filter: saturate(0.82) brightness(0.92);
+}
+
+/* File edits (write_file / edit_file / patch) are the deliverable, not
+   scaffolding — the diff is what the user reviews, like a PR. An *expanded*
+   edit stays at full strength; collapsed it fades like any other row. The
+   `data-file-edit` marker sits on the same row element and is only present
+   while the row is open. */
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row][data-file-edit] {
   opacity: 1;
 }
 

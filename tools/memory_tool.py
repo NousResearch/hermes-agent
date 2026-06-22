@@ -731,6 +731,38 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
+def load_on_disk_store() -> "MemoryStore":
+    """Build a fresh on-disk :class:`MemoryStore`, honoring configured char limits.
+
+    Use this from any context that has no live agent (the messaging gateway, the
+    Desktop GUI, the bare CLI ``/memory`` handler) but still needs to read or
+    apply approved memory writes. Mirrors how the live agent constructs its store
+    in ``agent/agent_init.py`` — including the user's ``memory.memory_char_limit``
+    / ``memory.user_char_limit`` overrides — so an approval applied without a live
+    agent enforces the SAME caps as one applied with one.
+
+    Falls back to the built-in defaults if config can't be loaded, so this can
+    never raise on a missing/unreadable config.
+    """
+    memory_char_limit = 2200
+    user_char_limit = 1375
+    try:
+        from hermes_cli.config import load_config
+
+        mem_cfg = (load_config() or {}).get("memory", {}) or {}
+        memory_char_limit = int(mem_cfg.get("memory_char_limit", memory_char_limit))
+        user_char_limit = int(mem_cfg.get("user_char_limit", user_char_limit))
+    except Exception:
+        pass  # config optional — fall back to defaults rather than break /memory
+
+    store = MemoryStore(
+        memory_char_limit=memory_char_limit,
+        user_char_limit=user_char_limit,
+    )
+    store.load_from_disk()
+    return store
+
+
 def _apply_write_gate(action: str, target: str, content: Optional[str],
                       old_text: Optional[str]) -> Optional[str]:
     """Evaluate the memory write gate. Returns a JSON tool-result string when
@@ -835,6 +867,38 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
     )
 
 
+def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> str:
+    """Build a recoverable error for a replace/remove call that arrived without
+    ``old_text``.
+
+    ``replace``/``remove`` are inherently targeted -- without ``old_text`` there
+    is no entry to act on, so we cannot fulfil the call. But returning a bare
+    "old_text is required" is a dead-end: some structured-output clients omit the
+    optional ``old_text`` field (it isn't, and can't be, schema-required without
+    a top-level combinator the Codex backend rejects -- see
+    tests/tools/test_memory_tool_schema.py). So instead we return the current
+    entry inventory plus an explicit retry instruction, letting the model reissue
+    the call with ``old_text`` set to a unique substring of the entry it means.
+    Mirrors the batch path's ``_batch_error`` shape. (issues #43412, #49466)
+    """
+    entries = store._entries_for(target)
+    current = store._char_count(target)
+    limit = store._char_limit(target)
+    return json.dumps(
+        {
+            "success": False,
+            "error": (
+                f"'{action}' needs old_text -- a short unique substring of the entry "
+                f"to {action}. None was provided. Reissue the {action} with old_text "
+                f"set to part of one of the current_entries below."
+            ),
+            "current_entries": entries,
+            "usage": f"{current:,}/{limit:,}",
+        },
+        ensure_ascii=False,
+    )
+
+
 def memory_tool(
     action: str = None,
     target: str = "memory",
@@ -876,9 +940,15 @@ def memory_tool(
         return tool_error("Content is required for 'add' action.", success=False)
     if action == "replace" and (not old_text or not content):
         missing = "old_text" if not old_text else "content"
+        if not old_text:
+            # The client/model omitted old_text. Replace is inherently targeted
+            # -- we can't guess which entry. Return the current inventory plus a
+            # retry instruction so the model can reissue with old_text set,
+            # instead of hitting a dead-end error. (issues #43412, #49466)
+            return _missing_old_text_error(store, target, "replace")
         return tool_error(f"{missing} is required for 'replace' action.", success=False)
     if action == "remove" and not old_text:
-        return tool_error("old_text is required for 'remove' action.", success=False)
+        return _missing_old_text_error(store, target, "remove")
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
@@ -971,7 +1041,7 @@ MEMORY_SCHEMA = {
             },
             "old_text": {
                 "type": "string",
-                "description": "Short unique substring identifying the entry to replace or remove (single-op shape)."
+                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
             },
             "operations": {
                 "type": "array",

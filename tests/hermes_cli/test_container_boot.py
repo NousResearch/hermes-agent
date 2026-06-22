@@ -25,6 +25,29 @@ from hermes_cli.container_boot import (
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_container_argv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default ``_read_container_argv()`` to empty for the whole module.
+
+    ``_read_container_argv()`` walks the entire ``/proc`` table looking for
+    a process whose argv contains ``main-wrapper.sh`` (the s6-overlay v3
+    fallback). On a host that is *also* running hermes containers, those
+    containers' ``main-wrapper.sh`` processes are visible in the host's
+    ``/proc`` (shared PID view), so the scan would pick up a foreign
+    ``gateway run`` argv and make ``_maybe_migrate_legacy_gateway_run_state``
+    synthesize ``running`` state — flaking any test that reconciles without
+    injecting ``container_argv``. Inside the real container ``/proc`` is the
+    container's own PID namespace, so production is unaffected; this fixture
+    just makes the unit suite hermetic. Tests that need a specific argv
+    either pass ``container_argv=`` to ``reconcile_profile_gateways`` or
+    monkeypatch ``_read_container_argv`` themselves (both override this).
+    """
+    monkeypatch.setattr(
+        "hermes_cli.container_boot._read_container_argv",
+        lambda: (),
+    )
+
+
 def _make_profile(
     hermes_home: Path,
     name: str,
@@ -733,6 +756,24 @@ def test_profiles_default_subdir_is_skipped_with_warning(
         ),
         # Wrapper that kept the explicit `hermes` argv0.
         ("/init", "/opt/hermes/docker/main-wrapper.sh", "hermes", "dashboard"),
+        # s6-overlay v3: PID 1 is s6-svscan, so the role is read off the
+        # rc.init-launched process whose argv is
+        # `/bin/sh -e .../rc.init top .../main-wrapper.sh dashboard ...`.
+        # This is the exact shape that regressed in issue #49196.
+        (
+            "/bin/sh",
+            "-e",
+            "/run/s6/basedir/scripts/rc.init",
+            "top",
+            "/opt/hermes/docker/main-wrapper.sh",
+            "dashboard",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9119",
+            "--no-open",
+            "--insecure",
+        ),
     ],
 )
 def test_is_dashboard_container_true_for_dashboard_argv(
@@ -756,6 +797,17 @@ def test_is_dashboard_container_true_for_dashboard_argv(
         # we key on is the SUBCOMMAND, and `gateway run -p dashboard` is a
         # gateway container.
         ("gateway", "run", "-p", "dashboard"),
+        # s6-overlay v3 gateway container — the rc.init-launched argv for a
+        # gateway role must still read as non-dashboard (issue #49196 shape).
+        (
+            "/bin/sh",
+            "-e",
+            "/run/s6/basedir/scripts/rc.init",
+            "top",
+            "/opt/hermes/docker/main-wrapper.sh",
+            "gateway",
+            "run",
+        ),
     ],
 )
 def test_is_dashboard_container_false_for_non_dashboard_argv(
@@ -788,6 +840,54 @@ def test_main_skips_reconcile_in_dashboard_container(
         container_boot,
         "_read_container_argv",
         lambda: ("/init", "/opt/hermes/docker/main-wrapper.sh", "dashboard"),
+    )
+
+    rc = container_boot.main()
+
+    assert rc == 0
+    assert not (scandir / "gateway-worker").exists()
+    assert not (scandir / "gateway-default").exists()
+    assert "skipping (dashboard container" in capsys.readouterr().out
+
+
+def test_main_skips_reconcile_in_dashboard_container_s6v3(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The dashboard skip must fire under the s6-overlay v3 argv shape.
+
+    Regression test for issue #49196: under s6-overlay v3 the container
+    command is read off the rc.init-launched process, whose argv is
+    ``/bin/sh -e .../rc.init top .../main-wrapper.sh dashboard ...`` — not a
+    bare ``/init`` prefix. Before the fix, the prefix-strip left ``/bin/sh``
+    at args[0], so the role read as non-dashboard, the dashboard container
+    reconciled, and it started its own gateway-default (dual Telegram
+    getUpdates 409). Asserting the slot is absent proves the skip fires.
+    """
+    from hermes_cli import container_boot
+
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "worker", state="running")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("S6_PROFILE_GATEWAY_SCANDIR", str(scandir))
+    monkeypatch.setattr(
+        container_boot,
+        "_read_container_argv",
+        lambda: (
+            "/bin/sh",
+            "-e",
+            "/run/s6/basedir/scripts/rc.init",
+            "top",
+            "/opt/hermes/docker/main-wrapper.sh",
+            "dashboard",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9119",
+            "--no-open",
+            "--insecure",
+        ),
     )
 
     rc = container_boot.main()

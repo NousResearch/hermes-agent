@@ -199,26 +199,121 @@ def _maybe_migrate_legacy_gateway_run_state(
 
 
 def _read_container_argv() -> tuple[str, ...]:
-    """Best-effort read of the container PID 1 argv."""
+    """Best-effort read of the container's main program argv.
+
+    Under s6-overlay v2, PID 1 is ``/init`` and its argv contains the
+    ``main-wrapper.sh`` path.  Under s6-overlay v3, PID 1 is
+    ``s6-svscan`` and the actual command (``rc.init top main-wrapper.sh
+    ...``) lives on a different PID.  We try PID 1 first (fast path,
+    covers v2 and pre-s6 images), then fall back to scanning
+    ``/proc/*/cmdline`` for a process whose argv contains
+    ``main-wrapper.sh`` (the rc.init-launched PID in v3).
+    """
+    # Fast path: PID 1 is the command itself (s6-overlay v2 / tini).
     try:
         raw = Path("/proc/1/cmdline").read_bytes()
+        argv = tuple(
+            part.decode("utf-8", "replace") for part in raw.split(b"\0") if part
+        )
+        if any("main-wrapper.sh" in part for part in argv):
+            return argv
     except OSError:
-        return ()
-    return tuple(part.decode("utf-8", "replace") for part in raw.split(b"\0") if part)
+        pass
+
+    # Slow path: s6-overlay v3 — PID 1 is s6-svscan; find the
+    # rc.init-launched process whose argv contains main-wrapper.sh.
+    try:
+        proc_dir = Path("/proc")
+        for entry in proc_dir.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                raw = (entry / "cmdline").read_bytes()
+            except OSError:
+                continue
+            argv = tuple(
+                part.decode("utf-8", "replace")
+                for part in raw.split(b"\0")
+                if part
+            )
+            if any("main-wrapper.sh" in part for part in argv):
+                return argv
+    except OSError:
+        pass
+
+    return ()
+
+
+def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:
+    """Strip the s6/wrapper prefix off the container argv, leaving the hermes args.
+
+    Two container-command argv shapes are handled:
+
+    * **s6-overlay v2 / tini:** PID 1 argv is
+      ``/init /opt/hermes/docker/main-wrapper.sh <subcommand> [args...]``.
+    * **s6-overlay v3:** PID 1 is ``s6-svscan`` and the command lives on the
+      rc.init-launched process as ``/bin/sh -e
+      /run/s6/basedir/scripts/rc.init top /opt/hermes/docker/main-wrapper.sh
+      <subcommand> [args...]`` (see :func:`_read_container_argv`).
+
+    Rather than peel each leading token positionally (which silently breaks
+    the moment s6 changes its launcher shape again — exactly what happened
+    in the v2→v3 bump), drop everything up to and including the
+    ``main-wrapper.sh`` token: that wrapper path is the stable boundary the
+    image owns, and the subcommand always follows it. Pre-s6 / direct
+    ``hermes`` invocations carry no wrapper, so fall back to peeling a bare
+    ``init`` prefix. The wrapper re-execs ``hermes <subcommand>``, so an
+    explicit leading ``hermes`` is peeled too. Shared by the legacy-gateway
+    and dashboard role detectors.
+    """
+    args = list(argv)
+
+    # Preferred boundary: everything through main-wrapper.sh is launcher
+    # prefix. Covers s6-overlay v2 (`/init …main-wrapper.sh …`) and v3
+    # (`/bin/sh -e …rc.init top …main-wrapper.sh …`) with one rule.
+    wrapper_idx = next(
+        (i for i, a in enumerate(args) if a.endswith("main-wrapper.sh")),
+        None,
+    )
+    if wrapper_idx is not None:
+        args = args[wrapper_idx + 1 :]
+    elif args and Path(args[0]).name == "init":
+        # Defensive: an `init` prefix with no wrapper token in argv.
+        args = args[1:]
+
+    # The wrapper re-execs `hermes <subcommand>`; peel an explicit hermes.
+    if args and Path(args[0]).name == "hermes":
+        args = args[1:]
+    return args
 
 
 def _is_legacy_gateway_run_request(argv: Sequence[str]) -> bool:
     """Return True for Docker commands equivalent to `gateway run`."""
-    args = list(argv)
-    if args and Path(args[0]).name == "init":
-        args = args[1:]
-    if args and args[0].endswith("main-wrapper.sh"):
-        args = args[1:]
-    if args and Path(args[0]).name == "hermes":
-        args = args[1:]
+    args = _strip_container_argv_prefix(argv)
     if "--no-supervise" in args:
         return False
     return len(args) >= 2 and args[0] == "gateway" and args[1] == "run"
+
+
+def _is_dashboard_container(argv: Sequence[str]) -> bool:
+    """Return True when the container's command is the dashboard.
+
+    A dashboard-only container (``hermes dashboard ...``) never spawns or
+    supervises per-profile gateways — that is the gateway container's job.
+    Reconciling profile gateway s6 slots there is not just wasted work: when
+    the gateway and dashboard containers share a bind-mounted HERMES_HOME,
+    both race to ``flock()`` the same ``logs/gateways/<profile>/lock`` files,
+    producing "Resource busy" failures and an s6-log restart storm. So the
+    dashboard container skips reconciliation entirely.
+
+    Detected from PID 1 argv (``/proc/1/cmdline``) rather than an operator
+    flag: the role is a fact about the container's command, not a tunable,
+    and a flag can be forgotten in a hand-written compose/k8s manifest —
+    reintroducing the exact storm this prevents. Mirrors the argv handling
+    in :func:`_is_legacy_gateway_run_request`.
+    """
+    args = _strip_container_argv_prefix(argv)
+    return bool(args) and args[0] == "dashboard"
 
 
 def _read_desired_state(profile_dir: Path) -> str | None:
@@ -393,6 +488,22 @@ _LOG_ROTATE_BYTES = 256 * 1024
 
 def main() -> int:
     """Entry point invoked from /etc/cont-init.d/02-reconcile-profiles."""
+    # A dashboard-only container never spawns or supervises per-profile
+    # gateways, so reconciling their s6 slots here is pure waste — and
+    # actively harmful: when the gateway and dashboard containers share a
+    # bind-mounted HERMES_HOME, both race to flock() the same s6-log lock
+    # files under logs/gateways/<profile>/lock, producing "Resource busy"
+    # failures and a restart storm. Detect the role from PID 1 argv and
+    # skip reconciliation in the dashboard container. No operator flag:
+    # the role is a fact about the container's command, and a flag can be
+    # forgotten in a hand-written manifest, reintroducing the storm.
+    if _is_dashboard_container(_read_container_argv()):
+        print(
+            "reconcile: skipping (dashboard container — does not need "
+            "per-profile gateways)"
+        )
+        return 0
+
     hermes_home = Path(os.environ.get("HERMES_HOME", "/opt/data"))
     scandir = Path(os.environ.get("S6_PROFILE_GATEWAY_SCANDIR", "/run/service"))
     actions = reconcile_profile_gateways(

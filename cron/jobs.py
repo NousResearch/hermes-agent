@@ -5,18 +5,33 @@ Jobs are stored in ~/.hermes/cron/jobs.json
 Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 """
 
+import contextlib
 import copy
 import json
 import logging
 import shutil
 import tempfile
 import threading
+import time
 import os
 import re
 import uuid
+
+# Cross-process advisory file locking for jobs.json critical sections.
+# fcntl is Unix-only; on Windows fall back to msvcrt. Either may be absent,
+# in which case _jobs_lock() degrades to in-process locking only (the old
+# behaviour) rather than failing.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-Unix
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - non-Windows
+    msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -34,16 +49,99 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = get_hermes_home().resolve()
+HERMES_DIR = get_default_hermes_root().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
+# Heartbeat file the in-process ticker touches on every loop iteration. The
+# gateway process and the (separate) ``hermes cron status`` process share it
+# so status can tell whether the ticker THREAD is alive, not just whether the
+# gateway PROCESS exists — a ticker that dies silently inside a live gateway
+# would otherwise report healthy (#32612, #32895).
+TICKER_HEARTBEAT_FILE = CRON_DIR / "ticker_heartbeat"
+# Last tick that completed WITHOUT raising. Distinguishing this from the plain
+# heartbeat lets status detect a ticker that is alive but failing every tick.
+TICKER_SUCCESS_FILE = CRON_DIR / "ticker_last_success"
+# Default ticker loop interval (seconds). The single source of truth shared by
+# the in-process ticker (cron/scheduler_provider.py) and the staleness
+# threshold in `hermes cron status` (hermes_cli/cron.py), so the two never
+# drift apart.
+TICKER_INTERVAL_SECONDS = 60
 
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
-_jobs_file_lock = threading.Lock()
+_jobs_file_lock = threading.RLock()
+_jobs_lock_state = threading.local()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+
+
+def _jobs_lock_file() -> Path:
+    """Return the advisory lock path for the current cron directory."""
+    return CRON_DIR / ".jobs.lock"
+
+
+@contextlib.contextmanager
+def _jobs_lock():
+    """Serialize a load_jobs→modify→save_jobs critical section.
+
+    Combines the in-process threading lock (cheap mutual exclusion between
+    the gateway's parallel tick threads) with a cross-process advisory file
+    lock on ``<cron dir>/.jobs.lock`` (mutual exclusion between the gateway process
+    and standalone ``hermes`` CLI invocations, which previously shared no lock
+    at all — a `cron pause` could be silently clobbered by a concurrent
+    gateway write, leaving a "paused" job still firing).
+
+    The flock is blocking, but every critical section that uses it is short
+    (field updates only — no agent execution), so contention resolves in
+    milliseconds. If neither fcntl nor msvcrt is available the manager still
+    provides in-process locking, matching the historical behaviour.
+
+    Nested calls in the same thread reuse the held lock so legacy callers that
+    invoke save_jobs() inside a broader mutation section don't deadlock or try
+    to reacquire the advisory file lock.
+    """
+    depth = getattr(_jobs_lock_state, "depth", 0)
+    if depth:
+        _jobs_lock_state.depth = depth + 1
+        try:
+            yield
+        finally:
+            _jobs_lock_state.depth -= 1
+        return
+
+    with _jobs_file_lock:
+        _jobs_lock_state.depth = 1
+        lock_fd = None
+        try:
+            try:
+                ensure_dirs()
+                lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8")
+                lock_fd.seek(0)
+                if fcntl is not None:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                elif msvcrt is not None:
+                    getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+            except (OSError, IOError) as e:
+                # Never let a locking failure take down cron writes — fall back to
+                # in-process-only protection (still held via _jobs_file_lock).
+                logger.warning("jobs.json cross-process lock unavailable (%s); "
+                               "proceeding with in-process lock only", e)
+            try:
+                yield
+            finally:
+                if lock_fd is not None:
+                    try:
+                        if fcntl is not None:
+                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                        elif msvcrt is not None:
+                            getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
+                    except (OSError, IOError):
+                        pass
+                    finally:
+                        lock_fd.close()
+        finally:
+            _jobs_lock_state.depth = 0
 
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
@@ -311,6 +409,31 @@ def _ensure_aware(dt: datetime) -> datetime:
     return dt.astimezone(target_tz)
 
 
+def _timezone_offset_mismatch(stored: datetime, current: datetime) -> bool:
+    """Return True when a stored aware timestamp uses a different UTC offset.
+
+    Naive stored timestamps return False: they carry no offset to compare, and
+    are normalized by ``_ensure_aware`` instead — they intentionally never take
+    the offset-repair path.
+    """
+    if stored.tzinfo is None or current.tzinfo is None:
+        return False
+    return stored.utcoffset() != current.utcoffset()
+
+
+def _stored_wall_clock_is_future(stored: datetime, current: datetime) -> bool:
+    """Return True when the stored local wall-clock time has not arrived yet.
+
+    Cron schedules express local wall-clock intent. If Hermes/system local time
+    changes after next_run_at was persisted, an old offset can make a future
+    wall-clock run look due at the converted absolute time (for example
+    21:00+10 becomes 13:00+02). Comparing naive wall-clock values lets us
+    distinguish that migration case from a genuinely missed run whose scheduled
+    wall time has already passed.
+    """
+    return stored.replace(tzinfo=None) > current.replace(tzinfo=None)
+
+
 def _recoverable_oneshot_run_at(
     schedule: Dict[str, Any],
     now: datetime,
@@ -417,13 +540,119 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
 
 # =============================================================================
+# Ticker heartbeat (liveness signal for `hermes cron status`)
+# =============================================================================
+
+def _atomic_write_epoch(path: Path) -> None:
+    """Atomically write the current epoch time to ``path``.
+
+    Uses the same tmpfile + ``atomic_replace`` pattern as ``save_jobs`` so a
+    concurrent reader in another process (``hermes cron status``) never sees a
+    torn/truncated file. Best-effort: failures are swallowed by callers.
+    """
+    ensure_dirs()
+    fd, tmp_path = tempfile.mkstemp(dir=str(CRON_DIR), suffix=".tmp", prefix=".hb_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def record_ticker_heartbeat(success: bool = False) -> None:
+    """Record a ticker liveness signal, and optionally a successful-tick signal.
+
+    The ticker calls this once per loop iteration. ``success=True`` additionally
+    bumps the *last successful tick* marker. We track two distinct signals so
+    `hermes cron status` can tell a thread that is merely *alive and looping*
+    (heartbeat fresh, success stale) from one that is actually *firing jobs*
+    (both fresh) — a ticker stuck failing every tick would otherwise keep the
+    plain heartbeat fresh and falsely report healthy (#32612, #32895).
+
+    Best-effort: a write failure must never disrupt the tick loop.
+    """
+    try:
+        _atomic_write_epoch(TICKER_HEARTBEAT_FILE)
+    except Exception:
+        pass
+    if success:
+        try:
+            _atomic_write_epoch(TICKER_SUCCESS_FILE)
+        except Exception:
+            pass
+
+
+def _epoch_file_age(path: Path) -> Optional[float]:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+        return max(0.0, time.time() - float(raw))
+    except Exception:
+        return None
+
+
+def get_ticker_heartbeat_age() -> Optional[float]:
+    """Seconds since the ticker loop last iterated, or None if unknown.
+
+    None = heartbeat file missing/unreadable (older build, never ran, or a
+    torn read). Callers treat None as "cannot determine", not "dead".
+    """
+    return _epoch_file_age(TICKER_HEARTBEAT_FILE)
+
+
+def get_ticker_success_age() -> Optional[float]:
+    """Seconds since the ticker last completed a tick WITHOUT raising, or None."""
+    return _epoch_file_age(TICKER_SUCCESS_FILE)
+
+
+# =============================================================================
 # Job CRUD Operations
 # =============================================================================
+
+_WARNED_ORPHAN_STORE = False
+
+
+def _warn_if_orphaned_profile_store() -> None:
+    """Loudly warn (once) if the root store is empty but a profile-local
+    jobs.json exists from before #32091's root-anchoring fix.
+
+    Such a file is now unreachable (the store anchors at the default root, not
+    the active profile). The jobs in it were already orphaned pre-fix (the
+    profile-less gateway never read them), so this is not a regression — but a
+    user who could SEE them in `cron list` under their profile would otherwise
+    find them silently gone. Point them at the path instead of failing silent.
+    """
+    global _WARNED_ORPHAN_STORE
+    if _WARNED_ORPHAN_STORE:
+        return
+    try:
+        active = get_hermes_home().resolve()
+        if active == HERMES_DIR:
+            return  # not in a profile; nothing could be orphaned
+        legacy = active / "cron" / "jobs.json"
+        if legacy.exists():
+            _WARNED_ORPHAN_STORE = True
+            logger.warning(
+                "Cron jobs now live at %s (shared across profiles). A legacy "
+                "profile-local store exists at %s and is no longer read; "
+                "re-create those jobs or move them into the root store. (#32091)",
+                JOBS_FILE, legacy,
+            )
+    except Exception:
+        pass  # best-effort advisory; never block load_jobs
+
 
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
     if not JOBS_FILE.exists():
+        _warn_if_orphaned_profile_store()
         return []
 
     _strict_retry = False  # track whether we used the strict=False fallback
@@ -468,8 +697,8 @@ def load_jobs() -> List[Dict[str, Any]]:
     )
 
 
-def save_jobs(jobs: List[Dict[str, Any]]):
-    """Save all jobs to storage."""
+def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
+    """Save all jobs to storage. Caller must hold _jobs_lock()."""
     ensure_dirs()
     fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
     try:
@@ -485,6 +714,12 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         except OSError:
             pass
         raise
+
+
+def save_jobs(jobs: List[Dict[str, Any]]):
+    """Save all jobs to storage."""
+    with _jobs_lock():
+        _save_jobs_unlocked(jobs)
 
 
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
@@ -670,9 +905,10 @@ def create_job(
         "workdir": normalized_workdir,
     }
 
-    jobs = load_jobs()
-    jobs.append(job)
-    save_jobs(jobs)
+    with _jobs_lock():
+        jobs = load_jobs()
+        jobs.append(job)
+        save_jobs(jobs)
 
     return job
 
@@ -743,49 +979,50 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}"
         )
 
-    jobs = load_jobs()
-    for i, job in enumerate(jobs):
-        if job["id"] != job_id:
-            continue
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] != job_id:
+                continue
 
-        # Validate / normalize workdir if present in updates.  Empty string or
-        # None both mean "clear the field" (restore old behaviour).
-        if "workdir" in updates:
-            _wd = updates["workdir"]
-            if _wd in {None, "", False}:
-                updates["workdir"] = None
-            else:
-                updates["workdir"] = _normalize_workdir(_wd)
+            # Validate / normalize workdir if present in updates.  Empty string
+            # or None both mean "clear the field" (restore old behaviour).
+            if "workdir" in updates:
+                _wd = updates["workdir"]
+                if _wd in {None, "", False}:
+                    updates["workdir"] = None
+                else:
+                    updates["workdir"] = _normalize_workdir(_wd)
 
-        updated = _apply_skill_fields({**job, **updates})
-        schedule_changed = "schedule" in updates
+            updated = _apply_skill_fields({**job, **updates})
+            schedule_changed = "schedule" in updates
 
-        if "skills" in updates or "skill" in updates:
-            normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
-            updated["skills"] = normalized_skills
-            updated["skill"] = normalized_skills[0] if normalized_skills else None
+            if "skills" in updates or "skill" in updates:
+                normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
+                updated["skills"] = normalized_skills
+                updated["skill"] = normalized_skills[0] if normalized_skills else None
 
-        if schedule_changed:
-            updated_schedule = updated["schedule"]
-            # The API may pass schedule as a raw string (e.g. "every 10m")
-            # instead of a pre-parsed dict.  Normalize it the same way
-            # create_job() does so downstream code can call .get() safely.
-            if isinstance(updated_schedule, str):
-                updated_schedule = parse_schedule(updated_schedule)
-                updated["schedule"] = updated_schedule
-            updated["schedule_display"] = updates.get(
-                "schedule_display",
-                updated_schedule.get("display", updated.get("schedule_display")),
-            )
-            if updated.get("state") != "paused":
-                updated["next_run_at"] = compute_next_run(updated_schedule)
+            if schedule_changed:
+                updated_schedule = updated["schedule"]
+                # The API may pass schedule as a raw string (e.g. "every 10m")
+                # instead of a pre-parsed dict.  Normalize it the same way
+                # create_job() does so downstream code can call .get() safely.
+                if isinstance(updated_schedule, str):
+                    updated_schedule = parse_schedule(updated_schedule)
+                    updated["schedule"] = updated_schedule
+                updated["schedule_display"] = updates.get(
+                    "schedule_display",
+                    updated_schedule.get("display", updated.get("schedule_display")),
+                )
+                if updated.get("state") != "paused":
+                    updated["next_run_at"] = compute_next_run(updated_schedule)
 
-        if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
-            updated["next_run_at"] = compute_next_run(updated["schedule"])
+            if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
+                updated["next_run_at"] = compute_next_run(updated["schedule"])
 
-        jobs[i] = updated
-        save_jobs(jobs)
-        return _normalize_job_record(jobs[i])
+            jobs[i] = updated
+            save_jobs(jobs)
+            return _normalize_job_record(jobs[i])
     return None
 
 
@@ -847,19 +1084,20 @@ def remove_job(job_id: str) -> bool:
     if not job:
         return False
     canonical_id = job["id"]
-    jobs = load_jobs()
-    original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != canonical_id]
-    if len(jobs) < original_len:
-        # Resolve the output dir BEFORE saving so a legacy unsafe ID (e.g.
-        # left over from before the create-time guard) fails closed without
-        # half-applying the removal.
-        job_output_dir = _job_output_dir(canonical_id)
-        save_jobs(jobs)
-        # Clean up output directory to prevent orphaned dirs accumulating
-        if job_output_dir.exists():
-            shutil.rmtree(job_output_dir)
-        return True
+    with _jobs_lock():
+        jobs = load_jobs()
+        original_len = len(jobs)
+        jobs = [j for j in jobs if j["id"] != canonical_id]
+        if len(jobs) < original_len:
+            # Resolve the output dir BEFORE saving so a legacy unsafe ID (e.g.
+            # left over from before the create-time guard) fails closed without
+            # half-applying the removal.
+            job_output_dir = _job_output_dir(canonical_id)
+            save_jobs(jobs)
+            # Clean up output directory to prevent orphaned dirs accumulating
+            if job_output_dir.exists():
+                shutil.rmtree(job_output_dir)
+            return True
     return False
 
 
@@ -874,7 +1112,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
     """
-    with _jobs_file_lock:
+    with _jobs_lock():
         jobs = load_jobs()
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
@@ -884,6 +1122,9 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+                # Clear any external-fire claim so a re-armed recurring job can
+                # be claimed again on its next fire (Phase 4C CAS).
+                job["fire_claim"] = None
                 
                 # Increment completed count
                 if job.get("repeat"):
@@ -948,7 +1189,7 @@ def advance_next_run(job_id: str) -> bool:
 
     Returns True if next_run_at was advanced, False otherwise.
     """
-    with _jobs_file_lock:
+    with _jobs_lock():
         jobs = load_jobs()
         for job in jobs:
             if job["id"] == job_id:
@@ -965,20 +1206,91 @@ def advance_next_run(job_id: str) -> bool:
         return False
 
 
+def _machine_id() -> str:
+    """Stable-ish identifier for claim attribution/debugging (NOT correctness).
+
+    Uses ``HERMES_MACHINE_ID`` if set, else hostname + pid. The CAS correctness
+    comes from the file lock + the fresh-claim check, not from this value.
+    """
+    explicit = os.getenv("HERMES_MACHINE_ID", "").strip()
+    if explicit:
+        return explicit
+    try:
+        import socket
+        host = socket.gethostname()
+    except Exception:
+        host = "unknown"
+    return f"{host}:{os.getpid()}"
+
+
+def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
+    """Atomically claim a job for a single external 'fire' (multi-machine
+    at-most-once). Returns True iff THIS caller won the claim.
+
+    Used by the external-provider fire path (``CronScheduler.fire_due``) when an
+    external scheduler (Chronos) signals a job is due across N gateway replicas:
+    exactly one wins. Single-machine deployments always win.
+
+    Under the file lock: reject if the job is missing/disabled/paused. If a
+    fresh claim (younger than ``claim_ttl_seconds``) already exists, lose.
+    Otherwise stamp a ``fire_claim`` and, for recurring jobs, advance
+    ``next_run_at`` (mirrors ``advance_next_run``'s at-most-once bump so a stale
+    re-delivery for the old time can't re-fire). One-shots keep ``next_run_at``
+    but the fresh ``fire_claim`` blocks a duplicate retry for the same fire.
+    ``mark_job_run`` clears the claim on completion so a re-armed recurring job
+    is claimable again next fire.
+
+    The stale-claim TTL means a machine that crashed after claiming but before
+    completing doesn't wedge the job forever — after the TTL another fire can
+    reclaim it.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] != job_id:
+                continue
+            if not job.get("enabled", True) or job.get("state") == "paused":
+                return False
+            now = _hermes_now()
+            existing = job.get("fire_claim")
+            if existing:
+                try:
+                    claimed_at = _ensure_aware(datetime.fromisoformat(existing["at"]))
+                    if (now - claimed_at).total_seconds() < claim_ttl_seconds:
+                        return False  # someone holds a fresh claim
+                except Exception:
+                    pass  # malformed claim → overwrite
+            job["fire_claim"] = {"at": now.isoformat(), "by": _machine_id()}
+            kind = job.get("schedule", {}).get("kind")
+            if kind in {"cron", "interval"}:
+                nxt = compute_next_run(job["schedule"], now.isoformat())
+                if nxt:
+                    job["next_run_at"] = nxt
+            save_jobs(jobs)
+            return True
+        return False
+
+
 def get_due_jobs() -> List[Dict[str, Any]]:
     """Get all jobs that are due to run now.
 
-    For recurring jobs (cron/interval), if the scheduled time is stale
-    (more than one period in the past, e.g. because the gateway was down),
-    the job is fast-forwarded to the next future run instead of firing
-    immediately.  This prevents a burst of missed jobs on gateway restart.
+    For recurring jobs (cron/interval), if the scheduled time is stale (more
+    than one period in the past, e.g. because the gateway was down OR because a
+    long-running previous execution overran the interval), the accumulated
+    missed runs are collapsed — ``next_run_at`` is fast-forwarded to the next
+    future occurrence so a backlog does NOT burst-fire on restart — but the job
+    still fires ONCE now. This prevents the perpetual-defer loop (#33315) where
+    a job whose runtime exceeds ``interval + grace`` would be skipped forever.
+
+    Note: firing once on catch-up flows through ``mark_job_run``, so a job with
+    a ``repeat.times`` limit consumes one of its runs on that catch-up fire.
     """
-    with _jobs_file_lock:
+    with _jobs_lock():
         return _get_due_jobs_locked()
 
 
 def _get_due_jobs_locked() -> List[Dict[str, Any]]:
-    """Inner implementation of get_due_jobs(); must be called with _jobs_file_lock held."""
+    """Inner implementation of get_due_jobs(); must be called with _jobs_lock held."""
     now = _hermes_now()
     raw_jobs = load_jobs()
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
@@ -1029,35 +1341,84 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     needs_save = True
                     break
 
-        next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
+        raw_next_run_dt = datetime.fromisoformat(next_run)
+        schedule = job.get("schedule", {})
+        kind = schedule.get("kind")
+
+        next_run_dt = _ensure_aware(raw_next_run_dt)
+        # Migration repair: a cron job persists next_run_at as an absolute
+        # instant, but the cron expr describes local wall-clock intent. If the
+        # configured/system timezone changed after persistence, the stored
+        # instant's offset no longer matches now's, and its converted time can
+        # look due hours early (21:00+10 -> 13:00+02). When the stored *wall
+        # clock* is still in the future, recompute from the schedule so we fire
+        # at the intended local time instead of early-then-again.
+        #
+        # TRADE-OFF: this cannot distinguish a config/host TZ migration from a
+        # legitimate DST offset change. A DST boundary that satisfies all four
+        # conditions will recompute (and thus SKIP the pending occurrence, no
+        # catch-up) rather than fire it. Accepted: in the pure-migration case
+        # the recompute lands on the same wall-clock time later the same period,
+        # and DST-boundary collisions with a still-future stored wall clock are
+        # rare relative to the double-fire bug this prevents (#28934).
+        if (
+            kind == "cron"
+            and next_run_dt <= now
+            and _timezone_offset_mismatch(raw_next_run_dt, now)
+            and _stored_wall_clock_is_future(raw_next_run_dt, now)
+        ):
+            new_next = compute_next_run(schedule, now.isoformat())
+            if new_next:
+                logger.info(
+                    "Job '%s' next_run_at offset changed (%s -> %s). "
+                    "Recomputing cron run to preserve local wall-clock intent: %s",
+                    job.get("name", job["id"]),
+                    raw_next_run_dt.utcoffset(),
+                    now.utcoffset(),
+                    new_next,
+                )
+                for rj in raw_jobs:
+                    if rj["id"] == job["id"]:
+                        rj["next_run_at"] = new_next
+                        needs_save = True
+                        break
+                continue
+
         if next_run_dt <= now:
-            schedule = job.get("schedule", {})
-            kind = schedule.get("kind")
 
             # For recurring jobs, check if the scheduled time is stale
             # (gateway was down and missed the window). Fast-forward to
             # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
             if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
-                # Job is past its catch-up grace window — this is a stale missed run.
-                # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
+                # Job is past its catch-up grace window — skip accumulated
+                # missed runs but still execute once now to avoid deferring
+                # indefinitely (e.g. a long-running job just finished).
                 new_next = compute_next_run(schedule, now.isoformat())
                 if new_next:
                     logger.info(
                         "Job '%s' missed its scheduled time (%s, grace=%ds). "
-                        "Fast-forwarding to next run: %s",
+                        "Running now; next run provisionally set to: %s "
+                        "(re-anchored on completion)",
                         job.get("name", job["id"]),
                         next_run,
                         grace,
                         new_next,
                     )
-                    # Update the job in storage
+                    # Persist the fast-forward to storage now (skip accumulated
+                    # slots). In the built-in ticker path this is shortly
+                    # overwritten by advance_next_run + mark_job_run, but it is
+                    # NOT redundant: it (a) protects the crash window between
+                    # here and mark_job_run, and (b) covers the external
+                    # fire_due provider path, which does not call
+                    # advance_next_run. mark_job_run re-anchors next_run_at off
+                    # the actual completion time, so this value is provisional.
                     for rj in raw_jobs:
                         if rj["id"] == job["id"]:
                             rj["next_run_at"] = new_next
                             needs_save = True
                             break
-                    continue  # Skip this run
+                    # Fall through to due.append(job) — execute once now
 
             due.append(job)
 
@@ -1158,7 +1519,7 @@ def rewrite_skill_refs(
     if not consolidated and not pruned_set:
         return {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
 
-    with _jobs_file_lock:
+    with _jobs_lock():
         jobs = load_jobs()
         rewrites: List[Dict[str, Any]] = []
         changed = False

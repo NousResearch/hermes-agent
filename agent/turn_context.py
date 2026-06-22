@@ -34,6 +34,29 @@ from agent.model_metadata import estimate_request_tokens_rough
 logger = logging.getLogger(__name__)
 
 
+def _compression_made_progress(
+    orig_len: int, new_len: int, orig_tokens: int, new_tokens: int
+) -> bool:
+    """Return ``True`` if a compression pass materially reduced the request.
+
+    Compression can succeed by summarising message contents — reducing the
+    estimated request token count — without reducing the message row
+    count.  Treating row count as the sole progress signal false-positives
+    on size-only wins and surfaces a misleading "Cannot compress further"
+    failure even when post-compression tokens are well below the model
+    context window.  See issue #39548 for an observed case: 220 → 220
+    messages, ~288k → ~183k tokens on a 1M-context model still triggered
+    auto-reset.
+
+    The token reduction must be *material* (>5%) to count as progress — the
+    same floor the overflow-handler retry path uses (conversation_loop.py,
+    #39550) — so a sub-5% wobble doesn't keep the multi-pass loop spinning.
+    """
+    if new_len < orig_len:
+        return True
+    return orig_tokens > 0 and new_tokens < orig_tokens * 0.95
+
+
 @dataclass
 class TurnContext:
     """Values produced by the turn prologue and consumed by the turn loop."""
@@ -69,6 +92,7 @@ def build_turn_context(
     task_id: Optional[str],
     stream_callback,
     persist_user_message: Optional[str],
+    persist_user_timestamp: Optional[float] = None,
     *,
     restore_or_build_system_prompt,
     install_safe_stdio,
@@ -111,6 +135,24 @@ def build_turn_context(
     # Restore the primary runtime if the previous turn activated fallback.
     agent._restore_primary_runtime()
 
+    # Between-turns MCP refresh: an MCP server that finished connecting since
+    # the previous turn (slow HTTP/OAuth servers routinely take 2-6s on a cold
+    # connect, missing the bounded startup wait) lands in THIS turn's tool
+    # snapshot.  This is cache-safe by construction: it runs in the per-turn
+    # prologue, before this turn's first API call assembles ``tools=``, so it
+    # only ever extends a fresh request prefix — it never mutates the cached
+    # prefix of an in-flight turn.  No-op when no MCP servers are registered
+    # (the common case, gated by the cheap ``has_registered_mcp_tools`` check)
+    # or when the tool set is unchanged (``refresh_agent_mcp_tools`` diffs by
+    # name and leaves the snapshot untouched on no-change).
+    try:
+        if not getattr(agent, "_skip_mcp_refresh", False):
+            from tools.mcp_tool import has_registered_mcp_tools, refresh_agent_mcp_tools
+            if has_registered_mcp_tools():
+                refresh_agent_mcp_tools(agent, quiet_mode=True)
+    except Exception:
+        logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
+
     # Sanitize surrogate characters from user input.
     if isinstance(user_message, str):
         user_message = sanitize_surrogates(user_message)
@@ -121,6 +163,7 @@ def build_turn_context(
     agent._stream_callback = stream_callback
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = persist_user_message
+    agent._persist_user_message_timestamp = persist_user_timestamp
     # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
@@ -293,23 +336,30 @@ def build_turn_context(
             )
             for _pass in range(3):
                 _orig_len = len(messages)
+                _orig_tokens = _preflight_tokens
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
                     task_id=effective_task_id,
                 )
-                if len(messages) >= _orig_len:
-                    break  # Cannot compress further
+                # Re-estimate now so size-only compression (same row count,
+                # lower token count — e.g. summarising tool outputs) is
+                # recognised as progress instead of being misread as
+                # "Cannot compress further". Fixes #39548.
+                _preflight_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=agent.tools or None,
+                )
+                if not _compression_made_progress(
+                    _orig_len, len(messages), _orig_tokens, _preflight_tokens
+                ):
+                    break  # Cannot compress further: neither rows nor tokens moved
                 conversation_history = None
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
                 agent._last_content_with_tools = None
                 agent._last_content_tools_all_housekeeping = False
                 agent._mute_post_response = False
-                _preflight_tokens = estimate_request_tokens_rough(
-                    messages,
-                    system_prompt=active_system_prompt or "",
-                    tools=agent.tools or None,
-                )
                 if not _compressor.should_compress(_preflight_tokens):
                     break
 

@@ -131,6 +131,33 @@ def relay_route_keys() -> list[str]:
     return [k.strip() for k in raw.split(",") if k.strip()]
 
 
+def relay_instance_id() -> Optional[str]:
+    """Stable per-instance id this gateway forwards at provision (Phase 6 Unit α).
+
+    Binds the connector's ``gatewayId -> instanceId`` so the connector can route
+    inbound per-instance (not tenant-broadcast) once Phase 6 delivery lands. The
+    value is the NAS ``AgentInstance.id`` for a managed agent (NAS stamps
+    ``GATEWAY_RELAY_INSTANCE_ID`` into the container env, beside
+    ``GATEWAY_RELAY_URL``); a self-hosted operator may set it explicitly. It is
+    gateway-asserted but safely scoped: the org/tenant stays token-verified, so a
+    dishonest gateway can only bind ITS OWN tenant's instance — the same posture
+    as ``relay_endpoint()``. Absent -> the connector stores null and per-instance
+    routing simply has no binding for this connection yet (back-compat).
+
+    Env first (Docker/NAS), then ``gateway.relay_instance_id`` in config.yaml.
+    """
+    value = os.environ.get("GATEWAY_RELAY_INSTANCE_ID", "").strip()
+    if not value:
+        try:
+            from gateway.run import _load_gateway_config  # late import to avoid cycle
+
+            cfg = (_load_gateway_config().get("gateway") or {})
+            value = str(cfg.get("relay_instance_id", "") or "").strip()
+        except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
+            value = ""
+    return value or None
+
+
 def _provision_url(relay_dial_url: str) -> str:
     """Map the ``ws(s)://…/relay`` dial URL to the ``http(s)://…/relay/provision`` POST URL."""
     raw = relay_dial_url.rstrip("/")
@@ -152,6 +179,7 @@ def _post_provision(
     bot_id: str,
     gateway_endpoint: Optional[str],
     route_keys: list[str],
+    instance_id: Optional[str] = None,
     timeout: float = 15.0,
 ) -> dict:
     """POST to the connector's ``/relay/provision`` and return the JSON body.
@@ -173,6 +201,10 @@ def _post_provision(
         "gatewayEndpoint": gateway_endpoint or "",
         "routeKeys": route_keys,
     }
+    # Only send instanceId when we actually have one — omitting it lets the
+    # connector store null (back-compat) rather than binding an empty string.
+    if instance_id:
+        body["instanceId"] = instance_id
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         provision_url,
@@ -277,6 +309,7 @@ def self_provision_relay() -> bool:
     gateway_id = os.environ.get("GATEWAY_RELAY_ID", "").strip() or f"gw-{host or 'hermes'}"
     endpoint = relay_endpoint()
     route_keys = relay_route_keys()
+    instance_id = relay_instance_id()
 
     try:
         result = _post_provision(
@@ -287,6 +320,7 @@ def self_provision_relay() -> bool:
             bot_id=bot_id,
             gateway_endpoint=endpoint,
             route_keys=route_keys,
+            instance_id=instance_id,
         )
     except RuntimeError as exc:
         logger.warning("relay self-provision failed (%s); gateway will boot without relay auth", exc)
@@ -302,11 +336,12 @@ def self_provision_relay() -> bool:
     os.environ["GATEWAY_RELAY_DELIVERY_KEY"] = str(result.get("deliveryKey") or "")
     tenant = str(result.get("tenant") or "")
     logger.info(
-        "relay self-provisioned (gateway_id=%s tenant=%s routes=%d inbound=%s)",
+        "relay self-provisioned (gateway_id=%s tenant=%s routes=%d inbound=%s instance=%s)",
         os.environ["GATEWAY_RELAY_ID"],
         tenant or "?",
         len(route_keys),
         "yes" if endpoint else "outbound-only",
+        instance_id or "unbound",
     )
     return True
 

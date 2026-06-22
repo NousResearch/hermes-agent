@@ -1,13 +1,11 @@
 """Signal messenger platform adapter.
 
-Connects to a signal-cli daemon running in HTTP mode.
-Inbound messages arrive via SSE (Server-Sent Events) streaming.
-Outbound messages and actions use JSON-RPC 2.0 over HTTP.
-
-Based on PR #268 by ibhagwan, rebuilt with bug fixes.
+Connects to bbernhard/signal-cli-rest-api (v0.99+) in json-rpc mode.
+Inbound messages arrive via WebSocket at /v1/receive/<number>.
+Outbound messages and side effects use the REST API (/v2/send, /v1/reactions, …).
 
 Requires:
-  - signal-cli installed and running: signal-cli daemon --http 127.0.0.1:8080
+  - signal-cli-rest-api container with MODE=json-rpc
   - SIGNAL_HTTP_URL and SIGNAL_ACCOUNT environment variables set
 """
 
@@ -29,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote
 
 import httpx
+import aiohttp
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -64,10 +63,15 @@ logger = logging.getLogger(__name__)
 SIGNAL_MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024  # 100 MB
 MAX_MESSAGE_LENGTH = 8000  # Signal message size limit
 TYPING_INTERVAL = 8.0  # seconds between typing indicator refreshes
-SSE_RETRY_DELAY_INITIAL = 2.0
-SSE_RETRY_DELAY_MAX = 60.0
-HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
-HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before concern
+WS_RETRY_DELAY_INITIAL = 2.0
+WS_RETRY_DELAY_MAX = 60.0
+# aiohttp sends a WS PING every WS_HEARTBEAT_INTERVAL seconds and raises
+# ServerTimeoutError (an aiohttp.ClientError) if the peer stops PONGing — this is
+# how a dead *transport* is detected and reconnected. It is NOT proof that the
+# receive path is delivering messages (see _health_monitor).
+WS_HEARTBEAT_INTERVAL = 30.0  # seconds between WS protocol pings
+HEALTH_CHECK_INTERVAL = 30.0  # seconds between liveness observations
+HEALTH_CHECK_STALE_THRESHOLD = 300.0  # seconds of application-idle before logging
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +290,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.client: Optional[httpx.AsyncClient] = None
 
         # Background tasks
-        self._sse_task: Optional[asyncio.Task] = None
+        self._receive_task: Optional[asyncio.Task] = None
         self._health_monitor_task: Optional[asyncio.Task] = None
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         # Per-chat typing-indicator backoff. When signal-cli reports
@@ -298,8 +302,17 @@ class SignalAdapter(BasePlatformAdapter):
         self._typing_failures: Dict[str, int] = {}
         self._typing_skip_until: Dict[str, float] = {}
         self._running = False
-        self._last_sse_activity = 0.0
-        self._sse_response: Optional[httpx.Response] = None
+        # Two distinct liveness signals — kept separate on purpose:
+        #   _last_ws_activity: any inbound WS frame (incl. receipts, typing,
+        #     sync events, keepalives). Reflects transport activity only.
+        #   _last_inbound_message: stamped solely when a real user MessageEvent
+        #     is dispatched. A healthy daemon / busy transport does NOT imply
+        #     the receive path is delivering — envelopes can be silently dropped
+        #     (e.g. a signal-cli sealed-sender bug) while the socket looks alive.
+        #     See #32574 (cross-adapter watchdog) / #40199 (expose last-inbound).
+        self._last_ws_activity = 0.0
+        self._last_inbound_message = 0.0
+        self._ws_session: Optional[aiohttp.ClientSession] = None
 
         # Normalize account for self-message filtering
         self._account_normalized = self.account.strip()
@@ -339,7 +352,7 @@ class SignalAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
-        """Connect to signal-cli daemon and start SSE listener."""
+        """Connect to signal-cli-rest-api and start the receive WebSocket."""
         if not self.http_url or not self.account:
             logger.error("Signal: SIGNAL_HTTP_URL and SIGNAL_ACCOUNT are required")
             return False
@@ -359,7 +372,7 @@ class SignalAdapter(BasePlatformAdapter):
         try:
             # Health check — verify signal-cli daemon is reachable
             try:
-                resp = await self.client.get(f"{self.http_url}/api/v1/check", timeout=10.0)
+                resp = await self.client.get(f"{self.http_url}/v1/about", timeout=10.0)
                 if resp.status_code != 200:
                     logger.error("Signal: health check failed (status %d)", resp.status_code)
                     return False
@@ -368,8 +381,8 @@ class SignalAdapter(BasePlatformAdapter):
                 return False
 
             self._running = True
-            self._last_sse_activity = time.time()
-            self._sse_task = asyncio.create_task(self._sse_listener())
+            self._last_ws_activity = time.time()
+            self._receive_task = asyncio.create_task(self._receive_listener())
             self._health_monitor_task = asyncio.create_task(self._health_monitor())
 
             logger.info("Signal: connected to %s", self.http_url)
@@ -383,13 +396,13 @@ class SignalAdapter(BasePlatformAdapter):
                     self._release_platform_lock()
 
     async def disconnect(self) -> None:
-        """Stop SSE listener and clean up."""
+        """Stop receive listener and clean up."""
         self._running = False
 
-        if self._sse_task:
-            self._sse_task.cancel()
+        if self._receive_task:
+            self._receive_task.cancel()
             try:
-                await self._sse_task
+                await self._receive_task
             except asyncio.CancelledError:
                 pass
 
@@ -414,114 +427,105 @@ class SignalAdapter(BasePlatformAdapter):
         logger.info("Signal: disconnected")
 
     # ------------------------------------------------------------------
-    # SSE Streaming (inbound messages)
+    # WebSocket Listener (inbound messages via signal-cli-rest-api)
     # ------------------------------------------------------------------
 
-    async def _sse_listener(self) -> None:
-        """Listen for SSE events from signal-cli daemon."""
-        url = f"{self.http_url}/api/v1/events?account={quote(self.account, safe='')}"
-        backoff = SSE_RETRY_DELAY_INITIAL
+    async def _receive_listener(self) -> None:
+        """Listen for messages from signal-cli-rest-api via WebSocket."""
+        ws_url = f"{self.http_url.replace('http', 'ws')}/v1/receive/{quote(self.account, safe='')}"
+        backoff = WS_RETRY_DELAY_INITIAL
+        self._ws_session = None
 
         while self._running:
             try:
-                logger.debug("Signal SSE: connecting to %s", url)
-                async with self.client.stream(
-                    "GET", url,
-                    headers={"Accept": "text/event-stream"},
-                    timeout=None,
-                ) as response:
-                    self._sse_response = response
-                    backoff = SSE_RETRY_DELAY_INITIAL  # Reset on successful connection
-                    self._last_sse_activity = time.time()
-                    logger.info("Signal SSE: connected")
+                logger.debug("Signal WS: connecting to %s", ws_url)
+                self._ws_session = aiohttp.ClientSession()
+                # heartbeat= lets aiohttp detect a dead transport (no PONG) and
+                # raise, which the reconnect loop below handles. This replaces
+                # the old daemon-health probe that masked silent-receive stalls.
+                async with self._ws_session.ws_connect(
+                    ws_url, heartbeat=WS_HEARTBEAT_INTERVAL
+                ) as ws:
+                    backoff = WS_RETRY_DELAY_INITIAL
+                    self._last_ws_activity = time.time()
+                    logger.info("Signal WS: connected")
 
-                    buffer = ""
-                    async for chunk in response.aiter_text():
+                    async for msg in ws:
                         if not self._running:
                             break
-                        buffer += chunk
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
-                            if not line:
-                                continue
-                            # SSE keepalive comments (":") prove the connection
-                            # is alive — update activity so the health monitor
-                            # doesn't report false idle warnings.
-                            if line.startswith(":"):
-                                self._last_sse_activity = time.time()
-                                continue
-                            # Parse SSE data lines
-                            if line.startswith("data:"):
-                                data_str = line[5:].strip()
-                                if not data_str:
-                                    continue
-                                self._last_sse_activity = time.time()
-                                try:
-                                    data = json.loads(data_str)
-                                    await self._handle_envelope(data)
-                                except json.JSONDecodeError:
-                                    logger.debug("Signal SSE: invalid JSON: %s", data_str[:100])
-                                except Exception:
-                                    logger.exception("Signal SSE: error handling event")
+                        self._last_ws_activity = time.time()
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            try:
+                                data = json.loads(msg.data)
+                                await self._handle_envelope(data)
+                            except json.JSONDecodeError:
+                                logger.debug("Signal WS: invalid JSON: %s", str(msg.data)[:100])
+                            except Exception:
+                                logger.exception("Signal WS: error handling event")
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            break
 
             except asyncio.CancelledError:
                 break
-            except httpx.HTTPError as e:
+            except aiohttp.ClientError as e:
                 if self._running:
-                    logger.warning("Signal SSE: HTTP error: %s (reconnecting in %.0fs)", e, backoff)
+                    logger.warning("Signal WS: error: %s (reconnecting in %.0fs)", e, backoff)
             except Exception as e:
                 if self._running:
-                    logger.warning("Signal SSE: error: %s (reconnecting in %.0fs)", e, backoff)
+                    logger.warning("Signal WS: error: %s (reconnecting in %.0fs)", e, backoff)
+            finally:
+                if self._ws_session:
+                    await self._ws_session.close()
+                    self._ws_session = None
 
             if self._running:
-                # Add 20% jitter to prevent thundering herd on reconnection
                 jitter = backoff * 0.2 * random.random()
                 await asyncio.sleep(backoff + jitter)
-                backoff = min(backoff * 2, SSE_RETRY_DELAY_MAX)
+                backoff = min(backoff * 2, WS_RETRY_DELAY_MAX)
 
-        self._sse_response = None
+        self._ws_session = None
 
     # ------------------------------------------------------------------
     # Health Monitor
     # ------------------------------------------------------------------
 
     async def _health_monitor(self) -> None:
-        """Monitor SSE connection health and force reconnect if stale."""
+        """Observe receive-path liveness without masking it as healthy.
+
+        A quiet chat is legitimately silent for long stretches, and the aiohttp
+        WebSocket heartbeat (see _receive_listener) already detects a dead
+        transport and triggers reconnect — so application idleness must NOT be
+        treated as a stale connection (that only causes reconnect churn).
+
+        Critically, a healthy signal-cli daemon is *not* proof that the receive
+        path is delivering: the daemon can stay up while envelopes are silently
+        dropped (e.g. a sealed-sender bug), which presents as "connected but not
+        receiving". We therefore track real dispatched messages
+        (_last_inbound_message) separately from transport frames
+        (_last_ws_activity) and surface prolonged silence rather than resetting
+        it on a daemon-health check. The cross-adapter watchdog in #32574 /
+        #40199 is the intended consumer of these timestamps.
+        """
         while self._running:
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
             if not self._running:
                 break
 
-            elapsed = time.time() - self._last_sse_activity
-            if elapsed > HEALTH_CHECK_STALE_THRESHOLD:
-                logger.warning("Signal: SSE idle for %.0fs, checking daemon health", elapsed)
-                try:
-                    resp = await self.client.get(
-                        f"{self.http_url}/api/v1/check", timeout=10.0
+            now = time.time()
+            ws_idle = now - self._last_ws_activity
+            if ws_idle > HEALTH_CHECK_STALE_THRESHOLD:
+                if self._last_inbound_message:
+                    logger.debug(
+                        "Signal: receive WS application-idle for %.0fs "
+                        "(no message dispatched for %.0fs)",
+                        ws_idle, now - self._last_inbound_message,
                     )
-                    if resp.status_code == 200:
-                        # Daemon is alive but SSE is idle — update activity to
-                        # avoid repeated warnings (connection may just be quiet)
-                        self._last_sse_activity = time.time()
-                        logger.debug("Signal: daemon healthy, SSE idle")
-                    else:
-                        logger.warning("Signal: health check failed (%d), forcing reconnect", resp.status_code)
-                        self._force_reconnect()
-                except Exception as e:
-                    logger.warning("Signal: health check error: %s, forcing reconnect", e)
-                    self._force_reconnect()
-
-    def _force_reconnect(self) -> None:
-        """Force SSE reconnection by closing the current response."""
-        if self._sse_response and not self._sse_response.is_stream_consumed:
-            try:
-                task = asyncio.create_task(self._sse_response.aclose())
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
-            except Exception:
-                pass
-            self._sse_response = None
+                else:
+                    logger.debug(
+                        "Signal: receive WS application-idle for %.0fs "
+                        "(no message dispatched yet)",
+                        ws_idle,
+                    )
 
     # ------------------------------------------------------------------
     # Message Handling
@@ -529,6 +533,16 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _handle_envelope(self, envelope: dict) -> None:
         """Process an incoming signal-cli envelope."""
+        exc = envelope.get("exception")
+        if exc:
+            env = envelope.get("envelope") or {}
+            logger.warning(
+                "Signal: message decryption failed (%s): %s",
+                exc.get("type", "unknown"),
+                exc.get("message", exc),
+            )
+            return
+
         # Unwrap nested envelope if present
         envelope_data = envelope.get("envelope", envelope)
 
@@ -760,6 +774,10 @@ class SignalAdapter(BasePlatformAdapter):
         logger.debug("Signal: message from %s in %s: %s",
                       redact_phone(sender), chat_id[:20], (text or "")[:50])
 
+        # Receive-path liveness: stamped only for a real, dispatched user
+        # message — never on keepalives, receipts, sync events, or daemon-health.
+        # This is the honest "are we actually receiving?" signal (#32574/#40199).
+        self._last_inbound_message = time.time()
         await self.handle_message(event)
 
     def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
@@ -917,8 +935,147 @@ class SignalAdapter(BasePlatformAdapter):
         return path, ext
 
     # ------------------------------------------------------------------
-    # JSON-RPC Communication
+    # signal-cli-rest-api REST communication
     # ------------------------------------------------------------------
+
+    def _account_path(self, suffix: str) -> str:
+        """Build a REST path with the configured account number URL-encoded."""
+        return f"{self.http_url}{suffix.format(account=quote(self.account, safe=''))}"
+
+    @staticmethod
+    def _format_group_recipient(group_id: str) -> str:
+        """Normalize a group id for signal-cli-rest-api recipients."""
+        if group_id.startswith("group."):
+            return group_id
+        return f"group.{group_id}"
+
+    def _recipient_from_params(self, params: dict) -> Optional[str]:
+        """Extract the REST API recipient (DM, UUID, or group id)."""
+        if params.get("groupId"):
+            return self._format_group_recipient(params["groupId"])
+        recipients = params.get("recipient") or []
+        if recipients:
+            return recipients[0]
+        return None
+
+    @staticmethod
+    def _encode_attachment_files(paths: List[str]) -> List[str]:
+        """Read local files and encode them for /v2/send base64_attachments."""
+        encoded: List[str] = []
+        for raw_path in paths:
+            path = Path(raw_path)
+            data = path.read_bytes()
+            ext = path.suffix or _guess_extension(data)
+            mime = _ext_to_mime(ext)
+            b64 = base64.b64encode(data).decode("ascii")
+            encoded.append(f"data:{mime};filename={path.name};base64,{b64}")
+        return encoded
+
+    def _build_v2_send_body(self, params: dict) -> dict:
+        """Map legacy JSON-RPC send params onto /v2/send REST payload."""
+        body: Dict[str, Any] = {
+            "number": self.account,
+            "message": params.get("message", ""),
+        }
+
+        recipient = self._recipient_from_params(params)
+        if recipient:
+            body["recipients"] = [recipient]
+
+        attachments = params.get("attachments")
+        if attachments:
+            body["base64_attachments"] = self._encode_attachment_files(attachments)
+
+        if params.get("styled_message"):
+            body["message"] = params["styled_message"]
+            body["text_mode"] = "styled"
+        elif params.get("textStyles") or params.get("textStyle"):
+            body["text_mode"] = "styled"
+
+        return body
+
+    @staticmethod
+    def _normalize_contact(contact: dict) -> dict:
+        """Map REST contact fields onto the JSON-RPC shape callers expect."""
+        profile = contact.get("profile") or {}
+        return {
+            "number": contact.get("number"),
+            "recipient": contact.get("number"),
+            "uuid": contact.get("uuid"),
+            "serviceId": contact.get("uuid") or profile.get("serviceId"),
+            "name": contact.get("name") or contact.get("profile_name"),
+            "profileName": contact.get("profile_name"),
+            "profile": profile,
+        }
+
+    def _extract_error_message(self, data: Any) -> str:
+        """Pull a human-readable error string from REST or JSON-RPC bodies."""
+        if not isinstance(data, dict):
+            return str(data)
+        err = data.get("error")
+        if isinstance(err, dict):
+            return str(err.get("message", err))
+        if err is not None:
+            return str(err)
+        return json.dumps(data)[:300]
+
+    def _maybe_raise_rate_limit(
+        self,
+        err_obj: Any,
+        *,
+        raise_on_rate_limit: bool,
+    ) -> None:
+        """Raise SignalRateLimitError when opted in and the error is a 429."""
+        if not raise_on_rate_limit or not _is_signal_rate_limit_error(err_obj):
+            return
+        if isinstance(err_obj, dict):
+            err_msg = str(err_obj.get("message", ""))
+        else:
+            err_msg = str(err_obj)
+        retry_after = _extract_retry_after_seconds(err_obj)
+        raise SignalRateLimitError(err_msg, retry_after=retry_after)
+
+    def _handle_api_error(
+        self,
+        data: Any,
+        method: str,
+        *,
+        log_failures: bool,
+        raise_on_rate_limit: bool,
+    ) -> None:
+        """Log and optionally raise on API errors."""
+        err_obj = data.get("error") if isinstance(data, dict) else data
+        self._maybe_raise_rate_limit(err_obj, raise_on_rate_limit=raise_on_rate_limit)
+        msg = self._extract_error_message(data)
+        if log_failures:
+            logger.warning("Signal %s failed: %s", method, msg)
+        else:
+            logger.debug("Signal %s failed: %s", method, msg)
+
+    @staticmethod
+    def _read_response_json(resp: Any) -> Any:
+        """Parse JSON from an httpx Response or lightweight test fakes."""
+        try:
+            return resp.json()
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+        content = getattr(resp, "content", None) or b""
+        if content:
+            try:
+                return json.loads(content)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+        return {}
+
+    @staticmethod
+    def _response_succeeded(resp: httpx.Response, data: Any) -> bool:
+        """Return True when an HTTP response represents success."""
+        status = getattr(resp, "status_code", None)
+        if status is not None:
+            return status in (200, 201, 204)
+        if isinstance(data, dict) and data.get("error"):
+            return False
+        return True
 
     async def _rpc(
         self,
@@ -930,18 +1087,17 @@ class SignalAdapter(BasePlatformAdapter):
         raise_on_rate_limit: bool = False,
         timeout: float = 30.0,
     ) -> Any:
-        """Send a JSON-RPC 2.0 request to signal-cli daemon.
+        """Dispatch adapter operations to signal-cli-rest-api REST endpoints.
 
-        When ``log_failures=False``, error and exception paths log at DEBUG
-        instead of WARNING — used by the typing-indicator path to silence
-        repeated NETWORK_FAILURE spam for unreachable recipients while
-        still preserving visibility for the first occurrence and for
-        unrelated RPCs.
+        The adapter historically spoke JSON-RPC to a native signal-cli daemon.
+        bbernhard/signal-cli-rest-api v0.99 exposes per-feature REST routes
+        instead of a generic /v1/rpc proxy, so each method is mapped here.
 
-        When ``raise_on_rate_limit=True``, a Signal ``[429]`` /
-        ``RateLimitException`` response raises ``SignalRateLimitError``
-        instead of being swallowed — lets callers (multi-attachment send)
-        opt into backoff-retry without changing default behaviour.
+        When ``log_failures=False``, errors log at DEBUG — used by the typing
+        indicator path to avoid spamming logs for unreachable recipients.
+
+        When ``raise_on_rate_limit=True``, rate-limit responses raise
+        ``SignalRateLimitError`` so multi-attachment sends can back off.
         """
         if not self.client:
             logger.warning("Signal: RPC called but client not connected")
@@ -950,33 +1106,114 @@ class SignalAdapter(BasePlatformAdapter):
         if rpc_id is None:
             rpc_id = f"{method}_{int(time.time() * 1000)}"
 
-        payload = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": rpc_id,
-        }
-
         try:
-            resp = await self.client.post(
-                f"{self.http_url}/api/v1/rpc",
-                json=payload,
-                timeout=timeout,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            if method == "send":
+                resp = await self.client.post(
+                    f"{self.http_url}/v2/send",
+                    json=self._build_v2_send_body(params),
+                    timeout=timeout,
+                )
+                data = self._read_response_json(resp)
+                if not self._response_succeeded(resp, data):
+                    self._handle_api_error(
+                        data, method,
+                        log_failures=log_failures,
+                        raise_on_rate_limit=raise_on_rate_limit,
+                    )
+                    return None
+                result: Dict[str, Any] = {"results": [{"type": "SUCCESS"}]}
+                ts = data.get("timestamp") if isinstance(data, dict) else None
+                if ts is not None:
+                    try:
+                        result["timestamp"] = int(ts)
+                    except (TypeError, ValueError):
+                        pass
+                return result
 
-            if "error" in data:
-                err = data["error"]
-                if raise_on_rate_limit:
-                    if _is_signal_rate_limit_error(err):
-                        err_msg = str(err.get("message", "")) if isinstance(err, dict) else str(err)
-                        retry_after = _extract_retry_after_seconds(err)
-                        raise SignalRateLimitError(err_msg, retry_after=retry_after)
-                if log_failures:
-                    logger.warning("Signal RPC error (%s): %s", method, err)
+            if method == "sendTyping":
+                recipient = self._recipient_from_params(params)
+                if not recipient:
+                    return None
+                resp = await self.client.put(
+                    self._account_path("/v1/typing-indicator/{account}"),
+                    json={"recipient": recipient},
+                    timeout=timeout,
+                )
+                if self._response_succeeded(resp, {}):
+                    return {}
+                data = self._read_response_json(resp) or {
+                    "error": getattr(resp, "text", "")[:200],
+                }
+                self._handle_api_error(
+                    data, method,
+                    log_failures=log_failures,
+                    raise_on_rate_limit=raise_on_rate_limit,
+                )
+                return None
+
+            if method == "sendReaction":
+                recipient = self._recipient_from_params(params)
+                if not recipient:
+                    return None
+                body = {
+                    "reaction": params.get("emoji", ""),
+                    "recipient": recipient,
+                    "target_author": params.get("targetAuthor"),
+                    "timestamp": params.get("targetTimestamp"),
+                }
+                url = self._account_path("/v1/reactions/{account}")
+                if params.get("remove"):
+                    resp = await self.client.request(
+                        "DELETE", url, json=body, timeout=timeout,
+                    )
                 else:
-                    logger.debug("Signal RPC error (%s): %s", method, err)
+                    resp = await self.client.post(url, json=body, timeout=timeout)
+                if self._response_succeeded(resp, {}):
+                    return {}
+                data = self._read_response_json(resp) or {
+                    "error": getattr(resp, "text", "")[:200],
+                }
+                self._handle_api_error(
+                    data, method,
+                    log_failures=log_failures,
+                    raise_on_rate_limit=raise_on_rate_limit,
+                )
+                return None
+
+            if method == "listContacts":
+                resp = await self.client.get(
+                    self._account_path("/v1/contacts/{account}"),
+                    params={"all_recipients": "true"} if params.get("allRecipients") else None,
+                    timeout=timeout,
+                )
+                data = self._read_response_json(resp)
+                if not self._response_succeeded(resp, data):
+                    self._handle_api_error(
+                        data or {}, method,
+                        log_failures=log_failures,
+                        raise_on_rate_limit=raise_on_rate_limit,
+                    )
+                    return None
+                if not isinstance(data, list):
+                    return None
+                return [self._normalize_contact(c) for c in data if isinstance(c, dict)]
+
+            if method == "getContact":
+                address = params.get("contactAddress")
+                if not address:
+                    return None
+                contacts = await self._rpc(
+                    "listContacts",
+                    {"account": self.account, "allRecipients": True},
+                    log_failures=log_failures,
+                    raise_on_rate_limit=raise_on_rate_limit,
+                    timeout=timeout,
+                )
+                if not isinstance(contacts, list):
+                    return None
+                for contact in contacts:
+                    if contact.get("number") == address or contact.get("uuid") == address:
+                        return contact
                 return None
 
             result = data.get("result")
@@ -994,9 +1231,9 @@ class SignalAdapter(BasePlatformAdapter):
             raise
         except Exception as e:
             if log_failures:
-                logger.warning("Signal RPC %s failed: %s", method, e)
+                logger.warning("Signal %s failed: %s", method, e)
             else:
-                logger.debug("Signal RPC %s failed: %s", method, e)
+                logger.debug("Signal %s failed: %s", method, e)
             return None
 
     # ------------------------------------------------------------------
@@ -1066,6 +1303,8 @@ class SignalAdapter(BasePlatformAdapter):
                 params["textStyle"] = text_styles[0]
             else:
                 params["textStyles"] = text_styles
+            # /v2/send styled mode expects markdown in the message body.
+            params["styled_message"] = content
 
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]

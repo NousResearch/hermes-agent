@@ -2273,9 +2273,18 @@ class _FakeSignalHttp:
         item = self.responses.pop(0)
         if isinstance(item, BaseException):
             raise item
+        if isinstance(item, dict) and "error" in item:
+            status_code = item.get("_status", 400)
+            data = item
+        else:
+            status_code = item.get("_status", 201) if isinstance(item, dict) else 201
+            data = item if isinstance(item, dict) else {"timestamp": "1"}
         resp = SimpleNamespace(
+            status_code=status_code,
+            content=b"{}",
+            text="",
             raise_for_status=lambda: None,
-            json=lambda data=item: data,
+            json=lambda data=data: data,
         )
         return resp
 
@@ -2318,7 +2327,7 @@ def _patch_sendmsg_sleep_and_time(monkeypatch, capture: list):
 
 class TestSendSignalChunking:
     def test_text_only_single_rpc(self, monkeypatch):
-        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        fake = _FakeSignalHttp([{"timestamp": "1"}])
         _install_signal_http(monkeypatch, fake)
 
         result = asyncio.run(
@@ -2406,8 +2415,8 @@ class TestSendSignalChunking:
             paths.append((str(p), False))
 
         fake = _FakeSignalHttp([
-            {"result": {"timestamp": 1}},   # batch 0
-            {"result": {"timestamp": 2}},   # batch 1
+            {"timestamp": "1"},   # batch 0
+            {"timestamp": "2"},   # batch 1
         ])
         _install_signal_http(monkeypatch, fake)
 
@@ -2427,13 +2436,13 @@ class TestSendSignalChunking:
         assert len(fake.calls) == 2
         assert len(sleep_calls) == 0
 
-        first = fake.calls[0]["payload"]["params"]
+        first = fake.calls[0]["payload"]
         assert first["message"] == "Caption goes here"
         assert len(first["attachments"]) == SIGNAL_MAX_ATTACHMENTS_PER_MSG
         assert "textStyle" not in first
         assert "textStyles" not in first
 
-        second = fake.calls[1]["payload"]["params"]
+        second = fake.calls[1]["payload"]
         assert second["message"] == ""  # caption only on batch 0
         assert len(second["attachments"]) == 33 - SIGNAL_MAX_ATTACHMENTS_PER_MSG
         assert "textStyle" not in second
@@ -2495,9 +2504,9 @@ class TestSendSignalChunking:
             paths.append((str(p), False))
 
         fake = _FakeSignalHttp([
-            {"result": {"timestamp": 1}},   # batch 0
-            {"result": {"timestamp": 99}},  # pacing notice
-            {"result": {"timestamp": 2}},   # batch 1
+            {"timestamp": "1"},   # batch 0
+            {"timestamp": "99"},  # pacing notice
+            {"timestamp": "2"},   # batch 1
         ])
         _install_signal_http(monkeypatch, fake)
 
@@ -2515,9 +2524,9 @@ class TestSendSignalChunking:
 
         assert result["success"] is True
         assert len(fake.calls) == 3
-        notice = fake.calls[1]["payload"]["params"]
+        notice = fake.calls[1]["payload"]
         assert "More images coming" in notice["message"]
-        assert "attachments" not in notice
+        assert "base64_attachments" not in notice
         # Batch 1 deficit: 32 - (50 - 32) = 14 tokens × 4s = 56s
         expected = (
             SIGNAL_MAX_ATTACHMENTS_PER_MSG
@@ -2550,7 +2559,7 @@ class TestSendSignalChunking:
                     },
                 }
             },
-            {"result": {"timestamp": 7}},
+            {"timestamp": "7"},
         ])
         _install_signal_http(monkeypatch, fake)
 
@@ -2580,7 +2589,7 @@ class TestSendSignalChunking:
 
         fake = _FakeSignalHttp([
             {"error": {"message": "Failed: [429] Rate Limited"}},
-            {"result": {"timestamp": 7}},
+            {"timestamp": "7"},
         ])
         _install_signal_http(monkeypatch, fake)
 
@@ -2629,7 +2638,7 @@ class TestSendSignalChunking:
         fake = _FakeSignalHttp([
             rate_limit_err,                  # batch 0, attempt 1
             rate_limit_err,                  # batch 0, attempt 2 (exhaust)
-            {"result": {"timestamp": 9}},    # batch 1 succeeds
+            {"timestamp": "9"},    # batch 1 succeeds
         ])
         _install_signal_http(monkeypatch, fake)
 
@@ -2679,7 +2688,7 @@ class TestSendSignalChunking:
         good = tmp_path / "ok.png"
         good.write_bytes(b"\x89PNG" + b"\x00" * 16)
 
-        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        fake = _FakeSignalHttp([{"timestamp": "1"}])
         _install_signal_http(monkeypatch, fake)
 
         result = asyncio.run(
@@ -2694,8 +2703,8 @@ class TestSendSignalChunking:
         assert result["success"] is True
         assert "warnings" in result
         # Only the existing file made it into the RPC
-        params = fake.calls[0]["payload"]["params"]
-        assert len(params["attachments"]) == 1
+        body = fake.calls[0]["payload"]
+        assert len(body["base64_attachments"]) == 1
 
 
 # ── _send_via_adapter standalone fallback ────────────────────────────────

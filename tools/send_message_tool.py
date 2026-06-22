@@ -6,6 +6,7 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -13,6 +14,7 @@ import re
 import ssl
 import time
 from email.utils import formatdate
+from pathlib import Path
 
 from agent.redact import redact_sensitive_text
 
@@ -1229,7 +1231,7 @@ async def _registry_standalone_send(platform_name, pconfig, chat_id, message, th
 
 
 async def _send_signal(extra, chat_id, message, media_files=None):
-    """Send via signal-cli JSON-RPC API.
+    """Send via signal-cli-rest-api REST endpoints.
 
     Supports both text-only and text-with-attachments (images/audio/documents).
     Multi-attachment sends are chunked into batches of
@@ -1242,6 +1244,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
     except ImportError:
         return {"error": "httpx not installed"}
 
+    from gateway.platforms.signal import _ext_to_mime, _guess_extension
     from gateway.platforms.signal_rate_limit import (
         SIGNAL_BATCH_PACING_NOTICE_THRESHOLD,
         SIGNAL_MAX_ATTACHMENTS_PER_MSG,
@@ -1253,6 +1256,47 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         get_scheduler,
     )
     from gateway.platforms.signal_format import markdown_to_signal
+
+    def _format_group_recipient(group_id: str) -> str:
+        if group_id.startswith("group."):
+            return group_id
+        return f"group.{group_id}"
+
+    def _encode_attachment_files(paths: list[str]) -> list[str]:
+        encoded: list[str] = []
+        for raw_path in paths:
+            path = Path(raw_path)
+            data = path.read_bytes()
+            ext = path.suffix or _guess_extension(data)
+            mime = _ext_to_mime(ext)
+            b64 = base64.b64encode(data).decode("ascii")
+            encoded.append(f"data:{mime};filename={path.name};base64,{b64}")
+        return encoded
+
+    def _build_v2_send_body(
+        account: str,
+        target: str,
+        batch_message: str,
+        batch_attachments: list[str] | None,
+    ) -> dict:
+        body = {"number": account, "message": batch_message}
+        if target.startswith("group:"):
+            body["recipients"] = [_format_group_recipient(target[6:])]
+        else:
+            body["recipients"] = [target]
+        if batch_attachments:
+            body["base64_attachments"] = _encode_attachment_files(batch_attachments)
+        return body
+
+    def _normalize_v2_error(data: dict, status_code: int, text: str) -> dict:
+        err = data.get("error") if isinstance(data, dict) else None
+        if isinstance(err, dict):
+            return err
+        if isinstance(err, str):
+            return {"message": err}
+        if text:
+            return {"message": text[:300]}
+        return {"message": f"HTTP {status_code}"}
 
     try:
         http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
@@ -1303,28 +1347,22 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             }
             timeout = _signal_send_timeout(len(batch_attachments) if batch_attachments else 0)
             async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(f"{http_url}/api/v1/rpc", json=payload)
-                resp.raise_for_status()
-                return resp.json()
+                resp = await client.post(f"{http_url}/v2/send", json=body)
+                text = resp.text or ""
+                try:
+                    data = resp.json() if resp.content else {}
+                except ValueError:
+                    data = {}
+                if resp.status_code in (200, 201, 204):
+                    return {}
+                return {"error": _normalize_v2_error(data, resp.status_code, text)}
 
         async def _send_inline_notice(text: str) -> None:
-            """Best-effort one-shot RPC for a user-facing pacing notice."""
-            notice_params = {"account": account, "message": text}
-            if chat_id.startswith("group:"):
-                notice_params["groupId"] = chat_id[6:]
-            else:
-                notice_params["recipient"] = [chat_id]
+            """Best-effort one-shot REST send for a user-facing pacing notice."""
             try:
+                body = _build_v2_send_body(account, chat_id, text, None)
                 async with httpx.AsyncClient(timeout=30.0) as _client:
-                    await _client.post(
-                        f"{http_url}/api/v1/rpc",
-                        json={
-                            "jsonrpc": "2.0",
-                            "method": "send",
-                            "params": notice_params,
-                            "id": f"notice_{int(time.time() * 1000)}",
-                        },
-                    )
+                    await _client.post(f"{http_url}/v2/send", json=body)
             except Exception as _e:
                 logger.warning("Signal: inline notice failed: %s", _e)
 
@@ -1334,6 +1372,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             scheduler.state(), len(attachment_paths), len(att_batches),
         )
         failed_batches: list[int] = []
+        failed_errors: list[str] = []
         for idx, att_batch in enumerate(att_batches):
             n = len(att_batch)
             if n > 0:
@@ -1359,7 +1398,10 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                     err = data["error"]
 
                     if not _is_signal_rate_limit_error(err):
-                        return _error(f"Signal RPC error on batch {idx + 1}/{len(att_batches)}: {err}")
+                        err_msg = err.get("message", err) if isinstance(err, dict) else err
+                        return _error(
+                            f"Signal send failed on batch {idx + 1}/{len(att_batches)}: {err_msg}"
+                        )
 
                     server_retry_after = _extract_retry_after_seconds(err)
                     scheduler.feedback(server_retry_after, n)
@@ -1384,6 +1426,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                 except Exception as e:
                     if attempt >= SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
                         failed_batches.append(idx + 1)
+                        failed_errors.append(str(e))
                         logger.error(
                             "Signal: send error on batch %d/%d after %d attempts: %s",
                             idx + 1, len(att_batches), attempt, str(e)
@@ -1404,6 +1447,8 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             )
 
         if failed_batches and len(failed_batches) == len(att_batches):
+            if failed_errors:
+                return _error(f"Signal send failed: {failed_errors[0]}")
             return _error(
                 f"Signal: every batch ({len(att_batches)}) hit rate limit; "
                 f"no attachments delivered"

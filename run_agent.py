@@ -4093,8 +4093,9 @@ class AIAgent:
         if pool is None:
             return False
         if (
-            self.provider == "google-gemini-cli"
+            self.provider in ("google-gemini-cli", "google-antigravity")
             or str(getattr(self, "base_url", "")).startswith("cloudcode-pa://")
+            or str(getattr(self, "base_url", "")).startswith("antigravity-pa://")
         ):
             # CloudCode/Gemini quota windows are usually account-level throttles.
             # Prefer the configured fallback immediately instead of waiting out

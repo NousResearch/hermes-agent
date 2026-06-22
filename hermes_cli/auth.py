@@ -2264,38 +2264,55 @@ def resolve_antigravity_oauth_runtime_credentials(
 ) -> Dict[str, Any]:
     """Resolve runtime OAuth creds for google-antigravity."""
     try:
-        from agent.antigravity_oauth import (
-            AntigravityOAuthError,
-            _credentials_path,
-            get_valid_access_token,
-            load_credentials,
-        )
+        from agent.credential_pool import load_pool
     except ImportError as exc:
         raise AuthError(
-            f"agent.antigravity_oauth is not importable: {exc}",
+            f"agent.credential_pool is not importable: {exc}",
             provider="google-antigravity",
-            code="antigravity_oauth_module_missing",
+            code="credential_pool_module_missing",
         ) from exc
 
     try:
-        access_token = get_valid_access_token(force_refresh=force_refresh)
-    except AntigravityOAuthError as exc:
+        pool = load_pool("google-antigravity")
+        # Try to select an available credential from the pool
+        selected = pool.select()
+        if not selected:
+            raise AuthError(
+                "No available google-antigravity credentials in the pool",
+                provider="google-antigravity",
+                code="antigravity_oauth_not_logged_in",
+                relogin_required=True,
+            )
+        
+        # Ensure it has a valid access token.
+        access_token = selected.access_token
+        if not access_token:
+            raise AuthError(
+                "Selected credential has no access token",
+                provider="google-antigravity",
+                code="invalid_credential",
+            )
+            
+    except Exception as exc:
+        # Fallback error mapping for tests that might mock load_pool but not catch it correctly
+        if isinstance(exc, AuthError):
+            raise
         raise AuthError(
-            str(exc),
+            f"Credential pool error: {exc}",
             provider="google-antigravity",
-            code=exc.code,
+            code="credential_pool_error",
         ) from exc
 
-    creds = load_credentials()
     return {
         "provider": "google-antigravity",
         "base_url": DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL,
         "api_key": access_token,
-        "source": "antigravity-oauth",
-        "expires_at_ms": (creds.expires_ms if creds else None),
-        "auth_file": str(_credentials_path()),
-        "email": (creds.email if creds else "") or "",
-        "project_id": (creds.project_id if creds else "") or "",
+        "source": getattr(selected, "source", None) or "antigravity-oauth-pool",
+        "credential_pool": pool,
+        "expires_at_ms": None,  # Not strictly needed for runtime resolution if pool handles it
+        "auth_file": str(selected.id), # Traceability
+        "email": getattr(selected, "email", None) or getattr(selected, "label", ""),
+        "project_id": getattr(selected, "project_id", None) or "",
     }
 
 

@@ -552,7 +552,13 @@ def _resolve_active_context_length() -> int:
         if not model_id:
             return 0
         from agent.model_metadata import get_model_context_length
-        return int(get_model_context_length(model_id) or 0)
+        # Honor explicit `model.context_length` in config.yaml — short-circuits
+        # the OpenRouter /models probe at get_model_context_length step 0, so
+        # non-OpenRouter providers don't pay the ~2-3s OpenRouter fetch at every
+        # CLI startup.  See issue #46620.
+        raw_ctx = model_cfg.get("context_length")
+        config_ctx = raw_ctx if isinstance(raw_ctx, int) and raw_ctx > 0 else None
+        return int(get_model_context_length(model_id, config_context_length=config_ctx) or 0)
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)
         return 0

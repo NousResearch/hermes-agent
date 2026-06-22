@@ -2485,3 +2485,262 @@ class TestSessionLifecycle:
 
         with patch("tools.lazy_deps.ensure"):
             backend.start()  # must not raise
+
+
+class TestCuaToolCoverageExpansion:
+    """Audit follow-up: the 20 cua-driver tools previously uncovered by
+    the wrapper now have typed Python methods that map to them. Each
+    test below asserts the wrapper calls the right cua-driver tool name
+    with the right arg shape AND injects the run's session id (Surface
+    audit decision: every call gets `session=...`).
+    """
+
+    def _backend(self, structured: Optional[Dict[str, Any]] = None,
+                 data: Any = "ok"):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = {
+            "data": data, "images": [], "image_mime_types": [],
+            "structuredContent": structured, "isError": False,
+        }
+        backend._session.supports_capability = lambda cap, tool=None: False
+        return backend
+
+    # ── App lifecycle ────────────────────────────────────────────
+
+    def test_launch_app_requires_bundle_id_or_name(self):
+        backend = self._backend()
+        import pytest
+        with pytest.raises(ValueError, match="bundle_id or name"):
+            backend.launch_app()
+
+    def test_launch_app_minimal_call(self):
+        backend = self._backend(structured={"pid": 99, "windows": []})
+        result = backend.launch_app(bundle_id="com.apple.calculator")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "launch_app"
+        assert args["bundle_id"] == "com.apple.calculator"
+        assert args["session"] == backend._session_id
+        # Optional flags absent when not supplied.
+        assert "name" not in args
+        assert "creates_new_application_instance" not in args
+        assert result["pid"] == 99
+
+    def test_launch_app_carries_all_optional_args(self):
+        backend = self._backend(structured={"pid": 1})
+        backend.launch_app(
+            name="Calculator",
+            urls=["/Users/me/note.txt"],
+            additional_arguments=["--debug"],
+            creates_new_application_instance=True,
+        )
+        name, args = backend._session.call_tool.call_args.args
+        assert args["name"] == "Calculator"
+        assert args["urls"] == ["/Users/me/note.txt"]
+        assert args["additional_arguments"] == ["--debug"]
+        assert args["creates_new_application_instance"] is True
+
+    def test_kill_app(self):
+        backend = self._backend()
+        backend.kill_app(pid=12345)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "kill_app"
+        assert args["pid"] == 12345
+        assert args["session"] == backend._session_id
+
+    def test_bring_to_front_without_window_id(self):
+        backend = self._backend()
+        backend.bring_to_front(pid=42)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "bring_to_front"
+        assert args["pid"] == 42
+        assert "window_id" not in args
+
+    def test_bring_to_front_with_window_id(self):
+        backend = self._backend()
+        backend.bring_to_front(pid=42, window_id=7)
+        name, args = backend._session.call_tool.call_args.args
+        assert args["window_id"] == 7
+
+    # ── Pointer + display introspection ─────────────────────────
+
+    def test_move_cursor(self):
+        backend = self._backend()
+        backend.move_cursor(100, 200)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "move_cursor"
+        assert args["x"] == 100
+        assert args["y"] == 200
+
+    def test_get_cursor_position_returns_tuple(self):
+        backend = self._backend(structured={"x": 50, "y": 60})
+        pos = backend.get_cursor_position()
+        assert pos == (50, 60)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "get_cursor_position"
+        assert args["session"] == backend._session_id
+
+    def test_get_cursor_position_handles_missing_fields(self):
+        backend = self._backend(structured={})
+        assert backend.get_cursor_position() == (0, 0)
+
+    def test_get_screen_size(self):
+        backend = self._backend(structured={
+            "width": 2560, "height": 1440, "scale_factor": 2.0,
+        })
+        size = backend.get_screen_size()
+        assert size["width"] == 2560
+        assert size["scale_factor"] == 2.0
+
+    def test_zoom_full_args(self):
+        backend = self._backend()
+        backend.zoom(window_id=1, x=10.0, y=20.0, w=300.0, h=400.0,
+                     factor=2.0, format="png", quality=90)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "zoom"
+        assert args["window_id"] == 1
+        assert args["factor"] == 2.0
+        assert args["format"] == "png"
+        assert args["quality"] == 90
+
+    # ── Agent cursor (overlay) ──────────────────────────────────
+
+    def test_set_agent_cursor_enabled(self):
+        backend = self._backend()
+        backend.set_agent_cursor_enabled(False)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "set_agent_cursor_enabled"
+        assert args["enabled"] is False
+
+    def test_set_agent_cursor_motion_partial(self):
+        """None-valued kwargs must be dropped — cua-driver's
+        set_agent_cursor_motion treats absent fields as 'leave alone'
+        but rejects null values."""
+        backend = self._backend()
+        backend.set_agent_cursor_motion(glide_ms=500.0)
+        name, args = backend._session.call_tool.call_args.args
+        assert args == {"glide_ms": 500.0, "session": backend._session_id}
+
+    def test_set_agent_cursor_style_gradient(self):
+        backend = self._backend()
+        backend.set_agent_cursor_style(gradient_colors=["#FF0000", "#00FF00"])
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "set_agent_cursor_style"
+        assert args["gradient_colors"] == ["#FF0000", "#00FF00"]
+        assert "bloom_color" not in args
+        assert "image_path" not in args
+
+    def test_set_agent_cursor_style_image_path(self):
+        backend = self._backend()
+        backend.set_agent_cursor_style(image_path="/tmp/cursor.svg")
+        name, args = backend._session.call_tool.call_args.args
+        assert args["image_path"] == "/tmp/cursor.svg"
+
+    def test_get_agent_cursor_state(self):
+        backend = self._backend(structured={"x": 1, "y": 2, "enabled": True})
+        state = backend.get_agent_cursor_state()
+        assert state == {"x": 1, "y": 2, "enabled": True}
+
+    # ── Recording / replay ──────────────────────────────────────
+
+    def test_start_recording_with_video(self):
+        backend = self._backend(structured={"recording": True, "video_active": True})
+        out = backend.start_recording(output_dir="/tmp/rec", record_video=True)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "start_recording"
+        assert args["output_dir"] == "/tmp/rec"
+        assert args["record_video"] is True
+        assert args["session"] == backend._session_id
+        assert out["recording"] is True
+
+    def test_stop_recording_returns_state(self):
+        backend = self._backend(structured={"recording": False,
+                                            "last_video_path": "/tmp/rec/r.mp4"})
+        out = backend.stop_recording()
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "stop_recording"
+        assert args["session"] == backend._session_id
+        assert out["last_video_path"] == "/tmp/rec/r.mp4"
+
+    def test_get_recording_state(self):
+        backend = self._backend(structured={"recording": False, "enabled": False})
+        out = backend.get_recording_state()
+        assert out["recording"] is False
+
+    def test_replay_trajectory(self):
+        backend = self._backend()
+        backend.replay_trajectory(trajectory_dir="/tmp/rec",
+                                  dry_run=True, speed_factor=2.0)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "replay_trajectory"
+        assert args["trajectory_dir"] == "/tmp/rec"
+        assert args["dry_run"] is True
+        assert args["speed_factor"] == 2.0
+
+    def test_install_ffmpeg(self):
+        backend = self._backend()
+        backend.install_ffmpeg()
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "install_ffmpeg"
+        assert args["session"] == backend._session_id
+
+    # ── Config ──────────────────────────────────────────────────
+
+    def test_get_config(self):
+        backend = self._backend(structured={"max_image_dimension": 1024})
+        out = backend.get_config()
+        assert out["max_image_dimension"] == 1024
+
+    def test_set_config_passes_kwargs_verbatim(self):
+        backend = self._backend()
+        backend.set_config(max_image_dimension=2048, novel_future_key="hello")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "set_config"
+        assert args["max_image_dimension"] == 2048
+        # Unknown keys flow through — cua-driver validates.
+        assert args["novel_future_key"] == "hello"
+
+    # ── Other ───────────────────────────────────────────────────
+
+    def test_get_accessibility_tree(self):
+        backend = self._backend(structured={"apps": [], "windows": []})
+        out = backend.get_accessibility_tree()
+        assert "apps" in out
+
+    def test_page_eval_action(self):
+        backend = self._backend(structured={"value": "42"})
+        backend.page(pid=99, action="eval", js="2 * 21")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "page"
+        assert args["pid"] == 99
+        assert args["action"] == "eval"
+        assert args["js"] == "2 * 21"
+        assert args["session"] == backend._session_id
+
+    # ── Generic escape hatch ────────────────────────────────────
+
+    def test_call_tool_passthrough(self):
+        backend = self._backend(structured={"x": 1})
+        out = backend.call_tool("future_tool_name", {"arbitrary": "args"})
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "future_tool_name"
+        assert args["arbitrary"] == "args"
+        # Session injected.
+        assert args["session"] == backend._session_id
+
+    def test_call_tool_preserves_caller_session(self):
+        """If the caller already supplied `session`, that wins
+        (setdefault). Lets subagent harnesses route through their own
+        id without the wrapper clobbering it."""
+        backend = self._backend()
+        backend.call_tool("any_tool", {"session": "harness-1", "arg": 1})
+        name, args = backend._session.call_tool.call_args.args
+        assert args["session"] == "harness-1"
+
+    def test_call_tool_empty_args(self):
+        backend = self._backend()
+        backend.call_tool("get_cursor_position")
+        name, args = backend._session.call_tool.call_args.args
+        assert args == {"session": backend._session_id}

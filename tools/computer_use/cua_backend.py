@@ -1263,6 +1263,281 @@ class CuaDriverBackend(ComputerUseBackend):
         return ActionResult(ok=False, action="focus_app",
                             message=f"No on-screen window found for app '{app}'.")
 
+    # ── App lifecycle ────────────────────────────────────────────────
+    #
+    # cua-driver exposes launch_app / kill_app / bring_to_front as a
+    # complete set. focus_app() above is a *window-selector* (no
+    # process state change); these methods drive the process layer.
+
+    def launch_app(
+        self,
+        *,
+        bundle_id: Optional[str] = None,
+        name: Optional[str] = None,
+        urls: Optional[List[str]] = None,
+        additional_arguments: Optional[List[str]] = None,
+        creates_new_application_instance: bool = False,
+    ) -> Dict[str, Any]:
+        """Idempotent launch. Returns ``{pid, bundle_id, name, windows[]}``
+        so callers can skip an extra ``list_windows`` round-trip before
+        ``get_window_state``.
+
+        ``creates_new_application_instance=True`` forces a new instance
+        even if the app is already running — use it when concurrent
+        runs may touch the same app so each session gets its own
+        isolated window."""
+        if not bundle_id and not name:
+            raise ValueError("launch_app requires either bundle_id or name")
+        args: Dict[str, Any] = {"session": self._session_id}
+        if bundle_id:
+            args["bundle_id"] = bundle_id
+        if name:
+            args["name"] = name
+        if urls:
+            args["urls"] = list(urls)
+        if additional_arguments:
+            args["additional_arguments"] = list(additional_arguments)
+        if creates_new_application_instance:
+            args["creates_new_application_instance"] = True
+        out = self._session.call_tool("launch_app", args)
+        return out["structuredContent"] or {"data": out["data"]}
+
+    def kill_app(self, *, pid: int) -> ActionResult:
+        """Terminate by pid. Equivalent to ``kill -9`` on POSIX,
+        ``taskkill /F`` on Windows."""
+        return self._action("kill_app", {"pid": int(pid)})
+
+    def bring_to_front(self, *, pid: int,
+                       window_id: Optional[int] = None) -> ActionResult:
+        """Activate a window so subsequent foreground-dispatched input
+        lands on it. cua-driver's docstring notes this is the cheaper
+        path than per-call SetForegroundWindow flashes."""
+        args: Dict[str, Any] = {"pid": int(pid)}
+        if window_id is not None:
+            args["window_id"] = int(window_id)
+        return self._action("bring_to_front", args)
+
+    # ── Pointer + display introspection ─────────────────────────────
+
+    def move_cursor(self, x: int, y: int) -> ActionResult:
+        """Move the agent-cursor *overlay* to a screen point. This is a
+        visual hint — it does NOT move the real OS pointer (cua-driver
+        explicitly avoids stealing pointer focus). The overlay glides
+        smoothly to the target, so consumers use it before a click to
+        give a visible "where the agent is going" cue."""
+        return self._action("move_cursor", {"x": int(x), "y": int(y)})
+
+    def get_cursor_position(self) -> Tuple[int, int]:
+        """Return the *real* OS cursor position in screen points
+        (origin top-left)."""
+        out = self._session.call_tool(
+            "get_cursor_position", {"session": self._session_id}
+        )
+        sc = out.get("structuredContent") or {}
+        return int(sc.get("x", 0)), int(sc.get("y", 0))
+
+    def get_screen_size(self) -> Dict[str, Any]:
+        """Return the logical size of the main display in points plus
+        its backing scale factor. Shape:
+        ``{width, height, backing_scale_factor}``."""
+        out = self._session.call_tool(
+            "get_screen_size", {"session": self._session_id}
+        )
+        return out.get("structuredContent") or {}
+
+    def zoom(self, *, window_id: int, x: float, y: float, w: float, h: float,
+             factor: float = 1.0, format: str = "jpeg",
+             quality: int = 85) -> Dict[str, Any]:
+        """Return a JPEG / PNG of a sub-region of a window, optionally
+        scaled. cua-driver supports zoom-to-rect for callers that need
+        a higher-resolution view of a specific element."""
+        return self._session.call_tool("zoom", {
+            "window_id": int(window_id),
+            "x": float(x), "y": float(y), "w": float(w), "h": float(h),
+            "factor": float(factor),
+            "format": format, "quality": int(quality),
+            "session": self._session_id,
+        })
+
+    # ── Agent cursor (overlay) ──────────────────────────────────────
+    #
+    # Sessions (start_session/end_session, wired in start/stop) own the
+    # cursor. These knobs tune its appearance + behavior per-session.
+    # All accept an optional `cursor_id` to address a specific cursor
+    # when the run drives multiple (rare); the default is this run's
+    # session id.
+
+    def set_agent_cursor_enabled(self, enabled: bool, *,
+                                 cursor_id: Optional[str] = None) -> ActionResult:
+        """Toggle the agent cursor overlay's visibility for this run."""
+        args: Dict[str, Any] = {"enabled": bool(enabled)}
+        if cursor_id:
+            args["cursor_id"] = cursor_id
+        return self._action("set_agent_cursor_enabled", args)
+
+    def set_agent_cursor_motion(self, *,
+                                glide_ms: Optional[float] = None,
+                                dwell_ms: Optional[float] = None,
+                                idle_hide_ms: Optional[float] = None,
+                                cursor_id: Optional[str] = None) -> ActionResult:
+        """Tune the overlay's motion timings — glide duration, post-click
+        dwell, idle-hide delay. Each None means "leave at current value"."""
+        args: Dict[str, Any] = {}
+        if glide_ms is not None:
+            args["glide_ms"] = float(glide_ms)
+        if dwell_ms is not None:
+            args["dwell_ms"] = float(dwell_ms)
+        if idle_hide_ms is not None:
+            args["idle_hide_ms"] = float(idle_hide_ms)
+        if cursor_id:
+            args["cursor_id"] = cursor_id
+        return self._action("set_agent_cursor_motion", args)
+
+    def set_agent_cursor_style(self, *,
+                               gradient_colors: Optional[List[str]] = None,
+                               bloom_color: Optional[str] = None,
+                               image_path: Optional[str] = None,
+                               cursor_id: Optional[str] = None) -> ActionResult:
+        """Customise the cursor body. ``gradient_colors`` are CSS hex
+        strings tip→tail; ``bloom_color`` is the radial halo; an
+        ``image_path`` (.svg/.png/.ico) replaces the silhouette
+        entirely. Empty values revert to the palette default."""
+        args: Dict[str, Any] = {}
+        if gradient_colors is not None:
+            args["gradient_colors"] = list(gradient_colors)
+        if bloom_color is not None:
+            args["bloom_color"] = bloom_color
+        if image_path is not None:
+            args["image_path"] = image_path
+        if cursor_id:
+            args["cursor_id"] = cursor_id
+        return self._action("set_agent_cursor_style", args)
+
+    def get_agent_cursor_state(self, *,
+                               cursor_id: Optional[str] = None) -> Dict[str, Any]:
+        """Return ``{x, y, config: {cursor_color, cursor_icon, ...},
+        enabled}`` for this run's cursor (or the named ``cursor_id``)."""
+        args: Dict[str, Any] = {"session": self._session_id}
+        if cursor_id:
+            args["cursor_id"] = cursor_id
+        out = self._session.call_tool("get_agent_cursor_state", args)
+        return out.get("structuredContent") or {}
+
+    # ── Recording / replay ──────────────────────────────────────────
+
+    def start_recording(self, *, output_dir: str,
+                        record_video: bool = False) -> Dict[str, Any]:
+        """Enable trajectory recording (per-turn screenshots + action
+        JSON) to ``output_dir``. ``record_video=True`` ALSO captures
+        the main display to ``<output_dir>/recording.mp4`` (H.264).
+        Recording ownership is keyed by this run's session id so
+        concurrent runs don't fight over the recorder."""
+        out = self._session.call_tool("start_recording", {
+            "output_dir": output_dir,
+            "record_video": bool(record_video),
+            "session": self._session_id,
+        })
+        return out.get("structuredContent") or {}
+
+    def stop_recording(self) -> Dict[str, Any]:
+        """Disable recording and finalise the mp4 (if video was on).
+        Returns the recorder's final state including ``last_video_path``."""
+        out = self._session.call_tool("stop_recording", {
+            "session": self._session_id,
+        })
+        return out.get("structuredContent") or {}
+
+    def get_recording_state(self) -> Dict[str, Any]:
+        """Return the current recorder state without changing it.
+        Shape: ``{recording, enabled, output_dir, next_turn,
+        last_video_path, last_error, owner, video_active}``."""
+        out = self._session.call_tool(
+            "get_recording_state", {"session": self._session_id}
+        )
+        return out.get("structuredContent") or {}
+
+    def replay_trajectory(self, *, trajectory_dir: str,
+                          dry_run: bool = False,
+                          speed_factor: float = 1.0) -> Dict[str, Any]:
+        """Replay a prior recording's turn stream by re-invoking each
+        turn's tool call in lexical order. ``dry_run=True`` logs without
+        actually firing the tools."""
+        return self._session.call_tool("replay_trajectory", {
+            "trajectory_dir": trajectory_dir,
+            "dry_run": bool(dry_run),
+            "speed_factor": float(speed_factor),
+            "session": self._session_id,
+        })
+
+    def install_ffmpeg(self) -> Dict[str, Any]:
+        """Bootstrap ffmpeg for ``start_recording(record_video=True)``
+        on Linux / Windows. macOS records natively via ScreenCaptureKit
+        and doesn't need ffmpeg."""
+        return self._session.call_tool(
+            "install_ffmpeg", {"session": self._session_id}
+        )
+
+    # ── Config ──────────────────────────────────────────────────────
+
+    def get_config(self) -> Dict[str, Any]:
+        """Return the current cua-driver runtime config."""
+        out = self._session.call_tool(
+            "get_config", {"session": self._session_id}
+        )
+        return out.get("structuredContent") or {}
+
+    def set_config(self, **config) -> ActionResult:
+        """Set cua-driver config keys. Common keys include
+        ``max_image_dimension`` (image-output resizing), recording
+        flags, etc. Unknown keys are passed through verbatim — cua-driver
+        validates against its own schema."""
+        return self._action("set_config", dict(config))
+
+    # ── Lower-level introspection ───────────────────────────────────
+
+    def get_accessibility_tree(self) -> Dict[str, Any]:
+        """Return a lightweight snapshot of running regular apps +
+        on-screen visible windows with bounds, z-order, owner pid.
+        Roughly the data ``list_windows`` exposes, in one call. Most
+        callers should prefer ``capture()`` / ``focus_app()`` which
+        already use this shape internally."""
+        out = self._session.call_tool(
+            "get_accessibility_tree", {"session": self._session_id}
+        )
+        return out.get("structuredContent") or {"data": out["data"]}
+
+    # ── Browser page tool ───────────────────────────────────────────
+
+    def page(self, *, pid: int, action: str,
+             **page_args: Any) -> Dict[str, Any]:
+        """Interact with a browser page loaded in a running app (Chrome,
+        Safari, Edge, ...). cua-driver routes through CDP / Apple Events
+        / AX tree depending on the target. ``action`` + ``page_args``
+        shape depends on the requested operation (e.g. ``action="eval"``
+        takes ``js: str``); see cua-driver's ``page`` tool description
+        for the full grammar."""
+        args: Dict[str, Any] = {
+            "pid": int(pid),
+            "action": action,
+            "session": self._session_id,
+        }
+        args.update(page_args)
+        return self._session.call_tool("page", args)
+
+    # ── Generic escape hatch ────────────────────────────────────────
+
+    def call_tool(self, name: str, args: Optional[Dict[str, Any]] = None,
+                  *, timeout: float = 30.0) -> Dict[str, Any]:
+        """Call any cua-driver MCP tool by name with arbitrary args.
+        ``session`` is injected (preserves the caller's explicit one
+        via setdefault). For tools the wrapper doesn't already type-
+        wrap, this is the supported escape hatch — preferred over
+        reaching for ``self._session.call_tool`` directly because it
+        keeps the session-id contract consistent with everything else."""
+        payload = dict(args) if args else {}
+        payload.setdefault("session", self._session_id)
+        return self._session.call_tool(name, payload, timeout=timeout)
+
     # ── Internal ───────────────────────────────────────────────────
     def _maybe_attach_element_token(self, tool: str, args: Dict[str, Any]) -> None:
         """Surface 6: when the wrapper is about to call a token-capable

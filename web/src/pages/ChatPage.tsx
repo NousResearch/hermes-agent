@@ -36,6 +36,10 @@ import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import {
+  resolveNativeTerminalInputText,
+  shouldDeferToNativeTerminalInput,
+} from "@/lib/terminal-native-input";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -406,6 +410,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     const isMac =
       typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
+    let nativeTextareaInputArmed = false;
+    let nativeTextareaCompositionActive = false;
 
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
@@ -450,6 +456,23 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return false;
       }
 
+      if (
+        shouldDeferToNativeTerminalInput({
+          type: ev.type,
+          key: ev.key,
+          ctrlKey: ev.ctrlKey,
+          altKey: ev.altKey,
+          metaKey: ev.metaKey,
+          isComposing: ev.isComposing,
+          keyCode: ev.keyCode,
+          which: ev.which,
+          altGraph: ev.getModifierState?.("AltGraph") ?? false,
+        })
+      ) {
+        nativeTextareaInputArmed = true;
+        return false;
+      }
+
       return true;
     });
 
@@ -480,6 +503,61 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.loadAddon(new WebLinksAddon());
 
     term.open(host);
+
+    let removeNativeTextareaListeners = () => {};
+    const nativeTextarea = host.querySelector("textarea");
+    if (nativeTextarea instanceof HTMLTextAreaElement) {
+      const flushNativeTextareaInput = (
+        event: InputEvent | CompositionEvent,
+      ) => {
+        const text = resolveNativeTerminalInputText({
+          armed: nativeTextareaInputArmed,
+          isComposing:
+            nativeTextareaCompositionActive ||
+            ("isComposing" in event && event.isComposing === true),
+          data: "data" in event ? event.data : null,
+          value: nativeTextarea.value,
+        });
+        if (!text) return;
+
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(text);
+        }
+        nativeTextarea.value = "";
+        nativeTextareaInputArmed = false;
+      };
+
+      const onNativeCompositionStart = () => {
+        nativeTextareaCompositionActive = true;
+        nativeTextareaInputArmed = true;
+      };
+      const onNativeCompositionEnd = (event: CompositionEvent) => {
+        nativeTextareaCompositionActive = false;
+        flushNativeTextareaInput(event);
+      };
+      const onNativeInput = (event: InputEvent) => {
+        flushNativeTextareaInput(event);
+      };
+
+      nativeTextarea.addEventListener(
+        "compositionstart",
+        onNativeCompositionStart,
+      );
+      nativeTextarea.addEventListener("compositionend", onNativeCompositionEnd);
+      nativeTextarea.addEventListener("input", onNativeInput);
+      removeNativeTextareaListeners = () => {
+        nativeTextarea.removeEventListener(
+          "compositionstart",
+          onNativeCompositionStart,
+        );
+        nativeTextarea.removeEventListener(
+          "compositionend",
+          onNativeCompositionEnd,
+        );
+        nativeTextarea.removeEventListener("input", onNativeInput);
+      };
+    }
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
@@ -744,6 +822,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // effect's top level so it can't reach into that scope — close via
       // the ref instead. ``?.`` covers the race where unmount fires before
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
+      removeNativeTextareaListeners();
       wsRef.current?.close();
       wsRef.current = null;
       term.dispose();

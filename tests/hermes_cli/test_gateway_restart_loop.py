@@ -207,11 +207,32 @@ class TestGatewaySelfTargetingGuard:
 
     def test_restart_refuses_inside_gateway(self, monkeypatch):
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
-        from hermes_cli.gateway import gateway_command
+        monkeypatch.delenv("SYSTEMD_EXEC_PID", raising=False)
+        import hermes_cli.gateway as gw
+
+        monkeypatch.setattr(gw, "_request_gateway_self_restart", lambda pid: False)
+
         args = Namespace(gateway_command="restart", all=False, system=False)
         with pytest.raises(SystemExit) as exc_info:
-            gateway_command(args)
+            gw.gateway_command(args)
         assert exc_info.value.code == 1
+
+    def test_restart_from_gateway_child_shell_requests_sigusr1(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setenv("SYSTEMD_EXEC_PID", "43210")
+        import hermes_cli.gateway as gw
+
+        requested = []
+        monkeypatch.setattr(gw, "_request_gateway_self_restart", lambda pid: requested.append(pid) or True)
+        monkeypatch.setattr(gw, "get_hermes_home", lambda: tmp_path)
+
+        args = Namespace(gateway_command="restart", all=False, system=False)
+        gw.gateway_command(args)
+
+        assert requested == [43210]
+        assert (tmp_path / ".restart_pending.json").exists()
+        out = capsys.readouterr().out
+        assert "Requested graceful gateway self-restart via SIGUSR1" in out
 
     def test_stop_allows_outside_gateway(self, monkeypatch):
         # With the gateway marker unset, the self-targeting guard must NOT

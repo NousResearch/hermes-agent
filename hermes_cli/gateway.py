@@ -6216,6 +6216,34 @@ def _gateway_command_inner(args):
         # Defense: refuse self-targeting gateway restart from inside the gateway.
         # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
         if os.getenv("_HERMES_GATEWAY") == "1":
+            candidate_pids: list[int] = []
+            raw_gateway_pid = (os.getenv("SYSTEMD_EXEC_PID") or "").strip()
+            if raw_gateway_pid:
+                try:
+                    candidate_pids.append(int(raw_gateway_pid))
+                except ValueError:
+                    pass
+
+            try:
+                from gateway.status import get_running_pid
+
+                running_pid = get_running_pid()
+            except Exception:
+                running_pid = None
+            if running_pid is not None and running_pid not in candidate_pids:
+                candidate_pids.append(running_pid)
+
+            for candidate_pid in candidate_pids:
+                if _request_gateway_self_restart(candidate_pid):
+                    try:
+                        (get_hermes_home() / ".restart_pending.json").write_text("{}", encoding="utf-8")
+                    except Exception:
+                        pass
+                    print_success(
+                        f"Requested graceful gateway self-restart via SIGUSR1 (gateway pid {candidate_pid})."
+                    )
+                    return
+
             print_error(
                 "Refusing to restart the gateway from inside the gateway process.\n"
                 "This command was blocked to prevent restart loops.\n"

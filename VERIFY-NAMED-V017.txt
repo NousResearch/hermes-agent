@@ -1,0 +1,34 @@
+=== verify_against_named_v017_commit.sh 2026-06-22T09:58:14Z ===
+NAMED v0.17.0 apply target = 2bd1977d8fad185c9b4be47884f7e87f1add0ce3
+  (= 2bd1977d8 chore: release v0.17.0 (2026.6.19))
+
+worktree HEAD = 2bd1977d8fad185c9b4be47884f7e87f1add0ce3
+✓ ASSERT: worktree is checked out at the NAMED v0.17.0 commit (not origin/main)
+
+===== sequential per-PR apply onto the NAMED v0.17.0 commit =====
+  #50296 resolved via patch (agent/agent_init.py)
+  #50073 resolved via patch ()
+  #50064 resolved via patch (tests/run_agent/test_provider_attribution_headers.py)
+  #50056 resolved via patch (tests/hermes_cli/test_kanban_db.py)
+  #49917 resolved via patch ()
+  #49916 resolved via patch (tui_gateway/server.py)
+  #49644 resolved via patch (hermes_cli/commands.py)
+  #49184 resolved via patch ()
+  #48065 resolved via patch ()
+
+apply onto NAMED v0.17.0: clean=30 resolved=9 failed=0  (total=39) ->
+
+===== FULL-TREE compile on the v0.17.0-based integrated worktree =====
+changed .py compiled=111 compile-fail=0
+
+===== representative pytest on the v0.17.0-based integrated worktree =====
+..................................................................       [100%]
+=============================== warnings summary ===============================
+tests/agent/test_auxiliary_client.py::TestAuxiliaryPoolAwareness::test_call_llm_retries_nous_after_401
+  /mnt/devvm/custom/hermes/src/venv/lib64/python3.11/site-packages/discord/player.py:30: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
+    import audioop
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+609 passed, 28 skipped, 5 xfailed, 1 warning in 23.08s
+
+RESULT: PASS — 39/39 PRs apply onto NAMED v0.17.0 commit 2bd1977d8fad185c9b4be47884f7e87f1add0ce3 (30 clean + 9 resolved), tree compiles

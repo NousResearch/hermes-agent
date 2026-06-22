@@ -238,6 +238,54 @@ class TestUnicodeNormalized:
         assert count == 1
         assert strategy == "exact"
 
+    def test_unicode_preserved_in_output(self):
+        """Unicode characters in unchanged portions survive the replacement."""
+        content = "Hello\u2014world"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "Hello--world", "Hello--there"
+        )
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        # The em-dash should be preserved; only "world" → "there" should change
+        assert new == "Hello\u2014there", f"Got {new!r}"
+
+    def test_smart_quotes_preserved(self):
+        """Smart quotes survive when only the quoted text changes."""
+        content = 'He said \u201chello\u201d to her'
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, 'He said "hello" to her', 'He said "goodbye" to her'
+        )
+        assert count == 1, f"Expected match, got err={err}"
+        assert new == 'He said \u201cgoodbye\u201d to her', f"Got {new!r}"
+
+    def test_ellipsis_preserved(self):
+        """Ellipsis survives when surrounding text changes."""
+        content = "Wait for it\u2026and done"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "Wait for it...and done", "Wait for it...then done"
+        )
+        assert count == 1, f"Expected match, got err={err}"
+        assert new == "Wait for it\u2026then done", f"Got {new!r}"
+
+    def test_mixed_unicode_multiline(self):
+        """Multiple Unicode types in a multi-line block all survive."""
+        content = 'Line 1 \u2014 with dash\nLine 2 \u201cquoted\u201d text\nLine 3 plain'
+        old = 'Line 1 -- with dash\nLine 2 "quoted" text\nLine 3 plain'
+        new_str = 'Line 1 -- with dash\nLine 2 "quoted" text\nLine 3 changed'
+        new, count, strategy, err = fuzzy_find_and_replace(content, old, new_str)
+        assert count == 1, f"Expected match, got err={err}"
+        expected = 'Line 1 \u2014 with dash\nLine 2 \u201cquoted\u201d text\nLine 3 changed'
+        assert new == expected, f"Got {new!r}"
+
+    def test_no_unicode_no_change(self):
+        """When file has no Unicode, replacement is direct (no-op guard)."""
+        content = "plain text here"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "plain text here", "plain text there"
+        )
+        assert count == 1
+        assert new == "plain text there"
+
 
 class TestBlockAnchorThreshold:
     """Tests for the raised block_anchor threshold (Bug 4)."""

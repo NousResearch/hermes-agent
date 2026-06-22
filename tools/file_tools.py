@@ -811,6 +811,49 @@ def _is_internal_file_tool_content(content: str) -> bool:
     )
 
 
+def _strip_read_file_line_numbers(content: str) -> tuple:
+    """Strip read_file-style line-number prefixes from content.
+
+    read_file output uses the format ``LINE_NUM|CONTENT`` (e.g.
+    ``1|package main``, ``42|    return x``).  If the agent passes this
+    output directly to write_file, the line-number column gets persisted
+    into the file — corrupting source code with double line numbers.
+
+    Returns ``(cleaned_content, warning_string_or_None)``.  The warning
+    is non-None only when prefixes were actually stripped, so the caller
+    can surface it in the tool response.
+    """
+    import re
+    if not isinstance(content, str) or not content:
+        return content, None
+    # Match lines that start with digits followed by a pipe.
+    # The Go write_file corruption produces "N|N|content" (double prefix);
+    # standard read_file output is "N|content" (single prefix).
+    # Apply the regex repeatedly to strip both forms.
+    # Require at least 2 such lines to avoid false positives on
+    # legitimate content that happens to start with "1|" (rare).
+    lines = content.split("\n")
+    pattern = re.compile(r"^\d+\|")
+    matches = [pattern.match(line) for line in lines]
+    match_count = sum(1 for m in matches if m)
+    if match_count < 2:
+        return content, None
+    # Strip the prefix from every line that has it.
+    # Apply repeatedly to handle double-prefix (Go corruption: N|N|content).
+    cleaned_lines = []
+    for line in lines:
+        while pattern.match(line):
+            line = pattern.sub("", line, count=1)
+        cleaned_lines.append(line)
+    cleaned = "\n".join(cleaned_lines)
+    warning = (
+        f"Stripped read_file line-number prefixes from {match_count} of "
+        f"{len(lines)} lines before writing.  Pass file content directly "
+        f"to write_file, not read_file output."
+    )
+    return cleaned, warning
+
+
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     """Get or create ShellFileOperations for a terminal environment.
 
@@ -1437,6 +1480,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             "Strip read_file line-number prefixes or reconstruct the intended "
             "file contents before writing."
         )
+    # Detect read_file-style line-number prefixes (e.g. "1|package main").
+    # The agent sometimes passes read_file output directly to write_file,
+    # which would persist the line-number column into the file.  Strip the
+    # prefixes and warn so the agent learns to pass clean content.
+    content, line_no_warning = _strip_read_file_line_numbers(content)
     try:
         # Resolve once for the registry lock + stale check.  Failures here
         # fall back to the legacy path — write proceeds, per-task staleness
@@ -1451,8 +1499,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
-            if stale_warning:
-                result_dict["_warning"] = stale_warning
+            effective_warning = line_no_warning or stale_warning
+            if effective_warning:
+                result_dict["_warning"] = effective_warning
             if not result_dict.get("error"):
                 _mark_verification_stale(task_id, [path], session_id=session_id)
             _update_read_timestamp(path, task_id)
@@ -1472,7 +1521,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
-            effective_warning = cross_warning or stale_warning or cwd_warning
+            effective_warning = line_no_warning or cross_warning or stale_warning or cwd_warning
             if effective_warning:
                 result_dict["_warning"] = effective_warning
             # Always report the ABSOLUTE path actually written, so a wrong-cwd

@@ -166,6 +166,39 @@ class TestWriteFileHandler:
         assert "error" in result
         assert "string" in result["error"].lower() or "content" in result["error"].lower()
 
+    def test_strips_read_file_line_numbers(self):
+        """Content with read_file-style line-number prefixes is cleaned."""
+        from tools.file_tools import _strip_read_file_line_numbers
+        content = "1|package main\n2|\n3|import (\n4|\t\"fmt\"\n5|)\n"
+        cleaned, warning = _strip_read_file_line_numbers(content)
+        assert warning is not None
+        assert "Stripped read_file line-number prefixes" in warning
+        assert cleaned == "package main\n\nimport (\n\t\"fmt\"\n)\n"
+
+    def test_strips_go_double_line_numbers(self):
+        """Go double-line-number pattern (N|N|content) is also stripped."""
+        from tools.file_tools import _strip_read_file_line_numbers
+        content = "1|1|package main\n2|2|\n3|3|func main() {\n"
+        cleaned, warning = _strip_read_file_line_numbers(content)
+        assert warning is not None
+        assert cleaned == "package main\n\nfunc main() {\n"
+
+    def test_no_strip_on_normal_content(self):
+        """Content without line-number prefixes passes through unchanged."""
+        from tools.file_tools import _strip_read_file_line_numbers
+        content = "package main\n\nimport \"fmt\"\n"
+        cleaned, warning = _strip_read_file_line_numbers(content)
+        assert warning is None
+        assert cleaned == content
+
+    def test_no_strip_on_single_line_match(self):
+        """A single line starting with '1|' is not enough to trigger stripping."""
+        from tools.file_tools import _strip_read_file_line_numbers
+        content = "1|this is a single line that happens to start with 1|\nmore text here\n"
+        cleaned, warning = _strip_read_file_line_numbers(content)
+        assert warning is None
+        assert cleaned == content
+
 
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")

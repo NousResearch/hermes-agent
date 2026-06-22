@@ -171,7 +171,7 @@ def test_estimate_usage_cost_refuses_cache_pricing_without_official_cache_rate(m
 def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_endpoint_model_metadata",
-        lambda base_url, api_key=None: {
+        lambda base_url, api_key=None, **kwargs: {
             "zai-org/GLM-5-TEE": {
                 "pricing": {
                     "prompt": "0.0000005",
@@ -195,7 +195,7 @@ def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
 def test_nous_portal_pricing_preserves_vendor_prefixed_model_ids(monkeypatch):
     seen = {}
 
-    def _fake_fetch_endpoint_model_metadata(base_url, api_key=None):
+    def _fake_fetch_endpoint_model_metadata(base_url, api_key=None, **kwargs):
         seen["base_url"] = base_url
         return {
             "openai/gpt-5.5-pro": {

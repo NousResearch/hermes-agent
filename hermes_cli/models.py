@@ -378,6 +378,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
     ],
+    "qubrid": [
+        "openai/gpt-oss-120b",
+        "meta-llama/Llama-3.3-70B-Instruct",
+        "deepseek-ai/DeepSeek-V3.2",
+        "moonshotai/Kimi-K2.6",
+        "Qwen/Qwen3-Coder-Plus",
+    ],
     "opencode-zen": [
         "kimi-k2.5",
         "gpt-5.4-pro",
@@ -1029,6 +1036,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (Cloud-hosted open models, ollama.com)"),
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models, direct API)"),
     ProviderEntry("gmi",            "GMI Cloud",                "GMI Cloud (Multi-model direct API)"),
+    ProviderEntry("qubrid",         "Qubrid AI",                "Qubrid AI (OpenAI-compatible serverless models)"),
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (Curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (Open models subscription)"),
@@ -1188,6 +1196,8 @@ _PROVIDER_ALIASES = {
     "arceeai": "arcee",
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
+    "qubrid-ai": "qubrid",
+    "qubrid-platform": "qubrid",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "minimax-portal": "minimax-oauth",
@@ -2357,6 +2367,22 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     return live
         except Exception:
             pass
+    if normalized == "qubrid":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+            from providers import get_provider_profile
+
+            creds = resolve_api_key_provider_credentials("qubrid")
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            profile = get_provider_profile("qubrid")
+            if api_key and base_url and profile:
+                live = profile.fetch_models(api_key=api_key, base_url=base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
+        return list(_PROVIDER_MODELS.get("qubrid", []))
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:

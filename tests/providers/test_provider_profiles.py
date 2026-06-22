@@ -46,6 +46,70 @@ class TestNvidiaProfile:
         assert p.default_headers == {}
 
 
+class TestQubridProfile:
+    def test_base_url(self):
+        p = get_provider_profile("qubrid")
+        assert p is not None
+        assert p.base_url == "https://platform.qubrid.com/v1"
+
+    def test_default_aux_model(self):
+        p = get_provider_profile("qubrid")
+        assert p.default_aux_model == "mistralai/Mistral-7B-Instruct-v0.3"
+
+    def test_alias_lookup(self):
+        assert get_provider_profile("qubrid-ai").name == "qubrid"
+        assert get_provider_profile("qubrid-platform").name == "qubrid"
+
+    def test_catalog_url_uses_openrouter_export(self):
+        from agent.model_metadata import _provider_models_catalog_url
+
+        url = _provider_models_catalog_url(
+            "qubrid",
+            "https://platform.qubrid.com/v1",
+        )
+        assert url == "https://platform.qubrid.com/v1/openrouter/models"
+
+
+class TestQubridPricing:
+    def test_hf_per_million_pricing_converted_to_per_token(self):
+        from agent.model_metadata import _extract_pricing
+
+        result = _extract_pricing(
+            {
+                "id": "zai-org/GLM-5.2",
+                "owned_by": "qubrid",
+                "pricing": {"input": 1.1, "output": 3.851},
+            }
+        )
+        assert float(result["prompt"]) == 1.1 / 1_000_000
+        assert float(result["completion"]) == 3.851 / 1_000_000
+
+    def test_glm_52_not_flagged_expensive_with_openrouter_pricing(self, monkeypatch):
+        monkeypatch.setattr("agent.models_dev.get_model_info", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            "agent.usage_pricing.fetch_endpoint_model_metadata",
+            lambda base_url, api_key="", **kwargs: {
+                "zai-org/GLM-5.2": {
+                    "pricing": {
+                        "prompt": "0.0000011",
+                        "completion": "0.000003851",
+                    }
+                }
+            },
+        )
+
+        from hermes_cli.model_cost_guard import expensive_model_warning
+
+        assert (
+            expensive_model_warning(
+                "zai-org/GLM-5.2",
+                provider="qubrid",
+                base_url="https://platform.qubrid.com/v1",
+            )
+            is None
+        )
+
+
 class TestKimiProfile:
     def test_temperature_omit(self):
         p = get_provider_profile("kimi")

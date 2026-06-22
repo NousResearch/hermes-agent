@@ -1,0 +1,5 @@
+name: qubrid-provider
+kind: model-provider
+version: 1.0.0
+description: Qubrid AI Platform — OpenAI-compatible serverless inference
+author: Qubrid

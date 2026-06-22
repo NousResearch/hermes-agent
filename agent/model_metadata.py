@@ -53,6 +53,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "xiaomi",
     "arcee",
     "gmi",
+    "qubrid",
     "tencent-tokenhub",
     "custom", "local",
     # Common aliases
@@ -65,6 +66,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
     "arcee-ai", "arceeai",
     "gmi-cloud", "gmicloud",
+    "qubrid-ai", "qubrid-platform",
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
     "qwen-portal", "novita-ai", "novitaai",
@@ -654,6 +656,23 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
             pricing["completion"] = str(float(novita_output) / 10_000 / 1_000_000)
         return pricing
 
+    # Hugging Face Inference Provider export (Qubrid ``/v1/models``): ``pricing.input``
+    # and ``pricing.output`` are USD per 1M tokens — not per-token like OpenRouter.
+    pricing_obj = payload.get("pricing")
+    if isinstance(pricing_obj, dict):
+        hf_input = pricing_obj.get("input")
+        hf_output = pricing_obj.get("output")
+        if (
+            hf_input is not None
+            and hf_output is not None
+            and pricing_obj.get("prompt") in {None, ""}
+            and pricing_obj.get("completion") in {None, ""}
+        ):
+            return {
+                "prompt": str(float(hf_input) / 1_000_000),
+                "completion": str(float(hf_output) / 1_000_000),
+            }
+
     alias_map = {
         "prompt": ("prompt", "input", "input_cost_per_token", "prompt_token_cost"),
         "completion": ("completion", "output", "output_cost_per_token", "completion_token_cost"),
@@ -740,16 +759,88 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         return {}
 
 
+def _parse_openai_models_metadata_payload(payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Parse an OpenAI-style ``{data: [{id, pricing, ...}]}`` models response."""
+    cache: Dict[str, Dict[str, Any]] = {}
+    for model in payload.get("data", []):
+        if not isinstance(model, dict):
+            continue
+        model_id = model.get("id")
+        if not model_id:
+            continue
+        entry: Dict[str, Any] = {"name": model.get("name", model_id)}
+        context_length = _extract_context_length(model)
+        if context_length is not None:
+            entry["context_length"] = context_length
+        max_completion_tokens = _extract_max_completion_tokens(model)
+        if max_completion_tokens is not None:
+            entry["max_completion_tokens"] = max_completion_tokens
+        pricing = _extract_pricing(model)
+        if pricing:
+            entry["pricing"] = pricing
+        _add_model_aliases(cache, model_id, entry)
+    return cache
+
+
+def _provider_models_catalog_url(provider: str, base_url: str) -> str:
+    """Explicit catalog URL when inference ``/models`` is not OpenRouter-shaped."""
+    normalized_provider = (provider or "").strip().lower()
+    if normalized_provider == "qubrid" and base_url:
+        return base_url.rstrip("/") + "/openrouter/models"
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(normalized_provider)
+        if profile and profile.models_url:
+            return profile.models_url.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def fetch_endpoint_model_metadata(
     base_url: str,
     api_key: str = "",
     force_refresh: bool = False,
+    *,
+    models_url: str = "",
 ) -> Dict[str, Dict[str, Any]]:
     """Fetch model metadata from an OpenAI-compatible ``/models`` endpoint.
 
     This is used for explicit custom endpoints where hardcoded global model-name
     defaults are unreliable. Results are cached in memory per base URL.
+
+    When *models_url* is set (e.g. Qubrid's ``/v1/openrouter/models`` export),
+    that URL is fetched directly instead of ``{base_url}/models``.
     """
+    override_url = (models_url or "").strip()
+    if override_url:
+        cache_key = override_url.rstrip("/")
+        if not force_refresh:
+            cached = _endpoint_model_metadata_cache.get(cache_key)
+            cached_at = _endpoint_model_metadata_cache_time.get(cache_key, 0)
+            if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
+                return cached
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        try:
+            response = requests.get(
+                override_url,
+                headers=headers,
+                timeout=10,
+                verify=_resolve_requests_verify(),
+            )
+            response.raise_for_status()
+            payload = response.json()
+            cache = _parse_openai_models_metadata_payload(payload)
+            _endpoint_model_metadata_cache[cache_key] = cache
+            _endpoint_model_metadata_cache_time[cache_key] = time.time()
+            return cache
+        except Exception as exc:
+            logger.debug("Failed to fetch model metadata from %s: %s", override_url, exc)
+            _endpoint_model_metadata_cache[cache_key] = {}
+            _endpoint_model_metadata_cache_time[cache_key] = time.time()
+            return {}
+
     normalized = _normalize_base_url(base_url)
     if not normalized or _is_openrouter_base_url(normalized):
         return {}
@@ -829,24 +920,7 @@ def fetch_endpoint_model_metadata(
             response = requests.get(url, headers=headers, timeout=10, verify=_resolve_requests_verify())
             response.raise_for_status()
             payload = response.json()
-            cache: Dict[str, Dict[str, Any]] = {}
-            for model in payload.get("data", []):
-                if not isinstance(model, dict):
-                    continue
-                model_id = model.get("id")
-                if not model_id:
-                    continue
-                entry: Dict[str, Any] = {"name": model.get("name", model_id)}
-                context_length = _extract_context_length(model)
-                if context_length is not None:
-                    entry["context_length"] = context_length
-                max_completion_tokens = _extract_max_completion_tokens(model)
-                if max_completion_tokens is not None:
-                    entry["max_completion_tokens"] = max_completion_tokens
-                pricing = _extract_pricing(model)
-                if pricing:
-                    entry["pricing"] = pricing
-                _add_model_aliases(cache, model_id, entry)
+            cache = _parse_openai_models_metadata_payload(payload)
 
             # If this is a llama.cpp server, query /props for actual allocated context
             is_llamacpp = any(
@@ -888,9 +962,16 @@ def _resolve_endpoint_context_length(
     model: str,
     base_url: str,
     api_key: str = "",
+    *,
+    provider: str = "",
 ) -> Optional[int]:
     """Resolve context length from an endpoint's live ``/models`` metadata."""
-    endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    catalog_url = _provider_models_catalog_url(provider, base_url)
+    endpoint_metadata = fetch_endpoint_model_metadata(
+        base_url,
+        api_key=api_key,
+        models_url=catalog_url,
+    )
     matched = endpoint_metadata.get(model)
     if not matched:
         if len(endpoint_metadata) == 1:
@@ -1880,6 +1961,12 @@ def get_model_context_length(
         # GMI exposes authoritative context_length via /models, but it is not
         # in models.dev yet. Preserve that higher-fidelity endpoint lookup.
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+        if ctx is not None:
+            return ctx
+    if effective_provider == "qubrid" and base_url:
+        ctx = _resolve_endpoint_context_length(
+            model, base_url, api_key=api_key, provider="qubrid"
+        )
         if ctx is not None:
             return ctx
     # 5e. Ollama native /api/show probe — runs for ANY provider with a

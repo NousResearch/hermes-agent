@@ -725,10 +725,21 @@ def get_pricing_entry(
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
     if route.base_url:
+        catalog_url = ""
+        try:
+            from agent.model_metadata import _provider_models_catalog_url
+
+            catalog_url = _provider_models_catalog_url(route.provider or "", route.base_url)
+        except Exception:
+            catalog_url = ""
         entry = _pricing_entry_from_metadata(
-            fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),
+            fetch_endpoint_model_metadata(
+                route.base_url,
+                api_key=api_key or "",
+                models_url=catalog_url,
+            ),
             route.model,
-            source_url=f"{route.base_url.rstrip('/')}/models",
+            source_url=catalog_url or f"{route.base_url.rstrip('/')}/models",
             pricing_version="openai-compatible-models-api",
         )
         if entry:

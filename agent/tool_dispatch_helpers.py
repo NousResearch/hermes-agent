@@ -112,15 +112,22 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
     reserved_paths: list[Path] = []
     for tool_call in tool_calls:
         tool_name = tool_call.function.name
-        try:
-            function_args = json.loads(tool_call.function.arguments)
-        except Exception:
-            logging.debug(
-                "Could not parse args for %s — defaulting to sequential; raw=%s",
-                tool_name,
-                tool_call.function.arguments[:200],
-            )
-            return False
+        raw_args = tool_call.function.arguments
+        if isinstance(raw_args, dict):
+            # Already parsed (e.g. direct dispatch) — accept it as-is, like the
+            # executors do, instead of letting json.loads raise and force sequential.
+            function_args = raw_args
+        else:
+            try:
+                function_args = json.loads(raw_args)
+            except Exception:
+                raw_preview = raw_args[:200] if isinstance(raw_args, str) else repr(raw_args)[:200]
+                logging.debug(
+                    "Could not parse args for %s — defaulting to sequential; raw=%s",
+                    tool_name,
+                    raw_preview,
+                )
+                return False
         if not isinstance(function_args, dict):
             logging.debug(
                 "Non-dict args for %s (%s) — defaulting to sequential",

@@ -29,17 +29,24 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 
-def _make_codex_agent(tmp_path, monkeypatch):
+def _make_codex_agent(
+    tmp_path,
+    monkeypatch,
+    *,
+    model="gpt-5.5",
+    provider="openai-codex",
+    base_url="https://chatgpt.com/backend-api/codex",
+):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
     from run_agent import AIAgent
 
     agent = AIAgent(
-        model="gpt-5.5",
-        provider="openai-codex",
+        model=model,
+        provider=provider,
         api_key="sk-dummy",
-        base_url="https://chatgpt.com/backend-api/codex",
+        base_url=base_url,
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
@@ -312,6 +319,120 @@ def test_event_idle_kills_after_first_event_then_silence(tmp_path, monkeypatch):
         assert "after first byte" in str(excinfo.value)
         assert "codex_stream_idle_kill" in closes
         assert "codex_ttfb_kill" not in closes
+    finally:
+        stop["flag"] = True
+
+
+def test_non_openai_responses_provider_does_not_use_codex_fast_watchdogs_by_default(tmp_path, monkeypatch):
+    """Fugu-style Responses providers can legitimately pause between SSE events.
+
+    The aggressive Codex TTFB/event-idle watchdogs are for the ChatGPT Codex
+    backend, where reconnecting is usually cheap and correct. Applying their
+    short defaults to other Responses providers turns normal long reasoning
+    gaps into local aborts surfaced as BrokenPipe/ReadError.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(
+        tmp_path,
+        monkeypatch,
+        model="fugu-ultra",
+        provider="sakana-fugu",
+        base_url="https://api.sakana.ai/v1",
+    )
+    monkeypatch.delenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+
+    original_env_float = h._env_float
+
+    def fast_default(name, default):
+        if name in {
+            "HERMES_CODEX_TTFB_TIMEOUT_SECONDS",
+            "HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS",
+        }:
+            return 1.0
+        return original_env_float(name, default)
+
+    monkeypatch.setattr(h, "_env_float", fast_default)
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    sentinel = SimpleNamespace(ok=True)
+
+    def fake_slow_first_event(api_kwargs, client=None, on_first_delta=None):
+        time.sleep(1.5)
+        return sentinel
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_slow_first_event)
+    assert h.interruptible_api_call(agent, {"model": "fugu-ultra", "input": "hi"}) is sentinel
+    assert "codex_ttfb_kill" not in closes
+
+    def fake_gap_after_event(api_kwargs, client=None, on_first_delta=None):
+        agent._codex_stream_last_event_ts = time.time()
+        time.sleep(1.5)
+        return sentinel
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_gap_after_event)
+    assert h.interruptible_api_call(agent, {"model": "fugu-ultra", "input": "hi"}) is sentinel
+    assert "codex_stream_idle_kill" not in closes
+
+
+def test_non_openai_responses_provider_can_opt_into_event_idle_watchdog(tmp_path, monkeypatch):
+    """Operators can still enable the event-idle kill for non-Codex providers."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(
+        tmp_path,
+        monkeypatch,
+        model="fugu-ultra",
+        provider="sakana-fugu",
+        base_url="https://api.sakana.ai/v1",
+    )
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "10")
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "1")
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent,
+        "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent,
+        "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    stop = {"flag": False}
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        agent._codex_stream_last_event_ts = time.time()
+        deadline = time.time() + 30
+        while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
+            time.sleep(0.02)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    try:
+        with pytest.raises(TimeoutError) as excinfo:
+            h.interruptible_api_call(agent, {"model": "fugu-ultra", "input": "hi"})
+        assert "after first byte" in str(excinfo.value)
+        assert "codex_stream_idle_kill" in closes
     finally:
         stop["flag"] = True
 

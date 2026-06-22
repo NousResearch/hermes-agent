@@ -27,6 +27,7 @@ class TestSakanaFuguProfile:
         assert profile.base_url == "https://api.sakana.ai/v1"
         assert profile.env_vars == ("SAKANA_API_KEY", "SAKANA_BASE_URL")
         assert profile.default_aux_model == "fugu"
+        assert profile.default_stale_timeout_seconds == 600.0
         assert profile.fallback_models == ("fugu-ultra", "fugu")
         sakana_alias = get_provider_profile("sakana")
         fugu_alias = get_provider_profile("fugu")

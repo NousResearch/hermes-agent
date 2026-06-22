@@ -1118,7 +1118,8 @@ class AIAgent:
           1. ``providers.<id>.models.<model>.stale_timeout_seconds``
           2. ``providers.<id>.stale_timeout_seconds``
           3. ``HERMES_API_CALL_STALE_TIMEOUT`` env var
-          4. 90.0s default (time-to-first-byte for non-streaming / Codex
+          4. provider profile default for known long-running providers
+          5. 90.0s default (time-to-first-byte for non-streaming / Codex
              internal-streaming requests; lowered from 300s in May 2026 so
              fallback providers kick in faster when upstream providers
              stall).  The detector still scales up for large contexts in
@@ -1136,6 +1137,15 @@ class AIAgent:
         env_timeout = os.getenv("HERMES_API_CALL_STALE_TIMEOUT")
         if env_timeout is not None:
             return float(env_timeout), False
+
+        try:
+            from providers import get_provider_profile
+            profile = get_provider_profile(getattr(self, "provider", ""))
+        except Exception:
+            profile = None
+        profile_timeout = getattr(profile, "default_stale_timeout_seconds", None)
+        if profile_timeout is not None:
+            return float(profile_timeout), True
 
         return 90.0, True
 

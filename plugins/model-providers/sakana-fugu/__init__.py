@@ -50,6 +50,7 @@ sakana_fugu = SakanaFuguProfile(
     supports_vision=True,
     default_aux_model="fugu",
     fallback_models=("fugu-ultra", "fugu"),
+    default_stale_timeout_seconds=600.0,
 )
 
 register_provider(sakana_fugu)

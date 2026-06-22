@@ -88,6 +88,11 @@ class ProviderProfile:
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
+    # Optional profile-level stale-call default for providers whose Responses or
+    # chat-completions turns legitimately run longer than Hermes' global 90s
+    # implicit stale detector. User config and HERMES_API_CALL_STALE_TIMEOUT
+    # still take precedence.
+    default_stale_timeout_seconds: float | None = None
     default_aux_model: str = (
         ""  # cheap model for auxiliary tasks (compression, vision, etc.)
     )

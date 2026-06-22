@@ -300,13 +300,20 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # No-byte TTFB cutoff. The OpenAI SDK's own streaming read timeout is far
     # longer (openai 2.x DEFAULT_TIMEOUT.read = 600s), so a tight 12s default
     # killed subscription-backed Codex requests mid-prefill before the backend
-    # had a chance to emit its first SSE event. Default to 120s — long enough to
-    # clear normal backend admission / prompt prefill, short enough to still
-    # reconnect promptly when the socket is genuinely wedged. Set
-    # HERMES_CODEX_TTFB_TIMEOUT_SECONDS=0 to disable this watchdog entirely.
+    # had a chance to emit its first SSE event. Default to 120s for the
+    # chatgpt.com Codex backend — long enough to clear normal backend admission
+    # / prompt prefill, short enough to still reconnect promptly when that
+    # backend is genuinely wedged. Other OpenAI-compatible Responses providers
+    # (for example Sakana Fugu) may legitimately spend longer in model-side
+    # reasoning without Codex-style keepalives, so they do not inherit this
+    # Codex-specific fast watchdog unless the operator explicitly sets
+    # HERMES_CODEX_TTFB_TIMEOUT_SECONDS. Set it to 0 to disable entirely.
+    _ttfb_env_raw = os.getenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS")
     _ttfb_enabled = _codex_watchdog_enabled
     _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
-    if _ttfb_timeout <= 0:
+    if not _openai_codex_backend and _ttfb_env_raw is None:
+        _ttfb_enabled = False
+    elif _ttfb_timeout <= 0:
         _ttfb_enabled = False
     elif _openai_codex_backend:
         _ttfb_disable_above = _env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 25_000.0)
@@ -338,12 +345,15 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 )
                 _ttfb_timeout = _ttfb_cap
 
+    _codex_idle_env_raw = os.getenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS")
     _codex_idle_enabled = _codex_watchdog_enabled
     _codex_idle_timeout = _env_float(
         "HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS",
         _codex_idle_timeout_default,
     )
-    if _codex_idle_timeout <= 0:
+    if not _openai_codex_backend and _codex_idle_env_raw is None:
+        _codex_idle_enabled = False
+    elif _codex_idle_timeout <= 0:
         _codex_idle_enabled = False
 
     if _codex_watchdog_enabled:

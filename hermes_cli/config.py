@@ -2728,6 +2728,13 @@ DEFAULT_CONFIG = {
             "enabled": False,
         },
 
+        # Echo each successfully transcribed voice/audio message back to the
+        # user as a separate "🎙️ ..." chat message. The transcript is always
+        # included in the agent's context when STT succeeds; disabling this only
+        # hides the extra user-visible confirmation message. Default preserves
+        # existing behavior.
+        "echo_voice_transcripts": True,
+
         # Maximum bytes for an inbound image / audio / video payload the
         # gateway will buffer into memory and cache to disk. Inbound media is
         # read fully into RAM before being written, so an unbounded upload

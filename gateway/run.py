@@ -9611,24 +9611,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_text,
                     audio_paths,
                 )
-                # Echo each successful transcript back to the user immediately,
-                # before the agent loop runs. Lets the user verify STT quality
-                # in real-time and see the raw whisper output verbatim.
+                # Optionally echo each successful transcript back to the user
+                # immediately, before the agent loop runs. The transcript is
+                # always prepended to the model input; this user-visible echo is
+                # controlled by gateway.echo_voice_transcripts.
                 if _successful_transcripts:
-                    _echo_adapter = self.adapters.get(source.platform)
                     _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                    if _echo_adapter:
-                        for _tx in _successful_transcripts:
-                            try:
-                                await _echo_adapter.send(
-                                    source.chat_id,
-                                    f'🎙️ "{_tx}"',
-                                    metadata=_echo_meta,
-                                )
-                            except Exception as _echo_exc:
-                                logger.debug(
-                                    "Transcript echo failed (non-fatal): %s", _echo_exc,
-                                )
+                    await self._echo_voice_transcripts(source, _successful_transcripts, metadata=_echo_meta)
                 # NOTE: Previously, when transcription failed (e.g. no STT
                 # provider configured), the gateway also emitted a hardcoded
                 # English notice via `_stt_adapter.send()`. That bypassed the
@@ -13979,6 +13968,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return prefix
         return user_text
 
+    async def _echo_voice_transcripts(
+        self,
+        source,
+        transcripts: List[str],
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Echo successful STT transcripts to the user when configured.
+
+        The transcript is always included in the agent's input by
+        _enrich_message_with_transcription(); this controls only the extra
+        user-visible confirmation message.
+        """
+        if not transcripts:
+            return
+        cfg = _load_gateway_config()
+        raw_enabled = cfg_get(cfg, "gateway", "echo_voice_transcripts", default=True)
+        if isinstance(raw_enabled, str):
+            echo_enabled = raw_enabled.strip().lower() not in {"0", "false", "no", "off", ""}
+        else:
+            echo_enabled = bool(raw_enabled)
+        if not echo_enabled:
+            return
+
+        echo_adapter = self.adapters.get(source.platform)
+        if not echo_adapter:
+            return
+        for transcript in transcripts:
+            try:
+                await echo_adapter.send(
+                    source.chat_id,
+                    f'🎙️ "{transcript}"',
+                    metadata=metadata,
+                )
+            except Exception as echo_exc:
+                logger.debug("Transcript echo failed (non-fatal): %s", echo_exc)
+
     async def _enrich_message_with_transcription(
         self,
         user_text: str,
@@ -14110,23 +14136,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
                 text, audio_paths,
             )
-            # Echo raw transcripts back to the user so voice interrupts
-            # feel identical to fresh voice messages.
+            # Keep queued voice interrupts aligned with fresh voice messages:
+            # transcripts are always included in the agent input, while the
+            # separate user-visible echo obeys gateway.echo_voice_transcripts.
             if successful_transcripts:
-                echo_adapter = self.adapters.get(source.platform)
                 echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                if echo_adapter:
-                    for tx in successful_transcripts:
-                        try:
-                            await echo_adapter.send(
-                                source.chat_id,
-                                f'🎙️ "{tx}"',
-                                metadata=echo_meta,
-                            )
-                        except Exception as echo_exc:
-                            logger.debug(
-                                "Transcript echo failed (non-fatal): %s", echo_exc,
-                            )
+                await self._echo_voice_transcripts(source, successful_transcripts, metadata=echo_meta)
             return enriched_text or None
 
         # Non-audio fallback: preserve original _dequeue_pending_text semantics.

@@ -358,6 +358,15 @@ Voice messages you send on Telegram are automatically transcribed by Hermes's co
 - `groq` uses Groq Whisper and requires `GROQ_API_KEY`
 - `openai` uses OpenAI Whisper and requires `VOICE_TOOLS_OPENAI_KEY`
 
+By default, Hermes also sends a separate confirmation message containing the raw transcript (for example `🎙️ "..."`) before the agent replies. If you want STT to keep working but do not want that extra chat message, disable only the echo:
+
+```yaml
+gateway:
+  echo_voice_transcripts: false
+```
+
+The transcript is still injected into the agent's context when STT succeeds; this setting only controls the user-visible confirmation message.
+
 #### Skipping STT: pass the raw audio file to the agent
 
 If you'd rather have the **agent itself** handle audio — for diarization, a custom transcription tool, or just archiving the recording — set `stt.enabled: false` in `~/.hermes/config.yaml`:

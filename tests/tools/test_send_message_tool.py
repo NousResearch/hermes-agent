@@ -3097,3 +3097,128 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+# ── Per-platform import isolation (regression for the #41112 stale eager
+#    Slack import that took down delivery for ALL targets) ────────────────
+
+
+class TestSlackAdapterImportIsolation:
+    """A missing/broken single platform adapter must degrade only that
+    platform, never the whole ``send_message`` dispatch.
+
+    Regression for the crash where ``_send_to_platform`` eagerly ran
+    ``from gateway.platforms.slack import SlackAdapter`` at function entry
+    for *every* target.  After the Slack adapter moved to a bundled plugin
+    in #41112 (``gateway/platforms/slack.py`` deleted), that unconditional
+    import raised ``ModuleNotFoundError: No module named
+    'gateway.platforms.slack'`` and aborted delivery for Discord, local,
+    and everything else — none of which have anything to do with Slack.
+
+    These assert the *behavior contract* (routing a non-Slack send must not
+    touch the Slack adapter), not a snapshot, so they keep catching a
+    reintroduced eager/top-level import regardless of which adapters happen
+    to live on disk.
+    """
+
+    @staticmethod
+    def _register_fake_discord(send_fn):
+        """Override the ``discord`` registry entry with a stub sender and
+        return a restore callable that puts the original back."""
+        from gateway.platform_registry import platform_registry, PlatformEntry
+
+        original = platform_registry.get("discord")
+        platform_registry.register(
+            PlatformEntry(
+                name="discord",
+                label="Discord",
+                adapter_factory=lambda cfg: None,
+                check_fn=lambda: True,
+                standalone_sender_fn=send_fn,
+            )
+        )
+
+        def _restore():
+            if original is not None:
+                platform_registry.register(original)
+            else:
+                platform_registry.unregister("discord")
+
+        return _restore
+
+    @pytest.mark.asyncio
+    async def test_discord_send_survives_absent_slack_module(self, monkeypatch):
+        """A Discord send completes even when ``gateway.platforms.slack`` is
+        un-importable — the original symptom was that it didn't."""
+        from tools.send_message_tool import _send_to_platform
+
+        # Make the Slack adapter module un-importable (as it is post-#41112):
+        # ``import gateway.platforms.slack`` now raises, exactly like the
+        # production crash that motivated this test.
+        monkeypatch.setitem(sys.modules, "gateway.platforms.slack", None)
+
+        sent = {}
+
+        async def discord_send(pconfig, chat_id, message, *, thread_id=None,
+                               media_files=None):
+            sent["chat_id"] = chat_id
+            sent["message"] = message
+            return {"success": True, "message_id": "disc-1"}
+
+        restore = self._register_fake_discord(discord_send)
+        try:
+            result = await _send_to_platform(
+                Platform.DISCORD,
+                SimpleNamespace(extra={}, token="discord-token"),
+                "123456789",
+                "hello discord",
+            )
+        finally:
+            restore()
+
+        assert result == {"success": True, "message_id": "disc-1"}
+        assert sent["message"] == "hello discord"
+
+    @pytest.mark.asyncio
+    async def test_no_eager_slack_import_when_routing_non_slack_target(self, monkeypatch):
+        """Routing a Discord send must not even *attempt* to import the Slack
+        adapter.  This is the tight invariant: it fails the instant an
+        unconditional/top-level ``gateway.platforms.slack`` import is
+        reintroduced, before it can crash delivery in production."""
+        import importlib.abc
+        from tools.send_message_tool import _send_to_platform
+
+        attempts = []
+
+        class _SlackImportTrap(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path, target=None):
+                if fullname == "gateway.platforms.slack":
+                    attempts.append(fullname)
+                return None  # never actually claims the module
+
+        trap = _SlackImportTrap()
+        sys.meta_path.insert(0, trap)
+
+        async def discord_send(pconfig, chat_id, message, *, thread_id=None,
+                               media_files=None):
+            return {"success": True, "message_id": "disc-2"}
+
+        restore = self._register_fake_discord(discord_send)
+        try:
+            result = await _send_to_platform(
+                Platform.DISCORD,
+                SimpleNamespace(extra={}, token="discord-token"),
+                "123456789",
+                "no slack import please",
+            )
+        finally:
+            restore()
+            sys.meta_path.remove(trap)
+
+        assert result == {"success": True, "message_id": "disc-2"}
+        assert attempts == [], (
+            "routing a Discord send tried to import gateway.platforms.slack "
+            f"({attempts}) — an eager Slack import has been reintroduced and "
+            "will crash delivery for every target on a build where the Slack "
+            "adapter has moved to a plugin"
+        )

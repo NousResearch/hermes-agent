@@ -201,16 +201,6 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
-                  label: 'devops',
-                  key: 'skills-bundled-devops',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/devops/devops-kanban-orchestrator',
-                    'user-guide/skills/bundled/devops/devops-kanban-worker',
-                  ],
-                },
-                {
-                  type: 'category',
                   label: 'dogfood',
                   key: 'skills-bundled-dogfood',
                   collapsed: true,

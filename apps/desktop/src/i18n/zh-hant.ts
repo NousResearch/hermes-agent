@@ -1436,8 +1436,12 @@ export const zhHant = defineLocale({
       fetch: '下載中…',
       pull: '快完成了…',
       pydeps: '收尾中…',
+      update: '正在更新 Hermes…',
+      rebuild: '正在重新建置桌面應用程式…',
       restart: '正在重新啟動 Hermes…',
+      done: '更新完成',
       manual: '從終端機更新',
+      guiSkew: '請更新桌面應用程式',
       error: '更新已暫停'
     },
     checking: '正在檢查更新…',
@@ -1460,6 +1464,9 @@ export const zhHant = defineLocale({
     manualTitle: '從終端機更新',
     manualBody: '您是從命令列安裝的 Hermes，因此更新也需要在那裡執行。請將此指令貼到終端機：',
     manualPickedUp: '下次啟動 Hermes 時會使用新版本。',
+    guiSkewTitle: '請更新桌面應用程式',
+    guiSkewBody:
+      '後端已更新，但此桌面應用程式套件未變更。請更新或重新安裝 Hermes 桌面應用程式（你的 AppImage / .deb / .rpm）以保持一致。',
     copy: '複製',
     copied: '已複製',
     done: '完成',

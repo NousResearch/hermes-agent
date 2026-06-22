@@ -1318,3 +1318,121 @@ class TestTerminateHostPidPosix:
         pr.ProcessRegistry._terminate_host_pid(12345)
 
         assert kill_calls == [(12345, signal.SIGTERM)]
+
+
+# =========================================================================
+# PID-reuse guard — a recycled PID/PGID must never be signalled.
+#
+# Regression: once a background-session process exits and is reaped, the kernel
+# can recycle its PID onto an unrelated process (observed in the wild landing on
+# a desktop browser's session leader, whose whole tree we then SIGTERMed —
+# Firefox dying at irregular intervals).  Identity is re-validated via the
+# kernel start time captured at spawn before any signal is sent.
+# =========================================================================
+
+class TestPidReuseGuard:
+    def test_terminate_refuses_when_start_time_mismatches(self, registry):
+        """A live PID whose start time changed (recycled) is NOT killed."""
+        proc = _spawn_python_sleep(30)
+        try:
+            real_start = ProcessRegistry._safe_host_start_time(proc.pid)
+            assert real_start is not None, "no /proc start time on this platform?"
+            # Simulate recycling: the recorded baseline no longer matches.
+            registry._terminate_host_pid(proc.pid, expected_start=real_start + 1)
+            # The process must still be alive — the guard refused to signal it.
+            assert not _wait_until(lambda: proc.poll() is not None, timeout=1.0)
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_terminate_kills_when_start_time_matches(self, registry):
+        """The genuine process (start time matches) IS terminated."""
+        proc = _spawn_python_sleep(30)
+        try:
+            real_start = ProcessRegistry._safe_host_start_time(proc.pid)
+            registry._terminate_host_pid(proc.pid, expected_start=real_start)
+            assert _wait_until(lambda: proc.poll() is not None, timeout=5.0)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_terminate_without_baseline_is_best_effort(self, registry):
+        """No baseline (legacy) → degrade to prior unconditional behaviour."""
+        proc = _spawn_python_sleep(30)
+        try:
+            registry._terminate_host_pid(proc.pid)  # expected_start=None
+            assert _wait_until(lambda: proc.poll() is not None, timeout=5.0)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_recover_skips_recycled_pid(self, registry, tmp_path):
+        """Checkpoint PID is alive but its start time changed → not adopted."""
+        wrong_start = (ProcessRegistry._safe_host_start_time(os.getpid()) or 0) + 999
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_recycled",
+            "command": "sleep 999",
+            "pid": os.getpid(),            # alive...
+            "pid_scope": "host",
+            "host_start_time": wrong_start,  # ...but a different process now
+            "task_id": "t1",
+        }]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            assert registry.recover_from_checkpoint() == 0
+            assert len(registry._running) == 0
+
+    def test_recover_adopts_when_start_time_matches(self, registry, tmp_path):
+        """Checkpoint PID alive AND start time matches → adopted as before."""
+        real_start = ProcessRegistry._safe_host_start_time(os.getpid())
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_match",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "pid_scope": "host",
+            "host_start_time": real_start,
+            "task_id": "t1",
+        }]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            assert registry.recover_from_checkpoint() == 1
+
+    def test_legacy_checkpoint_without_start_time_still_recovers(self, registry, tmp_path):
+        """Entries written before host_start_time existed degrade to liveness."""
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_legacy",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "pid_scope": "host",
+            "task_id": "t1",
+        }]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            assert registry.recover_from_checkpoint() == 1
+
+    def test_write_checkpoint_backfills_host_start_time(self, registry, tmp_path):
+        """A host session is checkpointed with a kernel start time recorded."""
+        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
+            s = _make_session()
+            s.pid = os.getpid()
+            s.pid_scope = "host"
+            registry._running[s.id] = s
+            registry._write_checkpoint()
+            data = json.loads((tmp_path / "procs.json").read_text())
+            assert data[0]["host_start_time"] is not None
+
+    def test_refresh_detached_marks_recycled_pid_exited(self, registry):
+        """A detached session whose PID got recycled is moved to finished."""
+        wrong_start = (ProcessRegistry._safe_host_start_time(os.getpid()) or 0) + 999
+        s = _make_session(sid="proc_detached")
+        s.pid = os.getpid()          # alive, but...
+        s.pid_scope = "host"
+        s.detached = True
+        s.host_start_time = wrong_start  # ...identity no longer matches
+        registry._running[s.id] = s
+        refreshed = registry._refresh_detached_session(s)
+        assert refreshed.exited is True
+        assert s.id in registry._finished

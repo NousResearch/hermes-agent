@@ -38,7 +38,8 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 |---------|-------------|
 | `/new [name]` (alias: `/reset`) | Start a new session (fresh session ID + history). Optional `[name]` sets the initial session title — e.g. `/new my-experiment` opens a fresh session already titled `my-experiment` so it's easy to find later with `/resume` or `/sessions`. Append `now`, `--yes`, or `-y` to skip the confirmation modal — e.g. `/reset now`, `/new --yes my-experiment`. |
 | `/clear` | Clear screen and start a new session |
-| `/history` | Show conversation history |
+| `/history` | Show conversation history (respects `/timestamps` when enabled) |
+| `/prompt [initial text]` (alias: `/compose`) | **CLI only.** Open `$EDITOR` to compose your next user message in markdown, then send it on save. Optional initial text seeds the buffer. TUI parity: Ctrl+G submits the edited draft. |
 | `/save` | Save the current conversation |
 | `/retry` | Retry the last message (resend to agent) |
 | `/undo` | Remove the last user/assistant exchange |
@@ -70,7 +71,8 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/personality` | Set a predefined personality |
 | `/verbose` | Cycle tool progress display: off → new → all → verbose. Can be [enabled for messaging](#notes) via config. |
 | `/fast [normal\|fast\|status]` | Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode. Options: `normal`, `fast`, `status`. |
-| `/reasoning` | Manage reasoning effort and display (usage: /reasoning [level\|show\|hide]) |
+| `/reasoning` | Manage reasoning effort and display (usage: `/reasoning [level|show|hide|full|clamp]`). `full` shows the complete thinking trace in `/history` instead of a short clamp. Levels include `none`, `minimal`, `low`, `medium`, `high`, and `xhigh` where the provider supports them. |
+| `/timestamps [on|off|status]` (alias: `/ts`) | **CLI only.** Toggle `[HH:MM]` timestamps on messages and in `/history`. |
 | `/skin` | Show or change the display skin/theme |
 | `/statusbar` (alias: `/sb`) | Toggle the context/model status bar on or off |
 | `/voice [on\|off\|tts\|status]` | Toggle CLI voice mode and spoken playback. Recording uses `voice.record_key` (default: `Ctrl+B`). |
@@ -217,7 +219,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits pulled live from the provider's API. |
 | `/credits` | Show your Nous credit balance and a top-up link that opens the portal billing page in a browser. |
 | `/insights [days]` | Show usage analytics. |
-| `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display. |
+| `/reasoning [level\|show\|hide\|full\|clamp]` | Change reasoning effort or toggle reasoning display. `full` shows the complete thinking trace instead of a short clamp. |
 | `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | Control spoken replies in chat. `join`/`channel`/`leave` manage Discord voice-channel mode. |
 | `/rollback [number]` | List or restore filesystem checkpoints. |
 | `/background <prompt>` | Run a prompt in a separate background session. Results are delivered back to the same chat when the task finishes. See [Messaging Background Sessions](/user-guide/messaging/#background-sessions). |
@@ -245,7 +247,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 ## Notes
 
-- `/skin`, `/snapshot`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/platforms`, `/paste`, `/image`, `/statusbar`, `/plugins`, `/busy`, `/indicator`, `/redraw`, `/clear`, `/history`, `/save`, `/copy`, `/handoff`, `/billing`, and `/quit` are **CLI-only** commands.
+- `/skin`, `/snapshot`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/platforms`, `/paste`, `/image`, `/statusbar`, `/plugins`, `/busy`, `/indicator`, `/redraw`, `/clear`, `/history`, `/save`, `/copy`, `/handoff`, `/billing`, `/prompt`, `/timestamps`, and `/quit` are **CLI-only** commands.
 - `/skills` is **CLI-only for search/browse/install**; its write-approval review subcommands (`pending`, `approve`, `reject`, `diff`, `approval`) also work on messaging platforms when `skills.write_approval` is on. `/memory` works on **both** surfaces.
 - `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
 - `/sethome`, `/update`, `/restart`, `/approve`, `/deny`, `/topic`, `/platform`, and `/commands` are **messaging-only** commands.

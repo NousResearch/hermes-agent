@@ -195,6 +195,8 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 | `TERMINAL_DOCKER_IMAGE` | Docker image (default: `nikolaik/python-nodejs:python3.11-nodejs20`) |
 | `TERMINAL_DOCKER_FORWARD_ENV` | JSON array of env var names to explicitly forward into Docker terminal sessions. Note: skill-declared `required_environment_variables` are forwarded automatically — you only need this for vars not declared by any skill. |
 | `TERMINAL_DOCKER_VOLUMES` | Additional Docker volume mounts (comma-separated `host:container` pairs) |
+| `TERMINAL_DOCKER_ENV` | JSON object of literal `KEY=value` pairs injected into the Docker terminal sandbox |
+| `TERMINAL_DOCKER_EXTRA_ARGS` | JSON array of extra `docker run` flags (for example `["--gpus=all"]`); mirrors `terminal.docker_extra_args` |
 | `TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE` | Advanced opt-in: mount the launch cwd into Docker `/workspace` (`true`/`false`, default: `false`) |
 | `TERMINAL_SINGULARITY_IMAGE` | Singularity image or `.sif` path |
 | `TERMINAL_MODAL_IMAGE` | Modal container image |
@@ -205,6 +207,17 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 | `SUDO_PASSWORD` | Enable sudo without interactive prompt |
 
 For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETIME_SECONDS` controls when Hermes cleans up an idle terminal session, and later resumes may recreate the sandbox rather than keep the same live processes running.
+
+## Memory providers (Mem0)
+
+| Variable | Description |
+|----------|-------------|
+| `MEM0_API_KEY` | Mem0 API key for cloud or authenticated self-hosted instances |
+| `MEM0_HOST` | Self-hosted Mem0 base URL (for example `http://localhost:24220`). When set, overrides the default cloud endpoint. |
+| `MEM0_USER_ID` | Mem0 user identifier (default: `hermes-user`) |
+| `MEM0_AGENT_ID` | Mem0 agent identifier (default: `hermes`) |
+
+See [Memory providers](/user-guide/features/memory-providers#mem0) for setup.
 
 ## SSH Backend
 

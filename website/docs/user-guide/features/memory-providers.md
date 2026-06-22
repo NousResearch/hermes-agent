@@ -320,8 +320,8 @@ Server-side LLM fact extraction with semantic search, reranking, and automatic d
 | | |
 |---|---|
 | **Best for** | Hands-off memory management — Mem0 handles extraction automatically |
-| **Requires** | `pip install mem0ai` + API key |
-| **Data storage** | Mem0 Cloud |
+| **Requires** | `pip install mem0ai` + API key (cloud or self-hosted with auth) |
+| **Data storage** | Mem0 Cloud or a self-hosted Mem0 instance |
 | **Cost** | Mem0 pricing |
 
 **Tools:** `mem0_profile` (all stored memories), `mem0_search` (semantic search + reranking), `mem0_conclude` (store verbatim facts)
@@ -332,14 +332,18 @@ hermes memory setup    # select "mem0"
 # Or manually:
 hermes config set memory.provider mem0
 echo "MEM0_API_KEY=your-key" >> ~/.hermes/.env
+# Self-hosted Mem0 (optional):
+echo "MEM0_HOST=http://localhost:24220" >> ~/.hermes/.env
 ```
 
-**Config:** `$HERMES_HOME/mem0.json`
+**Config:** `$HERMES_HOME/mem0.json` or `memory.providers.mem0` in `config.yaml`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `user_id` | `hermes-user` | User identifier |
-| `agent_id` | `hermes` | Agent identifier |
+| `api_key` | — | Mem0 API key (`MEM0_API_KEY` in `.env`) |
+| `host` | `https://api.mem0.ai` | Self-hosted Mem0 base URL (`MEM0_HOST` overrides when set) |
+| `user_id` | `hermes-user` | User identifier (`MEM0_USER_ID`) |
+| `agent_id` | `hermes` | Agent identifier (`MEM0_AGENT_ID`) |
 
 ---
 

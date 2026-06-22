@@ -702,3 +702,52 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 - Commit this verified redaction/audit lane and merge current upstream drift on the guarded sync branch.
 - After merge, preserve AgentCyber/Live USB files and rerun focused tests before push.
+
+### 2026-06-22T01:10:26Z — finish upstream merge and verify Live USB lane remains complete
+
+**Commands / status**
+
+- `git status --short --branch && git remote -v && git branch --show-current`: started on `agentcyber/upstream-sync-20260621-194355...origin/agentcyber/upstream-sync-20260621-194355` with local `HEAD` ahead of the origin sync branch by 10 commits and an in-progress upstream merge conflict in `website/docs/user-guide/skills/optional/creative/creative-kanban-video-orchestrator.md`.
+- `git fetch upstream main --prune && git fetch origin main --prune && git fetch origin agentcyber/upstream-sync-20260621-194355 --prune`: fetched cleanly; `upstream/main` remained `73340d8be6504425b008a3d56daeeac979ae5fa6` for this merge.
+- Drift before resolving the merge: `HEAD..upstream/main` -> `19`; `upstream/main..HEAD` -> `91`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `10`; `HEAD..origin/main` -> `0`; `origin/main..HEAD` -> `245`.
+- Resolved the generated skill-doc conflict by dropping stale `kanban-orchestrator`/`kanban-worker` links removed upstream while preserving the valid local `spotify` docs link.
+- `git add website/docs/user-guide/skills/optional/creative/creative-kanban-video-orchestrator.md` cleared the unmerged index; `git diff --name-only --diff-filter=U` returned no files.
+- `git commit --no-edit` completed the upstream merge as `067df7c13a4f941fdd30c996e9bfbf0841b2b8dc`; `MERGE_HEAD` no longer exists.
+- Drift after the merge commit: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `92`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `30`; `HEAD..origin/main` -> `0`; `origin/main..HEAD` -> `265`.
+
+**Changed files**
+
+- Previous interrupted lane commit preserved on the local branch: `28ede95dce9eb898918e9f5e842f79253ed32e4e` (`fix: redact AgentCyber live USB approvals`).
+- Upstream merge `067df7c13a4f941fdd30c996e9bfbf0841b2b8dc` brought in upstream changes across prompt/skill utils, desktop updater/composer/UI files, gateway status/WhatsApp tests, kanban/process/code-execution files, mem0 plugin files, release script, generated skills docs, and related tests/docs.
+- Manual conflict resolution touched `website/docs/user-guide/skills/optional/creative/creative-kanban-video-orchestrator.md` only.
+- Required AgentCyber/Live USB files remained present and tracked: `tools/cyber_live_usb.py`, `tests/cyber/test_live_usb_tool.py`, `tests/cyber/test_live_usb_docs.py`, `scripts/agentcyber`, this ledger, `docs/AGENTCYBER_STANDALONE_RUNBOOK.md`, and `live-usb/{build_iso.sh,write_usb.sh,provision.sh}`.
+- No Live USB implementation, toolset, README, or runbook behavior was changed this run because read-only review found no new focused safety/test/docs gap.
+
+**Verification**
+
+- `uv run --frozen python -m pytest tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py tests/gateway/test_status.py tests/gateway/test_whatsapp_connect.py tests/gateway/test_whatsapp_bridge_pidfile.py tests/hermes_cli/test_kanban_core_functionality.py tests/hermes_cli/test_kanban_goal_mode.py tests/tools/test_kanban_tools.py tests/tools/test_process_registry.py tests/tools/test_code_execution.py -q -o addopts= --tb=short` -> `839 passed, 8 warnings in 53.46s`.
+- `scripts/run_tests.sh tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py tests/gateway/test_status.py tests/gateway/test_whatsapp_connect.py tests/gateway/test_whatsapp_bridge_pidfile.py tests/hermes_cli/test_kanban_core_functionality.py tests/hermes_cli/test_kanban_goal_mode.py tests/tools/test_kanban_tools.py tests/tools/test_process_registry.py tests/tools/test_code_execution.py` -> `839 tests passed, 0 failed`.
+- `scripts/agentcyber status --json` after the merge commit -> `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, local runtime health `ok: true`, git `dirty: false`, and secret fields as booleans/presence only.
+- `scripts/agentcyber hermes tools list` -> `cyber` enabled and `live_usb` disabled.
+- Conflict marker search for lines starting `<<<<<<< ` or `>>>>>>> ` -> `0` matches.
+- `git diff --check && git diff --cached --check && git diff --check HEAD~1..HEAD` -> passed with no output.
+- Subagent upstream preservation review: `PASS`; required AgentCyber/Live USB files are present/tracked, no unmerged files remain, no conflict markers remain, shell scripts retain executable index modes, and required Live USB files were not modified by the staged upstream merge.
+- Subagent Live USB safety/docs next-gap review: `PASS`; no smallest safety/test/docs gap found.
+
+**Blockers / boundaries**
+
+- No cron jobs were scheduled, created, updated, paused, resumed, or removed.
+- No default `~/.hermes`, default gateway, default cron, or default profiles were modified.
+- No files were deleted.
+- No USB/block-device writes, ISO builds as root, `sudo`, package installs, hardware actions, external security actions, cloud spend, credential access/disclosure, or public disclosure were performed.
+- Status commands contacted only the configured local Ollama health endpoint and printed booleans/status fields, not secrets.
+
+**Commit / push**
+
+- Completed upstream merge commit: `067df7c13a4f941fdd30c996e9bfbf0841b2b8dc`.
+- This is the bounded ledger-only follow-up recording the merge and verification facts. After pushing this ledger commit, final verification should check local `HEAD` equals the remote sync branch tip and stop rather than amending the ledger again solely to mention the ledger-only commit SHA.
+
+**Next lane**
+
+- Push this bounded ledger-only follow-up to the guarded sync branch and verify local `HEAD` equals the remote branch tip.
+- Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.

@@ -1,0 +1,71 @@
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -23,6 +23,7 @@
+ from __future__ import annotations
+ 
+ import logging
++import os
+ import threading
+ import uuid
+ from dataclasses import dataclass
+@@ -34,6 +35,52 @@
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _bound_prefetch_query(query: str) -> str:
++    """Cap a memory-recall query before it is embedded / hybrid-searched.
++
++    Some hosts pack their whole system prompt + tool catalogue into the prompt
++    text, arriving as a 50-100KB "user message". Embedding that blob stalls the
++    memory backend and the signal is boilerplate, not intent. Bound it to
++    ``HERMES_PREFETCH_QUERY_MAX_CHARS`` characters (default 1500); set the env
++    var to ``0`` to disable the cap entirely.
++    """
++    try:
++        cap = int(os.environ.get("HERMES_PREFETCH_QUERY_MAX_CHARS", "1500"))
++    except (TypeError, ValueError):
++        cap = 1500
++    if cap > 0 and len(query) > cap:
++        logger.info(
++            "Memory prefetch query truncated: %d -> %d chars "
++            "(set HERMES_PREFETCH_QUERY_MAX_CHARS to override; 0 disables)",
++            len(query), cap,
++        )
++        return query[:cap]
++    return query
++
++
++def _compression_made_progress(
++    orig_len: int, new_len: int, orig_tokens: int, new_tokens: int
++) -> bool:
++    """Return ``True`` if a compression pass materially reduced the request.
++
++    Compression can succeed by summarising message contents — reducing the
++    estimated request token count — without reducing the message row
++    count.  Treating row count as the sole progress signal false-positives
++    on size-only wins and surfaces a misleading "Cannot compress further"
++    failure even when post-compression tokens are well below the model
++    context window.  See issue #39548 for an observed case: 220 → 220
++    messages, ~288k → ~183k tokens on a 1M-context model still triggered
++    auto-reset.
++
++    The token reduction must be *material* (>5%) to count as progress — the
++    same floor the overflow-handler retry path uses (conversation_loop.py,
++    #39550) — so a sub-5% wobble doesn't keep the multi-pass loop spinning.
++    """
++    if new_len < orig_len:
++        return True
++    return orig_tokens > 0 and new_tokens < orig_tokens * 0.95
++
++
+ @dataclass
+ class TurnContext:
+     """Values produced by the turn prologue and consumed by the turn loop."""
+@@ -389,6 +436,7 @@
+     if agent._memory_manager:
+         try:
+             _query = original_user_message if isinstance(original_user_message, str) else ""
++            _query = _bound_prefetch_query(_query)
+             ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+         except Exception:
+             pass

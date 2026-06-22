@@ -1238,6 +1238,21 @@ canvas {
   opacity: 1;
 }
 
+/* Syntax-highlighted inline diff (Shiki): strip the theme's own surface +
+   default margins so context lines stay transparent and each changed line owns
+   its tint. `display: grid` on the code puts one `.line` per row and drops the
+   whitespace-only `\n` nodes between them — without it, full-width block lines
+   double up with the literal newlines (phantom blank rows). */
+[data-slot='file-diff-panel'] .shiki,
+[data-slot='file-diff-panel'] .shiki code {
+  margin: 0;
+  background: transparent !important;
+}
+
+[data-slot='file-diff-panel'] .shiki code {
+  display: grid;
+}
+
 /* File edits (write_file / edit_file / patch) are the deliverable, not
    scaffolding — the diff is what the user reviews, like a PR. An *expanded*
    edit stays at full strength; collapsed it fades like any other row. The

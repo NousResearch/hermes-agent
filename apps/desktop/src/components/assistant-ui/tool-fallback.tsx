@@ -439,7 +439,7 @@ function ToolEntry({ part }: ToolEntryProps) {
               <SearchResultsList hits={view.searchHits} />
             </div>
           )}
-          {view.inlineDiff && <FileDiffPanel diff={view.inlineDiff} />}
+          {view.inlineDiff && <FileDiffPanel diff={view.inlineDiff} path={isFileEdit ? view.subtitle : undefined} />}
           {showDetail &&
             toolViewMode !== 'technical' &&
             (view.status === 'error' ? (

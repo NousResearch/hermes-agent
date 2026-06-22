@@ -145,17 +145,98 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
 // `Dockerfile`), reusing the language→codicon map so file-edit rows and code
 // blocks share one visual vocabulary. Unknown / generic code files get `code`.
 export function codiconForFilename(path: string | undefined): string {
-  const base = (path || '').replace(/\\/g, '/').split('/').pop()?.trim().toLowerCase() || ''
-
-  if (!base) {
-    return 'code'
-  }
-
-  const dot = base.lastIndexOf('.')
-  const token = dot > 0 ? base.slice(dot + 1) : base
+  const token = filenameExtToken(path)
   const language = LANGUAGE_BY_EXTENSION[token] || token
 
   return codiconForLanguage(language)
+}
+
+// Last path segment's extension (or the bare lowercased name for `Dockerfile`,
+// `Makefile`, …). Shared by the icon and Shiki-language resolvers.
+function filenameExtToken(path: string | undefined): string {
+  const base = (path || '').replace(/\\/g, '/').split('/').pop()?.trim().toLowerCase() || ''
+  const dot = base.lastIndexOf('.')
+
+  return dot > 0 ? base.slice(dot + 1) : base
+}
+
+// File extension → Shiki bundled-language id, for syntax-highlighting diffs in
+// the editing tool's own language. Unknown extensions return '' so callers fall
+// back to the plain color-only diff renderer.
+const SHIKI_LANGUAGE_BY_EXTENSION: Record<string, string> = {
+  astro: 'astro',
+  bash: 'bash',
+  c: 'c',
+  cc: 'cpp',
+  cjs: 'javascript',
+  clj: 'clojure',
+  cpp: 'cpp',
+  cs: 'csharp',
+  css: 'css',
+  cxx: 'cpp',
+  dart: 'dart',
+  dockerfile: 'docker',
+  ex: 'elixir',
+  exs: 'elixir',
+  fish: 'fish',
+  go: 'go',
+  gql: 'graphql',
+  graphql: 'graphql',
+  h: 'c',
+  hpp: 'cpp',
+  hs: 'haskell',
+  htm: 'html',
+  html: 'html',
+  ini: 'ini',
+  java: 'java',
+  jl: 'julia',
+  js: 'javascript',
+  json: 'json',
+  json5: 'json5',
+  jsonc: 'jsonc',
+  jsx: 'jsx',
+  kt: 'kotlin',
+  kts: 'kotlin',
+  less: 'less',
+  lua: 'lua',
+  makefile: 'make',
+  markdown: 'markdown',
+  md: 'markdown',
+  mdx: 'mdx',
+  mjs: 'javascript',
+  ml: 'ocaml',
+  mts: 'typescript',
+  nix: 'nix',
+  php: 'php',
+  pl: 'perl',
+  proto: 'proto',
+  ps1: 'powershell',
+  py: 'python',
+  pyi: 'python',
+  r: 'r',
+  rb: 'ruby',
+  rs: 'rust',
+  sass: 'sass',
+  scala: 'scala',
+  scss: 'scss',
+  sh: 'bash',
+  sql: 'sql',
+  svelte: 'svelte',
+  swift: 'swift',
+  tf: 'terraform',
+  toml: 'toml',
+  ts: 'typescript',
+  tsx: 'tsx',
+  vue: 'vue',
+  xml: 'xml',
+  yaml: 'yaml',
+  yml: 'yaml',
+  zig: 'zig',
+  zsh: 'bash'
+}
+
+export function shikiLanguageForFilename(path: string | undefined): string {
+  return SHIKI_LANGUAGE_BY_EXTENSION[filenameExtToken(path)] || ''
 }
 
 function proseLineCount(body: string): number {

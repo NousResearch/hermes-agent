@@ -735,6 +735,16 @@ def test_mention_patterns_env_var_fallback(monkeypatch):
     assert adapter._slack_message_matches_mention_patterns("hey hermes") is True
 
 
+def test_mention_patterns_env_var_csv_fallback_splits_patterns(monkeypatch):
+    monkeypatch.setenv("SLACK_MENTION_PATTERNS", "hey hermes,hermes,")
+    adapter = _make_adapter()  # no config value -> falls back to env
+
+    patterns = adapter._slack_mention_patterns()
+
+    assert [pattern.pattern for pattern in patterns] == ["hey hermes", "hermes"]
+    assert adapter._slack_message_matches_mention_patterns("hey hermes") is True
+
+
 def test_mention_patterns_trigger_in_channel_without_literal_mention():
     """A wake word triggers the bot in a channel even with require_mention on."""
     adapter = _make_adapter(require_mention=True, mention_patterns=["hey hermes"])

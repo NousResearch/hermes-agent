@@ -263,6 +263,302 @@ class TestBlueBubblesMentionGating:
         assert [event.text for event in handled] == ["hello from a dm"]
 
 
+class TestBlueBubblesUpdatedMessageHandling:
+    async def _dispatch(self, adapter, payload):
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        await asyncio.sleep(0)
+        return response
+
+    @pytest.mark.asyncio
+    async def test_updated_message_same_guid_and_text_is_deduped(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_mark_read(chat_id):
+            return False
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "mark_read", fake_mark_read)
+
+        base = {
+            "data": {
+                "guid": "MSG-GUID-1",
+                "text": "hello",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chats": [{"guid": "any;-;user@example.com"}],
+            }
+        }
+        await self._dispatch(adapter, {"type": "new-message", **base})
+        await self._dispatch(adapter, {"type": "updated-message", **base})
+
+        assert len(handled) == 1
+        assert handled[0].text == "hello"
+
+    @pytest.mark.asyncio
+    async def test_updated_message_receipt_without_text_is_acknowledged(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        response = await self._dispatch(
+            adapter,
+            {
+                "type": "updated-message",
+                "data": {
+                    "guid": "MSG-GUID-2",
+                    "handle": {"address": "user@example.com"},
+                    "isFromMe": False,
+                    "chats": [{"guid": "any;-;user@example.com"}],
+                    "dateEdited": None,
+                    "dateRetracted": None,
+                },
+            },
+        )
+
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_updated_message_edit_forwards_before_after_context(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_mark_read(chat_id):
+            return False
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "mark_read", fake_mark_read)
+
+        original = {
+            "type": "new-message",
+            "data": {
+                "guid": "MSG-GUID-3",
+                "text": "first draft",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chats": [{"guid": "any;-;user@example.com"}],
+            },
+        }
+        edited = {
+            "type": "updated-message",
+            "data": {
+                "guid": "MSG-GUID-3",
+                "text": "second draft",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chats": [{"guid": "any;-;user@example.com"}],
+                "dateEdited": 123456789,
+            },
+        }
+
+        await self._dispatch(adapter, original)
+        await self._dispatch(adapter, edited)
+
+        assert len(handled) == 2
+        assert "edited" in handled[1].text.lower()
+        assert "first draft" in handled[1].text
+        assert "second draft" in handled[1].text
+
+    @pytest.mark.asyncio
+    async def test_updated_message_retraction_notifies_agent_with_cached_text(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_mark_read(chat_id):
+            return False
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "mark_read", fake_mark_read)
+
+        await self._dispatch(
+            adapter,
+            {
+                "type": "new-message",
+                "data": {
+                    "guid": "MSG-GUID-4",
+                    "text": "please unsend me",
+                    "handle": {"address": "user@example.com"},
+                    "isFromMe": False,
+                    "chats": [{"guid": "any;-;user@example.com"}],
+                },
+            },
+        )
+        await self._dispatch(
+            adapter,
+            {
+                "type": "updated-message",
+                "data": {
+                    "guid": "MSG-GUID-4",
+                    "handle": {"address": "user@example.com"},
+                    "isFromMe": False,
+                    "chats": [{"guid": "any;-;user@example.com"}],
+                    "dateRetracted": 123456789,
+                },
+            },
+        )
+
+        assert len(handled) == 2
+        assert "retracted" in handled[1].text.lower() or "unsent" in handled[1].text.lower()
+        assert "please unsend me" in handled[1].text
+
+    @pytest.mark.asyncio
+    async def test_tapback_text_is_forwarded_as_reaction_event(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_mark_read(chat_id):
+            return False
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "mark_read", fake_mark_read)
+
+        await self._dispatch(
+            adapter,
+            {
+                "type": "new-message",
+                "data": {
+                    "guid": "TAPBACK-GUID-1",
+                    "text": "Liked “Smoke test passed”",
+                    "handle": {"address": "user@example.com"},
+                    "isFromMe": False,
+                    "chats": [{"guid": "any;-;user@example.com"}],
+                },
+            },
+        )
+
+        assert len(handled) == 1
+        assert handled[0].text == "Reaction: User liked this message: Smoke test passed"
+        assert handled[0].source.chat_id == "user@example.com"
+
+    @pytest.mark.asyncio
+    async def test_removed_tapback_text_is_forwarded_as_reaction_removal(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_mark_read(chat_id):
+            return False
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "mark_read", fake_mark_read)
+
+        await self._dispatch(
+            adapter,
+            {
+                "type": "new-message",
+                "data": {
+                    "guid": "TAPBACK-GUID-2",
+                    "text": "Removed a like from “Smoke test passed”",
+                    "handle": {"address": "user@example.com"},
+                    "isFromMe": False,
+                    "chats": [{"guid": "any;-;user@example.com"}],
+                },
+            },
+        )
+
+        assert len(handled) == 1
+        assert handled[0].text == "Reaction removed: User removed a like Tapback from: Smoke test passed"
+
+    @pytest.mark.asyncio
+    async def test_associated_message_type_string_is_forwarded_as_reaction(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_mark_read(chat_id):
+            return False
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "mark_read", fake_mark_read)
+
+        await self._dispatch(
+            adapter,
+            {
+                "type": "new-message",
+                "data": {
+                    "guid": "TAPBACK-GUID-3",
+                    "text": "Smoke test passed",
+                    "associatedMessageType": "2003",
+                    "handle": {"address": "user@example.com"},
+                    "isFromMe": False,
+                    "chats": [{"guid": "any;-;user@example.com"}],
+                },
+            },
+        )
+
+        assert len(handled) == 1
+        assert handled[0].text == "Reaction: User added a laugh Tapback to: Smoke test passed"
+
+    @pytest.mark.asyncio
+    async def test_dm_chat_guid_and_plain_identifier_use_same_session(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_mark_read(chat_id):
+            return False
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "mark_read", fake_mark_read)
+
+        await self._dispatch(
+            adapter,
+            {
+                "type": "new-message",
+                "data": {
+                    "guid": "MSG-GUID-5",
+                    "text": "first draft",
+                    "handle": {"address": "user@example.com"},
+                    "isFromMe": False,
+                    "chats": [{"guid": "any;-;user@example.com"}],
+                },
+            },
+        )
+        await self._dispatch(
+            adapter,
+            {
+                "type": "updated-message",
+                "data": {
+                    "guid": "MSG-GUID-5",
+                    "text": "second draft",
+                    "chatIdentifier": "user@example.com",
+                    "handle": {"address": "user@example.com"},
+                    "isFromMe": False,
+                    "dateEdited": 123456789,
+                },
+            },
+        )
+
+        assert len(handled) == 2
+        assert handled[0].source.chat_id == "user@example.com"
+        assert handled[1].source.chat_id == "user@example.com"
+        assert "first draft" in handled[1].text
+        assert "second draft" in handled[1].text
+
+
 class TestBlueBubblesWebhookParsing:
     def test_webhook_prefers_chat_guid_over_message_guid(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)

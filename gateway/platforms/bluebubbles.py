@@ -66,9 +66,26 @@ _TAPBACK_REMOVED = {
     3000: "love", 3001: "like", 3002: "dislike",
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
+_TAPBACK_TEXT_RE = re.compile(
+    r"^(?P<verb>Liked|Loved|Disliked|Laughed at|Emphasized|Questioned)\s+[\"“](?P<target>.*)[\"”]$",
+    re.S,
+)
+_TAPBACK_REMOVED_TEXT_RE = re.compile(
+    r"^Removed an? (?P<reaction>like|love|dislike|laugh|emphasis|question) from\s+[\"“](?P<target>.*)[\"”]$",
+    re.S,
+)
+_TAPBACK_VERBS = {
+    "Liked": "liked",
+    "Loved": "loved",
+    "Disliked": "disliked",
+    "Laughed at": "laughed at",
+    "Emphasized": "emphasized",
+    "Questioned": "questioned",
+}
 
 # Webhook event types that carry user messages
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
+_UPDATED_MESSAGE_CACHE_LIMIT = 500
 
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
@@ -155,6 +172,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._recent_message_texts: OrderedDict[str, str] = OrderedDict()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -870,6 +888,127 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return candidate.strip()
         return None
 
+    @staticmethod
+    def _is_set(value: Any) -> bool:
+        return value not in (None, "", 0, False)
+
+    def _message_id_for_record(self, record: Dict[str, Any]) -> Optional[str]:
+        return self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("message_guid"),
+            record.get("id"),
+        )
+
+    def _remember_message_text(self, message_id: Optional[str], text: str) -> None:
+        if not message_id or not text:
+            return
+        self._recent_message_texts[message_id] = text
+        self._recent_message_texts.move_to_end(message_id)
+        while len(self._recent_message_texts) > _UPDATED_MESSAGE_CACHE_LIMIT:
+            self._recent_message_texts.popitem(last=False)
+
+    @staticmethod
+    def _canonical_dm_handle(raw: Optional[str]) -> Optional[str]:
+        if not raw:
+            return None
+        value = raw.strip()
+        if ";+;" in value:
+            return None
+        if ";-;" in value:
+            value = value.rsplit(";-;", 1)[-1]
+        return value or None
+
+    def _canonical_chat_id(
+        self,
+        chat_guid: Optional[str],
+        chat_identifier: Optional[str],
+        sender: Optional[str],
+        is_group: bool,
+    ) -> str:
+        if is_group:
+            return chat_guid or chat_identifier or sender or ""
+        return (
+            self._canonical_dm_handle(chat_identifier)
+            or self._canonical_dm_handle(sender)
+            or self._canonical_dm_handle(chat_guid)
+            or chat_guid
+            or chat_identifier
+            or sender
+            or ""
+        )
+
+    @staticmethod
+    def _classify_tapback_text(text: str) -> Optional[str]:
+        stripped = text.strip()
+        removed = _TAPBACK_REMOVED_TEXT_RE.match(stripped)
+        if removed:
+            reaction = removed.group("reaction")
+            target = removed.group("target").strip()
+            return f"Reaction removed: User removed a {reaction} Tapback from: {target}"
+        match = _TAPBACK_TEXT_RE.match(stripped)
+        if not match:
+            return None
+        verb = _TAPBACK_VERBS.get(match.group("verb"), match.group("verb").lower())
+        target = match.group("target").strip()
+        return f"Reaction: User {verb} this message: {target}"
+
+    def _classify_tapback_record(
+        self,
+        record: Dict[str, Any],
+        text: str,
+    ) -> Optional[str]:
+        assoc_type = record.get("associatedMessageType")
+        if isinstance(assoc_type, str) and assoc_type.strip().lstrip("-").isdigit():
+            assoc_type = int(assoc_type)
+        if isinstance(assoc_type, int):
+            if assoc_type in _TAPBACK_ADDED:
+                reaction = _TAPBACK_ADDED[assoc_type]
+                target = text or "(message text unavailable)"
+                return f"Reaction: User added a {reaction} Tapback to: {target}"
+            if assoc_type in _TAPBACK_REMOVED:
+                reaction = _TAPBACK_REMOVED[assoc_type]
+                target = text or "(message text unavailable)"
+                return f"Reaction removed: User removed a {reaction} Tapback from: {target}"
+        return self._classify_tapback_text(text)
+
+    def _classify_updated_message(
+        self,
+        record: Dict[str, Any],
+        message_id: Optional[str],
+        text: str,
+    ) -> Optional[str]:
+        """Return agent-facing text for an updated-message, or None to ACK only."""
+        if not message_id:
+            return None
+
+        previous = self._recent_message_texts.get(message_id)
+        is_retraction = self._is_set(
+            record.get("dateRetracted")
+            or record.get("date_retracted")
+            or record.get("retractedAt")
+            or record.get("retracted_at")
+        )
+        if is_retraction:
+            if previous:
+                self._recent_message_texts.pop(message_id, None)
+                return f"Message retracted/unsent.\nOriginal text: {previous}"
+            return "Message retracted/unsent.\nOriginal text: (unknown)"
+
+        is_edit = self._is_set(
+            record.get("dateEdited")
+            or record.get("date_edited")
+            or record.get("editedAt")
+            or record.get("edited_at")
+        )
+        if not is_edit or not text or previous == text:
+            return None
+        if previous:
+            self._remember_message_text(message_id, text)
+            return f"Message edited.\nBefore: {previous}\nAfter: {text}"
+        self._remember_message_text(message_id, text)
+        return f"Message edited.\nNew text: {text}"
+
     async def _handle_webhook(self, request):
         from aiohttp import web
 
@@ -916,20 +1055,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if is_from_me:
             return web.Response(text="ok")
 
-        # Skip tapback reactions delivered as messages
-        assoc_type = record.get("associatedMessageType")
-        if isinstance(assoc_type, int) and assoc_type in {
-            **_TAPBACK_ADDED,
-            **_TAPBACK_REMOVED,
-        }:
-            return web.Response(text="ok")
-
         text = (
             self._value(
                 record.get("text"), record.get("message"), record.get("body")
             )
             or ""
         )
+
+        tapback_text = self._classify_tapback_record(record, text)
+        is_tapback = tapback_text is not None
+        if is_tapback:
+            text = tapback_text
 
         # --- Inbound attachment handling ---
         attachments = record.get("attachments") or []
@@ -967,6 +1103,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             text = "(attachment)"
         # --- End attachment handling ---
 
+        message_id = self._message_id_for_record(record)
+        if event_type == "updated-message" and not is_tapback:
+            text = self._classify_updated_message(record, message_id, text) or ""
+            if not text:
+                return web.Response(text="ok")
+        elif not is_tapback:
+            self._remember_message_text(message_id, text)
+
         chat_guid = self._value(
             record.get("chatGuid"),
             payload.get("chatGuid"),
@@ -1000,11 +1144,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         )
         if not (chat_guid or chat_identifier) and sender:
             chat_identifier = sender
-        if not sender or not (chat_guid or chat_identifier) or not text:
+
+        is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        session_chat_id = self._canonical_chat_id(
+            chat_guid, chat_identifier, sender, is_group
+        )
+        if not sender or not session_chat_id or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
-        session_chat_id = chat_guid or chat_identifier
-        is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug(
@@ -1018,18 +1165,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             chat_type="group" if is_group else "dm",
             user_id=sender,
             user_name=sender,
-            chat_id_alt=chat_identifier,
+            chat_id_alt=chat_guid if chat_guid != session_chat_id else chat_identifier,
         )
         event = MessageEvent(
             text=text,
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
+            message_id=message_id,
             reply_to_message_id=self._value(
                 record.get("threadOriginatorGuid"),
                 record.get("associatedMessageGuid"),

@@ -1127,6 +1127,7 @@ stt:
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
+    # initial_prompt: ""       # Optional faster-whisper prompt, e.g. bias Chinese output to simplified Chinese
   # groq:
   #   language: ""             # blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   openai:

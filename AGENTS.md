@@ -2,6 +2,14 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## FalconPM Fork Context
+
+This fork customizes Hermes into **FalconPM**, a Growth Product Manager AI Agent for D2C brands.
+
+Preserve Hermes' core architecture and extension style. FalconPM-specific capability should live in context files, skills, docs, examples, and plugins before changing the core agent runtime.
+
+FalconPM V1 focuses on The Pickle Romance, a D2C pickle brand using Instagram Reels, Instagram Shopping, a one-page website, and WhatsApp ordering to sell the Aam Romantics Combo.
+
 **Never give up on the right solution.**
 
 ## What Hermes Is

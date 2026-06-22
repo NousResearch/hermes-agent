@@ -320,7 +320,27 @@ class DeliveryRouter:
         
         if not target.chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")
-        
+        # Regression guard for the 2026-06-19 11:20:58–11:22:32 UTC
+        # cross-channel misroute. Cron-triggered deliveries happen
+        # outside any inbound handler, so the guard has no pinned
+        # chat_id to compare against — verify_outbound is a no-op in
+        # that case (returns True). When called from inside a handler
+        # turn, it enforces alignment. See gateway/outbound_guard.py.
+        try:
+            from gateway.outbound_guard import verify_outbound
+            if not verify_outbound(target.chat_id, operation="delivery.send"):
+                raise ValueError(
+                    "refused: outbound chat_id does not match active inbound "
+                    f"(target={target.chat_id}, platform={target.platform.value})"
+                )
+        except ValueError:
+            raise
+        except Exception:
+            logger.debug(
+                "OutboundGuard.verify_outbound raised in _deliver_to_platform; ignoring",
+                exc_info=True,
+            )
+
         # Guard: handle oversized cron output.
         #
         # Two independent decisions:
@@ -333,7 +353,6 @@ class DeliveryRouter:
         #      payload and split natively in their send().
         job_id = (metadata or {}).get("job_id", "unknown")
         saved_path: Optional[Path] = None
-
         if len(content) > MAX_PLATFORM_OUTPUT:
             # Step 1 — audit save (best-effort).  The save is a side-effect
             # audit trail, not essential to delivery.  If it fails (full disk,

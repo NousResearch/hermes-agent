@@ -814,9 +814,8 @@ class GatewayStreamConsumer:
         if not text.strip():
             return reply_to_id
         try:
-            result = await self.adapter.send(
-                chat_id=self.chat_id,
-                content=text,
+            result = await self._guarded_send(
+                text=text,
                 reply_to=reply_to_id,
                 metadata=self._metadata_for_send(final=final, expect_edits=True),
             )
@@ -842,6 +841,53 @@ class GatewayStreamConsumer:
         if self.cfg.cursor and prefix.endswith(self.cfg.cursor):
             prefix = prefix[:-len(self.cfg.cursor)]
         return self._clean_for_display(prefix)
+
+    async def _guarded_send(
+        self,
+        text: str,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        operation: str = "stream_consumer.send",
+    ):
+        """Wrap `self.adapter.send` with the OutboundGuard verification.
+
+        Regression guard for the 2026-06-19 11:20:58–11:22:32 UTC
+        cross-channel misroute. When a handler is active and the
+        inbound chat_id is pinned, refuse to post to a different
+        channel — return a failed SendResult with the guard's error
+        message instead of letting the misalignment reach the adapter.
+        When no inbound is pinned (cron-triggered, startup, etc.),
+        the call passes through unchanged.
+
+        See `gateway/outbound_guard.py` for the protocol.
+        """
+        try:
+            from gateway.outbound_guard import verify_outbound
+            if not verify_outbound(self.chat_id, operation=operation):
+                # Construct a SendResult-shaped failure without importing
+                # the platform base class (some tests mock the adapter).
+                class _GuardedResult:
+                    success = False
+                    message_id = None
+                    error = (
+                        "refused: outbound chat_id does not match active "
+                        "inbound (OutboundGuard)"
+                    )
+                return _GuardedResult()
+        except Exception:
+            # Guard is best-effort: never block a real send because of an
+            # internal guard error. Log at debug and continue.
+            logger.debug(
+                "OutboundGuard.verify_outbound raised in _guarded_send; ignoring",
+                exc_info=True,
+            )
+        return await self.adapter.send(
+            chat_id=self.chat_id,
+            content=text,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     def _continuation_text(self, final_text: str) -> str:
         """Return only the part of final_text the user has not already seen."""
@@ -934,9 +980,8 @@ class GatewayStreamConsumer:
             # Try sending with one retry on flood-control errors.
             result = None
             for attempt in range(2):
-                result = await self.adapter.send(
-                    chat_id=self.chat_id,
-                    content=chunk,
+                result = await self._guarded_send(
+                    text=chunk,
                     metadata=self._metadata_for_send(final=True),
                 )
                 if result.success:
@@ -1073,6 +1118,23 @@ class GatewayStreamConsumer:
             # set in tandem with _draft_id in run().  Disable to be safe.
             self._use_draft_streaming = False
             return False
+        # OutboundGuard: refuse draft frames if the adapter's chat_id does
+        # not match the inbound that triggered the run (cross-channel
+        # misroute defense — see gateway/outbound_guard.py).
+        try:
+            from gateway.outbound_guard import verify_outbound
+            if not verify_outbound(self.chat_id, operation="stream_consumer.send_draft"):
+                logger.debug(
+                    "Refused _send_draft_frame: chat_id does not match active "
+                    "inbound (OutboundGuard); disabling draft streaming"
+                )
+                self._use_draft_streaming = False
+                return False
+        except Exception:
+            logger.debug(
+                "OutboundGuard.verify_outbound raised in _send_draft_frame; ignoring",
+                exc_info=True,
+            )
         try:
             result = await self.adapter.send_draft(
                 chat_id=self.chat_id,
@@ -1122,9 +1184,8 @@ class GatewayStreamConsumer:
         if not tail.strip():
             return
         try:
-            result = await self.adapter.send(
-                chat_id=self.chat_id,
-                content=tail,
+            result = await self._guarded_send(
+                text=tail,
                 metadata=self.metadata,
             )
             if result.success:
@@ -1158,9 +1219,8 @@ class GatewayStreamConsumer:
         if not text.strip():
             return False
         try:
-            result = await self.adapter.send(
-                chat_id=self.chat_id,
-                content=text,
+            result = await self._guarded_send(
+                text=text,
                 metadata=self.metadata,
             )
             # Note: do NOT set _already_sent = True here.
@@ -1291,9 +1351,8 @@ class GatewayStreamConsumer:
         if self._message_id and self._message_id != "__no_edit__":
             stale_ids.add(self._message_id)
         try:
-            result = await self.adapter.send(
-                chat_id=self.chat_id,
-                content=text,
+            result = await self._guarded_send(
+                text=text,
                 metadata=self._metadata_for_send(final=True),
             )
         except Exception as e:
@@ -1606,9 +1665,8 @@ class GatewayStreamConsumer:
             else:
                 # First message — send new, threaded to the original user message
                 # so it lands in the correct topic/thread.
-                result = await self.adapter.send(
-                    chat_id=self.chat_id,
-                    content=text,
+                result = await self._guarded_send(
+                    text=text,
                     reply_to=self._initial_reply_to_id,
                     metadata=self._metadata_for_send(
                         final=finalize,

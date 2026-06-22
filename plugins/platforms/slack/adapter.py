@@ -57,6 +57,44 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+
+def _slack_guard_check(
+    chat_id: Optional[str],
+    *,
+    operation: str,
+    allowed_extra_destinations: Optional[List[str]] = None,
+) -> bool:
+    """Module-level helper that calls `verify_outbound` for every Slack
+    write path. Centralises the guard invocation so the same try/except
+    envelope is applied to send(), send_private_notice(), _upload_file(),
+    send_image_file(), send_image(), send_voice(), send_video(),
+    send_document(), send_multiple_images(), send_exec_approval(),
+    send_slash_confirm(), and any future write path.
+
+    Returns True if the write is allowed; False if it is refused (the
+    caller should return a failed `SendResult` without performing the
+    underlying Slack API call).
+
+    Guard exceptions are best-effort: a raised exception is logged at
+    debug level and the write is allowed through (we never block a
+    real send because of an internal guard error).
+    """
+    try:
+        from gateway.outbound_guard import verify_outbound
+        return verify_outbound(
+            chat_id,
+            operation=operation,
+            allowed_extra_destinations=allowed_extra_destinations,
+        )
+    except Exception:
+        logger.debug(
+            "OutboundGuard.verify_outbound raised in %s; allowing send",
+            operation,
+            exc_info=True,
+        )
+        return True
+
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -1234,6 +1272,19 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        # Regression guard for the 2026-06-19 11:20:58–11:22:32 UTC
+        # cross-channel misroute (orphan 1781868147.039389 in
+        # C0AJQ5M0A0Y while inbound was from C0AH3RY3DK6). When a handler
+        # is active and the inbound chat_id is pinned, refuse to post to
+        # a different channel — record a violation and return an error
+        # SendResult instead of letting the misalignment reach Slack.
+        # See gateway/outbound_guard.py for the protocol.
+        if not _slack_guard_check(chat_id, operation="slack.send"):
+            return SendResult(
+                success=False,
+                error="refused: outbound chat_id does not match active inbound (OutboundGuard)",
+            )
+
         try:
             # Check for a pending slash-command context.  When the user ran a
             # native slash command (e.g. /q, /stop, /model), the initial ack
@@ -1314,6 +1365,11 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         if not chat_id or not user_id:
             return SendResult(success=False, error="chat_id and user_id are required")
+        if not _slack_guard_check(chat_id, operation="slack.send_private_notice"):
+            return SendResult(
+                success=False,
+                error="refused: outbound chat_id does not match active inbound (OutboundGuard)",
+            )
 
         try:
             formatted = self.format_message(content)
@@ -1480,6 +1536,12 @@ class SlackAdapter(BasePlatformAdapter):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
 
+        if not _slack_guard_check(chat_id, operation="slack.upload_file"):
+            return SendResult(
+                success=False,
+                error="refused: outbound chat_id does not match active inbound (OutboundGuard)",
+            )
+
         thread_ts = self._resolve_thread_ts(reply_to, metadata)
         last_exc = None
         for attempt in range(3):
@@ -1526,6 +1588,13 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return
         if not images:
+            return
+
+        if not _slack_guard_check(chat_id, operation="slack.send_multiple_images"):
+            logger.warning(
+                "[Slack] Refused send_multiple_images: chat_id does not match "
+                "active inbound (OutboundGuard)"
+            )
             return
 
         try:
@@ -1884,6 +1953,11 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local image file to Slack by uploading it."""
+        if not _slack_guard_check(chat_id, operation="slack.send_image_file"):
+            return SendResult(
+                success=False,
+                error="refused: outbound chat_id does not match active inbound (OutboundGuard)",
+            )
         try:
             return await self._upload_file(
                 chat_id, image_path, caption, reply_to, metadata
@@ -1916,6 +1990,12 @@ class SlackAdapter(BasePlatformAdapter):
         """Send an image to Slack by uploading the URL as a file."""
         if not self._app:
             return SendResult(success=False, error="Not connected")
+
+        if not _slack_guard_check(chat_id, operation="slack.send_image"):
+            return SendResult(
+                success=False,
+                error="refused: outbound chat_id does not match active inbound (OutboundGuard)",
+            )
 
         from tools.url_safety import is_safe_url
 
@@ -1982,6 +2062,11 @@ class SlackAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         """Send an audio file to Slack."""
+        if not _slack_guard_check(chat_id, operation="slack.send_voice"):
+            return SendResult(
+                success=False,
+                error="refused: outbound chat_id does not match active inbound (OutboundGuard)",
+            )
         try:
             return await self._upload_file(
                 chat_id, audio_path, caption, reply_to, metadata
@@ -2014,6 +2099,12 @@ class SlackAdapter(BasePlatformAdapter):
         if not os.path.exists(video_path):
             return SendResult(
                 success=False, error=f"Video file not found: {video_path}"
+            )
+
+        if not _slack_guard_check(chat_id, operation="slack.send_video"):
+            return SendResult(
+                success=False,
+                error="refused: outbound chat_id does not match active inbound (OutboundGuard)",
             )
 
         try:
@@ -2072,6 +2163,12 @@ class SlackAdapter(BasePlatformAdapter):
 
         if not os.path.exists(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
+
+        if not _slack_guard_check(chat_id, operation="slack.send_document"):
+            return SendResult(
+                success=False,
+                error="refused: outbound chat_id does not match active inbound (OutboundGuard)",
+            )
 
         display_name = file_name or os.path.basename(file_path)
         thread_ts = self._resolve_thread_ts(reply_to, metadata)
@@ -3001,6 +3098,12 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        if not _slack_guard_check(chat_id, operation="slack.send_exec_approval"):
+            return SendResult(
+                success=False,
+                error="refused: outbound chat_id does not match active inbound (OutboundGuard)",
+            )
+
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)
 
@@ -3087,6 +3190,12 @@ class SlackAdapter(BasePlatformAdapter):
         """Send a Block Kit three-option slash-command confirmation prompt."""
         if not self._app:
             return SendResult(success=False, error="Not connected")
+
+        if not _slack_guard_check(chat_id, operation="slack.send_slash_confirm"):
+            return SendResult(
+                success=False,
+                error="refused: outbound chat_id does not match active inbound (OutboundGuard)",
+            )
 
         try:
             thread_ts = self._resolve_thread_ts(None, metadata)

@@ -9594,6 +9594,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
         )
 
+        # Pin the inbound chat_id for the duration of this handler so any
+        # outbound send that targets a different channel is caught by
+        # `OutboundGuard.verify_send` and logged. This is the regression
+        # guard for the 2026-06-19 11:20:58–11:22:32 cross-channel
+        # misroute (orphan `1781868147.039389` posted to C0AJQ5M0A0Y
+        # while the inbound was from C0AH3RY3DK6). See
+        # `gateway/outbound_guard.py` and the regression test in
+        # `tests/hermes_cli/test_outbound_guard.py`.
+        #
+        # The pin is applied to BOTH the per-instance guard (for unit
+        # tests and explicit-reference call sites) AND the module-level
+        # singleton (so call sites that don't hold a reference to the
+        # instance — SlackAdapter.send, delivery._deliver_to_platform,
+        # stream_consumer — all see the same pin within this handler
+        # turn via `verify_outbound(chat_id)`).
+        _outbound_token = None
+        _singleton_token = None
+        _outbound_guard = getattr(self, "_outbound_guard", None)
+        if _outbound_guard is None:
+            from gateway.outbound_guard import OutboundGuard, pin_inbound
+            _outbound_guard = OutboundGuard()
+            self._outbound_guard = _outbound_guard
+        else:
+            from gateway.outbound_guard import pin_inbound
+        try:
+            _outbound_token = _outbound_guard.enter(source.chat_id)
+            _singleton_token = pin_inbound(source.chat_id)
+        except Exception:
+            logger.debug("Failed to pin outbound chat_id guard", exc_info=True)
+            _outbound_token = None
+            _singleton_token = None
+
         # Get or create session
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
         # last-active topic so a cross-topic Reply or stripped plain reply
@@ -10963,6 +10995,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
+            # Reset the outbound chat_id guard so the next handler's
+            # verify_send() checks are not contaminated by the chat_id
+            # pinned for this inbound. Regression guard for the
+            # 2026-06-19 11:20:58–11:22:32 UTC cross-channel misroute
+            # (orphan 1781868147.039389 in C0AJQ5M0A0Y while inbound
+            # was from C0AH3RY3DK6). See gateway/outbound_guard.py.
+            #
+            # Both the per-instance guard AND the module-level singleton
+            # are unpinned so the next inbound (in this task or another)
+            # starts with a clean state. Unpinning the singleton is what
+            # protects other call sites (SlackAdapter.send, delivery,
+            # stream_consumer) from seeing a stale pin from a previous
+            # handler turn.
+            if _outbound_token is not None and _outbound_guard is not None:
+                try:
+                    _outbound_guard.reset(_outbound_token)
+                except Exception:
+                    logger.debug("Failed to reset outbound chat_id guard", exc_info=True)
+            if _singleton_token is not None:
+                try:
+                    from gateway.outbound_guard import unpin_inbound
+                    unpin_inbound(_singleton_token)
+                except Exception:
+                    logger.debug("Failed to reset outbound chat_id singleton", exc_info=True)
 
     def _format_session_info(self) -> str:
         """Resolve current model config and return a formatted info block.

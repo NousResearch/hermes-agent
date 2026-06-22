@@ -1,6 +1,8 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
 import subprocess
+import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -107,6 +109,57 @@ class TestCmdUpdatePip:
 
         assert mock_run.call_count == 1
         assert "env" not in mock_run.call_args.kwargs
+
+
+class TestZipFallbackProjectVenv:
+    """ZIP update path should preserve and reuse the active project env."""
+
+    def test_update_via_zip_exports_dotvenv_when_project_uses_dotvenv(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import main as hm
+
+        project = tmp_path / "repo"
+        project.mkdir()
+        active_venv = project / ".venv"
+        (active_venv / "bin").mkdir(parents=True)
+
+        payload_root = tmp_path / "payload" / "hermes-agent-main"
+        payload_root.mkdir(parents=True)
+        (payload_root / "README.md").write_text("updated\n")
+
+        zip_src = tmp_path / "payload.zip"
+        with zipfile.ZipFile(zip_src, "w") as zf:
+            zf.write(payload_root / "README.md", arcname="hermes-agent-main/README.md")
+
+        captured = {}
+
+        def fake_urlretrieve(_url, dst):
+            Path(dst).write_bytes(zip_src.read_bytes())
+            return dst, None
+
+        def fake_install(_cmd, *, env=None, **_kwargs):
+            captured["env"] = env
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", project)
+        monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda *_a, **_k: 0)
+        monkeypatch.setattr(hm, "_update_node_dependencies", lambda: None)
+        monkeypatch.setattr(hm, "_build_web_ui", lambda *_a, **_k: None)
+        monkeypatch.setattr(hm, "_install_python_dependencies_with_optional_fallback", fake_install)
+        monkeypatch.setattr(hm, "_print_curator_first_run_notice", lambda: None)
+        monkeypatch.setattr(hm, "_print_curator_recent_run_notice", lambda: None)
+        monkeypatch.setattr(hm, "_kill_stale_dashboard_processes", lambda: None)
+        monkeypatch.setattr(hm.sys, "prefix", str(active_venv))
+        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
+
+        with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve), \
+             patch("hermes_cli.managed_uv.update_managed_uv", return_value=None), \
+             patch("hermes_cli.managed_uv.ensure_uv", return_value="/usr/bin/uv"), \
+             patch("tools.skills_sync.sync_skills", return_value={"copied": [], "updated": [], "user_modified": [], "cleaned": []}), \
+             patch("hermes_cli.model_catalog.seed_cache_from_checkout", return_value=False):
+            hm._update_via_zip(SimpleNamespace(branch=None))
+
+        assert captured["env"]["VIRTUAL_ENV"] == str(active_venv)
 
 
 class TestCmdUpdateBranchFallback:

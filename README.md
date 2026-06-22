@@ -271,10 +271,10 @@ Plug the USB into the target PC. Select a boot mode from the GRUB menu (5-second
 | **Gateway Mode** | First-boot wizard (60 seconds) → enter Telegram token + API key → `hermes-gateway.service` starts → send commands from your phone |
 | **Terminal Mode** | First-boot wizard → interactive `hermes` shell on the console |
 | **Headless Scan** | Skips wizard, reads provisioned config → autonomous network scan → CVE triage → saves report to `~/hermes-scan-<date>.md` |
-| **Forensic — No Automount** | `noautomount noswap nopersistent` — safe for evidence collection; host drives are never touched |
+| **Forensic — No Automount** | `noautomount noswap nopersistent` — safe for evidence collection; AgentCyber first boot skips config auto-load, setup wizard, and gateway startup, and does not scan or mount host/provision block devices |
 | **With Persistence** | Same as Gateway Mode but all changes (config, logs, memory) survive reboots. Requires the `--persistence` partition created in Step 3. |
 
-On **first boot**, the wizard runs once and creates `/home/hermes/.hermes/config.yaml`. All subsequent boots skip the wizard and start the gateway directly.
+Outside forensic mode, the first-boot wizard runs once and creates `/home/hermes/.hermes/config.yaml` when no provisioned `HERMESCFG` archive is present. All subsequent boots skip the wizard and start the gateway directly when the selected mode allows it.
 
 ---
 

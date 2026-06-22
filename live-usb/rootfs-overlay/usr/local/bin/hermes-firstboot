@@ -14,8 +14,61 @@ CONFIG_FILE="${HERMES_HOME}/config.yaml"
 VENV="/opt/hermes-venv"
 HERMES_BIN="${VENV}/bin/hermes"
 
+# ---- Boot-mode helpers ------------------------------------------------------
+_BOOT_CMDLINE="$(tr '\0' ' ' < /proc/cmdline 2>/dev/null || true)"
+
+_live_mode_from_cmdline() {
+  local word
+  for word in ${_BOOT_CMDLINE}; do
+    case "$word" in
+      HERMES_LIVE_MODE=*)
+        printf '%s\n' "${word#HERMES_LIVE_MODE=}"
+        return 0
+        ;;
+    esac
+  done
+}
+
+LIVE_MODE="${HERMES_LIVE_MODE:-$(_live_mode_from_cmdline)}"
+
+_is_forensic_mode() {
+  [[ "$LIVE_MODE" == "forensic" ]]
+}
+
+_hermescfg_partition() {
+  local label_path="/dev/disk/by-label/HERMESCFG"
+  local resolved=""
+
+  if [[ -e "$label_path" ]]; then
+    resolved="$(readlink -f -- "$label_path" 2>/dev/null || true)"
+    if [[ -n "$resolved" && -b "$resolved" ]]; then
+      printf '%s\n' "$resolved"
+      return 0
+    fi
+  fi
+
+  if command -v blkid >/dev/null 2>&1; then
+    resolved="$(blkid -L HERMESCFG 2>/dev/null || true)"
+    if [[ -n "$resolved" && -b "$resolved" ]]; then
+      printf '%s\n' "$resolved"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 # ---- Guard: only run once ---------------------------------------------------
 if [[ -f "$FLAG_FILE" ]]; then
+  exit 0
+fi
+
+# Forensic mode is intentionally inert: do not scan/mount host block devices,
+# auto-load provisioned configs, start the gateway, or run the setup wizard.
+if _is_forensic_mode; then
+  mkdir -p "${HERMES_HOME}"
+  touch "$FLAG_FILE"
+  echo "  🛡️  Forensic mode active — skipping config auto-load, wizard, and gateway startup."
   exit 0
 fi
 
@@ -49,18 +102,20 @@ if [[ -f /opt/hermes-install-on-firstboot ]]; then
 fi
 
 # ---- Auto-load provisioned config ------------------------------------------
-for part in /dev/sd?3 /dev/nvme?n?p3; do
-  [[ -b "$part" ]] || continue
+# Only inspect the AgentCyber provision partition by label. Do not glob common
+# host disk names; forensic mode has already exited before this point.
+CONFIG_PART="$(_hermescfg_partition || true)"
+if [[ -n "$CONFIG_PART" ]]; then
   TMP_MNT=$(mktemp -d)
-  if mount -o ro "$part" "$TMP_MNT" 2>/dev/null; then
+  if mount -o ro "$CONFIG_PART" "$TMP_MNT" 2>/dev/null; then
     if [[ -f "${TMP_MNT}/hermes-config.tar.gz" ]]; then
       echo ""
-      echo "  🔑  Found provisioned config — applying..."
+      echo "  🔑  Found provisioned config on HERMESCFG — applying..."
       mkdir -p "${HERMES_HOME}"
       tar xzf "${TMP_MNT}/hermes-config.tar.gz" -C "$(dirname "$HERMES_HOME")" 2>/dev/null || true
       umount "$TMP_MNT"
       rm -rf "$TMP_MNT"
-      echo "  ✓  Config loaded from provision partition"
+      echo "  ✓  Config loaded from HERMESCFG provision partition"
       touch "$FLAG_FILE"
       # Skip the wizard
       systemctl start hermes-gateway.service 2>/dev/null || true
@@ -69,7 +124,7 @@ for part in /dev/sd?3 /dev/nvme?n?p3; do
     umount "$TMP_MNT"
   fi
   rm -rf "$TMP_MNT" 2>/dev/null || true
-done
+fi
 
 # =============================================================================
 # Interactive first-boot wizard

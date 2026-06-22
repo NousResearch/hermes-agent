@@ -1629,3 +1629,55 @@ Finish/verify the AgentCyber Live USB feature and keep the fork synchronized wit
 
 - Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
 - Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If no upstream drift or new Live USB gap is found, continue treating the lane as verification/no-op.
+
+### 2026-06-22T07:56:37Z — fix forensic firstboot host-mount and gateway guard
+
+**Commands / status**
+
+- Read this ledger and `docs/AGENTCYBER_STANDALONE_RUNBOOK.md` before acting.
+- `git status --short --branch && git remote -v && git branch --show-current && date -u +%Y-%m-%dT%H:%M:%SZ`: started clean on `agentcyber/upstream-sync-20260621-194355...origin/agentcyber/upstream-sync-20260621-194355`.
+- `git fetch upstream main --prune --no-tags && git fetch origin main --prune --no-tags && git fetch origin agentcyber/upstream-sync-20260621-194355 --prune --no-tags`: fetched read-only.
+- Drift after fetch: `HEAD..upstream/main` -> `0`; `upstream/main..HEAD` -> `118`; `HEAD..origin/agentcyber/upstream-sync-20260621-194355` -> `0`; `origin/agentcyber/upstream-sync-20260621-194355..HEAD` -> `0`; `upstream/main` is an ancestor of `HEAD`.
+- Baseline focused wrapper acceptance before edits: `scripts/run_tests.sh tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py` -> `322 tests passed, 0 failed`.
+- Baseline `scripts/agentcyber status --json` before edits reported `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, local runtime health `ok: true`, git `dirty: false`, head `ac79c776ac3bf3a155c04ec4920acd2a0f2c8999`, and secret fields summarized as booleans/presence only.
+- Baseline `scripts/agentcyber hermes tools list` showed `cyber` enabled and `live_usb` disabled.
+- Conflict marker search for lines starting `<<<<<<< ` or `>>>>>>> ` returned `0` matches.
+
+**Changed files**
+
+- `live-usb/rootfs-overlay/usr/local/bin/hermes-firstboot`: added boot-mode parsing, exits early for `HERMES_LIVE_MODE=forensic` before PyPI install, provision config auto-load, setup wizard, or explicit gateway start, and changed provision config discovery from `/dev/sd?3` / `/dev/nvme?n?p3` glob scanning to `HERMESCFG` label lookup via `/dev/disk/by-label/HERMESCFG` or `blkid -L HERMESCFG`.
+- `live-usb/rootfs-overlay/etc/systemd/system/hermes-gateway.service`: added `ConditionKernelCommandLine=!HERMES_LIVE_MODE=forensic` so the enabled gateway unit is skipped for the forensic GRUB entry.
+- `README.md`: tightened forensic boot wording to say AgentCyber first boot skips config auto-load, setup wizard, and gateway startup, and does not scan or mount host/provision block devices; also qualified the first-boot wizard text for non-forensic/non-provisioned boots.
+- `tests/cyber/test_live_usb_docs.py`: added invariants for forensic GRUB args, gateway systemd condition, firstboot ordering, `HERMESCFG`-only config auto-load, and absence of old host-disk globs.
+- `docs/AGENTCYBER_LIVE_USB_UPSTREAM_LEDGER.md`: added this run entry.
+
+**Verification**
+
+- Initial focused fix verification: `bash -n live-usb/rootfs-overlay/usr/local/bin/hermes-firstboot live-usb/build_iso.sh live-usb/write_usb.sh live-usb/provision.sh && uv run --frozen python -m pytest tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py -q -o addopts= --tb=short && uv run --frozen python -m ruff check tests/cyber/test_live_usb_docs.py tools/cyber_live_usb.py tests/cyber/test_live_usb_tool.py` -> `74 passed in 1.01s`; ruff `All checks passed!`.
+- Focused wrapper acceptance after the full fix: `scripts/run_tests.sh tests/cyber/test_live_usb_docs.py tests/cyber/test_live_usb_tool.py tests/hermes_cli/test_tools_config.py tests/hermes_cli/test_agentcyber_cmd.py tests/hermes_cli/test_agentcyber_wrapper.py tests/agent/test_redact.py tests/gateway/test_cyber_audit_hook.py` -> `324 tests passed, 0 failed`.
+- `bash -n live-usb/rootfs-overlay/usr/local/bin/hermes-firstboot live-usb/build_iso.sh live-usb/write_usb.sh live-usb/provision.sh` -> passed.
+- `uv run --frozen python -m ruff check tests/cyber/test_live_usb_docs.py tools/cyber_live_usb.py tests/cyber/test_live_usb_tool.py` -> `All checks passed!`.
+- `systemd-analyze condition 'ConditionKernelCommandLine=!HERMES_LIVE_MODE=forensic'` -> `Conditions succeeded` on the current non-forensic kernel command line.
+- `scripts/agentcyber status --json` after the fix before ledger edit reported `live_usb_visible: true`, `live_usb_enabled: false`, `cyber_enabled: true`, local runtime health `ok: true`, and git `dirty: true` only because this forensic firstboot lane was in progress.
+- `scripts/agentcyber hermes tools list` after the fix showed `cyber` enabled and `live_usb` disabled.
+- `git diff --check && git diff --cached --check` -> passed with no output before the ledger edit.
+- Read-only preservation/spec review before the fix: `PASS` for upstream/no-op preservation; read-only Live USB safety/docs next-gap review returned `REQUEST_CHANGES` for forensic firstboot host-disk glob scanning and gateway startup ambiguity.
+- Spec and quality re-reviews after adding the systemd gateway condition: `PASS` / `APPROVED`; reviewers found no remaining critical or important issues.
+
+**Blockers / boundaries**
+
+- No upstream drift on `upstream/main` was present, so no upstream merge was needed this run.
+- No cron jobs were scheduled, created, updated, paused, resumed, or removed.
+- No default `~/.hermes`, default gateway, default cron, or default profiles were modified.
+- No files were deleted by this cron run.
+- No USB/block-device writes, ISO builds as root, `sudo`, package installs, hardware actions, external security actions, cloud spend, credential access/disclosure, or public disclosure were performed.
+- Status commands contacted only the configured local Ollama health endpoint and printed booleans/status fields, not secrets.
+
+**Commit / push**
+
+- This scoped forensic firstboot/gateway guard fix plus ledger entry should be committed and pushed to `origin/agentcyber/upstream-sync-20260621-194355` without force. After pushing, final verification should check local `HEAD` equals the remote sync branch tip and stop rather than amending this ledger solely to mention the commit SHA.
+
+**Next lane**
+
+- Open/review/merge the guarded sync branch into AgentCyber main only after human approval; do not force-push.
+- Future runs should re-check upstream drift, focused Live USB tests, toolset/status visibility, and this ledger. If no upstream drift or new Live USB gap is found, continue treating the lane as verification/no-op.

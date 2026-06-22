@@ -3,6 +3,7 @@ Description=Hermes AgentCyber Gateway
 Documentation=https://github.com/NousResearch/hermes-agent
 After=network-online.target hermes-firstboot.service
 Wants=network-online.target
+ConditionKernelCommandLine=!HERMES_LIVE_MODE=forensic
 # Gateway exits with code 1 when no platforms are connected — restart until configured
 StartLimitIntervalSec=120
 StartLimitBurst=5

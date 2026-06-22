@@ -9,6 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 README = ROOT / "README.md"
 LIVE_USB_DIR = ROOT / "live-usb"
+FIRSTBOOT = LIVE_USB_DIR / "rootfs-overlay" / "usr" / "local" / "bin" / "hermes-firstboot"
+GRUB_CFG = LIVE_USB_DIR / "grub" / "grub.cfg"
+GATEWAY_SERVICE = LIVE_USB_DIR / "rootfs-overlay" / "etc" / "systemd" / "system" / "hermes-gateway.service"
 
 
 def _run_script(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -268,3 +271,46 @@ def test_direct_build_completion_guidance_does_not_imply_sudo_is_enough() -> Non
     assert "--operator-approval" in lowered
     assert "canonical whole removable /dev disk" in lowered
     assert "write to usb:  sudo ./write_usb.sh" not in lowered
+
+
+def test_firstboot_forensic_mode_skips_host_mounts_and_gateway_startup() -> None:
+    firstboot = FIRSTBOOT.read_text(encoding="utf-8")
+    grub_cfg = GRUB_CFG.read_text(encoding="utf-8")
+    gateway_service = GATEWAY_SERVICE.read_text(encoding="utf-8")
+    readme_section = _live_usb_section().lower()
+
+    assert "Hermes AgentCyber Live (Forensic" in grub_cfg
+    assert "noautomount noswap nopersistent" in grub_cfg
+    assert "HERMES_LIVE_MODE=forensic" in grub_cfg
+    assert "ConditionKernelCommandLine=!HERMES_LIVE_MODE=forensic" in gateway_service
+
+    forensic_guard = firstboot.index("if _is_forensic_mode; then")
+    pypi_install = firstboot.index("if [[ -f /opt/hermes-install-on-firstboot ]]", forensic_guard)
+    config_autoload = firstboot.index("CONFIG_PART=\"$(_hermescfg_partition || true)\"", pypi_install)
+    wizard = firstboot.index("Interactive first-boot wizard", config_autoload)
+    gateway_start = firstboot.index("systemctl start hermes-gateway.service", config_autoload)
+
+    assert forensic_guard < pypi_install < config_autoload < wizard
+    assert forensic_guard < gateway_start
+    assert "skipping config auto-load, wizard, and gateway startup" in firstboot
+    assert "agentcyber first boot skips config auto-load, setup wizard, and gateway startup" in readme_section
+    assert "does not scan or mount host/provision block devices" in readme_section
+
+
+def test_firstboot_loads_provisioned_config_only_from_hermescfg_label() -> None:
+    firstboot = FIRSTBOOT.read_text(encoding="utf-8")
+
+    assert "/dev/disk/by-label/HERMESCFG" in firstboot
+    assert "blkid -L HERMESCFG" in firstboot
+    assert "CONFIG_PART=\"$(_hermescfg_partition || true)\"" in firstboot
+    assert "mount -o ro \"$CONFIG_PART\" \"$TMP_MNT\"" in firstboot
+    assert "Found provisioned config on HERMESCFG" in firstboot
+    assert "Do not glob common" in firstboot
+
+    obsolete_host_disk_scans = (
+        "for part in /dev/sd?3 /dev/nvme?n?p3",
+        "mount -o ro \"$part\"",
+        "[[ -b \"$part\" ]]",
+    )
+    for obsolete_scan in obsolete_host_disk_scans:
+        assert obsolete_scan not in firstboot

@@ -1322,13 +1322,35 @@ def _dashboard_local_update_managed_externally() -> bool:
     in-browser local update action. Keep this dashboard capability separate
     from install-method detection: manual git/pip installs inside containers can
     still behave like their actual install method in the CLI.
+
+    However, when the install method is ``git`` (a bind-mounted checkout inside
+    a container — e.g. the hermes-webui image sharing the Hermes source tree),
+    the dashboard's ``hermes update`` button is the correct update path and
+    should not be suppressed. Other containerized install methods remain
+    externally managed unless their apply path is proven safe inside the
+    running container filesystem.
     """
+    if _default_hermes_root_is_opt_data():
+        return True
     try:
         from hermes_constants import is_container
 
-        return is_container()
+        if not is_container():
+            return False
     except Exception:
         return False
+    # We are inside a container, but the install may still be self-managed.
+    # If the install method is git, the dashboard update button works against
+    # the mounted checkout and should be offered. Keep pip blocked inside
+    # containers: its apply path mutates the running container filesystem and
+    # is not the bind-mounted checkout case this gate is meant to recover.
+    try:
+        method = detect_install_method(PROJECT_ROOT)
+        if method == "git":
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def _managed_files_policy(request: Request, *, create_root: bool = True) -> ManagedFilesPolicy:

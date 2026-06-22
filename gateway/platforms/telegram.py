@@ -491,6 +491,31 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        try:
+            send_concurrency = int(os.getenv("HERMES_TELEGRAM_SEND_CONCURRENCY", "8"))
+        except (TypeError, ValueError):
+            send_concurrency = 8
+        try:
+            typing_concurrency = int(os.getenv("HERMES_TELEGRAM_TYPING_CONCURRENCY", "2"))
+        except (TypeError, ValueError):
+            typing_concurrency = 2
+        send_concurrency = max(1, send_concurrency)
+        typing_concurrency = max(1, typing_concurrency)
+        self._send_semaphore = asyncio.Semaphore(send_concurrency)
+        self._typing_semaphore = asyncio.Semaphore(typing_concurrency)
+        self._telegram_send_queue_timeout_seconds = self._env_float_clamped(
+            "HERMES_TELEGRAM_SEND_QUEUE_TIMEOUT_SECONDS",
+            60.0,
+            min_value=0.1,
+            max_value=600.0,
+        )
+        self._telegram_typing_min_interval_seconds = self._env_float_clamped(
+            "HERMES_TELEGRAM_TYPING_MIN_INTERVAL_SECONDS",
+            4.0,
+            min_value=0.5,
+            max_value=30.0,
+        )
+        self._last_typing_at: Dict[tuple, float] = {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -1841,6 +1866,38 @@ class TelegramAdapter(BasePlatformAdapter):
             return chunk_index == 0
 
     async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> SendResult:
+        """Send a message to a Telegram chat with adapter-level backpressure."""
+        semaphore = getattr(self, "_send_semaphore", None)
+        if semaphore is None:
+            return await self._send_unthrottled(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+        timeout = float(getattr(self, "_telegram_send_queue_timeout_seconds", 60.0))
+        try:
+            await asyncio.wait_for(semaphore.acquire(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] Telegram send queue timed out after %.1fs; dropping to retry path",
+                self.name,
+                timeout,
+            )
+            return SendResult(
+                success=False,
+                error=f"telegram_send_queue_timeout:{timeout:.1f}s",
+                retryable=True,
+            )
+
+        try:
+            return await self._send_unthrottled(chat_id, content, reply_to=reply_to, metadata=metadata)
+        finally:
+            semaphore.release()
+
+    async def _send_unthrottled(
         self,
         chat_id: str,
         content: str,
@@ -4269,10 +4326,31 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._bot:
             _is_dm_topic: bool = False
             message_thread_id: Optional[int] = None
+            acquired_typing_slot = False
             try:
                 _typing_thread = self._metadata_thread_id(metadata)
                 _is_dm_topic = bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
                 message_thread_id = self._message_thread_id_for_typing(_typing_thread)
+                typing_key = (str(chat_id), message_thread_id)
+                loop_time = asyncio.get_running_loop().time()
+                last_typing_at = getattr(self, "_last_typing_at", {}).get(typing_key, 0.0)
+                min_interval = float(getattr(self, "_telegram_typing_min_interval_seconds", 4.0))
+                if loop_time - last_typing_at < min_interval:
+                    return
+
+                typing_semaphore = getattr(self, "_typing_semaphore", None)
+                if typing_semaphore is not None:
+                    if typing_semaphore.locked():
+                        return
+                    try:
+                        await asyncio.wait_for(typing_semaphore.acquire(), timeout=0.05)
+                        acquired_typing_slot = True
+                    except asyncio.TimeoutError:
+                        return
+
+                if not hasattr(self, "_last_typing_at"):
+                    self._last_typing_at = {}
+                self._last_typing_at[typing_key] = loop_time
                 await self._bot.send_chat_action(
                     chat_id=int(chat_id),
                     action="typing",
@@ -4298,6 +4376,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     e,
                     exc_info=True,
                 )
+            finally:
+                if acquired_typing_slot:
+                    self._typing_semaphore.release()
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""

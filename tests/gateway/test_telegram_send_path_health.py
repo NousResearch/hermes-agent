@@ -6,6 +6,7 @@ but nothing reaches the recipient.  ``_send_path_degraded`` short-circuits
 ``send()`` so cron's live-adapter branch falls through to standalone HTTP.
 """
 import sys
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -62,6 +63,69 @@ async def test_send_short_circuits_when_path_degraded():
     assert result.error == "send_path_degraded"
     assert result.retryable is True
     adapter._bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_uses_adapter_backpressure_for_concurrent_calls():
+    """Concurrent sends are gated before they enter python-telegram-bot.
+
+    This protects the shared PTB/httpx pool from digest/status bursts that
+    otherwise create many simultaneous send_message calls.
+    """
+    adapter = _make_adapter()
+    adapter._send_semaphore = asyncio.Semaphore(1)
+    adapter.send_typing = AsyncMock()
+    active = 0
+    max_active = 0
+
+    async def fake_send_message(**_kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.02)
+        active -= 1
+        return MagicMock(message_id=42)
+
+    adapter._bot.send_message = AsyncMock(side_effect=fake_send_message)
+
+    results = await asyncio.gather(
+        adapter.send("123", "one"),
+        adapter.send("123", "two"),
+        adapter.send("123", "three"),
+    )
+
+    assert [r.success for r in results] == [True, True, True]
+    assert max_active == 1
+    assert adapter._bot.send_message.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_send_queue_timeout_returns_retryable_failure():
+    """A saturated Telegram send queue fails fast instead of wedging Hermes."""
+    adapter = _make_adapter()
+    adapter._send_semaphore = asyncio.Semaphore(1)
+    adapter._telegram_send_queue_timeout_seconds = 0.01
+    adapter.send_typing = AsyncMock()
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def fake_send_message(**_kwargs):
+        first_started.set()
+        await release_first.wait()
+        return MagicMock(message_id=42)
+
+    adapter._bot.send_message = AsyncMock(side_effect=fake_send_message)
+
+    first = asyncio.create_task(adapter.send("123", "first"))
+    await first_started.wait()
+    second = await adapter.send("123", "second")
+    release_first.set()
+    first_result = await first
+
+    assert first_result.success is True
+    assert second.success is False
+    assert second.retryable is True
+    assert "telegram_send_queue_timeout" in second.error
 
 
 @pytest.mark.asyncio

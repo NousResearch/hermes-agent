@@ -1,0 +1,40 @@
+# v0.17.0 RESOLUTION INTENT-JUSTIFICATION + PER-PR TESTS
+# Generated 2026-06-21 22:58. Council item 3:
+# 'any take-theirs fallback must be diffed against the PR intended change and
+# explicitly justified.' For each of the 6 we PROVE every line the PR adds (vs
+# origin/main) is present in the v0.17.0 resolution (set-membership), then run the
+# PR own tests on the resolved v0.17.0 tree.
+#
+# SUMMARY: 6/6 resolutions preserve 100% of PR-intended additions. 5/6 fully test-green;
+# #50064 17/18 (1 failure = a v0.17.0 upstream test-removal #2647, NOT lost intent; Q2).
+
+## #49644  [hermes_cli/commands.py]  strategy=theirs
+  intent-preserved: ALL PR-added lines present in the v0.17.0 resolution (verified by set-membership).
+  justification: SUPERSET: v0.17.0 has the base /reasoning subcommand tuple; the PR replaces it with the extended tuple (adds max/full/clamp). take-theirs == the PR superset. keep-both would duplicate the tuple (SyntaxError), so take-theirs is the ONLY valid resolution AND it is exactly the PR intent.
+  tests on resolved v0.17.0: 10 passed
+
+## #50033  [agent/gemini_cloudcode_adapter.py]  strategy=theirs
+  intent-preserved: ALL PR-added lines present in the v0.17.0 resolution (verified by set-membership).
+  justification: ADDITIVE: ours-side empty; the PR adds the google_user_agent import. take-theirs preserves exactly the PR addition (801 added lines all present).
+  tests on resolved v0.17.0: no own test; 3 files compile OK + 165 gemini-adapter tests passed
+
+## #50056  [tests/hermes_cli/test_kanban_db.py]  strategy=both
+  intent-preserved: ALL PR-added lines present in the v0.17.0 resolution (verified by set-membership).
+  justification: BOTH-ADD imports: v0.17.0 adds 'import sqlite3', the PR adds 'import subprocess'. keep-both keeps the PR import AND v0.17.0 import; neither lost.
+  tests on resolved v0.17.0: 218 passed
+
+## #50064  [tests/run_agent/test_provider_attribution_headers.py]  strategy=theirs
+  intent-preserved: ALL PR-added lines present in the v0.17.0 resolution (verified by set-membership).
+  justification: ADDITIVE: ours-side empty; the PR adds its tests. take-theirs preserves them (31 added lines all present). The 1 failure is a PRE-EXISTING upstream test that v0.17.0 itself REMOVED along with its behavior (commit 8d59881a6 / #2647) — it is NOT lost PR intent; it is a v0.17.0 deprecation, dropped on rebase = Q2.
+  tests on resolved v0.17.0: 17 passed, 1 failed (see Q2)
+
+## #50073  [hermes_cli/config.py]  strategy=keep400
+  intent-preserved: ALL PR-added lines present in the v0.17.0 resolution (verified by set-membership).
+  justification: CONTEXT-DRIFT: the PR adds 3 keys (max_attempts/chunk_oversized_input/never_413); the hygiene_hard_message_limit line is UNCHANGED CONTEXT in the PR diff (no +/- prefix — VERIFIED), so keeping v0.17.0 value 400 loses NO PR change. All 11 PR additions present.
+  tests on resolved v0.17.0: 9 passed
+
+## #50296  [agent/agent_init.py]  strategy=theirs
+  intent-preserved: ALL PR-added lines present in the v0.17.0 resolution (verified by set-membership).
+  justification: ADDITIVE: ours-side empty; the PR adds the session-isolation block. take-theirs preserves exactly the PR addition (5 added lines all present).
+  tests on resolved v0.17.0: 13 passed
+

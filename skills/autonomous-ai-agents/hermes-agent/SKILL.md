@@ -297,7 +297,6 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 /tools               Manage tools (CLI)
 /toolsets            List toolsets (CLI)
 /skills              Search/install skills (CLI)
-/skill <name>        Load a skill into session
 /reload-skills       Re-scan ~/.hermes/skills/ for added/removed skills
 /reload              Reload .env variables into the running session (CLI)
 /reload-mcp          Reload MCP servers
@@ -343,7 +342,7 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 
 ### Exit
 ```
-/quit (/exit, /q)    Exit CLI
+/quit (/exit)    Exit CLI
 ```
 
 ---
@@ -890,7 +889,7 @@ and logs — avoids shell-escaping backslashes in bash.
 ### Skills not showing
 1. `hermes skills list` — verify installed
 2. `hermes skills config` — check platform enablement
-3. Load explicitly: `/skill name` or `hermes -s name`
+3. Load explicitly: `hermes -s name`
 
 ### Gateway issues
 Check logs first:

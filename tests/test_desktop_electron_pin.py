@@ -3,13 +3,12 @@
 The Windows desktop install failed at "Building desktop app" because Electron
 changed its install mechanism mid patch-series:
 
-    electron 40.9.3 .. 40.10.2  -> @electron/get@^2 + extract-zip@^2  (pure JS)
-    electron 40.10.3 / 40.10.4  -> @electron/get@^5 +
-                                   @electron-internal/extract-zip@^1 (native napi)
+    electron 40.10.3 .. 42.4.1  -> @electron/get@^5 + @electron-internal/extract-zip@^1  (native napi)
+    electron 42.4.2+             -> @electron/get@^5 + @electron-internal/extract-zip@^1 (native napi)
 
-``apps/desktop/package.json`` declared ``electronVersion: 40.9.3`` (the tested,
-JS-extract build) but pinned the dependency loosely as ``electron: ^40.9.3``.
-``npm ci`` then resolved 40.10.3/40.10.4 — the new *native* extract-zip whose
+``apps/desktop/package.json`` declared ``electronVersion: 42.4.1`` (the tested,
+JS-extract build) but pinned the dependency loosely as ``electron: ^42.4.1``.
+``npm ci`` then resolved 42.4.2 — the new *native* extract-zip whose
 win32-x64 binding fails to ``dlopen`` on some Windows hosts
 (``ERR_DLOPEN_FAILED loading index.win32-x64-msvc.node``).
 

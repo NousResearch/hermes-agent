@@ -46,9 +46,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from utils import env_var_enabled
-from hermes_cli.config import cfg_get
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
 
 
@@ -204,50 +203,76 @@ def _env_enabled(name: str) -> bool:
     return env_var_enabled(name)
 
 
-def _get_disabled_plugins() -> set:
-    """Read the disabled plugins list from config.yaml.
-
-    Kept for backward compat and explicit deny-list semantics. A plugin
-    name in this set will never load, even if it appears in
-    ``plugins.enabled``.
-    """
+def _path_identity(path: Path) -> str:
+    """Return a stable identity for path de-duplication without requiring it to exist."""
     try:
-        from hermes_cli.config import load_config
-        config = load_config()
-        disabled = cfg_get(config, "plugins", "disabled", default=[])
-        return set(disabled) if isinstance(disabled, list) else set()
+        return str(path.expanduser().resolve(strict=False))
     except Exception:
-        return set()
+        return str(path.expanduser())
+
+
+def _ordered_hermes_homes() -> List[Path]:
+    """Return default-root and active Hermes homes, de-duplicated in load order."""
+    homes: List[Path] = []
+    seen: Set[str] = set()
+    for home in (get_default_hermes_root(), get_hermes_home()):
+        key = _path_identity(home)
+        if key in seen:
+            continue
+        seen.add(key)
+        homes.append(home)
+    return homes
+
+
+def _read_plugins_config(home: Path) -> Optional[Dict[str, Any]]:
+    """Read only the ``plugins`` block from a Hermes home config file."""
+    if yaml is None:
+        return None
+    config_path = home / "config.yaml"
+    try:
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    plugins_cfg = data.get("plugins")
+    return plugins_cfg if isinstance(plugins_cfg, dict) else None
+
+
+def _plugin_config_candidates() -> List[Dict[str, Any]]:
+    """Return root/profile plugin config blocks in increasing precedence order."""
+    configs: List[Dict[str, Any]] = []
+    for home in _ordered_hermes_homes():
+        plugins_cfg = _read_plugins_config(home)
+        if plugins_cfg is not None:
+            configs.append(plugins_cfg)
+    return configs
+
+
+def _get_disabled_plugins() -> set:
+    """Read disabled plugin names from root/profile config.yaml files."""
+    disabled_plugins: Set[Any] = set()
+    for plugins_cfg in _plugin_config_candidates():
+        disabled = plugins_cfg.get("disabled", [])
+        if isinstance(disabled, list):
+            disabled_plugins.update(disabled)
+    return disabled_plugins
 
 
 def _get_enabled_plugins() -> Optional[set]:
     """Read the enabled-plugins allow-list from config.yaml.
 
-    Plugins are opt-in by default — only plugins whose name appears in
-    this set are loaded. Returns:
-
-    * ``None`` — the key is missing or malformed. Callers should treat
-      this as "nothing enabled yet" (the opt-in default); the first
-      ``migrate_config`` run populates the key with a grandfathered set
-      of currently-installed user plugins so existing setups don't
-      break on upgrade.
-    * ``set()`` — an empty list was explicitly set; nothing loads.
-    * ``set(...)`` — the concrete allow-list.
+    Plugins are opt-in by default - only plugins whose name appears in this set
+    are loaded. In profile mode, a profile-local ``plugins.enabled`` list wins;
+    otherwise fresh profiles inherit the default-root allow-list so root-installed
+    hooks still register for ``hermes -p <profile> chat``.
     """
-    try:
-        from hermes_cli.config import load_config
-        config = load_config()
-        plugins_cfg = config.get("plugins")
-        if not isinstance(plugins_cfg, dict):
-            return None
+    for plugins_cfg in reversed(_plugin_config_candidates()):
         if "enabled" not in plugins_cfg:
-            return None
+            continue
         enabled = plugins_cfg.get("enabled")
         if not isinstance(enabled, list):
             return None
         return set(enabled)
-    except Exception:
-        return None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1236,13 +1261,14 @@ class PluginManager:
         logger.debug("  bundled/platforms: %d manifest(s)", len(bundled_platforms))
         manifests.extend(bundled_platforms)
 
-        # 2. User plugins (~/.hermes/plugins/)
-        user_dir = get_hermes_home() / "plugins"
-        logger.debug("Scanning user plugins: %s", user_dir)
-        user_manifests = self._scan_directory(user_dir, source="user")
-        logger.debug("  user: %d manifest(s)", len(user_manifests))
-        manifests.extend(user_manifests)
-
+        # 2. User plugins. In profile mode, scan the default root first so
+        # root-installed plugins remain available, then scan the active profile
+        # so profile-local plugins can override by key.
+        for user_dir in (home / "plugins" for home in _ordered_hermes_homes()):
+            logger.debug("Scanning user plugins: %s", user_dir)
+            user_manifests = self._scan_directory(user_dir, source="user")
+            logger.debug("  user: %d manifest(s)", len(user_manifests))
+            manifests.extend(user_manifests)
         # 3. Project plugins (./.hermes/plugins/)
         if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
             project_dir = Path.cwd() / ".hermes" / "plugins"

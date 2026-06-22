@@ -75,6 +75,35 @@ def test_hook_receives_expected_kwargs(tmp_path, monkeypatch):
     assert results == ["hello world|s1|anthropic/claude-sonnet-4.6|cli"]
 
 
+def test_hook_loads_from_default_home_for_named_profile(tmp_path, monkeypatch):
+    """Named profiles should see root-installed output transform hooks."""
+    default_home = tmp_path / ".hermes"
+    profile_home = default_home / "profiles" / "test-profile"
+    default_home.mkdir()
+    profile_home.mkdir(parents=True)
+    _make_enabled_plugin(
+        default_home,
+        "profile_output_hook",
+        register_body=(
+            'ctx.register_hook("transform_llm_output", '
+            'lambda **kw: "HOOK-REPLACED")'
+        ),
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    mgr = PluginManager()
+    mgr.discover_and_load()
+
+    results = mgr.invoke_hook(
+        "transform_llm_output",
+        response_text="original",
+        session_id="s1",
+        model="m",
+        platform="cli",
+    )
+    assert results == ["HOOK-REPLACED"]
+
 def test_first_non_empty_string_wins_semantics():
     """Simulate the run_agent.py loop: first non-empty string replaces text."""
     # The dispatch contract: invoke_hook returns a list; the caller walks

@@ -88,9 +88,11 @@ export function readPopoutBounds(composer: Element | null): PopoutBounds | undef
     return undefined
   }
 
-  const { bottom, left, right, top } = el.getBoundingClientRect()
+  const { bottom, height, left, right, top, width } = el.getBoundingClientRect()
 
-  return { bottom, left, right, top }
+  // Pre-layout (mount before first layout) the rect is empty — fall back to the
+  // window rather than clamping the box into a collapsed area.
+  return width > 0 && height > 0 ? { bottom, left, right, top } : undefined
 }
 
 // Bound the bottom/right inset so the WHOLE box stays inside `area` (the thread

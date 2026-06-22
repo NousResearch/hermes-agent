@@ -6216,6 +6216,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         preview_limit = 400
         visible_index = 0
         hidden_tool_messages = 0
+        show_ts = bool(getattr(self, "show_timestamps", False))
+
+        def _ts_suffix(message: dict) -> str:
+            # Messages restored from SessionDB carry a unix `timestamp`; live
+            # unsaved turns may not. Only annotate when both the toggle is on
+            # and the turn actually has a stored time — never fabricate one.
+            if not show_ts:
+                return ""
+            ts = message.get("timestamp")
+            if not ts:
+                return ""
+            try:
+                from datetime import datetime
+                return f"  [{datetime.fromtimestamp(float(ts)).strftime('%H:%M')}]"
+            except (ValueError, OSError, TypeError):
+                return ""
 
         def flush_tool_summary():
             nonlocal hidden_tool_messages
@@ -6249,13 +6265,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             content_text = "" if content is None else str(content)
 
             if role == "user":
-                print(f"\n  [You #{visible_index}]")
+                print(f"\n  [You #{visible_index}]{_ts_suffix(msg)}")
                 print(
                     f"    {content_text[:preview_limit]}{'...' if len(content_text) > preview_limit else ''}"
                 )
                 continue
 
-            print(f"\n  [Hermes #{visible_index}]")
+            print(f"\n  [Hermes #{visible_index}]{_ts_suffix(msg)}")
             tool_calls = msg.get("tool_calls") or []
             if content_text:
                 preview = content_text[:preview_limit]
@@ -7978,6 +7994,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"
             self._console_print(f"  Status bar {state}")
+        elif canonical == "timestamps":
+            self._handle_timestamps_command(cmd_original)
         elif canonical == "verbose":
             self._toggle_verbose()
         elif canonical == "footer":

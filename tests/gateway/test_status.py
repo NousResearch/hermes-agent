@@ -119,6 +119,12 @@ class TestGatewayPidState:
         finally:
             status.release_gateway_runtime_lock()
 
+    def test_gateway_command_line_rejects_tmux_session_named_hermes_gateway(self):
+        assert not status.looks_like_gateway_command_line(
+            "tmux new-session -d -s hermes-gateway -x 120 -y 40 bash"
+        )
+        assert status.looks_like_gateway_command_line("hermes-gateway")
+
     def test_get_running_pid_accepts_explicit_pid_path_without_cleanup(self, tmp_path, monkeypatch):
         other_home = tmp_path / "profile-home"
         other_home.mkdir()

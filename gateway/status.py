@@ -223,11 +223,14 @@ def looks_like_gateway_command_line(command: str | None) -> bool:
         return False
 
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if token == "gateway/run.py" or token.endswith("/gateway/run.py"):
             return True
         basename = token.rsplit("/", 1)[-1]
-        if basename in ("hermes-gateway", "hermes-gateway.exe"):
+        # Dedicated gateway entrypoints are executable tokens, not arbitrary
+        # arguments.  A tmux/screen session name like ``hermes-gateway`` must
+        # not make the terminal multiplexer itself look like a gateway process.
+        if index == 0 and basename in ("hermes-gateway", "hermes-gateway.exe"):
             return True
 
     joined = " ".join(tokens)

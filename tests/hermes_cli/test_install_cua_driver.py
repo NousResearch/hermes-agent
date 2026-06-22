@@ -1,4 +1,4 @@
-"""Tests for ``install_cua_driver`` upgrade semantics and architecture pre-check.
+"""Tests for ``install_cua_driver`` upgrade semantics.
 
 The cua-driver upstream installer always pulls the latest release tag, so
 re-running it is the canonical upgrade path. ``install_cua_driver(upgrade=True)``
@@ -10,14 +10,18 @@ must:
   fix for the "we only pulled cua-driver once on enable" complaint).
 * Preserve original ``upgrade=False`` behaviour for the toolset-enable flow:
   skip if installed, install otherwise, warn on non-macOS.
-* Pre-check architecture compatibility before downloading to avoid raw 404
-  errors on Intel macOS when the upstream release lacks x86_64 assets.
+
+The pre-install arch probe that used to live alongside this function was
+deleted (see top-of-file comment in tools_config.py) — the upstream
+installer has CUA_DRIVER_RS_BAKED_VERSION baked in by CD and errors
+cleanly on missing-arch assets, and the upgrade path uses
+``cua_driver_update_check()`` (which shells `cua-driver check-update
+--json` against the already-installed binary).
 """
 
 from __future__ import annotations
 
-import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
 class TestInstallCuaDriverUpgrade:
@@ -44,8 +48,6 @@ class TestInstallCuaDriverUpgrade:
              patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/local/bin/" + n
                                                  if n in {"cua-driver", "curl"} else None), \
-             patch.object(tools_config, "_check_cua_driver_asset_for_arch",
-                          return_value=True), \
              patch.object(tools_config, "_run_cua_driver_installer",
                           return_value=True) as runner, \
              patch("subprocess.run"):
@@ -60,8 +62,6 @@ class TestInstallCuaDriverUpgrade:
         with patch("platform.system", return_value="Darwin"), \
              patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
-             patch.object(tools_config, "_check_cua_driver_asset_for_arch",
-                          return_value=True), \
              patch.object(tools_config, "_run_cua_driver_installer",
                           return_value=True) as runner:
             assert tools_config.install_cua_driver(upgrade=True) is True
@@ -85,128 +85,75 @@ class TestInstallCuaDriverUpgrade:
         with patch("platform.system", return_value="Darwin"), \
              patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
-             patch.object(tools_config, "_check_cua_driver_asset_for_arch",
-                          return_value=True), \
              patch.object(tools_config, "_run_cua_driver_installer",
                           return_value=True) as runner:
             assert tools_config.install_cua_driver(upgrade=False) is True
+            runner.assert_called_once()
 
 
-class TestCheckCuaDriverAssetForArch:
-    def test_arm64_always_returns_true(self):
+class TestArchProbeRemoval:
+    """Regression tests for the deletion of `_check_cua_driver_asset_for_arch`.
+
+    The old probe queried ``/releases/latest`` on trycua/cua and inspected
+    asset names. That was wrong in two ways:
+
+    1. cua-driver-rs releases are marked **prerelease** on every cut, so
+       ``/releases/latest`` returns the Python ``cua-agent`` / ``cua-computer``
+       package instead — a release with zero binary assets. The probe then
+       reported "no asset for $arch" on Linux x86_64, Windows, macOS Intel,
+       Linux arm64 — every non-Apple-Silicon host.
+    2. Even with the right endpoint, it duplicated tag-resolution the upstream
+       installer already does correctly via ``CUA_DRIVER_RS_BAKED_VERSION``
+       (auto-baked by CD on every release).
+
+    The fix: stop probing. Trust the upstream installer for fresh installs
+    (it has the baked version + correct API fallback) and the
+    ``cua-driver check-update --json`` MCP-binary native command for the
+    upgrade path.
+    """
+
+    def test_probe_function_is_gone(self):
         from hermes_cli import tools_config
+        assert not hasattr(tools_config, "_check_cua_driver_asset_for_arch")
+        assert not hasattr(tools_config, "_latest_cua_driver_rs_release")
 
-        with patch("platform.machine", return_value="arm64"):
-            assert tools_config._check_cua_driver_asset_for_arch() is True
-
-    def test_x86_64_with_asset_returns_true(self):
+    def test_fresh_install_does_not_call_github_api(self):
+        """Pre-install no longer probes the GitHub API — the upstream
+        ``install.sh`` resolves the tag from its baked CUA_DRIVER_RS_BAKED_VERSION
+        line. install.sh errors cleanly when the arch has no asset, so the
+        probe was duplicate gatekeeping.
+        """
         from hermes_cli import tools_config
-
-        release = {
-            "tag_name": "cua-driver-v0.1.6",
-            "assets": [
-                {"name": "cua-driver-0.1.6-darwin-arm64.tar.gz"},
-                {"name": "cua-driver-0.1.6-darwin-x86_64.tar.gz"},
-            ],
-        }
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps(release).encode()
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("platform.machine", return_value="x86_64"), \
-             patch("urllib.request.urlopen", return_value=mock_resp):
-            assert tools_config._check_cua_driver_asset_for_arch() is True
-
-    def test_x86_64_without_asset_returns_false(self):
-        from hermes_cli import tools_config
-
-        release = {
-            "tag_name": "cua-driver-v0.1.6",
-            "assets": [
-                {"name": "cua-driver-0.1.6-darwin-arm64.tar.gz"},
-                {"name": "cua-driver.tar.gz"},
-            ],
-        }
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps(release).encode()
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("platform.machine", return_value="x86_64"), \
-             patch("urllib.request.urlopen", return_value=mock_resp), \
-             patch.object(tools_config, "_print_warning") as warn, \
-             patch.object(tools_config, "_print_info"):
-            assert tools_config._check_cua_driver_asset_for_arch() is False
-            warn.assert_called_once()
-            assert "no Intel" in warn.call_args[0][0].lower() or "x86_64" in warn.call_args[0][0]
-
-    def test_x86_64_api_failure_returns_true(self):
-        """Network failure should fail open — let the installer handle it."""
-        from hermes_cli import tools_config
-
-        with patch("platform.machine", return_value="x86_64"), \
-             patch("urllib.request.urlopen", side_effect=Exception("timeout")):
-            assert tools_config._check_cua_driver_asset_for_arch() is True
-
-    def test_fresh_install_x86_64_no_asset_skips_installer(self):
-        """When the latest release has no Intel asset, skip the installer."""
-        from hermes_cli import tools_config
-
-        release = {
-            "tag_name": "cua-driver-v0.1.6",
-            "assets": [{"name": "cua-driver-0.1.6-darwin-arm64.tar.gz"}],
-        }
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps(release).encode()
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
 
         with patch("platform.system", return_value="Darwin"), \
              patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
-             patch("platform.machine", return_value="x86_64"), \
-             patch("urllib.request.urlopen", return_value=mock_resp), \
-             patch.object(tools_config, "_print_warning"), \
-             patch.object(tools_config, "_print_info"), \
-             patch.object(tools_config, "_run_cua_driver_installer") as runner:
-            assert tools_config.install_cua_driver(upgrade=False) is False
-            runner.assert_not_called()
+             patch("urllib.request.urlopen") as urlopen, \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner:
+            assert tools_config.install_cua_driver(upgrade=False) is True
+            runner.assert_called_once()
+            urlopen.assert_not_called()
 
-    def test_upgrade_x86_64_no_asset_returns_existing_status(self):
-        """On upgrade with no Intel asset, return whether binary existed."""
+    def test_upgrade_with_binary_does_not_call_github_api_directly(self):
+        """The upgrade path no longer hits GitHub from Python — it delegates
+        to the upstream ``install.sh`` (which has the baked release tag and
+        the proper API fallback). When cua-driver is already installed,
+        ``cua_driver_update_check()`` (added in a separate change) further
+        short-circuits the network re-install via the binary's native
+        ``check-update --json`` verb.
+        """
         from hermes_cli import tools_config
 
-        release = {
-            "tag_name": "cua-driver-v0.1.6",
-            "assets": [{"name": "cua-driver-0.1.6-darwin-arm64.tar.gz"}],
-        }
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps(release).encode()
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        # With binary installed — returns True (binary exists)
         with patch("platform.system", return_value="Darwin"), \
              patch.object(tools_config.shutil, "which",
                           side_effect=lambda n: "/usr/local/bin/" + n
                                                  if n in ("cua-driver", "curl") else None), \
-             patch("platform.machine", return_value="x86_64"), \
-             patch("urllib.request.urlopen", return_value=mock_resp), \
-             patch.object(tools_config, "_print_warning"), \
-             patch.object(tools_config, "_print_info"), \
-             patch.object(tools_config, "_run_cua_driver_installer") as runner:
+             patch("urllib.request.urlopen") as urlopen, \
+             patch("subprocess.run"), \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner:
             assert tools_config.install_cua_driver(upgrade=True) is True
-            runner.assert_not_called()
-
-        # Without binary — returns False
-        with patch("platform.system", return_value="Darwin"), \
-             patch.object(tools_config.shutil, "which",
-                          side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
-             patch("platform.machine", return_value="x86_64"), \
-             patch("urllib.request.urlopen", return_value=mock_resp), \
-             patch.object(tools_config, "_print_warning"), \
-             patch.object(tools_config, "_print_info"), \
-             patch.object(tools_config, "_run_cua_driver_installer") as runner:
-            assert tools_config.install_cua_driver(upgrade=True) is False
-            runner.assert_not_called()
+            runner.assert_called_once()
+            # Probe deleted — no direct GitHub API call from Python.
+            urlopen.assert_not_called()

@@ -2105,6 +2105,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.COMMAND,
                 self._handle_command
             ))
+            web_app_data_filter = getattr(getattr(filters, "StatusUpdate", None), "WEB_APP_DATA", None)
+            if web_app_data_filter is not None:
+                self._app.add_handler(TelegramMessageHandler(
+                    web_app_data_filter,
+                    self._handle_web_app_data_message
+                ))
             self._app.add_handler(TelegramMessageHandler(
                 filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
                 self._handle_location_message
@@ -5994,6 +6000,36 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
+        event = self._apply_telegram_group_observe_attribution(event)
+        await self.handle_message(event)
+
+    async def _handle_web_app_data_message(self, update: Any, context: Any) -> None:
+        """Handle Telegram Mini App data sent via WebApp.sendData()."""
+        msg = self._effective_update_message(update)
+        web_app_data = getattr(msg, "web_app_data", None) if msg else None
+        if not msg or web_app_data is None:
+            return
+        if not self._should_process_message(msg):
+            return
+        await self._ensure_forum_commands(msg)
+
+        button_text = getattr(web_app_data, "button_text", None)
+        payload = getattr(web_app_data, "data", "") or ""
+        formatted_payload = payload
+        try:
+            parsed = json.loads(payload)
+            formatted_payload = json.dumps(parsed, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+        parts = ["[Telegram Mini App data]"]
+        if button_text:
+            parts.append(f"Button: {button_text}")
+        parts.append("Payload:")
+        parts.append(formatted_payload)
+
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        event.text = "\n".join(parts)
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)
 

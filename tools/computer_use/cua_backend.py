@@ -78,6 +78,45 @@ _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
                             # driver doesn't expose `manifest` — see
                             # `_resolve_mcp_invocation` below)
 
+# Env var cua-driver reads to gate its anonymous usage telemetry (PostHog).
+# Setting it to "0" disables telemetry; absence => the binary's own default
+# (telemetry ON upstream).
+_CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
+
+
+def _cua_telemetry_disabled() -> bool:
+    """True when Hermes should disable cua-driver telemetry for this user.
+
+    Reads ``computer_use.cua_telemetry`` from config.yaml. Default is False
+    (telemetry off). Any failure to read config fails SAFE — toward the
+    privacy-preserving default of telemetry disabled.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        cu = cfg.get("computer_use") or {}
+        # opt-in flag: True => user wants telemetry => do NOT disable.
+        return not bool(cu.get("cua_telemetry", False))
+    except Exception:
+        # Config unreadable — default to disabling telemetry (fail safe).
+        return True
+
+
+def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Return the environment dict for spawning cua-driver.
+
+    Starts from ``base_env`` (defaults to ``os.environ``) and, when telemetry
+    is disabled (the default), injects ``CUA_DRIVER_RS_TELEMETRY_ENABLED=0``.
+    When the user has opted in, the var is left untouched so cua-driver uses
+    its own default. Used by every cua-driver spawn site (MCP backend, status,
+    doctor, install) so the policy is applied consistently.
+    """
+    env = dict(base_env if base_env is not None else os.environ)
+    if _cua_telemetry_disabled():
+        env[_CUA_TELEMETRY_ENV_VAR] = "0"
+    return env
+
 
 def _resolve_mcp_invocation(
     driver_cmd: str,
@@ -176,6 +215,7 @@ def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]
             # stdin-reading mode rather than erroring — DEVNULL gives them EOF
             # so they exit fast instead of blocking until the timeout.
             stdin=subprocess.DEVNULL,
+            env=cua_driver_child_env(),
         )
     except Exception:
         return None
@@ -523,7 +563,9 @@ class _CuaDriverSession:
             params = StdioServerParameters(
                 command=command,
                 args=args,
-                env=_sanitize_subprocess_env(dict(os.environ)),
+                # Apply the telemetry policy first (default: disabled), then
+                # sanitize Hermes-managed secrets out of the child env.
+                env=_sanitize_subprocess_env(cua_driver_child_env()),
             )
 
             async with stdio_client(params) as (read, write):

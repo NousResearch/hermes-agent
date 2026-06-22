@@ -37,6 +37,21 @@ _OVERALL_GLYPH = {
 }
 
 
+def _cua_child_env() -> Dict[str, str]:
+    """cua-driver child env with the Hermes telemetry policy applied.
+
+    Delegates to ``cua_backend.cua_driver_child_env`` (telemetry disabled by
+    default unless the user opts in). Falls back to the current environment
+    if that import fails, so doctor never breaks on a telemetry-helper error.
+    """
+    try:
+        from tools.computer_use.cua_backend import cua_driver_child_env
+
+        return cua_driver_child_env()
+    except Exception:
+        return dict(os.environ)
+
+
 def _drive_health_report(
     binary: str,
     *,
@@ -72,6 +87,7 @@ def _drive_health_report(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        env=_cua_child_env(),
     )
     try:
         # 1. initialize

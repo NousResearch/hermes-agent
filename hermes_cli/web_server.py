@@ -623,6 +623,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # with the other messaging-platform config (discord) so it isn't an
     # orphan tab of one field.
     "telegram": "discord",
+    # `computer_use.cua_telemetry` is the only schema-surfaced computer_use
+    # field — fold it into the agent tab rather than spawning a one-field
+    # orphan category.
+    "computer_use": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.

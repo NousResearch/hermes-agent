@@ -12526,9 +12526,11 @@ def main():
             if path:
                 version = ""
                 try:
+                    from hermes_cli.tools_config import _cua_driver_env
                     version = subprocess.run(
                         [path, "--version"],
                         capture_output=True, text=True, timeout=5,
+                        env=_cua_driver_env(),
                     ).stdout.strip()
                 except Exception:
                     pass

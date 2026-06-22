@@ -23,6 +23,7 @@ from plugins.memory.hindsight import (
     RETAIN_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
+    _persisted_profile_env_keys,
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
@@ -416,6 +417,49 @@ class TestConfig:
         })
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
+
+    def test_persisted_profile_env_keys_filters_to_api_keys(self):
+        env = {
+            "HINDSIGHT_API_LLM_PROVIDER": "provider-x",
+            "HINDSIGHT_API_LLM_MODEL": "model-x",
+            "HINDSIGHT_API_LOG_LEVEL": "info",
+            "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT": "0",
+        }
+
+        persisted = _persisted_profile_env_keys(env)
+
+        assert persisted == {
+            "HINDSIGHT_API_LLM_PROVIDER": "provider-x",
+            "HINDSIGHT_API_LLM_MODEL": "model-x",
+            "HINDSIGHT_API_LOG_LEVEL": "info",
+        }
+        assert "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT" not in persisted
+
+    def test_persisted_keys_equal_when_only_idle_timeout_differs(self):
+        # The hindsight_embed daemon manager (_register_profile) persists only
+        # HINDSIGHT_API_* keys, so the on-disk profile env never contains the
+        # HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT key that _build_embedded_profile_env
+        # emits. A raw comparison is therefore always unequal and restarts the
+        # daemon every session; comparing the persisted subset must be equal.
+        # (provider/model are inert string inputs here; no LLM is invoked.)
+        built = _build_embedded_profile_env({
+            "llm_provider": "provider-x",
+            "llm_model": "model-x",
+            "idle_timeout": 0,
+        })
+        on_disk = {k: v for k, v in built.items() if k.startswith("HINDSIGHT_API_")}
+
+        assert built != on_disk
+        assert _persisted_profile_env_keys(built) == _persisted_profile_env_keys(on_disk)
+
+    def test_persisted_keys_differ_when_model_changes(self):
+        # A real HINDSIGHT_API_* change (the model) must still register so the
+        # daemon is restarted to pick it up.
+        base = {"llm_provider": "provider-x", "llm_model": "model-x", "idle_timeout": 0}
+        built_a = _build_embedded_profile_env(base)
+        built_b = _build_embedded_profile_env({**base, "llm_model": "model-y"})
+
+        assert _persisted_profile_env_keys(built_a) != _persisted_profile_env_keys(built_b)
 
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}

@@ -542,6 +542,22 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     return env_values
 
 
+def _persisted_profile_env_keys(env: dict[str, str]) -> dict[str, str]:
+    """Return only the keys the embedded daemon manager persists to the profile env.
+
+    ``hindsight_embed``'s ``_register_profile`` writes only ``HINDSIGHT_API_*``
+    keys to the on-disk profile env, dropping the ``HINDSIGHT_EMBED_*`` keys that
+    ``_build_embedded_profile_env`` also emits (e.g.
+    ``HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT``). Restart-on-config-change must compare
+    on this subset; comparing the full built env against the stripped on-disk file
+    is always unequal and restarts the daemon every session. The daemon still
+    receives the idle timeout via its ``--idle-timeout`` flag at startup, so the
+    only trade-off is that an idle-timeout-only change is picked up on the daemon's
+    next restart rather than forcing one.
+    """
+    return {k: v for k, v in env.items() if k.startswith("HINDSIGHT_API_")}
+
+
 def _embedded_profile_env_path(config: dict[str, Any]):
     from pathlib import Path
 
@@ -1421,7 +1437,10 @@ class HindsightMemoryProvider(MemoryProvider):
                     profile_env = _embedded_profile_env_path(self._config)
                     expected_env = _build_embedded_profile_env(self._config)
                     saved = _load_simple_env(profile_env)
-                    config_changed = saved != expected_env
+                    config_changed = (
+                        _persisted_profile_env_keys(saved)
+                        != _persisted_profile_env_keys(expected_env)
+                    )
 
                     if config_changed:
                         profile_env = _materialize_embedded_profile_env(self._config)

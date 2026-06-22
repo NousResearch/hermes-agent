@@ -54,6 +54,29 @@ def _resolve_hermes_home() -> Path:
     return get_hermes_home()
 
 
+def _translate_to_host_path(container_path: str) -> str:
+    """Translate an in-container path to its host-side equivalent.
+
+    When Hermes spawns sibling containers via the host Docker daemon,
+    bind-mount sources must be host paths.  If HERMES_HOST_DATA_DIR is set,
+    paths under HERMES_HOME are remapped.  Otherwise returns the input.
+    """
+    import os
+
+    host_data_dir = os.environ.get("HERMES_HOST_DATA_DIR")
+    if not host_data_dir:
+        return container_path
+
+    hermes_home = _resolve_hermes_home()
+    container_path_obj = Path(container_path)
+
+    try:
+        rel = container_path_obj.relative_to(hermes_home)
+        return str(Path(host_data_dir) / rel)
+    except ValueError:
+        return container_path
+
+
 def register_credential_file(
     relative_path: str,
     container_base: str = "/root/.hermes",
@@ -224,6 +247,8 @@ def get_skills_directory_mount(
     skills_dir = hermes_home / "skills"
     if skills_dir.is_dir():
         host_path = _safe_skills_path(skills_dir)
+        # Translate to host path for sibling-container mounts
+        host_path = _translate_to_host_path(host_path)
         mounts.append({
             "host_path": host_path,
             "container_path": f"{container_base.rstrip('/')}/skills",
@@ -369,8 +394,10 @@ def get_cache_directory_mounts(
         if host_dir.is_dir():
             # Always map to the *new* container layout regardless of host layout.
             container_path = f"{container_base.rstrip('/')}/{new_subpath}"
+            # Translate to host path for sibling-container mounts
+            host_path = _translate_to_host_path(str(host_dir))
             mounts.append({
-                "host_path": str(host_dir),
+                "host_path": host_path,
                 "container_path": container_path,
             })
     return mounts

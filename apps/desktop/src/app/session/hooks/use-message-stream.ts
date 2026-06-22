@@ -556,6 +556,17 @@ export function useMessageStream({
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
+
+          // Responses-API reasoning models (GPT-5.5 / Codex) frequently ship an
+          // empty aggregated final_response even though the answer streamed
+          // token-by-token via message.delta. Erasing the streamed text parts
+          // here (and re-adding nothing) is what blanked out completed GPT-5.5
+          // turns. When there's no visible final text but we already streamed
+          // text, keep the streamed parts untouched.
+          if (!visibleFinalText && parts.some(part => part.type === 'text')) {
+            return parts
+          }
+
           const dedupeReference = normalize(visibleFinalText)
 
           const kept = parts.filter(part => {
@@ -627,8 +638,22 @@ export function useMessageStream({
         const hasInlineError = nextMessages.some(m => m.role === 'assistant' && m.error && !m.hidden)
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
+
+        // Does the finalized assistant bubble still hold visible streamed text?
+        // If so, an empty final_response must NOT trigger a hydrate: the stored
+        // session can lag (or, on a history_version desync, never received this
+        // turn at all), so reloading would blank the answer the user can see.
+        const finalizedAssistant = streamId
+          ? nextMessages.find(m => m.id === streamId)
+          : [...nextMessages].reverse().find(m => m.role === 'assistant' && !m.hidden)
+        const finalizedHasText = finalizedAssistant ? chatMessageText(finalizedAssistant).trim().length > 0 : false
+
         shouldHydrate =
-          !completionError && !hasInlineError && !unresolvedUserTail && (!state.sawAssistantPayload || !finalText)
+          !completionError &&
+          !hasInlineError &&
+          !unresolvedUserTail &&
+          !finalizedHasText &&
+          (!state.sawAssistantPayload || !finalText)
 
         return {
           ...state,

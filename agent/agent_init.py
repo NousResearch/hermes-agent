@@ -151,6 +151,41 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def backfill_session_counters_from_row(agent, row: Dict[str, Any]) -> None:
+    """Seed an agent's in-memory session counters from a persisted session row.
+
+    Used when a gateway AIAgent is *rebuilt* for an existing session (agent-cache
+    invalidation, #50675): the rebuilt instance starts every counter at 0, but
+    the SessionDB row already holds the correct cumulative totals. Mirror them
+    back so ``/usage`` keeps reporting whole-session figures instead of only the
+    activity since the rebuild.
+
+    The ``sessions`` table has no separate prompt/completion/total columns, so
+    total is derived as input+output and the prompt/completion split mirrors the
+    input/output split. Missing/NULL values default to 0 / existing defaults.
+    """
+    if not row:
+        return
+    _in = int(row.get("input_tokens") or 0)
+    _out = int(row.get("output_tokens") or 0)
+    agent.session_input_tokens = _in
+    agent.session_output_tokens = _out
+    agent.session_cache_read_tokens = int(row.get("cache_read_tokens") or 0)
+    agent.session_cache_write_tokens = int(row.get("cache_write_tokens") or 0)
+    agent.session_reasoning_tokens = int(row.get("reasoning_tokens") or 0)
+    agent.session_api_calls = int(row.get("api_call_count") or 0)
+    agent.session_total_tokens = _in + _out
+    agent.session_prompt_tokens = _in
+    agent.session_completion_tokens = _out
+    _prior_cost = row.get("estimated_cost_usd")
+    if _prior_cost is not None:
+        agent.session_estimated_cost_usd = float(_prior_cost)
+    if row.get("cost_status"):
+        agent.session_cost_status = row["cost_status"]
+    if row.get("cost_source"):
+        agent.session_cost_source = row["cost_source"]
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1663,7 +1698,27 @@ def init_agent(
     agent.session_estimated_cost_usd = 0.0
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
-    
+
+    # Backfill cumulative counters from the SessionDB row when this AIAgent is
+    # a *rebuild* of an existing session (gateway agent-cache invalidation).
+    # The gateway rebuilds AIAgent for the same session_id when its cached
+    # message_count snapshot goes stale (large flushes, compression). Without
+    # this, the fresh instance starts every counter at 0, so /usage reports
+    # only the calls/tokens since the rebuild and silently undercounts the
+    # session totals (#50675). The on-disk row already holds the correct
+    # cumulative totals (per-call increments survive the rebuild), so seed the
+    # in-memory counters from it. Brand-new sessions have no row yet (or an
+    # all-zero one), so this is a no-op for them. Fail-open: never let a DB
+    # read break agent construction.
+    if session_db is not None and getattr(agent, "session_id", None):
+        try:
+            _prior = session_db.get_session(agent.session_id)
+        except Exception as _bf_err:
+            _prior = None
+            _ra().logger.debug("Session counter backfill read failed: %s", _bf_err)
+        if _prior:
+            backfill_session_counters_from_row(agent, _prior)
+
     # ── Ollama num_ctx injection ──
     # Ollama defaults to 2048 context regardless of the model's capabilities.
     # When running against an Ollama server, detect the model's max context

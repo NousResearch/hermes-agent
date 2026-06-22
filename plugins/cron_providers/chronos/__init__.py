@@ -235,7 +235,7 @@ class ChronosCronScheduler(CronScheduler):
 def register(ctx) -> None:
     """Plugin entrypoint — register the Chronos provider with the loader.
 
-    Mirrors the memory-plugin shape; plugins/cron discovery calls this and
+    Mirrors the memory-plugin shape; plugins/cron_providers discovery calls this and
     collects the provider via register_cron_scheduler.
     """
     ctx.register_cron_scheduler(ChronosCronScheduler())

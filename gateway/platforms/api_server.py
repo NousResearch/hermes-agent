@@ -3448,7 +3448,7 @@ class APIServerAdapter(BasePlatformAdapter):
         against double-fire on a NAS/scheduler retry.
         """
         from hermes_cli.config import cfg_get, load_config
-        from plugins.cron.chronos.verify import get_fire_verifier
+        from plugins.cron_providers.chronos.verify import get_fire_verifier
 
         auth = request.headers.get("Authorization", "")
         token = auth[7:].strip() if auth.startswith("Bearer ") else ""

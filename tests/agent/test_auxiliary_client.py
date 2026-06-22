@@ -2706,6 +2706,175 @@ class TestAuxiliaryPoolRotationRetry:
         assert pool.rotate_calls[0]["status_code"] == 429
         mock_fallback.assert_not_called()
 
+    def test_call_llm_rotates_explicit_codex_pool_on_connection_error(self):
+        """A connection blip on a multi-account Codex pool rotates to the next
+        account instead of giving up.
+
+        Reporter scenario: ``auxiliary.compression`` runs on ``openai-codex``
+        (also the main provider), so the cross-provider fallback is empty.
+        Before this fix a connection/stream error killed the call even though
+        other pool accounts were available — the same-provider rotation gate
+        only covered auth/payment/rate-limit.  The rotation uses the short
+        ``STATUS_CODE_CONNECTION`` cooldown so a healthy account isn't locked
+        out for the full quota TTL.
+        """
+        from agent.credential_pool import STATUS_CODE_CONNECTION
+
+        conn_err = ConnectionError("transport closed")
+
+        # The stale account must fail TWICE: the initial call plus the
+        # transient-transport retry-once that call_llm runs on the same client
+        # before any rotation.  Only a *persistent* connection failure rotates
+        # to another account — a single blip is retried in place.
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create.side_effect = [conn_err, conn_err]
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create.return_value = _DummyResponse("rotated-conn-sync")
+
+        class _Pool:
+            def __init__(self):
+                self.rotate_calls = []
+
+            def has_credentials(self):
+                return True
+
+            def entries(self):
+                return [SimpleNamespace(id="cred-a"), SimpleNamespace(id="cred-b")]
+
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                self.rotate_calls.append(kwargs)
+                return SimpleNamespace(id="cred-b")
+
+        pool = _Pool()
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False),
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback,
+        ):
+            resp = call_llm(
+                task="compression",
+                provider="openai-codex",
+                model="gpt-5.4",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "rotated-conn-sync"
+        assert stale_client.chat.completions.create.call_count == 2
+        assert fresh_client.chat.completions.create.call_count == 1
+        assert len(pool.rotate_calls) == 1
+        assert pool.rotate_calls[0]["status_code"] == STATUS_CODE_CONNECTION
+        mock_fallback.assert_not_called()
+
+    def test_call_llm_does_not_rotate_single_account_pool_on_connection_error(self):
+        """A single-credential pool must NOT be rotated on a connection error —
+        rotating to nothing only penalises the lone account.  The call falls
+        through to the existing cross-provider connection fallback instead.
+        """
+        conn_err = ConnectionError("transport closed")
+
+        only_client = MagicMock()
+        only_client.base_url = "https://chatgpt.com/backend-api/codex"
+        only_client.chat.completions.create.side_effect = conn_err
+
+        class _Pool:
+            def __init__(self):
+                self.rotate_calls = []
+
+            def has_credentials(self):
+                return True
+
+            def entries(self):
+                return [SimpleNamespace(id="cred-a")]
+
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                self.rotate_calls.append(kwargs)
+                return None
+
+        pool = _Pool()
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(only_client, "gpt-5.4")),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False),
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._try_payment_fallback", return_value=(None, None, "")),
+        ):
+            with pytest.raises(ConnectionError):
+                call_llm(
+                    task="compression",
+                    provider="openai-codex",
+                    model="gpt-5.4",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+
+        assert pool.rotate_calls == [], "single-account pool must not be rotated on a connection blip"
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_rotates_explicit_codex_pool_on_connection_error(self):
+        from agent.credential_pool import STATUS_CODE_CONNECTION
+
+        conn_err = ConnectionError("transport closed")
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create = AsyncMock(side_effect=[conn_err, conn_err])
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create = AsyncMock(return_value=_DummyResponse("rotated-conn-async"))
+
+        class _Pool:
+            def __init__(self):
+                self.rotate_calls = []
+
+            def has_credentials(self):
+                return True
+
+            def entries(self):
+                return [SimpleNamespace(id="cred-a"), SimpleNamespace(id="cred-b")]
+
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, **kwargs):
+                self.rotate_calls.append(kwargs)
+                return SimpleNamespace(id="cred-b")
+
+        pool = _Pool()
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False),
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback,
+        ):
+            resp = await async_call_llm(
+                task="compression",
+                provider="openai-codex",
+                model="gpt-5.4",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "rotated-conn-async"
+        assert stale_client.chat.completions.create.await_count == 2
+        assert fresh_client.chat.completions.create.await_count == 1
+        assert len(pool.rotate_calls) == 1
+        assert pool.rotate_calls[0]["status_code"] == STATUS_CODE_CONNECTION
+        mock_fallback.assert_not_called()
+
 
 class TestCodexAdapterReasoningTranslation:
     """Verify _CodexCompletionsAdapter translates extra_body.reasoning
@@ -3414,6 +3583,13 @@ class TestAuxiliaryClientPoisonedCacheEviction:
             _client_cache.clear()
             _client_cache[cache_key] = (poisoned, "gpt-5.5", None)
 
+        # Stub the credential pool to "no credentials" so the same-provider
+        # connection-error rotation path (which now covers connection errors)
+        # bails immediately instead of loading the real on-disk pool and
+        # marking a live account exhausted.  The contract under test is cache
+        # eviction, not rotation.
+        _no_cred_pool = SimpleNamespace(has_credentials=lambda: False)
+
         try:
             with patch(
                 "agent.auxiliary_client._resolve_task_provider_model",
@@ -3421,6 +3597,9 @@ class TestAuxiliaryClientPoisonedCacheEviction:
             ), patch(
                 "agent.auxiliary_client._get_cached_client",
                 return_value=(poisoned, "gpt-5.5"),
+            ), patch(
+                "agent.auxiliary_client.load_pool",
+                return_value=_no_cred_pool,
             ), patch(
                 "agent.auxiliary_client._try_payment_fallback",
                 return_value=(None, None, ""),
@@ -3450,6 +3629,10 @@ class TestAuxiliaryClientPoisonedCacheEviction:
             _client_cache.clear()
             _client_cache[cache_key] = (poisoned, "gpt-5.5", None)
 
+        # See sync counterpart: stub the pool to "no credentials" so the
+        # connection-error rotation path bails without touching the real pool.
+        _no_cred_pool = SimpleNamespace(has_credentials=lambda: False)
+
         try:
             with patch(
                 "agent.auxiliary_client._resolve_task_provider_model",
@@ -3457,6 +3640,9 @@ class TestAuxiliaryClientPoisonedCacheEviction:
             ), patch(
                 "agent.auxiliary_client._get_cached_client",
                 return_value=(poisoned, "gpt-5.5"),
+            ), patch(
+                "agent.auxiliary_client.load_pool",
+                return_value=_no_cred_pool,
             ), patch(
                 "agent.auxiliary_client._try_payment_fallback",
                 return_value=(None, None, ""),

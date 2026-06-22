@@ -99,7 +99,7 @@ class _OpenAIProxy:
 
 OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
-from agent.credential_pool import load_pool
+from agent.credential_pool import STATUS_CODE_CONNECTION, load_pool
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, model_forces_max_completion_tokens, normalize_proxy_env_vars
@@ -2771,6 +2771,28 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         if next_entry is not None:
             _evict_cached_clients(normalized)
             return True
+
+    if _is_connection_error(exc):
+        # A connection/stream blip can be account-specific (a stalled stream, a
+        # soft-throttle, or a stale OAuth session that authenticates but is
+        # dead) rather than a global endpoint outage.  When the pool holds more
+        # than one credential, rotate to the next one for this request with a
+        # SHORT cooldown (STATUS_CODE_CONNECTION) — long enough to skip the
+        # failing account on the immediate retry, short enough not to drain the
+        # pool on a string of network blips.  Single-credential pools are left
+        # untouched (rotating to nothing would only penalise the lone account).
+        # The caller bounds this to one rotation: a second connection error on
+        # the rotated account falls through to the cross-provider fallback
+        # instead of rotating again.
+        if len(pool.entries()) > 1:
+            next_entry = pool.mark_exhausted_and_rotate(
+                status_code=STATUS_CODE_CONNECTION,
+                error_context=error_context,
+                api_key_hint=hint,
+            )
+            if next_entry is not None:
+                _evict_cached_clients(normalized)
+                return True
     return False
 
 
@@ -5489,7 +5511,7 @@ def call_llm(
         # between this call and recovery (which leaves current()=None and makes
         # _select_unlocked() return the NEXT key by mistake).
         _client_api_key = str(getattr(client, "api_key", "") or "")
-        if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
+        if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err) or _is_connection_error(first_err)):
             recovery_err = first_err
             # Skip the extra retry for clear payment/quota errors — the endpoint
             # won't accept another request with the same exhausted key.
@@ -5532,6 +5554,11 @@ def call_llm(
                     if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                             or _is_rate_limit_error(retry2_err)):
                         _recover_provider_pool(pool_provider, retry2_err)
+                        first_err = retry2_err
+                    elif _is_connection_error(retry2_err):
+                        # Rotated account also unreachable.  Don't rotate again
+                        # (bounded to one same-provider rotation); fall through
+                        # to the cross-provider connection fallback below.
                         first_err = retry2_err
                     else:
                         raise
@@ -5963,7 +5990,7 @@ async def async_call_llm(
         # ── Same-provider credential-pool recovery (mirrors sync) ─────
         pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)
         _client_api_key = str(getattr(client, "api_key", "") or "")
-        if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
+        if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err) or _is_connection_error(first_err)):
             recovery_err = first_err
             # Skip the extra retry for clear payment/quota errors — the endpoint
             # won't accept another request with the same exhausted key.
@@ -6000,6 +6027,11 @@ async def async_call_llm(
                     if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                             or _is_rate_limit_error(retry2_err)):
                         _recover_provider_pool(pool_provider, retry2_err)
+                        first_err = retry2_err
+                    elif _is_connection_error(retry2_err):
+                        # Rotated account also unreachable.  Don't rotate again
+                        # (bounded to one same-provider rotation); fall through
+                        # to the cross-provider connection fallback below.
                         first_err = retry2_err
                     else:
                         raise

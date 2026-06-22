@@ -62,6 +62,18 @@ STATUS_EXHAUSTED = "exhausted"
 # login) rewrites the tokens.
 STATUS_DEAD = "dead"
 
+# Synthetic status code used to mark a credential after a transient
+# connection/transport failure (DNS blip, connection reset, premature stream
+# close, request timeout).  These errors carry no real HTTP status, and 599 is
+# never returned by a real provider response, so it maps to a short cooldown
+# (``EXHAUSTED_TTL_CONNECTION_SECONDS``).  Rationale: a connection failure can
+# be account-specific (a stalled stream or a stale OAuth session that
+# authenticates but is dead), so rotating to another credential for the
+# immediate retry is worth a try — but the failing account is probably healthy,
+# so it is only skipped briefly rather than treated as quota-exhausted.  A long
+# cooldown here would risk draining the whole pool on a string of network blips.
+STATUS_CODE_CONNECTION = 599
+
 # OAuth error reasons that indicate the credential is permanently invalid
 # server-side and cannot be recovered by retry/refresh.  Sourced from
 # OpenAI Codex Responses API, Anthropic, xAI, and Google OAuth spec.
@@ -111,6 +123,8 @@ SUPPORTED_POOL_STRATEGIES = {
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
+EXHAUSTED_TTL_CONNECTION_SECONDS = 90        # transient transport blip — skip the
+                                             # account briefly, don't drain the pool
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
@@ -252,6 +266,8 @@ def _exhausted_ttl(error_code: Optional[int]) -> int:
         return EXHAUSTED_TTL_401_SECONDS
     if error_code == 429:
         return EXHAUSTED_TTL_429_SECONDS
+    if error_code == STATUS_CODE_CONNECTION:
+        return EXHAUSTED_TTL_CONNECTION_SECONDS
     return EXHAUSTED_TTL_DEFAULT_SECONDS
 
 

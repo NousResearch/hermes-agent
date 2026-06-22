@@ -61,6 +61,7 @@ def _runner(monkeypatch, tmp_path):
         platform=Platform.TELEGRAM,
         chat_type="group",
     )
+    runner.session_store.get_or_create_session_async = AsyncMock(return_value=runner.session_store.get_or_create_session.return_value)
     runner.session_store.load_transcript.return_value = []
     runner.session_store.append_to_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()

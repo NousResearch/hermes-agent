@@ -344,6 +344,7 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
         platform=Platform.TELEGRAM,
         chat_type="group",
     )
+    runner.session_store.get_or_create_session_async = AsyncMock(return_value=runner.session_store.get_or_create_session.return_value)
     runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.rewrite_transcript = MagicMock()
@@ -447,6 +448,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
         platform=Platform.TELEGRAM,
         chat_type="group",
     )
+    runner.session_store.get_or_create_session_async = AsyncMock(return_value=runner.session_store.get_or_create_session.return_value)
     runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.rewrite_transcript = MagicMock()
@@ -552,6 +554,7 @@ async def test_session_hygiene_warns_user_when_compression_aborts(monkeypatch, t
         platform=Platform.TELEGRAM,
         chat_type="group",
     )
+    runner.session_store.get_or_create_session_async = AsyncMock(return_value=runner.session_store.get_or_create_session.return_value)
     runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.rewrite_transcript = MagicMock()
@@ -672,6 +675,7 @@ async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(mo
         platform=Platform.TELEGRAM,
         chat_type="group",
     )
+    runner.session_store.get_or_create_session_async = AsyncMock(return_value=runner.session_store.get_or_create_session.return_value)
     runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.rewrite_transcript = MagicMock()
@@ -799,6 +803,7 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
         platform=Platform.TELEGRAM,
         chat_type="private",
     )
+    runner.session_store.get_or_create_session_async = AsyncMock(return_value=runner.session_store.get_or_create_session.return_value)
     # 12 messages: below default → no compression without override,
     # but above the configured limit of 10 → should compress.
     runner.session_store.load_transcript.return_value = _make_history(12, content_size=40)
@@ -904,6 +909,7 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
         platform=Platform.TELEGRAM,
         chat_type="private",
     )
+    runner.session_store.get_or_create_session_async = AsyncMock(return_value=runner.session_store.get_or_create_session.return_value)
     runner.session_store.load_transcript.return_value = _make_history(12, content_size=40)
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.rewrite_transcript = MagicMock()

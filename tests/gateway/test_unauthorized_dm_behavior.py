@@ -449,6 +449,9 @@ async def test_handle_message_does_not_drop_anonymous_sender_in_allowlisted_chat
     # before this hook ever runs).
     reached_dispatch = MagicMock(side_effect=RuntimeError("reached dispatch"))
     runner._session_key_for_source = reached_dispatch
+    # HRM-T0a step 5: _handle_message now awaits the async resolver before
+    # the sync one. Stub both so the sentinel still fires past the auth gate.
+    runner._session_key_for_source_async = AsyncMock(side_effect=reached_dispatch)
 
     event = MessageEvent(
         text="hi",

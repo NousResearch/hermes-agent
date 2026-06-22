@@ -906,7 +906,7 @@ DEFAULT_CONFIG = {
 
     # Web dashboard settings
     "dashboard": {
-        "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        "theme": "default",  # Dashboard visual theme: "default" (白天) or "night" (黑夜)
     },
 
     # Privacy settings

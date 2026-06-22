@@ -1,6 +1,6 @@
 {
   "name": "hermes",
-  "productName": "元话 Agent",
+  "productName": "Hermes",
   "private": true,
   "version": "0.0.0",
   "description": "Private desktop workbench for metakina-agent Digital Investment Banking Agent OS.",
@@ -107,9 +107,9 @@
   },
   "build": {
     "electronVersion": "40.9.3",
-    "appId": "com.metakina.agent",
-    "productName": "元话 Agent",
-    "executableName": "metakina-agent",
+    "appId": "com.nousresearch.hermes",
+    "productName": "Hermes",
+    "executableName": "Hermes",
     "artifactName": "metakina-agent-${version}-${os}-${arch}.${ext}",
     "icon": "assets/icon",
     "directories": {
@@ -140,8 +140,8 @@
       "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
         "CFBundleDisplayName": "元话 Agent",
-        "CFBundleExecutable": "metakina-agent",
-        "CFBundleName": "元话 Agent",
+        "CFBundleExecutable": "Hermes",
+        "CFBundleName": "Hermes",
         "NSAudioCaptureUsageDescription": "元话 Agent uses audio capture for voice conversations.",
         "NSMicrophoneUsageDescription": "元话 Agent uses the microphone for voice input and voice conversations."
       },

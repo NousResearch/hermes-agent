@@ -40,14 +40,29 @@ const DEFAULT_LAYOUT: ThemeLayout = {
 
 export const defaultTheme: DashboardTheme = {
   name: "default",
-  label: "Hermes Teal",
-  description: "Classic dark teal — the canonical Hermes look",
+  label: "白天",
+  description: "白底黑字模式",
   palette: {
-    background: { hex: "#041c1c", alpha: 1 },
-    midground: { hex: "#ffe6cb", alpha: 1 },
-    foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(255, 189, 56, 0.35)",
-    noiseOpacity: 1,
+    background: { hex: "#ffffff", alpha: 1 },
+    midground: { hex: "#31b768", alpha: 1 },
+    foreground: { hex: "#000000", alpha: 1 },
+    warmGlow: "rgba(49, 183, 104, 0.08)",
+    noiseOpacity: 0,
+  },
+  typography: DEFAULT_TYPOGRAPHY,
+  layout: DEFAULT_LAYOUT,
+};
+
+export const nightTheme: DashboardTheme = {
+  name: "night",
+  label: "黑夜",
+  description: "黑底白字模式",
+  palette: {
+    background: { hex: "#000000", alpha: 1 },
+    midground: { hex: "#31b768", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 1 },
+    warmGlow: "rgba(49, 183, 104, 0.12)",
+    noiseOpacity: 0,
   },
   typography: DEFAULT_TYPOGRAPHY,
   layout: DEFAULT_LAYOUT,
@@ -190,8 +205,8 @@ export const roseTheme: DashboardTheme = {
  */
 export const defaultLargeTheme: DashboardTheme = {
   name: "default-large",
-  label: "Hermes Teal (Large)",
-  description: "Hermes Teal with bigger fonts and roomier spacing",
+  label: "metakina-agent Large",
+  description: "metakina-agent with bigger fonts and roomier spacing",
   palette: defaultTheme.palette,
   typography: {
     ...DEFAULT_TYPOGRAPHY,
@@ -206,10 +221,5 @@ export const defaultLargeTheme: DashboardTheme = {
 
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
-  "default-large": defaultLargeTheme,
-  midnight: midnightTheme,
-  ember: emberTheme,
-  mono: monoTheme,
-  cyberpunk: cyberpunkTheme,
-  rose: roseTheme,
+  night: nightTheme,
 };

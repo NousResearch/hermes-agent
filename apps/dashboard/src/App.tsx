@@ -484,9 +484,7 @@ export default function App() {
                   className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
                   style={{ mixBlendMode: "plus-lighter" }}
                 >
-                  Hermes
-                  <br />
-                  Agent
+                  元话-AGENT
                 </Typography>
               </div>
 
@@ -703,8 +701,8 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
     {
       action: "update",
       icon: Download,
-      label: t.status.updateHermes,
-      runningLabel: t.status.updatingHermes,
+      label: t.status.updateMetakinaAgent,
+      runningLabel: t.status.updatingMetakinaAgent,
       spin: false,
     },
   ];

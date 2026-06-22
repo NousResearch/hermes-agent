@@ -68,29 +68,29 @@
   :root {
     color-scheme: dark;
 
-    --dt-background: #f7f7f7;
-    --dt-foreground: #242424;
+    --dt-background: #f7faf8;
+    --dt-foreground: #18201c;
     --dt-card: #ffffff;
-    --dt-card-foreground: #242424;
-    --dt-muted: #f0f0ef;
-    --dt-muted-foreground: #737373;
+    --dt-card-foreground: #18201c;
+    --dt-muted: #edf3ef;
+    --dt-muted-foreground: #66736b;
     --dt-popover: #ffffff;
-    --dt-popover-foreground: #242424;
-    --dt-primary: #cf806d;
+    --dt-popover-foreground: #18201c;
+    --dt-primary: #31b768;
     --dt-primary-foreground: #ffffff;
-    --dt-secondary: #f1f1f0;
-    --dt-secondary-foreground: #2d2d2d;
-    --dt-accent: #eeeeed;
-    --dt-accent-foreground: #242424;
-    --dt-border: #dfdfdc;
-    --dt-input: #ddddda;
-    --dt-ring: #b97969;
+    --dt-secondary: #eaf2ee;
+    --dt-secondary-foreground: #1e3128;
+    --dt-accent: #e8f4ed;
+    --dt-accent-foreground: #1e3128;
+    --dt-border: #d9e4de;
+    --dt-input: #d3e0d8;
+    --dt-ring: #2fae63;
     --dt-destructive: #b94a3a;
     --dt-destructive-foreground: #ffffff;
-    --dt-sidebar-bg: #fafafa;
-    --dt-sidebar-border: #e2e2df;
-    --dt-user-bubble: #f2f2f1;
-    --dt-user-bubble-border: #dededb;
+    --dt-sidebar-bg: #f1f6f3;
+    --dt-sidebar-border: #d9e4de;
+    --dt-user-bubble: #eaf2ee;
+    --dt-user-bubble-border: #d9e4de;
 
     --dt-font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
     --dt-font-mono: 'SF Mono', ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;

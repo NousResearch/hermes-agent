@@ -1791,6 +1791,7 @@ async function startHermes() {
 
 function createWindow() {
   const icon = getAppIconPath()
+  rememberLog('[window] creating main window')
   mainWindow = new BrowserWindow({
     width: 1220,
     height: 800,
@@ -1830,7 +1831,29 @@ function createWindow() {
     mainWindow.loadURL(pathToFileURL(resolveRendererIndex()).toString())
   }
 
+  mainWindow.once('ready-to-show', () => {
+    rememberLog('[window] ready-to-show')
+    mainWindow?.show()
+    mainWindow?.focus()
+  })
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    rememberLog(`[window] did-fail-load ${errorCode} ${errorDescription} ${validatedURL}`)
+  })
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    rememberLog(`[window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`)
+  })
+
+  mainWindow.on('closed', () => {
+    rememberLog('[window] closed')
+    mainWindow = null
+  })
+
   mainWindow.webContents.once('did-finish-load', () => {
+    rememberLog('[window] did-finish-load')
+    mainWindow?.show()
+    mainWindow?.focus()
     broadcastBootProgress()
     startHermes().catch(error => rememberLog(error.stack || error.message))
   })

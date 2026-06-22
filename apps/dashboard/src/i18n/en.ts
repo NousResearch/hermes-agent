@@ -50,8 +50,8 @@ export const en: Translations = {
   },
 
   app: {
-    brand: "元话 Agent",
-    brandShort: "元",
+    brand: "metakina-agent",
+    brandShort: "m",
     closeNavigation: "Close navigation",
     closeModelTools: "Close model and tools",
     footer: {
@@ -96,7 +96,7 @@ export const en: Translations = {
     actionFailed: "Action failed",
     actionFinished: "Finished",
     actions: "Actions",
-    agent: "Agent",
+    agent: "metakina-agent",
     activeSessions: "Active Sessions",
     connected: "Connected",
     connectedPlatforms: "Connected Platforms",
@@ -120,8 +120,8 @@ export const en: Translations = {
     starting: "Starting",
     startedInBackground: "Started in background — check logs for progress",
     stopped: "Stopped",
-    updateHermes: "Update Hermes",
-    updatingHermes: "Updating Hermes…",
+    updateMetakinaAgent: "Update metakina-agent",
+    updatingMetakinaAgent: "Updating metakina-agent…",
     waitingForOutput: "Waiting for output…",
   },
 
@@ -160,8 +160,8 @@ export const en: Translations = {
     perModelBreakdown: "Per-Model Breakdown",
     topSkills: "Top Skills",
     skill: "Skill",
-    loads: "Agent Loaded",
-    edits: "Agent Managed",
+    loads: "metakina-agent Loaded",
+    edits: "metakina-agent Managed",
     lastUsed: "Last Used",
     input: "Input",
     output: "Output",
@@ -266,7 +266,7 @@ export const en: Translations = {
     enableRuntime: "Enable",
     forceReinstall: "Force reinstall (delete existing folder first)",
     headline:
-      "Discover, install, enable, and update Hermes plugins (`hermes plugins` parity).",
+      "Discover, install, enable, and update metakina-agent plugins (`hermes plugins` parity).",
     identifierLabel: "Git URL or owner/repo",
     inactive: "inactive",
     installBtn: "Install from Git",
@@ -342,7 +342,7 @@ export const en: Translations = {
     invalidJson: "Invalid JSON file",
     categories: {
       general: "General",
-      agent: "Agent",
+      agent: "metakina-agent",
       terminal: "Terminal",
       display: "Display",
       delegation: "Delegation",

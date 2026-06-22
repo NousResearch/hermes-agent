@@ -306,7 +306,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   /** Name of the currently active theme (built-in id or user YAML name). */
   const [themeName, setThemeName] = useState<string>(() => {
     if (typeof window === "undefined") return "default";
-    return window.localStorage.getItem(STORAGE_KEY) ?? "default";
+    const saved = window.localStorage.getItem(STORAGE_KEY) ?? "default";
+    return BUILTIN_THEMES[saved] ? saved : "default";
   });
 
   /** All selectable themes (shown in the picker). Starts with just the

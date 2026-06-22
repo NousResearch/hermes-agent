@@ -28,36 +28,36 @@ export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = {
 // Built-in themes
 // ---------------------------------------------------------------------------
 
-/** Hermes light — premium warm white with restrained antique gold. */
+/** Hermes light — clean neutral canvas with metakina green accents. */
 export const nousLightTheme: DesktopTheme = {
   name: 'nous-light',
   label: 'Hermes Light',
-  description: 'Warm white with antique gold — premium and restrained',
+  description: 'Cool white with metakina green accents — quiet and operational',
   colors: {
-    background: '#FAF8F5',
-    foreground: '#1A1610',
+    background: '#F7FAF8',
+    foreground: '#18201C',
     card: '#FFFFFF',
-    cardForeground: '#1A1610',
-    muted: '#F3EFE8',
-    mutedForeground: '#7A6E60',
+    cardForeground: '#18201C',
+    muted: '#EDF3EF',
+    mutedForeground: '#66736B',
     popover: '#FFFFFF',
-    popoverForeground: '#1A1610',
-    primary: '#A0782A',
+    popoverForeground: '#18201C',
+    primary: '#31B768',
     primaryForeground: '#ffffff',
-    secondary: '#EDE8DF',
-    secondaryForeground: '#1A1610',
-    accent: '#EDE8DF',
-    accentForeground: '#1A1610',
-    border: '#E3DDCF',
-    input: '#D8D1C3',
-    ring: '#A0782A',
-    midground: '#A0782A',
+    secondary: '#EAF2EE',
+    secondaryForeground: '#1E3128',
+    accent: '#E8F4ED',
+    accentForeground: '#1E3128',
+    border: '#D9E4DE',
+    input: '#D3E0D8',
+    ring: '#2FAE63',
+    midground: '#31B768',
     destructive: '#b94a3a',
     destructiveForeground: '#ffffff',
-    sidebarBackground: '#F5F2EC',
-    sidebarBorder: '#E3DDCF',
-    userBubble: '#EDE8DF',
-    userBubbleBorder: '#E3DDCF'
+    sidebarBackground: '#F1F6F3',
+    sidebarBorder: '#D9E4DE',
+    userBubble: '#EAF2EE',
+    userBubbleBorder: '#D9E4DE'
   }
 }
 

@@ -1064,14 +1064,20 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
-    # The active Hermes profile and shared Hermes root both contain control
-    # files and credentials. Only cache subdirectories under them are
-    # explicitly allowlisted above.
+    # The active Hermes profile and shared Hermes root hold config, sessions,
+    # memory, databases (state.db, kanban.db), and a growing set of integration
+    # credentials (.env, auth.json, google_token.json, mcp-tokens/, ...). Deny
+    # the WHOLE tree rather than enumerating individual files one at a time:
+    # the only deliverables that legitimately live under ~/.hermes are the
+    # managed cache subdirectories, and those are allowlisted in
+    # MEDIA_DELIVERY_SAFE_ROOTS and matched BEFORE this denylist in
+    # validate_media_delivery_path — so generated images/audio/video/documents
+    # still deliver, while no credential or state file under ~/.hermes can be
+    # emitted as a chat attachment. This closes the whole class (a refreshed
+    # google_token.json was being auto-attached to Slack replies) instead of
+    # leaving sibling files (mcp-tokens, *.db, future tokens) exposed.
     for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
-        denied.append(hermes_root / ".env")
-        denied.append(hermes_root / "auth.json")
-        denied.append(hermes_root / "credentials")
-        denied.append(hermes_root / "config.yaml")
+        denied.append(Path(hermes_root))
     return denied
 
 
@@ -1190,9 +1196,11 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
             return str(resolved)
 
     # Non-strict mode (default): accept anything not on the denylist.
-    # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
-    # ~/.hermes/auth.json, etc. — so the obvious prompt-injection sites
-    # (``MEDIA:/etc/passwd``, ``MEDIA:~/.ssh/id_rsa``) remain rejected.
+    # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, and the entire
+    # ~/.hermes tree (credentials, tokens, state — only its cache subdirs are
+    # allowlisted above) — so the obvious prompt-injection / credential-exfil
+    # sites (``MEDIA:/etc/passwd``, ``MEDIA:~/.ssh/id_rsa``,
+    # ``MEDIA:~/.hermes/google_token.json``) remain rejected.
     if not _media_delivery_strict_mode():
         if _path_under_denied_prefix(resolved):
             return None

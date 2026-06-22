@@ -365,6 +365,48 @@ def _run_adapter_antipattern_scan() -> list[str]:
     return violations
 
 
+_ORIG_ARGV: list[str] | None = None
+
+
+def _sanitize_pytest_randomly_argv(config) -> None:
+    """Reduce ``sys.argv`` to just the program name (in place).
+
+    Several gateway tests import ``hermes_cli.main`` inside a test body. That
+    module runs ``_apply_profile_override()`` at import time, which scans the live
+    ``sys.argv`` for a ``-p <profile>`` flag. Under pytest **any** ``-p <name>``
+    plugin flag (``-p randomly``, ``-p no:cacheprovider``, …) is mis-read as a
+    Hermes profile — ``-p randomly`` resolves to a nonexistent profile and the
+    import ``sys.exit(1)``s, killing whichever test triggers the first
+    ``hermes_cli.main`` import during the run. Because the collision is general to
+    pytest's ``-p`` (not specific to pytest-randomly — review R6), we blanket-reduce
+    argv to ``[argv0]`` rather than maintain an incomplete token allowlist. Gateway
+    tests never read the process ``sys.argv`` (verified: zero ``sys.argv`` reads in
+    ``tests/gateway/``), so this is side-effect-free for them. Captured ONCE and
+    restored at session end (INV-6); re-entrancy-safe under xdist (review R5).
+    """
+    global _ORIG_ARGV
+    # Capture-once: a 2nd pytest_configure (xdist controller+workers, or a re-run)
+    # must NOT re-capture an already-reduced argv, or the restore would write garbage.
+    if _ORIG_ARGV is not None:
+        return
+    _ORIG_ARGV = list(sys.argv)
+    if sys.argv:
+        sys.argv[:] = [sys.argv[0]]
+
+
+def _restore_sanitized_argv() -> None:
+    """Restore ``sys.argv`` to its pre-sanitize value (session teardown — INV-6)."""
+    global _ORIG_ARGV
+    if _ORIG_ARGV is not None:
+        sys.argv[:] = _ORIG_ARGV
+        _ORIG_ARGV = None
+
+
+def pytest_unconfigure(config):  # noqa: D401 — pytest hook
+    """Restore the argv we sanitized in ``pytest_configure`` (INV-6)."""
+    _restore_sanitized_argv()
+
+
 def pytest_configure(config):
     """Reject plugin-adapter tests that use the sys.path anti-pattern.
 
@@ -388,6 +430,20 @@ def pytest_configure(config):
        subprocesses acquire a lock; only the first performs the scan;
        the rest wait and read the cached result.
     """
+    # --- Random-order argv-collision guard (runs on EVERY process incl. workers) ---
+    # Several gateway tests import ``hermes_cli.main`` inside a test body. That
+    # module runs ``_apply_profile_override()`` at import time (main.py:508), which
+    # scans the live ``sys.argv`` for a ``-p <profile>`` flag. Under pytest-randomly
+    # the argv carries ``-p randomly`` / ``--randomly-seed=N``; ``_apply_profile_override``
+    # parses ``randomly`` as a Hermes profile, fails to resolve it, and calls
+    # ``sys.exit(1)`` — killing whichever test triggers the first ``hermes_cli.main``
+    # import during a ``-p randomly`` run (a seed-dependent victim, a constant cause).
+    # Because the collision is GENERAL to pytest's ``-p <plugin>`` flag (not specific to
+    # randomly), we BLANKET-reduce argv to ``[argv0]`` rather than maintain an incomplete
+    # token allowlist; gateway tests never read the process argv. Restored at session end
+    # (see _restore_sanitized_argv / pytest_unconfigure).
+    _sanitize_pytest_randomly_argv(config)
+
     # Only run on the xdist controller (or in non-xdist runs). Skip on
     # worker subprocesses so we don't scan the filesystem N times.
     if hasattr(config, "workerinput"):

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import PlatformConfig, Platform
 
 
 # ---------------------------------------------------------------------------
@@ -918,6 +918,9 @@ def _guest_test_adapter(*, guest_mode=True, require_mention=True, allowed_chats=
         },
     )
     adapter = object.__new__(TelegramAdapter)
+    adapter.platform = Platform.TELEGRAM  # __init__ is bypassed; set what base.__init__ would,
+    # so the `name` property (self.platform.value.title(), used in _compile_mention_patterns'
+    # logger.info) doesn't AttributeError when a leaked caplog.set_level(INFO) enables that log line.
     adapter.config = config
     adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
     adapter._mention_patterns = adapter._compile_mention_patterns()

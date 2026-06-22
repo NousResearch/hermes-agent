@@ -395,7 +395,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
 DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
-COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "flac"})
+COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "flac", "m4a", "aac", "amr", "opus"})
 DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = 5000
 
 
@@ -607,7 +607,7 @@ def _get_command_tts_output_format(
     config: Dict[str, Any],
     output_path: Optional[str] = None,
 ) -> str:
-    """Return the validated output format (mp3/wav/ogg/flac)."""
+    """Return the validated output format (mp3/wav/ogg/flac/m4a/aac/amr/opus)."""
     if output_path:
         suffix = Path(output_path).suffix.lower().strip().lstrip(".")
         if suffix in COMMAND_TTS_OUTPUT_FORMATS:

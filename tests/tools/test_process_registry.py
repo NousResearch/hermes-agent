@@ -1537,3 +1537,50 @@ class TestSigkillEscalation:
         monkeypatch.setattr(cfg_mod, "read_raw_config",
                             lambda: {"terminal": {"daemon_term_grace_seconds": -5}})
         assert ProcessRegistry._daemon_term_grace_seconds() == 0.0
+
+    def test_entire_tree_is_sigkilled_not_just_parent(self, monkeypatch):
+        """A SIGTERM-ignoring parent + children are ALL force-killed.
+
+        Regression: an earlier implementation trusted psutil.wait_procs's
+        gone/alive partition, which mis-partitioned across a parent/child tree
+        and left survivors un-killed (flaky — sometimes the parent lived,
+        sometimes a child). The escalation now re-probes every target directly.
+        """
+        import psutil
+        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
+                            staticmethod(lambda: 1.0))
+        # Parent spawns 2 children; all trap SIGTERM. Parent prints child pids
+        # after the handler is installed.
+        parent_src = (
+            "import signal, subprocess, sys, time;"
+            "child='import signal,time\\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\\n"
+            "[time.sleep(0.2) for _ in iter(int,1)]';"
+            "kids=[subprocess.Popen([sys.executable,'-c',child]) for _ in range(2)];"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+            "sys.stdout.write(' '.join(str(k.pid) for k in kids)+'\\n'); sys.stdout.flush();"
+            "[time.sleep(0.2) for _ in iter(int,1)]"
+        )
+        parent = subprocess.Popen([sys.executable, "-c", parent_src],
+                                  stdout=subprocess.PIPE, text=True)
+        child_pids = [int(x) for x in parent.stdout.readline().split()]
+        all_pids = [parent.pid] + child_pids
+        try:
+            ProcessRegistry._terminate_host_pid(parent.pid)
+
+            def _all_dead():
+                return not any(
+                    psutil.pid_exists(p)
+                    and ProcessRegistry._proc_alive(psutil.Process(p))
+                    for p in all_pids
+                )
+
+            assert _wait_until(_all_dead, timeout=4.0), (
+                "entire SIGTERM-ignoring tree (parent + children) must be SIGKILLed"
+            )
+        finally:
+            for p in all_pids:
+                try:
+                    os.kill(p, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            parent.wait()

@@ -484,6 +484,20 @@ class ProcessRegistry:
         return session
 
     @staticmethod
+    def _proc_alive(proc) -> bool:
+        """True if a psutil.Process is running and not a zombie.
+
+        A zombie is already dead (just unreaped), so there's nothing to SIGKILL.
+        """
+        try:
+            import psutil
+            if not proc.is_running():
+                return False
+            return proc.status() != psutil.STATUS_ZOMBIE
+        except Exception:
+            return False
+
+    @staticmethod
     def _daemon_term_grace_seconds() -> float:
         """Grace window (s) between SIGTERM and escalated SIGKILL.
 
@@ -603,12 +617,22 @@ class ProcessRegistry:
         grace = cls._daemon_term_grace_seconds()
         if grace <= 0:
             return
-        try:
-            _gone, alive = psutil.wait_procs(targets, timeout=grace)
-        except (psutil.Error, OSError):
-            alive = []
-        for proc in alive:
+        # Sleep out the grace window, then independently re-probe every target
+        # and SIGKILL any survivor.  We deliberately do NOT trust
+        # ``psutil.wait_procs``'s gone/alive partition here: it reaps via
+        # ``Process.wait()`` and can mis-partition when a target transitions
+        # through a zombie state or when reaping is racy across a parent/child
+        # tree, which left survivors un-killed.  A direct liveness re-probe is
+        # deterministic.
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            if not any(cls._proc_alive(_p) for _p in targets):
+                break
+            time.sleep(0.05)
+        for proc in targets:
             try:
+                if not cls._proc_alive(proc):
+                    continue
                 proc.kill()  # SIGKILL on POSIX
                 logger.info(
                     "Escalated to SIGKILL for pid %d (ignored SIGTERM within "

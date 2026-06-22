@@ -201,10 +201,19 @@ class TestConfigGetters:
         assert _get_command_tts_output_format({"format": "ogg"}, "/tmp/clip.xyz") == "ogg"
 
     def test_output_format_rejects_unknown(self):
-        assert _get_command_tts_output_format({"format": "m4a"}) == DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
+        assert _get_command_tts_output_format({"format": "midi"}) == DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
 
     def test_output_format_supported_set(self):
-        assert COMMAND_TTS_OUTPUT_FORMATS == frozenset({"mp3", "wav", "ogg", "flac"})
+        assert COMMAND_TTS_OUTPUT_FORMATS == frozenset(
+            {"mp3", "wav", "ogg", "flac", "m4a", "aac", "amr", "opus"}
+        )
+
+    def test_output_format_accepts_extended_formats(self):
+        # m4a/aac/amr/opus are common ffmpeg-producible containers/codecs;
+        # honored both via explicit config and via the output path suffix.
+        for fmt in ("m4a", "aac", "amr", "opus"):
+            assert _get_command_tts_output_format({"format": fmt}) == fmt
+            assert _get_command_tts_output_format({}, f"/tmp/clip.{fmt}") == fmt
 
     def test_voice_compatible_boolean(self):
         assert _is_command_tts_voice_compatible({"voice_compatible": True}) is True

@@ -395,7 +395,9 @@ BUILTIN_TTS_PROVIDERS = frozenset({
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
 DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
-COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "flac"})
+COMMAND_TTS_OUTPUT_FORMATS = frozenset(
+    {"mp3", "wav", "ogg", "flac", "m4a", "aac", "amr", "opus"}
+)
 DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = 5000
 
 

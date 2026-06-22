@@ -457,7 +457,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 preview = _build_tool_preview(name, args)
                 agent.tool_progress_callback("tool.started", name, preview, args)
             except Exception as cb_err:
-                logging.debug(f"Tool progress callback error: {cb_err}")
+                logging.debug("Tool progress callback error: %s", cb_err)
 
     for tc, name, args, middleware_trace, block_result, blocked_by_guardrail in parsed_calls:
         if block_result is not None:
@@ -466,7 +466,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             try:
                 agent.tool_start_callback(tc.id, name, args)
             except Exception as cb_err:
-                logging.debug(f"Tool start callback error: {cb_err}")
+                logging.debug("Tool start callback error: %s", cb_err)
 
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
@@ -713,11 +713,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         result=function_result,
                     )
                 except Exception as cb_err:
-                    logging.debug(f"Tool progress callback error: {cb_err}")
+                    logging.debug("Tool progress callback error: %s", cb_err)
 
             if agent.verbose_logging:
-                logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
-                logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
+                logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
+                logging.debug("Tool result (%d chars): %s", len(function_result), function_result)
 
         # Print cute message per tool
         if agent._should_emit_quiet_tool_messages():
@@ -739,7 +739,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             try:
                 agent.tool_complete_callback(tc.id, name, args, function_result)
             except Exception as cb_err:
-                logging.debug(f"Tool complete callback error: {cb_err}")
+                logging.debug("Tool complete callback error: %s", cb_err)
 
         function_result = maybe_persist_tool_result(
             content=function_result,
@@ -918,13 +918,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 preview = _build_tool_preview(function_name, function_args)
                 agent.tool_progress_callback("tool.started", function_name, preview, function_args)
             except Exception as cb_err:
-                logging.debug(f"Tool progress callback error: {cb_err}")
+                logging.debug("Tool progress callback error: %s", cb_err)
 
         if not _execution_blocked and agent.tool_start_callback:
             try:
                 agent.tool_start_callback(tool_call.id, function_name, function_args)
             except Exception as cb_err:
-                logging.debug(f"Tool start callback error: {cb_err}")
+                logging.debug("Tool start callback error: %s", cb_err)
 
         # Checkpoint: snapshot working dir before file-mutating tools
         if not _execution_blocked and function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
@@ -1380,21 +1380,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     result=function_result,
                 )
             except Exception as cb_err:
-                logging.debug(f"Tool progress callback error: {cb_err}")
+                logging.debug("Tool progress callback error: %s", cb_err)
 
         agent._current_tool = None
         agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
 
         if agent.verbose_logging:
-            logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
+            logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
             _log_result = _multimodal_text_summary(function_result)
-            logging.debug(f"Tool result ({len(_log_result)} chars): {_log_result}")
+            logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
         if not _execution_blocked and agent.tool_complete_callback:
             try:
                 agent.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
             except Exception as cb_err:
-                logging.debug(f"Tool complete callback error: {cb_err}")
+                logging.debug("Tool complete callback error: %s", cb_err)
 
         function_result = maybe_persist_tool_result(
             content=function_result,

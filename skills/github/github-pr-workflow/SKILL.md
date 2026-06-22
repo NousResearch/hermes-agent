@@ -173,7 +173,7 @@ SHA=$(git rev-parse HEAD)
 curl -s \
   -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$OWNER/$REPO/commits/$SHA/status \
-  | python3 -c "
+  | python -c "
 import sys, json
 data = json.load(sys.stdin)
 print(f\"Overall: {data['state']}\")
@@ -184,7 +184,7 @@ for s in data.get('statuses', []):
 curl -s \
   -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$OWNER/$REPO/commits/$SHA/check-runs \
-  | python3 -c "
+  | python -c "
 import sys, json
 data = json.load(sys.stdin)
 for cr in data.get('check_runs', []):
@@ -200,7 +200,7 @@ for i in $(seq 1 20); do
   STATUS=$(curl -s \
     -H "Authorization: token $GITHUB_TOKEN" \
     https://api.github.com/repos/$OWNER/$REPO/commits/$SHA/status \
-    | python3 -c "import sys,json; print(json.load(sys.stdin)['state'])")
+    | python -c "import sys,json; print(json.load(sys.stdin)['state'])")
   echo "Check $i: $STATUS"
   if [ "$STATUS" = "success" ] || [ "$STATUS" = "failure" ] || [ "$STATUS" = "error" ]; then
     break
@@ -234,7 +234,7 @@ BRANCH=$(git branch --show-current)
 curl -s \
   -H "Authorization: token $GITHUB_TOKEN" \
   "https://api.github.com/repos/$OWNER/$REPO/actions/runs?branch=$BRANCH&per_page=5" \
-  | python3 -c "
+  | python -c "
 import sys, json
 runs = json.load(sys.stdin)['workflow_runs']
 for r in runs:
@@ -319,7 +319,7 @@ Merge methods: `"merge"` (merge commit), `"squash"`, `"rebase"`
 PR_NODE_ID=$(curl -s \
   -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['node_id'])")
+  | python -c "import sys,json; print(json.load(sys.stdin)['node_id'])")
 
 curl -s -X POST \
   -H "Authorization: token $GITHUB_TOKEN" \

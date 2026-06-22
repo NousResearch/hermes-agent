@@ -294,6 +294,14 @@ class GatewaySlashCommandsMixin:
             f"Slash commands you can run: {runnable_str}"
         )
 
+    async def _handle_bot_ping_command(self, event: MessageEvent) -> str:
+        """Handle /bot-ping — reply 'pong' to verify bot is alive.
+
+        Designed as a liveness check for QQBot platform, similar to OpenClaw's
+        /bot-ping command. Returns simple 'pong' text for latency measurement.
+        """
+        return "pong"
+
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.
 

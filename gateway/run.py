@@ -8059,6 +8059,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
 
+        if canonical == "bot-ping":
+            return await self._handle_bot_ping_command(event)
+
         if canonical == "status":
             return await self._handle_status_command(event)
 

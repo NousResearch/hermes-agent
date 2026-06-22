@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +17,16 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+
+
+DISABLED_COMMANDS = "gmail.send,gmail.forward,gmail.autoreply,gmail.drafts.send"
+AUDIT_LOG = get_hermes_home() / "logs" / "gmail-mutations.jsonl"
+
+
+def _append_audit(event: dict) -> None:
+    AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with AUDIT_LOG.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
 def get_token_path() -> Path:
@@ -103,7 +114,35 @@ def main():
     env = os.environ.copy()
     env["GOOGLE_WORKSPACE_CLI_TOKEN"] = access_token
 
-    result = subprocess.run(["gws"] + sys.argv[1:], env=env)
+    cmd = [
+        "gws",
+        "--gmail-no-send",
+        f"--disable-commands={DISABLED_COMMANDS}",
+        *sys.argv[1:],
+    ]
+    result = subprocess.run(cmd, env=env, text=True, capture_output=True)
+    _append_audit(
+        {
+            "tool": "gws_bridge",
+            "argv": sys.argv[1:],
+            "command_class": "workspace_cli_bridge",
+            "wrapped_safety_flags": [
+                "--gmail-no-send",
+                f"--disable-commands={DISABLED_COMMANDS}",
+            ],
+            "wrapped_command": cmd,
+            "returncode": result.returncode,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "stdout_len": len(result.stdout or ""),
+            "stderr_len": len(result.stderr or ""),
+            **({"stdout_sha256": hashlib.sha256((result.stdout or "").encode("utf-8")).hexdigest()} if result.stdout else {}),
+            **({"stderr_sha256": hashlib.sha256((result.stderr or "").encode("utf-8")).hexdigest()} if result.stderr else {}),
+        }
+    )
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+    if result.stderr:
+        sys.stderr.write(result.stderr)
     sys.exit(result.returncode)
 
 

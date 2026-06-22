@@ -165,7 +165,7 @@ def test_bridge_main_injects_token_env(bridge_module, tmp_path):
     def capture_run(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env", {})
-        return MagicMock(returncode=0)
+        return MagicMock(returncode=0, stdout="", stderr="")
 
     with patch.object(sys, "argv", ["gws_bridge.py", "gmail", "+triage"]):
         with patch.object(subprocess, "run", side_effect=capture_run):
@@ -173,7 +173,45 @@ def test_bridge_main_injects_token_env(bridge_module, tmp_path):
                 bridge_module.main()
 
     assert captured["env"]["GOOGLE_WORKSPACE_CLI_TOKEN"] == "ya29.injected"
-    assert captured["cmd"] == ["gws", "gmail", "+triage"]
+    assert captured["cmd"] == [
+        "gws",
+        "--gmail-no-send",
+        "--disable-commands=gmail.send,gmail.forward,gmail.autoreply,gmail.drafts.send",
+        "gmail",
+        "+triage",
+    ]
+
+
+def test_bridge_main_writes_audit_log(bridge_module):
+    """Every gws bridge invocation appends an audit event."""
+    future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    token_path = bridge_module.get_token_path()
+    _write_token(token_path, token="ya29.audit", expiry=future)
+
+    with patch.object(sys, "argv", ["gws_bridge.py", "gmail", "labels", "list"]):
+        with patch.object(
+            subprocess,
+            "run",
+            return_value=MagicMock(returncode=0, stdout='{"ok":true}', stderr=""),
+        ):
+            with pytest.raises(SystemExit):
+                bridge_module.main()
+
+    audit_path = bridge_module.AUDIT_LOG
+    assert audit_path.exists()
+    event = json.loads(audit_path.read_text().strip().splitlines()[-1])
+    assert event["tool"] == "gws_bridge"
+    assert event["command_class"] == "workspace_cli_bridge"
+    assert event["wrapped_safety_flags"][0] == "--gmail-no-send"
+    assert event["wrapped_command"][1] == "--gmail-no-send"
+    assert "--disable-commands=gmail.send,gmail.forward,gmail.autoreply,gmail.drafts.send" in event["wrapped_command"]
+    assert event["returncode"] == 0
+    assert "timestamp" in event
+    assert event["stdout_len"] == len('{"ok":true}')
+    assert event["stderr_len"] == 0
+    assert "stdout_sha256" in event
+    assert "stdout" not in event
+    assert "stderr" not in event
 
 
 def test_api_calendar_list_uses_events_list(api_module):
@@ -279,3 +317,28 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def test_google_api_send_is_hard_blocked(api_module):
+    args = api_module.argparse.Namespace(
+        to="user@example.com",
+        subject="Hello",
+        body="Body",
+        cc="",
+        from_header="",
+        html=False,
+        thread_id="",
+    )
+    with pytest.raises(SystemExit, match="Google Docs for human review and manual send"):
+        api_module.gmail_send(args)
+
+
+
+def test_google_api_reply_is_hard_blocked(api_module):
+    args = api_module.argparse.Namespace(
+        message_id="abc123",
+        body="Reply",
+        from_header="",
+    )
+    with pytest.raises(SystemExit, match="Google Docs for human review and manual send"):
+        api_module.gmail_reply(args)

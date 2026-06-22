@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
-"""Google Workspace API CLI for Hermes Agent.
+"""Google Workspace helper CLI for Hermes Agent.
 
-Uses the Google Workspace CLI (`gws`) when available, but preserves the
-existing Hermes-facing JSON contract and falls back to the Python client
-libraries if `gws` is not installed.
-
-Usage:
+Usage examples:
   python google_api.py gmail search "is:unread" [--max 10]
   python google_api.py gmail get MESSAGE_ID
-  python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
-  python google_api.py gmail reply MESSAGE_ID --body "Thanks"
   python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
-  python google_api.py drive search "budget report" [--max 10]
+  python google_api.py drive list [--folder FOLDER_ID]
   python google_api.py contacts list [--max 20]
   python google_api.py sheets get SHEET_ID RANGE
   python google_api.py sheets update SHEET_ID RANGE --values '[[...]]'
   python google_api.py sheets append SHEET_ID RANGE --values '[[...]]'
   python google_api.py docs get DOC_ID
+  python google_api.py docs create --title "Email Draft" --body "Recipient: ...\nSubject: ...\n..."
 """
+
+from __future__ import annotations
 
 import argparse
 import base64
@@ -44,13 +41,9 @@ CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/contacts.readonly",
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/documents",
 ]
 
 
@@ -312,108 +305,15 @@ def gmail_get(args):
 
 
 def gmail_send(args):
-    if _gws_binary():
-        message = MIMEText(args.body, "html" if args.html else "plain")
-        message["to"] = args.to
-        message["subject"] = args.subject
-        if args.cc:
-            message["cc"] = args.cc
-        if args.from_header:
-            message["from"] = args.from_header
-
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        body = {"raw": raw}
-        if args.thread_id:
-            body["threadId"] = args.thread_id
-
-        result = _run_gws(
-            ["gmail", "users", "messages", "send"],
-            params={"userId": "me"},
-            body=body,
-        )
-        print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
-        return
-
-    service = build_service("gmail", "v1")
-    message = MIMEText(args.body, "html" if args.html else "plain")
-    message["to"] = args.to
-    message["subject"] = args.subject
-    if args.cc:
-        message["cc"] = args.cc
-    if args.from_header:
-        message["from"] = args.from_header
-
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-    body = {"raw": raw}
-
-    if args.thread_id:
-        body["threadId"] = args.thread_id
-
-    result = service.users().messages().send(userId="me", body=body).execute()
-    print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
-
+    raise SystemExit(
+        "BLOCKED: google_api.py gmail send is disabled. Coach-agent outbound email composition must go to Google Docs for human review and manual send."
+    )
 
 
 def gmail_reply(args):
-    if _gws_binary():
-        original = _run_gws(
-            ["gmail", "users", "messages", "get"],
-            params={
-                "userId": "me",
-                "id": args.message_id,
-                "format": "metadata",
-                "metadataHeaders": ["From", "Subject", "Message-ID"],
-            },
-        )
-        headers = _headers_dict(original)
-
-        subject = headers.get("Subject", "")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-
-        message = MIMEText(args.body)
-        message["to"] = headers.get("From", "")
-        message["subject"] = subject
-        if args.from_header:
-            message["from"] = args.from_header
-        if headers.get("Message-ID"):
-            message["In-Reply-To"] = headers["Message-ID"]
-            message["References"] = headers["Message-ID"]
-
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        result = _run_gws(
-            ["gmail", "users", "messages", "send"],
-            params={"userId": "me"},
-            body={"raw": raw, "threadId": original["threadId"]},
-        )
-        print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
-        return
-
-    service = build_service("gmail", "v1")
-    original = service.users().messages().get(
-        userId="me", id=args.message_id, format="metadata",
-        metadataHeaders=["From", "Subject", "Message-ID"],
-    ).execute()
-    headers = _headers_dict(original)
-
-    subject = headers.get("Subject", "")
-    if not subject.startswith("Re:"):
-        subject = f"Re: {subject}"
-
-    message = MIMEText(args.body)
-    message["to"] = headers.get("From", "")
-    message["subject"] = subject
-    if args.from_header:
-        message["from"] = args.from_header
-    if headers.get("Message-ID"):
-        message["In-Reply-To"] = headers["Message-ID"]
-        message["References"] = headers["Message-ID"]
-
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-    body = {"raw": raw, "threadId": original["threadId"]}
-
-    result = service.users().messages().send(userId="me", body=body).execute()
-    print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
+    raise SystemExit(
+        "BLOCKED: google_api.py gmail reply is disabled. Coach-agent outbound email composition must go to Google Docs for human review and manual send."
+    )
 
 
 
@@ -432,24 +332,9 @@ def gmail_labels(args):
 
 
 def gmail_modify(args):
-    body = {}
-    if args.add_labels:
-        body["addLabelIds"] = args.add_labels.split(",")
-    if args.remove_labels:
-        body["removeLabelIds"] = args.remove_labels.split(",")
-
-    if _gws_binary():
-        result = _run_gws(
-            ["gmail", "users", "messages", "modify"],
-            params={"userId": "me", "id": args.message_id},
-            body=body,
-        )
-        print(json.dumps({"id": result["id"], "labels": result.get("labelIds", [])}, indent=2))
-        return
-
-    service = build_service("gmail", "v1")
-    result = service.users().messages().modify(userId="me", id=args.message_id, body=body).execute()
-    print(json.dumps({"id": result["id"], "labels": result.get("labelIds", [])}, indent=2))
+    raise SystemExit(
+        "BLOCKED: google_api.py gmail modify is disabled under read-only Gmail posture. Coach-agent outbound email composition must go to Google Docs for human review and manual send."
+    )
 
 
 # =========================================================================

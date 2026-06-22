@@ -2485,7 +2485,10 @@ class SlackAdapter(BasePlatformAdapter):
         #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         routing_text = original_text or ""
-        is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
+        is_mentioned = bool(
+            (bot_uid and f"<@{bot_uid}>" in routing_text)
+            or self._slack_message_matches_mention_patterns(routing_text)
+        )
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
@@ -3811,6 +3814,62 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, str) and raw.strip():
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
+
+    def _slack_mention_patterns(self) -> List["re.Pattern"]:
+        """Compile optional regex wake-word patterns for channel triggers.
+
+        Parity with the other adapters (Telegram, DingTalk, Mattermost,
+        WhatsApp, BlueBubbles, Photon): when ``require_mention`` is on, a
+        channel message matching one of these patterns triggers the bot even
+        without a literal ``<@BOTUID>`` mention. Reads ``slack.mention_patterns``
+        (a list or single string) or ``SLACK_MENTION_PATTERNS`` (a JSON list, or
+        newline/comma-separated values). Compiled patterns are cached on the
+        instance. Previously this documented field was silently dropped.
+        """
+        cached = getattr(self, "_compiled_mention_patterns", None)
+        if cached is not None:
+            return cached
+
+        patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
+        if patterns is None:
+            raw = os.getenv("SLACK_MENTION_PATTERNS", "").strip()
+            if raw:
+                try:
+                    import json as _json
+                    patterns = _json.loads(raw)
+                except Exception:
+                    patterns = [p.strip() for p in raw.splitlines() if p.strip()] or [
+                        p.strip() for p in raw.split(",") if p.strip()
+                    ]
+
+        if isinstance(patterns, str):
+            patterns = [patterns]
+
+        compiled: List["re.Pattern"] = []
+        if isinstance(patterns, list):
+            for pat in patterns:
+                if not isinstance(pat, str) or not pat.strip():
+                    continue
+                try:
+                    compiled.append(re.compile(pat, re.IGNORECASE))
+                except re.error as exc:
+                    logger.warning("[Slack] Invalid mention pattern %r: %s", pat, exc)
+        elif patterns is not None:
+            logger.warning(
+                "[Slack] mention_patterns must be a list or string; got %s",
+                type(patterns).__name__,
+            )
+
+        if compiled:
+            logger.info("[Slack] Loaded %d mention pattern(s)", len(compiled))
+        self._compiled_mention_patterns = compiled
+        return compiled
+
+    def _slack_message_matches_mention_patterns(self, text: str) -> bool:
+        """Return True when ``text`` matches a configured wake-word pattern."""
+        if not text:
+            return False
+        return any(pattern.search(text) for pattern in self._slack_mention_patterns())
 
 
 # ──────────────────────────────────────────────────────────────────────────

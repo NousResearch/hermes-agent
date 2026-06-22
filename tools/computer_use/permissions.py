@@ -63,6 +63,7 @@ def _run(binary: str, *args: str, timeout: float) -> subprocess.CompletedProcess
         text=True,
         timeout=timeout,
         env=_child_env(),
+        stdin=subprocess.DEVNULL,
     )
 
 
@@ -174,7 +175,13 @@ def request_permissions_grant(driver_cmd: Optional[str] = None) -> int:
         "approve it, then return here."
     )
     try:
-        return int(subprocess.run([binary, "permissions", "grant"], env=_child_env()).returncode)
+        return int(
+            subprocess.run(
+                [binary, "permissions", "grant"],
+                env=_child_env(),
+                stdin=subprocess.DEVNULL,
+            ).returncode
+        )
     except KeyboardInterrupt:  # pragma: no cover - interactive
         return 130
     except Exception as exc:  # pragma: no cover - defensive

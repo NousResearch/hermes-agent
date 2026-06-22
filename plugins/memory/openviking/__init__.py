@@ -1793,6 +1793,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._prefetch_thread: Optional[threading.Thread] = None
         self._runtime_start_lock = threading.Lock()
         self._runtime_start_thread: Optional[threading.Thread] = None
+        self._memory_write_lock = threading.Lock()
+        self._memory_write_threads: Set[threading.Thread] = set()
         # All prefetch threads ever spawned (daemon, short-lived). Tracked so
         # shutdown() can drain them and rapid re-queues don't orphan a still-
         # running thread by overwriting the single _prefetch_thread slot.
@@ -2901,9 +2903,20 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 })
             except Exception as e:
                 logger.debug("OpenViking memory mirror failed: %s", e)
+            finally:
+                with self._memory_write_lock:
+                    self._memory_write_threads.discard(threading.current_thread())
 
         t = threading.Thread(target=_write, daemon=True, name="openviking-memwrite")
-        t.start()
+        with self._memory_write_lock:
+            if self._shutting_down:
+                return
+            self._memory_write_threads.add(t)
+            try:
+                t.start()
+            except Exception as e:
+                self._memory_write_threads.discard(t)
+                logger.debug("OpenViking memory mirror worker failed to start: %s", e)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [
@@ -2949,6 +2962,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             deferred_workers = list(self._deferred_commit_threads)
         with self._prefetch_lock:
             prefetch_workers = list(self._prefetch_threads)
+        with self._memory_write_lock:
+            memory_write_workers = list(self._memory_write_threads)
         for t in all_workers:
             if t.is_alive():
                 t.join(timeout=5.0)
@@ -2956,6 +2971,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if t.is_alive():
                 t.join(timeout=5.0)
         for t in prefetch_workers:
+            if t.is_alive():
+                t.join(timeout=5.0)
+        for t in memory_write_workers:
             if t.is_alive():
                 t.join(timeout=5.0)
         # Clear atexit reference so it doesn't double-commit.

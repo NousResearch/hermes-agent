@@ -438,9 +438,16 @@ def _resolve_codex_usage_url(base_url: str) -> str:
 
 def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-    token_data = _read_codex_tokens()
-    tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
+    # Codex credentials can live in the newer credential pool without the
+    # legacy codex token file. Account-id is optional for /wham/usage, so do
+    # not let a missing legacy store hide otherwise valid usage data.
+    account_id = None
+    try:
+        token_data = _read_codex_tokens()
+        tokens = token_data.get("tokens") or {}
+        account_id = str(tokens.get("account_id", "") or "").strip() or None
+    except Exception:
+        account_id = None
     headers = {
         "Authorization": f"Bearer {creds['api_key']}",
         "Accept": "application/json",

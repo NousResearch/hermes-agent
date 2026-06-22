@@ -1659,6 +1659,72 @@ def _session(agent=None, **extra):
     }
 
 
+def test_session_usage_includes_account_limit_lines(monkeypatch):
+    agent = types.SimpleNamespace(
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="token",
+        model="codex-test",
+        session_api_calls=1,
+        session_input_tokens=10,
+        session_output_tokens=5,
+        session_total_tokens=15,
+    )
+    monkeypatch.setitem(server._sessions, "usage-sid", _session(agent=agent))
+    monkeypatch.setattr(
+        server,
+        "_get_account_usage_lines",
+        lambda seen: [
+            "📈 Account limits",
+            "Provider: openai-codex (Pro)",
+            "Session: 74% remaining (26% used)",
+            "Weekly: 91% remaining (9% used)",
+        ]
+        if seen is agent
+        else [],
+    )
+
+    try:
+        resp = server.dispatch(
+            {"id": "usage", "method": "session.usage", "params": {"session_id": "usage-sid"}}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert resp is not None
+    result = resp["result"]
+    assert result["calls"] == 1
+    assert "Session: 74% remaining" in "\n".join(result["account_usage_lines"])
+    assert "Weekly: 91% remaining" in "\n".join(result["account_usage_lines"])
+
+
+def test_get_account_usage_lines_passes_agent_runtime_to_fetch(monkeypatch):
+    calls = []
+    snapshot = object()
+
+    account_usage_module = types.ModuleType("agent.account_usage")
+
+    def fake_fetch(provider, *, base_url=None, api_key=None):
+        calls.append((provider, base_url, api_key))
+        return snapshot
+
+    def fake_render(seen_snapshot):
+        assert seen_snapshot is snapshot
+        return ["📈 Account limits", "Weekly: 90% remaining (10% used)"]
+
+    setattr(account_usage_module, "fetch_account_usage", fake_fetch)
+    setattr(account_usage_module, "render_account_usage_lines", fake_render)
+    monkeypatch.setitem(sys.modules, "agent.account_usage", account_usage_module)
+
+    agent = types.SimpleNamespace(provider="openai-codex", base_url="https://example.test", api_key="pool-token")
+
+    assert server._get_account_usage_lines(agent) == [
+        "📈 Account limits",
+        "Weekly: 90% remaining (10% used)",
+    ]
+    assert calls == [("openai-codex", "https://example.test", "pool-token")]
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 

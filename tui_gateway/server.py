@@ -2573,7 +2573,7 @@ def _sync_session_key_after_compress(
             pass
 
 
-def _get_usage(agent) -> dict:
+def _get_usage(agent) -> dict[str, Any]:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
         "model": getattr(agent, "model", "") or "",
@@ -2625,6 +2625,34 @@ def _get_usage(agent) -> dict:
         except Exception:
             pass
     return usage
+
+
+def _get_account_usage_lines(agent) -> list[str]:
+    """Fetch provider account-limit lines for explicit `/usage` requests.
+
+    Keep this out of `_get_usage()`: that helper is emitted on normal TUI
+    prompt/stream updates, where a network call to the provider usage API would
+    be surprising and could stall unrelated UI refreshes. The slash command is
+    user-initiated and matches gateway `/usage` behavior.
+    """
+    if agent is None:
+        return []
+    provider = getattr(agent, "provider", None)
+    if not provider:
+        return []
+    try:
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+        snapshot = fetch_account_usage(
+            provider,
+            base_url=getattr(agent, "base_url", None),
+            api_key=getattr(agent, "api_key", None),
+        )
+        if snapshot:
+            return render_account_usage_lines(snapshot)
+    except Exception:
+        pass
+    return []
 
 
 def _probe_credentials(agent) -> str:
@@ -5292,7 +5320,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     agent = session.get("agent")
-    usage: dict = (
+    usage: dict[str, Any] = (
         _get_usage(agent)
         if agent is not None
         else {"calls": 0, "input": 0, "output": 0, "total": 0}
@@ -5309,6 +5337,9 @@ def _(rid, params: dict) -> dict:
             usage["credits_lines"] = credits
     except Exception:
         pass
+    account_lines = _get_account_usage_lines(agent)
+    if account_lines:
+        usage["account_usage_lines"] = account_lines
     return _ok(rid, usage)
 
 

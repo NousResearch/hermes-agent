@@ -549,19 +549,21 @@ export const sessionCommands: SlashCommand[] = [
           })
         }
 
+        if (!r) {
+          return ctx.transcript.sys('no API calls yet')
+        }
+
         // Nous credits block is agent-independent (a portal fetch), so it shows
         // even with zero API calls or on a resumed session. Render it whenever
         // present, before the token panel.
-        const creditsLines = r?.credits_lines ?? []
+        const creditsLines = r.credits_lines ?? []
+        const accountUsageLines = r.account_usage_lines ?? []
         if (creditsLines.length) {
           ctx.transcript.panel('Nous credits', [{ text: creditsLines.join('\n') }])
         }
 
-        if (!r?.calls) {
-          if (!creditsLines.length) {
-            ctx.transcript.sys('no API calls yet')
-          }
-          return
+        if (!r.calls && !creditsLines.length && !accountUsageLines.length) {
+          return ctx.transcript.sys('no API calls yet')
         }
 
         const f = (v: number | undefined) => (v ?? 0).toLocaleString()
@@ -589,6 +591,10 @@ export const sessionCommands: SlashCommand[] = [
 
         if (r.compressions) {
           sections.push({ text: `Compressions: ${r.compressions}` })
+        }
+
+        if (accountUsageLines.length) {
+          sections.push({ text: accountUsageLines.join('\n') })
         }
 
         ctx.transcript.panel('Usage', sections)

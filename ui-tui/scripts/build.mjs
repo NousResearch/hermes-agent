@@ -3,12 +3,15 @@
 // No runtime node_modules needed.
 import { build } from 'esbuild'
 import { readFileSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const out = resolve(root, 'dist/entry.js')
+const requireFromRoot = createRequire(resolve(root, 'package.json'))
+const packageRoot = (specifier) => dirname(requireFromRoot.resolve(`${specifier}/package.json`))
 
 // `react-devtools-core` is only imported when DEV=true at runtime (Ink dev
 // mode). Stub it out so the bundle doesn't carry the dep.
@@ -38,7 +41,17 @@ await build({
   // Skip the prebuilt @hermes/ink bundle — esbuild's __esm helper doesn't
   // await nested async init, which breaks lazy-initialized exports like
   // `render`. Bundling from source sidesteps that.
-  alias: { '@hermes/ink': resolve(root, 'packages/hermes-ink/src/entry-exports.ts') },
+  //
+  // Keep React, JSX runtime, and the Ink fork's reconciler on one physical
+  // dependency tree. If the app and reconciler bundle separate React copies,
+  // hooks fail at startup with ReactSharedInternals.H === null.
+  alias: {
+    '@hermes/ink': resolve(root, 'packages/hermes-ink/src/entry-exports.ts'),
+    'react': packageRoot('react'),
+    'react/jsx-runtime': requireFromRoot.resolve('react/jsx-runtime'),
+    'react-reconciler': packageRoot('react-reconciler'),
+    'react-reconciler/constants.js': requireFromRoot.resolve('react-reconciler/constants.js')
+  },
   plugins: [stubDevtools],
   // Some transitive deps use CommonJS `require(...)` at runtime. ESM bundles
   // don't get a `require` binding automatically, so we inject one.

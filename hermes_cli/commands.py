@@ -1881,7 +1881,8 @@ class SlashCommandAutoSuggest(AutoSuggest):
     """Inline ghost-text suggestions for slash commands and their subcommands.
 
     Shows the rest of a command or subcommand in dim text as you type.
-    Falls back to history-based suggestions for non-slash input.
+    Falls back to history-based suggestions for non-slash input only when a
+    history suggester is provided by the CLI config.
     """
 
     def __init__(

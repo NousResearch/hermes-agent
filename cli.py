@@ -454,6 +454,9 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "reasoning_full": False,
             "streaming": True,
+            # Inline ghost text from previously submitted prompts. This does
+            # not affect persisted history or explicit Up-arrow recall.
+            "cli_history_autosuggest": True,
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
@@ -719,6 +722,18 @@ def load_cli_config() -> Dict[str, Any]:
 
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
+
+
+def _cli_history_autosuggest_enabled(config: Dict[str, Any]) -> bool:
+    """Return whether free-text prompt history should appear as ghost text."""
+    display = config.get("display", {}) if isinstance(config, dict) else {}
+    if not isinstance(display, dict):
+        return True
+
+    value = display.get("cli_history_autosuggest", True)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
 
 
 # Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.
@@ -13228,6 +13243,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             command_filter=cli_ref._command_available,
             skill_bundles_provider=lambda: get_skill_bundles(),
         )
+        history_suggest = (
+            AutoSuggestFromHistory()
+            if _cli_history_autosuggest_enabled(self.config)
+            else None
+        )
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),
             prompt=get_prompt,
@@ -13245,7 +13265,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             completer=ThreadedCompleter(_completer),
             complete_while_typing=True,
             auto_suggest=SlashCommandAutoSuggest(
-                history_suggest=AutoSuggestFromHistory(),
+                history_suggest=history_suggest,
                 completer=_completer,
             ),
         )

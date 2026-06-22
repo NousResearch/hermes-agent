@@ -362,6 +362,7 @@ _STRICT_FORBIDDEN = (
     "strftime",
     "fts5",
     "match ",
+    "x'",        # SQLite hex literals (X'0A' etc.) — translated to chr() above
 )
 
 
@@ -410,6 +411,11 @@ def _translate_sql(sql: str) -> str:
         translated,
         flags=re.IGNORECASE,
     )
+
+    # SQLite hex literals for newline/CR used in REPLACE(col, X'0A', ' ')
+    # snippet-building queries (list_sessions_rich, list_cron_job_runs, etc.).
+    # PostgreSQL has no X'' hex syntax; chr() is the portable equivalent.
+    translated = translated.replace("X'0A'", "chr(10)").replace("X'0D'", "chr(13)")
 
     translated = translated.replace("?", "%s")
 

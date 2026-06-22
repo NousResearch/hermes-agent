@@ -532,6 +532,22 @@ def _restart_loop_window_secs() -> float:
     return max(1.0, min(value, 86400.0))
 
 
+def _restart_initiated_ttl_secs() -> float:
+    """Freshness backstop for an F2 restart-initiator breadcrumb (D-5/I-5).
+
+    The boot_id check (I-4) is the PRIMARY guard against a stale breadcrumb
+    marking a later turn; this TTL is only a janitor for orphaned crumbs whose
+    boot somehow matches but that were never consumed. Floor is generous enough
+    to never make a same-boot in-turn write→gate latency self-discard.
+    """
+    raw = os.environ.get("HERMES_RESTART_INITIATED_TTL_SECS")
+    try:
+        value = float(raw) if raw not in (None, "") else 600.0
+    except (TypeError, ValueError):
+        value = 600.0
+    return max(60.0, min(value, 86400.0))
+
+
 # Inspection verbs that READ the safe-restart script without EXECUTING it — a
 # `terminal` command starting with one of these mentions the path but does not
 # initiate a restart, so it must NOT trip the F2 self-loop detector (C1).
@@ -575,6 +591,28 @@ def _command_invokes_safe_restart(cmd: str) -> bool:
         # any non-inspection segment that names the script = an execution
         return True
     return False
+
+
+# F2 restart-initiator breadcrumb (per-session, per-boot files) — see spec
+# 2026-06-22_f2-initiator-detection-authoritative-breadcrumb.md. The
+# safe-restart skill's safe-restart.py drops one file per restart it initiates;
+# the gateway's clean-turn gate consumes it to know "this turn initiated a
+# restart" independent of the command string (robust to alias/wrapper/rename
+# that the C1 heuristic misses). Shared contract with the script — keep in sync.
+_RESTART_INITIATED_DIRNAME = ".restart_initiated"
+
+
+def _restart_initiated_filename(session_key: str) -> str:
+    """Per-session breadcrumb filename = sha8 of the session key.
+
+    Per-session files mean the writer (script) and the consumer (gateway) never
+    touch the same inode → no read-modify-write race / lost-update (a shared
+    list would have one). The full key is also stored INSIDE the file and must
+    hash back to this name (anti-forgery, I-8).
+    """
+    import hashlib
+
+    return hashlib.sha256((session_key or "").encode("utf-8")).hexdigest()[:8]
 
 
 def _float_env(name: str, default: float) -> float:
@@ -4766,11 +4804,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``_session_initiated_restart`` is popped (one-shot per turn) so it can't
         bleed into the next turn. ``resume_pending`` is always cleared (recovery
         completed; the breaker, not the resume flag, is what trips a loop).
+
+        The restart-initiator signal comes from THREE sources, OR'd:
+        ``_session_initiated_restart`` (F1 ``request_restart`` + C1 progress-
+        callback heuristic) AND a per-session breadcrumb FILE the safe-restart
+        skill's ``safe-restart.py`` dropped (the authoritative signal, robust to
+        an alias/wrapper/rename the C1 command-string heuristic misses). The
+        breadcrumb is ALWAYS consumed (read+unlink) even when the flag is already
+        True — assign both, then OR (never ``flag or consume(...)``, whose short-
+        circuit would leave the breadcrumb on disk to mark a later turn, I-3).
         """
-        initiated_restart = bool(
+        flag = bool(
             getattr(self, "_session_initiated_restart", {}).pop(session_key, False)
         )
+        # ALWAYS consume (unlink) the breadcrumb, regardless of `flag` — do not
+        # short-circuit, or a C1/F1-flagged turn leaks its breadcrumb (I-3).
+        breadcrumb = self._consume_restart_initiated_breadcrumb(session_key)
+        initiated_restart = flag or breadcrumb
         if initiated_restart:
+            if breadcrumb and not flag:
+                logger.info(
+                    "F2 restart-initiator signal=breadcrumb for %s "
+                    "(authoritative; C1/F1 flag was absent)",
+                    session_key,
+                )
             try:
                 self._record_restart_replay_mark(session_key)
             except Exception as exc:
@@ -4789,6 +4846,157 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self.session_store.clear_resume_pending(session_key)
         except Exception as exc:
             logger.debug("clear_resume_pending failed for %s: %s", session_key, exc)
+
+    # ------------------------------------------------------------------
+    # F2 restart-initiator breadcrumb consume / sweep (per-session, per-boot)
+    # ------------------------------------------------------------------
+    def _restart_initiated_dir(self) -> Path:
+        return _hermes_home / _RESTART_INITIATED_DIRNAME
+
+    def _current_boot_id(self) -> str:
+        """This gateway's per-boot identity — the SAME string it persisted in
+        ``gateway_state.json`` (single producer; the script copies it). See
+        ``gateway.status.get_current_boot_id``."""
+        try:
+            from gateway.status import get_current_boot_id
+
+            return get_current_boot_id()
+        except Exception:
+            # Last-resort fallback keeps the gate functional; a degraded id only
+            # weakens cross-boot rejection, never breaks the restart.
+            return f"{os.getpid()}:"
+
+    def _consume_restart_initiated_breadcrumb(self, session_key: str) -> bool:
+        """Read+UNLINK this session's restart-initiator breadcrumb (I-3).
+
+        Returns True only when a breadcrumb existed AND:
+          - its ``boot_id`` matches the current boot (I-4 — rejects a crumb that
+            survived a reboot from an interrupted initiator, the false-trip kill),
+          - its ``ts`` is within the TTL backstop (I-5),
+          - its stored ``session_key`` hashes back to the filename (I-8 anti-forgery).
+        The file is unlinked regardless of the verdict so a stale/foreign crumb
+        cannot mark a later turn. Fail-safe: any error → treat as absent, best-
+        effort unlink, never raise.
+        """
+        if not session_key:
+            return False
+        path = self._restart_initiated_dir() / _restart_initiated_filename(session_key)
+        try:
+            if not path.exists():
+                return False
+        except Exception:
+            return False
+        data = None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            data = None
+        # Always unlink (consume) — even malformed/foreign — so it can't linger.
+        try:
+            path.unlink()
+        except Exception:
+            pass
+        if not isinstance(data, dict):
+            logger.info(
+                "F2 breadcrumb for %s discarded (malformed/unreadable)", session_key
+            )
+            return False
+        stored_key = data.get("session_key")
+        # I-8 (integrity, not authZ — the security boundary is the 0700 dir owner):
+        # the breadcrumb's stored key must equal the session we're consuming for.
+        # On this direct-lookup path `path.name == filename(session_key)` by
+        # construction, so `stored_key == session_key` is the load-bearing check;
+        # the filename-hash equality is the same invariant the sweep relies on
+        # when it trusts a filename from iterdir(), kept here as a cheap assert.
+        if stored_key != session_key or _restart_initiated_filename(
+            stored_key or ""
+        ) != path.name:
+            logger.info(
+                "F2 breadcrumb at %s discarded (key/filename mismatch)", path.name
+            )
+            return False
+        boot_id = data.get("boot_id")
+        current_boot = self._current_boot_id()
+        # MAJOR-1 fail-safe: a degraded boot_id (no create_time component, e.g.
+        # "1234:") cannot prove same-boot — pids are reused across reboots, so a
+        # bare-pid match would honor a cross-boot crumb. If EITHER side is
+        # degraded, refuse the authoritative signal (fall back to C1/F1).
+        if current_boot.endswith(":") or not isinstance(boot_id, str) or boot_id.endswith(":"):
+            logger.info(
+                "F2 breadcrumb for %s discarded (degraded/unknown boot_id: %r vs %r)",
+                session_key, boot_id, current_boot,
+            )
+            return False
+        if boot_id != current_boot:
+            logger.info(
+                "F2 breadcrumb for %s discarded (wrong boot: %r != current)",
+                session_key,
+                boot_id,
+            )
+            return False
+        try:
+            ts = float(data.get("ts"))
+        except (TypeError, ValueError):
+            logger.info("F2 breadcrumb for %s discarded (bad ts)", session_key)
+            return False
+        if (time.time() - ts) > _restart_initiated_ttl_secs():
+            logger.info("F2 breadcrumb for %s discarded (stale, ts=%s)", session_key, ts)
+            return False
+        return True
+
+    def _sweep_restart_initiated_breadcrumbs(self) -> int:
+        """Prune breadcrumb files from a prior boot or past the TTL (D-8).
+
+        Called on startup. Bounds unbounded growth under a no-consume write
+        storm and reaps crumbs from a turn whose gate never ran. Best-effort,
+        fail-safe. Returns the number of files removed.
+        """
+        d = self._restart_initiated_dir()
+        try:
+            if not d.exists():
+                return 0
+        except Exception:
+            return 0
+        current = self._current_boot_id()
+        # Symmetry with the consume side (MAJOR-1): if our own boot_id is degraded
+        # (pid-only, psutil failed), we cannot reliably distinguish a same-pid
+        # prior-boot crumb from a current one — so treat ALL crumbs as stale and
+        # reap them (the consume side would reject them anyway; this keeps the dir
+        # from accumulating under a degraded boot).
+        current_degraded = current.endswith(":")
+        ttl = _restart_initiated_ttl_secs()
+        now = time.time()
+        removed = 0
+        try:
+            entries = list(d.iterdir())
+        except Exception:
+            return 0
+        for f in entries:
+            try:
+                stale = True
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        ts = float(data.get("ts", 0) or 0)
+                        # Keep ONLY current-boot, in-TTL crumbs (an in-flight
+                        # current-boot breadcrumb written during the sweep window
+                        # must survive — RC-4). A degraded current boot keeps
+                        # nothing (symmetry with consume).
+                        stale = (
+                            current_degraded
+                            or data.get("boot_id") != current
+                            or (now - ts) > ttl
+                        )
+                except Exception:
+                    stale = True
+                if stale:
+                    f.unlink()
+                    removed += 1
+            except Exception:
+                continue
+        if removed:
+            logger.info("F2 breadcrumb sweep removed %d stale/wrong-boot file(s)", removed)
+        return removed
 
     def _clear_restart_failure_count(self, session_key: str) -> None:
         """Clear the restart-failure counter for a session that completed OK.
@@ -5473,6 +5681,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
         except Exception as e:
             logger.debug("Stuck-loop detection failed: %s", e)
+
+        # Reap F2 restart-initiator breadcrumbs from a prior boot or past the
+        # TTL (D-8): any crumb whose boot_id != current is from a restart that
+        # already happened (the new boot won't ever match it), and a turn whose
+        # gate never ran would otherwise leave its crumb on disk.
+        try:
+            swept = self._sweep_restart_initiated_breadcrumbs()
+            if swept:
+                logger.info("Swept %d stale restart-initiator breadcrumb(s)", swept)
+        except Exception as e:
+            logger.debug("Restart-initiator breadcrumb sweep failed: %s", e)
 
         # Serialize startup restore against inbound dispatch.  Platform
         # adapters can begin receiving messages as soon as they connect, but
@@ -9900,6 +10119,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
+            # D-6 defense: if this turn ended via an exception/early-return
+            # BEFORE the clean-turn gate ran (run.py ~9637), its restart-initiator
+            # breadcrumb would otherwise linger on disk and could be read by a
+            # later same-session/same-boot turn. Consume (unlink) it here without
+            # recording a mark — a turn that crashed made no loop progress to
+            # count. Idempotent: a no-op if the gate already consumed it.
+            try:
+                _sk_cleanup = locals().get("session_key")
+                if _sk_cleanup:
+                    self._consume_restart_initiated_breadcrumb(_sk_cleanup)
+            except Exception:
+                pass
 
     def _format_session_info(self) -> str:
         """Resolve current model config and return a formatted info block.

@@ -521,3 +521,501 @@ def _make_progress_callback(runner, session_key):
             if _command_invokes_safe_restart(cmd):
                 runner._session_initiated_restart[session_key] = True
     return cb
+
+
+# ───────── F2 initiator-detection AUTHORITATIVE BREADCRUMB (spec 2026-06-22) ─────────
+#
+# The breadcrumb is the authoritative restart-initiator signal: safe-restart.py
+# drops a per-session, per-boot FILE that the clean-turn gate consumes. These
+# tests drive the REAL gate + real on-disk files (tmp_path == _hermes_home via
+# the _runner monkeypatch). They cover I-1..I-9 + D-6/D-8.
+
+import os as _os
+import time as _time
+
+from gateway.run import (
+    _restart_initiated_filename,
+    _restart_initiated_ttl_secs,
+)
+
+
+def _write_breadcrumb(runner, session_key, *, boot_id=None, ts=None, key_override=None):
+    """Write a real breadcrumb file exactly as safe-restart.py would."""
+    d = runner._restart_initiated_dir()
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = d / _restart_initiated_filename(session_key)
+    payload = {
+        "session_key": key_override if key_override is not None else session_key,
+        "ts": _time.time() if ts is None else ts,
+        "boot_id": runner._current_boot_id() if boot_id is None else boot_id,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_breadcrumb_marks_when_current_boot(tmp_path, monkeypatch):
+    """A fresh current-boot breadcrumb makes the gate treat the turn as a
+    restart-initiator → records a replay-mark (the authoritative signal works
+    with NO C1/F1 flag set)."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "crumb").session_key
+    runner._resumed_this_boot.add(sk)
+    _write_breadcrumb(runner, sk)
+    runner._apply_post_turn_resume_gate(sk)
+    counts = runner._load_restart_failure_counts().get(sk, {})
+    assert len(counts.get("replay_marks", [])) == 1
+
+
+def test_breadcrumb_from_prior_boot_discarded_not_marked(tmp_path, monkeypatch):
+    """I-4 (the false-trip kill): a breadcrumb with a DIFFERENT boot_id (an
+    interrupted initiator's crumb that survived a reboot) must NOT mark the next
+    real-work resumed turn, even with a fresh ts. RED without the boot_id check."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "priorboot").session_key
+    runner._resumed_this_boot.add(sk)
+    # fresh ts, but a prior boot's id
+    _write_breadcrumb(runner, sk, boot_id="99999:1.0", ts=_time.time())
+    runner._apply_post_turn_resume_gate(sk)
+    # no mark recorded, and forward-progress clear happened
+    counts = runner._load_restart_failure_counts().get(sk, {})
+    assert counts.get("replay_marks", []) == []
+    assert sk not in runner._resumed_this_boot
+
+
+def test_stale_breadcrumb_discarded_not_marked(tmp_path, monkeypatch):
+    """I-5: a current-boot breadcrumb older than the TTL backstop is discarded
+    unmarked."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "stale").session_key
+    old_ts = _time.time() - (_restart_initiated_ttl_secs() + 60)
+    _write_breadcrumb(runner, sk, ts=old_ts)
+    runner._apply_post_turn_resume_gate(sk)
+    counts = runner._load_restart_failure_counts().get(sk, {})
+    assert counts.get("replay_marks", []) == []
+
+
+def test_breadcrumb_consumed_after_gate(tmp_path, monkeypatch):
+    """I-3: the breadcrumb file is unlinked on consume — a second gate call sees
+    nothing (no double-mark, no lingering crumb)."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "5")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "consumed").session_key
+    path = _write_breadcrumb(runner, sk)
+    runner._resumed_this_boot.add(sk)
+    runner._apply_post_turn_resume_gate(sk)
+    assert not path.exists()
+    # second gate: no breadcrumb → clear branch, marks unchanged at 1
+    runner._apply_post_turn_resume_gate(sk)
+    counts = runner._load_restart_failure_counts().get(sk, {})
+    assert len(counts.get("replay_marks", [])) <= 1
+
+
+def test_breadcrumb_and_c1_flag_same_turn_records_one_mark(tmp_path, monkeypatch):
+    """I-1: with BOTH the C1/F1 flag and a breadcrumb present for one turn, the
+    gate records exactly ONE mark (not two → would trip the breaker early)."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "both").session_key
+    runner._resumed_this_boot.add(sk)
+    runner._session_initiated_restart[sk] = True
+    _write_breadcrumb(runner, sk)
+    runner._apply_post_turn_resume_gate(sk)
+    counts = runner._load_restart_failure_counts().get(sk, {})
+    assert len(counts.get("replay_marks", [])) == 1
+
+
+def test_c1_flag_true_still_consumes_breadcrumb(tmp_path, monkeypatch):
+    """Pass-2 B-3: a C1/F1-flagged turn must STILL unlink the breadcrumb (no
+    `flag or consume()` short-circuit), else it leaks to a later turn."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "5")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "noshort").session_key
+    runner._session_initiated_restart[sk] = True
+    path = _write_breadcrumb(runner, sk)
+    runner._apply_post_turn_resume_gate(sk)
+    assert not path.exists(), "breadcrumb leaked: short-circuit skipped the unlink"
+
+
+def test_real_work_turn_consumes_no_breadcrumb(tmp_path, monkeypatch):
+    """I-2: a real-work turn (no flag, no breadcrumb) clears the breaker and
+    accrues no mark — anti-false-trip preserved."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "realwork2").session_key
+    for _ in range(6):
+        runner._resumed_this_boot.add(sk)
+        runner._apply_post_turn_resume_gate(sk)
+    assert runner.session_store._entries[sk].suspended is False
+    counts = runner._load_restart_failure_counts().get(sk, {})
+    assert counts.get("replay_marks", []) == []
+
+
+def test_malformed_breadcrumb_file_is_ignored(tmp_path, monkeypatch):
+    """I-6: a garbage breadcrumb file → no mark, no exception, file consumed."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "garbage").session_key
+    d = runner._restart_initiated_dir()
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = d / _restart_initiated_filename(sk)
+    path.write_text("}{ not json", encoding="utf-8")
+    assert runner._consume_restart_initiated_breadcrumb(sk) is False
+    assert not path.exists()
+
+
+def test_breadcrumb_key_filename_mismatch_ignored(tmp_path, monkeypatch):
+    """I-8: a breadcrumb whose stored key doesn't hash to its filename (forgery)
+    is ignored."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "forge").session_key
+    # write a crumb at sk's filename but with a DIFFERENT key inside
+    _write_breadcrumb(runner, sk, key_override="agent:main:telegram:evil:1")
+    assert runner._consume_restart_initiated_breadcrumb(sk) is False
+
+
+def test_startup_sweep_prunes_wrong_boot_and_stale(tmp_path, monkeypatch):
+    """D-8: startup sweep removes prior-boot + stale crumbs."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    a = _entry(runner, "swA").session_key
+    b = _entry(runner, "swB").session_key
+    _write_breadcrumb(runner, a, boot_id="11111:1.0")  # wrong boot
+    _write_breadcrumb(runner, b, ts=_time.time() - (_restart_initiated_ttl_secs() + 99))  # stale
+    removed = runner._sweep_restart_initiated_breadcrumbs()
+    assert removed == 2
+    assert not (runner._restart_initiated_dir() / _restart_initiated_filename(a)).exists()
+
+
+def test_current_boot_breadcrumb_survives_sweep(tmp_path, monkeypatch):
+    """Pass-2 RC-4: a fresh current-boot crumb (an in-flight initiator) must
+    survive the startup sweep."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "survive").session_key
+    path = _write_breadcrumb(runner, sk)  # current boot, fresh
+    removed = runner._sweep_restart_initiated_breadcrumbs()
+    assert removed == 0
+    assert path.exists()
+
+
+def test_two_sessions_independent_at_the_gate(tmp_path, monkeypatch):
+    """Pass-2 RC-5: two sessions with independent breadcrumb files — one marks,
+    the other (no crumb, real work) clears. Proves per-session isolation E2E."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    s_restart = _entry(runner, "sA").session_key
+    s_work = _entry(runner, "sB").session_key
+    runner._resumed_this_boot.add(s_restart)
+    runner._resumed_this_boot.add(s_work)
+    _write_breadcrumb(runner, s_restart)  # only A initiated a restart
+    runner._apply_post_turn_resume_gate(s_restart)
+    runner._apply_post_turn_resume_gate(s_work)
+    a_marks = runner._load_restart_failure_counts().get(s_restart, {}).get("replay_marks", [])
+    b_marks = runner._load_restart_failure_counts().get(s_work, {}).get("replay_marks", [])
+    assert len(a_marks) == 1
+    assert b_marks == []
+    assert s_work not in runner._resumed_this_boot
+
+
+def test_self_completing_loop_via_breadcrumb_is_suspended(tmp_path, monkeypatch):
+    """End-to-end: a session that drops a current-boot breadcrumb every cycle
+    (the alias/wrapper case C1 would miss) is SUSPENDED at threshold — the whole
+    point of the authoritative signal."""
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    monkeypatch.setenv("HERMES_RESTART_LOOP_WINDOW_SECS", "300")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "selfloopcrumb").session_key
+    for _ in range(3):
+        runner._resumed_this_boot.add(sk)
+        _write_breadcrumb(runner, sk)  # NO C1 flag — breadcrumb only
+        runner._apply_post_turn_resume_gate(sk)
+    assert runner.session_store._entries[sk].suspended is True
+
+
+def test_boot_id_present_and_not_pid_only_on_this_host(tmp_path, monkeypatch):
+    """I-9 regression guard: the gateway's boot_id must carry a non-empty
+    create_time component — catches a return to the macOS `/proc`-None collapse
+    (pid-only boot_id)."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    bid = runner._current_boot_id()
+    assert ":" in bid
+    pid_part, _, ct_part = bid.partition(":")
+    assert pid_part.isdigit()
+    assert ct_part != "", "boot_id collapsed to pid-only (create_time missing)"
+
+
+def test_single_gate_call_site():
+    """D-6: _apply_post_turn_resume_gate has exactly one call site (the clean-turn
+    gate). A second site would need its own breadcrumb-consume reasoning."""
+    import inspect
+    import gateway.run as gr
+
+    src = inspect.getsource(gr)
+    n = src.count("self._apply_post_turn_resume_gate(session_key)")
+    assert n == 1, f"expected 1 gate call site, found {n}"
+
+
+def test_finally_consume_present_in_handler():
+    """D-6 defense: the handler's finally block must consume the breadcrumb so a
+    gate-skip (exception/early-return) can't leak it within-boot."""
+    import inspect
+    import gateway.run as gr
+
+    src = inspect.getsource(gr)
+    assert "_consume_restart_initiated_breadcrumb(_sk_cleanup)" in src, (
+        "finally-block defensive consume missing"
+    )
+
+
+def _seed_gateway_state_via_real_producer(tmp_path, monkeypatch, *, stale_first=False):
+    """Write gateway_state.json via the REAL producer (write_runtime_status),
+    NOT by hand — so the test exercises the actual code path the script depends
+    on (BLOCKER-2: hand-seeding masks the stale-boot_id bug). HERMES_HOME is
+    pointed at tmp_path so the status file lands where the script reads it.
+
+    When stale_first=True, first drop a prior-boot status file on disk (with a
+    DIFFERENT boot_id) to simulate the file surviving a reboot, then call the
+    real producer — proving the producer REFRESHES boot_id rather than leaving
+    the stale value.
+    """
+    import gateway.status as status
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # status.py resolves the status path from get_hermes_home(); make sure it
+    # points at tmp_path for this call.
+    monkeypatch.setattr(status, "get_hermes_home", lambda: tmp_path, raising=False)
+    state_path = tmp_path / "gateway_state.json"
+    if stale_first:
+        state_path.write_text(json.dumps({
+            "pid": 999999, "boot_id": "999999:1.0", "gateway_state": "running",
+        }), encoding="utf-8")
+    status.write_runtime_status(gateway_state="running")
+    return state_path
+
+
+def test_real_producer_refreshes_boot_id_across_restart(tmp_path, monkeypatch):
+    """BLOCKER-1/2 regression: write_runtime_status MUST refresh boot_id on every
+    write. gateway_state.json survives reboots, so a stale prior-boot file must
+    not leave its old boot_id behind (which would make every breadcrumb mismatch
+    → feature inert after restart #1). RED against the pre-fix producer."""
+    import gateway.status as status
+
+    state_path = _seed_gateway_state_via_real_producer(
+        tmp_path, monkeypatch, stale_first=True
+    )
+    persisted = json.loads(state_path.read_text())["boot_id"]
+    # The producer must have overwritten the stale "999999:1.0" with THIS boot.
+    assert persisted == status.get_current_boot_id()
+    assert persisted != "999999:1.0"
+    # and it carries a real create_time component (not pid-only)
+    assert not persisted.endswith(":")
+
+
+def test_roundtrip_real_script_writes_breadcrumb_gate_marks(tmp_path, monkeypatch):
+    """E2E no-mock seam (the load-bearing alias/wrapper-robustness proof): run the
+    REAL safe-restart.py as a subprocess — the gateway never sees its command
+    line — so the ONLY signal is the breadcrumb file it drops. gateway_state.json
+    is produced by the REAL write_runtime_status (not hand-seeded), so the
+    script reads the boot_id the real producer persists. Then the real gateway
+    gate consumes it and records a mark."""
+    import subprocess
+    import sys
+
+    script = (
+        "/Users/alexgierczyk/.hermes/skills-shared/general/"
+        "safe-gateway-restart/scripts/safe-restart.py"
+    )
+    if not _os.path.exists(script):
+        pytest.skip("safe-restart.py skill script not present")
+
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "rt").session_key
+    # REAL producer writes gateway_state.json (incl. boot_id) at tmp_path —
+    # stale_first=True simulates the file surviving a reboot (the NORMAL steady
+    # state), so this test exercises the exact stale-boot_id path BLOCKER-1 fixed.
+    _seed_gateway_state_via_real_producer(tmp_path, monkeypatch, stale_first=True)
+
+    env = dict(_os.environ)
+    env["HERMES_HOME"] = str(tmp_path)
+    r = subprocess.run(
+        [sys.executable, script, "--no-spawn", "--write-breadcrumb",
+         "--session-key", sk, "--session-id", "sidrt", "--chat", "123",
+         "--platform", "telegram", "--handoff", "roundtrip"],
+        capture_output=True, text=True, env=env,
+    )
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["breadcrumb_written"] is True
+
+    # The gateway gate now consumes it — boot_id read from the REAL producer's
+    # file must match the gate's _current_boot_id() (this is the seam that was
+    # broken before BLOCKER-1's fix).
+    runner._resumed_this_boot.add(sk)
+    runner._apply_post_turn_resume_gate(sk)
+    counts = runner._load_restart_failure_counts().get(sk, {})
+    assert len(counts.get("replay_marks", [])) == 1
+
+
+def test_roundtrip_script_boot_id_matches_real_producer(tmp_path, monkeypatch):
+    """Pass-2 B-1/I-9 via the REAL producer: the breadcrumb the script writes
+    carries exactly the boot_id write_runtime_status persisted — single producer,
+    verbatim copy, no second parser. (Replaces the prior hand-seeded version that
+    masked BLOCKER-1.)"""
+    import subprocess
+    import sys
+
+    script = (
+        "/Users/alexgierczyk/.hermes/skills-shared/general/"
+        "safe-gateway-restart/scripts/safe-restart.py"
+    )
+    if not _os.path.exists(script):
+        pytest.skip("safe-restart.py skill script not present")
+
+    import gateway.status as status
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "rtboot").session_key
+    _seed_gateway_state_via_real_producer(tmp_path, monkeypatch, stale_first=True)
+    expected_boot = status.get_current_boot_id()
+
+    env = dict(_os.environ)
+    env["HERMES_HOME"] = str(tmp_path)
+    subprocess.run(
+        [sys.executable, script, "--no-spawn", "--write-breadcrumb",
+         "--session-key", sk, "--session-id", "s", "--chat", "1",
+         "--platform", "telegram", "--handoff", "x"],
+        capture_output=True, text=True, env=env, check=True,
+    )
+    crumb = json.loads(
+        (tmp_path / ".restart_initiated" / _restart_initiated_filename(sk)).read_text()
+    )
+    assert crumb["boot_id"] == expected_boot  # verbatim copy of the producer's id
+    assert crumb["boot_id"] != "999999:1.0"   # not the stale prior-boot value
+
+
+def test_roundtrip_script_dead_pid_writes_no_breadcrumb(tmp_path, monkeypatch):
+    """D-4a liveness: if gateway_state.json's pid is dead (stale file), the script
+    writes NO breadcrumb (fail-open to C1/F1)."""
+    import subprocess
+    import sys
+
+    script = (
+        "/Users/alexgierczyk/.hermes/skills-shared/general/"
+        "safe-gateway-restart/scripts/safe-restart.py"
+    )
+    if not _os.path.exists(script):
+        pytest.skip("safe-restart.py skill script not present")
+
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "rtdead").session_key
+    # a pid that is almost certainly dead
+    state = {"pid": 2, "boot_id": "2:1.0", "gateway_state": "running"}
+    (tmp_path / "gateway_state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    env = dict(_os.environ)
+    env["HERMES_HOME"] = str(tmp_path)
+    r = subprocess.run(
+        [sys.executable, script, "--no-spawn", "--write-breadcrumb",
+         "--session-key", sk, "--session-id", "s", "--chat", "1",
+         "--platform", "telegram", "--handoff", "x"],
+        capture_output=True, text=True, env=env,
+    )
+    assert r.returncode == 0
+    assert json.loads(r.stdout)["breadcrumb_written"] is False
+    assert not (tmp_path / ".restart_initiated" / _restart_initiated_filename(sk)).exists()
+
+
+def test_no_spawn_without_write_flag_plants_no_breadcrumb(tmp_path, monkeypatch):
+    """MINOR-2: a diagnostic --no-spawn (without --write-breadcrumb) must NOT
+    drop a real breadcrumb — else a diagnostic run under a live gateway plants a
+    crumb the session's next turn consumes as a restart-initiator mark."""
+    import subprocess
+    import sys
+
+    script = (
+        "/Users/alexgierczyk/.hermes/skills-shared/general/"
+        "safe-gateway-restart/scripts/safe-restart.py"
+    )
+    if not _os.path.exists(script):
+        pytest.skip("safe-restart.py skill script not present")
+
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "nodiag").session_key
+    _seed_gateway_state_via_real_producer(tmp_path, monkeypatch)
+
+    env = dict(_os.environ)
+    env["HERMES_HOME"] = str(tmp_path)
+    r = subprocess.run(
+        [sys.executable, script, "--no-spawn",  # NO --write-breadcrumb
+         "--session-key", sk, "--session-id", "s", "--chat", "1",
+         "--platform", "telegram", "--handoff", "x"],
+        capture_output=True, text=True, env=env,
+    )
+    assert r.returncode == 0
+    assert json.loads(r.stdout)["breadcrumb_written"] is False
+    assert not (tmp_path / ".restart_initiated" / _restart_initiated_filename(sk)).exists()
+
+
+def test_cross_process_breadcrumb_contract_ci_safe(tmp_path, monkeypatch):
+    """CI-GUARANTEED cross-process contract (Required Change #1): the round-trip
+    subprocess tests skip when the live skill script isn't on-path (CI), which
+    would make the anti-masking proof illusory off-host. This test reproduces the
+    SCRIPT's breadcrumb-write contract INLINE (the exact JSON shape + filename
+    hash + boot_id read from gateway_state.json) and proves the real gateway gate
+    consumes it — so the cross-process file contract is verified on EVERY host,
+    with no dependency on the skill script's filesystem location.
+
+    If the real script's write shape ever drifts from this inline replica, the
+    subprocess round-trip tests (when present) catch it; this guarantees the gate
+    side of the contract is always exercised."""
+    import gateway.status as status
+
+    monkeypatch.setenv("HERMES_RESTART_LOOP_THRESHOLD", "3")
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "ci").session_key
+    # real producer persists boot_id (stale_first → exercises the refresh path)
+    _seed_gateway_state_via_real_producer(tmp_path, monkeypatch, stale_first=True)
+
+    # Replicate the SCRIPT's write: read boot_id from gateway_state.json (the
+    # field the real producer just wrote), write the per-session file with the
+    # same {session_key, ts, boot_id} shape and sha8 filename the gate expects.
+    gw_state = json.loads((tmp_path / "gateway_state.json").read_text())
+    boot_id = gw_state["boot_id"]
+    assert boot_id == status.get_current_boot_id()  # producer/consumer agree
+    d = runner._restart_initiated_dir()
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (d / _restart_initiated_filename(sk)).write_text(
+        json.dumps({"session_key": sk, "ts": _time.time(), "boot_id": boot_id}),
+        encoding="utf-8",
+    )
+
+    runner._resumed_this_boot.add(sk)
+    runner._apply_post_turn_resume_gate(sk)
+    counts = runner._load_restart_failure_counts().get(sk, {})
+    assert len(counts.get("replay_marks", [])) == 1
+
+
+def test_degraded_current_boot_id_rejects_breadcrumb(tmp_path, monkeypatch):
+    """MAJOR-1: if the gateway's _current_boot_id() is degraded (pid-only, no
+    create_time — psutil failure), the consume side must REJECT every breadcrumb
+    (can't prove same-boot → fall back to C1/F1) rather than honor a pid-only
+    match (pid reuse across reboots)."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "degraded").session_key
+    # force a degraded current boot id
+    monkeypatch.setattr(runner, "_current_boot_id", lambda: f"{_os.getpid()}:")
+    # write a crumb whose stored boot_id is ALSO pid-only for the same pid
+    _write_breadcrumb(runner, sk, boot_id=f"{_os.getpid()}:")
+    assert runner._consume_restart_initiated_breadcrumb(sk) is False
+
+
+def test_sweep_degraded_boot_reaps_all(tmp_path, monkeypatch):
+    """Sweep symmetry with consume (Pass-review RC-2): under a degraded current
+    boot_id, the sweep treats every crumb as stale (it can't trust a same-pid
+    match), keeping the dir from accumulating."""
+    runner, _adapter = _runner(tmp_path, monkeypatch)
+    sk = _entry(runner, "sweepdeg").session_key
+    monkeypatch.setattr(runner, "_current_boot_id", lambda: f"{_os.getpid()}:")
+    # a crumb stamped with the SAME pid-only id (would survive a naive == check)
+    _write_breadcrumb(runner, sk, boot_id=f"{_os.getpid()}:")
+    removed = runner._sweep_restart_initiated_breadcrumbs()
+    assert removed == 1

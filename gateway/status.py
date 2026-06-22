@@ -13,6 +13,7 @@ concurrently under distinct configurations).
 
 import hashlib
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -22,6 +23,8 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Optional
 from utils import atomic_json_write
+
+logger = logging.getLogger(__name__)
 
 if sys.platform == "win32":
     import msvcrt
@@ -123,6 +126,11 @@ def get_process_start_time(pid: int) -> Optional[int]:
     return _get_process_start_time(pid)
 
 
+def get_current_boot_id() -> str:
+    """The current process's per-boot identity (see :func:`_compute_boot_id`)."""
+    return _compute_boot_id(os.getpid())
+
+
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string.
 
@@ -200,12 +208,45 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     return any(pattern in cmdline for pattern in patterns)
 
 
+def _compute_boot_id(pid: int) -> str:
+    """Stable per-boot identity string for a gateway process.
+
+    ``f"{pid}:{create_time}"`` where ``create_time`` is the kernel process
+    start time via psutil (cross-platform: macOS/Linux/Windows). pid alone is
+    insufficient — pids are reused across reboots — so we pair it with the
+    process create time. psutil is a hard dependency (see pyproject) and is
+    already used elsewhere in this module.
+
+    Falls back to ``f"{pid}:"`` only if psutil cannot read the create time. A
+    degraded (pid-only) id makes the F2 restart-initiator breadcrumb fail CLOSED
+    (every crumb rejected as degraded → silent fall back to C1/F1), so we log a
+    WARNING to make that otherwise-silent inert state observable.
+    """
+    try:
+        import psutil
+
+        return f"{pid}:{psutil.Process(pid).create_time()}"
+    except Exception as exc:
+        logger.warning(
+            "boot_id degraded to pid-only for pid %s (psutil failed: %s) — the F2 "
+            "restart-initiator breadcrumb will fail closed (fall back to C1/F1)",
+            pid,
+            exc,
+        )
+        return f"{pid}:"
+
+
 def _build_pid_record() -> dict:
+    pid = os.getpid()
     return {
-        "pid": os.getpid(),
+        "pid": pid,
         "kind": _GATEWAY_KIND,
         "argv": list(sys.argv),
-        "start_time": _get_process_start_time(os.getpid()),
+        "start_time": _get_process_start_time(pid),
+        # Cross-platform per-boot identity (status.py:_get_process_start_time is
+        # /proc-only → None on macOS; boot_id is the portable replacement used by
+        # the F2 restart-initiator breadcrumb to reject cross-boot crumbs).
+        "boot_id": _compute_boot_id(pid),
     }
 
 
@@ -525,6 +566,13 @@ def write_runtime_status(
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
+    # boot_id MUST be refreshed on every write, not seeded once: gateway_state.json
+    # survives across reboots (never unlinked at startup), so without this the
+    # prior boot's boot_id would persist while pid updates to the new process —
+    # making the F2 restart-initiator breadcrumb's boot check always mismatch
+    # (feature silently inert after restart #1). The gateway is the SINGLE
+    # producer of boot_id; safe-restart.py copies this string verbatim.
+    payload["boot_id"] = current_record["boot_id"]
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:

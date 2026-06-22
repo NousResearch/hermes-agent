@@ -1,0 +1,2 @@
+All checks passed!
+ruff exit=0

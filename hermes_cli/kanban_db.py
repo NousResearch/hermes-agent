@@ -1181,6 +1181,82 @@ _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
 
+# Local deployments can add a SQLite created_by allowlist trigger as an extra
+# hardening layer. Keep the canonical builder->reviewer exception here so init
+# refreshes stale triggers that predate builder-gpt5 style profile names.
+_CREATED_BY_ALLOWLIST_TRIGGER_SQL = """
+DROP TRIGGER IF EXISTS trg_created_by_allowlist;
+CREATE TRIGGER trg_created_by_allowlist BEFORE INSERT ON tasks
+BEGIN
+    SELECT CASE
+        WHEN NEW.created_by IS NULL THEN NULL
+        WHEN NEW.created_by IN (
+            'user', 'mike', 'mike-via-cos', 'cos-cron', 'devex-cron',
+            'ceo', 'ceo-roadmap-publisher', 'dashboard', 'cos', 'Claude-CoS',
+            'agent-marketing', 'worker-coder', 'worker-general', 'ai-engineer',
+            'agents-orchestrator', 'technical-writer', 'app-store-optimizer',
+            'accessibility-auditor', 'builder-deepseek', 'builder-kimi'
+        ) THEN NULL
+        WHEN NEW.created_by GLOB 'agent-*'
+             AND NEW.created_by NOT GLOB '*[^a-zA-Z0-9_-]*'
+             AND NEW.created_by NOT GLOB '*..*' THEN NULL
+        WHEN NEW.created_by GLOB 'worker-*'
+             AND NEW.created_by NOT GLOB '*[^a-zA-Z0-9_-]*'
+             AND NEW.created_by NOT GLOB '*..*' THEN NULL
+        WHEN NEW.created_by GLOB 'mkt-*'
+             AND NEW.created_by NOT GLOB '*[^a-zA-Z0-9_-]*'
+             AND NEW.created_by NOT GLOB '*..*' THEN NULL
+        WHEN NEW.created_by GLOB 'shadow-*'
+             AND NEW.created_by NOT GLOB '*[^a-zA-Z0-9_-]*'
+             AND NEW.created_by NOT GLOB '*..*' THEN NULL
+        WHEN NEW.created_by GLOB 'product-*'
+             AND NEW.created_by NOT GLOB '*[^a-zA-Z0-9_-]*'
+             AND NEW.created_by NOT GLOB '*..*' THEN NULL
+        WHEN NEW.created_by GLOB 'builder-*'
+             AND NEW.created_by NOT GLOB '*[^a-zA-Z0-9_-]*'
+             AND NEW.created_by NOT GLOB '*..*'
+             AND NEW.assignee GLOB 'reviewer-*' THEN NULL
+        ELSE RAISE(ABORT, 'created_by not in allowlist')
+    END;
+END;
+"""
+
+
+def _is_builder_profile(value: Optional[str]) -> bool:
+    return bool(value and str(value).startswith("builder-"))
+
+
+def _is_reviewer_assignee(value: Optional[str]) -> bool:
+    return bool(value and str(value).startswith("reviewer-"))
+
+
+def _enforce_create_identity_policy(
+    *,
+    creator_profile: Optional[str],
+    created_by: Optional[str],
+    assignee: Optional[str],
+) -> None:
+    """Prevent builder workers from minting elevated task identities.
+
+    Database allowlists can validate the recorded ``created_by`` string, but
+    only the application knows the caller/profile that is making the request.
+    Builder workers are deliberately narrow: they may fan out reviewer cards
+    under their own identity, and nothing else. Human/dashboard/CoS callers keep
+    their existing paths because they do not present a builder caller profile.
+    """
+    if not _is_builder_profile(creator_profile):
+        return
+    if created_by != creator_profile:
+        raise ValueError(
+            "builder task creation must use the caller profile as created_by "
+            f"({creator_profile}); refusing created_by={created_by!r}"
+        )
+    if not _is_reviewer_assignee(assignee):
+        raise ValueError(
+            "builder task creation is limited to reviewer-* fanout tasks"
+        )
+
+
 # Bounded acquire for the cross-process init lock (#36644). The original bare
 # blocking flock had no timeout, so a wedged holder blocked the dispatcher's
 # next-tick connect forever. We retry a non-blocking acquire up to this
@@ -1673,6 +1749,7 @@ def connect(
                     # stale PRAGMA snapshots during gateway startup.
                     conn.executescript(SCHEMA_SQL)
                     _migrate_add_optional_columns(conn)
+                    _ensure_created_by_allowlist_trigger(conn)
                     _INITIALIZED_PATHS.add(resolved)
         except Exception:
             conn.close()
@@ -1743,6 +1820,15 @@ def init_db(
     with contextlib.closing(connect(path)):
         pass
     return path
+
+
+def _ensure_created_by_allowlist_trigger(conn: sqlite3.Connection) -> None:
+    """Refresh the optional created_by trigger used by hardened shared boards."""
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='trg_created_by_allowlist'"
+    ).fetchone()
+    if row:
+        conn.executescript(_CREATED_BY_ALLOWLIST_TRIGGER_SQL)
 
 
 def _add_column_if_missing(
@@ -2246,6 +2332,7 @@ def create_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     created_by: Optional[str] = None,
+    creator_profile: Optional[str] = None,
     workspace_kind: str = "scratch",
     workspace_path: Optional[str] = None,
     branch_name: Optional[str] = None,
@@ -2287,6 +2374,11 @@ def create_task(
     translation skill regardless of the profile's default config).
     """
     assignee = _canonical_assignee(assignee)
+    _enforce_create_identity_policy(
+        creator_profile=creator_profile,
+        created_by=created_by,
+        assignee=assignee,
+    )
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:

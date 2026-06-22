@@ -807,6 +807,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if _self_task is not None and _self_task.workspace_kind:
                         workspace_kind = _self_task.workspace_kind
                         workspace_path = _self_task.workspace_path
+            creator = os.environ.get("HERMES_PROFILE") or "worker"
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -829,7 +830,8 @@ def _handle_create(args: dict, **kw) -> str:
                     int(goal_max_turns) if goal_max_turns is not None else None
                 ),
                 initial_status=str(initial_status),
-                created_by=os.environ.get("HERMES_PROFILE") or "worker",
+                created_by=creator,
+                creator_profile=creator,
                 session_id=session_id,
             )
             new_task = kb.get_task(conn, new_tid)

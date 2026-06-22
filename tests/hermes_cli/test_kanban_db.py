@@ -62,6 +62,77 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_builder_reviewer_fanout_created_by_self_succeeds(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="Review PR #110",
+            assignee="reviewer-deepseek",
+            created_by="builder-gpt5",
+            creator_profile="builder-gpt5",
+            body=(
+                "source_build_card=t_build linked_pr=110 branch=fix/x "
+                "builder_model=gpt-5.5 required_reviewer_model=deepseek-v4-pro"
+            ),
+        )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None
+    assert task.created_by == "builder-gpt5"
+    assert task.assignee == "reviewer-deepseek"
+
+
+def test_builder_created_by_user_is_denied(kanban_home):
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="must use the caller profile"):
+            kb.create_task(
+                conn,
+                title="forged authority",
+                assignee="reviewer-deepseek",
+                created_by="user",
+                creator_profile="builder-gpt5",
+            )
+
+
+def test_builder_non_reviewer_fanout_is_denied(kanban_home):
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="limited to reviewer"):
+            kb.create_task(
+                conn,
+                title="non-reviewer fanout",
+                assignee="builder-deepseek",
+                created_by="builder-gpt5",
+                creator_profile="builder-gpt5",
+            )
+
+
+def test_created_by_trigger_allows_builder_only_for_reviewer_cards(kanban_home):
+    with kb.connect() as conn:
+        conn.executescript("""
+        CREATE TRIGGER trg_created_by_allowlist BEFORE INSERT ON tasks
+        BEGIN
+            SELECT CASE
+                WHEN NEW.created_by = 'user' THEN NULL
+                ELSE RAISE(ABORT, 'created_by not in allowlist')
+            END;
+        END;
+        """)
+        kb._ensure_created_by_allowlist_trigger(conn)
+        kb.create_task(
+            conn,
+            title="trigger positive",
+            assignee="reviewer-qwen",
+            created_by="builder-gpt5",
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="created_by not in allowlist"):
+            kb.create_task(
+                conn,
+                title="trigger negative",
+                assignee="builder-deepseek",
+                created_by="builder-gpt5",
+            )
+
+
 def test_connect_honors_kanban_busy_timeout_env(kanban_home, monkeypatch):
     """All kanban connections should use the explicit busy-timeout knob.
 

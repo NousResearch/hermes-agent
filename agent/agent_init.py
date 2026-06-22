@@ -1128,6 +1128,27 @@ def init_agent(
                 _agent_cfg.get("tool_loop_guardrails", {})
             )
         )
+        # Auto-register user-supplied policy hooks from config.
+        #
+        # Config schema (optional):
+        #     tool_loop_guardrails:
+        #       policy_hooks:
+        #         - "agent.policy_hooks.example_policy_guardrail:risk_policy_guardrail"
+        #         - "my_pkg.my_module:my_hook"
+        #
+        # Each entry is a "module:callable" import path. Failures are logged
+        # and skipped — never break agent init on a missing optional hook.
+        for _hook_path in _agent_cfg.get("tool_loop_guardrails", {}).get("policy_hooks", []) or []:
+            try:
+                _mod_name, _attr = _hook_path.split(":", 1)
+                _mod = __import__(_mod_name, fromlist=[_attr])
+                _hook = getattr(_mod, _attr)
+                agent._tool_guardrails.register_policy_hook(_hook)
+                _ra().logger.info("Registered tool guardrail policy hook: %s", _hook_path)
+            except Exception as _ph_err:
+                _ra().logger.warning(
+                    "Could not register policy hook %s: %s", _hook_path, _ph_err,
+                )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
     # Cache only the derived auxiliary compression context override that is

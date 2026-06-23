@@ -20,6 +20,7 @@ permissions:
   pull-requests: write # needed by lint (PR comment) + supply-chain (PR comment)
   actions: read # needed by osv-scanner (SARIF upload)
   security-events: write # needed by osv-scanner (SARIF upload)
+  packages: write # needed by docker build
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -94,6 +95,11 @@ jobs:
     if: needs.detect.outputs.docker_meta == 'true'
     uses: ./.github/workflows/docker-lint.yml
 
+  docker:
+    needs: detect
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true'
+    uses: ./.github/workflows/docker-publish.yml
+
   supply-chain:
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.scan == 'true' || needs.detect.outputs.deps == 'true' || needs.detect.outputs.mcp_catalog == 'true')
@@ -128,6 +134,8 @@ jobs:
       - docker-lint
       - supply-chain
       - osv-scanner
+      # we don't require docker to pass rn because it's so slow lol
+      # - docker
     if: always()
     runs-on: ubuntu-latest
     steps:

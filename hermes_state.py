@@ -1163,6 +1163,12 @@ class SessionDB:
             )
         else:
             current_version = row["version"] if isinstance(row, sqlite3.Row) else row[0]
+            if current_version is None:
+                # Schema version row exists but its value is NULL (partial or
+                # corrupted initialization). Treat as version 0 so the migration
+                # chain below can reconcile the database state and bump it to
+                # SCHEMA_VERSION.
+                current_version = 0
             # Data migrations that can't be expressed declaratively (row
             # backfills, index changes tied to a specific version step) stay
             # in a version-gated chain. Column additions are handled by

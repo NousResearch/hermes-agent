@@ -2769,6 +2769,37 @@ class TestSchemaInit:
                     f"but missing from live DB. Live columns: {live_cols}"
                 )
 
+    def test_schema_version_null_does_not_crash(self, tmp_path):
+            """Opening a DB where schema_version row has NULL version should not raise.
+
+            Regression: a partially-initialized or corrupted database can have a
+            schema_version row whose version column is NULL.  _init_schema must
+            handle this gracefully instead of raising
+            TypeError: '<' not supported between instances of 'NoneType' and 'int'.
+            """
+            db_path = tmp_path / "null_version.db"
+            conn = sqlite3.connect(str(db_path))
+            conn.executescript(SCHEMA_SQL)
+            # Recreate schema_version WITHOUT NOT NULL to simulate legacy/corrupt DB
+            conn.execute("DROP TABLE schema_version")
+            conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER)")
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (None,))
+            conn.commit()
+            conn.close()
+
+            db = SessionDB(db_path=db_path)
+            try:
+                # _init_schema should have treated NULL as 0 and bumped to SCHEMA_VERSION.
+                row = db._conn.execute(
+                    "SELECT version FROM schema_version"
+                ).fetchone()
+                assert row[0] == SCHEMA_VERSION
+                # Basic operations should still work.
+                db.create_session(session_id="s1", source="cli")
+                assert db.get_session("s1") is not None
+            finally:
+                db.close()
+
 
 class TestTitleUniqueness:
     """Tests for unique title enforcement and title-based lookups."""

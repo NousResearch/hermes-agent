@@ -56,7 +56,23 @@ class TestValidateContentSize:
 
     def test_custom_label(self):
         err = _validate_content_size("a" * (MAX_SKILL_CONTENT_CHARS + 1), label="references/api.md")
-        assert "references/api.md" in err
+        assert err is not None
+        assert "Reduce it by at least 1 character in one edit." in err
+        assert "split references/api.md into smaller supporting files" in err
+        assert "update the skill to reference them" in err
+
+    def test_small_overage_message_allows_one_shot_reduction(self):
+        err = _validate_content_size("a" * (MAX_SKILL_CONTENT_CHARS + 1))
+        assert err is not None
+        assert "Reduce it by at least 1 character in one edit." in err
+        assert "Do not repeatedly trim small amounts and retry." in err
+
+    def test_structural_overage_message_directs_content_to_supporting_files(self):
+        err = _validate_content_size("a" * (MAX_SKILL_CONTENT_CHARS + 250))
+        assert err is not None
+        assert "Reduce it by at least 250 characters in one edit." in err
+        assert "move whole sections" in err
+        assert "references/ or templates/" in err
 
 
 class TestCreateSkillSizeLimit:
@@ -72,6 +88,9 @@ class TestCreateSkillSizeLimit:
         result = json.loads(skill_manage(action="create", name="huge-skill", content=content))
         assert result["success"] is False
         assert "100,000" in result["error"]
+        over = len(content) - MAX_SKILL_CONTENT_CHARS
+        assert f"Reduce it by at least {over:,} characters in one edit." in result["error"]
+        assert "move whole sections" in result["error"]
 
     def test_create_at_limit(self, isolate_skills):
         # Content at exactly the limit should succeed
@@ -160,7 +179,8 @@ class TestPatchSkillSizeLimit:
             file_path="references/data.md",
         ))
         assert result["success"] is False
-        assert "references/data.md" in result["error"]
+        assert "split references/data.md into smaller supporting files" in result["error"]
+        assert "Do not repeatedly trim small amounts and retry." in result["error"]
 
 
 class TestWriteFileSizeLimit:
@@ -178,6 +198,8 @@ class TestWriteFileSizeLimit:
         ))
         assert result["success"] is False
         assert "100,000" in result["error"]
+        assert "split references/huge.md into smaller supporting files" in result["error"]
+        assert "Do not repeatedly trim small amounts and retry." in result["error"]
 
     def test_write_file_within_limit(self, isolate_skills):
         small = _make_skill_content(1000)

@@ -830,3 +830,43 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+    def test_connect_outbound_only_skips_webhook_lifecycle(self, monkeypatch):
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        register_called = False
+        unregister_called = False
+
+        async def fake_get(path):
+            if path == "/api/v1/ping":
+                return {"status": 200}
+            if path == "/api/v1/server/info":
+                return {"data": {"private_api": True, "helper_connected": True}}
+            raise AssertionError(path)
+
+        async def fake_register():
+            nonlocal register_called
+            register_called = True
+            return True
+
+        async def fake_unregister():
+            nonlocal unregister_called
+            unregister_called = True
+            return True
+
+        adapter._api_get = fake_get
+        adapter._register_webhook = fake_register
+        adapter._unregister_webhook = fake_unregister
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter.connect(start_webhook=False)
+        )
+        assert ok is True
+        assert adapter.client is not None
+        assert adapter._runner is None
+        assert adapter._webhook_registered_by_instance is False
+        assert register_called is False
+
+        asyncio.get_event_loop().run_until_complete(adapter.disconnect())
+        assert unregister_called is False

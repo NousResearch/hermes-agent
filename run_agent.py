@@ -1033,6 +1033,9 @@ class AIAgent:
         detail = (detail or exc.__class__.__name__).strip()
         if len(detail) > 220:
             detail = detail[:217].rstrip() + "..."
+        if task.strip().lower() == "title generation":
+            logger.debug("Auxiliary title generation failed: %s", detail)
+            return
         self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
 
     def _current_main_runtime(self) -> Dict[str, str]:

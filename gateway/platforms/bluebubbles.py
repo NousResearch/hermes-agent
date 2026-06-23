@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from collections import OrderedDict
 from datetime import datetime
@@ -43,6 +44,7 @@ DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 DEFAULT_WEBHOOK_PORT = 8645
 DEFAULT_WEBHOOK_PATH = "/bluebubbles-webhook"
 MAX_TEXT_LENGTH = 4000
+INBOUND_DEDUPE_TTL_SECS = 90.0
 
 # BlueBubbles/iMessage does not expose a stable bot mention identity like
 # Slack (<@U...>), Telegram (@botname), or Matrix (MXID). When users opt into
@@ -148,9 +150,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         )
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
+        self._webhook_registered_by_instance = False
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._seen_inbound_events: OrderedDict[str, float] = OrderedDict()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -201,6 +205,25 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return False
         return any(pattern.search(text) for pattern in self._mention_patterns)
 
+    def _seen_inbound_event(self, key: str) -> bool:
+        """Return True if an inbound BlueBubbles webhook was already handled."""
+        if not key:
+            return False
+        now = time.monotonic()
+        # Opportunistically prune expired entries so the cache stays bounded.
+        while self._seen_inbound_events:
+            _, ts = next(iter(self._seen_inbound_events.items()))
+            if now - ts <= INBOUND_DEDUPE_TTL_SECS:
+                break
+            self._seen_inbound_events.popitem(last=False)
+        if key in self._seen_inbound_events:
+            self._seen_inbound_events.move_to_end(key)
+            return True
+        self._seen_inbound_events[key] = now
+        while len(self._seen_inbound_events) > 1000:
+            self._seen_inbound_events.popitem(last=False)
+        return False
+
     def _clean_mention_text(self, text: str) -> str:
         """Strip a leading BlueBubbles wake word before dispatch.
 
@@ -232,7 +255,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, start_webhook: bool = True) -> bool:
         if not self.server_url or not self.password:
             logger.error(
                 "[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required"
@@ -264,6 +287,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 self.client = None
             return False
 
+        if not start_webhook:
+            self._webhook_registered_by_instance = False
+            self._mark_connected()
+            return True
+
         app = web.Application()
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
         app.router.add_post(self.webhook_path, self._handle_webhook)
@@ -284,13 +312,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         # Register webhook with BlueBubbles server
         # This is required for the server to know where to send events
-        await self._register_webhook()
+        self._webhook_registered_by_instance = await self._register_webhook()
 
         return True
 
     async def disconnect(self) -> None:
         # Unregister webhook before cleaning up
-        await self._unregister_webhook()
+        if self._webhook_registered_by_instance:
+            await self._unregister_webhook()
+            self._webhook_registered_by_instance = False
 
         if self.client:
             await self.client.aclose()
@@ -994,6 +1024,23 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
+        message_id = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        dedupe_keys: List[str] = []
+        if message_id:
+            dedupe_keys.append(f"id:{message_id}")
+        # BlueBubbles can deliver the same inbound event under both a raw chat
+        # GUID (for example any;-;+1...) and a normalized phone-number chat id.
+        # Use sender/text as a fallback so one user message cannot fork into two
+        # Hermes sessions and send stale/old replies twice.
+        dedupe_keys.append(f"fallback:{sender}:{text}")
+        if any(self._seen_inbound_event(key) for key in dedupe_keys):
+            logger.info("[bluebubbles] duplicate inbound message ignored")
+            return web.Response(text="ok")
+
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         if is_group and self.require_mention:
@@ -1016,11 +1063,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
+            message_id=message_id,
             reply_to_message_id=self._value(
                 record.get("threadOriginatorGuid"),
                 record.get("associatedMessageGuid"),

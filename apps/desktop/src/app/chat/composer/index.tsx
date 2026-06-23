@@ -662,14 +662,14 @@ export function ChatBar({
       return
     }
 
-    // Fast-bail: if neither `@` nor `/` appears in the current draft, there's
+    // Fast-bail: if no trigger character appears in the current draft, there's
     // nothing for `detectTrigger` to match. Use `textContent` (cheap browser-
     // native walk) for the precondition check rather than `composerPlainText`
     // (recursive child walk with chip-aware logic). Only when a trigger char
     // is present do we pay the cost of the full walk + DOM range work.
     const rawText = editor.textContent ?? ''
 
-    if (!rawText.includes('@') && !rawText.includes('/')) {
+    if (!rawText.includes('@') && !rawText.includes('/') && !rawText.includes('$')) {
       if (trigger) {
         setTrigger(null)
         setTriggerActive(0)
@@ -768,7 +768,13 @@ export function ChatBar({
   }
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
-    trigger?.kind === '@' ? at.adapter : trigger?.kind === '/' ? slash.adapter : null
+    trigger?.kind === '@'
+      ? at.adapter
+      : trigger?.kind === '/'
+        ? slash.adapter
+        : trigger?.kind === '$'
+          ? slash.skillAdapter
+          : null
 
   useEffect(() => {
     if (!trigger || !triggerAdapter?.search) {
@@ -780,7 +786,14 @@ export function ChatBar({
     setTriggerItems(triggerAdapter.search(trigger.query))
   }, [trigger, triggerAdapter])
 
-  const triggerLoading = trigger?.kind === '@' ? at.loading : trigger?.kind === '/' ? slash.loading : false
+  const triggerLoading =
+    trigger?.kind === '@'
+      ? at.loading
+      : trigger?.kind === '/'
+        ? slash.loading
+        : trigger?.kind === '$'
+          ? slash.skillLoading
+          : false
 
   // Suppress the "No matches" empty state once a slash command is past its name:
   // a no-arg command has nothing to offer, and a fully-typed arg commits on

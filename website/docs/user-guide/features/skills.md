@@ -71,6 +71,32 @@ hermes chat --toolsets skills -q "What skills do you have?"
 hermes chat --toolsets skills -q "Show me the axolotl skill"
 ```
 
+### Multi-Skill Invocation
+
+You can activate multiple skills in a single turn. All selected skill instructions are loaded together, in order, and the agent follows them jointly for the same user request.
+
+**Supported syntaxes:**
+
+1. Dollar-sign markers: `$skill-a $skill-b your instruction`
+2. Slash prefixes: `/skill-a /skill-b your instruction`
+3. Markdown links (target ignored): `[$skill-a](any-link) your instruction`
+
+**Examples:**
+
+```bash
+# In the CLI or any messaging platform:
+$python-code-style $python-testing-patterns refactor the auth module
+/database-reviewer /security-reviewer audit the new payment schema
+```
+
+**Behavior:**
+
+- Only installed skills are recognized and loaded — unrecognized `$tokens` are kept as plain text.
+- Duplicate skills are loaded once (first occurrence wins).
+- When multiple skills are loaded, earlier-loaded skills take priority if instructions conflict.
+- A single skill uses the standard single-skill prompt wrapper; two or more skills use a multi-skill wrapper that names all loaded skills.
+- Skill bundles (see below) are the preferred way to group skills you frequently use together.
+
 ## Progressive Disclosure
 
 Skills use a token-efficient loading pattern:

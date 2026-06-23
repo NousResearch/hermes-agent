@@ -8,7 +8,8 @@ import json
 import logging
 import os
 import re
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, Optional
 
 from hermes_constants import display_hermes_home
@@ -25,6 +26,18 @@ _skill_commands_platform: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_SLASH_SKILL_TOKEN_RE = re.compile(r"\s*/([A-Za-z][A-Za-z0-9_-]*)(?=\s|$)")
+_INLINE_SKILL_LINK_RE = re.compile(r"\[\$([A-Za-z][A-Za-z0-9_-]*)\]\([^)]+\)")
+_INLINE_SKILL_MARKER_RE = re.compile(r"(?<![\w$])\$([A-Za-z][A-Za-z0-9_-]*)(?![\w-])")
+
+
+@dataclass(frozen=True)
+class MultiSkillInvocation:
+    """Parsed per-turn multi-skill invocation."""
+
+    skill_keys: tuple[str, ...]
+    user_instruction: str
+    source: str
 
 # ---------------------------------------------------------------------------
 # Skill-scaffolding markers and the canonical extractor.
@@ -304,19 +317,47 @@ def _build_skill_message(
         )
 
     supporting = []
+    supporting_seen: set[str] = set()
     linked_files = loaded_skill.get("linked_files") or {}
     for entries in linked_files.values():
         if isinstance(entries, list):
-            supporting.extend(entries)
+            for entry in entries:
+                _append_unique_supporting_file(
+                    supporting,
+                    supporting_seen,
+                    entry,
+                    skill_dir,
+                )
 
-    if not supporting and skill_dir:
+    if skill_dir and not linked_files:
+        try:
+            resolved_skill_dir = skill_dir.resolve()
+        except (OSError, RuntimeError):
+            resolved_skill_dir = None
         for subdir in ("references", "templates", "scripts", "assets"):
             subdir_path = skill_dir / subdir
-            if subdir_path.exists():
-                for f in sorted(subdir_path.rglob("*")):
-                    if f.is_file() and not f.is_symlink():
-                        rel = str(f.relative_to(skill_dir))
-                        supporting.append(rel)
+            try:
+                resolved_subdir = subdir_path.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if (
+                resolved_skill_dir is None
+                or not subdir_path.is_dir()
+                or not _path_is_within(resolved_subdir, resolved_skill_dir)
+            ):
+                continue
+            for f in sorted(subdir_path.rglob("*")):
+                if f.is_file() and not f.is_symlink():
+                    try:
+                        rel = f.relative_to(skill_dir).as_posix()
+                    except ValueError:
+                        continue
+                    _append_unique_supporting_file(
+                        supporting,
+                        supporting_seen,
+                        rel,
+                        skill_dir,
+                    )
 
     if supporting and skill_dir:
         try:
@@ -514,6 +555,165 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     return cmd_key if cmd_key in get_skill_commands() else None
 
 
+def _skill_command_key_from_token(
+    token: str,
+    skill_commands: Dict[str, Dict[str, Any]] | None = None,
+) -> str | None:
+    if not token:
+        return None
+    commands = skill_commands if skill_commands is not None else get_skill_commands()
+    normalized = token.strip().lstrip("/").lower().replace("_", "-")
+    if not normalized:
+        return None
+    key = f"/{normalized}"
+    return key if key in commands else None
+
+
+def _append_unique_skill_key(keys: list[str], seen: set[str], key: str | None) -> None:
+    if key and key not in seen:
+        keys.append(key)
+        seen.add(key)
+
+
+def _path_is_within(candidate: Path, directory: Path) -> bool:
+    try:
+        candidate.relative_to(directory)
+        return True
+    except ValueError:
+        return False
+
+
+def _normalize_supporting_file(value: Any, skill_dir: Path | None) -> str | None:
+    if skill_dir is None:
+        return None
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    try:
+        posix_path = PurePosixPath(raw)
+        windows_path = PureWindowsPath(raw)
+    except (TypeError, ValueError):
+        return None
+
+    pure_paths = (posix_path, windows_path)
+    if any(
+        path.is_absolute()
+        or bool(path.root)
+        or bool(path.drive)
+        or ".." in path.parts
+        for path in pure_paths
+    ):
+        return None
+
+    normalized = PurePosixPath(raw.replace("\\", "/"))
+    if not normalized.parts:
+        return None
+
+    try:
+        resolved_skill_dir = skill_dir.resolve()
+        candidate = (resolved_skill_dir / Path(*normalized.parts)).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not _path_is_within(candidate, resolved_skill_dir):
+        return None
+
+    return normalized.as_posix()
+
+
+def _append_unique_supporting_file(
+    files: list[str],
+    seen: set[str],
+    value: Any,
+    skill_dir: Path | None,
+) -> None:
+    rel = _normalize_supporting_file(value, skill_dir)
+    if rel and rel not in seen:
+        files.append(rel)
+        seen.add(rel)
+
+
+def _compact_skill_instruction(text: str) -> str:
+    """Trim outer marker gaps without rewriting user-authored formatting."""
+    return text.strip()
+
+
+def parse_multi_skill_invocation(
+    text: str,
+    *,
+    skill_commands: Dict[str, Dict[str, Any]] | None = None,
+) -> MultiSkillInvocation | None:
+    """Parse one-turn multi-skill syntax from a slash prefix or inline markers.
+
+    Supported forms:
+    - ``/skill-a /skill-b instruction``
+    - ``$skill-a $skill-b instruction``
+    - ``[$skill-a](ignored-link-target) instruction``
+
+    Only installed skills are consumed. Unknown ``$markers`` remain ordinary
+    message text, and markdown link targets are never used as skill paths.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+
+    commands = skill_commands if skill_commands is not None else get_skill_commands()
+    stripped = text.lstrip()
+
+    if stripped.startswith("/"):
+        keys: list[str] = []
+        seen: set[str] = set()
+        pos = 0
+        while True:
+            match = _SLASH_SKILL_TOKEN_RE.match(stripped, pos)
+            if not match:
+                break
+            key = _skill_command_key_from_token(match.group(1), commands)
+            if not key:
+                break
+            _append_unique_skill_key(keys, seen, key)
+            pos = match.end()
+
+        if len(keys) >= 2:
+            return MultiSkillInvocation(
+                skill_keys=tuple(keys),
+                user_instruction=_compact_skill_instruction(stripped[pos:]),
+                source="slash",
+            )
+
+    if "$" not in text:
+        return None
+
+    keys = []
+    seen = set()
+
+    def replace_link(match: re.Match[str]) -> str:
+        key = _skill_command_key_from_token(match.group(1), commands)
+        if not key:
+            return match.group(0)
+        _append_unique_skill_key(keys, seen, key)
+        return ""
+
+    without_links = _INLINE_SKILL_LINK_RE.sub(replace_link, text)
+
+    def replace_marker(match: re.Match[str]) -> str:
+        key = _skill_command_key_from_token(match.group(1), commands)
+        if not key:
+            return match.group(0)
+        _append_unique_skill_key(keys, seen, key)
+        return ""
+
+    instruction = _INLINE_SKILL_MARKER_RE.sub(replace_marker, without_links)
+    if not keys:
+        return None
+
+    return MultiSkillInvocation(
+        skill_keys=tuple(keys),
+        user_instruction=_compact_skill_instruction(instruction),
+        source="inline",
+    )
+
+
 def build_skill_invocation_message(
     cmd_key: str,
     user_instruction: str = "",
@@ -547,6 +747,25 @@ def build_skill_invocation_message(
     except Exception:
         pass  # Non-critical — skill invocation proceeds regardless
 
+    return _build_loaded_single_skill_invocation(
+        loaded_skill,
+        skill_dir,
+        skill_name,
+        user_instruction=user_instruction,
+        runtime_note=runtime_note,
+        task_id=task_id,
+    )
+
+
+def _build_loaded_single_skill_invocation(
+    loaded_skill: dict[str, Any],
+    skill_dir: Path | None,
+    skill_name: str,
+    *,
+    user_instruction: str = "",
+    runtime_note: str = "",
+    task_id: str | None = None,
+) -> str:
     activation_note = (
         f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '
         "you to follow its instructions. The full skill content is loaded below.]"
@@ -558,6 +777,121 @@ def build_skill_invocation_message(
         user_instruction=user_instruction,
         runtime_note=runtime_note,
         session_id=task_id,
+    )
+
+
+def build_multi_skill_invocation_message(
+    skill_keys: tuple[str, ...] | list[str],
+    user_instruction: str = "",
+    task_id: str | None = None,
+    runtime_note: str = "",
+) -> tuple[str, list[str], list[str]] | None:
+    """Build one user message that loads several skills for the same turn.
+
+    Returns ``(message, loaded_skill_names, missing_skill_keys)`` or ``None``
+    when no requested skill could be loaded.
+    """
+    commands = get_skill_commands()
+    loaded_skills: list[tuple[dict[str, Any], Path | None, str]] = []
+    loaded_names: list[str] = []
+    missing: list[str] = []
+    deduped_keys: list[str] = []
+    seen: set[str] = set()
+
+    for raw_key in skill_keys:
+        key = _skill_command_key_from_token(str(raw_key), commands)
+        if not key:
+            missing.append(str(raw_key))
+            continue
+        _append_unique_skill_key(deduped_keys, seen, key)
+
+    for key in deduped_keys:
+        skill_info = commands.get(key)
+        if not skill_info:
+            missing.append(key)
+            continue
+
+        loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
+        if not loaded:
+            missing.append(key)
+            continue
+
+        loaded_skill, skill_dir, skill_name = loaded
+        try:
+            from tools.skill_usage import bump_use
+
+            bump_use(skill_name)
+        except Exception:
+            pass
+
+        loaded_names.append(skill_name)
+        loaded_skills.append((loaded_skill, skill_dir, skill_name))
+
+    if not loaded_skills:
+        return None
+
+    if len(loaded_skills) == 1:
+        loaded_skill, skill_dir, skill_name = loaded_skills[0]
+        message = _build_loaded_single_skill_invocation(
+            loaded_skill,
+            skill_dir,
+            skill_name,
+            user_instruction=user_instruction,
+            runtime_note=runtime_note,
+            task_id=task_id,
+        )
+        return message, loaded_names, missing
+
+    prompt_parts: list[str] = []
+    display_names = ", ".join(loaded_names)
+    for loaded_skill, skill_dir, skill_name in loaded_skills:
+        activation_note = (
+            "[IMPORTANT: The user has invoked multiple skills for this turn: "
+            f"{display_names}. This block loads the \"{skill_name}\" skill. "
+            "Follow all loaded skill instructions together for the same user request.]"
+        )
+        prompt_parts.append(
+            _build_skill_message(
+                loaded_skill,
+                skill_dir,
+                activation_note,
+                session_id=task_id,
+            )
+        )
+
+    if user_instruction:
+        prompt_parts.append(
+            "The user has provided the following instruction alongside the "
+            f"multi-skill invocation: {user_instruction}"
+        )
+
+    if len(loaded_skills) > 1:
+        prompt_parts.append(
+            "[NOTE: Multiple skills are loaded for this turn. If skill instructions "
+            "conflict, earlier-loaded skills take priority over later-loaded ones. "
+            "Resolve any ambiguity in favor of the skill loaded first.]"
+        )
+
+    if runtime_note:
+        prompt_parts.append(f"[Runtime note: {runtime_note}]")
+
+    return "\n\n".join(prompt_parts), loaded_names, missing
+
+
+def expand_multi_skill_invocation(
+    text: str,
+    *,
+    task_id: str | None = None,
+    skill_commands: Dict[str, Dict[str, Any]] | None = None,
+) -> tuple[str, list[str], list[str]] | None:
+    """Parse and expand inline or slash multi-skill syntax into a prompt."""
+    parsed = parse_multi_skill_invocation(text, skill_commands=skill_commands)
+    if not parsed:
+        return None
+    return build_multi_skill_invocation_message(
+        parsed.skill_keys,
+        parsed.user_instruction,
+        task_id=task_id,
     )
 
 

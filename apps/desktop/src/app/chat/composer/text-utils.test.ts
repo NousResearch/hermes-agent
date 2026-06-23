@@ -11,6 +11,19 @@ describe('detectTrigger', () => {
     expect(detectTrigger('/skill')).toEqual({ kind: '/', query: 'skill', tokenLength: 6 })
   })
 
+  it('detects a bare skill marker trigger with an empty query', () => {
+    expect(detectTrigger('$')).toEqual({ kind: '$', query: '', tokenLength: 1 })
+  })
+
+  it('detects a skill marker query', () => {
+    expect(detectTrigger('$brainstorming')).toEqual({ kind: '$', query: 'brainstorming', tokenLength: 14 })
+    expect(detectTrigger('use $subagent-orchestrator')).toEqual({
+      kind: '$',
+      query: 'subagent-orchestrator',
+      tokenLength: 22
+    })
+  })
+
   it('detects a bare at-mention trigger with an empty query', () => {
     expect(detectTrigger('@')).toEqual({ kind: '@', query: '', tokenLength: 1 })
   })
@@ -44,6 +57,11 @@ describe('detectTrigger', () => {
   it('does not treat file-style paths as slash triggers', () => {
     expect(detectTrigger('src/foo/bar')).toBeNull()
     expect(detectTrigger('/path/to/file')).toBeNull()
+  })
+
+  it('does not treat currency or mid-word dollar text as skill triggers', () => {
+    expect(detectTrigger('$5')).toBeNull()
+    expect(detectTrigger('foo$bar')).toBeNull()
   })
 
   it('still anchors at-mention triggers strictly at the token edge', () => {

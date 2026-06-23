@@ -8,8 +8,12 @@ import pytest
 
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
+    _build_skill_message,
+    build_multi_skill_invocation_message,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    expand_multi_skill_invocation,
+    parse_multi_skill_invocation,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -615,6 +619,372 @@ Generate some audio.
 
         assert msg is not None
         assert 'file_path="<path>"' in msg
+
+
+class TestSupportingFiles:
+    def _build_message(self, tmp_path, linked_files):
+        skill_dir = tmp_path / "test-skill"
+        skill_dir.mkdir()
+        loaded_skill = {
+            "content": "Do the thing.",
+            "linked_files": linked_files,
+        }
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            return _build_skill_message(
+                loaded_skill,
+                skill_dir,
+                "[activation]",
+            )
+
+    @pytest.mark.parametrize(
+        "raw_path",
+        [
+            "../outside.txt",
+            "references/../../outside.txt",
+            "/absolute/path.txt",
+            r"\rooted\path.txt",
+            r"C:\absolute\path.txt",
+            r"C:drive-relative\path.txt",
+            r"\\server\share\path.txt",
+        ],
+    )
+    def test_rejects_unsafe_raw_supporting_paths(self, tmp_path, raw_path):
+        message = self._build_message(
+            tmp_path,
+            {"references": [raw_path]},
+        )
+
+        assert "[This skill has supporting files:]" not in message
+        assert raw_path not in message
+
+    def test_rejects_linked_file_symlink_escape(self, tmp_path):
+        skill_dir = tmp_path / "test-skill"
+        references = skill_dir / "references"
+        references.mkdir(parents=True)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret")
+        escaped_file = references / "escape.txt"
+        try:
+            escaped_file.symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        loaded_skill = {
+            "content": "Do the thing.",
+            "linked_files": {"references": ["references/escape.txt"]},
+        }
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            message = _build_skill_message(
+                loaded_skill,
+                skill_dir,
+                "[activation]",
+            )
+
+        assert "references/escape.txt" not in message
+        assert str(outside) not in message
+
+    def test_skips_supporting_directory_symlink_escape(self, tmp_path):
+        skill_dir = tmp_path / "test-skill"
+        skill_dir.mkdir()
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        (outside_dir / "secret.txt").write_text("secret")
+        try:
+            (skill_dir / "references").symlink_to(
+                outside_dir,
+                target_is_directory=True,
+            )
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            message = _build_skill_message(
+                {"content": "Do the thing.", "linked_files": None},
+                skill_dir,
+                "[activation]",
+            )
+
+        assert "references/secret.txt" not in message
+        assert str(outside_dir / "secret.txt") not in message
+
+    def test_keeps_legal_relative_paths_deduped_in_first_seen_order(self, tmp_path):
+        message = self._build_message(
+            tmp_path,
+            {
+                "references": [
+                    "references/first.md",
+                    r"references\first.md",
+                ],
+                "scripts": [
+                    "scripts/run.py",
+                    "references/first.md",
+                ],
+            },
+        )
+
+        assert message.count("- references/first.md  ->") == 1
+        assert message.count("- scripts/run.py  ->") == 1
+        assert message.index("- references/first.md  ->") < message.index(
+            "- scripts/run.py  ->"
+        )
+
+    def test_scans_supporting_directories_only_when_linked_files_is_empty(
+        self, tmp_path
+    ):
+        skill_dir = tmp_path / "test-skill"
+        references = skill_dir / "references"
+        references.mkdir(parents=True)
+        (references / "listed.md").write_text("listed")
+        (references / "unlisted.md").write_text("unlisted")
+        loaded_skill = {
+            "content": "Do the thing.",
+            "linked_files": {"references": ["references/listed.md"]},
+        }
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            message = _build_skill_message(
+                loaded_skill,
+                skill_dir,
+                "[activation]",
+            )
+
+        assert "references/listed.md" in message
+        assert "references/unlisted.md" not in message
+
+
+class TestMultiSkillInvocation:
+    def test_parses_leading_slash_multi_skill_prefix(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "brainstorming")
+            _make_skill(tmp_path, "subagent-orchestrator")
+            commands = scan_skill_commands()
+            parsed = parse_multi_skill_invocation(
+                "/brainstorming /subagent-orchestrator do X",
+                skill_commands=commands,
+            )
+
+        assert parsed is not None
+        assert parsed.skill_keys == ("/brainstorming", "/subagent-orchestrator")
+        assert parsed.user_instruction == "do X"
+        assert parsed.source == "slash"
+
+    def test_single_slash_skill_is_not_multi_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "brainstorming")
+            commands = scan_skill_commands()
+            parsed = parse_multi_skill_invocation(
+                "/brainstorming do X",
+                skill_commands=commands,
+            )
+
+        assert parsed is None
+
+    def test_parses_inline_markers_and_preserves_instruction(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "brainstorming")
+            _make_skill(tmp_path, "subagent-orchestrator")
+            commands = scan_skill_commands()
+            parsed = parse_multi_skill_invocation(
+                "$brainstorming $subagent-orchestrator do X",
+                skill_commands=commands,
+            )
+
+        assert parsed is not None
+        assert parsed.skill_keys == ("/brainstorming", "/subagent-orchestrator")
+        assert parsed.user_instruction == "do X"
+        assert parsed.source == "inline"
+
+    def test_inline_markers_preserve_body_spacing_blank_lines_and_indentation(
+        self, tmp_path
+    ):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "brainstorming")
+            _make_skill(tmp_path, "subagent-orchestrator")
+            commands = scan_skill_commands()
+            parsed = parse_multi_skill_invocation(
+                (
+                    "$brainstorming $subagent-orchestrator\n"
+                    "Paragraph  with  deliberate  spacing.\n"
+                    "\n"
+                    "    indented  instruction\n"
+                    "\n"
+                    "Final line."
+                ),
+                skill_commands=commands,
+            )
+
+        assert parsed is not None
+        assert parsed.user_instruction == (
+            "Paragraph  with  deliberate  spacing.\n"
+            "\n"
+            "    indented  instruction\n"
+            "\n"
+            "Final line."
+        )
+
+    def test_markdown_link_target_is_ignored_for_skill_resolution(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "brainstorming")
+            _make_skill(tmp_path, "subagent-orchestrator")
+            commands = scan_skill_commands()
+            parsed = parse_multi_skill_invocation(
+                r"[$brainstorming](C:\not\trusted\SKILL.md) $subagent-orchestrator do X",
+                skill_commands=commands,
+            )
+
+        assert parsed is not None
+        assert parsed.skill_keys == ("/brainstorming", "/subagent-orchestrator")
+        assert parsed.user_instruction == "do X"
+
+    def test_unknown_inline_marker_remains_plain_text(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "brainstorming")
+            commands = scan_skill_commands()
+            parsed = parse_multi_skill_invocation(
+                "$brainstorming $missing do X",
+                skill_commands=commands,
+            )
+
+        assert parsed is not None
+        assert parsed.skill_keys == ("/brainstorming",)
+        assert parsed.user_instruction == "$missing do X"
+
+    def test_dedupes_skills_preserving_first_seen_order(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "brainstorming")
+            _make_skill(tmp_path, "subagent-orchestrator")
+            commands = scan_skill_commands()
+            parsed = parse_multi_skill_invocation(
+                "$brainstorming $subagent-orchestrator $brainstorming do X",
+                skill_commands=commands,
+            )
+
+        assert parsed is not None
+        assert parsed.skill_keys == ("/brainstorming", "/subagent-orchestrator")
+        assert parsed.user_instruction == "do X"
+
+    def test_builds_single_message_for_multiple_skills(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "first-skill", body="First body.")
+            _make_skill(tmp_path, "second-skill", body="Second body.")
+            scan_skill_commands()
+            result = build_multi_skill_invocation_message(
+                ["/first-skill", "/second-skill"],
+                "do X",
+                task_id="session-1",
+            )
+
+        assert result is not None
+        message, loaded, missing = result
+        assert loaded == ["first-skill", "second-skill"]
+        assert missing == []
+        assert "First body." in message
+        assert "Second body." in message
+        assert "multiple skills for this turn" in message
+        assert message.count("multi-skill invocation: do X") == 1
+
+    def test_expand_multi_skill_invocation_returns_combined_prompt(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "first-skill", body="First body.")
+            _make_skill(tmp_path, "second-skill", body="Second body.")
+            scan_skill_commands()
+            result = expand_multi_skill_invocation("$first-skill $second-skill do X")
+
+        assert result is not None
+        message, loaded, missing = result
+        assert loaded == ["first-skill", "second-skill"]
+        assert missing == []
+        assert "First body." in message
+        assert "Second body." in message
+
+    def test_single_success_uses_single_skill_semantics_and_reports_missing(self):
+        commands = {
+            "/working": {"skill_dir": "/skills/working"},
+            "/broken": {"skill_dir": "/skills/broken"},
+        }
+        working_payload = (
+            {"content": "Working body.", "linked_files": None},
+            Path("/skills/working"),
+            "working",
+        )
+
+        def load_skill(skill_dir, task_id=None):
+            if skill_dir == "/skills/working":
+                return working_payload
+            return None
+
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=commands),
+            patch(
+                "agent.skill_commands._load_skill_payload",
+                side_effect=load_skill,
+            ),
+            patch("tools.skill_usage.bump_use") as bump_use,
+        ):
+            result = build_multi_skill_invocation_message(
+                ["/working", "/broken"],
+                "keep  exact\n\n    indentation",
+                task_id="session-1",
+                runtime_note="runtime",
+            )
+
+        assert result is not None
+        message, loaded, missing = result
+        assert loaded == ["working"]
+        assert missing == ["/broken"]
+        assert 'invoked the "working" skill' in message
+        assert "multiple skills for this turn" not in message
+        assert "multi-skill invocation" not in message
+        assert (
+            "instruction alongside the skill invocation: "
+            "keep  exact\n\n    indentation"
+        ) in message
+        assert "[Runtime note: runtime]" in message
+        bump_use.assert_called_once_with("working")
+
+    def test_dedupes_before_loading_and_bumps_each_successful_skill_once(self):
+        commands = {
+            "/first": {"skill_dir": "/skills/first"},
+            "/second": {"skill_dir": "/skills/second"},
+        }
+        payloads = {
+            "/skills/first": (
+                {"content": "First body.", "linked_files": None},
+                Path("/skills/first"),
+                "first",
+            ),
+            "/skills/second": (
+                {"content": "Second body.", "linked_files": None},
+                Path("/skills/second"),
+                "second",
+            ),
+        }
+
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=commands),
+            patch(
+                "agent.skill_commands._load_skill_payload",
+                side_effect=lambda skill_dir, task_id=None: payloads[skill_dir],
+            ) as load_skill,
+            patch("tools.skill_usage.bump_use") as bump_use,
+        ):
+            result = build_multi_skill_invocation_message(
+                ["/first", "/first", "/second", "/second"],
+                "do X",
+            )
+
+        assert result is not None
+        _, loaded, missing = result
+        assert loaded == ["first", "second"]
+        assert missing == []
+        assert [call.args[0] for call in load_skill.call_args_list] == [
+            "/skills/first",
+            "/skills/second",
+        ]
+        assert [call.args[0] for call in bump_use.call_args_list] == [
+            "first",
+            "second",
+        ]
 
 
 class TestSkillDirectoryHeader:

@@ -106,6 +106,7 @@ AUTHOR_MAP = {
     "gilad@smiti.ai": "giladbau",
     "yusufalweshdemir@gmail.com": "Dusk1e",
     "804436395@qq.com": "LaPhilosophie",
+    "2081789787@qq.com": "pengyuyanITYU",
     "maxmitcham@mac.home": "maxtrigify",
     "ccook@nvms.com": "ccook1963",
     "libre-7@users.noreply.github.com": "libre-7",

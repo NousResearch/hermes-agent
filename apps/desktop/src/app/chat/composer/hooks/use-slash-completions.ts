@@ -5,6 +5,7 @@ import type { HermesGateway } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
+  desktopSkillCommandPairs,
   desktopSkinSlashCompletions,
   desktopSlashDescription,
   type DesktopThemeCommandOption,
@@ -46,6 +47,10 @@ function commandText(value: string): string {
   return value.startsWith('/') ? value : `/${value}`
 }
 
+function skillMarkerText(value: string): string {
+  return `$${commandText(value).slice(1)}`
+}
+
 /** How many recent sessions to surface inline before the "Browse all…" entry. */
 const SESSION_INLINE_LIMIT = 7
 
@@ -59,6 +64,8 @@ export function useSlashCompletions(options: {
 }): {
   adapter: Unstable_TriggerAdapter
   loading: boolean
+  skillAdapter: Unstable_TriggerAdapter
+  skillLoading: boolean
 } {
   const { gateway, skinThemes, activeSkin } = options
   const enabled = Boolean(gateway)
@@ -231,5 +238,66 @@ export function useSlashCompletions(options: {
     }
   }, [])
 
-  return useLiveCompletionAdapter({ enabled, fetcher, toItem })
+  const slashCompletion = useLiveCompletionAdapter({ enabled, fetcher, toItem })
+
+  const skillFetcher = useCallback(
+    async (query: string): Promise<CompletionPayload> => {
+      if (!gateway) {
+        return { items: [], query }
+      }
+
+      try {
+        const catalog = await gateway.request<CommandsCatalogLike>('commands.catalog')
+
+        const items = desktopSkillCommandPairs(catalog, query).map(([command, meta]) => ({
+          text: command,
+          display: skillMarkerText(command),
+          group: 'Skills',
+          meta
+        }))
+
+        return { items, query }
+      } catch {
+        return { items: [], query }
+      }
+    },
+    [gateway]
+  )
+
+  const toSkillItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {
+    const command = commandText(entry.text)
+    const marker = skillMarkerText(command)
+    const display = textValue(entry.display, marker)
+    const meta = textValue(entry.meta)
+
+    const metadata: SlashItemMetadata = {
+      command,
+      display,
+      meta,
+      group: textValue(entry.group, 'Skills'),
+      action: textValue(entry.action),
+      rawText: marker
+    }
+
+    return {
+      id: `${marker}|${index}`,
+      type: 'slash',
+      label: display.startsWith('$') ? display.slice(1) : display,
+      ...(meta ? { description: meta } : {}),
+      metadata
+    }
+  }, [])
+
+  const skillCompletion = useLiveCompletionAdapter({
+    enabled,
+    fetcher: skillFetcher,
+    toItem: toSkillItem
+  })
+
+  return {
+    adapter: slashCompletion.adapter,
+    loading: slashCompletion.loading,
+    skillAdapter: skillCompletion.adapter,
+    skillLoading: skillCompletion.loading
+  }
 }

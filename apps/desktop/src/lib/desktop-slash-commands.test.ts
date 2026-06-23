@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  desktopSkillCommandPairs,
   desktopSkinSlashCompletions,
   desktopSlashDescription,
   desktopSlashUnavailableMessage,
@@ -118,6 +119,50 @@ describe('desktop slash command curation', () => {
 
     expect(filtered.pairs?.map(([cmd]) => cmd)).toEqual(['/new', '/gif-search', '/ship-it'])
     expect(filtered.skill_count).toBe(2)
+  })
+
+  it('extracts only real skill commands from the flat catalog tail', () => {
+    const catalog = {
+      pairs: [
+        ['/new', 'Start a new session'],
+        ['/ship-it', 'Quick command'],
+        ['/gif-search', 'Search for a gif'],
+        ['/review-pr', 'Review a pull request']
+      ] as [string, string][],
+      skill_count: 2
+    }
+
+    expect(desktopSkillCommandPairs(catalog)).toEqual([
+      ['/gif-search', 'Search for a gif'],
+      ['/review-pr', 'Review a pull request']
+    ])
+    expect(desktopSkillCommandPairs(catalog, 'gif')).toEqual([
+      ['/gif-search', 'Search for a gif']
+    ])
+  })
+
+  it('prefers an explicit Skills category over the flat catalog tail', () => {
+    const catalog = {
+      categories: [
+        {
+          name: 'User commands',
+          pairs: [['/ship-it', 'Quick command']] as [string, string][]
+        },
+        {
+          name: 'Skills',
+          pairs: [['/gif-search', 'Search for a gif']] as [string, string][]
+        }
+      ],
+      pairs: [
+        ['/ship-it', 'Quick command'],
+        ['/stale-skill', 'Stale flat entry']
+      ] as [string, string][],
+      skill_count: 1
+    }
+
+    expect(desktopSkillCommandPairs(catalog, '/GIF')).toEqual([
+      ['/gif-search', 'Search for a gif']
+    ])
   })
 
   it('uses desktop-specific labels for commands with different UI behavior', () => {

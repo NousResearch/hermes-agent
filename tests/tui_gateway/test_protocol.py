@@ -29,18 +29,21 @@ def server():
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
+        original_methods = dict(mod._methods)
         yield mod
         # Reset module-level session state without re-importing. importlib.reload
         # would re-register the module's atexit hooks (ThreadPoolExecutor
         # shutdown, _shutdown_sessions); the duplicates race the stderr
         # buffer at interpreter shutdown and surface as Fatal Python error:
         # _enter_buffered_busy. Clearing the per-session dicts gives the
-        # next test a clean slate; _methods is NOT cleared because it's
-        # populated at module import time and re-registration only happens
-        # via reload (which we don't do).
+        # next test a clean slate; _methods is restored to its import-time
+        # snapshot because some protocol tests temporarily replace long
+        # handlers to exercise dispatch paths.
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
+        mod._methods.clear()
+        mod._methods.update(original_methods)
 
 
 @pytest.fixture()
@@ -1346,6 +1349,39 @@ def test_command_dispatch_returns_skill_payload(server):
     assert result["type"] == "skill"
     assert result["message"] == fake_msg
     assert result["name"] == "hermes-agent-dev"
+
+
+def test_command_dispatch_returns_multi_skill_payload(server):
+    """command.dispatch expands leading multi-skill slash invocations."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+
+    fake_skills = {
+        "/first-skill": {"name": "first-skill", "description": "First"},
+        "/second-skill": {"name": "second-skill", "description": "Second"},
+    }
+    fake_msg = "Loaded multi-skill content here"
+
+    with patch("agent.skill_commands.scan_skill_commands", return_value=fake_skills), \
+         patch(
+             "agent.skill_commands.build_multi_skill_invocation_message",
+             return_value=(fake_msg, ["first-skill", "second-skill"], []),
+         ):
+        resp = server.handle_request({
+            "id": "r-multi-skill",
+            "method": "command.dispatch",
+            "params": {
+                "name": "first-skill",
+                "arg": "/second-skill do X",
+                "session_id": sid,
+            },
+        })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "skill"
+    assert result["message"] == fake_msg
+    assert result["name"] == "first-skill, second-skill"
 
 
 def test_command_dispatch_awaits_async_plugin_handler(server):

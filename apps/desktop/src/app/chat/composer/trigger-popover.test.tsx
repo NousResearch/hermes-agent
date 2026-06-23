@@ -5,7 +5,7 @@ import { I18nProvider } from '@/i18n'
 
 import { ComposerTriggerPopover } from './trigger-popover'
 
-function renderPopover(kind: '@' | '/', loading = false) {
+function renderPopover(kind: '@' | '/' | '$', loading = false) {
   const onHover = vi.fn()
   const onPick = vi.fn()
 
@@ -46,5 +46,12 @@ describe('ComposerTriggerPopover i18n', () => {
 
     expect(screen.getByText('没有匹配项。')).toBeTruthy()
     expect(container.textContent).toContain('/help')
+  })
+
+  it('renders the skill marker empty-state hint when not loading', () => {
+    const { container } = renderPopover('$')
+
+    expect(screen.getByText('没有匹配项。')).toBeTruthy()
+    expect(container.textContent).toContain('$skill')
   })
 })

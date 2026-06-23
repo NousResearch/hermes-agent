@@ -338,6 +338,18 @@ export function desktopSkinSlashCompletions(
   return commands.filter(item => item.text.slice('/skin '.length).toLowerCase().startsWith(prefix))
 }
 
+export function desktopSkillCommandPairs(catalog: CommandsCatalogLike, query = ''): [string, string][] {
+  const skillsCategory = catalog.categories?.find(section => section.name.trim().toLowerCase() === 'skills')
+  const skillCount = Math.max(0, Math.trunc(catalog.skill_count ?? 0))
+  // Older gateways append skills to the flat list after built-ins and quick commands.
+  const pairs = skillsCategory?.pairs ?? (skillCount > 0 ? (catalog.pairs ?? []).slice(-skillCount) : [])
+  const prefix = query.trim().replace(/^[$/]/, '').toLowerCase()
+
+  return pairs
+    .filter(([command]) => command.replace(/^\//, '').toLowerCase().startsWith(prefix))
+    .map(([command, description]) => [command, description])
+}
+
 export function filterDesktopCommandsCatalog(catalog: CommandsCatalogLike): CommandsCatalogLike {
   const categories = catalog.categories
     ?.map(section => ({

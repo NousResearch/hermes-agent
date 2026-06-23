@@ -6378,7 +6378,7 @@ def _(rid, params: dict) -> dict:
                 session["running"] = False
                 _clear_inflight_turn(session)
             return
-        _run_prompt_submit(rid, sid, session, text)
+        _run_prompt_submit(rid, sid, session, text, expand_skills=True)
 
     threading.Thread(target=run_after_agent_ready, daemon=True).start()
     return _ok(rid, {"status": "streaming"})
@@ -6580,7 +6580,59 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _expand_multi_skill_prompt(
+    text: Any,
+    session: dict | None,
+) -> tuple[Any, list[str], list[str]]:
+    """Expand inline $skill markers before prompt.submit reaches the agent."""
+    if not isinstance(text, str) or "$" not in text:
+        return text, [], []
+
+    try:
+        from agent.skill_commands import expand_multi_skill_invocation
+
+        expanded = expand_multi_skill_invocation(
+            text,
+            task_id=session.get("session_key", "") if session else "",
+        )
+    except Exception:
+        return text, [], []
+
+    if not expanded:
+        return text, [], []
+    return expanded
+
+
+def _run_prompt_submit(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    expand_skills: bool = False,
+) -> None:
+    if expand_skills:
+        _original_text = text
+        text, _loaded_skill_names, _missing_skill_names = (
+            _expand_multi_skill_prompt(
+                text,
+                session,
+            )
+        )
+        if _loaded_skill_names:
+            _status_update(
+                sid,
+                "skills",
+                f"Loading skills: {', '.join(_loaded_skill_names)}",
+            )
+        if _missing_skill_names:
+            _status_update(
+                sid,
+                "warning",
+                f"Skipped missing skills: {', '.join(_missing_skill_names)}",
+            )
+    else:
+        _original_text = None
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -6721,6 +6773,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 "conversation_history": list(history),
                 "stream_callback": _stream,
             }
+            if expand_skills and _original_text is not None and _original_text != text:
+                run_kwargs["persist_user_message"] = _original_text
             try:
                 if "task_id" in inspect.signature(agent.run_conversation).parameters:
                     run_kwargs["task_id"] = session["session_key"]
@@ -9012,12 +9066,34 @@ def _(rid, params: dict) -> dict:
 
     try:
         from agent.skill_commands import (
-            scan_skill_commands,
             build_skill_invocation_message,
+            build_multi_skill_invocation_message,
+            parse_multi_skill_invocation,
+            scan_skill_commands,
         )
 
         cmds = scan_skill_commands()
         key = f"/{name}"
+        multi_skill = parse_multi_skill_invocation(
+            f"{key} {arg}".strip(),
+            skill_commands=cmds,
+        )
+        if multi_skill:
+            multi_result = build_multi_skill_invocation_message(
+                multi_skill.skill_keys,
+                multi_skill.user_instruction,
+                task_id=session.get("session_key", "") if session else "",
+            )
+            if multi_result:
+                msg, loaded_names, _missing = multi_result
+                return _ok(
+                    rid,
+                    {
+                        "type": "skill",
+                        "message": msg,
+                        "name": ", ".join(loaded_names),
+                    },
+                )
         if key in cmds:
             msg = build_skill_invocation_message(
                 key, arg, task_id=session.get("session_key", "") if session else ""

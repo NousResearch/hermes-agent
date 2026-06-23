@@ -66,6 +66,9 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     Failures return a short ``[inline-shell error: ...]`` marker instead of
     raising, so one bad snippet can't wreck the whole skill message.
     """
+    if command.strip() == "pwd" and cwd:
+        return str(cwd)
+
     try:
         completed = subprocess.run(
             ["bash", "-c", command],

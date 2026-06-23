@@ -1,7 +1,7 @@
 import { DATA_IMAGE_URL_RE, dataUrlToBlob } from '@/lib/embedded-images'
 
 export interface TriggerState {
-  kind: '@' | '/'
+  kind: '@' | '/' | '$'
   query: string
   tokenLength: number
 }
@@ -9,10 +9,12 @@ export interface TriggerState {
 // `@` triggers stop at the first whitespace — `@file:path` and `@diff` are
 // single tokens. `/` triggers keep going so the popover stays live while the
 // user types args (`/personality alic` → arg completer suggests `alice`).
+// `$` triggers mirror skill slugs only, not arbitrary currency-like text.
 // Restricting the slash command name to `[a-zA-Z][\w-]*` avoids matching file
 // paths like `src/foo/bar`.
 const AT_TRIGGER_RE = /(?:^|[\s])(@)([^\s@/]*)$/
 const SLASH_TRIGGER_RE = /(?:^|[\s])(\/)((?:[a-zA-Z][\w-]*(?:\s+\S*)*)?)$/
+const SKILL_TRIGGER_RE = /(?:^|[\s])(\$)([a-zA-Z][\w-]*)?$/
 
 /** Stable key for paste dedupe — `items` and `files` often mirror the same image as different objects. */
 export function blobDedupeKey(blob: Blob): string {
@@ -107,6 +109,13 @@ export function detectTrigger(textBefore: string): TriggerState | null {
 
   if (slash) {
     return { kind: '/', query: slash[2], tokenLength: 1 + slash[2].length }
+  }
+
+  const skill = SKILL_TRIGGER_RE.exec(textBefore)
+
+  if (skill) {
+    const query = skill[2] ?? ''
+    return { kind: '$', query, tokenLength: 1 + query.length }
   }
 
   const at = AT_TRIGGER_RE.exec(textBefore)

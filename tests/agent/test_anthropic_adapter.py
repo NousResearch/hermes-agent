@@ -819,6 +819,55 @@ class TestConvertTools:
         }
         assert result[0]["input_schema"]["required"] == ["command"]
 
+    def test_tool_with_top_level_name_is_converted(self):
+        tools = [
+            {
+                "name": "flat_tool",
+                "description": "A tool without the function wrapper",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": ["q"],
+                },
+            }
+        ]
+        result = convert_tools_to_anthropic(tools)
+        assert len(result) == 1
+        assert result[0]["name"] == "flat_tool"
+        assert result[0]["description"] == "A tool without the function wrapper"
+        assert result[0]["input_schema"]["properties"]["q"]["type"] == "string"
+
+    def test_tool_without_resolvable_name_is_skipped(self):
+        tools = [
+            {"function": {"description": "no name", "parameters": {}}},
+            {
+                "type": "function",
+                "function": {
+                    "name": "ok",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ]
+        result = convert_tools_to_anthropic(tools)
+        assert [t["name"] for t in result] == ["ok"]
+
+    def test_tools_with_non_string_names_are_skipped(self):
+        tools = [
+            {"name": 123, "parameters": {"type": "object"}},
+            {"function": {"name": ["invalid"], "parameters": {}}},
+            {
+                "type": "function",
+                "function": {
+                    "name": "ok",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ]
+
+        result = convert_tools_to_anthropic(tools)
+
+        assert [tool["name"] for tool in result] == ["ok"]
+
 
 # ---------------------------------------------------------------------------
 # Message conversion

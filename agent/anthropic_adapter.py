@@ -1666,25 +1666,42 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     result = []
     seen_names: set = set()
     for t in tools:
-        fn = t.get("function", {})
-        name = fn.get("name", "")
+        fn = t.get("function")
+        if not isinstance(fn, dict):
+            fn = {}
+        # Some MCP/plugin tools use the bare schema instead of an OpenAI
+        # ``function`` wrapper. Strict Anthropic-compatible endpoints reject
+        # the whole request if either shape contributes an invalid name.
+        name = fn.get("name")
+        if not isinstance(name, str) or not name:
+            name = t.get("name")
+        if not isinstance(name, str) or not name:
+            logger.warning(
+                "convert_tools_to_anthropic: skipping tool with no valid name "
+                "(function=%r, top-level=%r)",
+                fn.get("name"),
+                t.get("name"),
+            )
+            continue
         # Defensive dedup: Anthropic rejects requests with duplicate tool
         # names.  Upstream injection paths already dedup, but this guard
         # converts a hard API failure into a warning.  See: #18478
-        if name and name in seen_names:
+        if name in seen_names:
             logger.warning(
                 "convert_tools_to_anthropic: duplicate tool name '%s' "
                 "— dropping second occurrence",
                 name,
             )
             continue
-        if name:
-            seen_names.add(name)
+        seen_names.add(name)
         anthropic_tool: Dict[str, Any] = {
             "name": name,
-            "description": fn.get("description", ""),
+            "description": fn.get("description") or t.get("description", ""),
             "input_schema": _normalize_tool_input_schema(
-                fn.get("parameters", {"type": "object", "properties": {}})
+                fn.get("parameters")
+                or t.get("parameters")
+                or t.get("input_schema")
+                or {"type": "object", "properties": {}}
             ),
         }
         # Forward cache_control marker when present on the OpenAI-format

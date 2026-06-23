@@ -4725,3 +4725,583 @@ def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
         chat_id="chat-1",
         chat_type="dm",
     ) is None
+
+# =========================================================================
+# Vector embedding search (sqlite-vec)
+# =========================================================================
+
+class TestVecSchema:
+    """Tests for the sqlite-vec vector embedding schema."""
+
+    def test_vec_table_exists_after_init(self, db):
+        """messages_vec virtual table is created during schema init."""
+        cursor = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_vec'"
+        )
+        assert cursor.fetchone() is not None, "messages_vec table missing"
+
+    def test_vec_table_has_embedding_column(self, db):
+        """messages_vec has an embedding column for float vectors."""
+        cursor = db._conn.execute("PRAGMA table_info(messages_vec)")
+        columns = {row[1]: row[2] for row in cursor.fetchall()}
+        assert "embedding" in columns, f"columns: {columns}"
+
+    def test_vec_trigger_insert_exists(self, db):
+        """Trigger fires on INSERT to generate embeddings."""
+        cursor = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND name='messages_vec_insert'"
+        )
+        assert cursor.fetchone() is not None, "messages_vec_insert trigger missing"
+
+    def test_vec_trigger_delete_exists(self, db):
+        """Trigger fires on DELETE to remove embeddings."""
+        cursor = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND name='messages_vec_delete'"
+        )
+        assert cursor.fetchone() is not None, "messages_vec_delete trigger missing"
+
+    def test_vec_trigger_update_absent(self, db):
+        """No UPDATE trigger — it would overwrite real embeddings with zeros.
+        INSERT and DELETE triggers are sufficient; content changes are rare
+        (compaction does DELETE+reINSERT)."""
+        cursor = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND name='messages_vec_update'"
+        )
+        assert cursor.fetchone() is None, (
+            "messages_vec_update trigger should NOT exist — "
+            "it overwrites real embeddings with zeroblob on any UPDATE to messages"
+        )
+
+    def test_vec_extension_loaded(self, db):
+        """sqlite-vec extension is loaded and vec0 is available."""
+        # Try creating a probe vec0 table — proves the extension is loaded
+        db._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _vec_probe USING vec0(embedding float[4])")
+        # If we got here without OperationalError, vec0 is available
+        db._conn.execute("DROP TABLE IF EXISTS _vec_probe")
+
+
+class TestVecSearch:
+    """Tests for semantic and hybrid vector search."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_provider(self):
+        """Inject a reusable mock embedding provider into every test."""
+        from agent.embedding_provider import EmbeddingProvider
+
+        class MockProvider(EmbeddingProvider):
+            @property
+            def dimensions(self):
+                return 768
+
+            def generate_embedding(self, text):
+                return [0.1] * 768
+
+        self.provider = MockProvider()
+
+    def test_search_semantic_returns_results(self, db):
+        """search_semantic finds messages by vector similarity."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="How do I deploy with Docker?")
+        db.append_message("s1", role="assistant", content="Use docker compose up.")
+
+        results = db.search_semantic("docker deployment", self.provider, limit=5)
+        assert len(results) > 0, "Expected at least one result"
+        for r in results:
+            assert "id" in r
+            assert "session_id" in r
+            assert "role" in r
+            assert "distance" in r
+            assert "context" in r
+
+    def test_search_semantic_respects_limit(self, db):
+        """search_semantic returns at most `limit` results."""
+        db.create_session(session_id="s1", source="cli")
+        for i in range(10):
+            db.append_message("s1", role="user", content=f"Message number {i}")
+
+        results = db.search_semantic("message", self.provider, limit=3)
+        assert len(results) <= 3
+
+    def test_search_semantic_empty_query(self, db):
+        """search_semantic returns empty list for empty query."""
+        assert db.search_semantic("", self.provider) == []
+        assert db.search_semantic("   ", self.provider) == []
+
+    def test_search_semantic_no_provider_returns_empty(self, db):
+        """search_semantic returns empty list when provider is None."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="test message")
+        assert db.search_semantic("test", None) == []
+
+    def test_search_hybrid_combines_fts5_and_vector(self, db):
+        """search_hybrid merges BM25 and vector results via RRF."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Docker deployment guide")
+        db.append_message("s1", role="assistant", content="Use docker compose for orchestration")
+        db.append_message("s1", role="user", content="Unrelated message about lunch")
+
+        results = db.search_hybrid("docker", self.provider, limit=5)
+        assert len(results) > 0
+        for r in results:
+            assert "hybrid_score" in r, f"Missing hybrid_score in {list(r.keys())}"
+
+    def test_search_hybrid_falls_back_to_fts5_when_no_provider(self, db):
+        """search_hybrid returns FTS5-only results when provider is None."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Docker deployment guide")
+
+        results = db.search_hybrid("docker", None, limit=5)
+        assert len(results) > 0
+        for r in results:
+            assert "hybrid_score" in r
+
+    def test_search_hybrid_respects_role_filter(self, db):
+        """search_hybrid applies role_filter to both FTS5 and vector results."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="What is Docker?")
+        db.append_message("s1", role="assistant", content="Docker is a container runtime.")
+
+        results = db.search_hybrid("Docker", self.provider, limit=5, role_filter=["assistant"])
+        roles = {r["role"] for r in results}
+        assert roles == {"assistant"}, f"Expected only assistant, got {roles}"
+
+    def test_search_hybrid_accepts_sort_parameter(self, db):
+        """search_hybrid accepts and forwards sort to inner search_messages."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Docker deployment guide")
+
+        results = db.search_hybrid("docker", self.provider, limit=5, sort="newest")
+        assert isinstance(results, list)
+
+    def test_search_hybrid_sort_newest_orders_by_timestamp(self, db):
+        """sort='newest' returns most recent messages first."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="First message")
+        db.append_message("s1", role="user", content="Second message")
+        db.append_message("s1", role="user", content="Third message")
+
+        results = db.search_hybrid("message", self.provider, limit=5, sort="newest")
+        assert len(results) >= 2
+        timestamps = [r["timestamp"] for r in results]
+        for i in range(len(timestamps) - 1):
+            assert timestamps[i] >= timestamps[i + 1], \
+                f"Expected descending timestamps, got {timestamps}"
+
+
+class TestRRFMerge:
+    """Tests for the standalone _rrf_merge static method."""
+
+    def test_rrf_merge_combines_results(self):
+        """Merges two result lists and returns hybrid scores."""
+        from hermes_state import SessionDB
+
+        bm25 = [
+            {"id": 1, "content": "alpha"},
+            {"id": 2, "content": "beta"},
+        ]
+        vec = [
+            {"id": 2, "content": "beta"},
+            {"id": 3, "content": "gamma"},
+        ]
+
+        merged = SessionDB._rrf_merge(bm25, vec, hybrid_weight=0.5, limit=10)
+        assert len(merged) == 3
+        # All should have hybrid_score
+        for r in merged:
+            assert "hybrid_score" in r
+
+    def test_rrf_merge_respects_limit(self):
+        """Returns at most `limit` results."""
+        from hermes_state import SessionDB
+
+        bm25 = [{"id": i, "content": f"msg{i}"} for i in range(10)]
+        vec = [{"id": i, "content": f"msg{i}"} for i in range(5, 15)]
+
+        merged = SessionDB._rrf_merge(bm25, vec, hybrid_weight=0.5, limit=3)
+        assert len(merged) == 3
+
+    def test_rrf_merge_bm25_only(self):
+        """When vec_results is empty, returns BM25 results with hybrid_score."""
+        from hermes_state import SessionDB
+
+        bm25 = [
+            {"id": 1, "content": "alpha"},
+            {"id": 2, "content": "beta"},
+        ]
+
+        merged = SessionDB._rrf_merge(bm25, [], hybrid_weight=0.5, limit=10)
+        assert len(merged) == 2
+        for r in merged:
+            assert "hybrid_score" in r
+
+    def test_rrf_merge_vec_only(self):
+        """When bm25_results is empty, returns vec results with hybrid_score."""
+        from hermes_state import SessionDB
+
+        vec = [
+            {"id": 1, "content": "alpha"},
+            {"id": 2, "content": "beta"},
+        ]
+
+        merged = SessionDB._rrf_merge([], vec, hybrid_weight=0.5, limit=10)
+        assert len(merged) == 2
+        for r in merged:
+            assert "hybrid_score" in r
+
+    def test_rrf_merge_higher_weight_boosts_vec(self):
+        """Higher hybrid_weight gives vec results better scores."""
+        from hermes_state import SessionDB
+
+        # msg 1: BM25 rank 1, vec rank 2
+        # msg 2: BM25 rank 2, vec rank 1
+        bm25 = [{"id": 1, "content": "a"}, {"id": 2, "content": "b"}]
+        vec = [{"id": 2, "content": "b"}, {"id": 1, "content": "a"}]
+
+        # With weight=0.0 (pure BM25), msg 1 should win
+        merged_bm25 = SessionDB._rrf_merge(bm25, vec, hybrid_weight=0.0, limit=10)
+        assert merged_bm25[0]["id"] == 1
+
+        # With weight=2.0 (vec-heavy), msg 2 should win
+        merged_vec = SessionDB._rrf_merge(bm25, vec, hybrid_weight=2.0, limit=10)
+        assert merged_vec[0]["id"] == 2
+
+    def test_rrf_merge_empty_both(self):
+        """Returns empty list when both inputs are empty."""
+        from hermes_state import SessionDB
+        merged = SessionDB._rrf_merge([], [], hybrid_weight=0.5, limit=10)
+        assert merged == []
+
+
+# =========================================================================
+# Embedding generation and backfill
+# =========================================================================
+
+class TestEmbedMessage:
+    """Tests for embed_message — generating and storing real embeddings."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_provider(self):
+        from agent.embedding_provider import EmbeddingProvider
+
+        class MockProvider(EmbeddingProvider):
+            @property
+            def dimensions(self):
+                return 768
+
+            def generate_embedding(self, text):
+                # Deterministic 768-float vector from text hash.
+                # SHA256 gives 32 bytes; repeat to fill 768 floats.
+                import hashlib
+                h = hashlib.sha256(text.encode()).digest()
+                # Repeat the 32-byte pattern 24 times to get 768 bytes
+                expanded = (h * 24)[:768]
+                return [b / 255.0 for b in expanded]
+
+        self.provider = MockProvider()
+
+    def test_embed_message_stores_real_embedding(self, db):
+        """embed_message replaces zero-vector with a real embedding."""
+        db.create_session(session_id="s1", source="cli")
+        msg_id = db.append_message("s1", role="user", content="Docker deployment guide")
+
+        # Before: zero vector
+        cursor = db._conn.execute(
+            "SELECT length(embedding) FROM messages_vec WHERE rowid = ?", (msg_id,)
+        )
+        before_len = cursor.fetchone()[0]
+        assert before_len == 3072  # zeroblob(3072)
+
+        # Embed
+        db.embed_message(msg_id, "Docker deployment guide", self.provider)
+
+        # After: real embedding (same length, different content)
+        cursor = db._conn.execute(
+            "SELECT length(embedding), embedding FROM messages_vec WHERE rowid = ?", (msg_id,)
+        )
+        row = cursor.fetchone()
+        assert row[0] == 3072  # still 768 * 4 bytes
+        # Not all zeros anymore
+        assert row[1] != b'\x00' * 3072, "Embedding should not be all zeros"
+
+    def test_embed_message_idempotent(self, db):
+        """embed_message can be called multiple times safely."""
+        db.create_session(session_id="s1", source="cli")
+        msg_id = db.append_message("s1", role="user", content="test")
+
+        db.embed_message(msg_id, "test", self.provider)
+        cursor = db._conn.execute(
+            "SELECT embedding FROM messages_vec WHERE rowid = ?", (msg_id,)
+        )
+        first = cursor.fetchone()[0]
+
+        # Second call with same text should produce same embedding
+        db.embed_message(msg_id, "test", self.provider)
+        cursor = db._conn.execute(
+            "SELECT embedding FROM messages_vec WHERE rowid = ?", (msg_id,)
+        )
+        second = cursor.fetchone()[0]
+        assert first == second
+
+    def test_embed_message_no_provider_noop(self, db):
+        """embed_message with None provider does nothing (no crash)."""
+        db.create_session(session_id="s1", source="cli")
+        msg_id = db.append_message("s1", role="user", content="test")
+        db.embed_message(msg_id, "test", None)  # should not raise
+
+    def test_embed_message_nonexistent_row_noop(self, db):
+        """embed_message on a nonexistent rowid does nothing (no crash)."""
+        db.embed_message(99999, "test", self.provider)  # should not raise
+
+
+class TestBackfillEmbeddings:
+    """Tests for backfill_embeddings — batch embedding of zero-vector rows."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_provider(self):
+        from agent.embedding_provider import EmbeddingProvider
+
+        class MockProvider(EmbeddingProvider):
+            @property
+            def dimensions(self):
+                return 768
+
+            def generate_embedding(self, text):
+                import hashlib
+                h = hashlib.sha256(text.encode()).digest()
+                expanded = (h * 24)[:768]
+                return [b / 255.0 for b in expanded]
+
+        self.provider = MockProvider()
+
+    def test_backfill_embeds_all_zero_vectors(self, db):
+        """backfill_embeddings replaces all zero-vector placeholders."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Message one")
+        db.append_message("s1", role="assistant", content="Message two")
+        db.append_message("s1", role="user", content="Message three")
+
+        # All should be unembedded initially
+        cursor = db._conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE vec_embedded = 0"
+        )
+        assert cursor.fetchone()[0] == 3
+
+        count = db.backfill_embeddings(self.provider, batch_size=10)
+
+        assert count == 3
+        # No unembedded messages remain
+        cursor = db._conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE vec_embedded = 0"
+        )
+        assert cursor.fetchone()[0] == 0
+
+    def test_backfill_skips_already_embedded(self, db):
+        """backfill_embeddings only touches vec_embedded=0 rows."""
+        db.create_session(session_id="s1", source="cli")
+        msg_id = db.append_message("s1", role="user", content="Already embedded")
+        db.embed_message(msg_id, "Already embedded", self.provider)
+
+        db.append_message("s1", role="user", content="Not embedded yet")
+
+        count = db.backfill_embeddings(self.provider, batch_size=10)
+        assert count == 1  # only the unembedded row
+
+    def test_backfill_no_provider_returns_zero(self, db):
+        """backfill_embeddings with None provider returns 0."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="test")
+        assert db.backfill_embeddings(None) == 0
+
+    def test_backfill_empty_db_returns_zero(self, db):
+        """backfill_embeddings on a DB with no messages returns 0."""
+        assert db.backfill_embeddings(self.provider) == 0
+
+    def test_backfill_respects_batch_size(self, db):
+        """backfill_embeddings processes in batches."""
+        db.create_session(session_id="s1", source="cli")
+        for i in range(5):
+            db.append_message("s1", role="user", content=f"Message {i}")
+
+        count = db.backfill_embeddings(self.provider, batch_size=2)
+        assert count == 5  # all embedded, just in batches
+
+
+class TestAutoEmbedOnAppend:
+    """Tests for automatic embedding on append_message."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_provider(self):
+        from agent.embedding_provider import EmbeddingProvider
+
+        class MockProvider(EmbeddingProvider):
+            @property
+            def dimensions(self):
+                return 768
+
+            def generate_embedding(self, text):
+                import hashlib
+                h = hashlib.sha256(text.encode()).digest()
+                expanded = (h * 24)[:768]
+                return [b / 255.0 for b in expanded]
+
+        self.provider = MockProvider()
+
+    def test_auto_embed_on_append(self, db):
+        """append_message auto-embeds when embedding_provider is set."""
+        db.embedding_provider = self.provider
+        db.create_session(session_id="s1", source="cli")
+        msg_id = db.append_message("s1", role="user", content="Auto-embed test")
+
+        cursor = db._conn.execute(
+            "SELECT embedding FROM messages_vec WHERE rowid = ?", (msg_id,)
+        )
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] != b'\x00' * 3072, "Should have real embedding, not zeros"
+
+    def test_no_auto_embed_when_provider_not_set(self, db):
+        """append_message stores zero vector when embedding_provider is None."""
+        db.create_session(session_id="s1", source="cli")
+        msg_id = db.append_message("s1", role="user", content="No provider")
+
+        cursor = db._conn.execute(
+            "SELECT embedding FROM messages_vec WHERE rowid = ?", (msg_id,)
+        )
+        row = cursor.fetchone()
+        assert row[0] == b'\x00' * 3072, "Should be zero vector placeholder"
+
+    def test_auto_embed_handles_provider_failure(self, db):
+        """append_message still succeeds even if embedding generation fails."""
+        from agent.embedding_provider import EmbeddingProvider
+
+        class FailingProvider(EmbeddingProvider):
+            @property
+            def dimensions(self):
+                return 768
+
+            def generate_embedding(self, text):
+                raise RuntimeError("Embedding service down")
+
+        db.embedding_provider = FailingProvider()
+        db.create_session(session_id="s1", source="cli")
+        msg_id = db.append_message("s1", role="user", content="test")
+
+        # Message was inserted (zero vector fallback)
+        cursor = db._conn.execute("SELECT id FROM messages WHERE id = ?", (msg_id,))
+        assert cursor.fetchone() is not None
+
+
+# =========================================================================
+# End-to-end test with real Ollama embeddings
+# =========================================================================
+
+@pytest.mark.skipif(
+    "not _ollama_available()",
+    reason="Ollama not running on localhost:11434",
+)
+class TestOllamaE2E:
+    """End-to-end semantic search with real Ollama nomic-embed-text."""
+
+    def test_real_embeddings_produce_meaningful_distances(self, db):
+        """Messages with similar content have smaller vector distances."""
+        from agent.embedding_provider import OllamaEmbeddingProvider
+
+        provider = OllamaEmbeddingProvider(
+            model="nomic-embed-text",
+            base_url="http://localhost:11434/v1",
+            dimensions=768,
+        )
+        db.embedding_provider = provider
+
+        db.create_session(session_id="s1", source="cli")
+        # Two Docker-related messages
+        docker1 = db.append_message("s1", role="user", content="How do I deploy with Docker?")
+        docker2 = db.append_message("s1", role="assistant", content="Use docker compose up for deployment")
+        # One unrelated message
+        lunch = db.append_message("s1", role="user", content="What should I eat for lunch today?")
+
+        # Verify embeddings are not zero vectors
+        for msg_id in (docker1, docker2, lunch):
+            cursor = db._conn.execute(
+                "SELECT embedding FROM messages_vec WHERE rowid = ?", (msg_id,)
+            )
+            row = cursor.fetchone()
+            assert row is not None, f"msg {msg_id} missing from messages_vec"
+            assert row[0] != b'\x00' * 3072, f"msg {msg_id} has zero vector"
+
+        # Semantic search for "Docker" should rank Docker messages above lunch
+        results = db.search_semantic("Docker container deployment", provider, limit=3)
+        assert len(results) >= 2
+        ids = [r["id"] for r in results]
+        # Docker messages should appear before lunch
+        lunch_pos = ids.index(lunch) if lunch in ids else len(ids)
+        docker_positions = [ids.index(d) for d in (docker1, docker2) if d in ids]
+        assert any(p < lunch_pos for p in docker_positions), \
+            f"Docker messages should rank above lunch. Got order: {ids}"
+
+    def test_hybrid_search_with_real_embeddings(self, db):
+        """Hybrid search returns results with hybrid_score."""
+        from agent.embedding_provider import OllamaEmbeddingProvider
+
+        provider = OllamaEmbeddingProvider(
+            model="nomic-embed-text",
+            base_url="http://localhost:11434/v1",
+            dimensions=768,
+        )
+        db.embedding_provider = provider
+
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Python async programming guide")
+        db.append_message("s1", role="assistant", content="Use asyncio for concurrent I/O")
+        db.append_message("s1", role="user", content="Best pizza places in New York")
+
+        results = db.search_hybrid("async python", provider, limit=3)
+        assert len(results) > 0
+        for r in results:
+            assert "hybrid_score" in r
+            assert isinstance(r["hybrid_score"], float)
+
+    def test_backfill_with_real_embeddings(self, db):
+        """backfill_embeddings replaces zero vectors with real embeddings."""
+        from agent.embedding_provider import OllamaEmbeddingProvider
+
+        provider = OllamaEmbeddingProvider(
+            model="nomic-embed-text",
+            base_url="http://localhost:11434/v1",
+            dimensions=768,
+        )
+
+        db.create_session(session_id="s1", source="cli")
+        # Insert without provider — zero vectors
+        db.append_message("s1", role="user", content="Message one")
+        db.append_message("s1", role="user", content="Message two")
+
+        # Verify zero vectors
+        cursor = db._conn.execute(
+            "SELECT COUNT(*) FROM messages_vec WHERE embedding = zeroblob(3072)"
+        )
+        assert cursor.fetchone()[0] == 2
+
+        # Backfill
+        count = db.backfill_embeddings(provider, batch_size=10)
+        assert count == 2
+
+        # Verify no zero vectors remain
+        cursor = db._conn.execute(
+            "SELECT COUNT(*) FROM messages_vec WHERE embedding = zeroblob(3072)"
+        )
+        assert cursor.fetchone()[0] == 0
+
+
+def _ollama_available():
+    """Check if Ollama is running and nomic-embed-text is available."""
+    try:
+        import urllib.request
+        req = urllib.request.Request("http://localhost:11434/api/tags")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            import json
+            data = json.loads(resp.read())
+            models = [m["name"] for m in data.get("models", [])]
+            return any("nomic-embed-text" in m for m in models)
+    except Exception:
+        return False

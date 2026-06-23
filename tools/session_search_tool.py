@@ -55,6 +55,40 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
 
+# Module-level cache for the resolved embedding provider.
+# load_config() is I/O-heavy; caching avoids re-reading config.yaml on every
+# semantic=True invocation within a session.
+_cached_embedding_provider = None
+_cached_embedding_config_hash = None
+
+
+def _resolve_embedding_provider() -> Optional[Any]:
+    """Resolve the embedding provider from config, with module-level caching.
+
+    Returns an EmbeddingProvider instance or None.  Caches the result so
+    repeated semantic=True calls within a session don't re-read config.yaml.
+    """
+    global _cached_embedding_provider, _cached_embedding_config_hash
+
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        emb_config = config.get("auxiliary", {}).get("session_search", {}).get("embedding", {})
+
+        # Simple cache key: hash the config dict.  If config hasn't changed,
+        # reuse the cached provider.
+        config_hash = hash(json.dumps(emb_config, sort_keys=True))
+        if _cached_embedding_provider is not None and _cached_embedding_config_hash == config_hash:
+            return _cached_embedding_provider
+
+        from agent.embedding_provider import resolve_embedding_provider
+        _cached_embedding_provider = resolve_embedding_provider(emb_config)
+        _cached_embedding_config_hash = config_hash
+        return _cached_embedding_provider
+    except Exception:
+        logging.debug("Embedding provider resolution failed", exc_info=True)
+        return None
+
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
@@ -503,25 +537,44 @@ def _discover(
     limit: int,
     sort: Optional[str],
     current_session_id: str = None,
+    semantic: bool = False,
+    hybrid_weight: float = 0.5,
+    provider=None,
 ) -> str:
-    """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
+    """Discovery shape: FTS5 + anchored window + bookends per hit. Single call.
+
+    When ``semantic=True``, uses hybrid BM25+vector search instead of pure FTS5.
+    *provider* is the resolved embedding provider (set on db.embedding_provider
+    by the caller for auto-embed on append_message).
+    """
     role_list = role_filter if role_filter else ["user", "assistant"]
     current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
     title_result = _title_match_result(db, query, current_lineage_root)
 
     try:
-        raw_results = db.search_messages(
-            query=query,
-            role_filter=role_list,
-            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            limit=_DISCOVER_SCAN_LIMIT,  # widen so dedup-by-lineage can find
-            # distinct sessions AND so interactive matches buried under a wall
-            # of cron rows are still in hand for the demotion pass below.
-            offset=0,
-            sort=sort,
-        )
+        if semantic and provider is not None:
+            raw_results = db.search_hybrid(
+                query=query,
+                provider=provider,
+                role_filter=role_list,
+                exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+                limit=50,
+                hybrid_weight=hybrid_weight,
+                sort=sort,
+            )
+        else:
+            raw_results = db.search_messages(
+                query=query,
+                role_filter=role_list,
+                exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+                limit=_DISCOVER_SCAN_LIMIT,  # widen so dedup-by-lineage can find
+                # distinct sessions AND so interactive matches buried under a wall
+                # of cron rows are still in hand for the demotion pass below.
+                offset=0,
+                sort=sort,
+            )
     except Exception as e:
-        logging.error("FTS5 search failed: %s", e, exc_info=True)
+        logging.error("Search failed: %s", e, exc_info=True)
         return tool_error(f"Search failed: {e}", success=False)
 
     # Demote automation (cron) rows below interactive ones before dedup, so a
@@ -630,6 +683,9 @@ def session_search(
     sort: str = None,
     # Cross-profile (any shape)
     profile: str = None,
+    # Semantic / hybrid search
+    semantic: bool = False,
+    hybrid_weight: float = 0.5,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
@@ -650,6 +706,12 @@ def session_search(
             logging.debug("SessionDB unavailable for session_search", exc_info=True)
             from hermes_state import format_session_db_unavailable
             return tool_error(format_session_db_unavailable(), success=False)
+
+    # Resolve embedding provider for semantic search (cached).
+    # Set on the db so append_message auto-embeds new messages.
+    provider = _resolve_embedding_provider() if semantic else None
+    if provider is not None:
+        db.embedding_provider = provider
 
     # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
     # Session ids never contain "/", so a slash unambiguously means profile/id —
@@ -737,6 +799,9 @@ def session_search(
         limit=limit,
         sort=sort_norm,
         current_session_id=current_session_id,
+        semantic=semantic,
+        hybrid_weight=hybrid_weight,
+        provider=provider,
     )
 
 
@@ -891,6 +956,26 @@ SESSION_SEARCH_SCHEMA = {
                     "Omit to use the current profile."
                 ),
             },
+            "semantic": {
+                "type": "boolean",
+                "description": (
+                    "Discovery shape only. Set true to use hybrid BM25+vector search "
+                    "instead of pure FTS5 keyword matching. Finds conversations by "
+                    "meaning, not just exact words. Requires an embedding provider "
+                    "configured in auxiliary.session_search.embedding. Default false "
+                    "(FTS5-only, backward compatible)."
+                ),
+                "default": False,
+            },
+            "hybrid_weight": {
+                "type": "number",
+                "description": (
+                    "Discovery shape only, when semantic=true. Weight for vector "
+                    "results in hybrid ranking (0.0 = pure BM25, 1.0 = pure vector, "
+                    "0.5 = balanced). Default 0.5."
+                ),
+                "default": 0.5,
+            },
         },
         "required": [],
     },
@@ -913,6 +998,8 @@ registry.register(
         window=args.get("window", 5),
         sort=args.get("sort"),
         profile=args.get("profile"),
+        semantic=args.get("semantic", False),
+        hybrid_weight=args.get("hybrid_weight", 0.5),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
     ),

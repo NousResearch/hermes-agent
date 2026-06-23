@@ -699,7 +699,8 @@ CREATE TABLE IF NOT EXISTS messages (
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
-    compacted INTEGER NOT NULL DEFAULT 0
+    compacted INTEGER NOT NULL DEFAULT 0,
+    vec_embedded INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -790,6 +791,31 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON message
 END;
 """
 
+# Vector embedding virtual table for semantic search.  Uses sqlite-vec's
+# vec0 extension — a virtual table with KNN search via MATCH.
+# Triggers mirror the FTS5 pattern: INSERT stores a zero-vector placeholder,
+# DELETE removes it, UPDATE refreshes it.
+# The zero vector (all zeros, 768 * 4 bytes) is a placeholder until the
+# embedding provider is wired up to generate real embeddings asynchronously.
+# Using a zero vector instead of NULL satisfies vec0's BLOB requirement
+# and produces a valid (if meaningless) distance for KNN queries.
+VEC_SQL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_vec USING vec0(
+    embedding float[768]
+);
+
+CREATE TRIGGER IF NOT EXISTS messages_vec_insert AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_vec(rowid, embedding) VALUES (
+        new.id,
+        zeroblob(3072)
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_vec_delete AFTER DELETE ON messages BEGIN
+    DELETE FROM messages_vec WHERE rowid = old.id;
+END;
+"""
+
 
 class SessionDB:
     """
@@ -823,7 +849,13 @@ class SessionDB:
         self._fts_enabled = False
         self._trigram_available = False
         self._fts_unavailable_warned = False
+        self._vec_enabled = False
         self._conn = None
+        # Optional embedding provider for auto-embed on append_message.
+        # Resolved from config at init time (best-effort).  None means
+        # zero-vector placeholders only — auto-embed is a no-op.
+        self.embedding_provider = None
+        self._embedding_provider_resolved = False
         try:
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
@@ -904,6 +936,12 @@ class SessionDB:
             # ``hermes_state._set_last_init_error(None)`` explicitly.
             _set_last_init_error(f"{type(exc).__name__}: {exc}")
             raise
+
+        # Resolve embedding provider from config (best-effort).
+        # Done once at init so append_message auto-embeds from the start
+        # without waiting for a session_search(semantic=True) call.
+        if not read_only:
+            self._resolve_embedding_provider()
 
     # ── Core write helper ──
 
@@ -1050,6 +1088,29 @@ class SessionDB:
                 self._warn_trigram_unavailable(exc)
             else:
                 self._warn_fts5_unavailable(exc)
+            return False
+
+    def _ensure_vec_schema(self, cursor: sqlite3.Cursor) -> bool:
+        """Create the messages_vec virtual table and triggers.
+
+        Loads the sqlite-vec extension and runs VEC_SQL.  If the extension
+        is unavailable (no such module: vec0), vec search is disabled but
+        the rest of the DB operates normally — this is an optional feature.
+        """
+        try:
+            import sqlite_vec
+            self._conn.enable_load_extension(True)
+            sqlite_vec.load(self._conn)
+            self._conn.enable_load_extension(False)
+        except Exception as exc:
+            logger.debug("sqlite-vec extension not available: %s", exc)
+            return False
+
+        try:
+            cursor.executescript(VEC_SQL)
+            return True
+        except sqlite3.OperationalError as exc:
+            logger.debug("vec0 schema creation failed: %s", exc)
             return False
 
     def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
@@ -1465,6 +1526,47 @@ class SessionDB:
                         cursor,
                         include_trigram=trigram_enabled,
                     )
+
+        # Vector embedding schema (sqlite-vec).  Independent of FTS5 — vec0
+        # is a separate extension.  If the extension can't be loaded, vec
+        # search is simply unavailable (no fallback needed; FTS5 still works).
+        self._vec_enabled = self._ensure_vec_schema(cursor)
+
+        # Migration: drop the old messages_vec_update trigger if it exists.
+        # It was removed from SCHEMA_SQL because it overwrites real embeddings
+        # with zeroblob on any UPDATE to messages (including vec_embedded=1).
+        # INSERT and DELETE triggers are sufficient.
+        if self._vec_enabled:
+            cursor.execute("DROP TRIGGER IF EXISTS messages_vec_update")
+
+        # One-time migration: seed messages_vec with zero-vector placeholders
+        # for all existing messages.  The INSERT trigger only fires on new
+        # rows, so historical messages need to be backfilled here.  After
+        # this, backfill_embeddings() can replace the zeros with real vectors.
+        if self._vec_enabled:
+            vec_count = cursor.execute(
+                "SELECT COUNT(*) FROM messages_vec"
+            ).fetchone()[0]
+            msg_count = cursor.execute(
+                "SELECT COUNT(*) FROM messages"
+            ).fetchone()[0]
+            if vec_count == 0 and msg_count > 0:
+                logger.info(
+                    "Seeding messages_vec with %d zero-vector placeholders "
+                    "(one-time migration)",
+                    msg_count,
+                )
+                cursor.execute(
+                    "INSERT INTO messages_vec(rowid, embedding) "
+                    "SELECT id, zeroblob(3072) FROM messages"
+                )
+
+        # Create the vec_embedded index now that the column is guaranteed
+        # to exist (added by _reconcile_columns above if missing).
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_vec_embedded "
+            "ON messages(vec_embedded, id)"
+        )
 
         self._conn.commit()
 
@@ -2989,7 +3091,182 @@ class SessionDB:
                 )
             return msg_id
 
-        return self._execute_write(_do)
+        msg_id = self._execute_write(_do)
+
+        # Auto-embed: generate a real vector if a provider is configured.
+        # Done outside the write transaction so embedding API latency
+        # doesn't block other writers.
+        # Only embed user and assistant messages — tool output is noise
+        # for semantic search and would bloat the vec table.
+        if (
+            self.embedding_provider is not None
+            and self._vec_enabled
+            and role in ("user", "assistant")
+        ):
+            text = content
+            if isinstance(content, list):
+                text_parts = [
+                    p.get("text", "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                text = " ".join(t for t in text_parts if t).strip()
+            elif isinstance(content, str):
+                text = content
+            else:
+                text = ""
+            if text:
+                self.embed_message(msg_id, text, self.embedding_provider)
+
+        return msg_id
+
+    # =========================================================================
+    # Embedding provider resolution
+    # =========================================================================
+
+    def _resolve_embedding_provider(self) -> None:
+        """Resolve the embedding provider from config (best-effort).
+
+        Called once at init time so append_message auto-embeds from the
+        start without waiting for a session_search(semantic=True) call.
+        Failures are logged but not raised — auto-embed degrades to
+        zero-vector placeholders.
+        """
+        if self._embedding_provider_resolved:
+            return
+        self._embedding_provider_resolved = True
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+            emb_config = config.get("auxiliary", {}).get(
+                "session_search", {}
+            ).get("embedding", {})
+            if not emb_config:
+                return
+            from agent.embedding_provider import resolve_embedding_provider
+            self.embedding_provider = resolve_embedding_provider(emb_config)
+        except Exception:
+            logger.debug(
+                "Embedding provider resolution failed at init; "
+                "auto-embed disabled",
+                exc_info=True,
+            )
+
+    # =========================================================================
+    # Embedding generation (sqlite-vec)
+    # =========================================================================
+
+    def embed_message(
+        self,
+        msg_id: int,
+        text: str,
+        provider=None,
+    ) -> None:
+        """Generate and store a real embedding for a single message.
+
+        Replaces the zero-vector placeholder in ``messages_vec`` with a real
+        embedding generated by *provider*.  If *provider* is None or the vec
+        table is unavailable, this is a no-op.
+
+        Safe to call multiple times on the same row — subsequent calls
+        overwrite the previous embedding.
+        """
+        if provider is None:
+            return
+        if not self._vec_enabled:
+            return
+        if not text or not text.strip():
+            return
+
+        try:
+            vec = provider.generate_embedding(text.strip())
+        except Exception:
+            logger.debug("embed_message: embedding generation failed for msg %d", msg_id, exc_info=True)
+            return
+
+        from sqlite_vec import serialize_float32
+        blob = serialize_float32(vec)
+
+        try:
+            with self._lock:
+                # vec0 virtual tables silently ignore UPDATE on the embedding
+                # column.  Use DELETE + INSERT instead.
+                self._conn.execute(
+                    "DELETE FROM messages_vec WHERE rowid = ?",
+                    (msg_id,),
+                )
+                self._conn.execute(
+                    "INSERT INTO messages_vec(rowid, embedding) VALUES (?, ?)",
+                    (msg_id, blob),
+                )
+                self._conn.execute(
+                    "UPDATE messages SET vec_embedded = 1 WHERE id = ?",
+                    (msg_id,),
+                )
+        except sqlite3.OperationalError:
+            logger.debug("embed_message: UPDATE failed for msg %d", msg_id, exc_info=True)
+
+    def backfill_embeddings(
+        self,
+        provider=None,
+        batch_size: int = 100,
+    ) -> int:
+        """Batch-embed all messages that still have zero-vector placeholders.
+
+        Returns the number of messages embedded.  Safe to call on an already-
+        embedded database — only rows with vec_embedded=0 are touched.
+
+        Processes in batches of *batch_size* to avoid holding the lock for
+        too long on large databases.  Uses the B-tree-indexed messages table
+        (vec_embedded column) instead of scanning the vec0 virtual table.
+        """
+        if provider is None:
+            return 0
+        if not self._vec_enabled:
+            return 0
+
+        total = 0
+        while True:
+            # Fetch a batch of unembedded messages via the indexed messages table.
+            # This is O(log N) via idx_messages_vec_embedded, not O(N) BLOB scan.
+            with self._lock:
+                cursor = self._conn.execute(
+                    """SELECT m.id, m.content
+                       FROM messages m
+                       WHERE m.vec_embedded = 0
+                       ORDER BY m.id
+                       LIMIT ?""",
+                    (batch_size,),
+                )
+                batch = [(row[0], self._decode_content(row[1])) for row in cursor.fetchall()]
+
+            if not batch:
+                break
+
+            for msg_id, content in batch:
+                # Extract text from potentially multimodal content
+                text = content
+                if isinstance(content, list):
+                    text_parts = [
+                        p.get("text", "") for p in content
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    ]
+                    text = " ".join(t for t in text_parts if t).strip()
+                elif not isinstance(content, str):
+                    text = ""
+
+                if text:
+                    self.embed_message(msg_id, text, provider)
+                    total += 1
+                else:
+                    # No embeddable text — mark as done so we don't re-fetch
+                    # this row forever.  The zero-vector placeholder stays.
+                    with self._lock:
+                        self._conn.execute(
+                            "UPDATE messages SET vec_embedded = 1 WHERE id = ?",
+                            (msg_id,),
+                        )
+
+        return total
 
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
@@ -3942,20 +4219,12 @@ class SessionDB:
             # are hidden. See archive_and_compact() / #38763.
             where_clauses.append("(m.active = 1 OR m.compacted = 1)")
 
-        if source_filter is not None:
-            source_placeholders = ",".join("?" for _ in source_filter)
-            where_clauses.append(f"s.source IN ({source_placeholders})")
-            params.extend(source_filter)
-
-        if exclude_sources is not None:
-            exclude_placeholders = ",".join("?" for _ in exclude_sources)
-            where_clauses.append(f"s.source NOT IN ({exclude_placeholders})")
-            params.extend(exclude_sources)
-
-        if role_filter:
-            role_placeholders = ",".join("?" for _ in role_filter)
-            where_clauses.append(f"m.role IN ({role_placeholders})")
-            params.extend(role_filter)
+        self._build_filter_clauses(
+            where_clauses, params,
+            source_filter=source_filter,
+            exclude_sources=exclude_sources,
+            role_filter=role_filter,
+        )
 
         where_sql = " AND ".join(where_clauses)
         params.extend([limit, offset])
@@ -4023,15 +4292,12 @@ class SessionDB:
                 tri_params: list = [trigram_query]
                 if not include_inactive:
                     tri_where.append("(m.active = 1 OR m.compacted = 1)")
-                if source_filter is not None:
-                    tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
-                    tri_params.extend(source_filter)
-                if exclude_sources is not None:
-                    tri_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
-                    tri_params.extend(exclude_sources)
-                if role_filter:
-                    tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
-                    tri_params.extend(role_filter)
+                self._build_filter_clauses(
+                    tri_where, tri_params,
+                    source_filter=source_filter,
+                    exclude_sources=exclude_sources,
+                    role_filter=role_filter,
+                )
                 tri_sql = f"""
                     SELECT
                         m.id,
@@ -4080,15 +4346,12 @@ class SessionDB:
                     )
                     like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
                 like_where = [f"({' OR '.join(token_clauses)})"]
-                if source_filter is not None:
-                    like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
-                    like_params.extend(source_filter)
-                if exclude_sources is not None:
-                    like_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
-                    like_params.extend(exclude_sources)
-                if role_filter:
-                    like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
-                    like_params.extend(role_filter)
+                self._build_filter_clauses(
+                    like_where, like_params,
+                    source_filter=source_filter,
+                    exclude_sources=exclude_sources,
+                    role_filter=role_filter,
+                )
                 like_sql = f"""
                     SELECT m.id, m.session_id, m.role,
                            substr(m.content,
@@ -4121,70 +4384,296 @@ class SessionDB:
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.
         for match in matches:
-            try:
-                with self._lock:
-                    ctx_cursor = self._conn.execute(
-                        """WITH target AS (
-                               SELECT session_id, timestamp, id
-                               FROM messages
-                               WHERE id = ?
-                           )
-                           SELECT role, content
-                           FROM (
-                               SELECT m.id, m.timestamp, m.role, m.content
-                               FROM messages m
-                               JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp < t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id < t.id)
-                               ORDER BY m.timestamp DESC, m.id DESC
-                               LIMIT 1
-                           )
-                           UNION ALL
-                           SELECT role, content
-                           FROM messages
-                           WHERE id = ?
-                           UNION ALL
-                           SELECT role, content
-                           FROM (
-                               SELECT m.id, m.timestamp, m.role, m.content
-                               FROM messages m
-                               JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp > t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id > t.id)
-                               ORDER BY m.timestamp ASC, m.id ASC
-                               LIMIT 1
-                           )""",
-                        (match["id"], match["id"]),
-                    )
-                    context_msgs = []
-                    for r in ctx_cursor.fetchall():
-                        raw = r["content"]
-                        decoded = self._decode_content(raw)
-                        # Multimodal context: render a compact text-only
-                        # summary for search previews.
-                        if isinstance(decoded, list):
-                            text_parts = [
-                                p.get("text", "") for p in decoded
-                                if isinstance(p, dict) and p.get("type") == "text"
-                            ]
-                            text = " ".join(t for t in text_parts if t).strip()
-                            preview = text or "[multimodal content]"
-                        elif isinstance(decoded, str):
-                            preview = decoded
-                        else:
-                            preview = ""
-                        context_msgs.append(
-                            {"role": r["role"], "content": preview[:200]}
-                        )
-                match["context"] = context_msgs
-            except Exception:
-                match["context"] = []
+            self._attach_context(match)
 
         # Remove full content from result (snippet is enough, saves tokens)
         for match in matches:
             match.pop("content", None)
 
         return matches
+
+    def _attach_context(self, match: Dict[str, Any]) -> None:
+        """Attach surrounding context (1 msg before + after) to a search match.
+
+        Mutates *match* in place, adding a ``context`` key with a list of
+        {role, content} dicts.  On failure, sets context to [].
+        """
+        try:
+            with self._lock:
+                ctx_cursor = self._conn.execute(
+                    """WITH target AS (
+                           SELECT session_id, timestamp, id
+                           FROM messages
+                           WHERE id = ?
+                       )
+                       SELECT role, content
+                       FROM (
+                           SELECT m.id, m.timestamp, m.role, m.content
+                           FROM messages m
+                           JOIN target t ON t.session_id = m.session_id
+                           WHERE (m.timestamp < t.timestamp)
+                              OR (m.timestamp = t.timestamp AND m.id < t.id)
+                           ORDER BY m.timestamp DESC, m.id DESC
+                           LIMIT 1
+                       )
+                       UNION ALL
+                       SELECT role, content
+                       FROM messages
+                       WHERE id = ?
+                       UNION ALL
+                       SELECT role, content
+                       FROM (
+                           SELECT m.id, m.timestamp, m.role, m.content
+                           FROM messages m
+                           JOIN target t ON t.session_id = m.session_id
+                           WHERE (m.timestamp > t.timestamp)
+                              OR (m.timestamp = t.timestamp AND m.id > t.id)
+                           ORDER BY m.timestamp ASC, m.id ASC
+                           LIMIT 1
+                       )""",
+                    (match["id"], match["id"]),
+                )
+                context_msgs = []
+                for r in ctx_cursor.fetchall():
+                    raw = r["content"]
+                    decoded = self._decode_content(raw)
+                    if isinstance(decoded, list):
+                        text_parts = [
+                            p.get("text", "") for p in decoded
+                            if isinstance(p, dict) and p.get("type") == "text"
+                        ]
+                        text = " ".join(t for t in text_parts if t).strip()
+                        preview = text or "[multimodal content]"
+                    elif isinstance(decoded, str):
+                        preview = decoded
+                    else:
+                        preview = ""
+                    context_msgs.append(
+                        {"role": r["role"], "content": preview[:200]}
+                    )
+            match["context"] = context_msgs
+        except Exception:
+            match["context"] = []
+
+    # =========================================================================
+    # Vector / semantic search (sqlite-vec)
+    # =========================================================================
+
+    @staticmethod
+    def _build_filter_clauses(
+        where_parts: List[str],
+        params: list,
+        source_filter: List[str] = None,
+        exclude_sources: List[str] = None,
+        role_filter: List[str] = None,
+    ) -> None:
+        """Append source/role filter WHERE clauses to *where_parts* and *params*.
+
+        Mutates both arguments in place.  Callers are responsible for joining
+        ``where_parts`` into a WHERE clause (e.g. ``" AND ".join(where_parts)``).
+        """
+        if source_filter is not None:
+            where_parts.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+            params.extend(source_filter)
+        if exclude_sources is not None:
+            where_parts.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
+            params.extend(exclude_sources)
+        if role_filter:
+            where_parts.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+            params.extend(role_filter)
+
+    def search_semantic(
+        self,
+        query: str,
+        provider=None,
+        limit: int = 20,
+        source_filter: List[str] = None,
+        exclude_sources: List[str] = None,
+        role_filter: List[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """KNN vector search across message embeddings.
+
+        Generates a query embedding via *provider*, then runs a vec0 MATCH
+        query against ``messages_vec``.  Returns the closest *limit* messages
+        with distance scores.
+
+        If *provider* is None or the vec table is unavailable, returns [].
+        """
+        if not query or not query.strip():
+            return []
+        if provider is None:
+            return []
+        if not self._vec_enabled:
+            return []
+
+        # Generate query embedding
+        try:
+            query_vec = provider.generate_embedding(query.strip())
+        except Exception:
+            logger.debug("Embedding generation failed for semantic search", exc_info=True)
+            return []
+
+        # Serialize to BLOB for vec0 MATCH
+        from sqlite_vec import serialize_float32
+        query_blob = serialize_float32(query_vec)
+
+        # Build WHERE clauses for filtering
+        where_parts = []
+        params: list = [query_blob]
+        self._build_filter_clauses(
+            where_parts, params,
+            source_filter=source_filter,
+            exclude_sources=exclude_sources,
+            role_filter=role_filter,
+        )
+        where_sql = (" AND " + " AND ".join(where_parts)) if where_parts else ""
+        params.extend([limit])
+
+        sql = f"""
+            SELECT
+                m.id,
+                m.session_id,
+                m.role,
+                m.content,
+                m.timestamp,
+                m.tool_name,
+                s.source,
+                s.model,
+                s.started_at AS session_started,
+                v.distance
+            FROM messages_vec v
+            JOIN messages m ON m.id = v.rowid
+            JOIN sessions s ON s.id = m.session_id
+            WHERE v.embedding MATCH ? AND k = ?{where_sql}
+            ORDER BY v.distance
+        """
+
+        with self._lock:
+            try:
+                cursor = self._conn.execute(sql, params)
+            except sqlite3.OperationalError:
+                logger.debug("vec0 MATCH query failed", exc_info=True)
+                return []
+            matches = [dict(row) for row in cursor.fetchall()]
+
+        # Add context and strip full content (same as search_messages)
+        for match in matches:
+            self._attach_context(match)
+
+        for match in matches:
+            match.pop("content", None)
+
+        return matches
+
+    def search_hybrid(
+        self,
+        query: str,
+        provider=None,
+        limit: int = 20,
+        source_filter: List[str] = None,
+        exclude_sources: List[str] = None,
+        role_filter: List[str] = None,
+        hybrid_weight: float = 0.5,
+        sort: str = None,
+    ) -> List[Dict[str, Any]]:
+        """Hybrid BM25 + vector search with Reciprocal Rank Fusion.
+
+        Runs both FTS5 keyword search and vec0 semantic search, then merges
+        results via RRF: ``score = 1/(k + bm25_rank) + w * 1/(k + vec_rank)``.
+
+        Falls back to FTS5-only when *provider* is None or vec is unavailable.
+
+        ``sort`` controls temporal ordering of the final merged results:
+          - ``None`` (default): hybrid score only
+          - ``"newest"``: order by timestamp DESC, hybrid score as tiebreaker
+          - ``"oldest"``: order by timestamp ASC, hybrid score as tiebreaker
+        """
+        if not query or not query.strip():
+            return []
+
+        # Normalise sort
+        sort_norm: Optional[str] = None
+        if isinstance(sort, str):
+            candidate = sort.strip().lower()
+            if candidate in ("newest", "oldest"):
+                sort_norm = candidate
+
+        # FTS5 search (always available)
+        bm25_results = self.search_messages(
+            query,
+            source_filter=source_filter,
+            exclude_sources=exclude_sources,
+            role_filter=role_filter,
+            limit=limit * 2,  # over-fetch for merge
+            sort=sort_norm,
+        )
+
+        # Vector search (optional)
+        vec_results = []
+        if provider is not None and self._vec_enabled:
+            vec_results = self.search_semantic(
+                query,
+                provider=provider,
+                limit=limit * 2,
+                source_filter=source_filter,
+                exclude_sources=exclude_sources,
+                role_filter=role_filter,
+            )
+
+        if not vec_results:
+            # No vector results — return BM25-only with hybrid_score = rank
+            for rank, r in enumerate(bm25_results[:limit], start=1):
+                r["hybrid_score"] = 1.0 / (60.0 + rank)
+            return bm25_results[:limit]
+
+        # RRF merge
+        merged = self._rrf_merge(bm25_results, vec_results, hybrid_weight, limit)
+
+        # Apply temporal sort on top of hybrid score if requested
+        if sort_norm == "newest":
+            merged.sort(key=lambda r: (r.get("timestamp", 0), r.get("hybrid_score", 0)), reverse=True)
+        elif sort_norm == "oldest":
+            merged.sort(key=lambda r: (r.get("timestamp", 0), r.get("hybrid_score", 0)))
+
+        return merged
+
+    @staticmethod
+    def _rrf_merge(
+        bm25_results: List[Dict[str, Any]],
+        vec_results: List[Dict[str, Any]],
+        hybrid_weight: float,
+        limit: int,
+        k: float = 60.0,
+    ) -> List[Dict[str, Any]]:
+        """Reciprocal Rank Fusion: merge BM25 and vector result lists.
+
+        score = 1/(k + bm25_rank) + hybrid_weight * 1/(k + vec_rank)
+
+        Returns the top *limit* results sorted by hybrid score.
+        """
+        scores: dict[int, float] = {}
+
+        for rank, r in enumerate(bm25_results, start=1):
+            msg_id = r["id"]
+            scores[msg_id] = scores.get(msg_id, 0.0) + 1.0 / (k + rank)
+
+        for rank, r in enumerate(vec_results, start=1):
+            msg_id = r["id"]
+            scores[msg_id] = scores.get(msg_id, 0.0) + hybrid_weight / (k + rank)
+
+        all_by_id: dict[int, dict] = {}
+        for r in bm25_results:
+            all_by_id[r["id"]] = r
+        for r in vec_results:
+            if r["id"] not in all_by_id:
+                all_by_id[r["id"]] = r
+
+        merged = [
+            {**all_by_id[mid], "hybrid_score": scores[mid]}
+            for mid in sorted(scores, key=lambda mid: scores[mid], reverse=True)
+        ]
+
+        return merged[:limit]
 
     def search_sessions_by_id(
         self,

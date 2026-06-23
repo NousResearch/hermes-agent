@@ -1477,6 +1477,20 @@ DEFAULT_CONFIG = {
         # single-shape tool returns DB content directly). The old
         # ``auxiliary.session_search.*`` block was removed here. Existing
         # values in user config.yaml files are harmless leftovers and ignored.
+        #
+        # Embedding provider for semantic session search (sqlite-vec).
+        # When configured, session_search(semantic=True) uses hybrid
+        # BM25+vector ranking instead of pure FTS5 keyword matching.
+        # Provider options: ollama (local, free), openai (API).
+        "session_search": {
+            "embedding": {
+                "provider": "ollama",           # ollama | openai
+                "model": "nomic-embed-text",    # model name for the provider
+                "base_url": "http://localhost:11434/v1",  # Ollama base URL
+                "api_key": "",                  # API key (OpenAI); empty for Ollama
+                "dimensions": 768,              # vector dimensions (nomic-embed-text = 768)
+            },
+        },
         "skills_hub": {
             "provider": "auto",
             "model": "",

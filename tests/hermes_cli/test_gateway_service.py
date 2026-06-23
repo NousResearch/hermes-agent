@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -550,6 +551,31 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    def test_launchd_plist_preserves_proxy_environment(self, monkeypatch):
+        for key in (
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "https_proxy",
+            "http_proxy",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+        monkeypatch.setenv("NO_PROXY", "localhost,.internal.example")
+        monkeypatch.setenv("no_proxy", "oneapi.example.com,.corp.example")
+        monkeypatch.setenv("http_proxy", "http://user:pa&ss@proxy.example:8080")
+
+        parsed = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        env = parsed["EnvironmentVariables"]
+
+        assert env["HTTPS_PROXY"] == "http://proxy.example:8080"
+        assert env["NO_PROXY"] == "localhost,.internal.example"
+        assert env["no_proxy"] == "oneapi.example.com,.corp.example"
+        assert env["http_proxy"] == "http://user:pa&ss@proxy.example:8080"
+
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
         monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})

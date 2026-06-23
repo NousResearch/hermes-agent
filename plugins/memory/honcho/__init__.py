@@ -253,8 +253,19 @@ class HonchoMemoryProvider(MemoryProvider):
         return "honcho"
 
     def is_available(self) -> bool:
-        """Check if Honcho is configured. No network calls."""
+        """Check if Honcho is configured and usable. No network calls.
+
+        The ``honcho`` SDK (``honcho-ai``) is imported lazily at session-init
+        time, so a config-only check would report Honcho as available even
+        when the package is missing. Hermes activates the provider only when
+        ``is_available()`` is True, so without this guard Honcho would be
+        logged as registered/activated and then fail every background session
+        init (#51099). Verify the package is importable first.
+        """
         try:
+            import importlib.util
+            if importlib.util.find_spec("honcho") is None:
+                return False
             from plugins.memory.honcho.client import HonchoClientConfig
             cfg = HonchoClientConfig.from_global_config()
             # Port #2645: baseUrl-only verification — api_key OR base_url suffices

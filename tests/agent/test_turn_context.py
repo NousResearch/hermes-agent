@@ -272,8 +272,13 @@ def _patch_hook(results):
     return patch("hermes_cli.plugins.invoke_hook", lambda *a, **k: list(results))
 
 
-def test_pre_llm_call_passes_agent_and_session_key():
-    """The hook must receive the new ``agent`` and ``session_key`` kwargs."""
+def test_pre_llm_call_passes_agent_and_not_redundant_session_key():
+    """The hook must receive the live ``agent`` kwarg.
+
+    The redundant ``session_key`` kwarg (it only duplicated ``session_id``) was
+    dropped — routing now keys off the durable ``agent._user_model_pin`` flag,
+    not a session key. ``session_id`` is still passed.
+    """
     agent = _FakeAgent()
     seen = {}
 
@@ -285,7 +290,8 @@ def test_pre_llm_call_passes_agent_and_session_key():
         _build(agent)
 
     assert seen.get("agent") is agent
-    assert "session_key" in seen
+    assert "session_id" in seen
+    assert "session_key" not in seen  # redundant kwarg removed
 
 
 def test_pre_llm_call_model_bundle_triggers_switch_model():

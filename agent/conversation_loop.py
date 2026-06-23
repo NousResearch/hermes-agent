@@ -538,6 +538,16 @@ def run_conversation(
     # (e.g. a /weather fast-path). Return the standard terminal dict with zero
     # LLM calls — the tool loop never runs.
     if _ctx.short_circuit_response is not None:
+        # Mirror the normal loop: history must end with a well-formed assistant
+        # turn so callers that persist ``messages`` as next-turn history keep
+        # alternating roles. ``messages`` currently ends with the user turn
+        # (appended in build_turn_context); append the assistant reply here —
+        # in exactly ONE place. No caller separately appends ``final_response``
+        # as another assistant turn (gateway/api_server fallbacks only fire when
+        # the returned messages list is empty, which it never is now).
+        messages.append(
+            {"role": "assistant", "content": _ctx.short_circuit_response}
+        )
         return {
             "final_response": _ctx.short_circuit_response,
             "messages": messages,

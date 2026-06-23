@@ -1456,6 +1456,13 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     client-swap logic but also updates ``_primary_runtime`` so the
     change persists across turns (unlike fallback which is
     turn-scoped).
+
+    Prompt-cache lag: the swap refreshes the context compressor and the
+    model-dependent caching flags, so the new model's prompt-cache prefix
+    is not warm until the NEXT turn. When invoked from ``pre_llm_call``
+    (a per-turn model swap), the swapping turn itself runs cache-cold; the
+    benefit lands on the following turn. Callers that swap every turn pay
+    this lag repeatedly — pin a model when you want a warm cache.
     """
     from hermes_cli.providers import determine_api_mode
 

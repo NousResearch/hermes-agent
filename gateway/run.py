@@ -15313,6 +15313,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
+            #
+            # User-model-pin signal for pre_llm_call routing plugins: a live
+            # ``/model <name>`` writes a session override (and a ``/model auto``
+            # / ``/new`` clears it), so an active override IS the operator's
+            # explicit pin. Set it per-turn (cached agents survive a pin/clear)
+            # so a routing plugin can defer reliably even when the pinned model
+            # happens to equal one of its tier models. Re-derived every turn.
+            agent._user_model_pin = bool(
+                self._session_model_overrides.get(session_key)
+            )
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).

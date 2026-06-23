@@ -6798,6 +6798,39 @@ class TestPreLlmCallShortCircuit:
         assert result["completed"] is True
         assert result["messages"] is messages
 
+    def test_short_circuit_appends_well_formed_assistant_turn(self):
+        """Regression (HIGH-1): the short-circuit terminal dict must end with a
+        well-formed assistant turn so callers persisting ``messages`` as
+        next-turn history keep alternating roles. Previously ``messages`` ended
+        with the user turn and NO assistant turn, corrupting the next turn.
+        """
+        from agent.conversation_loop import run_conversation
+        # Simulate prior history + this turn's user message (as build_turn_context
+        # leaves it): ends with the user turn, no assistant turn yet.
+        messages = [
+            {"role": "user", "content": "earlier"},
+            {"role": "assistant", "content": "earlier reply"},
+            {"role": "user", "content": "what's the weather?"},
+        ]
+        agent = SimpleNamespace(api_mode="chat_completions")
+
+        with patch(
+            "agent.conversation_loop.build_turn_context",
+            return_value=self._short_circuit_ctx("It is sunny.", messages),
+        ):
+            result = run_conversation(agent, "what's the weather?")
+
+        assert result["api_calls"] == 0
+        assert result["completed"] is True
+        out = result["messages"]
+        # History ends with a well-formed assistant turn carrying the reply.
+        assert out[-1] == {"role": "assistant", "content": "It is sunny."}
+        # Roles strictly alternate user/assistant/.../user/assistant.
+        roles = [m["role"] for m in out]
+        assert roles == ["user", "assistant", "user", "assistant"]
+        for a, b in zip(roles, roles[1:]):
+            assert a != b, f"non-alternating roles: {roles}"
+
     def test_no_short_circuit_proceeds_past_early_return(self):
         """When short_circuit_response is None the early return must NOT fire."""
         from agent.turn_context import TurnContext

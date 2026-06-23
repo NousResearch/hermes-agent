@@ -691,6 +691,15 @@ def _pricing_entry_from_metadata(
     def _per_token_to_per_million(value: Optional[Decimal]) -> Optional[Decimal]:
         if value is None:
             return None
+        # OpenRouter returns per-token prices (e.g., 0.000003 for
+        # $3/1M).  Some OpenAI-compatible endpoints (e.g., Umans)
+        # return per-million prices directly (e.g., 1.4 for
+        # $1.40/1M).  No production model charges more than
+        # ~$0.0001/token ($100/1M), so any value above 0.001 is
+        # almost certainly already per-million — skip the x1M
+        # conversion to avoid a 1,000,000x cost inflation.
+        if value > Decimal("0.001"):
+            return value
         return value * _ONE_MILLION
 
     return PricingEntry(

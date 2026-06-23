@@ -192,6 +192,36 @@ def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
     assert float(entry.output_cost_per_million) == 2.0
 
 
+def test_custom_endpoint_per_million_pricing_not_inflated(monkeypatch):
+    """Regression: some OpenAI-compatible endpoints (e.g., Umans) return
+    per-million prices in their /v1/models response (e.g., 1.4 for
+    $1.40/1M).  Hermes must NOT multiply by 1M, which would inflate
+    costs 1,000,000x.  See: #34256 (same bug class, different provider).
+    """
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda base_url, api_key=None: {
+            "umans-glm-5.2": {
+                "pricing": {
+                    "prompt": 1.4,
+                    "completion": 4.4,
+                }
+            }
+        },
+    )
+
+    entry = get_pricing_entry(
+        "umans-glm-5.2",
+        provider="custom",
+        base_url="https://api.code.umans.ai/v1",
+        api_key="test-key",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 1.4
+    assert float(entry.output_cost_per_million) == 4.4
+
+
 def test_nous_portal_pricing_preserves_vendor_prefixed_model_ids(monkeypatch):
     seen = {}
 

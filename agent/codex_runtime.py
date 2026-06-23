@@ -438,6 +438,22 @@ def _event_field(event: Any, name: str, default: Any = None) -> Any:
     return value if value is not None else default
 
 
+def _response_item_type(item: Any) -> str:
+    """Return a Responses output item type for attr-style or dict items."""
+    value = getattr(item, "type", None)
+    if value is None and isinstance(item, dict):
+        value = item.get("type")
+    return value if isinstance(value, str) else ""
+
+
+def _response_item_phase(item: Any) -> str:
+    """Return a normalized Responses message phase for attr-style or dict items."""
+    value = getattr(item, "phase", None)
+    if value is None and isinstance(item, dict):
+        value = item.get("phase")
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise a ``_StreamErrorEvent`` from a ``type=error`` SSE frame.
 
@@ -487,9 +503,10 @@ def _consume_codex_event_stream(
 
     Callbacks:
 
-    * ``on_text_delta(str)`` — fires per ``response.output_text.delta``, suppressed
-      once a function_call event is seen (so tool-call turns don't bleed text
-      into the chat).
+    * ``on_text_delta(str)`` — fires per final-answer ``response.output_text.delta``.
+      Commentary/analysis phase message items are deliberately suppressed because
+      Codex may emit them immediately before a tool call; surfacing those deltas
+      leaks internal planning into chat gateways.
     * ``on_reasoning_delta(str)`` — fires per ``response.reasoning.*.delta``.
     * ``on_first_delta()`` — one-shot, fires on the first text delta only.
     * ``on_event(event)`` — fires for every event before any other processing.
@@ -500,6 +517,7 @@ def _consume_codex_event_stream(
     collected_text_deltas: List[str] = []
     has_tool_calls = False
     first_delta_fired = False
+    suppress_current_text_item = False
     terminal_status: str = "completed"
     terminal_usage: Any = None
     terminal_response_id: str = None
@@ -533,11 +551,28 @@ def _consume_codex_event_stream(
         if event_type == "error":
             _raise_stream_error(event)
 
+        if event_type == "response.output_item.added":
+            added_item = _event_field(event, "item")
+            item_type = _response_item_type(added_item)
+            if item_type == "function_call":
+                has_tool_calls = True
+                suppress_current_text_item = True
+            elif item_type == "message":
+                # Codex Responses may stream a commentary/analysis message item
+                # immediately before a function_call item.  The text is useful
+                # for the transcript/fallback finalizer but must not be pushed
+                # live to Telegram/Discord as if it were the user-facing answer.
+                suppress_current_text_item = _response_item_phase(added_item) in {
+                    "commentary",
+                    "analysis",
+                }
+            continue
+
         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
             delta_text = _event_field(event, "delta", "")
             if delta_text:
                 collected_text_deltas.append(delta_text)
-                if not has_tool_calls:
+                if not has_tool_calls and not suppress_current_text_item:
                     if not first_delta_fired:
                         first_delta_fired = True
                         if on_first_delta is not None:

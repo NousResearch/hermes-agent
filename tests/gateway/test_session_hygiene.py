@@ -13,7 +13,7 @@ import sys
 import types
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
@@ -396,11 +396,111 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_session_hygiene_warns_user_when_summary_generation_fails(monkeypatch, tmp_path):
+async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch, tmp_path):
+    """Regression for #21301: the hygiene agent is built without a session_db,
+    so _compress_context cannot rotate. When it neither rotates NOR compacts
+    in place, the transcript MUST be preserved — an unconditional
+    rewrite_transcript() would replace the original messages with only the
+    summary (permanent data loss). Mirrors the /compress guard (#44794)."""
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class NonRotatingCompressAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "fake-session")
+            self.compression_in_place = False  # not in-place either
+            self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            # No session_db → cannot rotate: session_id is UNCHANGED, and this
+            # is a failure-to-rotate, not an in-place success.
+            return ([{"role": "assistant", "content": "summary only"}], None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = NonRotatingCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:group:-1001:17585",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=400)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100,
+    )
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
+
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="17585",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "ok"
+    # The transcript must NOT be rewritten — the original is preserved.
+    runner.session_store.rewrite_transcript.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_warns_user_when_compression_aborts(monkeypatch, tmp_path):
     """When auxiliary compression's summary LLM call fails, the compressor
-    inserts a static fallback and the dropped turns are unrecoverable.
-    Gateway must surface a visible ⚠️ warning to the user, including
-    thread_id metadata so it lands in the originating topic/thread."""
+    ABORTS — returns messages unchanged, sets _last_compress_aborted=True,
+    and drops nothing.  Gateway must surface a visible ⚠️ warning to the
+    user (including thread_id metadata so it lands in the originating
+    topic/thread) saying the conversation is unchanged and how to retry."""
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
@@ -415,17 +515,18 @@ async def test_session_hygiene_warns_user_when_summary_generation_fails(monkeypa
             self.shutdown_memory_provider = MagicMock()
             self.close = MagicMock()
             # Simulate a compressor that hit summary-generation failure
-            # and inserted the static fallback placeholder.
+            # and ABORTED — no fallback inserted, no messages dropped.
             self.context_compressor = SimpleNamespace(
-                _last_summary_fallback_used=True,
-                _last_summary_dropped_count=42,
+                _last_compress_aborted=True,
+                _last_summary_fallback_used=False,
+                _last_summary_dropped_count=0,
                 _last_summary_error="404 model not found: gemini-3-flash-preview",
             )
             type(self).last_instance = self
 
         def _compress_context(self, messages, *_args, **_kwargs):
-            self.session_id = f"{self.session_id}_compressed"
-            return ([{"role": "assistant", "content": "compressed"}], None)
+            # Abort path: messages preserved unchanged, session NOT rotated.
+            return (messages, None)
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = FakeCompressAgentWithSummaryFailure
@@ -494,16 +595,17 @@ async def test_session_hygiene_warns_user_when_summary_generation_fails(monkeypa
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    # The compressor reported summary-failure → exactly one warning
-    # message must have been delivered to the user.
-    warning_messages = [s for s in adapter.sent if "Context compression summary failed" in s["content"]]
+    # The compressor reported abort → exactly one warning message must
+    # have been delivered to the user.
+    warning_messages = [s for s in adapter.sent if "Context compression aborted" in s["content"]]
     assert len(warning_messages) == 1, (
-        f"Expected 1 compression-failure warning, got {len(warning_messages)}: {adapter.sent}"
+        f"Expected 1 compression-aborted warning, got {len(warning_messages)}: {adapter.sent}"
     )
     warn = warning_messages[0]
-    # Warning must include the dropped count and the underlying error.
-    assert "42" in warn["content"]
+    # Warning must include the underlying error and tell the user nothing
+    # was dropped.
     assert "404" in warn["content"]
+    assert "No messages were dropped" in warn["content"]
     # Warning must land in the originating topic/thread, not the main channel.
     assert warn["chat_id"] == "-1001"
     assert warn["metadata"] == {"thread_id": "17585"}
@@ -639,7 +741,7 @@ async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(mo
 async def test_session_hygiene_honors_configurable_hard_message_limit(
     monkeypatch, tmp_path
 ):
-    """compression.hygiene_hard_message_limit overrides the 400-message default.
+    """compression.hygiene_hard_message_limit overrides the default.
 
     Regression for user-reported fix: a gateway session with a small
     transcript (12 messages) should not hit hygiene compression by default,
@@ -697,7 +799,7 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
         platform=Platform.TELEGRAM,
         chat_type="private",
     )
-    # 12 messages: below 400 default → no compression without override,
+    # 12 messages: below default → no compression without override,
     # but above the configured limit of 10 → should compress.
     runner.session_store.load_transcript.return_value = _make_history(12, content_size=40)
     runner.session_store.has_any_sessions.return_value = True
@@ -758,7 +860,7 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     monkeypatch, tmp_path
 ):
     """Sanity check for the companion test above: without config override,
-    12 messages must NOT trigger the 400-message hard limit.  If this test
+    12 messages must NOT trigger the default hard limit.  If this test
     passes without changes, the override test's finding is meaningful."""
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -781,7 +883,7 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     fake_run_agent.AIAgent = FakeCompressAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    # No config.yaml — use defaults (hard_limit=400)
+    # No config.yaml — use defaults (hard_limit=5000)
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
 
@@ -845,7 +947,7 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    # No compression agent instantiated — 12 messages well under 400 default.
+    # No compression agent instantiated — 12 messages well under 5000 default.
     assert FakeCompressAgent.last_instance is None, (
-        "Compression should NOT fire at 12 messages with default hard_limit=400"
+        "Compression should NOT fire at 12 messages with default hard_limit=5000"
     )

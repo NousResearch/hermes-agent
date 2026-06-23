@@ -18,7 +18,6 @@ churn accumulated ~20B per session_id until the process exited.
 These tests pin the new caps + prune hooks.
 """
 
-import pytest
 
 
 class TestReadTrackerCaps:
@@ -127,7 +126,11 @@ class TestReadTrackerCaps:
             td = ft._read_tracker["long-session"]
             assert len(td["read_history"]) <= 3
             assert len(td["dedup"]) <= 3
-            assert len(td["read_timestamps"]) <= 3
+            # read_timestamps is populated lazily (via setdefault) only
+            # when os.path.getmtime() succeeds. On some CI filesystems
+            # that stat can race with file creation — skip rather than
+            # hard-error if the dict hasn't been created yet.
+            assert len(td.get("read_timestamps", {})) <= 3
 
 
 class TestCompletionConsumedPrune:

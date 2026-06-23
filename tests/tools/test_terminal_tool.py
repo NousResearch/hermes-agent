@@ -22,6 +22,14 @@ def test_searching_for_sudo_does_not_trigger_rewrite(monkeypatch):
     assert sudo_stdin is None
 
 
+def test_terminal_schema_advertises_persistent_env_state():
+    description = terminal_tool.TERMINAL_TOOL_DESCRIPTION
+
+    assert "exported environment variables persist between calls" in description
+    assert "activate a virtualenv" in description
+    assert "do not re-source the same environment before every command" in description
+
+
 def test_printf_literal_sudo_does_not_trigger_rewrite(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
@@ -90,6 +98,30 @@ def test_cached_sudo_password_is_used_when_env_is_unset(monkeypatch):
     assert sudo_stdin == "cached-pass\n"
 
 
+def test_registered_sudo_callback_is_used_without_interactive_env(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False)
+
+    calls = []
+
+    def sudo_callback():
+        calls.append("called")
+        return "callback-pass"
+
+    terminal_tool.set_sudo_password_callback(sudo_callback)
+    try:
+        transformed, sudo_stdin = terminal_tool._transform_sudo_command(
+            "echo ok | sudo tee /tmp/hermes-test"
+        )
+    finally:
+        terminal_tool.set_sudo_password_callback(None)
+
+    assert calls == ["called"]
+    assert transformed == "echo ok | sudo -S -p '' tee /tmp/hermes-test"
+    assert sudo_stdin == "callback-pass\n"
+
+
 def test_cached_sudo_password_isolated_by_session_key(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
@@ -102,6 +134,57 @@ def test_cached_sudo_password_isolated_by_session_key(monkeypatch):
 
     monkeypatch.setenv("HERMES_SESSION_KEY", "session-a")
     assert terminal_tool._get_cached_sudo_password() == "alpha-pass"
+
+
+def test_passwordless_sudo_skips_interactive_prompt_and_rewrite(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError(
+            "interactive sudo prompt should not run when sudo -n already works"
+        )
+
+    monkeypatch.setattr(terminal_tool, "_prompt_for_sudo_password", _fail_prompt)
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: True, raising=False)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command("sudo whoami")
+
+    assert transformed == "sudo whoami"
+    assert sudo_stdin is None
+
+
+def test_passwordless_sudo_probe_rechecks_local_terminal(monkeypatch):
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    calls = []
+
+    class Result:
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return Result(0 if len(calls) == 1 else 1)
+
+    monkeypatch.setattr(terminal_tool.subprocess, "run", fake_run)
+
+    assert terminal_tool._sudo_nopasswd_works() is True
+    assert terminal_tool._sudo_nopasswd_works() is False
+    assert len(calls) == 2
+    assert calls[0][0] == ["sudo", "-n", "true"]
+    assert calls[1][0] == ["sudo", "-n", "true"]
+
+
+def test_passwordless_sudo_probe_is_disabled_for_nonlocal_terminal_env(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    def _fail_run(*_args, **_kwargs):
+        raise AssertionError("host sudo probe must not run for non-local terminal envs")
+
+    monkeypatch.setattr(terminal_tool.subprocess, "run", _fail_run)
+
+    assert terminal_tool._sudo_nopasswd_works() is False
 
 
 def test_validate_workdir_allows_windows_drive_paths():
@@ -117,3 +200,46 @@ def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")
     assert terminal_tool._validate_workdir("C:\\Users\\Alice\\project\nwhoami")
+
+
+def test_get_env_config_ignores_bad_docker_json_for_local_backend(monkeypatch):
+    """Docker-only JSON env vars must not break the default local backend."""
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", "None")
+    monkeypatch.setenv("TERMINAL_DOCKER_ENV", "not-json")
+    monkeypatch.setenv("TERMINAL_DOCKER_FORWARD_ENV", "not-json")
+    monkeypatch.setenv("TERMINAL_DOCKER_EXTRA_ARGS", "not-json")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["env_type"] == "local"
+    assert config["docker_volumes"] == []
+    assert config["docker_env"] == {}
+    assert config["docker_forward_env"] == []
+    assert config["docker_extra_args"] == []
+
+
+def test_get_env_config_ignores_bad_docker_json_for_ssh_backend(monkeypatch):
+    """Non-container remote backends should also ignore Docker-only JSON."""
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", "None")
+    monkeypatch.setenv("TERMINAL_DOCKER_ENV", "not-json")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["env_type"] == "ssh"
+    assert config["docker_volumes"] == []
+    assert config["docker_env"] == {}
+
+
+def test_get_env_config_still_rejects_bad_docker_json_for_docker_backend(monkeypatch):
+    """Selecting Docker should keep the existing actionable config error."""
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", "None")
+
+    try:
+        terminal_tool._get_env_config()
+    except ValueError as exc:
+        assert "TERMINAL_DOCKER_VOLUMES" in str(exc)
+    else:
+        raise AssertionError("Docker backend must validate TERMINAL_DOCKER_VOLUMES")

@@ -1,0 +1,45 @@
+# .github/workflows/typecheck.yml
+name: Typecheck
+
+on:
+  push:
+    branches: [main]
+  # No paths filter — the job must always run so the required check
+  # reports a status (path-gated workflows leave checks "pending" forever
+  # when no matching files change, which blocks merge).
+  pull_request:
+    branches: [main]
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package:
+          [ui-tui, web, apps/bootstrap-installer, apps/desktop, apps/shared]
+      fail-fast: false # report all failures, not just the first one
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run --prefix ${{ matrix.package }} typecheck
+
+  # Production build of the desktop renderer. `typecheck` runs `tsc` only,
+  # which does NOT exercise Vite/Rolldown module resolution — so an
+  # unresolvable package export (e.g. a transitive @assistant-ui/tap that no
+  # longer exports "./react-shim") slips past typecheck and only explodes when
+  # users build apps/desktop from source on install/update. Run the real
+  # `vite build` here so that class of break fails in CI instead.
+  desktop-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run --prefix apps/desktop build

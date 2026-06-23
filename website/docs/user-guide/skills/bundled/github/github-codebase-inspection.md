@@ -1,14 +1,14 @@
 ---
-title: "Codebase Inspection"
+title: "Codebase Inspection — Inspect codebases w/ pygount: LOC, languages, ratios"
 sidebar_label: "Codebase Inspection"
-description: "Inspect and analyze codebases using pygount for LOC counting, language breakdown, and code-vs-comment ratios"
+description: "Inspect codebases w/ pygount: LOC, languages, ratios"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Codebase Inspection
 
-Inspect and analyze codebases using pygount for LOC counting, language breakdown, and code-vs-comment ratios. Use when asked to check lines of code, repo size, language composition, or codebase stats.
+Inspect codebases w/ pygount: LOC, languages, ratios.
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Inspect and analyze codebases using pygount for LOC counting, language breakdown
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `LOC`, `Code Analysis`, `pygount`, `Codebase`, `Metrics`, `Repository` |
 | Related skills | [`github-repo-management`](/docs/user-guide/skills/bundled/github/github-github-repo-management) |
 

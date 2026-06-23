@@ -8,7 +8,6 @@ import json
 import os
 from unittest.mock import patch
 
-import pytest
 
 
 class TestDiscordThreadPersistence:
@@ -17,7 +16,7 @@ class TestDiscordThreadPersistence:
     def _make_adapter(self, tmp_path):
         """Build a minimal DiscordAdapter with HERMES_HOME pointed at tmp_path."""
         from gateway.config import PlatformConfig
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
 
         config = PlatformConfig(enabled=True, token="test-token")
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -67,6 +66,21 @@ class TestDiscordThreadPersistence:
 
         saved = json.loads((tmp_path / "discord_threads.json").read_text())
         assert len(saved) == 5
+        assert saved == ["5", "6", "7", "8", "9"]
+
+    def test_capacity_keeps_newest_thread_when_existing_state_is_full(self, tmp_path):
+        """A newly joined thread must not be evicted by unordered set iteration."""
+        state_file = tmp_path / "discord_threads.json"
+        state_file.write_text(json.dumps(["0", "1", "2", "3", "4"]), encoding="utf-8")
+        adapter = self._make_adapter(tmp_path)
+        adapter._threads._max_tracked = 5
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            adapter._threads.mark("newest")
+
+        saved = json.loads(state_file.read_text(encoding="utf-8"))
+        assert saved == ["1", "2", "3", "4", "newest"]
+        assert "newest" in adapter._threads
 
     def test_corrupted_state_file_falls_back_to_empty(self, tmp_path):
         state_file = tmp_path / "discord_threads.json"

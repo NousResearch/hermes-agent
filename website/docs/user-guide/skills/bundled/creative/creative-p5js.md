@@ -1,14 +1,14 @@
 ---
-title: "P5Js — Production pipeline for interactive and generative visual art using p5"
+title: "P5Js — p5"
 sidebar_label: "P5Js"
-description: "Production pipeline for interactive and generative visual art using p5"
+description: "p5"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # P5Js
 
-Production pipeline for interactive and generative visual art using p5.js. Creates browser-based sketches, generative art, data visualizations, interactive experiences, 3D scenes, audio-reactive visuals, and motion graphics — exported as HTML, PNG, GIF, MP4, or SVG. Covers: 2D/3D rendering, noise and particle systems, flow fields, shaders (GLSL), pixel manipulation, kinetic typography, WebGL scenes, audio analysis, mouse/keyboard interaction, and headless high-res export. Use when users request: p5.js sketches, creative coding, generative art, interactive visualizations, canvas animations, browser-based visual art, data viz, shader effects, or any p5.js project.
+p5.js sketches: gen art, shaders, interactive, 3D.
 
 ## Skill metadata
 
@@ -17,6 +17,7 @@ Production pipeline for interactive and generative visual art using p5.js. Creat
 | Source | Bundled (installed by default) |
 | Path | `skills/creative/p5js` |
 | Version | `1.0.0` |
+| Platforms | linux, macos, windows |
 | Tags | `creative-coding`, `generative-art`, `p5js`, `canvas`, `interactive`, `visualization`, `webgl`, `shaders`, `animation` |
 | Related skills | [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video), [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video), [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw) |
 
@@ -27,6 +28,14 @@ The following is the complete skill definition that Hermes loads when this skill
 :::
 
 # p5.js Production Pipeline
+
+## When to use
+
+Use when users request: p5.js sketches, creative coding, generative art, interactive visualizations, canvas animations, browser-based visual art, data viz, shader effects, or any p5.js project.
+
+## What's inside
+
+Production pipeline for interactive and generative visual art using p5.js. Creates browser-based sketches, generative art, data visualizations, interactive experiences, 3D scenes, audio-reactive visuals, and motion graphics — exported as HTML, PNG, GIF, MP4, or SVG. Covers: 2D/3D rendering, noise and particle systems, flow fields, shaders (GLSL), pixel manipulation, kinetic typography, WebGL scenes, audio analysis, mouse/keyboard interaction, and headless high-res export.
 
 ## Creative Standard
 

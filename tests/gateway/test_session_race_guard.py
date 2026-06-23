@@ -226,6 +226,39 @@ def test_merge_pending_message_event_merges_text_and_photo_followups():
     assert merged.media_types == ["image/png"]
 
 
+def test_merge_pending_message_event_promotes_document_followups_over_text():
+    pending = {}
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+
+    text_event = MessageEvent(
+        text="please review this",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    document_event = MessageEvent(
+        text="",
+        message_type=MessageType.DOCUMENT,
+        source=source,
+        media_urls=["/tmp/report.pdf"],
+        media_types=["application/pdf"],
+    )
+
+    merge_pending_message_event(pending, session_key, text_event, merge_text=True)
+    merge_pending_message_event(pending, session_key, document_event, merge_text=True)
+
+    merged = pending[session_key]
+    assert merged.message_type == MessageType.DOCUMENT
+    assert merged.text == "please review this"
+    assert merged.media_urls == ["/tmp/report.pdf"]
+    assert merged.media_types == ["application/pdf"]
+
+
 @pytest.mark.asyncio
 async def test_recent_telegram_text_followup_is_queued_without_interrupt():
     runner = _make_runner()
@@ -295,6 +328,42 @@ async def test_command_messages_do_not_leave_sentinel():
     assert session_key not in runner._running_agents, (
         "Command handlers must not leave sentinel in _running_agents"
     )
+
+
+@pytest.mark.asyncio
+async def test_start_command_is_noop_and_does_not_show_help():
+    """Telegram /start is a platform ping; it must not dump /help output."""
+    runner = _make_runner()
+    event = _make_event(text="/start")
+    session_key = build_session_key(event.source)
+
+    runner._handle_help_command = AsyncMock(return_value="Help text")
+
+    result = await runner._handle_message(event)
+
+    assert result == ""
+    runner._handle_help_command.assert_not_awaited()
+    assert session_key not in runner._running_agents
+
+
+@pytest.mark.asyncio
+async def test_start_command_is_noop_during_active_session():
+    """A mid-run /start must not interrupt the active agent or show commands."""
+    runner = _make_runner()
+    event = _make_event(text="/start")
+    session_key = build_session_key(event.source)
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    runner._running_agents[session_key] = fake_agent
+    runner._handle_help_command = AsyncMock(return_value="Help text")
+
+    result = await runner._handle_message(event)
+
+    assert result == ""
+    runner._handle_help_command.assert_not_awaited()
+    fake_agent.interrupt.assert_not_called()
+    assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages
 
 
 @pytest.mark.asyncio

@@ -1,11 +1,8 @@
 """Tests for setup.py configuration flows."""
-import json
 import sys
 import types
 
-import pytest
 
-from hermes_cli.auth import get_active_provider
 from hermes_cli.config import load_config, save_config
 from hermes_cli import setup as setup_mod
 from hermes_cli.setup import setup_model_provider
@@ -162,11 +159,18 @@ def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch,
         "WEBHOOK_ENABLED": "",
     }
 
-    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
-    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
-    monkeypatch.setattr("platform.system", lambda: "Linux")
-
     import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
+    # Keep the checklist pre-selection (so matrix stays "configured" and the
+    # post-config service guidance runs), but stub the migrated plugins'
+    # interactive_setup so their wizards don't read real stdin. #41112.
+    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda _q, _items, pre=(), **k: list(pre))
+    import hermes_cli.gateway as _gw_mod
+    monkeypatch.setattr(_gw_mod, "_configure_platform", lambda *a, **k: None)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
@@ -200,11 +204,18 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
         "WEBHOOK_ENABLED": "",
     }
 
-    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
-    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
-    monkeypatch.setattr("platform.system", lambda: "Linux")
-
     import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
+    # Keep the checklist pre-selection (so matrix stays "configured" and the
+    # post-config service guidance runs), but stub the migrated plugins'
+    # interactive_setup so their wizards don't read real stdin. #41112.
+    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda _q, _items, pre=(), **k: list(pre))
+    import hermes_cli.gateway as _gw_mod
+    monkeypatch.setattr(_gw_mod, "_configure_platform", lambda *a, **k: None)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
@@ -480,50 +491,6 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
     assert config["terminal"]["modal_mode"] == "direct"
 
 
-def test_resolve_hermes_chat_argv_prefers_which(monkeypatch):
-    from hermes_cli import setup as setup_mod
+# test_setup_slack_* moved to tests/gateway/test_slack_plugin_setup.py — the
+# _setup_slack wizard migrated to the slack plugin's interactive_setup (#41112).
 
-    monkeypatch.setattr(setup_mod.shutil, "which", lambda name: "/usr/local/bin/hermes" if name == "hermes" else None)
-
-    assert setup_mod._resolve_hermes_chat_argv() == ["/usr/local/bin/hermes", "chat"]
-
-
-def test_resolve_hermes_chat_argv_falls_back_to_module(monkeypatch):
-    from hermes_cli import setup as setup_mod
-
-    monkeypatch.setattr(setup_mod.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(setup_mod.importlib.util, "find_spec", lambda name: object() if name == "hermes_cli" else None)
-
-    assert setup_mod._resolve_hermes_chat_argv() == [sys.executable, "-m", "hermes_cli.main", "chat"]
-
-
-def test_offer_launch_chat_execs_fresh_process(monkeypatch):
-    from hermes_cli import setup as setup_mod
-
-    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: ["/usr/local/bin/hermes", "chat"])
-
-    exec_calls = []
-
-    def fake_execvp(path, argv):
-        exec_calls.append((path, argv))
-        raise SystemExit(0)
-
-    monkeypatch.setattr(setup_mod.os, "execvp", fake_execvp)
-
-    with pytest.raises(SystemExit):
-        setup_mod._offer_launch_chat()
-
-    assert exec_calls == [("/usr/local/bin/hermes", ["/usr/local/bin/hermes", "chat"])]
-
-
-def test_offer_launch_chat_manual_fallback_when_unresolvable(monkeypatch, capsys):
-    from hermes_cli import setup as setup_mod
-
-    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: None)
-
-    setup_mod._offer_launch_chat()
-
-    captured = capsys.readouterr()
-    assert "Run 'hermes chat' manually" in captured.out

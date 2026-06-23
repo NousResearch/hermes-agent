@@ -17,7 +17,7 @@ All three are **drop-in at runtime**: no repo clone, no `npm run build`, no patc
 If you just want to use the dashboard, see [Web Dashboard](./web-dashboard). If you want to reskin the terminal CLI (not the web dashboard), see [Skins & Themes](./skins) — the CLI skin system is unrelated to dashboard themes.
 
 :::note How the pieces compose
-Themes and plugins are independent but synergistic. A theme can stand alone (just a YAML file). A plugin can stand alone (just a tab). Together they let you build a complete visual reskin with custom HUDs — the bundled `strike-freedom-cockpit` demo does exactly that. See [Combined theme + plugin demo](#combined-theme--plugin-demo).
+Themes and plugins are independent but synergistic. A theme can stand alone (just a YAML file). A plugin can stand alone (just a tab). Together they let you build a complete visual reskin with custom HUDs — the example `strike-freedom-cockpit` demo (lives in the `hermes-example-plugins` companion repo — see [Combined theme + plugin demo](#combined-theme--plugin-demo) for install steps) does exactly that.
 :::
 
 ---
@@ -130,6 +130,22 @@ typography:
   lineHeight: "1.5"
   letterSpacing: "0.04em"
 ```
+
+##### Changing the font from the UI (no YAML)
+
+The theme picker in the dashboard header has a **Font** section below the
+theme list. Pick any font there and it overrides the body font of whatever
+theme is active — the choice is independent of the theme and persists across
+theme switches (stored in `config.yaml` under `dashboard.font`). Choose
+**Theme default** to clear the override and fall back to the active theme's
+own `fontSans`.
+
+The picker offers a curated catalog (system stacks plus a set of Google-Fonts
+families across sans / serif / mono). It deliberately does **not** accept a
+free-text font URL — the font's stylesheet is injected as a `<link>`, so the
+catalog keeps the injected origins fixed. For a fully custom face, set
+`fontSans` + `fontUrl` in a theme YAML as shown above. The theme's `fontMono`
+(code blocks, terminal) is always left untouched by the UI override.
 
 #### Layout
 
@@ -265,6 +281,7 @@ Each built-in ships its own palette, typography, and layout — switching produc
 | Theme | Palette | Typography | Layout |
 |-------|---------|------------|--------|
 | **Hermes Teal** (`default`) | Dark teal + cream | System stack, 15px | 0.5rem radius, comfortable |
+| **Hermes Teal (Large)** (`default-large`) | Same as default | System stack, 18px, line-height 1.65 | 0.5rem radius, spacious |
 | **Midnight** (`midnight`) | Deep blue-violet | Inter + JetBrains Mono, 14px | 0.75rem radius, comfortable |
 | **Ember** (`ember`) | Warm crimson + bronze | Spectral (serif) + IBM Plex Mono, 15px | 0.25rem radius, comfortable |
 | **Mono** (`mono`) | Grayscale | IBM Plex Sans + IBM Plex Mono, 13px | 0 radius, compact |
@@ -414,14 +431,14 @@ If you prefer JSX, use any bundler (esbuild, Vite, rollup) with React as an exte
     ├── dist/
     │   ├── index.js         # required — pre-built JS bundle (IIFE)
     │   └── style.css        # optional — custom CSS
-    └── plugin_api.py        # optional — backend API routes (FastAPI)
+    └── plugin_api.py        # bundled plugins only — backend API routes (FastAPI)
 ```
 
 A single plugin directory can carry three orthogonal extensions:
 
 - `plugin.yaml` + `__init__.py` — CLI/gateway plugin ([see plugins page](./plugins)).
 - `dashboard/manifest.json` + `dashboard/dist/index.js` — dashboard UI plugin.
-- `dashboard/plugin_api.py` — dashboard backend routes.
+- `dashboard/plugin_api.py` — bundled plugins only; backend API routes.
 
 None of them are required; include only the layers you need.
 
@@ -680,7 +697,7 @@ Key points:
 - Multiple plugins can claim the same page-scoped slot. They render stacked in registration order.
 - Zero footprint when no plugin registers: the built-in page renders exactly as before.
 
-The bundled `example-dashboard` plugin ships a live demo that injects a banner into `sessions:top` — install it to see the pattern end-to-end.
+A reference plugin (`example-dashboard` in [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/example-dashboard)) ships a live demo that injects a banner into `sessions:top` — install it to see the pattern end-to-end.
 
 ### Slot-only plugins (`tab.hidden`)
 
@@ -726,7 +743,10 @@ Routes are mounted under `/api/plugins/<name>/`, so the above becomes:
 - `GET  /api/plugins/my-plugin/data`
 - `POST /api/plugins/my-plugin/action`
 
-Plugin API routes bypass session-token authentication since the dashboard server binds to localhost by default. **Don't expose the dashboard on a public interface with `--host 0.0.0.0` if you run untrusted plugins** — their routes become reachable too.
+Security notes:
+
+- Bundled plugin API routes bypass session-token authentication. The dashboard server binds to localhost by default, which mitigates the risks of this bypass.
+- User-installed and project dashboard plugins may still extend the UI with static JS/CSS, but their Python `api` files are not auto-imported by the dashboard server. Backend routes are reserved for bundled plugins.
 
 #### Accessing Hermes internals
 
@@ -787,10 +807,13 @@ The dashboard scans three directories for `dashboard/manifest.json`:
 
 | Priority | Directory | Source label |
 |----------|-----------|--------------|
-| 1 (wins on conflict) | `~/.hermes/plugins/<name>/dashboard/` | `user` |
-| 2 | `<repo>/plugins/memory/<name>/dashboard/` | `bundled` |
-| 2 | `<repo>/plugins/<name>/dashboard/` | `bundled` |
+| 1 (wins on conflict) | `<repo>/plugins/memory/<name>/dashboard/` | `bundled` |
+| 1 (wins on conflict) | `<repo>/plugins/<name>/dashboard/` | `bundled` |
+| 2 | `~/.hermes/plugins/<name>/dashboard/` | `user` |
 | 3 | `./.hermes/plugins/<name>/dashboard/` | `project` — only when `HERMES_ENABLE_PROJECT_PLUGINS` is set |
+
+Bundled dashboard plugins win name conflicts because only bundled plugins may
+register backend routes. Give user and project dashboard plugins unique names.
 
 Discovery results are cached per dashboard process. After adding a new plugin, either:
 
@@ -817,7 +840,7 @@ If a plugin's script fails to load (404, syntax error, exception during IIFE), t
 
 ## Combined theme + plugin demo
 
-The repo ships `plugins/strike-freedom-cockpit/` as a complete reskin demo. It pairs a theme YAML with a slot-only plugin to produce a cockpit-style HUD without forking the dashboard.
+The [`strike-freedom-cockpit`](https://github.com/NousResearch/hermes-example-plugins/tree/main/strike-freedom-cockpit) plugin (companion repo `hermes-example-plugins`) is a complete reskin demo. It pairs a theme YAML with a slot-only plugin to produce a cockpit-style HUD without forking the dashboard.
 
 **What it demonstrates:**
 
@@ -831,17 +854,19 @@ The repo ships `plugins/strike-freedom-cockpit/` as a complete reskin demo. It p
 **Install:**
 
 ```bash
+git clone https://github.com/NousResearch/hermes-example-plugins.git
+
 # Theme
-cp plugins/strike-freedom-cockpit/theme/strike-freedom.yaml \
+cp hermes-example-plugins/strike-freedom-cockpit/theme/strike-freedom.yaml \
    ~/.hermes/dashboard-themes/
 
 # Plugin
-cp -r plugins/strike-freedom-cockpit ~/.hermes/plugins/
+cp -r hermes-example-plugins/strike-freedom-cockpit ~/.hermes/plugins/
 ```
 
 Open the dashboard, pick **Strike Freedom** from the theme switcher. The cockpit sidebar appears, the crest shows in the header, the tagline replaces the footer. Switch back to **Hermes Teal** and the plugin remains installed but invisible (the `sidebar` slot only renders under the `cockpit` layout variant).
 
-Read the plugin source (`plugins/strike-freedom-cockpit/dashboard/dist/index.js`) to see how it reads CSS vars, guards against older dashboards without slot support, and registers three slots from one bundle.
+Read the plugin source (`strike-freedom-cockpit/dashboard/dist/index.js` in the companion repo) to see how it reads CSS vars, guards against older dashboards without slot support, and registers three slots from one bundle.
 
 ---
 
@@ -889,10 +914,11 @@ Check that the file is in `~/.hermes/dashboard-themes/` and ends in `.yaml` or `
 The `sidebar` slot only renders when the active theme has `layoutVariant: cockpit`. Other slots always render. If you're registering into a slot with no hits, add `console.log` inside `registerSlot` to confirm the plugin bundle ran at all.
 
 **Plugin backend routes return 404.**
-1. Confirm the manifest has `"api": "plugin_api.py"` pointing to an existing file inside `dashboard/`.
-2. Restart `hermes dashboard` — plugin API routes are mounted once at startup, **not** on rescan.
-3. Check that `plugin_api.py` exports a module-level `router = APIRouter()`. Other export names are not picked up.
-4. Tail `~/.hermes/logs/errors.log` for `Failed to load plugin <name> API routes` — import errors are logged there.
+1. Confirm the plugin is bundled with Hermes. User-installed and project dashboard plugins can extend the UI, but their Python backend routes are not auto-imported.
+2. Confirm the manifest has `"api": "plugin_api.py"` pointing to an existing file inside `dashboard/`.
+3. Restart `hermes dashboard` — plugin API routes are mounted once at startup, **not** on rescan.
+4. Check that `plugin_api.py` exports a module-level `router = APIRouter()`. Other export names are not picked up.
+5. Tail `~/.hermes/logs/errors.log` for `Failed to load plugin <name> API routes` — import errors are logged there.
 
 **Theme change drops my color overrides.**
 `colorOverrides` are scoped to the active theme and cleared on theme switch — that's by design. If you want overrides that persist, put them in your theme's YAML, not in the live switcher.

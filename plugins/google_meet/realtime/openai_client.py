@@ -183,7 +183,7 @@ class RealtimeSession:
                     rid = (frame.get("response") or {}).get("id")
                     if rid:
                         self._last_response_id = rid
-                elif ftype in ("response.done", "response.completed", "response.cancelled"):
+                elif ftype in {"response.done", "response.completed", "response.cancelled"}:
                     break
                 elif ftype == "error":
                     err = frame.get("error") or frame
@@ -292,7 +292,7 @@ class RealtimeSpeaker:
             return
         self.processed_path.parent.mkdir(parents=True, exist_ok=True)
         record = {"id": entry.get("id"), "text": entry.get("text", ""), "result": result}
-        with open(self.processed_path, "a") as fp:
+        with open(self.processed_path, "a", encoding="utf-8") as fp:
             fp.write(json.dumps(record) + "\n")
 
     # ── main loop ────────────────────────────────────────────────────────

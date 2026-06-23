@@ -11,7 +11,6 @@ asserting the expected env var outcomes.
 
 import os
 import json
-import pytest
 
 
 def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
@@ -33,13 +32,18 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             "backend": "TERMINAL_ENV",
             "cwd": "TERMINAL_CWD",
             "timeout": "TERMINAL_TIMEOUT",
+            "home_mode": "TERMINAL_HOME_MODE",
+            "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+            "container_cpu": "TERMINAL_CONTAINER_CPU",
+            "container_memory": "TERMINAL_CONTAINER_MEMORY",
+            "container_disk": "TERMINAL_CONTAINER_DISK",
         }
         for cfg_key, env_var in terminal_env_map.items():
             if cfg_key in terminal_cfg:
                 val = terminal_cfg[cfg_key]
                 # Skip cwd placeholder values — don't overwrite already-resolved
                 # TERMINAL_CWD.  Mirrors the fix in gateway/run.py.
-                if cfg_key == "cwd" and str(val) in (".", "auto", "cwd"):
+                if cfg_key == "cwd" and str(val) in {".", "auto", "cwd"}:
                     continue
                 # Expand shell tilde so subprocess.Popen never receives a literal
                 # "~/" which the kernel rejects.
@@ -65,7 +69,7 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
 
     # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
     configured_cwd = env.get("TERMINAL_CWD", "")
-    if not configured_cwd or configured_cwd in (".", "auto", "cwd"):
+    if not configured_cwd or configured_cwd in {".", "auto", "cwd"}:
         messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
         env["TERMINAL_CWD"] = messaging_cwd
 
@@ -211,6 +215,11 @@ class TestNestedTerminalCwdPlaceholderSkip:
         assert result["TERMINAL_ENV"] == "docker"
         assert result["TERMINAL_TIMEOUT"] == "300"
         assert result["TERMINAL_CWD"] == "/from/env"
+
+    def test_terminal_home_mode_bridges_to_env(self):
+        cfg = {"terminal": {"home_mode": "profile"}}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_HOME_MODE"] == "profile"
 
 
 class TestTildeExpansion:

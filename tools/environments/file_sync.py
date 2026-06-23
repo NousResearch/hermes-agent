@@ -9,6 +9,7 @@ view) and don't need this.
 import hashlib
 import logging
 import os
+import posixpath
 import shlex
 import shutil
 import signal
@@ -28,6 +29,12 @@ from hermes_constants import get_hermes_home
 from tools.environments.base import _file_mtime_key
 
 logger = logging.getLogger(__name__)
+
+# Keep retry sleeps patchable without mutating the shared stdlib ``time``
+# module. Patching ``tools.environments.file_sync.time.sleep`` replaces
+# ``time.sleep`` globally because ``time`` is the module object; under xdist
+# that lets unrelated background threads inflate retry-test call counts.
+_sleep = time.sleep
 
 _SYNC_INTERVAL_SECONDS = 5.0
 _FORCE_SYNC_ENV = "HERMES_FORCE_FILE_SYNC"
@@ -81,7 +88,7 @@ def quoted_mkdir_command(dirs: list[str]) -> str:
 
 def unique_parent_dirs(files: list[tuple[str, str]]) -> list[str]:
     """Extract sorted unique parent directories from (host, remote) pairs."""
-    return sorted({str(Path(remote).parent) for _, remote in files})
+    return sorted({posixpath.dirname(remote) for _, remote in files})
 
 
 def _sha256_file(path: str) -> str:
@@ -243,7 +250,7 @@ class FileSyncManager:
                         "sync_back: attempt %d failed (%s), retrying in %ds",
                         attempt + 1, exc, delay,
                     )
-                    time.sleep(delay)
+                    _sleep(delay)
 
         logger.warning("sync_back: all %d attempts failed: %s", _SYNC_BACK_MAX_RETRIES, last_exc)
 
@@ -278,12 +285,15 @@ class FileSyncManager:
             # Windows: no flock — run without serialization
             self._sync_back_impl()
             return
-        lock_fd = open(lock_path, "w")
+        lock_fd = open(lock_path, "w", encoding="utf-8")
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             self._sync_back_impl()
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
             lock_fd.close()
 
     def _sync_back_impl(self) -> None:

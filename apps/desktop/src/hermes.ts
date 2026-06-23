@@ -8,6 +8,7 @@ import type {
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
+  ComputerUseStatus,
   ConfigSchemaResponse,
   CronJob,
   CronJobCreatePayload,
@@ -18,6 +19,7 @@ import type {
   HermesConfigRecord,
   LogsResponse,
   MemoryProviderConfig,
+  MemoryProviderOAuthStatus,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
@@ -59,6 +61,9 @@ export type {
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
+  ComputerUseCheck,
+  ComputerUsePermissionSource,
+  ComputerUseStatus,
   ConfigFieldSchema,
   ConfigSchemaResponse,
   CronJob,
@@ -73,6 +78,7 @@ export type {
   HermesConfigRecord,
   LogsResponse,
   MemoryProviderConfig,
+  MemoryProviderOAuthStatus,
   MessagingEnvVarInfo,
   MessagingHomeChannel,
   MessagingPlatformInfo,
@@ -453,6 +459,23 @@ export function cancelOAuthSession(sessionId: string): Promise<{ ok: boolean }> 
   })
 }
 
+// Memory-provider OAuth connect (provider-keyed; 404s for providers without an
+// OAuth flow). Profile-scoped: the grant lands in the active profile's config.
+export function startMemoryProviderOAuth(provider: string): Promise<MemoryProviderOAuthStatus> {
+  return window.hermesDesktop.api<MemoryProviderOAuthStatus>({
+    ...profileScoped(),
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/start`,
+    method: 'POST'
+  })
+}
+
+export function getMemoryProviderOAuthStatus(provider: string): Promise<MemoryProviderOAuthStatus> {
+  return window.hermesDesktop.api<MemoryProviderOAuthStatus>({
+    ...profileScoped(),
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/status`
+  })
+}
+
 export function getSkills(): Promise<SkillInfo[]> {
   return window.hermesDesktop.api<SkillInfo[]>({
     ...profileScoped(),
@@ -513,6 +536,21 @@ export function runToolsetPostSetup(name: string, key: string): Promise<ActionRe
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
     method: 'POST',
     body: { key }
+  })
+}
+
+export function getComputerUseStatus(): Promise<ComputerUseStatus> {
+  return window.hermesDesktop.api<ComputerUseStatus>({
+    ...profileScoped(),
+    path: '/api/tools/computer-use/status'
+  })
+}
+
+export function grantComputerUsePermissions(): Promise<ActionResponse> {
+  return window.hermesDesktop.api<ActionResponse>({
+    ...profileScoped(),
+    path: '/api/tools/computer-use/permissions/grant',
+    method: 'POST'
   })
 }
 

@@ -458,14 +458,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
-      // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
-      // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
-      // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
-      // without a selection it passes through to the TUI so agents can still
-      // react to the keypress.
-      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
+      // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms.
       const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
-      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
 
       if (copyModifier && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
@@ -485,18 +479,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // (or the bare ev if the user used a different modifier).
       }
 
-      if (pasteModifier && ev.key.toLowerCase() === "v") {
-        navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text) term.paste(text);
-          })
-          .catch((err) => {
-            console.warn("[dashboard clipboard] paste failed:", err.message);
-          });
-        ev.preventDefault();
-        return false;
-      }
+      // Cmd+V paste on macOS is handled by xterm.js internally.
+      // xterm.js's key handler calls navigator.clipboard.readText()
+      // which may show a one-time WKWebView permission dialog ("粘贴").
+      // After the user clicks Allow, the permission is remembered in
+      // ~/Library/WebKit/local.hermes.agent.desktop/ and the dialog
+      // does not re-appear unless the data store is cleared.
+      //
+      // We intentionally do NOT intercept Cmd+V here — letting xterm.js
+      // handle it ensures the native paste event path stays intact.
 
       return true;
     });
@@ -505,21 +496,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     fitRef.current = fit;
     term.loadAddon(fit);
 
-    // Dashboard chat should scroll the browser-side transcript, not send
-    // mouse-wheel protocol bytes through the PTY.
-    term.attachCustomWheelEventHandler((ev) => {
-      const delta = ev.deltaY;
-      if (!delta) {
-        return false;
-      }
-
-      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      term.scrollLines(delta > 0 ? step : -step);
-
-      ev.preventDefault();
-      ev.stopPropagation();
-      return false;
-    });
+    // Let the TUI handle wheel scrolling natively.  With
+    // HERMES_TUI_MOUSE_TRACKING=wheel, DEC 1006 forwards wheel events
+    // through the PTY to Ink's renderer.  No custom handler needed —
+    // mouse tracking on the TUI side already handles transcript scrolling.
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
@@ -655,6 +635,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let unmounting = false;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
+    let wheelDisposable: { dispose(): void } | null = null;
     void (async () => {
       const authParam = await buildWsAuthParam();
       if (unmounting) return;
@@ -756,31 +737,30 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setSessionEnded(true);
     };
 
-    // Keystrokes → PTY.
+    // Keystrokes + mouse → PTY.
     //
-    // IMPORTANT:
-    // The embedded web chat has occasionally surfaced stray letters/digits
-    // in the input line after a turn completes. The most likely culprit is
-    // browser-side terminal control traffic being forwarded back into the
-    // PTY as if it were user text. SGR mouse tracking is the highest-risk
-    // path here: xterm.js emits raw CSI reports (`\x1b[<...`) that look like
-    // ordinary bytes to the backend.
-    //
-    // For the browser embed we prefer input stability over terminal-style
-    // mouse reporting, so we drop SGR mouse reports entirely instead of
-    // forwarding them into Hermes. Keyboard input, paste, and resize still
-    // behave normally.
-      // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
-      const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
-      onDataDisposable = term.onData((data) => {
+    // All keystrokes and SGR mouse events are forwarded to the PTY.
+    // SGR wheel-event filtering is handled server-side in the PTY
+    // bridge (web_server.py) so the browser scroll wheel still works.
+    onDataDisposable = term.onData((data) => {
         if (ws.readyState !== WebSocket.OPEN) return;
-
-        if (SGR_MOUSE_RE.test(data)) {
-          return;
-        }
-
         ws.send(data);
-      });
+    });
+
+      // When SGR mouse tracking (mode 1000) is active xterm.js forwards
+      // wheel events to the PTY instead of scrolling its viewport.
+      // Intercept the wheel at the DOM level: scroll the terminal
+      // viewport directly, then preventDefault so xterm.js never sees it.
+      const onWheel = (e: WheelEvent) => {
+        const delta = e.deltaY > 0 ? 3 : -3;
+        term.scrollLines(delta);
+        e.preventDefault();
+        e.stopPropagation();
+      };
+      term.element!.addEventListener("wheel", onWheel, { passive: false });
+      wheelDisposable = {
+        dispose: () => term.element!.removeEventListener("wheel", onWheel),
+      };
 
       onResizeDisposable = term.onResize(({ cols, rows }) => {
         if (ws.readyState === WebSocket.OPEN) {
@@ -796,6 +776,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       syncMetricsRef.current = null;
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
+      wheelDisposable?.dispose();
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(

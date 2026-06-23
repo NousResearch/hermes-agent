@@ -5368,7 +5368,7 @@ class TestPtyWebSocket:
 
         assert env["HERMES_TUI_DASHBOARD"] == "1"
         assert env["HERMES_TUI_INLINE"] == "1"
-        assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
+        assert env["HERMES_TUI_MOUSE_TRACKING"] == "wheel"
 
     def test_resolve_chat_argv_applies_terminal_backend_config(
         self, monkeypatch, _isolate_hermes_home

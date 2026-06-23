@@ -3973,41 +3973,59 @@ def run_conversation(
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
-                    _turn_exit_reason = "guardrail_halt"
-                    final_response = agent._toolguard_controlled_halt_response(decision)
-                    agent._emit_status(
-                        f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
-                    )
-                    # Append a short, structured model-facing observation as a
-                    # tool result — NOT the user-facing halt response.  This
-                    # tells the model to change strategy without giving it a
-                    # natural-language assistant response to echo back.
-                    # Tag it so _persist_session can strip it before writing
-                    # to session DB (guardrail content must not be persisted).
-                    messages.append({
-                        "role": "tool",
-                        "content": (
-                            f"TOOL_GUARDRAIL_BLOCKED: repeated identical "
-                            f"{decision.tool_name} call blocked "
-                            f"({decision.code}). Change strategy; do not "
-                            f"retry the same tool call with the same arguments."
-                        ),
-                        "_guardrail_ephemeral": True,  # strip before persist
-                    })
-                    # Emit the halt message to the client so it's not
-                    # indistinguishable from a crash.  The stream display
-                    # was flushed (callback(None)) before tool execution,
-                    # but the callback is still alive — fire the text
-                    # through it so SSE/TUI clients see the explanation.
-                    if final_response:
-                        agent._safe_print(f"\n{final_response}\n")
-                        if agent.stream_delta_callback:
-                            try:
-                                agent.stream_delta_callback(final_response)
-                                agent.stream_delta_callback(None)
-                            except Exception:
-                                pass
-                    break
+
+                    # Recovery mode: instead of halting immediately, give the model
+                    # a chance to re-plan. Track recovery attempts and blocked
+                    # signatures to prevent infinite recovery loops.
+                    controller = agent._tool_guardrails
+                    controller.record_recovery(decision.signature)
+
+                    # Check if recovery budget is exhausted — if so, final halt.
+                    if controller.recovery_exhausted:
+                        _turn_exit_reason = "guardrail_halt"
+                        final_response = agent._toolguard_controlled_halt_response(decision)
+                        agent._emit_status(
+                            f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code} "
+                            f"(after {controller.recovery_attempts} recovery attempts)"
+                        )
+                        # Emit the halt message to the client
+                        if final_response:
+                            agent._safe_print(f"\n{final_response}\n")
+                            if agent.stream_delta_callback:
+                                try:
+                                    agent.stream_delta_callback(final_response)
+                                    agent.stream_delta_callback(None)
+                                except Exception:
+                                    pass
+                        break
+                    else:
+                        # Recovery attempt: append structured observation and continue loop.
+                        agent._emit_status(
+                            f"⚠️ Tool guardrail blocked {decision.tool_name}: {decision.code} "
+                            f"(recovery attempt {controller.recovery_attempts}/{controller._max_recovery_attempts})"
+                        )
+                        # Append a short, structured model-facing recovery observation.
+                        # Tag it so _persist_session can strip it before writing
+                        # to session DB (guardrail content must not be persisted).
+                        messages.append({
+                            "role": "tool",
+                            "content": (
+                                f"TOOL_GUARDRAIL_RECOVERY_REQUIRED: blocked_tool={decision.tool_name}; "
+                                f"blocked_code={decision.code}; "
+                                f"recovery_attempt={controller.recovery_attempts}/{controller._max_recovery_attempts}; "
+                                f"The previous tool call made no progress repeatedly. "
+                                f"Do not retry the same tool with the same arguments. "
+                                f"Re-plan from the original user goal. First diagnose why "
+                                f"the previous strategy failed, then choose a materially "
+                                f"different strategy or provide a final answer if no "
+                                f"viable alternative exists."
+                            ),
+                            "_guardrail_ephemeral": True,  # strip before persist
+                        })
+                        # Clear the halt decision so the loop can continue
+                        agent._tool_guardrail_halt_decision = None
+                        # Continue the agent loop — do NOT break
+                        continue
 
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the

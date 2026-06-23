@@ -276,7 +276,12 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
 
 
 class ToolCallGuardrailController:
-    """Per-turn controller for repeated failed/non-progressing tool calls."""
+    """Per-turn controller for repeated failed/non-progressing tool calls.
+
+    Includes recovery budget tracking: after a guardrail block, the agent gets
+    a limited number of recovery attempts (default: 2) to re-plan. If recovery
+    also blocks, the turn is finally halted.
+    """
 
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
         self.config = config or ToolCallGuardrailConfig()
@@ -291,6 +296,11 @@ class ToolCallGuardrailController:
         self._turn_counter: int = 0
         self._halt_decision: ToolGuardrailDecision | None = None
         self._cross_turn_ttl: int = 10  # forget entries older than N turns
+        # Recovery budget: after a guardrail block, allow N recovery attempts
+        # before final halt. Prevents infinite recovery loops.
+        self._recovery_attempts: int = 0
+        self._max_recovery_attempts: int = 2
+        self._blocked_signatures: set[ToolCallSignature] = set()  # signatures blocked this turn
 
     def reset_for_turn(self) -> None:
         self._turn_counter += 1
@@ -298,6 +308,9 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts = {}
         self._no_progress = {}
         self._halt_decision = None
+        # Reset recovery budget for each new turn
+        self._recovery_attempts = 0
+        self._blocked_signatures = set()
         # Prune stale cross-turn entries so the dict doesn't grow unbounded.
         _cutoff = self._turn_counter - self._cross_turn_ttl
         self._no_progress_cross_turn = {
@@ -310,10 +323,50 @@ class ToolCallGuardrailController:
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
 
+    @property
+    def recovery_attempts(self) -> int:
+        """Number of recovery attempts used in the current turn."""
+        return self._recovery_attempts
+
+    @property
+    def recovery_exhausted(self) -> bool:
+        """True if the recovery budget is exhausted — must final halt."""
+        return self._recovery_attempts >= self._max_recovery_attempts
+
+    def record_recovery(self, signature: ToolCallSignature) -> None:
+        """Record a recovery attempt after a guardrail block.
+
+        Increments the recovery counter and tracks the blocked signature
+        so the same signature cannot be retried during recovery.
+        """
+        self._recovery_attempts += 1
+        self._blocked_signatures.add(signature)
+
+    def is_signature_blocked(self, signature: ToolCallSignature) -> bool:
+        """Check if a signature was previously blocked this turn."""
+        return signature in self._blocked_signatures
+
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+
+        # Check if this signature was previously blocked this turn (recovery retry guard)
+        if self.is_signature_blocked(signature):
+            decision = ToolGuardrailDecision(
+                action="block",
+                code="recovery_retry_block",
+                message=(
+                    f"Blocked {tool_name}: this call was already blocked this turn. "
+                    "Recovery requires a materially different strategy; do not retry "
+                    "the same blocked call."
+                ),
+                tool_name=tool_name,
+                count=self._recovery_attempts,
+                signature=signature,
+            )
+            self._halt_decision = decision
+            return decision
 
         exact_count = self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:

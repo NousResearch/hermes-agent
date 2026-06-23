@@ -44,6 +44,7 @@ import {
   $composerPopoutPosition,
   $composerPoppedOut,
   POPOUT_WIDTH_REM,
+  readPopoutBounds,
   setComposerPoppedOut,
   setComposerPopoutPosition
 } from '@/store/composer-popout'
@@ -59,6 +60,7 @@ import {
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
+import { $previewStatusBySession } from '@/store/preview-status'
 import { notify } from '@/store/notifications'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
@@ -194,6 +196,7 @@ export function ChatBar({
   const attachments = useStore($composerAttachments)
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const statusItemsBySession = useStore($statusItemsBySession)
+  const previewStatusBySession = useStore($previewStatusBySession)
   const scrolledUp = useStore($threadScrolledUp)
   // Pop-out is a shared, persisted state — but secondary windows (the Ctrl+Shift+N
   // tiny window, subagent watch windows) always start docked and can't pop out:
@@ -216,8 +219,12 @@ export function ChatBar({
 
   const statusStackVisible = useMemo(
     () =>
-      queuedPrompts.length > 0 || (statusSessionId ? (statusItemsBySession[statusSessionId]?.length ?? 0) > 0 : false),
-    [queuedPrompts.length, statusItemsBySession, statusSessionId]
+      queuedPrompts.length > 0 ||
+      (statusSessionId
+        ? (statusItemsBySession[statusSessionId]?.length ?? 0) > 0 ||
+          (previewStatusBySession[statusSessionId]?.length ?? 0) > 0
+        : false),
+    [previewStatusBySession, queuedPrompts.length, statusItemsBySession, statusSessionId]
   )
 
   const composerRef = useRef<HTMLFormElement | null>(null)
@@ -542,9 +549,12 @@ export function ChatBar({
     syncComposerMetrics()
   }, [poppedOut, syncComposerMetrics])
 
-  // Keep the floating box on-screen: re-clamp (with the real measured size) when
-  // it pops out and whenever the window resizes — so a position persisted on a
-  // bigger/other monitor, or a shrunk window, can never strand it out of reach.
+  // Keep the floating box on-screen: re-clamp (with the real measured size +
+  // thread bounds) when it pops out and on every window resize — so a position
+  // persisted on a bigger/other monitor, a shrunk window, or now-wider sidebar
+  // can never strand it. The rAF pass re-clamps after layout settles (sidebar
+  // widths, fonts), so anyone loading in out of bounds is pulled back + saved
+  // even if the first measure was premature.
   useEffect(() => {
     if (!poppedOut) {
       return undefined
@@ -553,14 +563,18 @@ export function ChatBar({
     const reclamp = (persist: boolean) => {
       const el = composerRef.current
       const size = el ? { height: el.offsetHeight, width: el.offsetWidth } : undefined
-      setComposerPopoutPosition($composerPopoutPosition.get(), { persist, size })
+      setComposerPopoutPosition($composerPopoutPosition.get(), { area: readPopoutBounds(el), persist, size })
     }
 
     reclamp(true)
+    const raf = requestAnimationFrame(() => reclamp(true))
     const onResize = () => reclamp(false)
     window.addEventListener('resize', onResize)
 
-    return () => window.removeEventListener('resize', onResize)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('resize', onResize)
+    }
   }, [poppedOut])
 
   useEffect(() => {

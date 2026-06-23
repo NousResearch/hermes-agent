@@ -1535,6 +1535,25 @@ DEFAULT_CONFIG = {
             "timeout": 60,
             "extra_body": {},
         },
+        # Background review — the post-turn self-improvement fork that decides
+        # whether to save a memory / patch a skill. "auto" (default) = run on
+        # the main chat model, replaying the full conversation, which is already
+        # warm in the prompt cache (cheap cache reads) — unchanged, optimal.
+        # Set provider/model to a cheaper model (e.g. openrouter
+        # google/gemini-3-flash-preview) to run the review there for ~3-5x lower
+        # cost. A different model can't reuse the main prompt cache anyway, so
+        # the fork automatically replays a compact digest instead of the full
+        # transcript when routed (minimises the cold-write). Same model = full
+        # replay; different model = digest. Quality holds (memory capture
+        # identical, skill near-identical in benchmarks).
+        "background_review": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 120,
+            "extra_body": {},
+        },
     },
     
     "display": {
@@ -2793,6 +2812,17 @@ DEFAULT_CONFIG = {
     "paste_collapse_threshold": 5,
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
+
+    # Computer Use (cua-driver) toolset settings.
+    "computer_use": {
+        # cua-driver ships with anonymous usage telemetry (PostHog) ENABLED
+        # by default upstream. Hermes disables it for our users unless they
+        # explicitly opt in here. When false (default), Hermes sets
+        # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in the cua-driver child env for
+        # every invocation (MCP backend, status, doctor, install). Set true
+        # to let cua-driver use its own default (telemetry on).
+        "cua_telemetry": False,
+    },
 
 
     # Config schema version - bump this when adding new required fields

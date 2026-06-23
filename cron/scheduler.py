@@ -316,17 +316,9 @@ def _get_hermes_home() -> Path:
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
-    """Resolve cron lock paths at call time so profile/env changes are honored.
-
-    Anchored on the DEFAULT ROOT home (not the active profile), matching the
-    jobs store in cron.jobs (which uses get_default_hermes_root). The tick lock
-    is storage-coordination — it must live next to the single jobs.json so that
-    tickers running under different profiles share one lock and can't
-    double-fire the relocated store (#32091). Execution context (.env,
-    config.yaml, scripts) stays profile-aware via _get_hermes_home().
-    """
-    from hermes_constants import get_default_hermes_root
-    lock_dir = (_hermes_home or get_default_hermes_root()) / "cron"
+    """Resolve cron lock paths at call time so profile/env changes are honored."""
+    hermes_home = _get_hermes_home()
+    lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
 
 
@@ -2189,13 +2181,27 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # would otherwise be delivered as if it were the agent's reply and the
         # job's `last_status` set to "ok". Raise so the except handler below
         # builds the proper failure tuple. (issue #17855)
-        if result.get("failed") is True or result.get("completed") is False:
+        turn_exit_reason = str(result.get("turn_exit_reason") or "")
+        final_response_text = (result.get("final_response") or "").strip()
+        max_iteration_summary = (
+            result.get("failed") is not True
+            and result.get("completed") is False
+            and turn_exit_reason.startswith("max_iterations_reached(")
+            and bool(final_response_text)
+        )
+        if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
             _err_text = (
                 result.get("error")
-                or (result.get("final_response") or "").strip()
+                or final_response_text
                 or "agent reported failure"
             )
             raise RuntimeError(_err_text)
+        if max_iteration_summary:
+            logger.warning(
+                "Job '%s' reached the iteration limit but produced a final fallback response; "
+                "delivering the response instead of failing the cron run",
+                job_name,
+            )
 
         final_response = result.get("final_response", "") or ""
         # Strip leaked placeholder text that upstream may inject on empty completions.

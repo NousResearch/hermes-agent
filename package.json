@@ -40,6 +40,15 @@
     "@assistant-ui/store": "0.2.13",
     "yauzl": "^3.3.1"
   },
+  "allowScripts": {
+    "agent-browser@0.26.0": true,
+    "electron@40.10.2": true,
+    "electron-winstaller@5.4.0": true,
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true,
+    "node-pty@1.1.0": true,
+    "unicode-animations@1.0.3": true
+  },
   "engines": {
     "node": ">=20.0.0"
   }

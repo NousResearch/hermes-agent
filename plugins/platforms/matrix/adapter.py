@@ -432,6 +432,50 @@ def _looks_like_matrix_image_filename(text: str) -> bool:
     return suffix in _MATRIX_IMAGE_FILENAME_EXTS
 
 
+def _strip_matrix_reply_fallback(body: str) -> str:
+    """Remove the ``> `` quoted reply fallback Matrix prepends to a reply body.
+
+    The Matrix reply spec asks senders to prefix the replied-to text as ``> ``
+    lines terminated by a blank line, so clients that don't render rich replies
+    still show context. The agent only wants the new message, so the fallback is
+    dropped.
+    """
+    if not body.startswith("> "):
+        return body
+
+    stripped = []
+    past_fallback = False
+    for line in body.split("\n"):
+        if not past_fallback:
+            if line.startswith("> ") or line == ">":
+                continue
+            if line == "":
+                past_fallback = True
+                continue
+            past_fallback = True
+        stripped.append(line)
+
+    return "\n".join(stripped)
+
+
+@dataclass(frozen=True)
+class _MatrixReplyContext:
+    """Resolved content of the event a message replies to.
+
+    A Matrix reply only references the replied-to event by id; its body and
+    sender have to be fetched separately. An all-unset instance means there is
+    no reply context to surface (not a reply, or the fetch failed).
+    """
+
+    text: Optional[str] = None
+    author_id: Optional[str] = None
+    author_name: Optional[str] = None
+    is_own_message: bool = False
+
+
+_EMPTY_REPLY_CONTEXT = _MatrixReplyContext()
+
+
 def _matrix_event_timestamp_seconds(event: Any) -> float:
     """Return a Matrix event timestamp in seconds, accepting ms or sec values."""
     raw_ts = (
@@ -2623,27 +2667,19 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         body, is_dm, chat_type, thread_id, display_name, source = ctx
 
-        # Reply-to detection.
-        reply_to = None
+        # Reply-to detection. A threaded message carries an m.in_reply_to that
+        # "falls back" to the previous event in the thread; that is thread
+        # linkage, not a user-intended reply, so it must not become reply
+        # context. The quoted-fallback prefix is still stripped either way.
         in_reply_to = relates_to.get("m.in_reply_to", {})
-        if in_reply_to:
-            reply_to = in_reply_to.get("event_id")
+        in_reply_to_id = in_reply_to.get("event_id") if in_reply_to else None
+        reply_to = None if relates_to.get("is_falling_back") else in_reply_to_id
 
-        # Strip reply fallback from body.
-        if reply_to and body.startswith("> "):
-            lines = body.split("\n")
-            stripped = []
-            past_fallback = False
-            for line in lines:
-                if not past_fallback:
-                    if line.startswith("> ") or line == ">":
-                        continue
-                    if line == "":
-                        past_fallback = True
-                        continue
-                    past_fallback = True
-                stripped.append(line)
-            body = "\n".join(stripped) if stripped else body
+        # Strip reply fallback from body. Keep the original when stripping would
+        # empty it (a reply whose body is nothing but the quoted fallback) so the
+        # message isn't silently reduced to nothing.
+        if in_reply_to_id:
+            body = _strip_matrix_reply_fallback(body) or body
 
         # Re-run bang normalization after reply-fallback stripping so a quoted
         # reply whose actual content is a bang command (e.g. ``> quoted\n\n!model``)
@@ -2654,6 +2690,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if body.startswith("/"):
             msg_type = MessageType.COMMAND
 
+        reply_ctx = await self._resolve_reply_context(room_id, reply_to)
+
         msg_event = MessageEvent(
             text=body,
             message_type=msg_type,
@@ -2661,6 +2699,10 @@ class MatrixAdapter(BasePlatformAdapter):
             raw_message=source_content,
             message_id=event_id,
             reply_to_message_id=reply_to,
+            reply_to_text=reply_ctx.text,
+            reply_to_author_id=reply_ctx.author_id,
+            reply_to_author_name=reply_ctx.author_name,
+            reply_to_is_own_message=reply_ctx.is_own_message,
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -2860,6 +2902,12 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         media_types = [media_type] if media_urls else None
 
+        in_reply_to = relates_to.get("m.in_reply_to", {})
+        in_reply_to_id = in_reply_to.get("event_id") if in_reply_to else None
+        reply_to = None if relates_to.get("is_falling_back") else in_reply_to_id
+
+        reply_ctx = await self._resolve_reply_context(room_id, reply_to)
+
         msg_event = MessageEvent(
             text=body,
             message_type=msg_type,
@@ -2868,6 +2916,11 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=event_id,
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_message_id=reply_to,
+            reply_to_text=reply_ctx.text,
+            reply_to_author_id=reply_ctx.author_id,
+            reply_to_author_name=reply_ctx.author_name,
+            reply_to_is_own_message=reply_ctx.is_own_message,
         )
 
         await self.handle_message(msg_event)
@@ -3491,6 +3544,75 @@ class MatrixAdapter(BasePlatformAdapter):
             "msgtype": str(content.get("msgtype", "")),
             "body": str(content.get("body", "")),
         }
+
+    @staticmethod
+    def _extract_event_body(event: Any) -> str:
+        """Pull the message body out of a fetched event (typed or raw dict).
+
+        Every mautrix ``MessageEventContent`` subtype exposes ``body`` as a
+        direct attribute, so the attribute is read in preference to
+        ``serialize()`` — the serialized form prefixes an edit's body with
+        ``"* "``, which must not leak into the quoted context.
+        """
+        content = getattr(event, "content", None)
+        if content is None and isinstance(event, dict):
+            content = event.get("content")
+        if content is None:
+            return ""
+        if isinstance(content, dict):
+            return str(content.get("body", "") or "")
+        return str(getattr(content, "body", "") or "")
+
+    async def _resolve_reply_context(
+        self,
+        room_id: str,
+        reply_to_event_id: Optional[str],
+    ) -> _MatrixReplyContext:
+        """Fetch the replied-to event so the agent can see what it references.
+
+        Matrix delivers only the new message; the body and sender of the event
+        being replied to live in a separate event that must be fetched from the
+        homeserver. Returns an empty context when there is no event to resolve,
+        when the event can't be fetched, or when it carries no body — a failed
+        fetch must never block handling of the new message.
+        """
+        if not reply_to_event_id:
+            return _EMPTY_REPLY_CONTEXT
+
+        client = self._client
+        get_event = getattr(client, "get_event", None) if client else None
+        if not callable(get_event):
+            return _EMPTY_REPLY_CONTEXT
+
+        try:
+            event = await get_event(RoomID(room_id), EventID(reply_to_event_id))
+        except Exception as exc:
+            logger.debug(
+                "Matrix: could not fetch replied-to event %s in %s: %s",
+                reply_to_event_id,
+                room_id,
+                exc,
+            )
+            return _EMPTY_REPLY_CONTEXT
+
+        body = _strip_matrix_reply_fallback(self._extract_event_body(event))
+        if not body:
+            return _EMPTY_REPLY_CONTEXT
+
+        sender = str(getattr(event, "sender", "") or "")
+        if not sender and isinstance(event, dict):
+            sender = str(event.get("sender", ""))
+
+        author_name = await self._get_display_name(room_id, sender) if sender else ""
+        own = (self._user_id or "").strip().lower()
+        is_own = bool(own) and sender.strip().lower() == own
+
+        return _MatrixReplyContext(
+            text=body,
+            author_id=sender or None,
+            author_name=author_name or None,
+            is_own_message=is_own,
+        )
 
     # ------------------------------------------------------------------
     # Presence

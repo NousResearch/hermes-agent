@@ -927,6 +927,256 @@ class TestMatrixThreadDetection:
 
 
 # ---------------------------------------------------------------------------
+# Reply context (replied-to message content)
+# ---------------------------------------------------------------------------
+
+class TestMatrixReplyContext:
+    """A Matrix reply only carries the replied-to event's *id*, not its body.
+
+    The body and sender live in a separate event that has to be fetched from
+    the homeserver before the agent can be told what the user is replying to.
+    Without this the bot has the reference but not the content.
+    """
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter._text_batch_delay_seconds = 0
+        self.adapter._require_mention = False
+        self.adapter._free_rooms = set()
+        self.adapter._get_display_name = AsyncMock(
+            side_effect=lambda room_id, user_id: {
+                "@bob:example.org": "Bob",
+                "@bot:example.org": "Hermes",
+                "@alice:example.org": "Alice",
+            }.get(user_id, user_id)
+        )
+
+    @staticmethod
+    def _client_returning(*, sender, body, content=None):
+        if content is None:
+            content = {"msgtype": "m.text", "body": body}
+        event = types.SimpleNamespace(
+            event_id="$parent-event",
+            sender=sender,
+            content=content,
+        )
+        client = MagicMock()
+        client.get_event = AsyncMock(return_value=event)
+        return client
+
+    async def _dispatch_reply(
+        self,
+        *,
+        client,
+        relates_to=None,
+        body="what does this mean?",
+    ):
+        captured = None
+        self.adapter._client = client
+        if relates_to is None:
+            relates_to = {"m.in_reply_to": {"event_id": "$parent-event"}}
+
+        async def capture(msg_event):
+            nonlocal captured
+            captured = msg_event
+
+        self.adapter.handle_message = capture
+        await self.adapter._handle_text_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$reply-event",
+            event_ts=0.0,
+            source_content={"msgtype": "m.text", "body": body},
+            relates_to=relates_to,
+        )
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_reply_to_another_user_populates_context(self):
+        client = self._client_returning(
+            sender="@bob:example.org", body="The meeting is at 3pm."
+        )
+        captured = await self._dispatch_reply(client=client)
+
+        assert captured is not None
+        assert captured.reply_to_message_id == "$parent-event"
+        assert captured.reply_to_text == "The meeting is at 3pm."
+        assert captured.reply_to_author_id == "@bob:example.org"
+        assert captured.reply_to_author_name == "Bob"
+        assert captured.reply_to_is_own_message is False
+        client.get_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reply_to_own_message_sets_is_own(self):
+        client = self._client_returning(
+            sender="@bot:example.org", body="Here is the summary you asked for."
+        )
+        captured = await self._dispatch_reply(client=client)
+
+        assert captured is not None
+        assert captured.reply_to_text == "Here is the summary you asked for."
+        assert captured.reply_to_author_id == "@bot:example.org"
+        assert captured.reply_to_is_own_message is True
+
+    @pytest.mark.asyncio
+    async def test_reply_strips_quoted_fallback_from_fetched_body(self):
+        client = self._client_returning(
+            sender="@bob:example.org",
+            body="> <@carol:example.org> earlier note\n\nThe real answer is 42.",
+        )
+        captured = await self._dispatch_reply(client=client)
+
+        assert captured is not None
+        assert captured.reply_to_text == "The real answer is 42."
+
+    @pytest.mark.asyncio
+    async def test_thread_fallback_reply_does_not_fetch_context(self):
+        """A threaded message whose m.in_reply_to is a thread fallback is not a
+        genuine user reply; it must not inject reply context."""
+        client = self._client_returning(
+            sender="@bob:example.org", body="thread root"
+        )
+        relates_to = {
+            "rel_type": "m.thread",
+            "event_id": "$thread-root",
+            "is_falling_back": True,
+            "m.in_reply_to": {"event_id": "$thread-root"},
+        }
+        captured = await self._dispatch_reply(client=client, relates_to=relates_to)
+
+        assert captured is not None
+        assert captured.reply_to_text is None
+        assert captured.reply_to_message_id is None
+        client.get_event.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_degrades_gracefully(self):
+        client = MagicMock()
+        client.get_event = AsyncMock(side_effect=RuntimeError("forbidden"))
+        captured = await self._dispatch_reply(client=client)
+
+        assert captured is not None
+        assert captured.reply_to_message_id == "$parent-event"
+        assert captured.reply_to_text is None
+        assert captured.reply_to_author_id is None
+
+    @pytest.mark.asyncio
+    async def test_non_reply_message_does_not_fetch(self):
+        client = self._client_returning(sender="@bob:example.org", body="irrelevant")
+        captured = await self._dispatch_reply(client=client, relates_to={})
+
+        assert captured is not None
+        assert captured.reply_to_message_id is None
+        assert captured.reply_to_text is None
+        client.get_event.assert_not_called()
+
+    def test_extract_event_body_prefers_attribute_over_serialized_edit(self):
+        """Typed mautrix content exposes .body directly; serialize() can prefix
+        an edit body with '* ', which must not leak into the quoted context."""
+
+        class _Content:
+            body = "real text"
+
+            def serialize(self):
+                return {"body": "* real text"}
+
+        event = types.SimpleNamespace(content=_Content())
+        assert self.adapter._extract_event_body(event) == "real text"
+
+    @pytest.mark.asyncio
+    async def test_reply_to_fallback_only_body_yields_no_context(self):
+        """A fetched event whose body is purely a quoted fallback (a chained
+        reply with no new text) has no real content to surface."""
+        client = self._client_returning(
+            sender="@bob:example.org",
+            body="> <@carol:example.org> earlier note\n",
+        )
+        captured = await self._dispatch_reply(client=client)
+
+        assert captured is not None
+        assert captured.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_incoming_fallback_only_body_is_preserved(self):
+        """Stripping the incoming body must not empty it when it is all
+        fallback — the original is kept rather than dropped."""
+        client = self._client_returning(sender="@bob:example.org", body="ctx")
+        captured = await self._dispatch_reply(
+            client=client, body="> <@x:example.org> hi\n"
+        )
+
+        assert captured is not None
+        assert captured.text.startswith("> <@x:example.org> hi")
+
+    @pytest.mark.asyncio
+    async def test_media_reply_populates_context(self):
+        """Replying with an image must carry the replied-to text too."""
+        captured = None
+        self.adapter._client = self._client_returning(
+            sender="@bob:example.org", body="Which logo do you mean?"
+        )
+
+        async def capture(msg_event):
+            nonlocal captured
+            captured = msg_event
+
+        self.adapter.handle_message = capture
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$reply-media-event",
+            event_ts=0.0,
+            source_content={"msgtype": "m.image", "body": "logo.png"},
+            relates_to={"m.in_reply_to": {"event_id": "$parent-event"}},
+            msgtype="m.image",
+        )
+
+        assert captured is not None
+        assert captured.reply_to_message_id == "$parent-event"
+        assert captured.reply_to_text == "Which logo do you mean?"
+        assert captured.reply_to_author_id == "@bob:example.org"
+
+    @pytest.mark.asyncio
+    async def test_reply_context_flows_through_on_room_message(self):
+        """End-to-end: a reply event delivered to the registered room-message
+        handler reaches handle_message carrying the replied-to content."""
+        captured = None
+        self.adapter._client = self._client_returning(
+            sender="@bob:example.org", body="Deploy finished at noon."
+        )
+        self.adapter._is_self_sender = MagicMock(return_value=False)
+        self.adapter._is_system_or_bridge_sender = MagicMock(return_value=False)
+        self.adapter._matches_ignored_user_pattern = MagicMock(return_value=False)
+        self.adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+        self.adapter._is_duplicate_event = MagicMock(return_value=False)
+
+        async def capture(msg_event):
+            nonlocal captured
+            captured = msg_event
+
+        self.adapter.handle_message = capture
+
+        event = types.SimpleNamespace(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$reply-event",
+            content={
+                "msgtype": "m.text",
+                "body": "when?",
+                "m.relates_to": {"m.in_reply_to": {"event_id": "$parent-event"}},
+            },
+        )
+        await self.adapter._on_room_message(event)
+
+        assert captured is not None
+        assert captured.reply_to_message_id == "$parent-event"
+        assert captured.reply_to_text == "Deploy finished at noon."
+        assert captured.reply_to_author_id == "@bob:example.org"
+
+
+# ---------------------------------------------------------------------------
 # Format message
 # ---------------------------------------------------------------------------
 

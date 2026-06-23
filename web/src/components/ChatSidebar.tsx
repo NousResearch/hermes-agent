@@ -21,7 +21,8 @@
  *      `ChatPage.tsx` for where the id is generated.
  *
  * Best-effort throughout: WS failures show in the badge / banner, the
- * terminal pane keeps working unimpaired.
+ * terminal pane keeps working unimpaired. When `showTools=false`, the sidebar
+ * is a model/session rail only and does not open sidecar sockets.
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -169,6 +170,18 @@ export function ChatSidebar({
 
   useEffect(() => {
     let cancelled = false;
+    if (!showTools) {
+      queueMicrotask(() => {
+        if (cancelled) return;
+        setState("idle");
+        setInfo({});
+        setError(null);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
     queueMicrotask(() => {
       if (cancelled) return;
       setInfo({});
@@ -221,7 +234,7 @@ export function ChatSidebar({
       gw.close();
     };
     // `profile` is read from render; scope changes bump `version` → new `gw`.
-  }, [gw]);
+  }, [gw, showTools]);
 
   // Event subscriber WebSocket — receives the rebroadcast of every
   // dispatcher emit from the PTY child's gateway.  See /api/pub +
@@ -232,7 +245,7 @@ export function ChatSidebar({
   // JSON-RPC sidecar so the sidebar matches its documented best-effort
   // UX and the user always has a reconnect affordance.
   useEffect(() => {
-    if (!channel) {
+    if (!showTools || !channel) {
       return;
     }
     // In loopback mode the legacy ?token=<session> path is fine; in gated
@@ -367,7 +380,7 @@ export function ChatSidebar({
       unmounting = true;
       ws?.close();
     };
-  }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
+  }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, showTools, version]);
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
   // (a profile/channel switch bumps `version`).

@@ -19,7 +19,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -219,7 +218,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
     [resumeParam, scopedProfile],
   );
-  const titleScope = `${channel}\0${reconnectNonce}`;
+  const ptyIdentity = `${channel}\0${reconnectNonce}`;
+  const titleScope = ptyIdentity;
   const sessionTitle =
     sessionTitleState.scope === titleScope ? sessionTitleState.title : null;
   const handleSessionTitleChange = useCallback(
@@ -257,30 +257,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
   }, [resumeParam, scopedProfile, handleSessionTitleChange]);
 
-  useEffect(() => {
-    if (!resumeParam) return;
-
-    let cancelled = false;
-
-    api
-      .getSessionLatestDescendant(resumeParam)
-      .then((res) => {
-        if (cancelled || !res.session_id || res.session_id === resumeParam) {
-          return;
-        }
-
-        const next = new URLSearchParams(searchParams);
-        next.set("resume", res.session_id);
-        setSearchParams(next, { replace: true });
-      })
-      .catch(() => {
-        // Best-effort: old servers or missing sessions should not block chat.
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [resumeParam, searchParams, setSearchParams]);
+  // Do not rewrite `?resume=` after the PTY has already started. The
+  // dashboard chat mounts the terminal immediately from `resumeParam`; doing
+  // an async latest-descendant lookup here can complete shortly after the
+  // resumed output paints, mutate the URL, and force the PTY/xterm session to
+  // tear down. If callers want latest-descendant canonicalisation, resolve it
+  // before navigating to /chat rather than from inside the live terminal.
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
@@ -529,24 +511,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.open(host);
 
-    // WebGL draws from a texture atlas sized with device pixels. On phones and
-    // in DevTools device mode that often produces *visually* much larger cells
-    // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
-    // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
-    // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
-    if (useWebgl) {
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch (err) {
-        console.warn(
-          "[hermes-chat] WebGL renderer unavailable; falling back to default",
-          err,
-        );
-      }
-    }
+    // Do not use xterm WebGL in dashboard chat. It can paint resumed
+    // transcript output correctly at first, then blank a large rectangle after
+    // the texture atlas/layout settles. The default renderer is less fancy but
+    // stable for long resumed Hermes turns.
 
     // Initial fit + resize observer.  fit.fit() reads the container's
     // current bounding box and resizes the terminal grid to match.
@@ -795,6 +763,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       wsRef.current?.close();
       wsRef.current = null;
       term.dispose();
+      host.replaceChildren();
       termRef.current = null;
       fitRef.current = null;
       if (copyResetRef.current) {
@@ -983,7 +952,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           }}
         >
           <div
+            key={ptyIdentity}
             ref={hostRef}
+            data-pty-identity={ptyIdentity}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 

@@ -154,3 +154,86 @@ def test_terminal_cwd_not_pinned_for_nonexistent_workspace(monkeypatch, tmp_path
 
     # Inherited value is preserved (not overwritten with a bogus path).
     assert captured["env"]["TERMINAL_CWD"] == "/pre/existing/anchor"
+
+
+def test_kanban_trace_context_propagates_to_parallel_children_and_worker_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    tracestate = "rojo=00f067aa0ba902b7"
+    monkeypatch.setenv("HERMES_KANBAN_TRACEPARENT", traceparent)
+    monkeypatch.setenv("HERMES_KANBAN_TRACESTATE", tracestate)
+
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="planner")
+        child_a = kb.create_task(conn, title="child a", assignee="worker", parents=[parent])
+        child_b = kb.create_task(conn, title="child b", assignee="worker", parents=[parent])
+
+        for tid in (parent, child_a, child_b):
+            task = kb.get_task(conn, tid)
+            assert task is not None
+            assert task.traceparent == traceparent
+            assert task.tracestate == tracestate
+
+        kb.complete_task(conn, parent, summary="done")
+        claimed = kb.claim_task(conn, child_a)
+        assert claimed is not None
+
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+        captured: dict = {}
+
+        class FakeProc:
+            pid = 1234
+
+        def fake_popen(cmd, *args, **kwargs):
+            captured.update(dict(kwargs.get("env") or {}))
+            return FakeProc()
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        kb._default_spawn(claimed, str(workspace))
+
+    assert captured["HERMES_KANBAN_TRACEPARENT"] == traceparent
+    assert captured["HERMES_KANBAN_TRACESTATE"] == tracestate
+    assert not any("SECRET" in key or "TOKEN" in key for key in captured)
+
+
+def test_linking_existing_tasks_backfills_missing_child_trace_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    traceparent = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+    monkeypatch.setenv("HERMES_KANBAN_TRACEPARENT", traceparent)
+
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="planner")
+        monkeypatch.delenv("HERMES_KANBAN_TRACEPARENT", raising=False)
+        child = kb.create_task(conn, title="child", assignee="worker")
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None
+        assert child_task.traceparent is None
+
+        kb.link_tasks(conn, parent, child)
+
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None
+        assert child_task.traceparent == traceparent
+
+
+def test_create_task_ignores_invalid_trace_context_and_secret_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HERMES_KANBAN_TRACEPARENT", "not-a-traceparent")
+    monkeypatch.setenv("HERMES_KANBAN_TRACESTATE", "x" * 513)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-sho...leak")
+
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="task", assignee="worker")
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.traceparent is None
+    assert task.tracestate is None

@@ -102,6 +102,70 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+_TRACEPARENT_RE = re.compile(
+    r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+    re.IGNORECASE,
+)
+
+
+def _valid_traceparent(value: Optional[str]) -> Optional[str]:
+    """Return a normalized W3C traceparent value, or None if invalid."""
+    if not value:
+        return None
+    text = str(value).strip().lower()
+    if not _TRACEPARENT_RE.match(text):
+        return None
+    _version, trace_id, span_id, _flags = text.split("-")
+    # W3C forbids all-zero trace/span ids.
+    if trace_id == "0" * 32 or span_id == "0" * 16:
+        return None
+    return text
+
+
+def _safe_tracestate(value: Optional[str]) -> Optional[str]:
+    """Return a bounded tracestate value suitable for Kanban persistence."""
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    # The W3C limit is 512 chars. Keep it strict so this field cannot become
+    # an accidental payload/secret sink.
+    if len(text) > 512 or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        return None
+    return text
+
+
+def _trace_context_from_env() -> tuple[Optional[str], Optional[str]]:
+    return (
+        _valid_traceparent(os.environ.get("HERMES_KANBAN_TRACEPARENT")),
+        _safe_tracestate(os.environ.get("HERMES_KANBAN_TRACESTATE")),
+    )
+
+
+def _trace_context_from_parents(
+    conn: sqlite3.Connection,
+    parents: Iterable[str],
+) -> tuple[Optional[str], Optional[str]]:
+    parent_ids = [p for p in parents if p]
+    if not parent_ids:
+        return None, None
+    placeholders = ",".join("?" * len(parent_ids))
+    rows = conn.execute(
+        f"""
+        SELECT traceparent, tracestate
+          FROM tasks
+         WHERE id IN ({placeholders})
+           AND traceparent IS NOT NULL
+         ORDER BY created_at ASC, id ASC
+         LIMIT 1
+        """,
+        parent_ids,
+    ).fetchall()
+    if not rows:
+        return None, None
+    row = rows[0]
+    return _valid_traceparent(row["traceparent"]), _safe_tracestate(row["tracestate"])
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -836,6 +900,10 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Minimal W3C context propagated from the creator/parent task so worker
+    # spans can continue the same trace without storing arbitrary headers.
+    traceparent: Optional[str] = None
+    tracestate: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -911,6 +979,12 @@ class Task:
             session_id=(
                 row["session_id"] if "session_id" in keys else None
             ),
+            traceparent=(
+                row["traceparent"] if "traceparent" in keys else None
+            ),
+            tracestate=(
+                row["tracestate"] if "tracestate" in keys else None
+            ),
         )
 
 
@@ -941,6 +1015,8 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    traceparent: Optional[str] = None
+    tracestate: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
@@ -965,6 +1041,8 @@ class Run:
             summary=row["summary"],
             metadata=meta,
             error=row["error"],
+            traceparent=row["traceparent"] if "traceparent" in row.keys() else None,
+            tracestate=row["tracestate"] if "tracestate" in row.keys() else None,
         )
 
 
@@ -1071,7 +1149,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- for tasks created from the CLI, dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
-    session_id           TEXT
+    session_id           TEXT,
+    -- Minimal W3C trace context propagated across Kanban task boundaries.
+    -- Only traceparent/tracestate are stored; arbitrary carrier headers are
+    -- intentionally excluded to avoid persisting credentials or payloads.
+    traceparent          TEXT,
+    tracestate           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1123,7 +1206,9 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    traceparent         TEXT,
+    tracestate          TEXT
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -1875,13 +1960,21 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         )
 
     if "session_id" not in cols:
-        # Originating agent/chat session id, populated when the task is
+        # Originating chat/agent session id for cards that were explicitly
         # created from within an agent loop that propagated
         # ``HERMES_SESSION_ID`` (e.g. ACP). NULL on legacy rows and on any
         # creation path that doesn't set the env var (CLI, dashboard).
-        _add_column_if_missing(
-            conn, "tasks", "session_id", "session_id TEXT"
-        )
+        _add_column_if_missing(conn, "tasks", "session_id", "session_id TEXT")
+    if "traceparent" not in cols:
+        _add_column_if_missing(conn, "tasks", "traceparent", "traceparent TEXT")
+    if "tracestate" not in cols:
+        _add_column_if_missing(conn, "tasks", "tracestate", "tracestate TEXT")
+
+    run_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
+    if "traceparent" not in run_cols:
+        _add_column_if_missing(conn, "task_runs", "traceparent", "traceparent TEXT")
+    if "tracestate" not in run_cols:
+        _add_column_if_missing(conn, "task_runs", "tracestate", "tracestate TEXT")
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -2419,14 +2512,19 @@ def create_task(
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
 
+                traceparent, tracestate = _trace_context_from_env()
+                if traceparent is None:
+                    traceparent, tracestate = _trace_context_from_parents(conn, parents)
+
                 conn.execute(
                     """
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        traceparent, tracestate
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2448,6 +2546,8 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        traceparent,
+                        tracestate,
                     ),
                 )
                 for pid in parents:
@@ -2467,6 +2567,7 @@ def create_task(
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
+                        "traceparent": traceparent,
                     },
                 )
             return task_id
@@ -2614,6 +2715,17 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
+        parent_traceparent, parent_tracestate = _trace_context_from_parents(conn, [parent_id])
+        if parent_traceparent:
+            conn.execute(
+                """
+                UPDATE tasks
+                   SET traceparent = COALESCE(traceparent, ?),
+                       tracestate = COALESCE(tracestate, ?)
+                 WHERE id = ?
+                """,
+                (parent_traceparent, parent_tracestate, child_id),
+            )
         # If child was ready but parent is not yet done, demote child to todo.
         parent_status = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (parent_id,)
@@ -3235,9 +3347,9 @@ def claim_task(
         if cur.rowcount != 1:
             return None
         # Look up the current task row so we can populate the run with
-        # its assignee / step / runtime cap.
+        # its assignee / step / runtime cap and propagated trace context.
         trow = conn.execute(
-            "SELECT assignee, max_runtime_seconds, current_step_key "
+            "SELECT assignee, max_runtime_seconds, current_step_key, traceparent, tracestate "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -3246,8 +3358,8 @@ def claim_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, traceparent, tracestate
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -3257,6 +3369,8 @@ def claim_task(
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
+                _valid_traceparent(trow["traceparent"]) if trow else None,
+                _safe_tracestate(trow["tracestate"]) if trow else None,
             ),
         )
         run_id = run_cur.lastrowid
@@ -3276,6 +3390,8 @@ def claim_task(
         board=get_current_board(),
         assignee=claimed.assignee if claimed else None,
         run_id=run_id,
+        traceparent=claimed.traceparent if claimed else None,
+        tracestate=claimed.tracestate if claimed else None,
     )
     return claimed
 
@@ -3319,7 +3435,7 @@ def claim_review_task(
         if cur.rowcount != 1:
             return None
         trow = conn.execute(
-            "SELECT assignee, max_runtime_seconds, current_step_key "
+            "SELECT assignee, max_runtime_seconds, current_step_key, traceparent, tracestate "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -3328,8 +3444,8 @@ def claim_review_task(
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, traceparent, tracestate
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -3339,6 +3455,8 @@ def claim_review_task(
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
+                _valid_traceparent(trow["traceparent"]) if trow else None,
+                _safe_tracestate(trow["tracestate"]) if trow else None,
             ),
         )
         run_id = run_cur.lastrowid
@@ -3950,6 +4068,8 @@ def complete_task(
         board=get_current_board(),
         assignee=_done_task.assignee if _done_task else None,
         run_id=run_id,
+        traceparent=_done_task.traceparent if _done_task else None,
+        tracestate=_done_task.tracestate if _done_task else None,
         summary=(summary if summary is not None else result),
     )
     return True
@@ -4382,6 +4502,8 @@ def block_task(
         board=get_current_board(),
         assignee=_blocked_task.assignee if _blocked_task else None,
         run_id=run_id,
+        traceparent=_blocked_task.traceparent if _blocked_task else None,
+        tracestate=_blocked_task.tracestate if _blocked_task else None,
         reason=reason,
     )
     return True
@@ -7352,6 +7474,10 @@ def _default_spawn(
         env["HERMES_KANBAN_BRANCH"] = task.branch_name
     if task.current_run_id is not None:
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
+    if task.traceparent:
+        env["HERMES_KANBAN_TRACEPARENT"] = task.traceparent
+    if task.tracestate:
+        env["HERMES_KANBAN_TRACESTATE"] = task.tracestate
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
     # Goal-loop mode: the worker reads these and wraps its run in the

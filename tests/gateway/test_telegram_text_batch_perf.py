@@ -93,12 +93,12 @@ class TestAdaptiveTextBatchTiers:
         assert delay == TelegramAdapter._TEXT_BATCH_FAST_DELAY_S
 
         # Operator tightened the cap below the fast-tier delay; cap wins.
-        adapter._text_batch_delay_seconds = 0.10
+        adapter._text_batch_delay_seconds = 0.01
         delay = min(
             adapter._text_batch_delay_seconds,
             TelegramAdapter._TEXT_BATCH_FAST_DELAY_S,
         )
-        assert delay == 0.10
+        assert delay == 0.01
 
     def test_short_tier_uses_min_with_configured_cap(self, adapter):
         """Same composition rule for the medium tier."""

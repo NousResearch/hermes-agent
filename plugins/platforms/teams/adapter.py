@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import importlib.util
 import json
 import logging
 import os
@@ -39,25 +40,57 @@ from urllib.parse import quote
 # runtime; nothing in the codebase calls ``typing.get_type_hints()`` on
 # this class so the annotation never has to resolve to a real symbol.
 
-try:
-    from aiohttp import web
+def _has_module(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, AttributeError, ValueError):
+        return False
 
-    AIOHTTP_AVAILABLE = True
-except ImportError:
-    AIOHTTP_AVAILABLE = False
-    web = None  # type: ignore[assignment]
 
-try:
+# Keep dependency probes passive. Importing ``microsoft_teams.apps`` at module
+# load pulls in the SDK, FastAPI/uvicorn, and auth helpers during every gateway
+# plugin-discovery pass. The active Teams adapter binds these globals through
+# ``check_teams_requirements()`` when Teams is actually connected.
+AIOHTTP_AVAILABLE = _has_module("aiohttp")
+TEAMS_SDK_AVAILABLE = _has_module("microsoft_teams.apps")
+web = None  # type: ignore[assignment]
+ClientOptions = None  # type: ignore[assignment,misc]
+App = None  # type: ignore[assignment,misc]
+ActivityContext = None  # type: ignore[assignment,misc]
+MessageActivity = None  # type: ignore[assignment,misc]
+ConversationReference = None  # type: ignore[assignment,misc]
+TypingActivityInput = None  # type: ignore[assignment,misc]
+AdaptiveCardInvokeActivity = None  # type: ignore[assignment,misc]
+AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
+AdaptiveCardActionMessageResponse = None  # type: ignore[assignment,misc]
+AdaptiveCardInvokeResponse = None  # type: ignore[assignment,misc,union-attr]
+InvokeResponse = None  # type: ignore[assignment,misc]
+HttpMethod = str  # type: ignore[assignment,misc]
+HttpRequest = None  # type: ignore[assignment,misc]
+HttpResponse = None  # type: ignore[assignment,misc]
+HttpRouteHandler = None  # type: ignore[assignment,misc]
+AdaptiveCard = None  # type: ignore[assignment,misc]
+ExecuteAction = None  # type: ignore[assignment,misc]
+TextBlock = None  # type: ignore[assignment,misc]
+
+
+def _import_teams_sdk() -> dict:
+    from aiohttp import web as _web
     from microsoft_teams.apps import App, ActivityContext
     from microsoft_teams.common.http.client import ClientOptions
     from microsoft_teams.api import MessageActivity, ConversationReference
     from microsoft_teams.api.activities.typing import TypingActivityInput
-    from microsoft_teams.api.activities.invoke.adaptive_card import AdaptiveCardInvokeActivity
+    from microsoft_teams.api.activities.invoke.adaptive_card import (
+        AdaptiveCardInvokeActivity,
+    )
     from microsoft_teams.api.models.adaptive_card import (
         AdaptiveCardActionCardResponse,
         AdaptiveCardActionMessageResponse,
     )
-    from microsoft_teams.api.models.invoke_response import InvokeResponse, AdaptiveCardInvokeResponse
+    from microsoft_teams.api.models.invoke_response import (
+        InvokeResponse,
+        AdaptiveCardInvokeResponse,
+    )
     from microsoft_teams.apps.http.adapter import (
         HttpMethod,
         HttpRequest,
@@ -66,27 +99,35 @@ try:
     )
     from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
 
-    TEAMS_SDK_AVAILABLE = True
-except ImportError:
-    TEAMS_SDK_AVAILABLE = False
-    ClientOptions = None  # type: ignore[assignment,misc]
-    App = None  # type: ignore[assignment,misc]
-    ActivityContext = None  # type: ignore[assignment,misc]
-    MessageActivity = None  # type: ignore[assignment,misc]
-    ConversationReference = None  # type: ignore[assignment,misc]
-    TypingActivityInput = None  # type: ignore[assignment,misc]
-    AdaptiveCardInvokeActivity = None  # type: ignore[assignment,misc]
-    AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
-    AdaptiveCardActionMessageResponse = None  # type: ignore[assignment,misc]
-    AdaptiveCardInvokeResponse = None  # type: ignore[assignment,misc,union-attr]
-    InvokeResponse = None  # type: ignore[assignment,misc]
-    HttpMethod = str  # type: ignore[assignment,misc]
-    HttpRequest = None  # type: ignore[assignment,misc]
-    HttpResponse = None  # type: ignore[assignment,misc]
-    HttpRouteHandler = None  # type: ignore[assignment,misc]
-    AdaptiveCard = None  # type: ignore[assignment,misc]
-    ExecuteAction = None  # type: ignore[assignment,misc]
-    TextBlock = None  # type: ignore[assignment,misc]
+    return {
+        "web": _web,
+        "AIOHTTP_AVAILABLE": True,
+        "App": App,
+        "ActivityContext": ActivityContext,
+        "ClientOptions": ClientOptions,
+        "MessageActivity": MessageActivity,
+        "ConversationReference": ConversationReference,
+        "TypingActivityInput": TypingActivityInput,
+        "AdaptiveCardInvokeActivity": AdaptiveCardInvokeActivity,
+        "AdaptiveCardActionCardResponse": AdaptiveCardActionCardResponse,
+        "AdaptiveCardActionMessageResponse": AdaptiveCardActionMessageResponse,
+        "InvokeResponse": InvokeResponse,
+        "AdaptiveCardInvokeResponse": AdaptiveCardInvokeResponse,
+        "HttpMethod": HttpMethod,
+        "HttpRequest": HttpRequest,
+        "HttpResponse": HttpResponse,
+        "HttpRouteHandler": HttpRouteHandler,
+        "AdaptiveCard": AdaptiveCard,
+        "ExecuteAction": ExecuteAction,
+        "TextBlock": TextBlock,
+        "TEAMS_SDK_AVAILABLE": True,
+    }
+
+
+def _bind_teams_sdk(*, prompt: bool = False) -> bool:
+    from tools.lazy_deps import ensure_and_bind
+
+    return ensure_and_bind("platform.teams", _import_teams_sdk, globals(), prompt=prompt)
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
@@ -393,7 +434,7 @@ class _AiohttpBridgeAdapter:
 
 def check_requirements() -> bool:
     """Return True when all Teams dependencies and credentials are present."""
-    return TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE
+    return bool(TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE)
 
 
 def validate_config(config) -> bool:
@@ -633,58 +674,7 @@ def check_teams_requirements() -> bool:
     if TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE:
         return True
 
-    def _import() -> dict:
-        from aiohttp import web as _web
-        from microsoft_teams.apps import App, ActivityContext
-        from microsoft_teams.common.http.client import ClientOptions
-        from microsoft_teams.api import MessageActivity, ConversationReference
-        from microsoft_teams.api.activities.typing import TypingActivityInput
-        from microsoft_teams.api.activities.invoke.adaptive_card import (
-            AdaptiveCardInvokeActivity,
-        )
-        from microsoft_teams.api.models.adaptive_card import (
-            AdaptiveCardActionCardResponse,
-            AdaptiveCardActionMessageResponse,
-        )
-        from microsoft_teams.api.models.invoke_response import (
-            InvokeResponse,
-            AdaptiveCardInvokeResponse,
-        )
-        from microsoft_teams.apps.http.adapter import (
-            HttpMethod,
-            HttpRequest,
-            HttpResponse,
-            HttpRouteHandler,
-        )
-        from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
-
-        return {
-            "web": _web,
-            "AIOHTTP_AVAILABLE": True,
-            "App": App,
-            "ActivityContext": ActivityContext,
-            "ClientOptions": ClientOptions,
-            "MessageActivity": MessageActivity,
-            "ConversationReference": ConversationReference,
-            "TypingActivityInput": TypingActivityInput,
-            "AdaptiveCardInvokeActivity": AdaptiveCardInvokeActivity,
-            "AdaptiveCardActionCardResponse": AdaptiveCardActionCardResponse,
-            "AdaptiveCardActionMessageResponse": AdaptiveCardActionMessageResponse,
-            "InvokeResponse": InvokeResponse,
-            "AdaptiveCardInvokeResponse": AdaptiveCardInvokeResponse,
-            "HttpMethod": HttpMethod,
-            "HttpRequest": HttpRequest,
-            "HttpResponse": HttpResponse,
-            "HttpRouteHandler": HttpRouteHandler,
-            "AdaptiveCard": AdaptiveCard,
-            "ExecuteAction": ExecuteAction,
-            "TextBlock": TextBlock,
-            "TEAMS_SDK_AVAILABLE": True,
-        }
-
-    from tools.lazy_deps import ensure_and_bind
-
-    return ensure_and_bind("platform.teams", _import, globals(), prompt=False)
+    return _bind_teams_sdk(prompt=False)
 
 
 class TeamsAdapter(BasePlatformAdapter):
@@ -713,7 +703,9 @@ class TeamsAdapter(BasePlatformAdapter):
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
         # then re-check the module globals it rebinds.
         check_teams_requirements()
-        if not TEAMS_SDK_AVAILABLE:
+        if TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE and (App is None or web is None):
+            _bind_teams_sdk(prompt=False)
+        if not TEAMS_SDK_AVAILABLE or App is None:
             self._set_fatal_error(
                 "MISSING_SDK",
                 "microsoft-teams-apps could not be installed. Run: pip install microsoft-teams-apps",
@@ -721,7 +713,7 @@ class TeamsAdapter(BasePlatformAdapter):
             )
             return False
 
-        if not AIOHTTP_AVAILABLE:
+        if not AIOHTTP_AVAILABLE or web is None:
             self._set_fatal_error(
                 "MISSING_SDK",
                 "aiohttp not installed. Run: pip install aiohttp",

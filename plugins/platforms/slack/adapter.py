@@ -10,6 +10,8 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import contextvars
+import importlib.metadata
+import importlib.util
 import json
 import logging
 import os
@@ -18,18 +20,51 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple, List
 
+def _has_module(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, AttributeError, ValueError):
+        return False
+
+
+def _has_distribution(distribution_name: str) -> bool:
+    try:
+        importlib.metadata.version(distribution_name)
+        return True
+    except importlib.metadata.PackageNotFoundError:
+        return False
+
+
+SLACK_AVAILABLE = _has_distribution("slack-bolt") and _has_distribution("slack-sdk")
+AsyncApp = Any
+AsyncSocketModeHandler = Any
+AsyncWebClient = Any
+
 try:
+    import aiohttp
+except ImportError:
+    aiohttp = None  # type: ignore[assignment]
+
+
+def _import_slack_sdk() -> dict:
     from slack_bolt.async_app import AsyncApp
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
     from slack_sdk.web.async_client import AsyncWebClient
     import aiohttp
 
-    SLACK_AVAILABLE = True
-except ImportError:
-    SLACK_AVAILABLE = False
-    AsyncApp = Any
-    AsyncSocketModeHandler = Any
-    AsyncWebClient = Any
+    return {
+        "AsyncApp": AsyncApp,
+        "AsyncSocketModeHandler": AsyncSocketModeHandler,
+        "AsyncWebClient": AsyncWebClient,
+        "aiohttp": aiohttp,
+        "SLACK_AVAILABLE": True,
+    }
+
+
+def _bind_slack_sdk(*, prompt: bool = False) -> bool:
+    from tools.lazy_deps import ensure_and_bind
+
+    return ensure_and_bind("platform.slack", _import_slack_sdk, globals(), prompt=prompt)
 
 import sys
 from pathlib import Path as _Path
@@ -88,23 +123,7 @@ def check_slack_requirements() -> bool:
     if SLACK_AVAILABLE:
         return True
 
-    def _import():
-        from slack_bolt.async_app import AsyncApp
-        from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
-        from slack_sdk.web.async_client import AsyncWebClient
-        import aiohttp
-
-        return {
-            "AsyncApp": AsyncApp,
-            "AsyncSocketModeHandler": AsyncSocketModeHandler,
-            "AsyncWebClient": AsyncWebClient,
-            "aiohttp": aiohttp,
-            "SLACK_AVAILABLE": True,
-        }
-
-    from tools.lazy_deps import ensure_and_bind
-
-    return ensure_and_bind("platform.slack", _import, globals(), prompt=False)
+    return _bind_slack_sdk(prompt=False)
 
 
 def _extract_text_from_slack_blocks(blocks: list) -> str:
@@ -831,7 +850,9 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
-        if not SLACK_AVAILABLE:
+        if SLACK_AVAILABLE and AsyncApp is Any:
+            _bind_slack_sdk(prompt=False)
+        if not SLACK_AVAILABLE or AsyncApp is Any:
             logger.error(
                 "[Slack] slack-bolt not installed. Run: pip install slack-bolt",
             )

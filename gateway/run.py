@@ -45,13 +45,20 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List, Union
 
-# account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
-# /usage; we still import it at module top in the gateway because test
-# patches (tests/gateway/test_usage_command.py) target
-# `gateway.run.fetch_account_usage` as a module-level attribute. The
-# gateway is a long-running daemon, so its boot cost matters less than
-# preserving the established test-patch surface.
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
+# Keep the established test-patch surface (`gateway.run.fetch_account_usage`)
+# without importing the account-usage/OpenAI SDK chain during gateway startup.
+def fetch_account_usage(*args, **kwargs):
+    from agent.account_usage import fetch_account_usage as _fetch_account_usage
+
+    return _fetch_account_usage(*args, **kwargs)
+
+
+def render_account_usage_lines(*args, **kwargs):
+    from agent.account_usage import render_account_usage_lines as _render_account_usage_lines
+
+    return _render_account_usage_lines(*args, **kwargs)
+
+
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
@@ -1510,24 +1517,16 @@ if _config_path.exists():
         # Auxiliary model/direct-endpoint overrides (vision, web_extract,
         # approval, plus any plugin-registered auxiliary tasks).
         # Each task has provider/model/base_url/api_key; bridge non-default
-        # values to env vars named AUXILIARY_<KEY_UPPER>_*. The legacy
-        # hard-coded list (vision/web_extract/approval) is replaced by a
-        # dynamic loop so plugin-registered tasks benefit from the same
-        # config→env bridging without core knowing about each one.
+        # values to env vars named AUXILIARY_<KEY_UPPER>_*.
         _auxiliary_cfg = _cfg.get("auxiliary", {})
         if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
             # Built-in tasks that previously had explicit env-var bridging.
-            # Kept here as the canonical bridged set; plugin tasks are added
-            # below via the plugin auxiliary registry.
-            _aux_bridged_keys = {"vision", "web_extract", "approval"}
-            try:
-                from hermes_cli.plugins import get_plugin_auxiliary_tasks
-                for _entry in get_plugin_auxiliary_tasks():
-                    _aux_bridged_keys.add(_entry["key"])
-            except Exception:
-                # Plugin discovery failure must not break gateway startup;
-                # built-in bridging stays intact.
-                pass
+            # Also bridge any explicitly configured auxiliary task key without
+            # importing the plugin registry at module load time. Gateway
+            # startup still discovers plugins before handling requests; this
+            # import-time bridge only needs the concrete keys already present
+            # in config.yaml.
+            _aux_bridged_keys = {"vision", "web_extract", "approval", *map(str, _auxiliary_cfg.keys())}
 
             for _task_key in _aux_bridged_keys:
                 _task_cfg = _auxiliary_cfg.get(_task_key, {})

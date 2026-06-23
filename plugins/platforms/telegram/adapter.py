@@ -437,16 +437,16 @@ class TelegramAdapter(BasePlatformAdapter):
     # Fixes #25710.
     REQUIRES_EDIT_FINALIZE: bool = True
 
-    # Adaptive text-batch ingress: short messages need a tighter delay so the
-    # first token reaches the agent fast.  Numbers tuned for "feels instant":
-    # ≤320 codepoints (one short paragraph) settles in ~180ms; ≤1024
-    # (a normal paragraph) in ~240ms; longer waits the configured cap.
+    # Adaptive text-batch ingress: short messages need a very small quiet
+    # period so the first token reaches the agent fast. Near-split chunks still
+    # use the longer split delay below; only normal short messages take this
+    # latency-first path.
     # Always clamped to ``_text_batch_delay_seconds`` so an operator can lower
     # the cap further via env var.
     _TEXT_BATCH_FAST_LEN = 320
-    _TEXT_BATCH_FAST_DELAY_S = 0.18
+    _TEXT_BATCH_FAST_DELAY_S = 0.025
     _TEXT_BATCH_SHORT_LEN = 1024
-    _TEXT_BATCH_SHORT_DELAY_S = 0.24
+    _TEXT_BATCH_SHORT_DELAY_S = 0.045
 
     @staticmethod
     def _env_float_clamped(
@@ -516,8 +516,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # messages are aggregated into a single MessageEvent.  Lower defaults
         # (0.3s / 1.0s instead of 0.6s / 2.0s) let short replies stream
         # without a noticeable wait — combined with the adaptive fast-path
-        # in ``_calc_text_batch_delay`` below, ≤320-codepoint replies settle
-        # in ~180ms.  All bounds are conservative for Telegram's
+        # in ``_flush_text_batch`` below, ≤320-codepoint replies settle in
+        # about 25ms.  All bounds are conservative for Telegram's
         # ~1 edit/s flood envelope.
         self._text_batch_delay_seconds = self._env_float_clamped(
             "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS",

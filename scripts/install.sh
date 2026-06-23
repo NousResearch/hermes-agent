@@ -2398,24 +2398,24 @@ _desktop_pack() {
     fi
 }
 
-# Public Electron mirror used as a last-resort fallback when GitHub's release
-# host is blocked/throttled (the repeating "retrying" symptom). npmmirror.com is
-# the de-facto Electron community mirror (Alibaba). @electron/get SHASUM-checks
-# the download, but the SHASUMS come from the same mirror — that guards against a
-# corrupt/partial download, NOT a compromised mirror. Reaching for it is an
-# explicit trust trade-off we only make AFTER the canonical GitHub download has
-# failed, and we never override a user-pinned ELECTRON_MIRROR.
+# Last-resort Electron mirror after GitHub download fails (#47266).
 DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
 
-# True (returns 0) when node_modules/electron/dist holds a usable Electron
-# binary. electron-builder reads the binary from build.electronDist
-# (node_modules/electron/dist) since #38673, so this is the exact file whose
-# absence makes a pack fail with "The specified electronDist does not exist". A
-# dist dir that exists but is missing the binary (partial extraction / aborted
-# postinstall) is NOT ok. $1 = the workspace root holding node_modules.
+# Electron package dir — workspace-local nest first, then root hoist.
+_electron_dir() {
+    local install_dir="$1"
+    if [ -d "$install_dir/apps/desktop/node_modules/electron" ]; then
+        printf '%s\n' "$install_dir/apps/desktop/node_modules/electron"
+    else
+        printf '%s\n' "$install_dir/node_modules/electron"
+    fi
+}
+
+# True when dist/ holds a usable Electron binary (#38673 / run-electron-builder.cjs).
 _electron_dist_ok() {
     local install_dir="$1"
-    local electron_dir="$install_dir/node_modules/electron"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
     if [ "$OS" = "macos" ]; then
         [ -e "$electron_dir/dist/Electron.app/Contents/MacOS/Electron" ]
     else
@@ -2423,26 +2423,12 @@ _electron_dist_ok() {
     fi
 }
 
-# (Re)populate node_modules/electron/dist via electron's own downloader.
-#
-# Since #38673 the desktop build pins build.electronDist to
-# node_modules/electron/dist, so electron-builder reads the Electron binary
-# straight from there and never downloads it during `npm run pack`. That dist
-# tree is produced by the electron package's postinstall (install.js) during
-# `npm ci`. When that download is blocked/throttled (GitHub's release host is
-# unreachable in some regions - #47266), dist is missing and re-running pack only
-# re-throws "The specified electronDist does not exist". The mirror fallback
-# therefore has to drive THIS downloader, not another pack.
-#
-# No-op (returns 0) when the dist binary is already present. Otherwise drops a
-# partial dist + version marker (electron's install.js short-circuits when
-# path.txt already matches) and runs the downloader once. $1 = the workspace root
-# holding node_modules; optional $2 = an ELECTRON_MIRROR base URL. Best-effort:
-# returns 0 iff the dist binary exists afterward.
+# Best-effort: run electron/install.js to populate dist/ (optional mirror).
 _restore_electron_dist() {
     local install_dir="$1"
     local mirror="${2:-}"
-    local electron_dir="$install_dir/node_modules/electron"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
     _electron_dist_ok "$install_dir" && return 0
 
     [ -f "$electron_dir/install.js" ] || return 1
@@ -2457,6 +2443,19 @@ _restore_electron_dist() {
         ( cd "$electron_dir" && node install.js ) || true
     fi
     _electron_dist_ok "$install_dir"
+}
+
+_electron_pkg_staged_missing_dist() {
+    local install_dir="$1"
+    local electron_dir
+    electron_dir="$(_electron_dir "$install_dir")"
+    [ -f "$electron_dir/package.json" ] && [ -f "$electron_dir/install.js" ] && ! _electron_dist_ok "$install_dir"
+}
+
+_restore_electron_dist_with_fallback() {
+    local install_dir="$1"
+    _restore_electron_dist "$install_dir" \
+        || { [ -z "${ELECTRON_MIRROR:-}" ] && _restore_electron_dist "$install_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; }
 }
 
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's
@@ -2500,7 +2499,12 @@ install_desktop() {
     #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
     #    only if `npm ci` is unavailable or the lockfile is out of sync.
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
-    ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ) || {
+    if ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ); then
+        log_success "Desktop workspace dependencies installed"
+    elif _electron_pkg_staged_missing_dist "$INSTALL_DIR"; then
+        log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
+        _restore_electron_dist_with_fallback "$INSTALL_DIR" || true
+    else
         log_error "Desktop workspace npm install failed"
         # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
         # ~/.npm, so this non-root install can't write the shared cache. npm hides
@@ -2513,8 +2517,7 @@ install_desktop() {
         log_info "Then re-run this installer, or build manually:"
         log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
         return 1
-    }
-    log_success "Desktop workspace dependencies installed"
+    fi
 
     # 2. Build, with up to three escalating attempts so a transient/blocked
     #    Electron download self-heals instead of failing the whole install:
@@ -2528,21 +2531,13 @@ install_desktop() {
     if _desktop_pack "$desktop_dir"; then
         pack_ok=true
     else
-        # (b) Corrupt cached Electron zip is the most common self-healable cause.
-        local purged
-        purged="$(clear_electron_build_cache "$desktop_dir")"
-        # electronDist is pinned to node_modules/electron/dist (#38673):
-        # electron-builder reads the binary from there and `pack` never downloads
-        # it, so purging the cache + re-running pack can't by itself repopulate a
-        # missing/partial dist. When the dist is actually gone, re-run electron's
-        # own downloader so the retry has a binary to read. Gated on the dist
-        # check so an unrelated build failure (tsc/vite) doesn't trigger a
-        # pointless ~200MB refetch.
+        local purged=""
         local restored=false
         if ! _electron_dist_ok "$INSTALL_DIR"; then
+            purged="$(clear_electron_build_cache "$desktop_dir")"
             if _restore_electron_dist "$INSTALL_DIR"; then restored=true; fi
         fi
-        if [ -n "$purged" ] || [ "$restored" = true ]; then
+        if [ "$restored" = true ]; then
             log_warn "Desktop build failed; refreshed the Electron download and retrying once..."
             if _desktop_pack "$desktop_dir"; then
                 pack_ok=true
@@ -2550,27 +2545,14 @@ install_desktop() {
         fi
     fi
 
-    # (c) Still failing and the user hasn't pinned their own mirror: the GitHub
-    #     release host is likely blocked/throttled. Re-download the Electron
-    #     binary via a public mirror, then retry. The mirror MUST drive
-    #     electron's own downloader — `npm run pack` reads the pinned electronDist
-    #     and never downloads, so a mirror passed only to pack is a no-op (#47266).
+    # (c) GitHub blocked → mirror fallback (#47266).
     if [ "$pack_ok" = false ] && [ -z "${ELECTRON_MIRROR:-}" ]; then
         log_warn "Desktop build still failing — the Electron download from GitHub looks blocked."
         log_warn "Re-downloading Electron via a public mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR), then rebuilding..."
         log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
-        local have_dist=false
-        if _electron_dist_ok "$INSTALL_DIR"; then
-            have_dist=true
-        elif _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
-            have_dist=true
-        fi
-        if [ "$have_dist" = true ]; then
-            if _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
-                pack_ok=true
-            fi
-        else
-            log_warn "Could not re-download Electron from the mirror (node_modules/electron/dist still missing)"
+        _electron_dist_ok "$INSTALL_DIR" || _restore_electron_dist "$INSTALL_DIR" "$DESKTOP_ELECTRON_FALLBACK_MIRROR" || true
+        if _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
+            pack_ok=true
         fi
     fi
 
@@ -2750,7 +2732,12 @@ run_stage_body() {
             detect_os
             resolve_install_layout
             print_success
-            echo "git" > "$HERMES_HOME/.install_method"
+            # Code-scoped stamp: write next to the install tree, not into
+            # $HERMES_HOME. $HERMES_HOME is a shared data dir (it can be
+            # bind-mounted into a Docker gateway too), so a stamp there gets
+            # clobbered by the container's 'docker' stamp and wrongly blocks
+            # 'hermes update' on this host install. See detect_install_method().
+            echo "git" > "$INSTALL_DIR/.install_method"
             ;;
         *)
             log_error "Unknown stage: $stage"
@@ -2829,7 +2816,12 @@ main() {
 
     print_success
 
-    echo "git" > "$HERMES_HOME/.install_method"
+    # Code-scoped stamp: write next to the install tree, not into $HERMES_HOME.
+    # $HERMES_HOME is a shared data dir (it can be bind-mounted into a Docker
+    # gateway too), so a stamp there gets clobbered by the container's 'docker'
+    # stamp and wrongly blocks 'hermes update' on this host install.
+    # See detect_install_method().
+    echo "git" > "$INSTALL_DIR/.install_method"
 }
 
 if [ "$MANIFEST_MODE" = true ]; then

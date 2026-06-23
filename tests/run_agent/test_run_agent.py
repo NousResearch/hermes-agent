@@ -23,6 +23,7 @@ from agent.codex_responses_adapter import _normalize_codex_response
 import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
+from agent.memory_manager import MemoryManager
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 
@@ -2082,6 +2083,41 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
 
+    def test_sequential_memory_remove_notifies_provider_with_tool_result(self, agent):
+        old_text = "stale preference entry"
+        tc = _mock_tool_call(
+            name="memory",
+            arguments=json.dumps({
+                "action": "remove",
+                "target": "memory",
+                "old_text": old_text,
+            }),
+            call_id="mem-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        calls = []
+
+        class FakeMemoryManager(MemoryManager):
+            def has_tool(self, tool_name):
+                return False
+
+            def on_memory_write(self, action, target, content, metadata=None):
+                calls.append((action, target, content, metadata or {}))
+
+        agent._memory_manager = FakeMemoryManager()
+        agent._memory_store = object()
+
+        with patch("tools.memory_tool.memory_tool", return_value=json.dumps({"success": True})):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert len(calls) == 1
+        action, target, content, metadata = calls[0]
+        assert (action, target, content) == ("remove", "memory", "")
+        assert metadata["old_text"] == old_text
+        assert metadata["tool_call_id"] == "mem-1"
+        assert messages[-1]["tool_call_id"] == "mem-1"
+
     def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
@@ -2796,6 +2832,68 @@ class TestConcurrentToolExecution:
 
         assert json.loads(result) == {"error": "Blocked"}
         assert agent._turns_since_memory == 5
+
+    def test_invoke_tool_memory_remove_notifies_provider_with_old_text(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        calls = []
+
+        class FakeMemoryManager(MemoryManager):
+            def has_tool(self, tool_name):
+                return False
+
+            def on_memory_write(self, action, target, content, metadata=None):
+                calls.append((action, target, content, metadata or {}))
+
+        old_text = "stale preference entry"
+        agent._memory_manager = FakeMemoryManager()
+        agent._memory_store = object()
+
+        with patch("tools.memory_tool.memory_tool", return_value=json.dumps({"success": True})):
+            agent._invoke_tool(
+                "memory",
+                {"action": "remove", "target": "memory", "old_text": old_text},
+                "task-1",
+                tool_call_id="mem-1",
+            )
+
+        assert len(calls) == 1
+        action, target, content, metadata = calls[0]
+        assert (action, target, content) == ("remove", "memory", "")
+        assert metadata["old_text"] == old_text
+        assert metadata["tool_call_id"] == "mem-1"
+
+    def test_invoke_tool_memory_failed_remove_skips_provider_notification(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        notify = MagicMock(side_effect=AssertionError("should not notify"))
+
+        class FakeMemoryManager(MemoryManager):
+            def has_tool(self, tool_name):
+                return False
+
+            on_memory_write = notify
+
+        manager = FakeMemoryManager()
+        agent._memory_manager = manager
+        agent._memory_store = object()
+
+        with patch(
+            "tools.memory_tool.memory_tool",
+            return_value=json.dumps({"success": False, "error": "No entry matched"}),
+        ):
+            agent._invoke_tool(
+                "memory",
+                {"action": "remove", "target": "memory", "old_text": "missing"},
+                "task-1",
+                tool_call_id="mem-1",
+            )
+
+        notify.assert_not_called()
 
     def test_concurrent_blocked_write_skips_checkpoint(self, agent, monkeypatch):
         """Concurrent path: blocked write_file should not trigger checkpoint."""
@@ -5813,12 +5911,126 @@ class TestAnthropicCredentialRefresh:
 
         response = SimpleNamespace(content=[])
         agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.create.return_value = response
+        stream_cm = MagicMock()
+        stream_cm.__enter__.return_value.get_final_message.return_value = response
+        agent._anthropic_client.messages.stream.return_value = stream_cm
 
         with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=True) as refresh:
             result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
 
         refresh.assert_called_once_with()
+        agent._anthropic_client.messages.stream.assert_called_once_with(model="claude-sonnet-4-20250514")
+        agent._anthropic_client.messages.create.assert_not_called()
+        assert result is response
+
+    def test_anthropic_messages_create_falls_back_when_stream_unavailable(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant-oat01-current-token",
+                base_url="https://openrouter.ai/api/v1",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        response = SimpleNamespace(content=[])
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = RuntimeError(
+            "stream is not supported by this provider"
+        )
+        agent._anthropic_client.messages.create.return_value = response
+
+        with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False):
+            result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
+
+        agent._anthropic_client.messages.stream.assert_called_once_with(model="claude-sonnet-4-20250514")
+        agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
+        assert result is response
+
+    def test_anthropic_messages_create_honors_disable_streaming(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant-oat01-current-token",
+                base_url="https://openrouter.ai/api/v1",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        response = SimpleNamespace(content=[])
+        agent._disable_streaming = True
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.create.return_value = response
+
+        with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False):
+            result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
+
+        agent._anthropic_client.messages.stream.assert_not_called()
+        agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
+        assert result is response
+
+    def test_anthropic_messages_create_does_not_mask_bedrock_stream_validation_errors(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant-oat01-current-token",
+                base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        exc = RuntimeError("ValidationException: InvokeModelWithResponseStream input malformed")
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = exc
+
+        with (
+            patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False),
+            pytest.raises(RuntimeError, match="input malformed"),
+        ):
+            agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
+
+        agent._anthropic_client.messages.create.assert_not_called()
+
+    def test_anthropic_messages_create_falls_back_for_bedrock_stream_access_denied(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant-oat01-current-token",
+                base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        response = SimpleNamespace(content=[])
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = RuntimeError(
+            "User is not authorized to perform: bedrock:InvokeModelWithResponseStream"
+        )
+        agent._anthropic_client.messages.create.return_value = response
+
+        with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False):
+            result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
+
         agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
         assert result is response
 
@@ -6299,6 +6511,13 @@ class TestReasoningReplayForStrictProviders:
 
     def test_explicit_reasoning_content_beats_normalized_reasoning_on_replay(self, agent):
         self._setup_agent(agent)
+        # Precedence (explicit reasoning_content wins over the 'reasoning'
+        # field) only matters on a provider that echoes reasoning_content
+        # back — strict providers strip the field entirely. Pin a
+        # reasoning provider so the precedence is observable.
+        agent.base_url = "https://api.kimi.com/coding/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "kimi-coding"
         prior_assistant = {
             "role": "assistant",
             "content": "",
@@ -6330,6 +6549,45 @@ class TestReasoningReplayForStrictProviders:
         sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
         replayed_assistant = next(msg for msg in sent_messages if msg.get("role") == "assistant")
         assert replayed_assistant["reasoning_content"] == "provider-native scratchpad"
+
+    def test_strict_provider_strips_reasoning_content_on_replay(self, agent):
+        """On a strict provider (Mistral et al.) reasoning_content from a
+        prior reasoning primary must be stripped on replay — otherwise the
+        request 400/422s ('Extra inputs are not permitted'). Refs #45655."""
+        self._setup_agent(agent)
+        agent.base_url = "https://api.mistral.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "mistral"
+        prior_assistant = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": "{\"q\":\"test\"}"},
+                }
+            ],
+            "reasoning_content": " ",  # space-pad from a reasoning primary
+        }
+        tool_result = {"role": "tool", "tool_call_id": "c1", "content": "ok"}
+        final_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = final_resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "next step",
+                conversation_history=[prior_assistant, tool_result],
+            )
+
+        assert result["completed"] is True
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        replayed_assistant = next(msg for msg in sent_messages if msg.get("role") == "assistant")
+        assert "reasoning_content" not in replayed_assistant
 
 
 # ---------------------------------------------------------------------------

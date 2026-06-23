@@ -485,13 +485,15 @@ def test_gui_retries_pack_once_after_purging_build_cache(tmp_path, monkeypatch):
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
+         patch("hermes_cli.main._electron_dist_ok", return_value=False), \
+         patch("hermes_cli.main._redownload_electron_dist", return_value=True), \
          patch("hermes_cli.main.subprocess.run", side_effect=[pack_fail, pack_ok, launch_ok]) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 0
     mock_purge.assert_called_once()
-    # pack(fail) → purge → pack(ok) → launch = 3 subprocess.run calls
+    # pack(fail) → repair succeeds → pack(ok) → launch = 3 subprocess.run calls
     assert mock_run.call_count == 3
     assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
     assert mock_run.call_args_list[1].args[0] == ["/usr/bin/npm", "run", "pack"]
@@ -535,10 +537,12 @@ def test_gui_redownloads_electron_via_mirror_then_repacks(tmp_path, monkeypatch,
     assert "Desktop GUI build failed" in capsys.readouterr().out
 
 
-def test_gui_skips_pack_when_electron_redownload_unrecoverable(tmp_path, monkeypatch, capsys):
-    """When the Electron binary can't be fetched at all (mirror also blocked),
-    skip the pointless final pack — it would just re-throw the same missing
-    electronDist — and fail with a clear message instead."""
+def test_gui_retries_pack_under_mirror_even_when_prefetch_blocked(tmp_path, monkeypatch, capsys):
+    """When electron's own downloader can't fetch the binary (even via the
+    mirror), still retry pack under ELECTRON_MIRROR: the build resolves
+    electronDist dynamically and lets electron-builder fetch Electron itself
+    via @electron/get, which honors the mirror. That retry is no longer
+    pointless (it was, back when electronDist was a static path)."""
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     _make_packaged_executable(root, monkeypatch, platform="linux")
@@ -553,17 +557,96 @@ def test_gui_skips_pack_when_electron_redownload_unrecoverable(tmp_path, monkeyp
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
          patch("hermes_cli.main._electron_dist_ok", return_value=False), \
          patch("hermes_cli.main._redownload_electron_dist", return_value=False), \
-         patch("hermes_cli.main.subprocess.run", side_effect=[pack_fail]) as mock_run, \
+         patch("hermes_cli.main.subprocess.run", side_effect=[pack_fail, pack_fail]) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 1
-    # Only the initial pack ran; both retries were skipped because no binary
-    # could be produced.
-    assert mock_run.call_count == 1
-    out = capsys.readouterr().out
-    assert "Could not re-download Electron from the mirror" in out
-    assert "Desktop GUI build failed" in out
+    # Initial pack + mirror-driven pack = 2; the mirror retry runs even though
+    # the pre-fetch failed, so electron-builder gets a shot at downloading.
+    assert mock_run.call_count == 2
+    assert "ELECTRON_MIRROR" not in (mock_run.call_args_list[0].kwargs.get("env") or {})
+    assert mock_run.call_args_list[1].kwargs["env"]["ELECTRON_MIRROR"]
+    assert "Desktop GUI build failed" in capsys.readouterr().out
+
+
+def test_gui_install_failure_self_heals_electron_and_continues(tmp_path, monkeypatch, capsys):
+    """npm ci failing on electron's blocked binary download must NOT abort the
+    install: with the electron package staged, repopulate its dist and continue
+    to the build instead of sys.exit-ing before pack ever runs (#47266/#48021)."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    # electron package staged on disk (postinstall download was the casualty).
+    (root / "apps" / "desktop" / "node_modules" / "electron").mkdir(parents=True)
+    (root / "apps" / "desktop" / "node_modules" / "electron" / "package.json").write_text("{}", encoding="utf-8")
+    (root / "apps" / "desktop" / "node_modules" / "electron" / "install.js").write_text("", encoding="utf-8")
+
+    install_fail = subprocess.CompletedProcess(["npm", "ci"], 1)
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_fail), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._electron_dist_ok", return_value=False), \
+         patch("hermes_cli.main._try_redownload_electron_dist", return_value=True) as mock_dl, \
+         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    mock_dl.assert_called()  # tried to repopulate the dist
+    # pack + launch ran — the install failure did NOT abort the build.
+    assert mock_run.call_count == 2
+    assert "repopulated" in capsys.readouterr().out.lower()
+
+
+def test_gui_install_failure_hard_fails_when_electron_not_staged(tmp_path, monkeypatch, capsys):
+    """A dependency-install failure where electron never even staged is a genuine
+    error (not a blocked binary download) — hard-fail with guidance, don't try to
+    self-heal a tree that isn't there."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="linux")
+
+    install_fail = subprocess.CompletedProcess(["npm", "ci"], 1)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_fail), \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 1
+    mock_run.assert_not_called()  # build never started
+    assert "Desktop dependency install failed" in capsys.readouterr().out
+
+
+def test_gui_install_failure_hard_fails_when_electron_dist_exists(tmp_path, monkeypatch, capsys):
+    """If npm install fails but Electron dist is already present, don't classify
+    it as the blocked-download shape; fail fast as a generic install error."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="linux")
+    electron_dir = root / "apps" / "desktop" / "node_modules" / "electron"
+    electron_dir.mkdir(parents=True)
+    (electron_dir / "package.json").write_text("{}", encoding="utf-8")
+    (electron_dir / "install.js").write_text("", encoding="utf-8")
+
+    install_fail = subprocess.CompletedProcess(["npm", "ci"], 1)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_fail), \
+         patch("hermes_cli.main._electron_dist_ok", return_value=True), \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 1
+    mock_run.assert_not_called()
+    assert "Desktop dependency install failed" in capsys.readouterr().out
 
 
 def test_gui_does_not_override_user_electron_mirror(tmp_path, monkeypatch, capsys):
@@ -612,6 +695,33 @@ def test_electron_dist_ok_per_platform(tmp_path, monkeypatch, platform, rel):
 
     binp = electron / rel
     binp.parent.mkdir(parents=True, exist_ok=True)
+    binp.write_text("", encoding="utf-8")
+    assert cli_main._electron_dist_ok(tmp_path) is True
+
+
+def test_electron_dir_prefers_workspace_local_package(tmp_path):
+    """npm may nest electron under apps/desktop; resolve there over the root hoist."""
+    root_electron = tmp_path / "node_modules" / "electron"
+    local_electron = tmp_path / "apps" / "desktop" / "node_modules" / "electron"
+    root_electron.mkdir(parents=True)
+    local_electron.mkdir(parents=True)
+
+    assert cli_main._electron_dir(tmp_path) == local_electron
+
+
+def test_electron_dir_falls_back_to_root_hoist(tmp_path):
+    """When npm hoists electron to the repo root, resolve there."""
+    root_electron = tmp_path / "node_modules" / "electron"
+    root_electron.mkdir(parents=True)
+
+    assert cli_main._electron_dir(tmp_path) == root_electron
+
+
+def test_electron_dist_ok_finds_workspace_local_binary(tmp_path, monkeypatch):
+    """A nested apps/desktop electron with a valid binary counts as ok."""
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    binp = tmp_path / "apps" / "desktop" / "node_modules" / "electron" / "dist" / "electron"
+    binp.parent.mkdir(parents=True)
     binp.write_text("", encoding="utf-8")
     assert cli_main._electron_dist_ok(tmp_path) is True
 

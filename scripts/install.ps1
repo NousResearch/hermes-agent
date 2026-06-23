@@ -89,6 +89,50 @@ try {
 }
 
 # ============================================================================
+# 8.3 short-path normalization
+# ============================================================================
+# When the Windows user-profile folder name contains a space (e.g.
+# "First Last"), Windows generates an 8.3 short alias for it (e.g. FIRST~1.LAS)
+# and may expose %TEMP%/%TMP% in that short form:
+#   C:\Users\FIRST~1.LAS\AppData\Local\Temp
+# PowerShell's FileSystem provider mishandles the "~1.ext" component when such a
+# path is handed to a provider cmdlet like `Tee-Object -FilePath` /
+# `Out-File -FilePath`, throwing:
+#   "An object at the specified path C:\Users\FIRST~1.LAS does not exist."
+# Every Node/Electron build+install stage streams its log to %TEMP% via
+# Tee-Object, so they all abort with that error, while the Python/uv stages --
+# which never write a side log to %TEMP% through a provider cmdlet -- complete
+# fine. Expanding %TEMP%/%TMP% back to their long form once, up front, lets
+# every downstream cmdlet (and child process) see a path the provider can
+# resolve. (GH: Windows desktop installer fails at Node/Electron stages.)
+
+function ConvertTo-LongPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    # Only 8.3 short names carry a tilde+digit ("~1"); skip the COM round-trip
+    # for ordinary long paths.
+    if ($Path -notmatch '~\d') { return $Path }
+    try {
+        $fso = New-Object -ComObject Scripting.FileSystemObject
+        if ($fso.FolderExists($Path)) { return $fso.GetFolder($Path).Path }
+        if ($fso.FileExists($Path))   { return $fso.GetFile($Path).Path }
+    } catch {
+        # COM unavailable / locked-down host: fall back to the original path.
+    }
+    return $Path
+}
+
+foreach ($tmpVar in @('TEMP', 'TMP')) {
+    $current = [Environment]::GetEnvironmentVariable($tmpVar)
+    if ($current) {
+        $expanded = ConvertTo-LongPath $current
+        if ($expanded -and $expanded -ne $current) {
+            Set-Item -Path "Env:$tmpVar" -Value $expanded
+        }
+    }
+}
+
+# ============================================================================
 # Configuration
 # ============================================================================
 
@@ -183,6 +227,18 @@ function Write-Warn {
 function Write-Err {
     param([string]$Message)
     Write-Host "[X] $Message" -ForegroundColor Red
+}
+
+function Invoke-NativeWithRelaxedErrorAction {
+    param([scriptblock]$Script)
+
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Script
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
 }
 
 # Inspect npm output for a TLS-trust failure and, if found, print actionable
@@ -318,6 +374,36 @@ function Install-AgentBrowser {
 # Dependency checks
 # ============================================================================
 
+# Resolve the PowerShell host executable used to spawn child PowerShell
+# processes (the astral uv installer below).  We must NOT hardcode the bare
+# name `powershell`: it names *Windows PowerShell* and only resolves when its
+# System32 directory is on PATH.  When install.ps1 is run under PowerShell 7+
+# (`pwsh`) -- or any session where `powershell` isn't on PATH -- a bare
+# `powershell` spawn dies with "The term 'powershell' is not recognized",
+# aborting uv installation (field report: Windows install stuck, uv install
+# failed with exactly that message).  Prefer the absolute path of the host we
+# are already running in (PATH-independent), then fall back to whichever of
+# powershell/pwsh is resolvable, and only then to the bare name.
+function Get-PowerShellHostExe {
+    try {
+        $hostExe = (Get-Process -Id $PID).Path
+        if ($hostExe -and (Test-Path $hostExe)) {
+            $leaf = Split-Path $hostExe -Leaf
+            # Only trust the current host when it is a real PowerShell CLI
+            # (not e.g. powershell_ise.exe or an embedded host that can't take
+            # `-ExecutionPolicy`/`-Command`).
+            if ($leaf -match '^(?i:powershell|pwsh)\.exe$') { return $hostExe }
+        }
+    } catch { }
+    foreach ($candidate in @("powershell", "pwsh")) {
+        $cmd = Get-Command $candidate -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($cmd -and $cmd.Source) { return $cmd.Source }
+    }
+    # Last-ditch: hand back the bare name so the spawn surfaces its own error.
+    return "powershell"
+}
+
 function Install-Uv {
     # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there —
     # no PATH probing, no conda guards, no multi-location resolution chains.
@@ -341,7 +427,11 @@ function Install-Uv {
     try {
         $ErrorActionPreference = "Continue"
         $env:UV_INSTALL_DIR = Join-Path $HermesHome "bin"
-        powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+        # Spawn via the resolved host exe (see Get-PowerShellHostExe) rather
+        # than a bare `powershell`, which isn't guaranteed to be on PATH under
+        # PowerShell 7 / pwsh-only setups.
+        $psHostExe = Get-PowerShellHostExe
+        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {
@@ -1306,7 +1396,7 @@ function Install-Repository {
         Write-Info "Trying SSH clone..."
         $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
         try {
-            git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir
+            Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir }
             if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
         } catch { }
         $env:GIT_SSH_COMMAND = $null
@@ -1315,7 +1405,7 @@ function Install-Repository {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Info "SSH failed, trying HTTPS..."
             try {
-                git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlHttps $InstallDir
+                Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlHttps $InstallDir }
                 if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
             } catch { }
         }
@@ -1443,8 +1533,20 @@ function Install-Venv {
         Remove-Item -Recurse -Force "venv"
     }
     
-    # uv creates the venv and pins the Python version in one step
-    & $UvCmd venv venv --python $PythonVersion
+    # uv creates the venv and pins the Python version in one step.  uv emits
+    # normal progress such as "Using CPython ..." on stderr; under Windows
+    # PowerShell 5.1 with EAP=Stop that stderr is a NativeCommandError unless
+    # we temporarily relax EAP and trust $LASTEXITCODE for real failures.
+    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $PythonVersion }
+    # Relaxing EAP above means a *genuine* uv-venv failure (exit != 0) no longer
+    # aborts on its own. Capture $LASTEXITCODE immediately and fail fast, so the
+    # `venv` stage can't falsely report success (and Invoke-Stage can't emit
+    # ok=true) when the venv was never created.
+    $venvExitCode = $LASTEXITCODE
+    if ($venvExitCode -ne 0) {
+        Pop-Location
+        throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
+    }
 
     # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
     # the user's shell). uv honours UV_PYTHON over an existing venv for the
@@ -1514,7 +1616,7 @@ function Install-Dependencies {
         # in the wrong directory and imports fail with ModuleNotFoundError.
         # (Mirrors the same flag in scripts/install.sh::install_deps.)
         $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
-        & $UvCmd sync --extra all --locked
+        Invoke-NativeWithRelaxedErrorAction { & $UvCmd sync --extra all --locked }
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Main package installed (hash-verified via uv.lock)"
             $script:InstalledTier = "hash-verified (uv.lock)"
@@ -1589,7 +1691,7 @@ except Exception:
     if (-not $skipPipFallback) {
         foreach ($tier in $installTiers) {
         Write-Info "Trying tier: $($tier.Name) ..."
-        & $UvCmd pip install -e $tier.Spec
+        Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install -e $tier.Spec }
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Main package installed ($($tier.Name))"
             $script:InstalledTier = $tier.Name
@@ -2161,39 +2263,31 @@ function Clear-ElectronBuildCache {
     return $removed
 }
 
-# True when node_modules\electron\dist holds a usable Electron binary.
-# electron-builder reads the binary from build.electronDist
-# (node_modules\electron\dist) since #38673, so this is the exact file whose
-# absence makes a pack fail with "The specified electronDist does not exist". A
-# dist dir that exists but is missing electron.exe (partial extraction / aborted
-# postinstall) is NOT ok.
+# Last-resort Electron mirror after GitHub download fails (#47266).
+$script:DesktopElectronFallbackMirror = "https://npmmirror.com/mirrors/electron/"
+
+# Electron package dir — workspace-local nest first, then root hoist.
+function Get-ElectronDir {
+    param([string]$InstallDir)
+    $desktopLocal = Join-Path $InstallDir 'apps\desktop\node_modules\electron'
+    if (Test-Path -LiteralPath $desktopLocal) { return $desktopLocal }
+    return (Join-Path $InstallDir 'node_modules\electron')
+}
+
+# True when dist/ holds a usable Electron binary (#38673 / run-electron-builder.cjs).
 function Test-ElectronDist {
     param([string]$InstallDir)
-    $distExe = Join-Path $InstallDir 'node_modules\electron\dist\electron.exe'
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
+    $distExe = Join-Path $electronDir 'dist\electron.exe'
     return (Test-Path -LiteralPath $distExe)
 }
 
-# (Re)populate node_modules\electron\dist via electron's own downloader.
-#
-# Since #38673 the desktop build pins build.electronDist to
-# node_modules\electron\dist, so electron-builder reads the Electron binary
-# straight from there and never downloads it during `npm run pack`. That dist
-# tree is produced by the electron package's postinstall (install.js) during
-# `npm ci`. When that download is blocked/throttled (GitHub's release host is
-# unreachable in some regions - #47266), dist is missing and re-running pack only
-# re-throws "The specified electronDist does not exist". The mirror fallback
-# therefore has to drive THIS downloader, not another pack.
-#
-# No-op (returns $true) when the dist binary is already present. Otherwise drops a
-# partial dist + version marker (electron's install.js short-circuits when
-# path.txt already matches) and runs the downloader once, optionally via a
-# mirror. Best-effort: never throws. Returns $true iff the dist binary exists
-# afterward.
+# Best-effort: run electron/install.js to populate dist/ (optional mirror).
 function Restore-ElectronDist {
     param([string]$InstallDir, [string]$Mirror)
     if (Test-ElectronDist -InstallDir $InstallDir) { return $true }
 
-    $electronDir = Join-Path $InstallDir 'node_modules\electron'
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
     $distExe = Join-Path $electronDir 'dist\electron.exe'
     $installer = Join-Path $electronDir 'install.js'
     if (-not (Test-Path -LiteralPath $installer)) { return $false }
@@ -2219,6 +2313,23 @@ function Restore-ElectronDist {
         $env:ELECTRON_MIRROR = $prevMirror
     }
     return (Test-Path -LiteralPath $distExe)
+}
+
+function Test-ElectronPkgStagedMissingDist {
+    param([string]$InstallDir)
+    $electronDir = Get-ElectronDir -InstallDir $InstallDir
+    return (
+        (Test-Path -LiteralPath (Join-Path $electronDir 'package.json')) -and
+        (Test-Path -LiteralPath (Join-Path $electronDir 'install.js')) -and
+        (-not (Test-ElectronDist -InstallDir $InstallDir))
+    )
+}
+
+function Try-RestoreElectronDist {
+    param([string]$InstallDir)
+    if (Restore-ElectronDist -InstallDir $InstallDir) { return $true }
+    if ($env:ELECTRON_MIRROR) { return $false }
+    return Restore-ElectronDist -InstallDir $InstallDir -Mirror $script:DesktopElectronFallbackMirror
 }
 
 function Install-Desktop {
@@ -2316,10 +2427,16 @@ function Install-Desktop {
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
-            Show-NpmCertHint ($npmOut -join "`n") | Out-Null
-            throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
+            if (Test-ElectronPkgStagedMissingDist -InstallDir $InstallDir) {
+                Write-Warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
+                Try-RestoreElectronDist -InstallDir $InstallDir | Out-Null
+            } else {
+                Show-NpmCertHint ($npmOut -join "`n") | Out-Null
+                throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
+            }
+        } else {
+            Write-Success "Desktop workspace dependencies installed"
         }
-        Write-Success "Desktop workspace dependencies installed"
     } catch {
         if ($prevEAP) { $ErrorActionPreference = $prevEAP }
         Pop-Location
@@ -2362,57 +2479,34 @@ function Install-Desktop {
         & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
         $code = $LASTEXITCODE
         if ($code -ne 0) {
-            # A corrupt cached Electron zip makes `pack` fail with an opaque
-            # ENOENT on the final `electron` -> `Hermes` rename: app-builder's
-            # unpack-electron extracted a partial tree (missing the binary) from
-            # the bad zip, and re-running reuses the poisoned cache forever.
-            # Purge the cached download + any stale unpacked output and retry
-            # once; @electron/get re-downloads with its own SHASUM check. Without
-            # this a corrupt download hard-fails the whole installer.
-            $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
-            # electronDist is pinned to node_modules\electron\dist (#38673):
-            # electron-builder reads the Electron binary from there and `pack`
-            # never downloads it, so purging the cache + re-running pack can't by
-            # itself repopulate a missing/partial dist. When the dist is actually
-            # gone, re-run electron's own downloader so the retry has a binary to
-            # read. Gated on the dist check so an unrelated build failure
-            # (tsc/vite) doesn't trigger a pointless ~200MB refetch.
+            $purged = @()
             $restored = $false
             if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
+                $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
                 $restored = Restore-ElectronDist -InstallDir $InstallDir
             }
-            if ($purged.Count -gt 0 -or $restored) {
+            if ($restored) {
                 Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
                 foreach ($p in $purged) { Write-Info "  - $p" }
                 & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
                 $code = $LASTEXITCODE
             }
         }
-        # Still failing and the user hasn't pinned their own mirror: GitHub's
-        # Electron release host is likely blocked/throttled (the repeating
-        # "retrying" log). Retry once via npmmirror.com — the de-facto Electron
-        # community mirror (Alibaba). @electron/get SHASUM-checks the download,
-        # but the SHASUMS come from the same mirror, so that guards against a
-        # corrupt/partial download, NOT a compromised mirror: an explicit trust
-        # trade-off we only make AFTER the canonical GitHub download has failed,
-        # and we never override a user-pinned ELECTRON_MIRROR.
         if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
-            $mirror = "https://npmmirror.com/mirrors/electron/"
+            $mirror = $script:DesktopElectronFallbackMirror
             Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
             Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"
             Write-Info "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
-            # electronDist is pinned (#38673), so `npm run pack` never downloads
-            # Electron - the mirror only helps if it drives electron's own
-            # downloader. Re-fetch the binary through the mirror first; otherwise
-            # the retry just re-reads the same missing dist and re-throws
-            # "The specified electronDist does not exist" (#47266).
-            $haveDist = Test-ElectronDist -InstallDir $InstallDir
-            if (-not $haveDist) { $haveDist = Restore-ElectronDist -InstallDir $InstallDir -Mirror $mirror }
-            if ($haveDist) {
+            if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
+                Restore-ElectronDist -InstallDir $InstallDir -Mirror $mirror | Out-Null
+            }
+            $prevMirror = $env:ELECTRON_MIRROR
+            $env:ELECTRON_MIRROR = $mirror
+            try {
                 & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
                 $code = $LASTEXITCODE
-            } else {
-                Write-Warn "Could not re-download Electron from the mirror (node_modules\electron\dist still missing)"
+            } finally {
+                $env:ELECTRON_MIRROR = $prevMirror
             }
         }
         $ErrorActionPreference = $prevEAP

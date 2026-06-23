@@ -64,6 +64,7 @@ import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { ThreadMessageList } from '@/components/assistant-ui/thread-list'
+import { ThreadTimeline } from '@/components/assistant-ui/thread-timeline'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
@@ -212,6 +213,7 @@ export const Thread: FC<{
         sessionKey={sessionKey}
       />
       {loading === 'session' && <CenteredThreadSpinner />}
+      <ThreadTimeline />
     </div>
   )
 }
@@ -797,7 +799,15 @@ function messageAttachmentRefs(value: unknown): string[] {
   return value.every(ref => typeof ref === 'string') ? value : EMPTY_ATTACHMENT_REFS
 }
 
-function StickyHumanMessageContainer({ attachments, children }: { attachments?: ReactNode; children: ReactNode }) {
+function StickyHumanMessageContainer({
+  attachments,
+  children,
+  messageId
+}: {
+  attachments?: ReactNode
+  children: ReactNode
+  messageId?: string
+}) {
   return (
     // Fragment, not a wrapper: a wrapping element becomes the sticky's
     // containing block (it'd stick within its own height = never). The bubble
@@ -806,6 +816,7 @@ function StickyHumanMessageContainer({ attachments, children }: { attachments?: 
     <>
       <div
         className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-1"
+        data-message-id={messageId}
         data-role="user"
         data-slot="aui_user-message-root"
       >
@@ -827,7 +838,7 @@ function StickyHumanMessageContainer({ attachments, children }: { attachments?: 
 // so without the carve-out, clicking a stuck bubble drags the window instead of
 // opening the edit composer.
 const USER_BUBBLE_BASE_CLASS =
-  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left [-webkit-app-region:no-drag]'
+  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-y-auto rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left [-webkit-app-region:no-drag]'
 
 const USER_ACTION_ICON_BUTTON_CLASS =
   'grid place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
@@ -859,7 +870,10 @@ const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
           <summary className="cursor-pointer select-none text-muted-foreground/45 hover:text-muted-foreground/70">
             output
           </summary>
-          <pre className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55">
+          <pre
+            className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55"
+            data-selectable-text="true"
+          >
             {detail}
           </pre>
         </details>
@@ -987,6 +1001,7 @@ const UserMessage: FC<{
   return (
     <MessagePrimitive.Root asChild>
       <StickyHumanMessageContainer
+        messageId={messageId}
         attachments={
           // Attachments live BELOW the sticky bubble in normal flow, so they
           // scroll away behind the pinned bubble instead of riding along with

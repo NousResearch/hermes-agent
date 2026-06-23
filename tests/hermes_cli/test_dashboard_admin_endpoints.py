@@ -94,9 +94,31 @@ class TestMcpEndpoints:
         body = r.json()
         assert "entries" in body and "diagnostics" in body
         # The shipped optional-mcps/ catalog has at least one entry; each must
-        # carry the install/enabled status fields the UI relies on.
+        # carry the install/enabled status fields plus the inspection detail
+        # the dashboard renders (transport target, install source, guidance) so
+        # users can vet an entry before installing.
         for e in body["entries"]:
-            assert {"name", "transport", "installed", "enabled", "needs_install"} <= set(e)
+            assert {
+                "name",
+                "transport",
+                "auth_type",
+                "installed",
+                "enabled",
+                "needs_install",
+                "command",
+                "args",
+                "url",
+                "install_url",
+                "install_ref",
+                "bootstrap",
+                "default_enabled",
+                "post_install",
+            } <= set(e)
+            # http entries expose a url; stdio entries expose a command.
+            if e["transport"] == "http":
+                assert e["url"]
+            elif e["transport"] == "stdio":
+                assert e["command"]
 
     def test_catalog_install_unknown_404(self):
         r = self.client.post("/api/mcp/catalog/install", json={"name": "no-such-mcp-xyz"})

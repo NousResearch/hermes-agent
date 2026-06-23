@@ -1159,6 +1159,46 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
+def _resolve_anthropic_pool_token() -> Optional[str]:
+    """Return the first available Anthropic OAuth token from credential_pool.
+
+    Read-only: enumerates with ``clear_expired=False, refresh=False`` so a bare
+    token *resolve* (which runs from diagnostic/read-only call sites such as
+    ``account_usage`` and ``hermes models``) never mutates ``~/.hermes/auth.json``
+    or makes a network refresh call. Refresh-on-expiry is owned by the API call
+    path's pool recovery, not the resolver.
+    """
+    try:
+        from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
+    except Exception:
+        return None
+
+    try:
+        pool = load_pool("anthropic")
+        # Enumerate read-only (clear_expired=False, refresh=False): never persist
+        # to auth.json or trigger a network refresh from a bare resolve. select()
+        # is deliberately NOT used — it runs clear_expired=True, refresh=True,
+        # which would violate this read-only contract.
+        entries = pool._available_entries(clear_expired=False, refresh=False)
+    except Exception:
+        logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
+        return None
+
+    for entry in entries:
+        if getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH:
+            continue
+        # access_token is a declared field but a persisted entry can carry an
+        # explicit null (or a partially-written OAuth entry), so coerce before
+        # strip — a bare None.strip() here would escape the try/excepts above
+        # and crash the whole resolver, taking down the source #5 fallback too.
+        # Matches the aux-client analog (auxiliary_client.py: str(key or "")).
+        token = (getattr(entry, "access_token", None) or "").strip()
+        if token:
+            return token
+
+    return None
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -1167,7 +1207,8 @@ def resolve_anthropic_token() -> Optional[str]:
       2. CLAUDE_CODE_OAUTH_TOKEN env var
       3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
-      4. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
+      4. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
+      5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
@@ -1194,7 +1235,12 @@ def resolve_anthropic_token() -> Optional[str]:
     if resolved_claude_token:
         return resolved_claude_token
 
-    # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
+    # 4. Hermes credential_pool OAuth entry.
+    resolved_pool_token = _resolve_anthropic_pool_token()
+    if resolved_pool_token:
+        return resolved_pool_token
+
+    # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:
@@ -2535,3 +2581,56 @@ def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
             sorted(leaked),
         )
     return api_kwargs
+
+
+def _is_stream_unavailable_error(exc: Exception) -> bool:
+    """Return True when an Anthropic stream call should fall back to create()."""
+    err_lower = str(exc).lower()
+    if "stream" in err_lower and "not supported" in err_lower:
+        return True
+    if "invokemodelwithresponsestream" in err_lower:
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+
+        return is_streaming_access_denied_error(exc)
+    return False
+
+
+def create_anthropic_message(
+    client: Any,
+    api_kwargs: dict,
+    *,
+    log_prefix: str = "",
+    prefer_stream: bool = True,
+) -> Any:
+    """Create an Anthropic message, aggregating via stream when available.
+
+    Some Anthropic-compatible gateways are SSE-only: they ignore non-streaming
+    requests and return ``text/event-stream`` even for ``messages.create()``.
+    The SDK can surface that as raw text, so callers that expect a Message then
+    crash on ``.content``.  Prefer ``messages.stream().get_final_message()`` to
+    match the main turn path, falling back to ``create()`` only for providers
+    that explicitly do not support streaming, such as restricted Bedrock roles.
+    """
+    sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
+
+    messages_api = getattr(client, "messages", None)
+    stream_fn = getattr(messages_api, "stream", None)
+    if prefer_stream and callable(stream_fn):
+        stream_kwargs = dict(api_kwargs)
+        stream_kwargs.pop("stream", None)
+        try:
+            with stream_fn(**stream_kwargs) as stream:
+                return stream.get_final_message()
+        except Exception as exc:
+            if not _is_stream_unavailable_error(exc):
+                raise
+            logger.debug(
+                "%sAnthropic Messages stream unavailable; falling back to "
+                "messages.create(): %s",
+                log_prefix,
+                exc,
+            )
+
+    create_kwargs = dict(api_kwargs)
+    create_kwargs.pop("stream", None)
+    return messages_api.create(**create_kwargs)

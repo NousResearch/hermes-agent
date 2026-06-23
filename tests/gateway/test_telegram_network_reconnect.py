@@ -33,7 +33,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ def _no_auto_discovery(monkeypatch):
     """Disable DoH auto-discovery so connect() uses the plain builder chain."""
     async def _noop():
         return []
-    monkeypatch.setattr("gateway.platforms.telegram.discover_fallback_ips", _noop)
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.discover_fallback_ips", _noop)
 
 
 def _make_adapter() -> TelegramAdapter:
@@ -379,7 +379,7 @@ async def test_heartbeat_probe_reenters_ladder_when_get_me_times_out():
         raise asyncio.TimeoutError()
 
     with patch("asyncio.sleep", new_callable=AsyncMock):
-        with patch("gateway.platforms.telegram.asyncio.wait_for", new=fast_wait_for):
+        with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", new=fast_wait_for):
             await adapter._verify_polling_after_reconnect()
 
     adapter._handle_polling_network_error.assert_awaited_once()

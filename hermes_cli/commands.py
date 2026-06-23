@@ -78,6 +78,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
+    CommandDef("prompt", "Compose your next prompt in $EDITOR (markdown), then send it", "Session",
+               cli_only=True, args_hint="[initial text]", aliases=("compose",)),
     CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
                args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session",
@@ -106,7 +108,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                args_hint="<prompt>"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
-               args_hint="[text | pause | resume | clear | status]"),
+               args_hint="[text | draft <text> | show | pause | resume | clear | status | wait <pid> | unwait]"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session, model, token, and context info", "Session"),
@@ -123,18 +125,19 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
-    CommandDef("model", "Switch model for this session", "Configuration",
-               args_hint="[model] [--provider name] [--global] [--refresh]"),
+    CommandDef("model", "Switch model (persists by default)", "Configuration",
+               args_hint="[model] [--provider name] [--global|--session] [--refresh]"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
-    CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
-               cli_only=True),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
     CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
                cli_only=True, aliases=("sb",)),
+    CommandDef("timestamps", "Toggle [HH:MM] timestamps on messages and /history", "Configuration",
+               cli_only=True, args_hint="[on|off|status]",
+               subcommands=("on", "off", "status"), aliases=("ts",)),
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
                "Configuration", cli_only=True,
                gateway_config_gate="display.tool_progress_command"),
@@ -144,8 +147,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration"),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
-               args_hint="[level|show|hide]",
-               subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "show", "hide", "on", "off")),
+               args_hint="[level|show|hide|full|clamp]",
+               subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "show", "hide", "on", "off", "full", "clamp")),
     CommandDef("fast", "Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (Normal/Fast)", "Configuration",
                args_hint="[normal|fast|status]",
                subcommands=("normal", "fast", "status", "on", "off")),
@@ -215,6 +218,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
     CommandDef("credits", "Show Nous credit balance and top up", "Info"),
+    CommandDef("billing", "Manage Nous terminal billing — buy credits, auto-reload, limits", "Info",
+               cli_only=True),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
@@ -1053,8 +1058,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # the telegram-parity test reads it so an entry here is a deliberate
 # "Slack-via-/hermes" decision, not a silent clamp.
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
+#   - billing: the terminal-billing surface (buy/auto-reload/limit); /hermes billing.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "debug"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "debug"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

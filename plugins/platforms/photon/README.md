@@ -131,10 +131,13 @@ All env vars are documented in `plugin.yaml`. The most important:
   the bytes (`content.read()`) and base64-inlines them on the NDJSON event; the
   adapter caches them to the shared media cache and populates `media_urls` /
   `media_types`, so the agent sees the real image/file or can transcribe the
-  voice note — parity with the BlueBubbles iMessage channel. Media larger than
-  `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` (default 20 MB), or any byte read that
-  fails, falls back to a text marker (`[Photon attachment received: …]` or
-  `[Photon voice received: …]`) so the agent still knows something arrived.
+  voice note — parity with the BlueBubbles iMessage channel. Mixed iMessage
+  bubbles that contain both text and attachments are normalized as a grouped
+  payload so the user's typed text is preserved alongside the cached media.
+  Media larger than `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` (default 20 MB), or
+  any byte read that fails, falls back to a text marker (`[Photon attachment
+  received: …]` or `[Photon voice received: …]`) so the agent still knows
+  something arrived.
 - **Outbound attachments are supported.** Images, voice notes, video, and
   documents are sent via `space.send(attachment(...))` /
   `space.send(voice(...))` through the sidecar's `/send-attachment`

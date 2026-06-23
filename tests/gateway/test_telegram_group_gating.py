@@ -23,7 +23,7 @@ def _make_adapter(
     observe_unmentioned_group_messages=None,
     bot_username="hermes_bot",
 ):
-    from gateway.platforms.telegram import TelegramAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
     extra = {}
     if require_mention is not None:
@@ -1180,7 +1180,7 @@ def test_unmentioned_large_document_observed_without_download(monkeypatch):
     asyncio.run(_run())
 
 
-def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
+def test_unmentioned_unsupported_document_observed_and_cached(monkeypatch):
     async def _run():
         adapter = _make_adapter(
             require_mention=True, allowed_chats=["-100"],
@@ -1188,14 +1188,14 @@ def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
         )
         store = _FakeSessionStore()
         adapter._session_store = store
-        cache_doc = Mock(return_value="/tmp/malware.exe")
+        cache_doc = Mock(return_value="/tmp/program.exe")
         monkeypatch.setattr("gateway.platforms.base.cache_document_from_bytes", cache_doc)
         file_obj = SimpleNamespace(
-            file_path="documents/malware.exe",
+            file_path="documents/program.exe",
             download_as_bytearray=AsyncMock(return_value=bytearray(b"MZ")),
         )
         document = SimpleNamespace(
-            file_name="malware.exe", mime_type="application/x-msdownload",
+            file_name="program.exe", mime_type="application/x-msdownload",
             file_size=2, get_file=AsyncMock(return_value=file_obj),
         )
         update = SimpleNamespace(
@@ -1204,8 +1204,10 @@ def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
 
         await adapter._handle_media_message(update, SimpleNamespace())
 
-        cache_doc.assert_not_called()
+        # Any file type is now cached — authorization is the gate, not the
+        # extension. The observed message records a path-pointing note.
+        cache_doc.assert_called_once()
         _, message, _ = store.messages[0]
-        assert "unsupported" in message["content"].lower()
+        assert "program.exe" in message["content"]
 
     asyncio.run(_run())

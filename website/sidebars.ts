@@ -27,6 +27,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/windows-native',
         'user-guide/windows-wsl-quickstart',
         'user-guide/configuration',
+        'user-guide/managed-scope',
         'user-guide/configuring-models',
         {
           type: 'category',
@@ -59,6 +60,7 @@ const sidebars: SidebarsConfig = {
           label: 'Core',
           items: [
             'user-guide/features/tools',
+            'user-guide/features/tool-search',
             'user-guide/features/skills',
             'user-guide/features/lsp',
             'user-guide/features/curator',
@@ -78,6 +80,7 @@ const sidebars: SidebarsConfig = {
           label: 'Automation',
           items: [
             'user-guide/features/cron',
+            'reference/automation-blueprints-catalog',
             'user-guide/features/delegation',
             'user-guide/features/kanban',
             'user-guide/features/codex-app-server-runtime',
@@ -183,16 +186,6 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel',
-                  ],
-                },
-                {
-                  type: 'category',
-                  label: 'devops',
-                  key: 'skills-bundled-devops',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/devops/devops-kanban-orchestrator',
-                    'user-guide/skills/bundled/devops/devops-kanban-worker',
                   ],
                 },
                 {
@@ -519,6 +512,17 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'payments',
+                  key: 'skills-optional-payments',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/payments/payments-mpp-agent',
+                    'user-guide/skills/optional/payments/payments-stripe-link-cli',
+                    'user-guide/skills/optional/payments/payments-stripe-projects',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'productivity',
                   key: 'skills-optional-productivity',
                   collapsed: true,
@@ -526,7 +530,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/productivity/productivity-canvas',
                     'user-guide/skills/optional/productivity/productivity-here-now',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
-                    'user-guide/skills/optional/productivity/productivity-shop-app',
+                    'user-guide/skills/optional/productivity/productivity-shop',
                     'user-guide/skills/optional/productivity/productivity-shopify',
                     'user-guide/skills/optional/productivity/productivity-siyuan',
                     'user-guide/skills/optional/productivity/productivity-telephony',
@@ -604,6 +608,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/discord',
             'user-guide/messaging/slack',
             'user-guide/messaging/whatsapp',
+            'user-guide/messaging/whatsapp-cloud',
             'user-guide/messaging/signal',
             'user-guide/messaging/email',
             'user-guide/messaging/sms',
@@ -684,7 +689,7 @@ const sidebars: SidebarsConfig = {
         'guides/build-a-hermes-plugin',
         'guides/automate-with-cron',
         'guides/cron-script-only',
-        'guides/automation-templates',
+        'guides/automation-blueprints',
         'guides/cron-troubleshooting',
         'guides/work-with-skills',
         'guides/delegation-patterns',

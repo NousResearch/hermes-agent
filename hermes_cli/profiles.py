@@ -22,13 +22,14 @@ Usage::
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
@@ -44,10 +45,10 @@ _PROFILE_DIRS = [
     "plans",
     "workspace",
     "cron",
-    # Per-profile HOME for subprocesses: isolates system tool configs (git,
-    # ssh, gh, npm …) so credentials don't bleed between profiles.  In Docker
-    # this also ensures tool configs land inside the persistent volume.
-    # See hermes_constants.get_subprocess_home() and issue #4426.
+    # Back-compat/Docker HOME for tool subprocesses. Host subprocesses keep
+    # the user's real HOME by default so normal CLI credentials remain visible;
+    # containers still use this directory for persistent HOME state.
+    # See hermes_constants.get_subprocess_home().
     "home",
 ]
 
@@ -88,15 +89,39 @@ _CLONE_ALL_STRIP: list[str] = [
 #   node_modules  — npm packages (hundreds of MB)
 #
 # See ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` below for the broader export-side
-# exclusion list (export drops state.db / logs / caches too because the
-# archive is a portable snapshot; clone-all keeps those because the cloned
-# profile is meant to keep working immediately).
+# exclusion list (export also drops logs / caches because the archive is a
+# portable snapshot; clone-all keeps those because the cloned profile is
+# meant to keep working immediately).
 _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "hermes-agent",
     ".worktrees",
     "profiles",
     "bin",
     "node_modules",
+})
+
+# Per-profile history artifacts excluded from --clone-all regardless of the
+# source profile.  A new profile is a fresh workspace — inheriting the source
+# profile's session history, backup archives, or quick-backup snapshots is
+# never useful (restoring one inside the clone would resurrect the SOURCE
+# profile's state) and can balloon the copy by tens of GB.  Unlike
+# ``_CLONE_ALL_DEFAULT_EXCLUDE_ROOT`` this set is NOT gated on the default
+# profile: named profiles accumulate the same artifacts.
+#
+# Rationale per item:
+#   state.db (+wal/shm) — SQLite session store (can reach many GB)
+#   sessions            — per-session transcript/data dirs
+#   backups             — `hermes backup` archives
+#   state-snapshots     — quick-backup snapshot trees
+#   checkpoints         — session checkpoint data
+_CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
+    "state.db",
+    "state.db-wal",
+    "state.db-shm",
+    "sessions",
+    "backups",
+    "state-snapshots",
+    "checkpoints",
 })
 
 # Marker file written by `hermes profile create --no-skills`.  When present in
@@ -119,13 +144,16 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
 def _clone_all_copytree_ignore(source_dir: Path):
     """Exclude infrastructure artifacts when cloning a profile via --clone-all.
 
-    Two categories:
-      1. Root-level entries in ``_CLONE_ALL_DEFAULT_EXCLUDE_ROOT`` — known
+    Three categories:
+      1. Root-level entries in ``_CLONE_ALL_HISTORY_EXCLUDE_ROOT`` — session
+         history, backups, and snapshots that belong to the SOURCE profile
+         and should never carry into a fresh clone.  Applies to any source.
+      2. Root-level entries in ``_CLONE_ALL_DEFAULT_EXCLUDE_ROOT`` — known
          Hermes infrastructure directories that only the default profile
          (``~/.hermes``) ever contains.  Gated on ``source_dir`` actually
          being the default profile so a named-profile source never has its
          own data silently dropped.
-      2. Universal exclusions at any depth — Python bytecode caches that
+      3. Universal exclusions at any depth — Python bytecode caches that
          are stale or regenerable (``__pycache__``, ``*.pyc``, ``*.pyo``)
          and runtime sockets / temp files (``*.sock``, ``*.tmp``).
 
@@ -147,17 +175,21 @@ def _clone_all_copytree_ignore(source_dir: Path):
             ):
                 ignored.append(entry)
                 continue
-            # Root-level exclusions only apply when cloning the default profile.
-            if is_default_source:
-                try:
-                    if Path(directory).resolve() == source_resolved:
-                        if entry in _CLONE_ALL_DEFAULT_EXCLUDE_ROOT:
-                            ignored.append(entry)
-                except (OSError, ValueError):
-                    # ``resolve()`` can fail on unusual FS layouts (broken
-                    # symlinks, missing parents).  Fail open — better to
-                    # over-copy than silently drop user data.
-                    pass
+            try:
+                at_root = Path(directory).resolve() == source_resolved
+            except (OSError, ValueError):
+                # ``resolve()`` can fail on unusual FS layouts (broken
+                # symlinks, missing parents).  Fail open — better to
+                # over-copy than silently drop user data.
+                at_root = False
+            if at_root:
+                # History artifacts: excluded for ANY source profile.
+                if entry in _CLONE_ALL_HISTORY_EXCLUDE_ROOT:
+                    ignored.append(entry)
+                    continue
+                # Infrastructure: only the default profile contains these.
+                if is_default_source and entry in _CLONE_ALL_DEFAULT_EXCLUDE_ROOT:
+                    ignored.append(entry)
         return ignored
 
     return _ignore
@@ -390,7 +422,8 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     else:
         wrapper_path = wrapper_dir / canon
         try:
-            wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {profile} "$@"\n')
+            hermes_exe = shutil.which("hermes") or "hermes"
+            wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} "$@"\n')
             wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
             return wrapper_path
         except OSError as e:
@@ -420,6 +453,37 @@ def remove_wrapper_script(name: str) -> bool:
             except Exception:
                 pass
     return False
+
+
+def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
+    """Bring a copied profile config.yaml up to the current schema.
+
+    Profile creation can clone a config file that predates schema tracking (no
+    ``_config_version``) or that is simply older than the running Hermes. If we
+    leave it untouched, the first desktop/doctor view of the new profile shows a
+    scary ``v0 → latest`` warning even though we just created the profile. Scope
+    the normal migration pipeline to the new profile and keep it non-interactive.
+    """
+    config_path = profile_dir / "config.yaml"
+    if not config_path.exists():
+        return
+
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import check_config_version, migrate_config
+
+        token = set_hermes_home_override(str(profile_dir))
+        try:
+            current_ver, latest_ver = check_config_version()
+            if current_ver < latest_ver:
+                migrate_config(interactive=False, quiet=True)
+        finally:
+            reset_hermes_home_override(token)
+    except Exception:
+        # Profile creation should not fail because an old copied config could
+        # not be migrated. The next `hermes doctor --fix` can still surface the
+        # detailed error in the target profile.
+        pass
 
 
 def find_alias_for_profile(profile_name: str) -> Optional[str]:
@@ -717,6 +781,47 @@ def list_profiles() -> List[ProfileInfo]:
     return profiles
 
 
+def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
+    """Return the ``(profile_name, hermes_home)`` pairs a gateway should serve.
+
+    This is the single chokepoint for "which profiles does the inbound gateway
+    handle" so later multiplexing phases never re-derive the set.
+
+    - ``multiplex=False`` (default): returns exactly one entry for the *active*
+      profile — byte-for-byte the single-profile behavior the gateway has
+      always had. The name is ``"default"`` for the default profile or the
+      active named profile's id.
+    - ``multiplex=True``: returns the default profile plus every valid named
+      profile under ``profiles/``, each paired with its own HERMES_HOME.
+
+    Intentionally lightweight (a directory scan + name validation only): no
+    per-profile config reads, gateway-running probes, or skill counts like
+    :func:`list_profiles`. It runs on gateway startup and must stay cheap.
+
+    The returned ``hermes_home`` is the path to pass to
+    ``set_hermes_home_override`` when scoping a turn to that profile.
+    """
+    active = get_active_profile_name() or "default"
+    if not multiplex:
+        return [(active, get_profile_dir(active))]
+
+    serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
+
+    profiles_root = _get_profiles_root()
+    if profiles_root.is_dir():
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if name == "default":
+                continue  # default is the built-in entry already added above
+            if not _PROFILE_ID_RE.match(name):
+                continue
+            serve.append((name, entry))
+
+    return serve
+
+
 def create_profile(
     name: str,
     clone_from: Optional[str] = None,
@@ -753,9 +858,9 @@ def create_profile(
     Path
         The newly created profile directory.
     """
-    if no_skills and (clone_config or clone_all):
+    if no_skills and (clone_from is not None or clone_config or clone_all):
         raise ValueError(
-            "--no-skills is mutually exclusive with --clone / --clone-all "
+            "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
             "(cloning explicitly copies skills from the source profile)."
         )
     canon = normalize_profile_name(name)
@@ -835,6 +940,25 @@ def create_profile(
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
 
+    # Seed an empty .env so the profile has its own credentials file from
+    # day one. Without it, profile-scoped env writes (dashboard Channels /
+    # Keys pages, `hermes -p <name> auth add`) had no file until first
+    # write, and the profile silently inherited API keys from the shell
+    # environment — users reasonably read that as "the new profile reads
+    # the root .env". Skipped when --clone/--clone-all already copied one.
+    env_path = profile_dir / ".env"
+    if not env_path.exists():
+        try:
+            env_path.write_text(
+                "# Per-profile secrets for this Hermes profile.\n"
+                "# API keys and tokens set here override the shell environment.\n"
+                "# Behavioral settings belong in config.yaml, not here.\n",
+                encoding="utf-8",
+            )
+            os.chmod(str(env_path), 0o600)
+        except OSError:
+            pass  # best-effort — save_env_value creates the file on demand
+
     # Seed a default SOUL.md so the user has a file to customize immediately.
     # Skipped when the profile already has one (from --clone / --clone-all).
     soul_path = profile_dir / "SOUL.md"
@@ -857,6 +981,14 @@ def create_profile(
             )
         except OSError:
             pass  # best-effort — the feature still works via the empty skills/ dir
+
+    # Cloned configs can be older than the running Hermes (or predate schema
+    # tracking entirely). Migrate config-only clones immediately so
+    # desktop/status surfaces don't warn that a just-created profile is
+    # v0/outdated. Leave --clone-all snapshots byte-for-byte apart from the
+    # explicit runtime/history stripping above.
+    if not clone_all:
+        _migrate_profile_config_if_outdated(profile_dir)
 
     # Persist description if the caller provided one. Done last so a
     # partial-create failure doesn't strand a description file in an
@@ -925,6 +1057,58 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
         if not quiet:
             print(f"⚠ Skill seeding failed: {e}")
         return None
+
+
+def backfill_profile_envs(quiet: bool = False) -> List[str]:
+    """Give every named profile that predates per-profile ``.env`` files one.
+
+    Profiles created before the dashboard/CLI started seeding a ``.env``
+    (PR #44792) have none, so once the Channels/Keys endpoints became
+    profile-scoped those profiles stopped inheriting the root install's
+    credentials and showed everything as unconfigured. To avoid breaking
+    anyone on update, copy the DEFAULT install's ``.env`` into each named
+    profile that lacks one — that preserves the effective credentials those
+    profiles were already running with (they previously read the root
+    ``.env`` via the process environment). Users can then diverge per
+    profile from there.
+
+    Falls back to the placeholder header when the default install has no
+    ``.env`` itself. Never overwrites an existing profile ``.env``.
+
+    Returns the list of profile names that received a backfilled ``.env``.
+    """
+    backfilled: List[str] = []
+    profiles_root = _get_profiles_root()
+    if not profiles_root.is_dir():
+        return backfilled
+
+    default_env = _get_default_hermes_home() / ".env"
+
+    for entry in sorted(profiles_root.iterdir()):
+        if not entry.is_dir() or not _PROFILE_ID_RE.match(entry.name):
+            continue
+        if entry.name == "default":
+            continue
+        env_path = entry / ".env"
+        if env_path.exists():
+            continue
+        try:
+            if default_env.is_file():
+                shutil.copy2(default_env, env_path)
+            else:
+                env_path.write_text(
+                    "# Per-profile secrets for this Hermes profile.\n"
+                    "# API keys and tokens set here override the shell environment.\n"
+                    "# Behavioral settings belong in config.yaml, not here.\n",
+                    encoding="utf-8",
+                )
+            os.chmod(str(env_path), 0o600)
+            backfilled.append(entry.name)
+        except OSError as e:
+            if not quiet:
+                print(f"⚠ Could not seed .env for profile '{entry.name}': {e}")
+
+    return backfilled
 
 
 def delete_profile(name: str, yes: bool = False) -> Path:
@@ -1088,10 +1272,16 @@ def _maybe_register_gateway_service(profile_name: str) -> None:
     can re-register manually later via the gateway start command,
     which goes through the same dispatch path.
 
-    Port selection is governed by the profile's ``config.yaml``
-    (``[gateway] port = …``) — there is no Python-side allocator
-    (PR #30136 review item I5 retired the SHA-256-derived range
-    [9200, 9800) because it was dead code through the entire stack).
+    Port selection: each supervised profile gateway loads its own
+    ``HERMES_HOME`` and binds the port resolved by ``gateway/config.py``
+    from that profile's environment — ``API_SERVER_PORT`` (or
+    ``platforms.api_server.extra.port`` in the profile's
+    ``config.yaml``), defaulting to 8642. There is no ``[gateway] port``
+    key and no Python-side allocator (PR #30136 review item I5 retired
+    the SHA-256-derived range [9200, 9800) as dead code), so two
+    profiles that both leave the port at its default will both try to
+    bind 8642 — give each profile a distinct ``API_SERVER_PORT`` in its
+    ``.env``.
 
     Host short-circuit: check ``detect_service_manager()`` first and
     return immediately if it isn't ``"s6"``. This keeps host
@@ -1119,7 +1309,7 @@ def _maybe_register_gateway_service(profile_name: str) -> None:
     if not mgr.supports_runtime_registration():
         return  # host backend; no-op
     try:
-        mgr.register_profile_gateway(profile_name)
+        mgr.register_profile_gateway(profile_name, start_now=False)
     except ValueError:
         # Already registered (e.g. the container-boot reconciler ran
         # first and brought up a stale slot). That's fine.

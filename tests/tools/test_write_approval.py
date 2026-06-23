@@ -107,6 +107,63 @@ def test_memory_gate_on_then_apply(hermes_home):
     assert "approved entry" in store.user_entries[0]
 
 
+def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, capsys):
+    """#46783: ``/memory approve`` from a context with no live agent (e.g. the
+    Desktop GUI) passed ``memory_store=None`` into the shared handler, which
+    returned "memory store unavailable" and applied nothing. The CLI handler must
+    fall back to a freshly loaded on-disk store, like the gateway path does."""
+    import json
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+    _set_approval("memory", True)
+    staging = MemoryStore(); staging.load_from_disk()
+    r = json.loads(memory_tool("add", "memory", "remember the launch date", store=staging))
+    assert r.get("pending_id"), r
+    assert wa.pending_count("memory") == 1
+
+    # Bare CLI handler with no live agent → store resolves to None pre-fix.
+    handler = CLICommandsMixin.__new__(CLICommandsMixin)
+    handler.agent = None
+    handler._handle_memory_command("/memory approve all")
+
+    out = capsys.readouterr().out
+    assert "memory store unavailable" not in out, out
+    assert "Approved 1" in out, out
+    assert wa.pending_count("memory") == 0
+    # The approved write landed in a freshly loaded on-disk store (MEMORY.md).
+    reloaded = MemoryStore(); reloaded.load_from_disk()
+    assert any("remember the launch date" in e for e in reloaded.memory_entries)
+
+
+def test_load_on_disk_store_honors_configured_char_limits(hermes_home, monkeypatch):
+    """load_on_disk_store() must read memory.memory_char_limit /
+    user_char_limit from config so approvals applied without a live agent
+    enforce the SAME caps as the live agent (agent_init.py). Falls back to
+    defaults when config can't be loaded.
+    """
+    from tools.memory_tool import load_on_disk_store
+
+    # Config override path: helper picks up the configured limits.
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"memory_char_limit": 999, "user_char_limit": 444}},
+    )
+    store = load_on_disk_store()
+    assert store.memory_char_limit == 999
+    assert store.user_char_limit == 444
+
+    # Failure path: config raises → defaults, never blows up.
+    def _boom():
+        raise RuntimeError("no config")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", _boom)
+    fallback = load_on_disk_store()
+    assert fallback.memory_char_limit == 2200
+    assert fallback.user_char_limit == 1375
+
+
 # ---------------------------------------------------------------------------
 # Skill gate
 # ---------------------------------------------------------------------------
@@ -268,3 +325,117 @@ def test_handle_unknown_subcommand_returns_none(hermes_home):
     # the CLI falls through to the skills hub.
     out = handle_pending_subcommand(wa.SKILLS, ["search", "foo"])
     assert out is None
+
+
+# ---------------------------------------------------------------------------
+# Inline (interactive CLI) approval path — regression for the bug where the
+# per-thread approval callback was never passed to prompt_dangerous_approval,
+# so every gated foreground memory write was silently denied.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def approval_callback_cleanup():
+    yield
+    from tools.terminal_tool import set_approval_callback
+    set_approval_callback(None)
+
+
+def test_memory_inline_approve_writes(hermes_home, approval_callback_cleanup):
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools.terminal_tool import set_approval_callback
+    from tools import write_approval as wa
+    _set_approval("memory", True)
+
+    calls = []
+    def approve_cb(command, description, **kw):
+        calls.append((command, description))
+        return "once"
+    set_approval_callback(approve_cb)
+
+    store = MemoryStore(); store.load_from_disk()
+    r = json.loads(memory_tool("add", "memory", "approved fact", store=store))
+    assert r["success"] is True
+    assert r.get("staged") is None  # real write, not staged
+    assert store.memory_entries == ["approved fact"]
+    assert wa.pending_count("memory") == 0
+    # The registered callback must actually be invoked (not the input() path).
+    assert len(calls) == 1
+    assert "approved fact" in calls[0][0]
+
+
+def test_memory_inline_deny_blocks(hermes_home, approval_callback_cleanup):
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools.terminal_tool import set_approval_callback
+    from tools import write_approval as wa
+    _set_approval("memory", True)
+    set_approval_callback(lambda command, description, **kw: "deny")
+
+    store = MemoryStore(); store.load_from_disk()
+    r = json.loads(memory_tool("add", "memory", "denied fact", store=store))
+    assert r["success"] is False
+    assert "denied" in r["error"].lower()
+    assert store.memory_entries == []
+    assert wa.pending_count("memory") == 0  # denied, not staged
+
+
+def test_memory_inline_callback_error_stages(hermes_home, approval_callback_cleanup):
+    # If the prompt machinery fails, fall back to staging — never drop silently.
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools.terminal_tool import set_approval_callback
+    from tools import write_approval as wa
+    _set_approval("memory", True)
+    def broken_cb(command, description, **kw):
+        raise RuntimeError("boom")
+    set_approval_callback(broken_cb)
+
+    store = MemoryStore(); store.load_from_disk()
+    r = json.loads(memory_tool("add", "memory", "fallback fact", store=store))
+    assert r.get("staged") is True
+    assert wa.pending_count("memory") == 1
+
+
+def test_gateway_context_stages_not_prompts(hermes_home, monkeypatch):
+    # A gateway session has no per-thread CLI callback; the dangerous-command
+    # /approve round-trip lives in the pending-queue machinery which the gate
+    # does not use. The gate must stage, never attempt an inline prompt
+    # (which would hit the input() fallback and silently deny).
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+    _set_approval("memory", True)
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+
+    store = MemoryStore(); store.load_from_disk()
+    r = json.loads(memory_tool("add", "memory", "gateway fact", store=store))
+    assert r.get("staged") is True
+    assert store.memory_entries == []
+    assert wa.pending_count("memory") == 1
+
+
+def test_skills_never_prompt_inline_even_with_callback(hermes_home, approval_callback_cleanup):
+    # Skills always stage — even when an interactive callback is registered.
+    from tools.skill_manager_tool import skill_manage
+    from tools.terminal_tool import set_approval_callback
+    from tools import write_approval as wa
+    _set_approval("skills", True)
+
+    calls = []
+    set_approval_callback(lambda c, d, **kw: calls.append(1) or "once")
+
+    r = json.loads(skill_manage(
+        action="create", name="test-inline-skill",
+        content="---\nname: test-inline-skill\ndescription: x\n---\nbody\n"))
+    assert r.get("staged") is True
+    assert calls == []  # never prompted
+    assert wa.pending_count("skills") == 1
+
+
+def test_memory_invalid_params_rejected_before_staging(hermes_home):
+    # Param validation must run BEFORE the gate so a broken write is rejected
+    # immediately instead of staged and failing at approve time.
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+    _set_approval("memory", True)
+    store = MemoryStore(); store.load_from_disk()
+    r = json.loads(memory_tool("add", "memory", None, store=store))
+    assert r["success"] is False
+    assert wa.pending_count("memory") == 0

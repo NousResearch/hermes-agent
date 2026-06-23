@@ -10,11 +10,66 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
+    cache_audio_from_bytes,
+    cache_image_from_bytes,
+    cache_video_from_bytes,
     safe_url_for_log,
     utf16_len,
+    validate_inbound_media_size,
     _log_safe_path,
     _prefix_within_utf16_limit,
 )
+
+
+class TestInboundMediaSizeCap:
+    """gateway.max_inbound_media_bytes caps inbound media buffered into RAM (#13145)."""
+
+    _PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 64
+
+    def test_default_cap_is_128_mib(self, monkeypatch):
+        # No config override -> default. Patch loader to return empty config.
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: base.DEFAULT_INBOUND_MEDIA_MAX_BYTES)
+        assert base.DEFAULT_INBOUND_MEDIA_MAX_BYTES == 128 * 1024 * 1024
+
+    def test_image_bytes_rejected_when_oversized(self, monkeypatch):
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 16)
+        with pytest.raises(ValueError, match="Inbound image payload is too large"):
+            cache_image_from_bytes(self._PNG, ext=".png")
+
+    def test_audio_bytes_rejected_when_oversized(self, monkeypatch):
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 4)
+        with pytest.raises(ValueError, match="Inbound audio payload is too large"):
+            cache_audio_from_bytes(b"x" * 8, ext=".ogg")
+
+    def test_video_bytes_rejected_when_oversized(self, monkeypatch):
+        # Video was the gap in the original report — verify it's covered.
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 4)
+        with pytest.raises(ValueError, match="Inbound video payload is too large"):
+            cache_video_from_bytes(b"x" * 8, ext=".mp4")
+
+    def test_legit_image_accepted_under_cap(self, monkeypatch):
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 128 * 1024 * 1024)
+        path = cache_image_from_bytes(self._PNG, ext=".png")
+        assert os.path.exists(path)
+        assert os.path.getsize(path) == len(self._PNG)
+
+    def test_cap_of_zero_disables_check(self, monkeypatch):
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 0)
+        # A would-be-oversized video passes through when the cap is disabled.
+        path = cache_video_from_bytes(b"x" * 5000, ext=".mp4")
+        assert os.path.exists(path)
+
+    def test_validate_helper_respects_explicit_max_bytes(self):
+        # max_bytes arg overrides the configured cap.
+        validate_inbound_media_size(100, media_type="image", max_bytes=200)  # ok
+        with pytest.raises(ValueError, match="too large"):
+            validate_inbound_media_size(300, media_type="image", max_bytes=200)
 
 
 class TestSecretCaptureGuidance:
@@ -911,6 +966,105 @@ class TestMediaDeliveryDefaultMode:
         )
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(config_file)) is None
+
+    def test_denylist_blocks_google_token_default_mode(self, tmp_path, monkeypatch):
+        """Integration credentials at the HERMES_HOME root (google_token.json)
+        must never be deliverable, even though they aren't the historically
+        enumerated .env/auth.json/config.yaml files. Regression for a
+        refreshed google_token.json being auto-attached to a Slack reply
+        (#50912).
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        hermes_dir.mkdir(parents=True)
+        token = hermes_dir / "google_token.json"
+        token.write_text('{"access_token": "***", "refresh_token": "***"}')
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
+
+    def test_denylist_blocks_google_token_even_when_freshly_refreshed(self, tmp_path, monkeypatch):
+        """The exploit was that the Google integration rewrites
+        google_token.json every turn, bumping its mtime to ~now, so the
+        strict-mode recency window (trust_recent_files) kept re-trusting it
+        and it re-sent on every reply. An explicit denylist entry must win
+        over recency trust.
+        """
+        self._patch_roots(monkeypatch)  # zero cache allowlist, strict mode on
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        hermes_dir.mkdir(parents=True)
+        token = hermes_dir / "google_token.json"
+        token.write_text('{"access_token": "***"}')  # mtime = now → "recent"
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
+
+    def test_denylist_blocks_pairing_directory_contents(self, tmp_path, monkeypatch):
+        """Files under ~/.hermes/pairing/ (platform pairing tokens) are
+        credential material and must not be deliverable.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        pairing = hermes_dir / "pairing"
+        pairing.mkdir(parents=True)
+        token = pairing / "telegram-approved.json"
+        token.write_text('{"approved": ["123"]}')
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
+
+    def test_hermes_cache_still_delivers_under_denied_home(self, tmp_path, monkeypatch):
+        """The targeted credential denylist must not break legitimate cache
+        deliveries: a generated artifact under the allowlisted cache root is
+        matched before the denylist and still delivers.
+        """
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        cache_dir = hermes_dir / "cache" / "documents"
+        cache_dir.mkdir(parents=True)
+        artifact = cache_dir / "report.pdf"
+        artifact.write_bytes(b"%PDF-1.4")
+        self._patch_roots(monkeypatch, cache_dir)
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(artifact)) == str(artifact.resolve())
+
+    def test_denylist_blocks_non_cache_file_under_hermes_home(self, tmp_path, monkeypatch):
+        """A non-credential file the agent wrote directly under ~/.hermes
+        (not in a cache subdir) is still deliverable via recency trust — we
+        did NOT blanket-deny the tree (per #32090/#34425). This guards against
+        accidentally re-introducing the rejected whole-tree deny.
+        """
+        self._patch_roots(monkeypatch)  # strict mode on
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        hermes_dir.mkdir(parents=True)
+        artifact = hermes_dir / "adhoc_report.pdf"
+        artifact.write_bytes(b"%PDF-1.4")  # fresh mtime
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(artifact)) == str(artifact.resolve())
 
     def test_strict_mode_envvar_restores_legacy_behavior(self, tmp_path, monkeypatch):
         """Setting HERMES_MEDIA_DELIVERY_STRICT=1 reactivates the older

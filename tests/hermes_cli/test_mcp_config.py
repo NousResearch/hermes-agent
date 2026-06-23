@@ -11,6 +11,14 @@ from pathlib import Path
 import pytest
 
 
+def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
+    from unittest.mock import MagicMock
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = is_tty
+    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -649,6 +657,7 @@ class TestMcpRemoveEvictsManager:
             "hermes_cli.mcp_config.get_hermes_home", lambda: tmp_path
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
 
         from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
         reset_manager_for_tests()
@@ -745,4 +754,3 @@ class TestMcpLogin:
 
         assert "Authenticated — 3 tool(s) available" in out
         assert "no OAuth token" not in out
-

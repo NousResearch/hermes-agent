@@ -174,10 +174,15 @@ RUN npm install --prefer-offline --no-audit && \
 # avoids the cross-platform failures that kept [matrix] out of [all]
 # while still making Matrix work in the published container. Fixes #30399.
 #
+# The Firecrawl web provider ([firecrawl] extra) is baked in because the
+# provider is registered by default and Docker disables lazy installs
+# (HERMES_DISABLE_LAZY_INSTALLS=1).  Without the SDK, web_search /
+# web_extract fail at runtime with "lazy installs disabled".  Fixes #51136.
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra firecrawl
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't

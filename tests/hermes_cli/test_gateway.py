@@ -808,7 +808,7 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     monkeypatch.setattr(gateway.os, "listdir", _no_proc_listdir)
 
     def fake_run(cmd, **kwargs):
-        if cmd[:4] == ["ps", "-A", "eww", "-o"]:
+        if cmd[:4] == ["ps", "-A", "eww", "-o"] or cmd[:4] == ["ps", "-A", "-ww", "-o"]:
             return SimpleNamespace(returncode=1, stdout="", stderr="ps failed")
         if cmd[:3] == ["ps", "-o", "ppid="]:
             # _get_ancestor_pids() walks up the tree; return "no parent" so
@@ -819,6 +819,49 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
 
     assert gateway.find_gateway_pids() == [321]
+
+
+def test_get_service_pids_parses_launchctl_plist_output(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: True)
+    monkeypatch.setattr(gateway, "get_launchd_label", lambda: "ai.hermes.gateway")
+
+    def fake_run(cmd, **kwargs):
+        assert cmd == ["launchctl", "list", "ai.hermes.gateway"]
+        return SimpleNamespace(
+            returncode=0,
+            stdout='{\n    "Label" = "ai.hermes.gateway";\n    "PID" = 855;\n};\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway._get_service_pids() == {855}
+
+
+def test_scan_gateway_pids_uses_macos_ps_wide_flags(monkeypatch):
+    monkeypatch.setattr(gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    real_isdir = gateway.os.path.isdir
+    monkeypatch.setattr(
+        gateway.os.path,
+        "isdir",
+        lambda path: False if path == "/proc" else real_isdir(path),
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["ps", "-A", "-ww", "-o", "pid=,command="]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="855 /usr/bin/python3 /tmp/hermes_cli/main.py gateway run --replace\n",
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway._scan_gateway_pids(set()) == [855]
 
 
 def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch):

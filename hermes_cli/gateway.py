@@ -137,7 +137,8 @@ def _get_service_pids() -> set:
                 timeout=5,
             )
             if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
+                # `launchctl list <label>` may return either a tabular line or a
+                # plist-like block, depending on the host launchctl version.
                 for line in result.stdout.strip().splitlines():
                     parts = line.split()
                     if len(parts) >= 3 and parts[2] == label:
@@ -147,6 +148,16 @@ def _get_service_pids() -> set:
                                 pids.add(pid)
                         except ValueError:
                             pass
+                    stripped = line.strip()
+                    if not stripped.startswith('"PID"'):
+                        continue
+                    _, _, raw_value = stripped.partition("=")
+                    try:
+                        pid = int(raw_value.strip().rstrip(";"))
+                    except ValueError:
+                        continue
+                    if pid > 0:
+                        pids.add(pid)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -456,8 +467,12 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                     pass
 
             if not _found_via_proc:
+                ps_cmd = ["ps", "-A", "eww", "-o", "pid=,command="]
+                if is_macos():
+                    # Darwin rejects the GNU-style `eww` positional token.
+                    ps_cmd = ["ps", "-A", "-ww", "-o", "pid=,command="]
                 result = subprocess.run(
-                    ["ps", "-A", "eww", "-o", "pid=,command="],
+                    ps_cmd,
                     capture_output=True,
                     text=True,
                     timeout=10,

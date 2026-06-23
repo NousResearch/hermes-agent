@@ -1784,6 +1784,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    # session_id stays timestamped for per-fire isolation (SQLite records, logs).
+    # prompt_cache_key is auto-derived in the Codex transport from the static
+    # prefix (system prompt + tool schemas) — no separate cache key needed here.
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])

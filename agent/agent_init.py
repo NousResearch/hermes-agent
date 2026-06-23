@@ -181,6 +181,7 @@ def init_agent(
     provider_data_collection: str = None,
     openrouter_min_coding_score: Optional[float] = None,
     session_id: str = None,
+    cache_key: str = None,
     tool_progress_callback: callable = None,
     tool_start_callback: callable = None,
     tool_complete_callback: callable = None,
@@ -1033,6 +1034,11 @@ def init_agent(
     
     # Session logging setup - auto-save conversation trajectories for debugging
     agent.session_start = datetime.now()
+    # Stable prompt-cache key — set explicitly by recurring cron jobs so
+    # every fire shares one cache prefix instead of busting it each time.
+    # None means "use session_id as the cache key" (the default for all
+    # interactive sessions and one-shot jobs).
+    agent._prompt_cache_key = cache_key or None
     if session_id:
         # Use provided session ID (e.g., from CLI)
         agent.session_id = session_id

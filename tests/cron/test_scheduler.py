@@ -1,8 +1,10 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import contextlib
 import json
 import logging
 import os
+import re
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -10,6 +12,158 @@ import pytest
 from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+class TestCronCacheKeyIsolation:
+    """Cron session_id isolation and transport-layer cache key routing.
+
+    Root cause (before any fix):
+      session_id = 'cron_<job_id>_<timestamp>' was used as prompt_cache_key.
+      Every fire produced a unique key → 288 cold starts/day on a 5-min job.
+
+    Phase 2 fix — content-addressed caching in the transport:
+      The Codex transport auto-derives prompt_cache_key from
+      SHA-256(system_prompt + sorted_tools).  Same agent config → same key,
+      regardless of whether the request came from cron, an interactive
+      session, or a one-shot job.  The scheduler no longer needs to pass
+      an explicit cache key — that concern belongs in the transport layer.
+
+    What this test class verifies:
+      1. scheduler does NOT pass an explicit cache_key (transport handles it)
+      2. session_id stays unique per fire (SQLite record isolation)
+      3. session_id is still the cron_<job_id>_<timestamp> format
+    """
+
+    def _make_job(self, job_id="aabbccdd1234"):
+        return {
+            "id": job_id,
+            "name": "test-job",
+            "prompt": "Do something",
+            "model": "gpt-5.4",
+        }
+
+    def _run_job_patched(self, job, on_init=None, on_run=None):
+        """Helper: run run_job() with the AI machinery stubbed out.
+
+        on_init — callable(kwargs) called when AIAgent.__init__ fires
+        on_run  — optional callable returning the run_conversation result dict
+        """
+        if on_run is None:
+            on_run = lambda *_: {"final_response": "done", "completed": True, "failed": False}
+
+        def fake_init(self_inner, **kwargs):
+            self_inner.session_id = kwargs.get("session_id", "")
+            self_inner._prompt_cache_key = kwargs.get("cache_key")
+            self_inner.model = kwargs.get("model", "")
+            self_inner.platform = kwargs.get("platform", "")
+            if on_init:
+                on_init(kwargs)
+
+        patches = [
+            patch("dotenv.load_dotenv"),
+            patch("cron.scheduler.load_config", return_value={}),
+            patch("cron.scheduler._build_job_prompt", return_value="do it"),
+            patch("cron.scheduler._resolve_delivery_target", return_value=None),
+            patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+                "provider": "openai", "api_key": "test", "base_url": None,
+                "api_mode": None, "command": None, "args": None,
+            }),
+            patch("hermes_cli.runtime_provider.format_runtime_provider_error", return_value="err"),
+            patch("run_agent.AIAgent.__init__", fake_init),
+            patch("run_agent.AIAgent.run_conversation", on_run),
+            patch("run_agent.AIAgent.close", return_value=None),
+        ]
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            return run_job(job)
+
+    def test_scheduler_does_not_pass_explicit_cache_key(self):
+        """Phase 2: prompt_cache_key is auto-derived by the Codex transport
+        from (system_prompt + tools).  The scheduler must NOT pass an explicit
+        cache_key — doing so would prevent two cron jobs with identical agent
+        configs from sharing the prefix cache, and it couples the scheduler to
+        cache-routing details that belong in the transport layer."""
+        job = self._make_job()
+        captured = {}
+
+        self._run_job_patched(job, on_init=lambda kwargs: captured.update(kwargs))
+
+        assert "cache_key" not in captured or captured.get("cache_key") is None, (
+            "scheduler must not pass an explicit cache_key; "
+            "prompt_cache_key is auto-computed by the transport"
+        )
+
+    def test_cron_session_id_remains_unique_per_fire(self):
+        """session_id must stay timestamped so concurrent / back-to-back
+        fires produce distinct SQLite session records and log files."""
+        import time
+        job = self._make_job()
+        captured_ids = []
+
+        self._run_job_patched(job, on_init=lambda kw: captured_ids.append(kw.get("session_id", "")))
+        time.sleep(1.1)  # ensure the second-resolution timestamp differs
+        self._run_job_patched(job, on_init=lambda kw: captured_ids.append(kw.get("session_id", "")))
+
+        assert len(captured_ids) == 2
+        assert captured_ids[0] != captured_ids[1], (
+            "Each cron fire must produce a unique session_id for isolation; "
+            "got identical IDs on two consecutive fires"
+        )
+        for sid in captured_ids:
+            assert sid.startswith(f"cron_{job['id']}_"), (
+                f"session_id must be 'cron_<job_id>_<timestamp>', got {sid!r}"
+            )
+
+    def test_session_id_has_timestamp_not_bare_job_id(self):
+        """Regression guard: session_id must NOT be the bare 'cron_<job_id>'
+        (that was never a valid session_id format).  It must carry a timestamp
+        so SQLite records stay unique and log files are distinguishable."""
+        job = self._make_job()
+        captured = {}
+
+        self._run_job_patched(job, on_init=lambda kwargs: captured.update(kwargs))
+
+        sid = captured.get("session_id", "")
+        assert sid != f"cron_{job['id']}", (
+            f"session_id must include a timestamp, got bare job ID: {sid!r}"
+        )
+        assert sid.startswith(f"cron_{job['id']}_"), (
+            f"session_id format must be 'cron_<job_id>_<timestamp>', got {sid!r}"
+        )
+
+    def test_retry_produces_unique_session_ids_and_no_explicit_cache_key(self):
+        """A retry (re-run of same job) must get a fresh session_id for
+        DB/log isolation, and must still not pass an explicit cache_key
+        (the transport auto-derives prompt_cache_key from content on both runs,
+        so retry never resets the content-addressed prefix cache)."""
+        import time
+
+        job = self._make_job()
+        captured_pairs = []
+
+        def _capture(kw):
+            captured_pairs.append({
+                "session_id": kw.get("session_id", ""),
+                "cache_key": kw.get("cache_key"),
+            })
+
+        self._run_job_patched(job, on_init=_capture)
+        time.sleep(1.1)
+        self._run_job_patched(job, on_init=_capture)
+
+        assert len(captured_pairs) == 2
+        sid_1, sid_2 = captured_pairs[0]["session_id"], captured_pairs[1]["session_id"]
+        assert sid_1 != sid_2, (
+            "Retry fire must produce a distinct session_id; "
+            f"got {sid_1!r} both times — DB records would be conflated"
+        )
+        for pair in captured_pairs:
+            assert pair["cache_key"] is None, (
+                "Scheduler must not pass explicit cache_key on retry; "
+                "transport auto-derives prompt_cache_key from static prefix, "
+                f"keeping the provider's prefix cache warm across retries. got {pair['cache_key']!r}"
+            )
 
 
 class TestPerJobToolsetMcpMerge:

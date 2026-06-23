@@ -2186,15 +2186,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
             connection_pool_size = request_kwargs["connection_pool_size"]
+            max_keepalive_connections = min(
+                _env_int("HERMES_TELEGRAM_HTTP_MAX_KEEPALIVE", 0),
+                connection_pool_size,
+            )
             httpx_kwargs = {}
             httpx_limits = platform_httpx_limits()
             if httpx_limits is not None:
-                max_keepalive = getattr(httpx_limits, "max_keepalive_connections", None)
-                if max_keepalive is not None:
-                    max_keepalive = min(max_keepalive, connection_pool_size)
+                platform_keepalive = getattr(httpx_limits, "max_keepalive_connections", None)
+                if platform_keepalive is not None:
+                    max_keepalive_connections = min(max_keepalive_connections, platform_keepalive)
                 httpx_kwargs["limits"] = type(httpx_limits)(
                     max_connections=connection_pool_size,
-                    max_keepalive_connections=max_keepalive,
+                    max_keepalive_connections=max_keepalive_connections,
                     keepalive_expiry=getattr(httpx_limits, "keepalive_expiry", None),
                 )
 

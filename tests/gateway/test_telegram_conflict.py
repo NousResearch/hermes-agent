@@ -305,6 +305,7 @@ async def test_connect_bounds_telegram_httpx_keepalive_pool(monkeypatch):
     captured_requests = []
 
     monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", "12")
+    monkeypatch.setenv("HERMES_TELEGRAM_HTTP_MAX_KEEPALIVE", "50")
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.platform_httpx_limits",
         lambda: FakeLimits(max_keepalive_connections=50, keepalive_expiry=2.5),
@@ -348,6 +349,67 @@ async def test_connect_bounds_telegram_httpx_keepalive_pool(monkeypatch):
         limits = kwargs["httpx_kwargs"]["limits"]
         assert limits.max_connections == 12
         assert limits.max_keepalive_connections == 12
+        assert limits.keepalive_expiry == 2.5
+
+
+@pytest.mark.asyncio
+async def test_connect_disables_telegram_httpx_keepalive_by_default(monkeypatch):
+    class FakeLimits:
+        def __init__(
+            self,
+            max_connections=None,
+            max_keepalive_connections=None,
+            keepalive_expiry=None,
+        ):
+            self.max_connections = max_connections
+            self.max_keepalive_connections = max_keepalive_connections
+            self.keepalive_expiry = keepalive_expiry
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    captured_requests = []
+
+    monkeypatch.delenv("HERMES_TELEGRAM_HTTP_MAX_KEEPALIVE", raising=False)
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.platform_httpx_limits",
+        lambda: FakeLimits(max_keepalive_connections=50, keepalive_expiry=2.5),
+    )
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.HTTPXRequest",
+        lambda **kwargs: captured_requests.append(kwargs) or MagicMock(),
+    )
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    app = SimpleNamespace(
+        bot=SimpleNamespace(delete_webhook=AsyncMock(), set_my_commands=AsyncMock()),
+        updater=SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True),
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert len(captured_requests) == 2
+    for kwargs in captured_requests:
+        limits = kwargs["httpx_kwargs"]["limits"]
+        assert limits.max_keepalive_connections == 0
         assert limits.keepalive_expiry == 2.5
 
 

@@ -56,6 +56,7 @@ def adapter():
     inst = object.__new__(DiscordAdapter)
     inst.platform = Platform.DISCORD
     inst._typing_tasks = {}
+    inst._typing_task_aliases = {}
     inst._background_tasks = set()
     inst._expected_cancelled_tasks = set()
     inst._session_tasks = {}
@@ -70,6 +71,27 @@ def adapter():
     inst._release_platform_lock = MagicMock()
     inst._ready_event = asyncio.Event()
     return inst
+
+
+@pytest.mark.asyncio
+async def test_discord_typing_stop_without_metadata_clears_thread_task(adapter, monkeypatch):
+    """Cleanup paths that forget thread metadata must still stop the thread-scoped loop."""
+    monkeypatch.setattr(
+        discord_platform.discord,
+        "http",
+        SimpleNamespace(Route=lambda method, path, **kwargs: (method, path, kwargs)),
+        raising=False,
+    )
+
+    request = AsyncMock(return_value=None)
+    adapter._client = SimpleNamespace(http=SimpleNamespace(request=request))
+
+    await adapter.send_typing("parent-channel", metadata={"thread_id": "456"})
+    await asyncio.sleep(0)
+
+    await adapter.stop_typing("parent-channel")
+    assert adapter._typing_tasks == {}
+    assert adapter._typing_task_aliases == {}
 
 
 @pytest.mark.asyncio
@@ -95,6 +117,30 @@ async def test_discord_typing_uses_thread_metadata(adapter, monkeypatch):
 
     await adapter.stop_typing("parent-channel", metadata={"thread_id": "456"})
     assert adapter._typing_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_discord_typing_stop_clears_parent_and_thread_tasks(adapter, monkeypatch):
+    """A cleanup stop must cancel every alias-related typing loop, not only first match."""
+    monkeypatch.setattr(
+        discord_platform.discord,
+        "http",
+        SimpleNamespace(Route=lambda method, path, **kwargs: (method, path, kwargs)),
+        raising=False,
+    )
+
+    adapter._client = SimpleNamespace(http=SimpleNamespace(request=AsyncMock(return_value=None)))
+
+    await adapter.send_typing("parent-channel")
+    await adapter.send_typing("parent-channel", metadata={"thread_id": "456"})
+    await asyncio.sleep(0)
+
+    assert set(adapter._typing_tasks) == {"parent-channel", "456"}
+
+    await adapter.stop_typing("parent-channel", metadata={"thread_id": "456"})
+
+    assert adapter._typing_tasks == {}
+    assert adapter._typing_task_aliases == {}
 
 
 @pytest.mark.asyncio

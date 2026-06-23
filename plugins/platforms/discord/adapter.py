@@ -779,6 +779,11 @@ class DiscordAdapter(BasePlatformAdapter):
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        # Map the public chat id we were called with to the actual typing-task
+        # key used for the loop (for example, a Discord thread id when thread
+        # metadata is present). This lets stop_typing() clean up thread-scoped
+        # loops even when an upstream path forgets to forward metadata.
+        self._typing_task_aliases: Dict[str, str] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
         # True while disconnect() is intentionally closing discord.py. The
@@ -1221,6 +1226,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         self._typing_tasks.clear()
+        self._typing_task_aliases.clear()
         live_tasks = [task for _, task in tasks if not task.done()]
         for task in live_tasks:
             task.cancel()
@@ -3358,6 +3364,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return
         task_chat_id = self._typing_task_chat_id(chat_id, metadata)
+        # Remember how to resolve this chat back to the actual typing loop key
+        # so stop_typing() can clean it up even if metadata is missing later.
+        self._typing_task_aliases[chat_id] = task_chat_id
+        self._typing_task_aliases[task_chat_id] = task_chat_id
         # Don't start a duplicate loop
         if task_chat_id in self._typing_tasks:
             return
@@ -3400,9 +3410,53 @@ class DiscordAdapter(BasePlatformAdapter):
     async def stop_typing(self, chat_id: str, metadata=None) -> None:
         """Stop the persistent typing indicator for a channel."""
         task_chat_id = self._typing_task_chat_id(chat_id, metadata)
-        task = self._typing_tasks.pop(task_chat_id, None)
-        if task:
+        candidate_ids: list[str] = []
+        for candidate in (
+            task_chat_id,
+            self._typing_task_aliases.get(chat_id),
+            chat_id,
+        ):
+            if candidate and candidate not in candidate_ids:
+                candidate_ids.append(candidate)
+
+        tasks: list[asyncio.Task] = []
+        for candidate in candidate_ids:
+            task = self._typing_tasks.pop(candidate, None)
+            self._typing_task_aliases.pop(candidate, None)
+            if task and task not in tasks:
+                tasks.append(task)
+
+        # Drop any stale aliases that point at the cancelled keys.  A previous
+        # run may have started both parent-channel and thread-scoped loops; a
+        # single stop call must drain the whole alias set, not just the first
+        # matching task.
+        cancelled_keys = set(candidate_ids)
+        for alias_key, alias_target in list(self._typing_task_aliases.items()):
+            if alias_target in cancelled_keys:
+                self._typing_task_aliases.pop(alias_key, None)
+
+        if tasks:
+            logger.info(
+                "[%s] typing-stop-request: chat_id=%s task_chat_ids=%s metadata=%s found=True active_tasks=%d",
+                self.name,
+                chat_id,
+                candidate_ids,
+                metadata,
+                len(self._typing_tasks),
+            )
+        else:
+            logger.info(
+                "[%s] typing-stop-request: chat_id=%s task_chat_ids=%s metadata=%s found=False active_tasks=%d",
+                self.name,
+                chat_id,
+                candidate_ids,
+                metadata,
+                len(self._typing_tasks),
+            )
+
+        for task in tasks:
             task.cancel()
+        for task in tasks:
             try:
                 await task
             except (asyncio.CancelledError, Exception):

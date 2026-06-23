@@ -822,10 +822,10 @@ class TestOpenVikingBrowse:
 
 
 class TestOpenVikingMemoryUriBuilder:
-    """Regression tests for _build_memory_uri — fixes #36969.
+    """Regression tests for _build_memory_uri.
 
-    OpenViking's current memory layout stores peer-scoped memories under
-    viking://user/peers/{peer_id}/...
+    OpenViking v0.3.23 stores peer-scoped memories under
+    viking://user/{peer_id}/...
     """
 
     def _make_provider(self, user="alice", agent="coder"):
@@ -834,19 +834,20 @@ class TestOpenVikingMemoryUriBuilder:
         p._agent = agent
         return p
 
-    def test_uri_layout_includes_peer_segment(self):
-        """URI must contain /peers/{peer_id}/ between user and memories."""
+    def test_uri_layout_uses_agent_memory_root(self):
+        """URI must use the configured agent root directly under user."""
         p = self._make_provider(user="alice", agent="coder")
         uri = p._build_memory_uri("preferences")
-        assert uri.startswith("viking://user/peers/coder/memories/preferences/mem_")
+        assert uri.startswith("viking://user/coder/memories/preferences/mem_")
         assert uri.endswith(".md")
 
     def test_uri_uses_configured_peer_not_default(self):
         """_agent value is the OpenViking actor peer ID, not hardcoded to 'hermes'."""
         p = self._make_provider(user="alice", agent="research-bot")
         uri = p._build_memory_uri("entities")
-        assert "/peers/research-bot/" in uri
-        assert "/peers/hermes/" not in uri
+        assert "/user/research-bot/" in uri
+        assert "/peers/" not in uri
+        assert "/user/hermes/" not in uri
 
     def test_uri_slug_is_twelve_hex_chars_and_unique(self):
         """Slug must be 12 hex chars and differ between calls."""
@@ -869,3 +870,28 @@ class TestOpenVikingMemoryUriBuilder:
             assert f"/memories/{subdir}/mem_" in uri, (
                 f"subdir '{subdir}' not placed correctly in URI: {uri}"
             )
+
+    def test_viking_remember_writes_to_agent_memory_root(self):
+        """viking_remember must send content/write to the same valid URI layout."""
+        calls = []
+
+        class Client:
+            def post(self, path, payload=None, **kwargs):
+                calls.append((path, payload or {}))
+                return {"result": {"written_bytes": 17}}
+
+        p = self._make_provider(user="alice", agent="coder")
+        p._client = Client()
+
+        result = json.loads(p._tool_remember({
+            "content": "Alice prefers concise answers.",
+            "category": "entity",
+        }))
+
+        assert result["status"] == "stored"
+        assert calls[0][0] == "/api/v1/content/write"
+        payload = calls[0][1]
+        assert payload["mode"] == "create"
+        assert payload["content"] == "Alice prefers concise answers."
+        assert payload["uri"].startswith("viking://user/coder/memories/entities/mem_")
+        assert "/peers/" not in payload["uri"]

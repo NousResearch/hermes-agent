@@ -7946,3 +7946,68 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         assert session["agent"].model == "claude-sonnet-4.6"
     finally:
         server._sessions.clear()
+
+
+def _session_create_with_transport(monkeypatch, tmp_path, transport):
+    """Drive session.create with *transport* bound (as dispatch() does) and
+    return the created session dict from server._sessions."""
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    launch_dir = tmp_path / "launchdir"
+    launch_dir.mkdir()
+    monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(launch_dir))
+    token = server.bind_transport(transport)
+    try:
+        resp = server._methods["session.create"]("rcwd", {"cols": 80})
+        assert "result" in resp, resp
+        sid = resp["result"]["session_id"]
+        return sid, server._sessions[sid], str(launch_dir)
+    finally:
+        server.reset_transport(token)
+
+
+def test_tui_stdio_session_records_cwd(monkeypatch, tmp_path):
+    """Regression for #50438: a standalone hermes --tui launch rides the
+    module-level stdio transport and never sends an explicit cwd, yet its launch
+    directory IS the user workspace and must be persisted so the Desktop list
+    can group it instead of dumping every TUI session under No workspace."""
+    for s in list(server._sessions.values()):
+        server._teardown_session(s)
+    server._sessions.clear()
+    try:
+        sid, session, launch_dir = _session_create_with_transport(
+            monkeypatch, tmp_path, server._stdio_transport
+        )
+        assert session["explicit_cwd"] is True
+        assert session["cwd"] == launch_dir
+        assert server._session_cwd(session) == launch_dir
+    finally:
+        for s in list(server._sessions.values()):
+            server._teardown_session(s)
+        server._sessions.clear()
+
+
+def test_desktop_ws_session_without_cwd_stays_unworkspaced(monkeypatch, tmp_path):
+    """The Desktop GUI dispatches over a bound WSTransport and only sends a cwd
+    when the user explicitly picks a workspace. Without that pick the shared
+    launch dir must NOT be stamped onto the row, so explicit_cwd stays False --
+    preserving the #50438 fix narrow scope."""
+
+    class _FakeWS:
+        def write(self, obj):
+            return True
+
+        def close(self):
+            pass
+
+    for s in list(server._sessions.values()):
+        server._teardown_session(s)
+    server._sessions.clear()
+    try:
+        sid, session, _launch_dir = _session_create_with_transport(
+            monkeypatch, tmp_path, _FakeWS()
+        )
+        assert session["explicit_cwd"] is False
+    finally:
+        for s in list(server._sessions.values()):
+            server._teardown_session(s)
+        server._sessions.clear()

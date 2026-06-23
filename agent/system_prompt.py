@@ -430,6 +430,9 @@ def invalidate_system_prompt(agent: Any) -> None:
     so the rebuilt prompt captures any writes from this session.
     """
     agent._cached_system_prompt = None
+    # Clear plugin content hashes so system_prompt hooks re-inject on rebuild
+    if hasattr(agent, "_plugin_system_prompt_hashes"):
+        agent._plugin_system_prompt_hashes.clear()
     if agent._memory_store:
         agent._memory_store.load_from_disk()
 

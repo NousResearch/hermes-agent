@@ -14087,7 +14087,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def _observe_inbound_message(self, event: MessageEvent) -> None:
         """Let the source adapter observe an inbound event before dispatch."""
-        adapter = self.adapters.get(event.source.platform)
+        adapters = getattr(self, "adapters", None)
+        if not adapters:
+            return
+        adapter = adapters.get(event.source.platform)
         if not adapter or not hasattr(adapter, "observe_inbound_message"):
             return
         try:

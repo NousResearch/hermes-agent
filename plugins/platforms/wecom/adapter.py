@@ -1142,6 +1142,32 @@ class WeComAdapter(BasePlatformAdapter):
         if not local_path.is_absolute():
             local_path = (Path.cwd() / local_path).resolve()
 
+        # Prevent path traversal: constrain the resolved media path to a file
+        # *inside* the Hermes working directory (cwd) or HERMES_HOME. This
+        # guard is fail-CLOSED: if path resolution itself fails for any reason
+        # (broken symlink, permission error, etc.) we refuse to serve the file
+        # rather than silently bypassing the allowlist. We require the path to
+        # be inside an allowed root, never the root directory itself (a dir is
+        # never a valid media file). Salvage of #32717 (@ErnestHysa) +
+        # @liuhao1024 hardening, re-targeted onto the bundled wecom plugin.
+        try:
+            local_path = local_path.resolve()
+            cwd = str(Path.cwd().resolve())
+            hermes_home = os.environ.get("HERMES_HOME", cwd)
+        except Exception as exc:
+            raise ValueError(
+                f"Refusing to serve media: unable to resolve path safely: {exc}"
+            ) from exc
+
+        local_path_str = str(local_path)
+        if not (
+            local_path_str.startswith(cwd + os.sep)
+            or local_path_str.startswith(hermes_home + os.sep)
+        ):
+            raise ValueError(
+                f"Media path {local_path} is outside the allowed directory"
+            )
+
         if not local_path.exists() or not local_path.is_file():
             raise FileNotFoundError(f"Media file not found: {local_path}")
 

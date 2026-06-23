@@ -21,6 +21,7 @@ from __future__ import annotations
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
@@ -46,7 +47,7 @@ def _make_source(
 
 
 def _make_event(text: str, source: SessionSource) -> MessageEvent:
-    return MessageEvent(text=text, source=source, message_id="m1")
+    return MessageEvent(text=text, source=source, message_id=uuid4().hex[:8])
 
 
 def _make_runner(*, platform_extra: dict | None = None,

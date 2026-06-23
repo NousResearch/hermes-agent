@@ -7,6 +7,7 @@ Telegram topics act as independent Hermes session lanes.
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
@@ -31,7 +32,7 @@ def _make_event(text: str, *, thread_id: str | None = None) -> MessageEvent:
     return MessageEvent(
         text=text,
         source=_make_source(thread_id=thread_id),
-        message_id="m1",
+        message_id=uuid4().hex[:8],
     )
 
 
@@ -50,7 +51,7 @@ def _make_group_event(text: str, *, thread_id: str | None = None) -> MessageEven
     return MessageEvent(
         text=text,
         source=_make_group_source(thread_id=thread_id),
-        message_id="gm1",
+        message_id=uuid4().hex[:8],
     )
 
 

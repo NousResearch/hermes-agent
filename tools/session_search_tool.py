@@ -6,12 +6,12 @@ Single-shape tool with three calling modes (inferred from args, no explicit
 mode parameter):
 
   1. DISCOVERY — pass ``query``. Runs FTS5, dedupes hits by session lineage,
-     returns top N sessions each with: snippet, ±5 message window around the
+     returns top N sessions each with: snippet, +/-5 message window around the
      match, plus bookend_start (first 3 user+assistant msgs of session) and
      bookend_end (last 3). Zero LLM cost.
 
   2. SCROLL — pass ``session_id`` + ``around_message_id``. Returns a window
-     of ±window messages centered on the anchor, no FTS5, no bookends. To
+     of +/-window messages centered on the anchor, no FTS5, no bookends. To
      scroll forward / backward, re-anchor on the last / first message id of
      the returned window.
 
@@ -651,7 +651,7 @@ SESSION_SEARCH_SCHEMA = {
         "       - snippet: FTS5-highlighted match excerpt\n"
         "       - bookend_start: first 3 user+assistant messages of the session "
         "(the goal / kickoff)\n"
-        "       - messages: ±5 messages around the FTS5 match, with the anchor message "
+        "       - messages: +/-5 messages around the FTS5 match, with the anchor message "
         "flagged (the hit in context)\n"
         "       - bookend_end: last 3 user+assistant messages of the session "
         "(the resolution / decisions)\n"
@@ -660,9 +660,9 @@ SESSION_SEARCH_SCHEMA = {
         "without paying for the whole transcript.\n\n"
         "  2) SCROLL — pass `session_id` + `around_message_id`:\n"
         "     session_search(session_id=\"...\", around_message_id=12345, window=10)\n"
-        "     Returns a window of ±`window` messages centered on the anchor. No FTS5, "
+        "     Returns a window of +/-`window` messages centered on the anchor. No FTS5, "
         "no bookends — just the slice. Use after a discovery call when you need more "
-        "context than the ±5 default window.\n"
+        "context than the +/-5 default window.\n"
         "       - To scroll FORWARD: pass messages[-1].id back as around_message_id.\n"
         "       - To scroll BACKWARD: pass messages[0].id back as around_message_id.\n"
         "       - The boundary message appears in both windows — orientation marker.\n"

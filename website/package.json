@@ -49,6 +49,8 @@
   "overrides": {
     "serialize-javascript": "7.0.5",
     "uuid": "11.1.1",
+    "joi": "17.13.4",
+    "http-proxy-middleware": "2.0.10",
     "@docusaurus/core": "3.10.1",
     "@docusaurus/babel": "3.10.1",
     "@docusaurus/bundler": "3.10.1",

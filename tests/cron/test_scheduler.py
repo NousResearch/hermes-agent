@@ -2795,19 +2795,25 @@ class TestParallelTick:
 
 class TestDeliverResultTimeoutCancelsFuture:
     """When future.result(timeout=60) raises TimeoutError in the live adapter
-    delivery path, the outcome depends on whether the coroutine was already
-    running.  future.cancel() returning False means it is in flight on the wire
-    (cannot be un-sent) → treat as DELIVERED and skip the standalone fallback to
-    avoid a duplicate (#38922).  future.cancel() returning True means it never
-    started (wedged loop) → nothing was sent, so fall through to standalone or
-    the message is silently dropped.  Regression for #38922.
+    delivery path, both outcomes (cancel True or False) now fall through to
+    standalone delivery.  cancel() == True means the coroutine never started
+    (wedged loop) — nothing was sent.  cancel() == False means the coroutine
+    was scheduled on the event loop but we cannot confirm the HTTP request
+    was actually sent — the coroutine may be stuck at an await before the
+    aiohttp call when the event loop is congested (#51184).  A possible
+    duplicate from standalone fallback is strictly better than silent
+    non-delivery for cron jobs.
     """
 
-    def test_live_adapter_timeout_assumes_delivered_no_duplicate(self):
-        """End-to-end: live adapter confirmation times out past the 60s budget.
-        The fix (#38922) treats the send as already-dispatched/delivered and
-        does NOT run the standalone fallback — otherwise the message is sent
-        twice."""
+    def test_live_adapter_timeout_cancel_false_falls_back_to_standalone(self):
+        """End-to-end: live adapter confirmation times out past the 60s budget
+        and future.cancel() returns False (coroutine was picked up by the
+        event loop).  cancel() == False does NOT mean the HTTP request was
+        actually sent — the coroutine may be stuck at an await before the
+        aiohttp call when the event loop is congested (#51184).  Treating
+        this as assume-delivered caused false-positive delivery reports.
+        Fix: always fall through to standalone on timeout, accepting
+        possible duplicate delivery as the lesser evil vs silent loss."""
         from gateway.config import Platform
         from concurrent.futures import Future
 
@@ -2863,11 +2869,12 @@ class TestDeliverResultTimeoutCancelsFuture:
 
         # 1. cancel() was attempted (returned False = in flight).
         assert cancel_calls == [True], "future.cancel() should be attempted on TimeoutError"
-        # 2. Delivery is reported successful (no error string returned).
+        # 2. The standalone fallback MUST run — we cannot distinguish
+        #    "in-flight on the wire" from "stuck at an await before the
+        #    HTTP call" when cancel() returns False (#51184).
+        standalone_send.assert_awaited_once()
+        # 3. Delivery is reported successful (standalone delivered it).
         assert result is None, f"expected successful delivery, got error: {result!r}"
-        # 3. The standalone fallback must NOT run — that is the #38922 fix:
-        #    an in-flight confirmation timeout is assume-delivered, not a resend.
-        standalone_send.assert_not_awaited()
 
     def test_live_adapter_timeout_before_dispatch_falls_back_to_standalone(self):
         """When the coroutine never started (loop wedged) — future.cancel()

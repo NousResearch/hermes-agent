@@ -967,23 +967,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         try:
                             send_result = future.result(timeout=60)
                         except TimeoutError:
-                            # #38922: a slow confirmation does NOT necessarily
-                            # mean the send failed — but we must distinguish two
-                            # cases via future.cancel()'s return value:
-                            #
-                            #   cancel() == False -> the coroutine was already
-                            #     running on the gateway loop when the timeout
-                            #     fired; the request is in flight on the wire and
-                            #     cannot be un-sent.  Re-sending via standalone
-                            #     would be a guaranteed DUPLICATE, so treat it as
-                            #     delivered (assume-delivered).
+                            # #38922 / #51184: a slow confirmation does NOT
+                            # necessarily mean the send failed — but we can no
+                            # longer distinguish "in flight on the wire" from
+                            # "stuck at an await before the HTTP call" based on
+                            # future.cancel()'s return value alone:
                             #
                             #   cancel() == True -> the scheduled callback never
                             #     started executing (loop wedged/backlogged for
-                            #     the full 60s), so nothing was sent.  We MUST
-                            #     fall through to the standalone path or the
-                            #     message is silently dropped (worse than a
-                            #     duplicate).
+                            #     the full 60s), so nothing was sent.  Fall
+                            #     through to standalone.
+                            #
+                            #   cancel() == False -> the coroutine was scheduled
+                            #     on the event loop, but cancel() returning
+                            #     False does NOT confirm the HTTP request was
+                            #     sent.  When the event loop is congested, the
+                            #     coroutine can be stuck at an await before the
+                            #     aiohttp call — nothing hit the wire (#51184).
+                            #     Always fall through to standalone: a possible
+                            #     duplicate is strictly better than silent
+                            #     non-delivery for cron jobs.
                             cancelled = future.cancel()
                             if cancelled:
                                 msg = (
@@ -998,15 +1001,30 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 adapter_ok = False  # fall through to standalone path
                                 timeout_handled = True
                             else:
-                                timed_out = True
-                                timeout_handled = True
-                                logger.warning(
-                                    "Job '%s': live adapter send to %s:%s timed out "
-                                    "after 60s; already dispatched (in flight), "
-                                    "assuming delivered (skipping standalone fallback "
-                                    "to avoid duplicate)",
-                                    job["id"], platform_name, chat_id,
+                                # #51184: cancel() == False only means the
+                                # coroutine was *scheduled* on the event loop,
+                                # NOT that the HTTP request was actually sent.
+                                # When the gateway event loop is congested, the
+                                # coroutine can be stuck at an await before the
+                                # aiohttp call — nothing hit the wire.  The old
+                                # "assume delivered" path caused false-positive
+                                # delivery reports for LINE and other adapters.
+                                # Always fall through to standalone: a possible
+                                # duplicate is strictly better than silent
+                                # non-delivery for cron jobs.
+                                msg = (
+                                    f"live adapter send to {platform_name}:{chat_id} "
+                                    "timed out after 60s; coroutine was dispatched "
+                                    "but unconfirmed — falling back to standalone "
+                                    "(possible duplicate)"
                                 )
+                                logger.warning(
+                                    "Job '%s': %s",
+                                    job["id"], msg,
+                                )
+                                target_errors.append(msg)
+                                adapter_ok = False  # fall through to standalone path
+                                timeout_handled = True
                         except Exception as ex:
                             # A real send error (not a slow confirmation) — fall
                             # through to the standalone path so the message is

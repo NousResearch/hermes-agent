@@ -7303,11 +7303,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _gw_msg_id and not is_internal:
             _gw_platform = getattr(source, "platform", None)
             if _gw_platform is not None:
-                _gw_dedup = self._platform_dedup.get(_gw_platform)
+                _gw_platform_dedup = getattr(self, "_platform_dedup", None)
+                if _gw_platform_dedup is None:
+                    _gw_platform_dedup = {}
+                    self._platform_dedup = _gw_platform_dedup
+                _gw_dedup = _gw_platform_dedup.get(_gw_platform)
                 if _gw_dedup is None:
                     from gateway.platforms.helpers import MessageDeduplicator
                     _gw_dedup = MessageDeduplicator()
-                    self._platform_dedup[_gw_platform] = _gw_dedup
+                    _gw_platform_dedup[_gw_platform] = _gw_dedup
                 if _gw_dedup.is_duplicate(str(_gw_msg_id)):
                     logger.debug(
                         "cross-adapter dedup: dropping already-seen %s message_id=%s",

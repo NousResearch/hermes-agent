@@ -237,3 +237,23 @@ def test_content_dedup_allows_same_text_different_users():
 
     assert dedup.is_duplicate(key_a) is False
     assert dedup.is_duplicate(key_b) is False  # different user → not a duplicate
+
+
+@pytest.mark.asyncio
+async def test_handle_message_defensive_platform_dedup():
+    """GatewayRunner._handle_message handles stubs where _platform_dedup is missing."""
+    runner = _make_runner()
+    # Deliberately remove the attribute to simulate a bare test stub
+    if hasattr(runner, "_platform_dedup"):
+        delattr(runner, "_platform_dedup")
+
+    event = _make_event(message_id="msg-999")
+
+    # Under the hood, this will run through our defensive fallback check
+    # and shouldn't raise AttributeError.
+    from gateway.run import GatewayRunner
+    await GatewayRunner._handle_message(runner, event)
+    # The call should succeed and initialize the attribute
+    assert hasattr(runner, "_platform_dedup")
+    assert isinstance(runner._platform_dedup, dict)
+

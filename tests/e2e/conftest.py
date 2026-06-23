@@ -217,6 +217,8 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner._fallback_model = None
     runner._show_reasoning = False
 
+    runner._platform_dedup = {}
+
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._handle_message_with_agent = AsyncMock(return_value="agent-handled-default")

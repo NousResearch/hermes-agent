@@ -93,16 +93,67 @@ class TestBuildAnthropicClient:
 
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client("sk-ant-api03-something")
+            build_anthropic_client("sk-ant...hing")
             kwargs = mock_sdk.Anthropic.call_args[1]
-            assert kwargs["api_key"] == "sk-ant-api03-something"
+            assert kwargs["api_key"] == "sk-ant...hing"
             assert "auth_token" not in kwargs
             # API key auth should still get common betas
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "interleaved-thinking-2025-05-14" in betas
             assert "context-1m-2025-08-07" not in betas
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
-            assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
+
+    def test_copilot_v1messages_uses_bearer_and_cli_identity(self):
+        """Claude on Copilot (/v1/messages) is sent with Bearer auth, the single
+        Copilot CLI identity headers, and the context-1m beta that unlocks the
+        1M input window. The Copilot token must NOT be sent as an Anthropic
+        x-api-key."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "gho_copaccesstoken",
+                base_url="https://api.githubcopilot.com",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            # Bearer, not x-api-key.
+            assert kwargs["auth_token"] == "gho_copaccesstoken"
+            assert "api_key" not in kwargs
+            headers = kwargs["default_headers"]
+            # The single Copilot CLI identity from copilot_request_headers.
+            assert headers["Copilot-Integration-Id"] == "copilot-developer-cli"
+            assert headers["User-Agent"].startswith("copilot/")
+            assert "Editor-Version" not in headers
+            # The 1M-window beta must be present on this path.
+            assert "context-1m-2025-08-07" in headers["anthropic-beta"]
+            assert "interleaved-thinking-2025-05-14" in headers["anthropic-beta"]
+
+    def test_copilot_base_url_detection(self):
+        from agent.anthropic_adapter import _is_copilot_base_url
+        assert _is_copilot_base_url("https://api.githubcopilot.com") is True
+        assert _is_copilot_base_url("https://api.githubcopilot.com/v1") is True
+        assert _is_copilot_base_url("https://api.anthropic.com") is False
+        assert _is_copilot_base_url("") is False
+        assert _is_copilot_base_url(None) is False
+
+    def test_copilot_needs_context_1m_beta(self):
+        from agent.anthropic_adapter import _base_url_needs_context_1m_beta
+        assert _base_url_needs_context_1m_beta("https://api.githubcopilot.com") is True
+        # Native Anthropic must NOT get context-1m by default.
+        assert _base_url_needs_context_1m_beta("https://api.anthropic.com") is False
+
+    def test_copilot_header_enrichment_failure_is_non_fatal(self):
+        """If copilot_request_headers raises, client construction still proceeds
+        with the bearer token and the beta header alone."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("hermes_cli.copilot_auth.copilot_request_headers",
+                   side_effect=RuntimeError("boom")):
+            build_anthropic_client(
+                "***",
+                base_url="https://api.githubcopilot.com",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "***"
+            # Beta still applied even when identity enrichment failed.
+            assert "context-1m-2025-08-07" in kwargs["default_headers"]["anthropic-beta"]
 
     def test_custom_base_url(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:

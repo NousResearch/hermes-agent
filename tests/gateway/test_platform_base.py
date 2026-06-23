@@ -889,6 +889,40 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
+    def test_denylist_blocks_home_root_credential_files(self, tmp_path, monkeypatch):
+        """Home-root single-file credential stores (~/.netrc, ~/.pgpass,
+        ~/.npmrc, ~/.pypirc, ~/.git-credentials) must never be deliverable in
+        default mode. The canonical write guard build_write_denied_paths already
+        forbids writing them, so the delivery (read/exfil) side must match — a
+        prompt-injected or buggy agent must not be able to auto-attach a
+        plaintext credential file to a chat reply.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        for name in (".netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials"):
+            cred = fake_home / name
+            cred.write_text("secret-token")
+            assert BasePlatformAdapter.validate_media_delivery_path(str(cred)) is None, name
+
+    def test_non_credential_home_file_still_delivers(self, tmp_path, monkeypatch):
+        """The home-root credential denylist is exact-match, so an ordinary file
+        sitting directly in $HOME (not one of the credential basenames) still
+        delivers — the new entries must not over-block the user's own home tree.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        report = fake_home / "report.md"
+        report.write_text("# notes\n")
+        assert BasePlatformAdapter.validate_media_delivery_path(str(report)) == str(report.resolve())
+
     def test_denylist_blocks_system_prefixes(self, tmp_path, monkeypatch):
         """Files under /etc, /proc, /sys, /root, /boot, /var/{log,lib,run}
         are denied. We construct the test by patching the denylist root

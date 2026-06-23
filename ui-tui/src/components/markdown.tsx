@@ -357,18 +357,30 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   const isHard = totalMin > availableWidth // tier 3 needs hard word breaks
   const sep = columnWidths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
 
-  // When wrapping isn't needed, build single-line strings per row.
-  // All cells render as plain text via stripInlineMarkup.
-  // TODO: follow-up — format to ANSI then wrap with wrapAnsi for inline markdown preservation.
-  // See free-code/src/components/MarkdownTable.tsx L44-L62 for approach.
+  // When wrapping isn't needed, render each cell with MdInline so inline
+  // markdown (bold, italic, code, links, math) is preserved. Padding is
+  // computed from stripInlineMarkup width so columns stay aligned.
   if (!needsWrap) {
-    const buildRowString = (row: string[]): string =>
-      row.map((cell, ci) => {
-        const text = stripInlineMarkup(cell)
-        const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(text)))
-        const gap = ci < numCols - 1 ? '  ' : ''
-        return text + pad + gap
-      }).join('')
+    const buildRowCells = (row: string[]): ReactNode[] => {
+      const cells: ReactNode[] = []
+
+      for (let ci = 0; ci < numCols; ci++) {
+        const cell = row[ci] ?? ''
+        const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(stripInlineMarkup(cell))))
+
+        cells.push(
+          <Text key={`c${ci}`}>
+            <MdInline t={t} text={cell} />{pad}
+          </Text>
+        )
+
+        if (ci < numCols - 1) {
+          cells.push(<Text key={`g${ci}`}>  </Text>)
+        }
+      }
+
+      return cells
+    }
 
     return (
       <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
@@ -379,7 +391,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
               color={ri === 0 ? t.color.accent : undefined}
               wrap="truncate-end"
             >
-              {buildRowString(row)}
+              {buildRowCells(row)}
             </Text>
             {ri === 0 && normalizedRows.length > 1 ? (
               <Text color={t.color.muted} dimColor wrap="truncate-end">{sep}</Text>

@@ -1756,6 +1756,72 @@ def test_default_spawn_uses_project_local_temp_profile(kanban_home, tmp_path, mo
     assert (hermes_home / ".env").read_text(encoding="utf-8") == "DUMMY_ENV=1\n"
     assert (hermes_home / "SOUL.md").read_text(encoding="utf-8") == "Base soul\n"
     assert (hermes_home / "skills" / "research" / "SKILL.md").is_file()
+    assert (project / ".hermes" / "tmp-profiles" / ".gitignore").read_text(encoding="utf-8") == "*\n!.gitignore\n"
+
+
+def test_temp_worker_profile_name_sanitizes_path_like_assignee():
+    temp_worker_profile_name = getattr(kb, "_temp_worker_profile_name")
+    assert temp_worker_profile_name("../../Outside Role") == "outside-role"
+    assert temp_worker_profile_name("/tmp/leak") == "tmp-leak"
+
+
+def test_dispatch_temp_profiles_skip_reserved_invalid_assignee(kanban_home, monkeypatch):
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    monkeypatch.setattr(
+        kb,
+        "_temp_profiles_config",
+        lambda: {
+            "enabled": True,
+            "cleanup_after_seconds": 7 * 24 * 60 * 60,
+            "root_dir": ".hermes/tmp-profiles",
+        },
+    )
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="bad", assignee="root")
+        res = kb.dispatch_once(conn, dry_run=True)
+    assert t in res.skipped_nonspawnable
+    assert not res.spawned
+
+
+def test_temp_profiles_relative_root_cannot_escape_project(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    workspace = project / "work"
+    workspace.mkdir()
+    monkeypatch.setattr(kb, "_git_toplevel", lambda _path: project)
+    with pytest.raises(ValueError, match="must stay under the project root"):
+        kb._temp_profiles_root_for_workspace(
+            str(workspace),
+            {"enabled": True, "cleanup_after_seconds": 1, "root_dir": "../outside"},
+        )
+
+
+def test_temp_profile_home_is_contained_for_path_like_assignee(kanban_home, tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    _init_git_repo(project)
+    workspace = project / "work"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        kb,
+        "_temp_profiles_config",
+        lambda: {
+            "enabled": True,
+            "cleanup_after_seconds": 7 * 24 * 60 * 60,
+            "root_dir": ".hermes/tmp-profiles",
+        },
+    )
+    monkeypatch.setattr(kb, "_git_toplevel", lambda _path: project)
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="bad path", assignee="../../outside")
+        task = kb.claim_task(conn, task_id)
+        assert task is not None
+        assert task.assignee is not None
+        hermes_home = kb.ensure_temp_worker_profile(task, str(workspace), task.assignee)
+    assert hermes_home.name == "outside"
+    assert project / ".hermes" / "tmp-profiles" in hermes_home.parents
+    assert tmp_path / "outside" not in hermes_home.parents
 
 
 def test_cleanup_stale_temp_profiles_only_removes_marked_roots(kanban_home, tmp_path, monkeypatch):

@@ -6496,6 +6496,14 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     return None
 
 
+def _temp_assignee_spawnable(assignee: str) -> bool:
+    try:
+        _temp_worker_profile_name(assignee)
+        return True
+    except Exception:
+        return False
+
+
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile or project-local temp profiles
@@ -6519,7 +6527,7 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     if not rows:
         return False
     if _temp_profiles_enabled():
-        return True
+        return any(_temp_assignee_spawnable(row["assignee"] or "") for row in rows)
     try:
         from hermes_cli.profiles import profile_exists  # local import: avoids cycle
     except Exception:
@@ -6548,7 +6556,7 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     if not rows:
         return False
     if _temp_profiles_enabled():
-        return True
+        return any(_temp_assignee_spawnable(row["assignee"] or "") for row in rows)
     try:
         from hermes_cli.profiles import profile_exists  # local import: avoids cycle
     except Exception:
@@ -6828,9 +6836,13 @@ def _dispatch_once_locked(
             from hermes_cli.profiles import profile_exists  # local import: avoids cycle
         except Exception:
             profile_exists = None  # type: ignore[assignment]
+        temp_profiles_enabled = _temp_profiles_enabled()
+        if temp_profiles_enabled and not _temp_assignee_spawnable(row_assignee):
+            result.skipped_nonspawnable.append(row["id"])
+            continue
         if (
             profile_exists is not None
-            and not _temp_profiles_enabled()
+            and not temp_profiles_enabled
             and not profile_exists(row_assignee)
         ):
             # Bucket separately from skipped_unassigned: the operator
@@ -6972,9 +6984,13 @@ def _dispatch_once_locked(
             from hermes_cli.profiles import profile_exists
         except Exception:
             profile_exists = None  # type: ignore[assignment]
+        temp_profiles_enabled = _temp_profiles_enabled()
+        if temp_profiles_enabled and not _temp_assignee_spawnable(row["assignee"]):
+            result.skipped_nonspawnable.append(row["id"])
+            continue
         if (
             profile_exists is not None
-            and not _temp_profiles_enabled()
+            and not temp_profiles_enabled
             and not profile_exists(row["assignee"])
         ):
             result.skipped_nonspawnable.append(row["id"])
@@ -7306,29 +7322,54 @@ def _workspace_project_root(workspace: str) -> Path:
     return git_root or ws
 
 
+def _path_is_relative_to(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
 def _temp_profiles_root_for_workspace(workspace: str, cfg: Optional[dict[str, Any]] = None) -> Path:
     cfg = cfg or _temp_profiles_config()
+    project_root = _workspace_project_root(workspace).resolve()
     root_dir = Path(str(cfg.get("root_dir") or ".hermes/tmp-profiles")).expanduser()
     if not root_dir.is_absolute():
-        root_dir = _workspace_project_root(workspace) / root_dir
+        root_dir = (project_root / root_dir).resolve()
+        if not _path_is_relative_to(root_dir, project_root):
+            raise ValueError(
+                f"kanban.temp_profiles.root_dir must stay under the project root when relative: {root_dir}"
+            )
+    else:
+        root_dir = root_dir.resolve()
     return root_dir
 
 
-def _safe_temp_profile_component(value: str, *, fallback: str = "run") -> str:
+def _safe_temp_profile_component(value: str, *, fallback: str = "run", max_len: int = 80) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(value or "").strip()).strip(".-_")
-    return (safe or fallback)[:80]
+    return (safe or fallback)[:max_len]
 
 
 def _temp_worker_profile_name(profile_arg: str) -> str:
-    """Return a valid local profile id for a durable or ad-hoc assignee name."""
-    try:
-        from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+    """Return a valid local profile id for a durable or ad-hoc assignee name.
 
+    Durable profile IDs pass through after canonical validation. Free-form role
+    labels are converted to safe profile IDs, then validated before any path is
+    constructed. Path-like input never reaches the filesystem as a separator.
+    """
+    from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+
+    try:
         normalized = normalize_profile_name(profile_arg)
         validate_profile_name(normalized)
         return normalized
-    except Exception:
-        return _safe_temp_profile_component(profile_arg, fallback="worker").lower()
+    except ValueError:
+        slug = re.sub(r"[^a-z0-9_-]+", "-", str(profile_arg or "").strip().lower()).strip("-_")
+        if not slug or not re.match(r"^[a-z0-9]", slug):
+            slug = f"worker-{slug}" if slug else "worker"
+        slug = slug[:64].rstrip("-_") or "worker"
+        validate_profile_name(slug)
+        return slug
 
 
 def _copytree_contents(src: Path, dst: Path) -> None:
@@ -7417,6 +7458,19 @@ def ensure_temp_worker_profile(task: Task, workspace: str, profile_arg: str) -> 
     nonce = secrets.token_hex(4)
     temp_root = root_parent / f"{task_part}-{run_part}-{profile_part}-{nonce}"
     profile_home = temp_root / "profiles" / profile_name
+    resolved_temp_root = temp_root.resolve()
+    resolved_profiles_root = (resolved_temp_root / "profiles").resolve()
+    resolved_profile_home = (resolved_profiles_root / profile_name).resolve()
+    if not _path_is_relative_to(resolved_profile_home, resolved_profiles_root):
+        raise ValueError(f"temporary profile path escaped temp root: {resolved_profile_home}")
+    profile_home = resolved_profile_home
+
+    # Defense in depth for copied .env secrets: keep the temp-profile tree
+    # untracked even in projects whose root .gitignore does not ignore .hermes/.
+    root_parent.mkdir(parents=True, exist_ok=True)
+    ignore_file = root_parent / ".gitignore"
+    if not ignore_file.exists():
+        ignore_file.write_text("*\n!.gitignore\n", encoding="utf-8")
 
     # Minimal profile skeleton matching hermes_cli.profiles._PROFILE_DIRS, plus
     # cron/plugins/cache dirs commonly created at runtime. Keep this local to

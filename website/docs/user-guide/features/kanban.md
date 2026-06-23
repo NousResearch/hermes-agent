@@ -509,8 +509,8 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 | `auto_subscribe_on_create` | `true` | When a worker calls `kanban_create` from inside a session with a persistent delivery channel (messaging gateway or TUI), the originating session is auto-subscribed to the new task's completion/block events. The dispatcher still drives the delivery — this only changes whether the caller's chat/key shows up in the notify-sub table. Set to `false` to require explicit `kanban_notify-subscribe` calls per task. |
-| `temp_profiles.enabled` | `false` | Spawn each worker attempt with a fresh project-local temp `HERMES_HOME` instead of the durable profile home. Useful for orchestrators that assign ad-hoc roles (`mckinsey-style`, one-off scrapers) without polluting `~/.hermes/profiles`. |
-| `temp_profiles.root_dir` | `.hermes/tmp-profiles` | Directory for temp Hermes homes. Relative paths are rooted at the task project/git root, so repo runs keep their worker state under the project folder. |
+| `temp_profiles.enabled` | `false` | Spawn each worker attempt with a fresh project-local temp `HERMES_HOME` instead of the durable profile home. Useful for orchestrators that assign ad-hoc roles (`mckinsey-style`, one-off scrapers) without polluting `~/.hermes/profiles`. The dispatcher validates/sanitizes role names before creating paths. |
+| `temp_profiles.root_dir` | `.hermes/tmp-profiles` | Directory for temp Hermes homes. Relative paths are rooted at the task project/git root and may not escape it; absolute paths are trusted operator overrides. The dispatcher writes a local `.gitignore` in this directory because cloned `.env` secrets can live in temp profiles. |
 | `temp_profiles.cleanup_after_seconds` | `604800` | Best-effort GC age for marked temp-profile roots. Only directories with the kanban temp-profile marker are removed. |
 
 And the two auxiliary LLM slots:

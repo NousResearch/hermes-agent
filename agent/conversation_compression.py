@@ -78,6 +78,39 @@ _ANNOUNCE_STATUS_CONDITIONAL = frozenset({"degraded_fail_open", "sanitized"})
 _DEGRADED_STATUSES = frozenset({"degraded_fallback_compressed", "degraded_fail_open"})
 
 
+def _warn_compaction_stats_once(agent, message: str, *, exc_info: bool = False) -> None:
+    """Emit a compaction-stats degrade ``warning`` at most once per (cause, session).
+
+    The granular compaction announce silently degrades to a two-line form when
+    stats fail to build/reconcile; logging that at ``debug`` is how the PR #95
+    regression stayed dark for weeks. This raises it to ``warning`` with a stable,
+    greppable ``COMPACTION_STATS_*`` marker — but throttled per cause+session so a
+    persistent reconcile bug can't flood the gateway log every turn. The throttle
+    state lives on the agent (``_compaction_stats_warned``); if the agent can't
+    hold it (no attribute), we still warn (fail-loud over fail-silent).
+    """
+    try:
+        seen = getattr(agent, "_compaction_stats_warned", None)
+        if seen is None:
+            seen = set()
+            try:
+                agent._compaction_stats_warned = seen
+            except Exception:
+                seen = None
+        # Key on the marker + path (first 2 tokens, e.g.
+        # "COMPACTION_STATS_RECONCILE_FAILED in-turn"), NOT the full message, so a
+        # varying reconcile reason doesn't defeat the throttle.
+        cause = " ".join(message.split()[:2])
+        key = (cause, getattr(agent, "session_id", None))
+        if seen is not None:
+            if key in seen:
+                return
+            seen.add(key)
+    except Exception:
+        pass  # never let throttle bookkeeping break the reply path
+    logger.warning(message, exc_info=exc_info)
+
+
 def _compaction_window_label(tokens: "int | None") -> str:
     """Compact human label for a context window: 1M, 272K, 128K (mirror of
     chat_completion_helpers._format_context_window; kept local to avoid a
@@ -1146,14 +1179,27 @@ def compress_context(
         try:
             from agent.compaction_stats import build_inturn_stats
             from agent.model_metadata import estimate_messages_tokens_rough as _est
-            _cand = build_inturn_stats(messages=messages, compressed=compressed, estimator=_est)
+            _why2 = "build raised"  # bound before build so the warning %s can't be unbound
+            _cand = build_inturn_stats(
+                messages=messages,
+                compressed=compressed,
+                estimator=_est,
+                engine_is_lcm=(_engine_name == "lcm"),
+                on_tag_missing=lambda: _warn_compaction_stats_once(
+                    agent, "COMPACTION_STATS_TAG_MISSING in-turn"
+                ),
+            )
             _ok2, _why2 = _cand.validate()
             if _ok2:
                 _inturn_stats = _cand
             else:
-                logger.debug("COMPACTION_STATS_RECONCILE_FAILED in-turn %s", _why2)
+                _warn_compaction_stats_once(
+                    agent, f"COMPACTION_STATS_RECONCILE_FAILED in-turn {_why2}"
+                )
         except Exception:
-            logger.debug("in-turn stats build failed; degrading to two-line", exc_info=True)
+            _warn_compaction_stats_once(
+                agent, "COMPACTION_STATS_BUILD_FAILED in-turn", exc_info=True
+            )
         _reasoning_inturn = None
         try:
             from gateway.run import _load_gateway_config as _lgc

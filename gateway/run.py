@@ -12181,15 +12181,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     from agent.compaction_stats import build_hygiene_stats
                     from agent.model_metadata import estimate_messages_tokens_rough
+                    from agent.conversation_compression import _warn_compaction_stats_once
                     _stats = build_hygiene_stats(
                         raw_history=raw_history,
                         eligible_msgs=eligible_msgs,
                         compressed=compressed,
                         estimator=estimate_messages_tokens_rough,
+                        engine_is_lcm=(_engine_name == "lcm"),
+                        on_tag_missing=lambda: _warn_compaction_stats_once(
+                            agent, "COMPACTION_STATS_TAG_MISSING hygiene"
+                        ),
                     )
                     _ok, _why = _stats.validate()
                     if not _ok:
-                        logger.warning("COMPACTION_STATS_RECONCILE_FAILED hygiene %s", _why)
+                        _warn_compaction_stats_once(
+                            agent, f"COMPACTION_STATS_RECONCILE_FAILED hygiene {_why}"
+                        )
                         _stats = None
                     else:
                         # Per-path store-correct recovery line: hygiene clears
@@ -12202,7 +12209,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "via lcm_grep / lcm_expand (lcm.db)."
                             )
                 except Exception:
-                    logger.debug("hygiene stats build failed; degrading to two-line", exc_info=True)
+                    from agent.conversation_compression import _warn_compaction_stats_once
+                    _warn_compaction_stats_once(
+                        agent, "COMPACTION_STATS_BUILD_FAILED hygiene", exc_info=True
+                    )
                     _stats = None
 
             # Built-in variant: do NOT ship session ids to a chat channel (D-11).

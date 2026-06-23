@@ -4410,7 +4410,12 @@ class LCMEngine(ContextEngine):
                     selected_parts.append(part)
             if selected_parts:
                 combined = "\n\n---\n\n".join(selected_parts)
-                result.append({"role": summary_role, "content": combined})
+                # Structural marker so downstream compaction-stats classification
+                # detects this summary row exactly, without depending on the marker
+                # text surviving content flattening. ``_``-prefixed → stripped by the
+                # transport sanitizer / not copied by the allowlist-rebuild adapters,
+                # so it never reaches a provider request or perturbs the prompt cache.
+                result.append({"role": summary_role, "content": combined, "_lcm_summary": True})
 
         # Fresh tail
         result.extend(tail_selected)

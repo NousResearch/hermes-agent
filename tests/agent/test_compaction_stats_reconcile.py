@@ -897,3 +897,143 @@ def test_flat_string_returned_verbatim():
     s = "[Recent Summary (d0, node 1)] body"
     assert _content_to_text(s) == s
 
+
+# ───────────────────────────────────────────────────────────────────────────
+# Structural summary tagging (_lcm_summary) — tag-first / regex-fallback, with
+# a tag-missing tripwire. Spec:
+# plans/2026-06-22_structural-summary-tagging-and-degrade-observability-SPEC.md
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_is_summary_row_tag_fast_path():
+    # tagged row with NON-marker content is still a summary (structural, not regex).
+    from agent.compaction_stats import _is_summary_row
+    assert _is_summary_row(
+        {"role": "assistant", "content": "no marker text here at all", "_lcm_summary": True}
+    ) is True
+
+
+def test_is_summary_row_falls_back_to_regex():
+    # untagged row with marker content → detected via the regex fallback (INV-3).
+    from agent.compaction_stats import _is_summary_row
+    assert _is_summary_row(
+        {"role": "assistant", "content": "[Recent Summary (d0, node 1)] x"}
+    ) is True
+
+
+def test_is_summary_row_none_content_no_raise():
+    # the existing call sites' `or ""` None-guard must be preserved (Pass-1 bpp B1).
+    from agent.compaction_stats import _is_summary_row
+    assert _is_summary_row({"role": "assistant", "content": None}) is False
+
+
+def test_is_summary_row_tag_must_be_literal_true():
+    # only literal True takes the fast path — no truthy widening (INV-4).
+    from agent.compaction_stats import _is_summary_row
+    for bad in ("yes", 1, None, [], {"x": 1}):
+        assert _is_summary_row(
+            {"role": "assistant", "content": "plain non-marker text", "_lcm_summary": bad}
+        ) is False, f"_lcm_summary={bad!r} must NOT take the fast path"
+
+
+def _regex_miss_summary_row(tagged: bool):
+    # marker text broken across content parts → the regex MISSES it (single-line
+    # join can't span the part boundary), the exact loose-end-#2 failure.
+    row = {"role": "assistant", "content": [
+        {"type": "text", "text": "[Recent Summary (d0,"},
+        {"type": "text", "text": "node 1)] x"},
+    ]}
+    if tagged:
+        row["_lcm_summary"] = True
+    return row
+
+
+def test_regex_miss_fixture_tag_detects_regex_misses():
+    # INV-5: the tag detects a summary the regex MISSES (proves a real defect fix).
+    from agent.compaction_stats import _is_summary_row, _is_summary_message
+    row = _regex_miss_summary_row(tagged=True)
+    assert _is_summary_message(row["content"]) is False, "regex must MISS the split marker"
+    assert _is_summary_row(row) is True, "tag must detect what the regex missed"
+
+
+def test_tagged_classification_keeps_validate_valid():
+    # INV-5: build_inturn_stats over a fixture containing the regex-miss summary row
+    # (tagged) reconciles AND counts the summary.
+    from agent.compaction_stats import build_inturn_stats
+    anchor = {"role": "system", "content": "SYS " * 50}
+    summary = _regex_miss_summary_row(tagged=True)
+    body = [_blockmsg("assistant", f"chat {i}") for i in range(10)]
+    msgs = [anchor] + body
+    compressed = [anchor, summary] + msgs[-3:]
+    stats = build_inturn_stats(messages=msgs, compressed=compressed, estimator=_est)
+    ok, why = stats.validate()
+    assert ok, why
+    assert stats.summary_messages == 1
+
+
+def test_mixed_tagged_and_untagged_summaries_reconcile():
+    # RQ-2: a single build pass over a MIX of tagged + untagged-but-marker summary
+    # rows (the real first-post-deploy state) reconciles and counts both.
+    from agent.compaction_stats import build_inturn_stats
+    anchor = {"role": "system", "content": "SYS " * 50}
+    tagged = _regex_miss_summary_row(tagged=True)                 # tag-only (regex misses)
+    untagged = {"role": "assistant",
+                "content": "[Session Arc Summary (d1, node 7)] y"}  # regex-only
+    body = [_blockmsg("assistant", f"chat {i}") for i in range(10)]
+    msgs = [anchor] + body
+    compressed = [anchor, tagged, untagged] + msgs[-3:]
+    stats = build_inturn_stats(messages=msgs, compressed=compressed, estimator=_est)
+    ok, why = stats.validate()
+    assert ok, why
+    assert stats.summary_messages == 2
+
+
+def test_tag_missing_tripwire_fires_once():
+    # INV-7: an LCM session whose summary row lacks the tag fires on_tag_missing
+    # exactly once, even across the two partition scans.
+    from agent.compaction_stats import build_inturn_stats
+    fires = []
+    anchor = {"role": "system", "content": "SYS " * 50}
+    untagged_marker = {"role": "assistant", "content": "[Recent Summary (d0, node 1)] z"}
+    body = [_blockmsg("assistant", f"chat {i}") for i in range(10)]
+    msgs = [anchor] + body
+    compressed = [anchor, untagged_marker] + msgs[-3:]
+    build_inturn_stats(
+        messages=msgs, compressed=compressed, estimator=_est,
+        engine_is_lcm=True, on_tag_missing=lambda: fires.append(1),
+    )
+    assert sum(fires) == 1, f"tripwire must fire exactly once, fired {sum(fires)}"
+
+
+def test_tag_present_no_tripwire():
+    # a properly-tagged LCM summary fires NO tripwire.
+    from agent.compaction_stats import build_inturn_stats
+    fires = []
+    anchor = {"role": "system", "content": "SYS " * 50}
+    tagged = {"role": "assistant", "content": "[Recent Summary (d0, node 1)] z", "_lcm_summary": True}
+    body = [_blockmsg("assistant", f"chat {i}") for i in range(10)]
+    msgs = [anchor] + body
+    compressed = [anchor, tagged] + msgs[-3:]
+    build_inturn_stats(
+        messages=msgs, compressed=compressed, estimator=_est,
+        engine_is_lcm=True, on_tag_missing=lambda: fires.append(1),
+    )
+    assert sum(fires) == 0, "a tagged summary must not fire the tag-missing tripwire"
+
+
+def test_tag_missing_silent_when_engine_not_lcm():
+    # built-in-engine sessions (engine_is_lcm=False) never fire the tripwire even
+    # with an untagged marker row.
+    from agent.compaction_stats import build_inturn_stats
+    fires = []
+    anchor = {"role": "system", "content": "SYS " * 50}
+    untagged_marker = {"role": "assistant", "content": "[Recent Summary (d0, node 1)] z"}
+    body = [_blockmsg("assistant", f"chat {i}") for i in range(10)]
+    msgs = [anchor] + body
+    compressed = [anchor, untagged_marker] + msgs[-3:]
+    build_inturn_stats(
+        messages=msgs, compressed=compressed, estimator=_est,
+        engine_is_lcm=False, on_tag_missing=lambda: fires.append(1),
+    )
+    assert sum(fires) == 0
+
+

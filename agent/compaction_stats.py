@@ -283,12 +283,67 @@ def _is_summary_message(content) -> bool:
     return bool(text) and bool(_LCM_SUMMARY_RE.search(text))
 
 
+# Internal scaffolding marker the LCM engine sets on the summary message it
+# assembles (see plugins/context_engine/lcm/engine.py). ``_``-prefixed so the
+# transport sanitizer strips it before any provider request (and the Anthropic/
+# Gemini/Bedrock adapters rebuild messages by allowlist and never copy it) — so
+# it never reaches the wire and never perturbs the prompt cache.
+_LCM_SUMMARY_TAG = "_lcm_summary"
+
+
+def _is_summary_row(msg, *, engine_is_lcm: bool = False, on_tag_missing=None) -> bool:
+    """True if a message is an LCM summary row.
+
+    Fast path: the LCM engine tags the summary message it assembles with the
+    internal ``_lcm_summary`` marker (structural — exact, independent of whether
+    the marker text survives content flattening). Fallback: the PR #99-hardened
+    ``_content_to_text`` regex for built-in-engine / pre-tag / non-LCM rows.
+
+    ``is True`` (not truthy) so a deserialized "yes"/1/None can't flip detection.
+    Restores the call sites' ``or ""`` None-guard. When ``engine_is_lcm`` and the
+    regex fallback DOES match a summary whose tag is absent, ``on_tag_missing`` is
+    called once so the silent fast-path/fallback is observable (the
+    COMPACTION_STATS_TAG_MISSING tripwire) rather than a dark revert to the regex.
+    """
+    if isinstance(msg, dict) and msg.get(_LCM_SUMMARY_TAG) is True:
+        return True
+    content = msg.get("content") if isinstance(msg, dict) else msg
+    hit = _is_summary_message(content or "")
+    if hit and engine_is_lcm and on_tag_missing is not None:
+        on_tag_missing()  # LCM session: regex matched a summary, but the tag was absent
+    return hit
+
+
+def _classify_summary_ids(comp, *, engine_is_lcm: bool = False, on_tag_missing=None):
+    """Return ``{id(m) for m in comp that are summary rows}``, firing the
+    tag-missing tripwire AT MOST ONCE per call.
+
+    Sharing one classification across the summary/kept partitions (a) avoids
+    re-running ``_is_summary_message`` twice per row and (b) ensures
+    ``on_tag_missing`` can't fire twice for the same compaction.
+    """
+    fired = {"n": 0}
+
+    def _tw():
+        if fired["n"] == 0 and on_tag_missing is not None:
+            fired["n"] = 1
+            on_tag_missing()
+
+    out = set()
+    for m in comp:
+        if _is_summary_row(m, engine_is_lcm=engine_is_lcm, on_tag_missing=_tw):
+            out.add(id(m))
+    return out
+
+
 def build_hygiene_stats(
     *,
     raw_history: List[dict],
     eligible_msgs: List[dict],
     compressed: List[dict],
     estimator,
+    engine_is_lcm: bool = False,
+    on_tag_missing=None,
 ) -> "CompactionStats":
     """Build a reconciling ``CompactionStats`` from the session-hygiene path's real data.
 
@@ -330,11 +385,17 @@ def build_hygiene_stats(
     elig = list(eligible_msgs or [])
     comp = list(compressed or [])
 
-    summary_rows = [m for m in comp if _is_summary_message(m.get("content") or "")]
+    # Classify each compressed row once (id-keyed) so summary detection is shared
+    # between the summary/kept partitions and the tag-missing tripwire fires at
+    # most once per build (not once per partition).
+    _summary_ids = _classify_summary_ids(
+        comp, engine_is_lcm=engine_is_lcm, on_tag_missing=on_tag_missing
+    )
+    summary_rows = [m for m in comp if id(m) in _summary_ids]
     anchor_rows = [m for m in comp if m.get("role") == "system"]
     kept_compressed_rows = [
         m for m in comp
-        if m.get("role") != "system" and not _is_summary_message(m.get("content") or "")
+        if m.get("role") != "system" and id(m) not in _summary_ids
     ]
 
     # ── Identity-aware three-way partition of `pre` ──
@@ -535,6 +596,8 @@ def build_inturn_stats(
     messages: List[dict],
     compressed: List[dict],
     estimator,
+    engine_is_lcm: bool = False,
+    on_tag_missing=None,
 ) -> "CompactionStats":
     """Build a reconciling ``CompactionStats`` for the in-turn (LCM) done-site.
 
@@ -550,11 +613,14 @@ def build_inturn_stats(
     pre_msgs = list(messages or [])
     comp = list(compressed or [])
 
-    summary_rows = [m for m in comp if _is_summary_message(m.get("content") or "")]
+    _summary_ids = _classify_summary_ids(
+        comp, engine_is_lcm=engine_is_lcm, on_tag_missing=on_tag_missing
+    )
+    summary_rows = [m for m in comp if id(m) in _summary_ids]
     anchor_rows = [m for m in comp if m.get("role") == "system"]
     kept_rows = [
         m for m in comp
-        if m.get("role") != "system" and not _is_summary_message(m.get("content") or "")
+        if m.get("role") != "system" and id(m) not in _summary_ids
     ]
 
     pre_messages = len(pre_msgs)

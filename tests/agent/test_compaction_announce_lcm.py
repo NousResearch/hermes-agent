@@ -183,3 +183,45 @@ class TestLCMDoneSiteAnnounce:
         )
         announce = [m for m in emitted if m.startswith("🗜️ Context compacted")]
         assert announce == [], f"a no-op LCM pass must not announce: {announce}"
+
+
+class TestLCMSummaryStructuralTag:
+    """PR-after-99: the LCM engine tags its summary message with ``_lcm_summary``
+    so compaction-stats classification is structural (exact), not a regex over
+    flattened content. These drive the REAL engine — no hand-built dict."""
+
+    def _compact(self, tmp_path: Path):
+        engine = _lcm_engine(tmp_path)
+        messages = _bulk_messages()
+        compressed = engine.compress(messages, current_tokens=count_messages_tokens(messages))
+        assert engine._last_compression_status == "compacted", (
+            f"expected a real compaction, got {engine._last_compression_status!r}"
+        )
+        return compressed
+
+    def test_lcm_compress_emits_tagged_summary(self, tmp_path: Path):
+        """AC-1: a real compaction's returned active context contains a
+        ``_lcm_summary is True`` summary row; the row survives the active-context
+        sanitizer; and the leading system anchor is NOT tagged."""
+        compressed = self._compact(tmp_path)
+        tagged = [m for m in compressed if isinstance(m, dict) and m.get("_lcm_summary") is True]
+        assert len(tagged) == 1, (
+            f"expected exactly one tagged summary row in the returned active context, "
+            f"got {[m.get('role') for m in compressed]}"
+        )
+        # the tag rides a summary-role row (assistant|user), never the system anchor
+        assert tagged[0].get("role") in ("assistant", "user")
+        # the system anchor (leading preserved-objective / system prompt) is untagged
+        for m in compressed:
+            if m.get("role") == "system":
+                assert m.get("_lcm_summary") is not True, "system anchor must not be tagged"
+
+    def test_tagged_summary_detected_by_is_summary_row(self, tmp_path: Path):
+        """The structural tag is what classification keys on: the tagged row is
+        recognized by ``_is_summary_row`` even though its marker text would also
+        match — proving the fast path is live on the real engine output."""
+        from agent.compaction_stats import _is_summary_row
+        compressed = self._compact(tmp_path)
+        tagged = [m for m in compressed if m.get("_lcm_summary") is True][0]
+        assert _is_summary_row(tagged) is True
+

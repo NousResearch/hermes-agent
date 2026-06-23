@@ -3031,6 +3031,43 @@ def test_complete_slash_details_args():
     assert any(item["text"] == "expanded" for item in resp_mode["result"]["items"])
 
 
+def test_config_get_reasoning_reports_config_status(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "agent:\n  reasoning_effort: medium\ndisplay:\n  show_reasoning: false\n",
+        encoding="utf-8",
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "reasoning"}}
+    )
+
+    assert resp["result"] == {"value": "medium", "display": "hide"}
+
+
+def test_config_get_reasoning_prefers_live_session_status(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "agent:\n  reasoning_effort: low\ndisplay:\n  show_reasoning: false\n",
+        encoding="utf-8",
+    )
+    agent = types.SimpleNamespace(reasoning_config={"enabled": True, "effort": "high"})
+    server._sessions["sid"] = _session(agent=agent, show_reasoning=True)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.get",
+                "params": {"session_id": "sid", "key": "reasoning"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {"value": "high", "display": "show"}
+
+
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     agent = types.SimpleNamespace(reasoning_config=None)

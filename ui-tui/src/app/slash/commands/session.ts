@@ -407,9 +407,11 @@ export const sessionCommands: SlashCommand[] = [
     help: 'inspect or set reasoning effort (updates live agent)',
     name: 'reasoning',
     run: (arg, ctx) => {
-      if (!arg) {
+      const value = arg.trim()
+
+      if (!value) {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning' })
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning', session_id: ctx.sid })
           .then(
             ctx.guarded<ConfigGetValueResponse>(
               r => r.value && ctx.transcript.sys(`reasoning: ${r.value} · display ${r.display || 'hide'}`)
@@ -418,7 +420,7 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value: arg })
+        .rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value })
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
             if (!r.value) {

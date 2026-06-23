@@ -8499,11 +8499,20 @@ def _(rid, params: dict) -> dict:
         effort = str(
             (cfg.get("agent") or {}).get("reasoning_effort", "medium") or "medium"
         )
-        display = (
-            "show"
-            if bool((cfg.get("display") or {}).get("show_reasoning", False))
-            else "hide"
-        )
+        show_reasoning = bool((cfg.get("display") or {}).get("show_reasoning", False))
+        session = _sessions.get(params.get("session_id", ""))
+        if session:
+            agent = session.get("agent")
+            reasoning_config = getattr(agent, "reasoning_config", None)
+            if isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
+                    effort = "none"
+                else:
+                    live_effort = str(reasoning_config.get("effort") or "").strip()
+                    if live_effort:
+                        effort = live_effort
+            show_reasoning = bool(session.get("show_reasoning", show_reasoning))
+        display = "show" if show_reasoning else "hide"
         return _ok(rid, {"value": effort, "display": display})
     if key == "fast":
         return _ok(

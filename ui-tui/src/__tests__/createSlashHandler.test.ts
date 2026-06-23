@@ -216,6 +216,16 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('routes bare /reasoning to the session status lookup', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ display: 'hide', value: 'medium' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/reasoning')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('config.get', { key: 'reasoning', session_id: 'sid-abc' })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('applies /reasoning hide to the thinking section immediately', async () => {
     patchUiState({ sections: { thinking: 'expanded' }, showReasoning: true, sid: 'sid-abc' })
     const ctx = buildCtx({

@@ -107,7 +107,8 @@ async def _cdp_call(
     works for ``Target.*``, ``Browser.*``, ``Storage.*`` and a few other
     globally-scoped domains.
     """
-    assert websockets is not None  # guarded by _WS_AVAILABLE at call-site
+    if websockets is None:
+        raise RuntimeError("websockets not available — install websockets package")
 
     async with websockets.connect(
         ws_url,

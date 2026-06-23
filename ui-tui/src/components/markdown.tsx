@@ -206,6 +206,117 @@ export const stripInlineMarkup = (v: string) =>
     .replace(/(?<!\$)\$([^\s$](?:[^$\n]*?[^\s$])?)\$(?!\$)/g, '$1')
     .replace(/\\\(([^\n]+?)\\\)/g, '$1')
 
+type TableCellSegment = { text: string; url?: string }
+type TableCell = { segments: TableCellSegment[]; text: string }
+
+const tableSegmentsText = (segments: TableCellSegment[]) => segments.map(segment => segment.text).join('')
+
+const mergeTableSegments = (segments: TableCellSegment[]): TableCellSegment[] => {
+  const merged: TableCellSegment[] = []
+
+  for (const segment of segments) {
+    if (!segment.text) {
+      continue
+    }
+
+    const prev = merged[merged.length - 1]
+
+    if (prev && prev.url === segment.url) {
+      prev.text += segment.text
+    } else {
+      merged.push({ ...segment })
+    }
+  }
+
+  return merged
+}
+
+const parseTableCellSegments = (raw: string): TableCellSegment[] => {
+  const segments: TableCellSegment[] = []
+
+  const pushPlain = (text: string) => {
+    if (text) {
+      segments.push({ text })
+    }
+  }
+
+  const pushFlattened = (text: string) => pushPlain(stripInlineMarkup(text))
+
+  let last = 0
+
+  for (const m of raw.matchAll(INLINE_RE)) {
+    const i = m.index ?? 0
+
+    if (i > last) {
+      pushPlain(raw.slice(last, i))
+    }
+
+    if (m[1] && m[2]) {
+      pushPlain(`[image: ${m[1]}] ${m[2]}`)
+    } else if (m[3] && m[4]) {
+      const target = normalizeExternalUrl(m[4])
+      segments.push({ text: stripInlineMarkup(m[3]) || target, url: target })
+    } else if (m[5]) {
+      const display = m[5].replace(/^mailto:/, '')
+      segments.push({ text: display, url: normalizeExternalUrl(autolinkUrl(m[5])) })
+    } else if (m[6]) {
+      segments.push(...parseTableCellSegments(m[6]))
+    } else if (m[7]) {
+      pushPlain(m[7])
+    } else if (m[8] ?? m[9]) {
+      segments.push(...parseTableCellSegments(m[8] ?? m[9]!))
+    } else if (m[10] ?? m[11]) {
+      segments.push(...parseTableCellSegments(m[10] ?? m[11]!))
+    } else if (m[12]) {
+      segments.push(...parseTableCellSegments(m[12]))
+    } else if (m[13]) {
+      pushPlain(`[${m[13]}]`)
+    } else if (m[14]) {
+      pushPlain(`^${m[14]}`)
+    } else if (m[15]) {
+      pushPlain(`_${m[15]}`)
+    } else if (m[16]) {
+      const url = m[16].replace(/[),.;:!?]+$/g, '')
+      segments.push({ text: url, url: normalizeExternalUrl(url) })
+
+      if (url.length < m[16].length) {
+        pushPlain(m[16].slice(url.length))
+      }
+    } else if (m[17] ?? m[18]) {
+      pushPlain(m[17] ?? m[18]!)
+    } else {
+      pushFlattened(m[0])
+    }
+
+    last = i + m[0].length
+  }
+
+  if (last < raw.length) {
+    pushPlain(raw.slice(last))
+  }
+
+  return mergeTableSegments(segments)
+}
+
+const parseTableCell = (raw: string): TableCell => {
+  const segments = parseTableCellSegments(raw)
+
+  return { segments, text: tableSegmentsText(segments) }
+}
+
+const renderTableSegments = (segments: TableCellSegment[], t: Theme, keyPrefix: string): ReactNode[] =>
+  mergeTableSegments(segments).map((segment, index) =>
+    segment.url ? (
+      <Link key={`${keyPrefix}-${index}`} url={segment.url}>
+        <Text color={t.color.accent} underline>
+          {segment.text}
+        </Text>
+      </Link>
+    ) : (
+      segment.text
+    )
+  )
+
 const SAFETY_MARGIN = 4
 const MIN_COL_WIDTH = 3
 const COL_GAP = 2 // the '  ' between columns
@@ -213,40 +324,48 @@ const TABLE_PADDING_LEFT = 2 // paddingLeft={2} on the outer <Box>
 
 const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   // Guard: empty table
-  if (rows.length === 0 || rows[0]!.length === 0) return null
-
-  const cellDisplayWidth = (raw: string) => stringWidth(stripInlineMarkup(raw))
-
-  // Minimum width: longest word in a cell (to avoid breaking words)
-  const minCellWidth = (raw: string) => {
-    const text = stripInlineMarkup(raw)
-    const words = text.split(/\s+/).filter(w => w.length > 0)
-    if (words.length === 0) return MIN_COL_WIDTH
-    return Math.max(...words.map(w => stringWidth(w)), MIN_COL_WIDTH)
+  if (rows.length === 0 || rows[0]!.length === 0) {
+    return null
   }
 
   const numCols = rows[0]!.length
 
   // Normalize ragged rows: ensure every row has exactly numCols cells
-  const normalizedRows = rows.map(row => {
-    if (row.length >= numCols) return row.slice(0, numCols)
-    return [...row, ...Array<string>(numCols - row.length).fill('')]
+  const normalizedRows: TableCell[][] = rows.map(row => {
+    const normalized =
+      row.length >= numCols ? row.slice(0, numCols) : [...row, ...Array<string>(numCols - row.length).fill('')]
+
+    return normalized.map(parseTableCell)
   })
+
+  const cellDisplayWidth = (cell: TableCell) => stringWidth(cell.text)
+
+  // Minimum width: longest word in a cell (to avoid breaking words)
+  const minCellWidth = (cell: TableCell) => {
+    const words = cell.text.split(/\s+/).filter(w => w.length > 0)
+
+    if (words.length === 0) {
+      return MIN_COL_WIDTH
+    }
+
+    return Math.max(...words.map(w => stringWidth(w)), MIN_COL_WIDTH)
+  }
 
   // Ideal widths: max cell content per column
   const idealWidths = normalizedRows[0]!.map((_, ci) =>
-    Math.max(...normalizedRows.map(r => cellDisplayWidth(r[ci] ?? '')), MIN_COL_WIDTH)
+    Math.max(...normalizedRows.map(r => cellDisplayWidth(r[ci]!)), MIN_COL_WIDTH)
   )
 
   // Min widths: longest word per column
   const minWidths = normalizedRows[0]!.map((_, ci) =>
-    Math.max(...normalizedRows.map(r => minCellWidth(r[ci] ?? '')), MIN_COL_WIDTH)
+    Math.max(...normalizedRows.map(r => minCellWidth(r[ci]!)), MIN_COL_WIDTH)
   )
 
   // Available width: cols minus table padding minus column gaps minus safety.
   // transcriptBodyWidth (source of cols) subtracts message gutter + scrollbar,
   // but NOT this table's paddingLeft — we subtract it here.
   const gapOverhead = (numCols - 1) * COL_GAP
+
   const availableWidth = cols
     ? Math.max(cols - TABLE_PADDING_LEFT - gapOverhead - SAFETY_MARGIN, numCols * MIN_COL_WIDTH)
     : Infinity
@@ -266,19 +385,23 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
     const extraSpace = availableWidth - totalMin
     const overflows = idealWidths.map((ideal, i) => ideal - minWidths[i]!)
     const totalOverflow = overflows.reduce((a, b) => a + b, 0)
+
     if (totalOverflow === 0) {
       columnWidths = [...minWidths]
     } else {
-      const rawAlloc = minWidths.map((min, i) =>
-        min + (overflows[i]! / totalOverflow) * extraSpace
-      )
+      const rawAlloc = minWidths.map((min, i) => min + (overflows[i]! / totalOverflow) * extraSpace)
+
       columnWidths = rawAlloc.map(v => Math.floor(v))
       // Distribute rounding remainders to columns with largest fractional part
       let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
-      const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
-        .sort((a, b) => b.frac - a.frac)
+
+      const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) })).sort((a, b) => b.frac - a.frac)
+
       for (const { i } of fracs) {
-        if (remainder <= 0) break
+        if (remainder <= 0) {
+          break
+        }
+
         columnWidths[i]!++
         remainder--
       }
@@ -292,97 +415,165 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
     const rawAlloc = minWidths.map(w => w * scaleFactor)
     columnWidths = rawAlloc.map(v => Math.max(Math.floor(v), MIN_COL_WIDTH))
     let remainder = availableWidth - columnWidths.reduce((a, b) => a + b, 0)
-    const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) }))
-      .sort((a, b) => b.frac - a.frac)
+
+    const fracs = rawAlloc.map((v, i) => ({ i, frac: v - Math.floor(v) })).sort((a, b) => b.frac - a.frac)
+
     for (const { i } of fracs) {
-      if (remainder <= 0) break
+      if (remainder <= 0) {
+        break
+      }
+
       columnWidths[i]!++
       remainder--
     }
   }
 
   // Grapheme-safe hard-break: prefer Intl.Segmenter, fall back to code-point split
-  const segmenter = typeof Intl !== 'undefined' && 'Segmenter' in Intl
-    ? new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' })
-    : null
+  const segmenter =
+    typeof Intl !== 'undefined' && 'Segmenter' in Intl
+      ? new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' })
+      : null
 
   const graphemes = (s: string): string[] =>
-    segmenter
-      ? [...segmenter.segment(s)].map((seg: { segment: string }) => seg.segment)
-      : [...s]
+    segmenter ? [...segmenter.segment(s)].map((seg: { segment: string }) => seg.segment) : [...s]
 
-  // Word-wrap plain text to fit within `width` display columns.
-  // Operates on stripped text for correct width measurement.
-  const wrapCell = (raw: string, width: number, hard: boolean): string[] => {
-    const text = stripInlineMarkup(raw)
-    if (width <= 0) return [text]
-    if (stringWidth(text) <= width) return [text]
+  const wordsFromSegments = (segments: TableCellSegment[]): TableCellSegment[][] => {
+    const words: TableCellSegment[][] = []
+    let current: TableCellSegment[] = []
 
-    const words = text.split(/\s+/).filter(w => w.length > 0)
-    const lines: string[] = []
-    let current = ''
-    let currentWidth = 0
-
-    for (const word of words) {
-      const w = stringWidth(word)
-      if (currentWidth === 0) {
-        if (hard && w > width) {
-          for (const ch of graphemes(word)) {
-            const cw = stringWidth(ch)
-            if (currentWidth + cw > width && current) {
-              lines.push(current)
-              current = ''
-              currentWidth = 0
-            }
-            current += ch
-            currentWidth += cw
-          }
-        } else {
-          current = word
-          currentWidth = w
-        }
-      } else if (currentWidth + 1 + w <= width) {
-        current += ' ' + word
-        currentWidth += 1 + w
-      } else {
-        lines.push(current)
-        current = word
-        currentWidth = w
+    const flush = () => {
+      if (current.length) {
+        words.push(mergeTableSegments(current))
+        current = []
       }
     }
-    if (current) lines.push(current)
-    return lines.length > 0 ? lines : ['']
+
+    for (const segment of segments) {
+      for (const part of segment.text.split(/(\s+)/)) {
+        if (!part) {
+          continue
+        }
+
+        if (/^\s+$/.test(part)) {
+          flush()
+        } else {
+          current.push({ text: part, url: segment.url })
+        }
+      }
+    }
+
+    flush()
+
+    return words
+  }
+
+  const hardBreakSegments = (segments: TableCellSegment[], width: number): TableCellSegment[][] => {
+    const lines: TableCellSegment[][] = []
+    let current: TableCellSegment[] = []
+    let currentWidth = 0
+
+    for (const segment of segments) {
+      for (const ch of graphemes(segment.text)) {
+        const cw = stringWidth(ch)
+
+        if (currentWidth + cw > width && current.length) {
+          lines.push(mergeTableSegments(current))
+          current = []
+          currentWidth = 0
+        }
+
+        current.push({ text: ch, url: segment.url })
+        currentWidth += cw
+      }
+    }
+
+    if (current.length) {
+      lines.push(mergeTableSegments(current))
+    }
+
+    return lines.length ? lines : [[{ text: '' }]]
+  }
+
+  // Word-wrap table cell segments to fit within `width` display columns.
+  // Operates on visible text for correct width measurement while preserving link spans.
+  const wrapCell = (cell: TableCell, width: number, hard: boolean): TableCellSegment[][] => {
+    if (width <= 0) {
+      return [cell.segments]
+    }
+
+    if (stringWidth(cell.text) <= width) {
+      return [cell.segments]
+    }
+
+    const words = wordsFromSegments(cell.segments)
+    const lines: TableCellSegment[][] = []
+    let current: TableCellSegment[] = []
+    let currentWidth = 0
+
+    const setCurrentToWord = (word: TableCellSegment[], wordWidth: number) => {
+      if (hard && wordWidth > width) {
+        const broken = hardBreakSegments(word, width)
+        lines.push(...broken.slice(0, -1))
+        current = broken[broken.length - 1] ?? []
+        currentWidth = stringWidth(tableSegmentsText(current))
+      } else {
+        current = [...word]
+        currentWidth = wordWidth
+      }
+    }
+
+    for (const word of words) {
+      const wordWidth = stringWidth(tableSegmentsText(word))
+
+      if (currentWidth === 0) {
+        setCurrentToWord(word, wordWidth)
+      } else if (currentWidth + 1 + wordWidth <= width) {
+        current.push({ text: ' ' }, ...word)
+        current = mergeTableSegments(current)
+        currentWidth += 1 + wordWidth
+      } else {
+        lines.push(mergeTableSegments(current))
+        setCurrentToWord(word, wordWidth)
+      }
+    }
+
+    if (current.length) {
+      lines.push(mergeTableSegments(current))
+    }
+
+    return lines.length > 0 ? lines : [[{ text: '' }]]
+  }
+
+  const padLine = (line: TableCellSegment[], width: number): TableCellSegment[] => {
+    const pad = ' '.repeat(Math.max(0, width - stringWidth(tableSegmentsText(line))))
+
+    return pad ? [...line, { text: pad }] : line
   }
 
   const isHard = totalMin > availableWidth // tier 3 needs hard word breaks
   const sep = columnWidths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
 
-  // When wrapping isn't needed, build single-line strings per row.
-  // All cells render as plain text via stripInlineMarkup.
-  // TODO: follow-up — format to ANSI then wrap with wrapAnsi for inline markdown preservation.
-  // See free-code/src/components/MarkdownTable.tsx L44-L62 for approach.
   if (!needsWrap) {
-    const buildRowString = (row: string[]): string =>
-      row.map((cell, ci) => {
-        const text = stripInlineMarkup(cell)
-        const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(text)))
-        const gap = ci < numCols - 1 ? '  ' : ''
-        return text + pad + gap
-      }).join('')
+    const buildRowSegments = (row: TableCell[]): TableCellSegment[] =>
+      mergeTableSegments(
+        row.flatMap((cell, ci) => {
+          const gap = ci < numCols - 1 ? '  ' : ''
+
+          return [...padLine(cell.segments, columnWidths[ci]!), ...(gap ? [{ text: gap }] : [])]
+        })
+      )
 
     return (
       <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
         {normalizedRows.map((row, ri) => (
           <Fragment key={ri}>
-            <Text
-              bold={ri === 0}
-              color={ri === 0 ? t.color.accent : undefined}
-              wrap="truncate-end"
-            >
-              {buildRowString(row)}
+            <Text bold={ri === 0} color={ri === 0 ? t.color.accent : undefined} wrap="truncate-end">
+              {renderTableSegments(buildRowSegments(row), t, `table-${k}-row-${ri}`)}
             </Text>
             {ri === 0 && normalizedRows.length > 1 ? (
-              <Text color={t.color.muted} dimColor wrap="truncate-end">{sep}</Text>
+              <Text color={t.color.muted} dimColor wrap="truncate-end">
+                {sep}
+              </Text>
             ) : null}
           </Fragment>
         ))}
@@ -390,27 +581,32 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
     )
   }
 
-  // Wrapping path: build multi-line rows as complete strings.
-  type LineEntry = { text: string; kind: 'header' | 'separator' | 'body' }
+  // Wrapping path: build multi-line rows as display-cell-aware segments.
+  type LineEntry = { segments: TableCellSegment[]; kind: 'header' | 'separator' | 'body' }
 
-  const buildRowLines = (row: string[]): string[] => {
-    const cellLines = row.map((cell, ci) =>
-      wrapCell(cell, columnWidths[ci]!, isHard)
-    )
+  const buildRowLines = (row: TableCell[]): TableCellSegment[][] => {
+    const cellLines = row.map((cell, ci) => wrapCell(cell, columnWidths[ci]!, isHard))
+
     const maxLines = Math.max(...cellLines.map(l => l.length), 1)
 
-    const result: string[] = []
+    const result: TableCellSegment[][] = []
+
     for (let li = 0; li < maxLines; li++) {
-      let line = ''
+      const line: TableCellSegment[] = []
+
       for (let ci = 0; ci < numCols; ci++) {
-        const cl = cellLines[ci] ?? ['']
-        const cellText = li < cl.length ? cl[li]! : ''
-        const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(cellText)))
-        line += cellText + pad
-        if (ci < numCols - 1) line += '  '
+        const cl = cellLines[ci] ?? [[{ text: '' }]]
+        const cellLine = li < cl.length ? cl[li]! : [{ text: '' }]
+        line.push(...padLine(cellLine, columnWidths[ci]!))
+
+        if (ci < numCols - 1) {
+          line.push({ text: '  ' })
+        }
       }
-      result.push(line)
+
+      result.push(mergeTableSegments(line))
     }
+
     return result
   }
 
@@ -418,17 +614,21 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   const allEntries: LineEntry[] = []
   let tallestBodyRow = 0
   normalizedRows.forEach((row, ri) => {
-    const kind = ri === 0 ? 'header' as const : 'body' as const
+    const kind = ri === 0 ? ('header' as const) : ('body' as const)
     const rowLines = buildRowLines(row)
-    rowLines.forEach(text => allEntries.push({ text, kind }))
-    if (ri > 0) tallestBodyRow = Math.max(tallestBodyRow, rowLines.length)
+    rowLines.forEach(segments => allEntries.push({ segments, kind }))
+
+    if (ri > 0) {
+      tallestBodyRow = Math.max(tallestBodyRow, rowLines.length)
+    }
+
     if (ri === 0 && normalizedRows.length > 1) {
-      allEntries.push({ text: sep, kind: 'separator' })
+      allEntries.push({ segments: [{ text: sep }], kind: 'separator' })
     }
   })
 
   // Post-render safety condition: compute max line width.
-  const maxLineWidth = Math.max(...allEntries.map(e => stringWidth(e.text)))
+  const maxLineWidth = Math.max(...allEntries.map(e => stringWidth(tableSegmentsText(e.segments))))
   const safetyOverflow = cols != null && maxLineWidth > cols - TABLE_PADDING_LEFT - SAFETY_MARGIN
 
   // Scaled vertical threshold — 2-3 col tables stay tabular even with tall cells
@@ -439,10 +639,14 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   if (useVertical) {
     // Edge case: header-only table
     if (normalizedRows.length <= 1) {
+      const headers = normalizedRows[0]!.flatMap((header, ci) =>
+        ci === 0 ? header.segments : [{ text: ' · ' }, ...header.segments]
+      )
+
       return (
         <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
           <Text bold color={t.color.accent} wrap="wrap-trim">
-            {normalizedRows[0]!.map(h => stripInlineMarkup(h)).join(' · ')}
+            {renderTableSegments(headers, t, `table-${k}-headers`)}
           </Text>
         </Box>
       )
@@ -457,15 +661,20 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
         {dataRows.map((row, ri) => (
           <Fragment key={ri}>
             {ri > 0 ? (
-              <Text color={t.color.muted} dimColor>{'─'.repeat(sepWidth)}</Text>
+              <Text color={t.color.muted} dimColor>
+                {'─'.repeat(sepWidth)}
+              </Text>
             ) : null}
             {headers.map((header, ci) => {
-              const cell = row[ci] ?? ''
-              const label = stripInlineMarkup(header) || `Col ${ci + 1}`
+              const cell = row[ci] ?? { segments: [], text: '' }
+              const label = header.text || `Col ${ci + 1}`
+
               return (
                 <Text key={ci} wrap="wrap-trim">
-                  <Text bold color={t.color.accent}>{label}:</Text>
-                  {' '}{stripInlineMarkup(cell)}
+                  <Text bold color={t.color.accent}>
+                    {label}:
+                  </Text>{' '}
+                  {renderTableSegments(cell.segments, t, `table-${k}-v-${ri}-${ci}`)}
                 </Text>
               )
             })}
@@ -486,7 +695,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
           key={i}
           wrap="truncate-end"
         >
-          {entry.text}
+          {renderTableSegments(entry.segments, t, `table-${k}-line-${i}`)}
         </Text>
       ))}
     </Box>

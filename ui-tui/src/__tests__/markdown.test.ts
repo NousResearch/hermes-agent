@@ -14,7 +14,7 @@ const ESC = String.fromCharCode(27)
 const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
 const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 
-const renderPlain = (node: React.ReactNode) => {
+const renderRaw = (node: React.ReactNode) => {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const stderr = new PassThrough()
@@ -38,10 +38,18 @@ const renderPlain = (node: React.ReactNode) => {
   instance.cleanup()
 
   return output
+}
+
+const renderPlain = (node: React.ReactNode) =>
+  renderRaw(node)
     .replace(OSC_RE, '')
     .split('\n')
     .map(line => stripAnsi(line).replace(CSI_RE, '').trimEnd())
-}
+
+const hyperlinkUrls = (output: string) =>
+  [...output.matchAll(new RegExp(`${ESC}\\]8;[^;${BEL}]*;([^${BEL}]*)${BEL}`, 'g'))]
+    .map(match => match[1])
+    .filter(Boolean)
 
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {
@@ -279,6 +287,69 @@ describe('Md link labels', () => {
     )
 
     expect(lines.join('\n')).toContain('Trip details')
+  })
+})
+
+describe('renderTable links', () => {
+  const tableWithLink = (notes = 'short words fit') =>
+    ['| Site | Notes |', '|---|---|', `| [Example](https://example.com) | ${notes} |`].join('\n')
+
+  it('preserves markdown link metadata in no-wrap table cells', () => {
+    const raw = renderRaw(
+      React.createElement(Box, null, React.createElement(Md, { cols: 120, t: DEFAULT_THEME, text: tableWithLink() }))
+    )
+
+    const plain = renderPlain(
+      React.createElement(Box, null, React.createElement(Md, { cols: 120, t: DEFAULT_THEME, text: tableWithLink() }))
+    ).join('\n')
+
+    expect(plain).toContain('Example')
+    expect(plain).not.toContain('https://example.com')
+    expect(hyperlinkUrls(raw)).toContain('https://example.com')
+  })
+
+  it('preserves markdown link metadata in wrapped horizontal table cells', () => {
+    const raw = renderRaw(
+      React.createElement(Box, null, React.createElement(Md, { cols: 25, t: DEFAULT_THEME, text: tableWithLink() }))
+    )
+
+    const plain = renderPlain(
+      React.createElement(Box, null, React.createElement(Md, { cols: 25, t: DEFAULT_THEME, text: tableWithLink() }))
+    ).join('\n')
+
+    expect(plain).toContain('Example')
+    expect(plain).not.toContain('https://example.com')
+    expect(hyperlinkUrls(raw)).toContain('https://example.com')
+  })
+
+  it('preserves markdown link metadata in vertical fallback table cells', () => {
+    const raw = renderRaw(
+      React.createElement(
+        Box,
+        null,
+        React.createElement(Md, {
+          cols: 22,
+          t: DEFAULT_THEME,
+          text: tableWithLink('alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima')
+        })
+      )
+    )
+
+    const plain = renderPlain(
+      React.createElement(
+        Box,
+        null,
+        React.createElement(Md, {
+          cols: 22,
+          t: DEFAULT_THEME,
+          text: tableWithLink('alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima')
+        })
+      )
+    ).join('\n')
+
+    expect(plain).toContain('Site: Example')
+    expect(plain).not.toContain('https://example.com')
+    expect(hyperlinkUrls(raw)).toContain('https://example.com')
   })
 })
 

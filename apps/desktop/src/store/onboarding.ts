@@ -188,6 +188,16 @@ async function checkRuntime(ctx: OnboardingContext): Promise<RuntimeReadinessRes
   })
 }
 
+function shouldPreserveConfiguredOnFallback(
+  runtime: RuntimeReadinessResult,
+  state: DesktopOnboardingState
+): boolean {
+  // A fallback result means both runtime probes were non-authoritative
+  // (transport timeout/disconnect). Keep a previously verified configured
+  // state instead of forcing the blocking onboarding overlay.
+  return runtime.source === 'fallback' && state.configured === true && !state.requested && !state.manual
+}
+
 function notifyReady(provider: string) {
   notify({ kind: 'success', title: 'Hermes is ready', message: `${provider} connected.` })
 }
@@ -515,6 +525,10 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   }
 
   const state = $desktopOnboarding.get()
+  if (shouldPreserveConfiguredOnFallback(runtime, state)) {
+    return false
+  }
+
   const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
 
   writeCachedConfigured(false)

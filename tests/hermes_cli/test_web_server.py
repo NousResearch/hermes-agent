@@ -1620,6 +1620,36 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/sessions?order=sideways")
         assert resp.status_code == 400
 
+    def test_get_sessions_source_filters_match_totals(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="chat-session", source="cli")
+            db.create_session(session_id="cron-session", source="cron")
+            db.create_session(session_id="tool-session", source="tool")
+            db.create_session(session_id="api-session", source="api_server")
+            db.create_session(session_id="acp-session", source="acp")
+        finally:
+            db.close()
+
+        chats = self.client.get(
+            "/api/sessions?exclude_sources=cron,tool,api_server,acp&limit=10"
+        ).json()
+        assert chats["total"] == 1
+        assert [s["id"] for s in chats["sessions"]] == ["chat-session"]
+
+        automation = self.client.get(
+            "/api/sessions?sources=cron,tool,api_server,acp&limit=10"
+        ).json()
+        assert automation["total"] == 4
+        assert {s["id"] for s in automation["sessions"]} == {
+            "cron-session",
+            "tool-session",
+            "api-session",
+            "acp-session",
+        }
+
     def test_get_sessions_order_recent_surfaces_compression_tip(self):
         """A long-running conversation that auto-compresses must stay on the
         first page by recency, listed under its live continuation id."""
@@ -1730,6 +1760,55 @@ class TestWebServerEndpoints:
             r["session_id"] == "branch-child" and r.get("lineage_root") == "branch-child"
             for r in results
         )
+
+    def test_search_sessions_respects_source_filters_for_messages_and_ids(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="filter-chat-id", source="cli")
+            db.append_message(
+                session_id="filter-chat-id",
+                role="user",
+                content="filterneedle human question",
+            )
+            db.create_session(session_id="filter-cron-id", source="cron")
+            db.append_message(
+                session_id="filter-cron-id",
+                role="user",
+                content="filterneedle scheduled run",
+            )
+            db.create_session(session_id="idmatch-chat", source="cli")
+            db.append_message(session_id="idmatch-chat", role="user", content="ordinary")
+            db.create_session(session_id="idmatch-cron", source="cron")
+            db.append_message(session_id="idmatch-cron", role="user", content="ordinary")
+        finally:
+            db.close()
+
+        message_resp = self.client.get(
+            "/api/sessions/search?q=filterneedle&exclude_sources=cron"
+        )
+        assert message_resp.status_code == 200
+        message_results = message_resp.json()["results"]
+        assert {r["session_id"] for r in message_results} == {"filter-chat-id"}
+        assert message_results[0]["id"] == "filter-chat-id"
+        assert "message_count" in message_results[0]
+
+        id_resp = self.client.get(
+            "/api/sessions/search?q=idmatch&exclude_sources=cron"
+        )
+        assert id_resp.status_code == 200
+        assert {r["session_id"] for r in id_resp.json()["results"]} == {
+            "idmatch-chat"
+        }
+
+        automation_resp = self.client.get(
+            "/api/sessions/search?q=idmatch&sources=cron"
+        )
+        assert automation_resp.status_code == 200
+        assert {r["session_id"] for r in automation_resp.json()["results"]} == {
+            "idmatch-cron"
+        }
 
     def test_get_session_messages_follows_compression_tip(self):
         """Reading a compressed session by its old id should hydrate from the

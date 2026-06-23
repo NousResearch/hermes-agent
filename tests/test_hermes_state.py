@@ -4446,6 +4446,18 @@ class TestExcludeSources:
         assert "s2" not in ids
         assert "s3" not in ids
 
+    def test_list_sessions_rich_includes_multiple_sources(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tool")
+        db.create_session("s3", "cron")
+        db.create_session("s4", "telegram")
+
+        sessions = db.list_sessions_rich(sources=["tool", "cron"])
+        ids = {s["id"] for s in sessions}
+
+        assert ids == {"s2", "s3"}
+        assert db.session_count(sources=["tool", "cron"]) == 2
+
     def test_search_messages_excludes_tool_source(self, db):
         db.create_session("s1", "cli")
         db.append_message("s1", "user", "Python deployment question")
@@ -5447,8 +5459,8 @@ class TestSessionArchive:
 class TestSessionIdSearch:
     """Session id search backs Desktop's Search Sessions UX."""
 
-    def _seed(self, db, sid, *, content="ordinary message", archived=False):
-        db.create_session(session_id=sid, source="cli", model="test-model")
+    def _seed(self, db, sid, *, content="ordinary message", archived=False, source="cli"):
+        db.create_session(session_id=sid, source=source, model="test-model")
         db.append_message(session_id=sid, role="user", content=content)
         if archived:
             db.set_session_archived(sid, True)
@@ -5495,6 +5507,29 @@ class TestSessionIdSearch:
 
         assert [s["id"] for s in matches] == [tip]
         assert matches[0]["_lineage_root_id"] == root
+
+    def test_search_sessions_by_id_respects_source_filters(self, db):
+        self._seed(db, "20260603_090200_cli")
+        self._seed(db, "20260603_090200_cron", source="cron")
+        self._seed(db, "20260603_090200_tool", source="tool")
+
+        automation = {
+            s["id"]
+            for s in db.search_sessions_by_id(
+                "20260603_090200",
+                sources=["cron", "tool"],
+            )
+        }
+        chats = {
+            s["id"]
+            for s in db.search_sessions_by_id(
+                "20260603_090200",
+                exclude_sources=["cron", "tool"],
+            )
+        }
+
+        assert automation == {"20260603_090200_cron", "20260603_090200_tool"}
+        assert chats == {"20260603_090200_cli"}
 
 
 class TestListCronJobRuns:

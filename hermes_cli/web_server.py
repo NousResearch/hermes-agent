@@ -4015,6 +4015,7 @@ def get_sessions(
     archived: str = "exclude",
     order: str = "created",
     source: str = None,
+    sources: str = None,
     exclude_sources: str = None,
     cwd_prefix: str = None,
     full: bool = False,
@@ -4055,12 +4056,15 @@ def get_sessions(
             archived_only = archived == "only"
             include_archived = archived == "include"
             # Optional source scoping: ``source`` includes a single class,
+            # ``sources`` includes any of several comma-separated classes, and
             # ``exclude_sources`` (comma-separated) drops classes. The desktop
             # uses these to split recents (exclude=cron) from the cron-jobs
             # section (source=cron) into two independent lists.
-            exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
+            source_list = [s.strip() for s in (sources or "").split(",") if s.strip()]
+            exclude_list = [s.strip() for s in (exclude_sources or "").split(",") if s.strip()]
             sessions = db.list_sessions_rich(
                 source=source or None,
+                sources=source_list or None,
                 exclude_sources=exclude_list or None,
                 cwd_prefix=(cwd_prefix or None),
                 limit=limit,
@@ -4076,6 +4080,7 @@ def get_sessions(
             )
             total = db.session_count(
                 source=source or None,
+                sources=source_list or None,
                 cwd_prefix=(cwd_prefix or None),
                 exclude_sources=exclude_list or None,
                 min_message_count=min_message_count,
@@ -4115,6 +4120,7 @@ def get_profiles_sessions(
     order: str = "recent",
     profile: str = "all",
     source: str = None,
+    sources: str = None,
     exclude_sources: str = None,
     full: bool = False,
 ):
@@ -4159,7 +4165,8 @@ def get_profiles_sessions(
     # the cron-jobs section passes source=cron — two independent lists so
     # newest cron sessions can't starve the recents page.
     source_filter = source or None
-    exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
+    source_list = [s.strip() for s in (sources or "").split(",") if s.strip()]
+    exclude_list = [s.strip() for s in (exclude_sources or "").split(",") if s.strip()]
     # Over-fetch per profile so the merged+sorted window is correct for the
     # requested page. Capped so a huge profile can't blow up the response.
     per_profile = min(max(limit + offset, limit), 500)
@@ -4184,6 +4191,7 @@ def get_profiles_sessions(
         try:
             rows = db.list_sessions_rich(
                 source=source_filter,
+                sources=source_list or None,
                 exclude_sources=exclude_list or None,
                 limit=per_profile,
                 offset=0,
@@ -4196,6 +4204,7 @@ def get_profiles_sessions(
             )
             profile_total = db.session_count(
                 source=source_filter,
+                sources=source_list or None,
                 exclude_sources=exclude_list or None,
                 min_message_count=min_message_count,
                 include_archived=include_archived,
@@ -4234,7 +4243,14 @@ def get_profiles_sessions(
 
 
 @app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] = None):
+async def search_sessions(
+    q: str = "",
+    limit: int = 20,
+    profile: Optional[str] = None,
+    source: str = None,
+    sources: str = None,
+    exclude_sources: str = None,
+):
     """Search sessions by ID plus full-text message content using FTS5.
 
     Direct session-id matches are surfaced first, then FTS message-content
@@ -4251,6 +4267,11 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
         db = _open_session_db_for_profile(profile)
         try:
             safe_limit = max(1, min(int(limit or 20), 100))
+            source_filter = source or None
+            source_list = [s.strip() for s in (sources or "").split(",") if s.strip()]
+            include_sources = [source_filter] if source_filter else (source_list or None)
+            exclude_list = [s.strip() for s in (exclude_sources or "").split(",") if s.strip()]
+            now = time.time()
 
             # Walk parent_session_id to the compression root, memoized so a
             # chain of compression segments only costs one walk. We deliberately
@@ -4335,15 +4356,52 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                 if root in seen or len(seen) >= safe_limit:
                     return
                 payload = dict(payload)
-                payload["session_id"] = lineage_tip(root)
+                sid = lineage_tip(root)
+                payload["session_id"] = sid
                 payload["lineage_root"] = root
+                try:
+                    row = db._get_session_rich_row(sid)
+                except Exception:
+                    row = None
+                if row:
+                    payload.update(
+                        {
+                            "id": row.get("id") or sid,
+                            "source": row.get("source"),
+                            "model": row.get("model"),
+                            "title": row.get("title"),
+                            "started_at": row.get("started_at"),
+                            "ended_at": row.get("ended_at"),
+                            "last_active": row.get("last_active") or row.get("started_at"),
+                            "is_active": (
+                                row.get("ended_at") is None
+                                and (now - (row.get("last_active") or row.get("started_at") or 0)) < 300
+                            ),
+                            "message_count": row.get("message_count") or 0,
+                            "tool_call_count": row.get("tool_call_count") or 0,
+                            "input_tokens": row.get("input_tokens") or 0,
+                            "output_tokens": row.get("output_tokens") or 0,
+                            "preview": row.get("preview"),
+                            "parent_session_id": row.get("parent_session_id"),
+                            "archived": bool(row.get("archived")),
+                        }
+                    )
+                else:
+                    payload["id"] = sid
                 seen[root] = payload
 
             # Direct ID matches first: users often paste a session id from CLI,
             # logs, or another Hermes surface. FTS can't find those unless the
             # id happens to appear in message text. search_sessions_by_id is
             # SQL-bounded, so this stays cheap even with thousands of sessions.
-            for row in db.search_sessions_by_id(q, limit=safe_limit, include_archived=True):
+            for row in db.search_sessions_by_id(
+                q,
+                limit=safe_limit,
+                include_archived=True,
+                source=source_filter,
+                sources=source_list or None,
+                exclude_sources=exclude_list or None,
+            ):
                 sid = row.get("id")
                 preview = (row.get("preview") or "").strip()
                 snippet = preview or f"Session ID: {sid}"
@@ -4372,7 +4430,12 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
             # Over-fetch so lineage dedup can still surface `limit` distinct
             # conversations even when several hits collapse onto one root.
             fetch_limit = max(safe_limit * 5, 50)
-            matches = db.search_messages(query=prefix_query, limit=fetch_limit)
+            matches = db.search_messages(
+                query=prefix_query,
+                source_filter=include_sources,
+                exclude_sources=exclude_list or None,
+                limit=fetch_limit,
+            )
 
             for m in matches:
                 if len(seen) >= safe_limit:

@@ -24,6 +24,8 @@ from typing import Any, Dict
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import SendResult
+from plugins.platforms.photon import adapter as photon_adapter
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
@@ -60,6 +62,136 @@ def test_base_network_patterns_still_match() -> None:
     # The override delegates to the base classifier first, so generic
     # network strings keep working.
     assert PhotonAdapter._is_retryable_error("ConnectError: connection refused") is True
+
+
+def test_structured_non_retryable_sidecar_error_not_legacy_retried() -> None:
+    error = str(
+        photon_adapter.PhotonSidecarError(
+            path="/send",
+            status_code=500,
+            error="internal sidecar error",
+            error_class="auth_or_config",
+            retryable=False,
+        )
+    )
+
+    assert PhotonAdapter._is_retryable_error(error) is False
+
+
+@pytest.mark.asyncio
+async def test_structured_sidecar_retryable_error_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    adapter._http_client = object()
+    adapter._sidecar_bind = "127.0.0.1"
+    adapter._sidecar_port = 43210
+    adapter._sidecar_token = "token"
+
+    class _Resp:
+        status_code = 500
+        text = (
+            '{"ok":false,"error":"temporary upstream failure",'
+            '"error_class":"upstream_transient","retryable":true}'
+        )
+
+        @staticmethod
+        def json() -> Dict[str, Any]:
+            return {
+                "ok": False,
+                "error": "temporary upstream failure",
+                "error_class": "upstream_transient",
+                "retryable": True,
+            }
+
+    class _FakeClient:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "_FakeClient":
+            return self
+
+        async def __aexit__(self, *a: Any) -> bool:
+            return False
+
+        async def post(self, *a: Any, **k: Any) -> _Resp:
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _FakeClient)
+
+    result = await adapter._sidecar_send("space-1", "hello")
+
+    assert result.success is False
+    assert result.retryable is True
+    assert "upstream_transient" in (result.error or "")
+    assert "temporary upstream failure" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_uses_structured_retryable_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    calls = 0
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    async def _fake_sidecar_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise photon_adapter.PhotonSidecarError(
+                path=path,
+                status_code=500,
+                error="temporary upstream failure",
+                error_class="upstream_transient",
+                retryable=True,
+            )
+        return {"ok": True, "messageId": "m-2"}
+
+    monkeypatch.setattr(photon_adapter.asyncio, "sleep", _fake_sleep)
+    monkeypatch.setattr(adapter, "_sidecar_call", _fake_sidecar_call)
+
+    result = await adapter._send_with_retry(
+        "space-1", "hello", max_retries=1, base_delay=0.25
+    )
+
+    assert result.success is True
+    assert result.message_id == "m-2"
+    assert calls == 2
+    assert sleeps == [0.25]
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_does_not_fallback_after_auth_or_config_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    calls = 0
+
+    async def _permanent_failure(**kwargs: Any) -> SendResult:
+        nonlocal calls
+        calls += 1
+        return SendResult(
+            success=False,
+            error="Photon sidecar /send returned 500 (auth_or_config)",
+            raw_response={
+                "error_class": "auth_or_config",
+                "retryable": False,
+            },
+            retryable=False,
+        )
+
+    monkeypatch.setattr(adapter, "send", _permanent_failure)
+
+    result = await adapter._send_with_retry(
+        "space-1", "hello", max_retries=2, base_delay=0
+    )
+
+    assert result.success is False
+    assert calls == 1
 
 
 # -- Gap 2: typing-indicator cooldown ---------------------------------------

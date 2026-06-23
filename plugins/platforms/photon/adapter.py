@@ -122,6 +122,53 @@ _DEFAULT_MENTION_PATTERNS = [
 # ---------------------------------------------------------------------------
 # Module-level helpers — also used by check_fn / standalone send
 
+class PhotonSidecarError(RuntimeError):
+    """Structured failure returned by the supervised Photon sidecar."""
+
+    def __init__(
+        self,
+        *,
+        path: str,
+        status_code: int,
+        error: str,
+        error_class: str = "sidecar_error",
+        retryable: bool = False,
+    ) -> None:
+        self.path = path
+        self.status_code = status_code
+        self.error = error
+        self.error_class = error_class
+        self.retryable = retryable
+        super().__init__(
+            f"Photon sidecar {path} returned {status_code} "
+            f"({error_class}, retryable={retryable}): {error}"
+        )
+
+
+def _sidecar_error_from_response(
+    path: str,
+    status_code: int,
+    text: str,
+    data: Optional[Dict[str, Any]] = None,
+) -> PhotonSidecarError:
+    if data is None:
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = {}
+        data = parsed if isinstance(parsed, dict) else {}
+
+    error = str(data.get("error") or text[:200] or "sidecar error")
+    error_class = str(data.get("error_class") or "sidecar_error")
+    retryable = bool(data.get("retryable"))
+    return PhotonSidecarError(
+        path=path,
+        status_code=status_code,
+        error=error,
+        error_class=error_class,
+        retryable=retryable,
+    )
+
 def _coerce_port(value: Any, default: int) -> int:
     try:
         return int(value)
@@ -1396,6 +1443,8 @@ class PhotonAdapter(BasePlatformAdapter):
         if not error:
             return False
         lowered = error.lower()
+        if "retryable=false" in lowered or "auth_or_config" in lowered:
+            return False
         return any(pat in lowered for pat in _PHOTON_RETRYABLE_PATTERNS)
 
     async def _send_with_retry(
@@ -1421,6 +1470,14 @@ class PhotonAdapter(BasePlatformAdapter):
             metadata=metadata,
         )
         if result.success:
+            return result
+
+        sidecar_failure = result.raw_response
+        if (
+            isinstance(sidecar_failure, dict)
+            and sidecar_failure.get("error_class") == "auth_or_config"
+            and sidecar_failure.get("retryable") is False
+        ):
             return result
 
         error_str = result.error or ""
@@ -1482,6 +1539,16 @@ class PhotonAdapter(BasePlatformAdapter):
             body["format"] = "markdown"
         try:
             data = await self._sidecar_call("/send", body)
+        except PhotonSidecarError as e:
+            return SendResult(
+                success=False,
+                error=str(e),
+                raw_response={
+                    "error_class": e.error_class,
+                    "retryable": e.retryable,
+                },
+                retryable=e.retryable,
+            )
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
@@ -1531,6 +1598,16 @@ class PhotonAdapter(BasePlatformAdapter):
             body["caption"] = caption
         try:
             data = await self._sidecar_call("/send-attachment", body)
+        except PhotonSidecarError as e:
+            return SendResult(
+                success=False,
+                error=str(e),
+                raw_response={
+                    "error_class": e.error_class,
+                    "retryable": e.retryable,
+                },
+                retryable=e.retryable,
+            )
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
@@ -1550,14 +1627,10 @@ class PhotonAdapter(BasePlatformAdapter):
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, json=body, headers=headers)
         if resp.status_code != 200:
-            raise RuntimeError(
-                f"Photon sidecar {path} returned {resp.status_code}: {resp.text[:200]}"
-            )
+            raise _sidecar_error_from_response(path, resp.status_code, resp.text)
         data = resp.json() or {}
         if not data.get("ok"):
-            raise RuntimeError(
-                f"Photon sidecar {path} reported error: {data.get('error')}"
-            )
+            raise _sidecar_error_from_response(path, resp.status_code, resp.text, data)
         return data
 
 

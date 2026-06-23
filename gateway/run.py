@@ -9726,14 +9726,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _show_reasoning_effective and response and not _intentional_silence:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
+                    reasoning = last_reasoning.strip()
+                    platform_key = _platform_config_key(source.platform)
+                    if platform_key == "matrix":
+                        # Quote-prefix so MatrixAdapter._markdown_to_html emits
+                        # <blockquote>, which Element wraps at viewport width.
+                        # <pre> code-fence (legacy) disabled wrap on mobile.
+                        quoted = "\n".join(
+                            f"> {ln}" if ln else ">"
+                            for ln in reasoning.splitlines()
+                        )
+                        response = f"💭 **Reasoning:**\n\n{quoted}\n\n{response}"
                     else:
-                        display_reasoning = last_reasoning.strip()
-                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                        lines = reasoning.splitlines()
+                        if len(lines) > 1000:
+                            display_reasoning = "\n".join(lines[:1000])
+                            display_reasoning += (
+                                f"\n_... ({len(lines) - 1000} more lines)_"
+                            )
+                        else:
+                            display_reasoning = reasoning
+                        response = (
+                            f"💭 **Reasoning:**\n```\n{display_reasoning}\n```"
+                            f"\n\n{response}"
+                        )
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When

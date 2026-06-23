@@ -1071,3 +1071,36 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+class TestApiServerEnvOverride:
+    def test_env_key_does_not_reenable_explicitly_disabled_api_server(self):
+        """An explicit ``platforms.api_server.enabled: false`` must survive
+        _apply_env_overrides() even when API_SERVER_KEY is present in the env.
+
+        Regression: _apply_env_overrides() force-set api_server.enabled = True
+        whenever API_SERVER_KEY (or API_SERVER_ENABLED) was set. In multiplex
+        mode a secondary profile pins ``api_server.enabled: false`` so it shares
+        the default profile's listener instead of binding its own port, but it
+        still inherits the process-level API_SERVER_KEY. The unconditional
+        re-enable flipped it back on and tripped the MultiplexConfigError check.
+
+        The fix honors the explicit disable, flagged by ``_enabled_explicit`` in
+        the platform's extra (set when the config.yaml pins enabled).
+        """
+        config = GatewayConfig(
+            platforms={
+                Platform.API_SERVER: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            },
+        )
+
+        with patch.dict(os.environ, {"API_SERVER_KEY": "secret-key"}, clear=True):
+            _apply_env_overrides(config)
+
+        # Explicit disable wins over the env-var presence.
+        assert config.platforms[Platform.API_SERVER].enabled is False
+        # The key is still wired through for the shared listener.
+        assert config.platforms[Platform.API_SERVER].extra.get("key") == "secret-key"

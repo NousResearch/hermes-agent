@@ -12,6 +12,15 @@ that use 198.18.0.0/15 or 100.64.0.0/10).  Even when disabled, cloud
 metadata hostnames (metadata.google.internal, 169.254.169.254) are
 **always** blocked — those are never legitimate agent targets.
 
+For a narrower exemption, ``security.allowed_private_networks`` accepts a
+CIDR (or list of CIDRs) to exempt *only* those ranges while keeping SSRF
+blocking in force for every other private network.  This is the right knob
+when a local DNS resolver maps public domains into the RFC 2544
+benchmark range (198.18.0.0/15): exempt that one range and your real LAN
+(192.168/16, 10/8, 172.16/12), loopback and CGNAT stay protected.  Cloud
+metadata endpoints remain in the always-blocked floor and cannot be
+allowlisted here.
+
 Limitations (documented, not fixable at pre-flight level):
   - DNS rebinding (TOCTOU): an attacker-controlled DNS server with TTL=0
     can return a public IP for the check, then a private IP for the actual
@@ -184,8 +193,62 @@ def _global_allow_private_urls() -> bool:
 def _reset_allow_private_cache() -> None:
     """Reset the cached toggle — only for tests."""
     global _allow_private_resolved, _cached_allow_private
+    global _allowed_networks_resolved, _cached_allowed_networks
     _allow_private_resolved = False
     _cached_allow_private = False
+    _allowed_networks_resolved = False
+    _cached_allowed_networks = ()
+
+
+# ---------------------------------------------------------------------------
+# Config-driven allowlist of specific private/benchmark CIDRs
+# ---------------------------------------------------------------------------
+# Unlike the blunt ``allow_private_urls`` toggle (which disables ALL private-IP
+# blocking), this lets a user exempt only the exact range(s) their environment
+# legitimately maps public domains onto — e.g. a local DNS resolver that maps
+# public domains into the RFC 2544 benchmark range 198.18.0.0/15 — while keeping SSRF blocking
+# fully in force for every other private network (192.168/16, 10/8, 172.16/12,
+# loopback, CGNAT, etc.). Cloud metadata endpoints remain in the always-blocked
+# floor regardless and CANNOT be allowlisted here.
+_allowed_networks_resolved = False
+_cached_allowed_networks: tuple = ()
+
+
+def _allowed_private_networks() -> tuple:
+    """Return the user-trusted private CIDRs from ``security.allowed_private_networks``.
+
+    Accepts a single CIDR string or a list of them. Invalid entries are logged
+    and skipped. Result is cached for the process lifetime.
+    """
+    global _allowed_networks_resolved, _cached_allowed_networks
+    if _allowed_networks_resolved:
+        return _cached_allowed_networks
+
+    _allowed_networks_resolved = True
+    nets = []
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        sec = cfg.get("security", {})
+        if isinstance(sec, dict):
+            raw = sec.get("allowed_private_networks") or []
+            if isinstance(raw, str):
+                raw = [raw]
+            if isinstance(raw, (list, tuple)):
+                for item in raw:
+                    try:
+                        nets.append(ipaddress.ip_network(str(item).strip(), strict=False))
+                    except ValueError:
+                        logger.warning(
+                            "Ignoring invalid security.allowed_private_networks entry: %r",
+                            item,
+                        )
+    except Exception:
+        # Config unavailable (tests, early import) — keep empty allowlist
+        pass
+
+    _cached_allowed_networks = tuple(nets)
+    return _cached_allowed_networks
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -345,6 +408,10 @@ def is_safe_url(url: str) -> bool:
 
         allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
 
+        # User-trusted private CIDRs (e.g. a local DNS resolver's 198.18.0.0/15).
+        # Checked per-IP below, AFTER the always-blocked metadata floor.
+        allowed_nets = _allowed_private_networks()
+
         # Try to resolve and check IP
         try:
             addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
@@ -374,6 +441,19 @@ def is_safe_url(url: str) -> bool:
                 return False
 
             if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
+                # Per-IP allowlist: exempt only user-trusted private CIDRs.
+                # IPv4-mapped IPv6 (::ffff:x.x.x.x) is matched by its embedded
+                # IPv4 so an allowlisted v4 CIDR covers the mapped form too.
+                check_ip = ip
+                if (isinstance(ip, ipaddress.IPv6Address)
+                        and ip.ipv4_mapped is not None):
+                    check_ip = ip.ipv4_mapped
+                if any(check_ip in net for net in allowed_nets):
+                    logger.debug(
+                        "Allowing IP in security.allowed_private_networks: %s -> %s",
+                        hostname, ip_str,
+                    )
+                    continue
                 logger.warning(
                     "Blocked request to private/internal address: %s -> %s",
                     hostname, ip_str,

@@ -828,14 +828,14 @@ class MattermostAdapter(BasePlatformAdapter):
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
             is_free_channel = channel_id in free_channels
 
-            mention_patterns = [
+            bot_mention_patterns = [
                 f"@{self._bot_username}",
                 f"@{self._bot_user_id}",
             ]
             has_mention = any(
                 pattern.lower() in message_text.lower()
-                for pattern in mention_patterns
-            )
+                for pattern in bot_mention_patterns
+            ) or self._mattermost_message_matches_mention_patterns(message_text)
 
             if require_mention and not is_free_channel and not has_mention:
                 logger.debug(
@@ -846,7 +846,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
             # Strip @mention from the message text so the agent sees clean input.
             if has_mention:
-                for pattern in mention_patterns:
+                for pattern in bot_mention_patterns:
                     message_text = re.sub(
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
@@ -948,7 +948,49 @@ class MattermostAdapter(BasePlatformAdapter):
 
         await self.handle_message(msg_event)
 
+    # -- mention_patterns (wake-word) support --------------------------------
 
+    def _mattermost_mention_patterns(self) -> List[re.Pattern]:
+        cached = getattr(self, "_compiled_mention_patterns", None)
+        if cached is not None:
+            return cached
+
+        patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
+        if patterns is None:
+            raw = os.getenv("MATTERMOST_MENTION_PATTERNS", "").strip()
+            if raw:
+                try:
+                    patterns = json.loads(raw)
+                except Exception:
+                    patterns = [p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()]
+
+        if isinstance(patterns, str):
+            patterns = [patterns]
+
+        compiled: List[re.Pattern] = []
+        if isinstance(patterns, list):
+            for pat in patterns:
+                if not isinstance(pat, str) or not pat.strip():
+                    continue
+                try:
+                    compiled.append(re.compile(pat, re.IGNORECASE))
+                except re.error as exc:
+                    logger.warning("[Mattermost] Invalid mention pattern %r: %s", pat, exc)
+        elif patterns is not None:
+            logger.warning(
+                "[Mattermost] mention_patterns must be a list or string; got %s",
+                type(patterns).__name__,
+            )
+
+        if compiled:
+            logger.info("[Mattermost] Loaded %d mention pattern(s)", len(compiled))
+        self._compiled_mention_patterns = compiled
+        return compiled
+
+    def _mattermost_message_matches_mention_patterns(self, text: str) -> bool:
+        if not text:
+            return False
+        return any(pattern.search(text) for pattern in self._mattermost_mention_patterns())
 
 
 # ---------------------------------------------------------------------------

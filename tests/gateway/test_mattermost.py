@@ -709,6 +709,113 @@ class TestMattermostMentionBehavior:
 
 
 # ---------------------------------------------------------------------------
+# mention_patterns (wake words) — parity with Slack #50843
+# ---------------------------------------------------------------------------
+
+class TestMattermostMentionPatterns:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+
+    def _make_event(self, message, channel_type="O", channel_id="chan_456"):
+        post_data = {
+            "id": "post_mp",
+            "user_id": "user_123",
+            "channel_id": channel_id,
+            "message": message,
+        }
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": channel_type,
+                "sender_name": "@alice",
+            },
+        }
+
+    def test_no_patterns_default(self):
+        """No configured patterns → empty list, no match."""
+        assert self.adapter._mattermost_mention_patterns() == []
+        assert self.adapter._mattermost_message_matches_mention_patterns("hello") is False
+
+    def test_patterns_from_config_extra(self):
+        """Patterns loaded from config.extra match correctly."""
+        self.adapter.config = PlatformConfig(
+            enabled=True, token="t", extra={"url": "https://mm.example.com", "mention_patterns": ["hey hermes", "hermes,"]}
+        )
+        assert self.adapter._mattermost_message_matches_mention_patterns("hey hermes, do it") is True
+        assert self.adapter._mattermost_message_matches_mention_patterns("just chatting") is False
+
+    def test_patterns_case_insensitive(self):
+        self.adapter.config = PlatformConfig(
+            enabled=True, token="t", extra={"url": "https://mm.example.com", "mention_patterns": ["hey hermes"]}
+        )
+        assert self.adapter._mattermost_message_matches_mention_patterns("HEY HERMES!") is True
+
+    def test_single_string_pattern(self):
+        self.adapter.config = PlatformConfig(
+            enabled=True, token="t", extra={"url": "https://mm.example.com", "mention_patterns": "^hermes"}
+        )
+        assert self.adapter._mattermost_message_matches_mention_patterns("hermes do this") is True
+        assert self.adapter._mattermost_message_matches_mention_patterns("ok hermes") is False
+
+    def test_invalid_regex_skipped(self):
+        self.adapter.config = PlatformConfig(
+            enabled=True, token="t", extra={"url": "https://mm.example.com", "mention_patterns": ["(unclosed", "hey hermes"]}
+        )
+        assert self.adapter._mattermost_message_matches_mention_patterns("hey hermes") is True
+
+    def test_env_var_fallback(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_MENTION_PATTERNS", '["hey hermes", "hermes,"]')
+        assert self.adapter._mattermost_message_matches_mention_patterns("hey hermes") is True
+
+    def test_env_var_csv_fallback(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_MENTION_PATTERNS", "hey hermes,hermes,")
+        patterns = self.adapter._mattermost_mention_patterns()
+        assert [p.pattern for p in patterns] == ["hey hermes", "hermes"]
+        assert self.adapter._mattermost_message_matches_mention_patterns("hey hermes") is True
+
+    @pytest.mark.asyncio
+    async def test_wake_word_triggers_in_channel(self):
+        """A wake word triggers the bot even with require_mention on."""
+        self.adapter.config = PlatformConfig(
+            enabled=True, token="t", extra={"url": "https://mm.example.com", "mention_patterns": ["hey hermes"]}
+        )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            os.environ.pop("MATTERMOST_FREE_RESPONSE_CHANNELS", None)
+            await self.adapter._handle_ws_event(
+                self._make_event("hey hermes what is the status")
+            )
+            assert self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_no_wake_word_still_skipped(self):
+        """Unrelated chatter is still skipped with require_mention on."""
+        self.adapter.config = PlatformConfig(
+            enabled=True, token="t", extra={"url": "https://mm.example.com", "mention_patterns": ["hey hermes"]}
+        )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            os.environ.pop("MATTERMOST_FREE_RESPONSE_CHANNELS", None)
+            await self.adapter._handle_ws_event(
+                self._make_event("lunch anyone?")
+            )
+            assert not self.adapter.handle_message.called
+
+    def test_patterns_cached_on_instance(self):
+        """Compiled patterns are cached — second call returns same objects."""
+        self.adapter.config = PlatformConfig(
+            enabled=True, token="t", extra={"url": "https://mm.example.com", "mention_patterns": ["hey hermes"]}
+        )
+        first = self.adapter._mattermost_mention_patterns()
+        second = self.adapter._mattermost_mention_patterns()
+        assert first is second
+
+
+# ---------------------------------------------------------------------------
 # File upload (send_image)
 # ---------------------------------------------------------------------------
 

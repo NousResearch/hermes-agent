@@ -240,6 +240,17 @@ class TestSubdirectoryHintTracker:
         assert tracker.check_tool_call("read_file", {}) is None
         assert tracker.check_tool_call("terminal", {"command": ""}) is None
 
+    def test_expanduser_runtime_error_is_ignored(self, project):
+        """Missing home resolution must not crash subdirectory hint discovery."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+
+        def fail_expanduser(self):
+            raise RuntimeError("Could not determine home directory.")
+
+        with patch.object(Path, "expanduser", fail_expanduser):
+            assert tracker.check_tool_call("read_file", {"path": "~/missing.py"}) is None
+            assert tracker.check_tool_call("terminal", {"command": "cat ~/missing.py"}) is None
+
     def test_url_in_command_ignored(self, project):
         """URLs in shell commands should not be treated as paths."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))

@@ -450,6 +450,23 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
             return bare
         return _normalize_for_deepseek(bare)
 
+    # --- Kimi / Moonshot: map auto-discovered short IDs (k2p6) to API-accepted
+    #     canonical names (kimi-k2.6).  The /models endpoint returns internal
+    #     short forms that fail at request time without this repair (issue #13758).
+    if provider in {"kimi-coding", "kimi-coding-cn", "moonshot"}:
+        bare = _strip_matching_provider_prefix(name, provider)
+        if "/" in bare:
+            bare = bare.split("/", 1)[1]
+        # k2p6 -> kimi-k2.6, k2p5 -> kimi-k2.5, etc.
+        _kimi_short_map = {
+            "k2p6": "kimi-k2.6",
+            "k2p5": "kimi-k2.5",
+            "k2p8": "kimi-k2.8",
+        }
+        if bare.lower() in _kimi_short_map:
+            return _kimi_short_map[bare.lower()]
+        return bare
+
     # --- Direct providers: repair matching provider prefixes only ---
     if provider in _MATCHING_PREFIX_STRIP_PROVIDERS:
         result = _strip_matching_provider_prefix(name, provider)

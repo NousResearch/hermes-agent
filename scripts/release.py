@@ -117,6 +117,7 @@ AUTHOR_MAP = {
     "123150002+deaneeth@users.noreply.github.com": "deaneeth",
     "157839748+psionic73@users.noreply.github.com": "psionic73",
     "manishbyatroy@gmail.com": "manishbyatroy",
+    "manusjs@users.noreply.github.com": "manus-use",  # PR #51129 salvage (Discord thread-starter dedup, #51057)
     "chilltulpa@gmail.com": "TheGardenGallery",
     "al@randomsnowflake.me": "randomsnowflake",
     "zakame@zakame.net": "zakame",

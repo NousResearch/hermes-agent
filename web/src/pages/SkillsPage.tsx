@@ -38,10 +38,12 @@ import type {
   SkillHubInstalledEntry,
   SkillHubPreview,
   SkillHubScan,
+  ArdInspectResponse,
 } from "@/lib/api";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { SkillEditorDialog } from "@/components/SkillEditorDialog";
+import ArdDiscoveryTab from "@/components/ArdDiscoveryTab";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -130,7 +132,7 @@ export default function SkillsPage() {
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [view, setView] = useState<"skills" | "toolsets" | "hub">("skills");
+  const [view, setView] = useState<"skills" | "toolsets" | "hub" | "ard">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
   const [configToolset, setConfigToolset] = useState<ToolsetInfo | null>(null);
@@ -422,6 +424,15 @@ export default function SkillsPage() {
                     setSearch("");
                   }}
                 />
+                <PanelItem
+                  icon={Globe}
+                  label="ARD Discovery"
+                  active={view === "ard"}
+                  onClick={() => {
+                    setView("ard");
+                    setSearch("");
+                  }}
+                />
               </div>
 
               {view === "skills" &&
@@ -650,6 +661,8 @@ export default function SkillsPage() {
                 </div>
               )}
             </>
+          ) : view === "ard" ? (
+            <ArdDiscoveryTab />
           ) : (
             <HubBrowser showToast={showToast} profile={selectedProfile || undefined} />
           )}
@@ -1264,6 +1277,25 @@ function HubResultCard({
   onInstall: () => void;
 }) {
   const trust = trustVisual(result.trust_level);
+  const [inspect, setInspect] = useState<ArdInspectResponse | null>(null);
+  const [inspecting, setInspecting] = useState(false);
+  const [inspectError, setInspectError] = useState("");
+  const canInspect = result.identifier.startsWith("urn:ai:");
+
+  const runInspect = useCallback(async () => {
+    setInspecting(true);
+    setInspectError("");
+    try {
+      const data = await api.inspectArdEntry(result.identifier);
+      setInspect(data);
+    } catch (e) {
+      setInspect(null);
+      setInspectError(String(e));
+    } finally {
+      setInspecting(false);
+    }
+  }, [result.identifier]);
+
   return (
     <Card className="rounded-none transition-colors hover:bg-muted/30">
       <CardContent className="py-3 flex items-start gap-3">
@@ -1315,6 +1347,23 @@ function HubResultCard({
           >
             Details
           </Button>
+          {canInspect && (
+            <Button
+              size="sm"
+              outlined
+              disabled={inspecting}
+              onClick={() => void runInspect()}
+              prefix={
+                inspecting ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                )
+              }
+            >
+              Inspect
+            </Button>
+          )}
           {installed ? (
             <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
               Installed
@@ -1330,6 +1379,35 @@ function HubResultCard({
           )}
         </div>
       </CardContent>
+      {(inspect || inspectError) && (
+        <CardContent className="border-t border-border py-2 text-xs">
+          {inspect ? (
+            <div className="flex flex-col gap-1 text-text-secondary">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={inspect.ok ? "success" : "warning"} className="text-xs">
+                  {inspect.risk?.decision ?? (inspect.ok ? "review" : "not found")}
+                </Badge>
+                <span className="font-mono text-text-tertiary">
+                  risk={inspect.risk?.risk ?? "unknown"}
+                </span>
+                <span className="font-mono text-text-tertiary">
+                  install={String(inspect.install_performed)}
+                </span>
+              </div>
+              {inspect.risk?.next_action && (
+                <div>next: {inspect.risk.next_action}</div>
+              )}
+              {inspect.source_catalog && (
+                <div className="break-all font-mono text-text-tertiary">
+                  {inspect.source_catalog}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-destructive">Inspect failed: {inspectError}</div>
+          )}
+        </CardContent>
+      )}
     </Card>
   );
 }

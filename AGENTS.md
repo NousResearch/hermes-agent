@@ -838,6 +838,22 @@ Two parallel surfaces:
 When reviewing skill PRs, check which directory they target — heavy-dep or
 niche skills belong in `optional-skills/`.
 
+### ARD (Agentic Resource Discovery)
+
+`tools/skills_hub.py` includes `ArdSource(SkillSource)` — a consumer for
+the ARD v0.9 spec. It queries federated registries (default: HF Discover)
+for MCP servers, skills, and A2A agent cards at runtime. Key entry points:
+
+- `/ard search <query> [--semantic] [--source remote|local]` — top-level CLI command
+- `/ard publish` — export Hermes capabilities as `ai-catalog.json`
+- `/ard serve` — start security-focused ARD registry (`scripts/security_ard_registry.py`)
+- `POST /api/ard/search` — REST endpoint (dashboard, authenticated)
+- `GET /.well-known/ai-catalog.json` — public ARD discovery (no auth)
+
+Config: `skills_hub.ard_registries` in `~/.hermes/config.yaml` (list of URLs).
+
+See skill `software-development/ard-agentic-resource-discovery` for full docs.
+
 ### SKILL.md frontmatter
 
 Standard fields: `name`, `description`, `version`, `author`, `license`,

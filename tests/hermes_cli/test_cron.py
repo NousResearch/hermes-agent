@@ -121,3 +121,18 @@ class TestCronCommandLifecycle:
 
         out = capsys.readouterr().out
         assert "Repeat:    ∞" in out
+
+    def test_list_does_not_crash_when_schedule_is_legacy_string(self, tmp_cron_dir, capsys):
+        """Legacy hand-written jobs may store schedule as a plain cron string."""
+        from cron.jobs import load_jobs, save_jobs
+
+        create_job(prompt="Legacy schedule", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0].pop("schedule_display", None)
+        jobs[0]["schedule"] = "0 */6 * * *"
+        save_jobs(jobs)
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        assert "Schedule:  0 */6 * * *" in out

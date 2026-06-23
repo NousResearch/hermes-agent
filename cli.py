@@ -7693,6 +7693,385 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 
 
+    def _handle_ard_command(self, cmd: str):
+        """Handle /ard top-level command — ARD discovery operations.
+
+        Subcommands:
+          /ard search <query> [--semantic] [--source remote|local] [--limit N]
+          /ard publish [--domain D]
+          /ard serve [--port 8390]
+          /ard catalog
+        """
+        from tools.skills_hub import ard_local_search
+
+        console = ChatConsole()
+
+        # Simple subcommand parsing
+        parts = cmd.strip().split(None, 1)
+        # parts[0] = "/ard" or "/ard-discover"
+        remaining = parts[1] if len(parts) > 1 else ""
+        parts2 = remaining.split(None, 1)
+        action = parts2[0].lower() if parts2 else ""
+        args_str = parts2[1] if len(parts2) > 1 else ""
+        import shlex
+        args = shlex.split(args_str) if args_str else []
+
+        def _collapse_multiword_option(values: list[str], option: str) -> list[str]:
+            collapsed: list[str] = []
+            idx = 0
+            while idx < len(values):
+                value = values[idx]
+                if value == option and idx + 1 < len(values):
+                    idx += 1
+                    parts_for_option: list[str] = []
+                    while idx < len(values) and not values[idx].startswith("--"):
+                        parts_for_option.append(values[idx])
+                        idx += 1
+                    collapsed.extend([option, " ".join(parts_for_option)])
+                    continue
+                collapsed.append(value)
+                idx += 1
+            return collapsed
+
+        valid = ("search", "navigate", "plan-install", "inspect", "regress", "compare-search", "publish", "serve", "catalog", "explore",
+                 "help", "--help", "-h")
+        if not action or action not in valid:
+            console.print("\n[bold cyan]Agentic Resource Discovery (ARD)[/]")
+            console.print("  [cyan]/ard search[/] <query> [--semantic] [--source remote|local] [--limit N]")
+            console.print("      Search local capabilities or remote ARD registries")
+            console.print("  [cyan]/ard navigate[/] <domain-or-registry> <query> [--max-depth N] [--limit N]")
+            console.print("      Discover /.well-known/ai-catalog.json, search, and follow referrals")
+            console.print("  [cyan]/ard plan-install[/] <urn> [--visibility public|private]")
+            console.print("      Risk-score a discovered ARD entry and print a plan-only install report")
+            console.print("  [cyan]/ard inspect[/] <urn> [--json]")
+            console.print("      Show entry, source catalog, risk decision, and next action without installing")
+            console.print("  [cyan]/ard regress[/] [--json] [--output PATH] [--query Q]")
+            console.print("      Run the ARD intent regression pack")
+            console.print("  [cyan]/ard compare-search[/] [--json] [--output PATH] [--query Q]")
+            console.print("      Compare ARD local search against optional external skill-search")
+            console.print("  [cyan]/ard publish[/] [--domain D] [--visibility public|private] [--output PATH]")
+            console.print("      Generate and publish ai-catalog.json")
+            console.print("  [cyan]/ard serve[/] [--port 8390]")
+            console.print("      Start security-focused ARD registry server")
+            console.print("  [cyan]/ard catalog[/]")
+            console.print("      Show current published catalog summary")
+            console.print("  [cyan]/ard explore[/]")
+            console.print("      Show facets/aggregations from catalog\n")
+            return
+
+        if action == "search":
+            if not args:
+                console.print("[bold red]Usage:[/] /ard search <query> [--semantic] [--source remote|local] [--limit N]\n")
+                return
+
+            # Parse flags
+            semantic = "--semantic" in args
+            source = "local"
+            if "--source" in args:
+                idx = args.index("--source")
+                if idx + 1 < len(args):
+                    source = args[idx + 1]
+            limit = 10
+            if "--limit" in args:
+                idx = args.index("--limit")
+                if idx + 1 < len(args):
+                    try:
+                        limit = int(args[idx + 1])
+                    except ValueError:
+                        pass
+
+            # Build query excluding flags and their values
+            flag_with_value = {"--limit", "--source", "--domain", "--port"}
+            query_parts = []
+            skip_next = False
+            for a in args:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a in flag_with_value:
+                    skip_next = True
+                    continue
+                if a.startswith("-"):
+                    continue
+                query_parts.append(a)
+            query = " ".join(query_parts)
+
+            if not query.strip():
+                console.print("[red]Query is required[/]")
+                return
+
+            if source == "remote":
+                from tools.skills_hub import ArdSource
+                src = ArdSource()
+                results = src.search(query, limit=limit)
+                console.print(f"\n[bold]ARD Remote Search[/] — {len(results)} results\n")
+                for r in results:
+                    mcp = r.extra.get("mcp")
+                    tag = "[purple]MCP[/]" if mcp else "[blue]SKILL[/]"
+                    cached = " (cached)" if r.extra.get("from_cache") else ""
+                    console.print(f"  {tag} {r.name}{cached}")
+                    if r.description:
+                        console.print(f"      [dim]{r.description[:120]}[/]")
+                    if mcp:
+                        console.print(f"      [blue]{mcp.get('url', '')}[/]")
+            else:
+                results = ard_local_search(
+                    query, limit=limit, semantic=semantic
+                )
+                mode = "semantic" if semantic else "keyword"
+                console.print(f"\n[bold]ARD Local Search[/] ({mode}) — {len(results)} results\n")
+                for r in results:
+                    score = r.get("score", 0)
+                    bar = "█" * (score // 10) + "░" * (10 - score // 10)
+                    name = r.get("displayName", "?")
+                    type_label = r.get("type", "").split("/")[-1]
+                    console.print(f"  [{bar}] {score:3d}  [cyan]{name}[/]")
+                    if r.get("description"):
+                        console.print(f"         [dim]{r['description'][:100]}[/]")
+
+        elif action == "navigate":
+            if len(args) < 2:
+                console.print("[bold red]Usage:[/] /ard navigate <domain-or-registry> <query> [--max-depth N] [--limit N]\n")
+                return
+            start = args[0]
+            limit = 10
+            max_depth = 2
+            if "--limit" in args:
+                idx = args.index("--limit")
+                if idx + 1 < len(args):
+                    try:
+                        limit = int(args[idx + 1])
+                    except ValueError:
+                        pass
+            if "--max-depth" in args:
+                idx = args.index("--max-depth")
+                if idx + 1 < len(args):
+                    try:
+                        max_depth = int(args[idx + 1])
+                    except ValueError:
+                        pass
+            flag_with_value = {"--limit", "--max-depth", "--type"}
+            query_parts = []
+            skip_next = False
+            for a in args[1:]:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a in flag_with_value:
+                    skip_next = True
+                    continue
+                if a.startswith("-"):
+                    continue
+                query_parts.append(a)
+            query = " ".join(query_parts)
+            if not query.strip():
+                console.print("[red]Query is required[/]")
+                return
+            from scripts.ard_navigate import navigate
+            result = navigate(start, query, page_size=limit, max_depth=max_depth)
+            console.print(f"\n[bold]ARD Navigate[/] — {result['entry_count']} entries from {len(result['visited'])} registry hop(s)\n")
+            for url in result["visited"]:
+                console.print(f"  [dim]{url}[/]")
+            for entry in result["entries"][:limit]:
+                label = entry.get("type", "").split("/")[-1] or "entry"
+                console.print(f"  [cyan]{label}[/] {entry.get('displayName') or entry.get('identifier')}")
+                desc = entry.get("description")
+                if desc:
+                    console.print(f"      [dim]{desc[:120]}[/]")
+            if result.get("errors"):
+                console.print(f"  [yellow]errors:[/] {len(result['errors'])}")
+
+        elif action == "plan-install":
+            if not args:
+                console.print("[bold red]Usage:[/] /ard plan-install <urn> [--visibility public|private]\n")
+                return
+            identifier = args[0]
+            visibility = "private"
+            if "--visibility" in args:
+                idx = args.index("--visibility")
+                if idx + 1 < len(args) and args[idx + 1] in {"public", "private"}:
+                    visibility = args[idx + 1]
+            from scripts.ard_candidate_risk_score import plan_install, find_entry_in_catalogs
+            try:
+                entry = find_entry_in_catalogs(identifier)
+            except SystemExit as exc:
+                console.print(f"[red]{exc}[/]")
+                return
+            plan = plan_install(entry, visibility=visibility)
+            risk_color = {"low": "green", "medium": "yellow", "high": "red", "critical": "bold red"}.get(plan["risk"], "white")
+            console.print(f"\n[bold]ARD Install Plan[/] — {plan['identifier']}")
+            console.print(f"  decision: [bold]{plan['decision']}[/]")
+            console.print(f"  risk: [{risk_color}]{plan['risk']}[/]")
+            if plan.get("url"):
+                console.print(f"  url: [blue]{plan['url']}[/]")
+            if plan.get("reasons"):
+                console.print("  reasons:")
+                for reason in plan["reasons"]:
+                    console.print(f"    - {reason}")
+            console.print(f"  next_action: {plan['next_action']}")
+            console.print(f"  rollback: {plan['rollback']}")
+            console.print("  side_effects: []\n")
+
+        elif action == "inspect":
+            if not args:
+                console.print("[bold red]Usage:[/] /ard inspect <urn> [--json]\n")
+                return
+            identifier = args[0]
+            from scripts.ard_inspect import inspect_identifier
+            report = inspect_identifier(identifier)
+            if "--json" in args:
+                import json
+                console.print(json.dumps(report, ensure_ascii=False, indent=2))
+                return
+            if not report.get("ok"):
+                console.print(f"[red]ARD entry not found:[/] {identifier}")
+                return
+            entry = report["entry"]
+            risk = report["risk"]
+            risk_color = {"low": "green", "medium": "yellow", "high": "red", "critical": "bold red"}.get(risk.get("risk"), "white")
+            console.print(f"\n[bold]ARD Inspect[/] — {identifier}")
+            console.print(f"  name: {entry.get('displayName') or entry.get('name') or '?'}")
+            console.print(f"  type: {entry.get('type', '?')}")
+            if entry.get("url"):
+                console.print(f"  url: [blue]{entry.get('url')}[/]")
+            console.print(f"  source_catalog: [dim]{report.get('source_catalog')}[/]")
+            console.print(f"  decision: [bold]{risk.get('decision')}[/]")
+            console.print(f"  risk: [{risk_color}]{risk.get('risk')}[/]")
+            if risk.get("reasons"):
+                console.print("  reasons:")
+                for reason in risk.get("reasons", []):
+                    console.print(f"    - {reason}")
+            console.print(f"  next_action: {risk.get('next_action')}")
+            console.print("  install_performed: false\n")
+
+        elif action == "regress":
+            from scripts.ard_intent_regression import main as ard_regress_main
+            rc = ard_regress_main(_collapse_multiword_option(args, "--query"))
+            if rc != 0:
+                console.print(f"[red]ARD regression failed with exit code {rc}[/]")
+
+        elif action == "compare-search":
+            from scripts.ard_skill_search_spike import main as ard_compare_main
+            rc = ard_compare_main(_collapse_multiword_option(args, "--query"))
+            if rc != 0:
+                console.print(f"[red]ARD search comparison failed with exit code {rc}[/]")
+
+        elif action == "publish":
+            domain = "hermes.local"
+            visibility = "public"
+            output_path = None
+            if "--domain" in args:
+                idx = args.index("--domain")
+                if idx + 1 < len(args):
+                    domain = args[idx + 1]
+            if "--visibility" in args:
+                idx = args.index("--visibility")
+                if idx + 1 < len(args) and args[idx + 1] in {"public", "private"}:
+                    visibility = args[idx + 1]
+            if "--output" in args:
+                idx = args.index("--output")
+                if idx + 1 < len(args):
+                    output_path = args[idx + 1]
+
+            from tools.skills_hub import publish_ard_catalog
+            path = publish_ard_catalog(domain=domain, visibility=visibility, output_path=output_path)
+            import json
+            data = json.loads(path.read_text())
+            from collections import Counter
+            types = Counter(e["type"].split("/")[-1] for e in data["entries"])
+
+            console.print(f"\n[green]Catalog published[/]")
+            console.print(f"  [bold]{len(data['entries'])}[/] entries")
+            console.print(f"  Types: {dict(types)}")
+            console.print(f"  Domain: {domain}")
+            console.print(f"  Visibility: {visibility}")
+            console.print(f"  Path: {path}")
+            if visibility == "public":
+                console.print(f"  Well-known: ~/.hermes/.well-known/ai-catalog.json\n")
+            else:
+                console.print(f"  [yellow]Private catalog is not exposed via /.well-known[/]\n")
+
+        elif action == "serve":
+            port = 8390
+            if "--port" in args:
+                idx = args.index("--port")
+                if idx + 1 < len(args):
+                    try:
+                        port = int(args[idx + 1])
+                    except ValueError:
+                        pass
+
+            console.print(f"\n[cyan]Starting Security ARD Registry on port {port}...[/]")
+            console.print("[dim]Press Ctrl+C to stop[/]\n")
+
+            import subprocess
+            import sys
+            script = str(Path(__file__).parent / "scripts" / "security_ard_registry.py")
+            try:
+                subprocess.run(
+                    [sys.executable, script, "--port", str(port)],
+                    cwd=str(Path(__file__).parent),
+                )
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Registry stopped[/]")
+
+        elif action == "catalog":
+            from hermes_constants import get_hermes_home
+            import json
+
+            catalog_path = get_hermes_home() / ".well-known" / "ai-catalog.json"
+            if not catalog_path.exists():
+                console.print("[yellow]No catalog published. Run /ard publish first.[/]")
+                return
+
+            data = json.loads(catalog_path.read_text())
+            console.print(f"\n[bold]ARD Catalog[/]")
+            console.print(f"  specVersion: {data.get('specVersion', '?')}")
+            console.print(f"  entries: {len(data.get('entries', []))}")
+
+            from collections import Counter
+            entries = data.get("entries", [])
+            types = Counter(e["type"].split("/")[-1] for e in entries)
+            console.print(f"  types: {dict(types)}")
+
+            # Show first 10
+            console.print(f"\n[dim]First 10 entries:[/]")
+            for e in entries[:10]:
+                name = e.get("displayName", "?")
+                eid = e.get("identifier", "")
+                console.print(f"  • {name}")
+                console.print(f"    [dim]{eid}[/]")
+            if len(entries) > 10:
+                console.print(f"  [dim]... and {len(entries) - 10} more[/]")
+            console.print()
+
+        elif action == "explore":
+            from tools.skills_hub import ard_local_search
+            from collections import Counter
+
+            results = ard_local_search("", limit=500)
+            if not results:
+                console.print("[yellow]No entries. Run /ard publish first.[/]")
+                return
+
+            types = Counter(r.get("type", "").split("/")[-1] for r in results)
+            console.print(f"\n[bold]ARD Catalog Facets[/]")
+            console.print(f"  Total: {len(results)} entries")
+            console.print(f"  Types:")
+            for t, c in types.most_common():
+                console.print(f"    {t}: {c}")
+
+            # Tag aggregation
+            tags = Counter()
+            for r in results:
+                for t in r.get("tags", []):
+                    tags[t] += 1
+            if tags:
+                console.print(f"  Top tags:")
+                for t, c in tags.most_common(10):
+                    console.print(f"    {t}: {c}")
+            console.print()
+
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
@@ -8013,6 +8392,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_learn_command(cmd_original)
         elif canonical == "memory":
             self._handle_memory_command(cmd_original)
+        elif canonical == "ard":
+            self._handle_ard_command(cmd_original)
         elif canonical == "platforms":
             self._show_gateway_status()
         elif canonical == "status":

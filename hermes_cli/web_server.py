@@ -12859,6 +12859,145 @@ _mount_plugin_api_routes()
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
 app.include_router(_dashboard_auth_router)
 
+# ---------------------------------------------------------------------------
+# ARD (Agentic Resource Discovery) REST API
+# Registered BEFORE mount_spa so the SPA catch-all (/{full_path:path})
+# doesn't intercept these routes when the frontend isn't built.
+# ---------------------------------------------------------------------------
+
+@app.post("/api/ard/search")
+async def ard_search_endpoint(request: Request):
+    """ARD-compatible POST /search endpoint.
+
+    Accepts the standard ARD search request body:
+        {
+            "query": {
+                "text": "natural language query",
+                "filter": {"type": ["application/ai-skill", ...]}
+            },
+            "pageSize": 10
+        }
+
+    Returns ranked entries with relevance scores (0-100).
+    """
+    _require_token(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    query_obj = body.get("query", {}) if isinstance(body, dict) else {}
+    text = str(query_obj.get("text", "")) if isinstance(query_obj, dict) else str(body)
+    filter_obj = query_obj.get("filter", {}) if isinstance(query_obj, dict) else {}
+    filter_types = filter_obj.get("type", []) if isinstance(filter_obj, dict) else []
+    page_size = body.get("pageSize", 10) if isinstance(body, dict) else 10
+
+    from tools.skills_hub import ard_local_search
+
+    results = ard_local_search(
+        text,
+        limit=min(int(page_size), 50),
+        filter_types=filter_types if filter_types else None,
+    )
+
+    return {"results": results, "count": len(results)}
+
+
+@app.get("/api/ard/catalog")
+async def ard_get_catalog_endpoint(request: Request):
+    """Return the ARD ai-catalog.json manifest.
+
+    Dashboard API is authenticated and may request a private catalog for local
+    UI use. The unauthenticated /.well-known route remains public-only.
+    """
+    _require_token(request)
+    from tools.skills_hub import generate_ard_catalog
+
+    visibility = request.query_params.get("visibility", "public")
+    if visibility not in {"public", "private"}:
+        raise HTTPException(status_code=400, detail="visibility must be 'public' or 'private'")
+    catalog = generate_ard_catalog(visibility=visibility)
+    return catalog
+
+
+@app.post("/api/ard/publish")
+async def ard_publish_endpoint(request: Request):
+    """Generate and write ai-catalog.json to ~/.hermes/.well-known/.
+
+    Request body (optional):
+        {"domain": "my.domain.com", "visibility": "public|private", "output_path": "/tmp/catalog.json"}
+    """
+    _require_token(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    domain = str(body.get("domain", "hermes.local")) if isinstance(body, dict) else "hermes.local"
+    visibility = str(body.get("visibility", "public")) if isinstance(body, dict) else "public"
+    output_path = body.get("output_path") if isinstance(body, dict) else None
+    if visibility not in {"public", "private"}:
+        raise HTTPException(status_code=400, detail="visibility must be 'public' or 'private'")
+
+    from tools.skills_hub import publish_ard_catalog
+
+    path = publish_ard_catalog(domain=domain, visibility=visibility, output_path=output_path)
+    import json
+    data = json.loads(path.read_text())
+    from collections import Counter
+
+    return {
+        "success": True,
+        "path": str(path),
+        "entries": len(data["entries"]),
+        "types": dict(Counter(e["type"].split("/")[-1] for e in data["entries"])),
+        "domain": domain,
+        "visibility": visibility,
+    }
+
+
+@app.post("/api/ard/inspect")
+async def ard_inspect_endpoint(request: Request):
+    """Inspect an ARD entry by URN without installing/registering it."""
+    _require_token(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    identifier = str(body.get("identifier", "")).strip() if isinstance(body, dict) else ""
+    if not identifier:
+        raise HTTPException(status_code=400, detail="identifier is required")
+    from scripts.ard_inspect import inspect_identifier
+    report = inspect_identifier(identifier)
+    if not report.get("ok") and report.get("error") == "not_found":
+        raise HTTPException(status_code=404, detail="ARD entry not found")
+    return report
+
+
+@app.get("/.well-known/ai-catalog.json")
+async def ard_well_known_catalog():
+    """Serve the ARD catalog at the standard well-known URI (unauthenticated).
+
+    Per the ARD spec, /.well-known/ai-catalog.json is a public static
+    discovery endpoint that any agent can fetch without authentication.
+    This route returns the published catalog if it exists, or generates
+    a fresh one on the fly.
+    """
+    from tools.skills_hub import generate_ard_catalog, publish_ard_catalog
+    from hermes_constants import get_hermes_home
+
+    well_known = get_hermes_home() / ".well-known" / "ai-catalog.json"
+    if not well_known.exists():
+        # Auto-publish on first access
+        publish_ard_catalog()
+
+    if well_known.exists():
+        return json.loads(well_known.read_text())
+
+    # Fallback: generate in-memory
+    return generate_ard_catalog()
+
+
 mount_spa(app)
 
 

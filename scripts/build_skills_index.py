@@ -41,6 +41,7 @@ from tools.skills_hub import (
     ClaudeMarketplaceSource,
     LobeHubSource,
     BrowseShSource,
+    ArdSource,
     SkillMeta,
 )
 import httpx
@@ -259,6 +260,7 @@ def main():
         "claude-marketplace": ClaudeMarketplaceSource(auth=auth),
         "lobehub": LobeHubSource(),
         "browse-sh": BrowseShSource(),
+        "ard": ArdSource(),
     }
 
     all_skills: list[dict] = []
@@ -281,6 +283,7 @@ def main():
         "github": 5_000,
         "well-known": 5_000,
         "official": 5_000,
+        "ard": 2_000,
     }
     DEFAULT_SOURCE_LIMIT = 500
 
@@ -323,6 +326,7 @@ def main():
 
     # Sort
     source_order = {"official": 0, "skills-sh": 1, "skills.sh": 1,
+                    "ard": 1,
                     "github": 2, "well-known": 3, "clawhub": 4,
                     "browse-sh": 5, "claude-marketplace": 6, "lobehub": 7}
     deduped.sort(key=lambda s: (source_order.get(s["source"], 99), s["name"]))

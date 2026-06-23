@@ -410,6 +410,22 @@ return `404`. The `/api/pty` WebSocket accepts the same parameter to spawn
 a chat under the selected profile.
 :::
 
+Authenticated API calls accept the ephemeral dashboard token through `X-Hermes-Session-Token: TOKEN` (preferred) or the legacy `Authorization: Bearer *** header.
+
+### ARD catalog and inspection endpoints
+
+Hermes exposes Agentic Resource Discovery (ARD) endpoints for discovering local capabilities, publishing `ai-catalog.json`, and inspecting candidate entries without installing them:
+
+| Endpoint | Auth | Description |
+|---|---|---|
+| `POST /api/ard/search` | token | ARD-compatible search. Body uses `query.text`, optional `query.filter.type`, and `pageSize`. |
+| `GET /api/ard/catalog?visibility=public\|private` | token | Return an in-memory ARD catalog. `private` may include local `stdio:<name>` placeholders; use only from authenticated local/dashboard clients. |
+| `POST /api/ard/publish` | token | Generate and write an ARD catalog. Body fields: `domain`, `visibility` (`public` or `private`), and optional `output_path`. |
+| `POST /api/ard/inspect` | token | Inspect one ARD entry by URN without installing/registering it. Body field: `identifier`. Returns entry, source catalog, risk decision, `next_action`, and `install_performed: false`. |
+| `GET /.well-known/ai-catalog.json` | none | Public ARD discovery endpoint. Always public-only; it never serves the private catalog. |
+
+`POST /api/ard/inspect` returns `400` for a missing identifier and `404` when the URN is not found. Use `/ard inspect <urn>` in the CLI for the same no-install report, `/ard regress` for the built-in discovery regression pack, and `/ard compare-search` to compare current local search against an optional external `skill-search` CLI.
+
 ### GET /api/status
 
 Returns agent version, gateway status, platform states, and active session count.

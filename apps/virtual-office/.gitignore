@@ -1,0 +1,18 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Frontend build / deps
+frontend/node_modules/
+frontend/dist/
+frontend/playwright-report/
+frontend/test-results/
+frontend/.cache/
+frontend/*.tsbuildinfo
+
+# Runtime state
+data/
+
+# Local artifacts
+*.log

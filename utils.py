@@ -217,13 +217,15 @@ def atomic_yaml_write(
             # inside multi-line double-quoted strings wrapped with `\`
             # continuations — a structure that stricter/non-PyYAML parsers and
             # hand-edits routinely break into unclosed quotes, corrupting the whole
-            # config (GitHub #51356).
+            # config (GitHub #51356). width=4096 keeps long values on one line so
+            # PyYAML does not introduce fragile backslash continuations.
             yaml.dump(
                 data,
                 f,
                 default_flow_style=default_flow_style,
                 sort_keys=sort_keys,
                 allow_unicode=True,
+                width=4096,
             )
             if extra_content:
                 f.write(extra_content)

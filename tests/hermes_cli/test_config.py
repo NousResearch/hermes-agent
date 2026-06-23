@@ -1,5 +1,6 @@
 """Tests for hermes_cli configuration management."""
 
+import copy
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -82,6 +83,40 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
+
+
+class TestSaveConfigSerialization:
+    def test_save_config_writes_readable_unicode_without_escape_continuations(self, tmp_path):
+        """User-facing config.yaml should not emit fragile \\U escapes.
+
+        Issue #51356 reported config corruption around long personality strings
+        containing emoji/kaomoji.  The file should stay parseable while keeping
+        Unicode readable, avoiding Python-style escape continuations that are
+        easy to corrupt during migrations or manual edits.
+        """
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config["agent"]["personalities"] = {
+            "hype": "YOOO LET'S GOOOO!!! 🔥🔥🔥 "
+            "We are going to CRUSH IT together! 💪😤🚀",
+            "kawaii": "You are a kawaii assistant! Use (◕‿◕), ★, ♪, and ~! ヽ(>∀<☆)ノ",
+            "surfer": "Duuude, keep things super chill. Cowabunga! 🤙",
+        }
+        config["display"]["cursor"] = " █"
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(config)
+
+        raw = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+        reparsed = yaml.safe_load(raw)
+
+        assert reparsed["agent"]["personalities"]["hype"].startswith("YOOO")
+        assert "🔥" in raw
+        assert "🤙" in raw
+        assert "█" in raw
+        assert "\\U0001F525" not in raw
+        assert "\\U0001F919" not in raw
+        assert "\\u2588" not in raw
+        assert "\\\n" not in raw
 
 
 class TestLoadConfigParseFailure:

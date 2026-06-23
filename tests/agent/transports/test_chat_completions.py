@@ -104,6 +104,29 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[2]["tool_name"] == "execute_code"
 
+    def test_convert_messages_strips_name_on_tool_role_only(self, transport):
+        """A leftover ``name`` from the legacy ``role: function`` dialect is
+        written alongside ``tool_name`` on tool-result messages but is absent
+        from the Chat Completions schema for ``role: tool``. Strict providers
+        (aki.io) reject it with 'contains item with unknown key name'. It must
+        be stripped on ``role: tool`` only — other roles keep ``name`` for the
+        legacy dialect.
+        """
+        msgs = [
+            {"role": "user", "content": "hi", "name": "alice"},
+            {"role": "tool", "tool_call_id": "call_1", "name": "execute_code",
+             "content": "result"},
+        ]
+        result = transport.convert_messages(msgs)
+        # Stripped on the tool message...
+        assert "name" not in result[1]
+        assert result[1]["content"] == "result"
+        assert result[1]["tool_call_id"] == "call_1"
+        # ...but preserved on non-tool roles.
+        assert result[0]["name"] == "alice"
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[1]["name"] == "execute_code"
+
     def test_convert_messages_strips_timestamp(self, transport):
         """Internal per-message ``timestamp`` metadata (stamped by
         ``_apply_persist_user_message_override`` to preserve platform event

@@ -657,7 +657,8 @@ def classify_api_error(
     if (
         status_code == 400
         and (
-            "error parsing grammar" in error_msg
+            "failed to parse grammar" in error_msg
+            or "error parsing grammar" in error_msg
             or "json-schema-to-grammar" in error_msg
             or (
                 "unable to generate parser" in error_msg

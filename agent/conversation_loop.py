@@ -716,6 +716,59 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     return sp
 
 
+def _apply_context_engine_selection(
+    agent: Any,
+    api_messages: List[Dict[str, Any]],
+    conversation_messages: List[Dict[str, Any]],
+    incoming_message: Optional[Dict[str, Any]],
+    *,
+    logger: Any,
+) -> List[Dict[str, Any]]:
+    """Run the optional per-turn ``ContextEngine.select_context()`` hook.
+
+    Returns the (possibly replaced) request message list. The hook is for
+    context *selection / routing* (retrieval, topic routing, role switching),
+    which is distinct from compression and fires every turn independent of
+    ``should_compress()``.
+
+    Fail-open by design: a missing hook, any exception, or an invalid return
+    value yields the unmodified ``api_messages``. The result is request-only —
+    persisted conversation history is never mutated here.
+    """
+    engine = getattr(agent, "context_compressor", None)
+    if engine is None or not hasattr(engine, "select_context"):
+        return api_messages
+
+    session_label = getattr(agent, "session_id", None) or "-"
+    try:
+        selected = engine.select_context(
+            api_messages,
+            conversation_messages=conversation_messages,
+            incoming_message=incoming_message,
+            budget_tokens=getattr(engine, "context_length", 0) or 0,
+        )
+    except Exception:
+        logger.warning(
+            "Context engine select_context hook failed; using unmodified "
+            "request messages (session=%s)",
+            session_label,
+            exc_info=True,
+        )
+        return api_messages
+
+    if selected is None:
+        return api_messages
+    if isinstance(selected, list) and all(isinstance(m, dict) for m in selected):
+        return selected
+
+    logger.warning(
+        "Context engine select_context returned a non-list of dicts; "
+        "ignoring (session=%s)",
+        session_label,
+    )
+    return api_messages
+
+
 def run_conversation(
     agent,
     user_message: Any,
@@ -1207,6 +1260,26 @@ def run_conversation(
             sys_offset = 1 if (api_messages and api_messages[0].get("role") == "system") else 0
             for idx, pfm in enumerate(agent.prefill_messages):
                 api_messages.insert(sys_offset + idx, pfm.copy())
+
+        # Per-turn context selection hook (additive, no-op by default).
+        # Lets a context engine select/replace which context enters the
+        # prompt for THIS call only — retrieval, topic routing, role/branch
+        # switching — distinct from compression and independent of
+        # should_compress(). Request-only: persisted history is untouched, so
+        # caching/sanitization below operate on whatever the engine selected.
+        # Fail-open (see _apply_context_engine_selection).
+        _sel_incoming = (
+            messages[current_turn_user_idx]
+            if 0 <= current_turn_user_idx < len(messages)
+            else None
+        )
+        api_messages = _apply_context_engine_selection(
+            agent,
+            api_messages,
+            messages,
+            _sel_incoming,
+            logger=request_logger,
+        )
 
         # Apply Anthropic prompt caching for Claude models on native
         # Anthropic, OpenRouter, and third-party Anthropic-compatible

@@ -56,7 +56,8 @@ jobs:
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
-
+    with:
+      slice_count: 8
   lint:
     needs: detect
     if: needs.detect.outputs.python == 'true'

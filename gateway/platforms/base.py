@@ -92,7 +92,6 @@ def _reply_anchor_for_event(event) -> str | None:
         return getattr(event, "reply_to_message_id", None)
     if (
         platform == "matrix"
-        and getattr(source, "chat_type", None) != "dm"
         and not _matrix_quote_replies_enabled()
     ):
         return None

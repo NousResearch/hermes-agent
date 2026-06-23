@@ -23,7 +23,7 @@ Environment variables:
     MATRIX_DM_AUTO_THREAD       Auto-create threads for DM messages (default: false)
     MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
     MATRIX_DM_MENTION_THREADS   Create a thread when bot is @mentioned in a DM (default: false)
-    MATRIX_QUOTE_REPLIES        Include reply quotes in group chat responses (default: true)
+    MATRIX_QUOTE_REPLIES        Include reply quotes in group & DM responses (default: true)
 """
 
 from __future__ import annotations

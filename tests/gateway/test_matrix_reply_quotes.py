@@ -25,7 +25,7 @@ def test_matrix_group_reply_quotes_can_be_disabled(monkeypatch):
     assert _reply_anchor_for_event(_event()) is None
 
 
-def test_matrix_dm_replies_still_anchor_when_group_quotes_disabled(monkeypatch):
+def test_matrix_dm_replies_also_suppressed_when_quotes_disabled(monkeypatch):
     monkeypatch.setenv("MATRIX_QUOTE_REPLIES", "false")
 
-    assert _reply_anchor_for_event(_event("dm")) == "mx-123"
+    assert _reply_anchor_for_event(_event("dm")) is None

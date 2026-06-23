@@ -462,6 +462,170 @@ def _build_apikey_providers_list() -> list:
     return _static
 
 
+
+# ---------------------------------------------------------------------------
+# MCP secret-propagation check
+# ---------------------------------------------------------------------------
+
+def _parse_dotenv(path) -> dict:
+    """Minimal .env parser: KEY=VALUE lines, skip comments and blanks.
+
+    Matches the same field shapes the gateway writes so the resolution order
+    is byte-for-byte identical to what ``tools/mcp_tool._interpolate_env_vars``
+    sees at runtime.
+    """
+    from pathlib import Path as _Path
+    out: dict = {}
+    p = _Path(path)
+    if not p.exists():
+        return out
+    try:
+        raw = p.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raw = p.read_text(encoding="latin-1")
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.strip()
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+            v = v[1:-1]
+        if k:
+            out[k] = v
+    return out
+
+
+def _effective_env_for_profile(profile_dir, hermes_root) -> dict:
+    """Merge env following the same resolution order as the gateway:
+
+    1. process environment (lowest priority)
+    2. shared ~/.hermes/.env
+    3. profile-local <profile_dir>/.env (wins)
+    """
+    import os as _os
+    from pathlib import Path as _Path
+    merged: dict = dict(_os.environ)
+    merged.update(_parse_dotenv(_Path(hermes_root) / ".env"))
+    merged.update(_parse_dotenv(_Path(profile_dir) / ".env"))
+    return merged
+
+
+def _extract_mcp_placeholders(value) -> set:
+    """Recursively walk an MCP entry and collect every ``${VAR}`` name."""
+    import re as _re
+    _PAT = _re.compile(r"\${([^}]+)}")
+    refs: set = set()
+    if isinstance(value, str):
+        for m in _PAT.finditer(value):
+            refs.add(m.group(1))
+    elif isinstance(value, dict):
+        for v in value.values():
+            refs |= _extract_mcp_placeholders(v)
+    elif isinstance(value, list):
+        for v in value:
+            refs |= _extract_mcp_placeholders(v)
+    return refs
+
+
+def _check_mcp_secrets(issues: list, manual_issues: list) -> None:
+    """Audit every profile's mcp_servers block for unresolved ``${VAR}`` refs.
+
+    Resolution order mirrors ``tools/mcp_tool._interpolate_env_vars``:
+      1. profile <profile>/.env  (highest priority)
+      2. shared ~/.hermes/.env
+      3. process environment     (lowest priority)
+
+    Healthy profiles print a single OK line; dirty ones get per-server WARN
+    lines with actionable guidance.  Does not mutate any files.
+    """
+    import os as _os
+    try:
+        import yaml as _yaml
+    except ImportError:
+        check_warn("MCP secret propagation check skipped", "(PyYAML not installed)")
+        return
+
+    from pathlib import Path as _Path
+    from hermes_constants import get_default_hermes_root
+
+    hermes_root = get_default_hermes_root()
+    profiles_dir = hermes_root / "profiles"
+
+    _SKIP = {"default"}
+
+    if not profiles_dir.is_dir():
+        check_ok("MCP secret propagation", "(no profiles directory — skip)")
+        return
+
+    profile_dirs = sorted(
+        d for d in profiles_dir.iterdir()
+        if d.is_dir() and d.name not in _SKIP
+    )
+
+    if not profile_dirs:
+        check_ok("No non-default profiles found", "(nothing to audit)")
+        return
+
+    total = 0
+    dirty = 0
+
+    for pdir in profile_dirs:
+        cfg_path = pdir / "config.yaml"
+        if not cfg_path.exists():
+            continue
+        try:
+            cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        except Exception as e:
+            check_warn(f"profile {pdir.name}: config.yaml parse error", f"({e})")
+            continue
+
+        servers = (cfg or {}).get("mcp_servers") or {}
+        if not isinstance(servers, dict) or not servers:
+            continue
+
+        total += 1
+        env = _effective_env_for_profile(pdir, hermes_root)
+
+        profile_bad = []
+        for server_name, entry in sorted(servers.items()):
+            if not isinstance(entry, dict):
+                continue
+            placeholders = sorted(_extract_mcp_placeholders(entry))
+            unresolved = [v for v in placeholders if not env.get(v)]
+            for var in unresolved:
+                profile_bad.append((server_name, var))
+
+        if profile_bad:
+            dirty += 1
+            for server_name, var in profile_bad:
+                check_warn(
+                    f"profile {pdir.name}: MCP '{server_name}' references ${{{var}}} — not set",
+                )
+                check_info(f"set it in ~/.hermes/profiles/{pdir.name}/.env (least-privilege), or")
+                check_info(f"set it in ~/.hermes/.env if the secret is shared, or")
+                check_info(f"remove the MCP entry from profiles/{pdir.name}/config.yaml.")
+            bad_summary = ", ".join(
+                f"'{srv}' missing ${{{var}}}" for srv, var in profile_bad
+            )
+            manual_issues.append(
+                f"profile {pdir.name}: {len(profile_bad)} unresolved MCP secret reference(s) "
+                f"({bad_summary}). "
+                f"Set the missing variable(s) in "
+                f"~/.hermes/profiles/{pdir.name}/.env or ~/.hermes/.env, "
+                f"or remove the MCP entry from the profile's config.yaml."
+            )
+
+    if dirty == 0:
+        if total == 0:
+            check_ok("MCP secret propagation", "(no profiles with mcp_servers configured)")
+        else:
+            check_ok(f"MCP secret propagation", f"({total} profile(s) checked, all secrets resolved)")
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -580,7 +744,10 @@ def run_doctor(args):
             check_ok("No suspicious MCP stdio commands")
     except Exception as e:
         check_warn(f"MCP security check failed: {e}")
-    
+
+    _section("MCP Secret Propagation")
+    _check_mcp_secrets(issues, manual_issues)
+
     _section("Python Environment")
     py_version = sys.version_info
     if py_version >= (3, 11):

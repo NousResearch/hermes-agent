@@ -631,6 +631,28 @@ def _print_setup_summary(config: dict, hermes_home):
 
     print(color("─" * 60, Colors.DIM))
     print()
+    # MCP secret-propagation advisory in the post-setup banner.
+    # We do a lightweight scan here (no output on clean) so a fresh install
+    # with an unresolved MCP reference surfaces immediately.
+    try:
+        from hermes_cli.doctor import _check_mcp_secrets as _doctor_mcp_check
+        _mcp_issues: list = []
+        _mcp_manual: list = []
+        _doctor_mcp_check(_mcp_issues, _mcp_manual)
+        if _mcp_manual:
+            print(color("─" * 60, Colors.YELLOW))
+            print(color(
+                f"  ⚠ {len(_mcp_manual)} MCP secret propagation issue(s) found.",
+                Colors.YELLOW, Colors.BOLD,
+            ))
+            print(color(
+                "  Run 'hermes doctor' for details and remediation guidance.",
+                Colors.DIM,
+            ))
+            print()
+    except Exception:
+        pass
+
     print(color("🚀 Ready to go!", Colors.CYAN, Colors.BOLD))
     print()
     print(f"   {color('hermes', Colors.GREEN)}              Start chatting")

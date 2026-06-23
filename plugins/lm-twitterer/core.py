@@ -411,28 +411,77 @@ def _verify_credentials(cfg: Settings) -> dict[str, Any]:
     return data
 
 
-def _verify_credentials_graphql(cfg: Settings, *, v11_http_status: int | None = None) -> dict[str, Any]:
-    client = _twitter_client(cfg)
-    profile = client.get_user_api().get_user_by_screen_name(cfg.bot_screen_name)
-    user = profile.data.user
-    core = getattr(user, "core", None)
-    screen_name = str(getattr(core, "screen_name", "") or cfg.bot_screen_name)
-    name = str(getattr(core, "name", "") or "")
+def _placeholder_graphql_get(cfg: Settings, operation: str, variables: dict[str, Any]) -> dict[str, Any]:
+    """Call an X GraphQL GET operation using twitter-openapi's placeholder map.
 
-    # SearchTimeline is an authenticated GraphQL read path in the same client used
-    # by reply scanning. It is not a write proof; live posting remains a separate gate.
-    client.get_tweet_api().get_search_timeline(
-        raw_query=f"@{cfg.bot_screen_name}",
-        product="Latest",
-        count=1,
+    This intentionally avoids ``TwitterOpenapiPython().get_client_from_cookies``.
+    That client construction scrapes x.com JavaScript and can fail with
+    ``AttributeError: 'NoneType' object has no attribute 'group'`` when X changes
+    the on-demand bundle layout, even when the configured cookies are still valid.
+    """
+    from twitter_openapi_python.client import TwitterOpenapiPython
+
+    client_meta = TwitterOpenapiPython()
+    with urllib.request.urlopen(
+        client_meta.placeholder_url.format(hash=client_meta.hash),
+        timeout=30,
+    ) as response:  # nosec B310 - fixed upstream placeholder URL.
+        placeholder = json.loads(response.read().decode("utf-8", errors="replace"))
+    flag = placeholder.get(operation) or {}
+    query_id = str(flag.get("queryId") or "").strip()
+    if not query_id:
+        raise RuntimeError(f"Could not resolve X {operation} query id")
+
+    merged_variables = _strip_optional_placeholder_keys(flag.get("variables") or {})
+    merged_variables.update(variables)
+    features = _strip_optional_placeholder_keys(flag.get("features") or {})
+    query = urllib.parse.urlencode(
+        {
+            "variables": json.dumps(merged_variables, ensure_ascii=False, separators=(",", ":")),
+            "features": json.dumps(features, ensure_ascii=False, separators=(",", ":")),
+        }
     )
+    request = urllib.request.Request(
+        f"https://x.com/i/api/graphql/{query_id}/{operation}?{query}",
+        headers=_twitter_web_headers(cfg),
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310 - fixed X API URL.
+        payload = response.read().decode("utf-8", errors="replace")
+    data = json.loads(payload or "{}")
+    if not isinstance(data, dict):
+        raise RuntimeError(f"X {operation} returned a non-object response")
+    return data
+
+
+def _verify_credentials_graphql(cfg: Settings, *, v11_http_status: int | None = None) -> dict[str, Any]:
+    if not cfg.bot_screen_name:
+        raise RuntimeError("LM_TWITTERER_BOT_SCREEN_NAME is not set")
+
+    profile_data = _placeholder_graphql_get(
+        cfg,
+        "UserByScreenName",
+        {"screen_name": cfg.bot_screen_name},
+    )
+    user = (((profile_data.get("data") or {}).get("user") or {}).get("result") or {})
+    if not isinstance(user, dict) or not user:
+        raise RuntimeError("X UserByScreenName returned no user for configured screen name")
+    core = user.get("core") if isinstance(user.get("core"), dict) else {}
+    legacy = user.get("legacy") if isinstance(user.get("legacy"), dict) else {}
+    screen_name = str(legacy.get("screen_name") or core.get("screen_name") or cfg.bot_screen_name).lstrip("@")
+    name = str(legacy.get("name") or core.get("name") or "")
+
+    # UserPreferences is an authenticated GraphQL read path. Calling it
+    # directly proves the cookies can access account-scoped X GraphQL without
+    # relying on the fragile scraped twitter-openapi client bootstrap.
+    _placeholder_graphql_get(cfg, "UserPreferences", {})
 
     return {
-        "id_str": str(getattr(user, "rest_id", "") or getattr(user, "id", "") or ""),
+        "id_str": str(user.get("rest_id") or user.get("id") or ""),
         "screen_name": screen_name,
         "name": name,
-        "protected": False,
-        "verification_method": "graphql_user_profile_and_search",
+        "protected": bool(legacy.get("protected", False)),
+        "verification_method": "direct_graphql_user_profile_and_search",
         "v11_verify_credentials_http_status": v11_http_status,
         "current_account_unverified": True,
     }

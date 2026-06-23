@@ -442,6 +442,72 @@ def test_tweet_url_from_result_accepts_flat_data_shape(tmp_path):
     )
 
 
+def test_graphql_auth_check_avoids_scraped_client_bootstrap(tmp_path, monkeypatch):
+    plugin = load_plugin()
+    core = plugin.core
+    cfg = make_settings(core, tmp_path, bot_screen_name="bot", auth_token="auth", ct0="csrf")
+    captured_urls = []
+    placeholder = {
+        "UserByScreenName": {
+            "queryId": "user-qid",
+            "variables": {"screen_name": "template", "unused_optional?": True},
+            "features": {"feature": True, "draft?": False},
+        },
+        "UserPreferences": {
+            "queryId": "prefs-qid",
+            "variables": None,
+            "features": None,
+        },
+    }
+
+    class Response:
+        def __init__(self, body: bytes):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return self.body
+
+    fake_client_module = types.SimpleNamespace(
+        TwitterOpenapiPython=lambda: types.SimpleNamespace(
+            placeholder_url="https://x.example/{hash}.json",
+            hash="placeholder",
+        )
+    )
+    monkeypatch.setitem(sys.modules, "twitter_openapi_python", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "twitter_openapi_python.client", fake_client_module)
+    monkeypatch.setattr(core, "_twitter_web_headers", lambda cfg_arg: {"authorization": "bearer"})
+
+    def fake_urlopen(request, timeout=None):
+        if isinstance(request, str):
+            return Response(json.dumps(placeholder).encode())
+        captured_urls.append(request.full_url)
+        if "UserByScreenName" in request.full_url:
+            return Response(
+                b'{"data":{"user":{"result":{"rest_id":"123","legacy":{"screen_name":"bot","name":"Bot Name","protected":true}}}}}'
+            )
+        if "UserPreferences" in request.full_url:
+            return Response(b'{"data":{"user_preferences":{"allow_dms_from":"following"}}}')
+        raise AssertionError(request.full_url)
+
+    monkeypatch.setattr(core.urllib.request, "urlopen", fake_urlopen)
+
+    data = core._verify_credentials_graphql(cfg, v11_http_status=404)
+
+    assert data["screen_name"] == "bot"
+    assert data["name"] == "Bot Name"
+    assert data["protected"] is True
+    assert data["id_str"] == "123"
+    assert data["verification_method"] == "direct_graphql_user_profile_and_search"
+    assert len(captured_urls) == 2
+    assert "unused_optional%3F" not in captured_urls[0]
+    assert "UserPreferences" in captured_urls[1]
+
 def test_post_accepts_explicit_text_and_media_paths_for_cookie_upload(tmp_path, monkeypatch):
     plugin = load_plugin()
     core = plugin.core

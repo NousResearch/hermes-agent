@@ -553,6 +553,171 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
 
 
 # =============================================================================
+# Operator-locked policy regions
+# =============================================================================
+#
+# Operators mark policy they author by hand — safety rules the live agent must
+# not rewrite for itself: execution gates, kill-switch handling, trim caps,
+# fast-fail rules, the positions-optimize `--wait-seconds 30` rule, etc. — by
+# wrapping them in sentinel HTML comments:
+#
+#     <!-- operator-locked -->
+#     - Keep the executor's --wait-seconds at 30; treat 120s as cron-unsafe.
+#     <!-- /operator-locked -->
+#
+# HTML comments are invisible in rendered Markdown and ignored by the model when
+# it reads the skill, so they cost nothing at read time. What they buy is a hard
+# guarantee: the self-patch tool (edit / patch / write_file / remove_file /
+# delete) must never rewrite, reorder, drop, or forge these regions. The agent
+# may still freely edit everything OUTSIDE the markers — append calibration
+# notes, refine non-policy guidance — so self-improvement keeps working.
+#
+# Background: on 2026-06-18 a live self-patch silently REVERSED the
+# --wait-seconds policy in positions-optimize/SKILL.md (deleted the "120s is
+# cron-unsafe" rule, asserted the opposite, citing its own runs). Nobody was
+# alerted; it was caught only by chance during an unrelated deploy.
+# Operators author and lift these locks out-of-band (git or the dashboard
+# editor), never through this tool.
+#
+# Limitation (by design): this protects the locked *bytes*, not their *meaning*.
+# The agent can still add or relocate text OUTSIDE the markers that
+# recontextualizes a locked rule (e.g. an "obsolete — ignore" note after the
+# close marker, or moving the block under a "superseded" heading). The locked
+# bytes survive verbatim for any human or the deploy reconciler to diff against
+# origin/main, and every allowed self-patch of a file that contains locked policy
+# is audit-logged (see ``_audit_locked_file_touch``) so the touch is never silent
+# — but detecting semantic contradiction is out of scope for a byte-level guard.
+# Pair with a whole-file policy diff at deploy time for defense
+# in depth.
+
+OPERATOR_LOCK_OPEN = "<!-- operator-locked -->"
+OPERATOR_LOCK_CLOSE = "<!-- /operator-locked -->"
+
+# Tolerant of whitespace inside the comment and of an optional trailing label or
+# reason, e.g. `<!-- operator-locked: keep wait-seconds 30 -->`. The open
+# and close markers each have one source pattern so the region regex can't drift
+# from them; they are matched separately so a stray '/' in the close marker can
+# never be read as an opener.
+_LOCK_OPEN_PAT = r"<!--\s*operator-locked\b[^>]*-->"
+_LOCK_CLOSE_PAT = r"<!--\s*/\s*operator-locked\s*-->"
+_LOCK_OPEN_RE = re.compile(_LOCK_OPEN_PAT, re.IGNORECASE)
+_LOCK_CLOSE_RE = re.compile(_LOCK_CLOSE_PAT, re.IGNORECASE)
+_LOCK_REGION_RE = re.compile(
+    _LOCK_OPEN_PAT + r".*?" + _LOCK_CLOSE_PAT, re.IGNORECASE | re.DOTALL
+)
+
+
+def _extract_locked_regions(content: str) -> List[str]:
+    """Return every balanced operator-locked region (markers included), in order."""
+    return _LOCK_REGION_RE.findall(content)
+
+
+def _count_lock_markers(content: str) -> Tuple[int, int]:
+    """Return ``(open_marker_count, close_marker_count)`` found in *content*."""
+    return len(_LOCK_OPEN_RE.findall(content)), len(_LOCK_CLOSE_RE.findall(content))
+
+
+def _has_lock_marker(text: str) -> bool:
+    """True if *text* carries any operator-lock marker, open or close.
+
+    remove_file/delete gate on this rather than on balanced regions: a file
+    holding even half an operator region (a lone or malformed marker) still
+    holds operator intent and must not be dropped silently.
+    """
+    return bool(_LOCK_OPEN_RE.search(text) or _LOCK_CLOSE_RE.search(text))
+
+
+def _audit_locked_file_touch(action: str, name: str, label: str, original: str) -> None:
+    """Breadcrumb an ALLOWED self-patch of a file that contains locked policy.
+
+    The change passed ``_locked_region_violation`` (it is outside the locked
+    bytes), but byte-locking can't tell whether the surrounding edit contradicts
+    the locked rule — so we log the touch for operator review rather than let it
+    pass unseen. Killing the *silence* is the core of this guard.
+    """
+    if _extract_locked_regions(original):
+        logger.info(
+            "skill_manage(%s) on '%s' modified %s outside its operator-locked "
+            "region(s) — review the non-locked change for contradiction.",
+            action, name, label,
+        )
+
+
+def _locked_region_violation(
+    original: str, updated: str, *, label: str = "SKILL.md"
+) -> Optional[str]:
+    """Refuse self-patches that would tamper with operator-locked policy.
+
+    Returns an error string when *updated* must be rejected, else ``None``.
+
+    Two invariants, both required so the markers can't be gamed:
+
+      1. Every operator-locked region in *original* must reappear in *updated*
+         byte-for-byte and in the same order. Catches edits inside a region,
+         dropping a region, and reordering.
+      2. The open- and close-marker counts must be preserved. Catches stripping
+         a single marker (to "unlock" a region) or adding an unbalanced one (to
+         smuggle an edit past invariant 1).
+
+    When *original* carries no locks at all, the only thing refused is the agent
+    FORGING new operator-lock markers around its own text — minting operator
+    authority it does not have. Everything outside the markers is unrestricted.
+    """
+    original_regions = _extract_locked_regions(original)
+    orig_open, orig_close = _count_lock_markers(original)
+    upd_open, upd_close = _count_lock_markers(updated)
+
+    if not original_regions and not orig_open and not orig_close:
+        if upd_open or upd_close:
+            return (
+                f"Refusing to write {label}: operator-lock markers "
+                f"({OPERATOR_LOCK_OPEN} … {OPERATOR_LOCK_CLOSE}) may only be "
+                f"authored by an operator (via git or the dashboard editor), "
+                f"not minted by the self-patch tool. Remove the lock markers "
+                f"and retry."
+            )
+        return None
+
+    if (
+        _extract_locked_regions(updated) != original_regions
+        or upd_open != orig_open
+        or upd_close != orig_close
+    ):
+        return (
+            f"Refusing to write {label}: this change would modify an "
+            f"operator-locked policy region. Text between "
+            f"{OPERATOR_LOCK_OPEN} and {OPERATOR_LOCK_CLOSE} is operator-"
+            f"authored safety policy and must stay exactly as written. "
+            f"Edit only OUTSIDE the locked markers — append "
+            f"calibration notes after them, refine non-policy guidance. If the "
+            f"policy itself genuinely needs to change, that is an operator "
+            f"decision: surface it for review instead of patching it here."
+        )
+    return None
+
+
+def _skill_dir_locked_files(skill_dir: Path) -> List[str]:
+    """Relative paths of files under *skill_dir* that carry an operator-lock
+    marker. Best-effort: symlinks and unreadable files are skipped so a broken
+    tree can never crash a delete.
+    """
+    locked: List[str] = []
+    try:
+        for f in sorted(skill_dir.rglob("*")):
+            try:
+                if f.is_symlink() or not f.is_file():
+                    continue
+                text = f.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if _has_lock_marker(text):
+                locked.append(str(f.relative_to(skill_dir)))
+    except OSError:
+        pass
+    return locked
+
+
+# =============================================================================
 # Core actions
 # =============================================================================
 
@@ -575,6 +740,13 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     err = _validate_content_size(content)
     if err:
         return {"success": False, "error": err}
+
+    # No skill_manage action — create included — may MINT operator-lock markers.
+    # Locks are operator authority, authored out-of-band (git / dashboard).
+    lock_err = _locked_region_violation("", content, label="SKILL.md")
+    if lock_err:
+        logger.warning("skill_manage(create) refused for '%s': forges operator-lock markers", name)
+        return {"success": False, "error": lock_err}
 
     # Check for name collisions across all directories
     existing = _find_skill(name)
@@ -641,6 +813,14 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
+
+    # Refuse rewrites that would touch an operator-locked policy region.
+    lock_err = _locked_region_violation(original_content or "", content, label="SKILL.md")
+    if lock_err:
+        logger.warning("skill_manage(edit) refused on '%s': operator-locked region change", name)
+        return {"success": False, "error": lock_err}
+
+    _audit_locked_file_touch("edit", name, "SKILL.md", original_content or "")
     _atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
@@ -747,6 +927,16 @@ def _patch_skill(
                 "error": f"Patch would break SKILL.md structure: {err}",
             }
 
+    # Refuse patches whose result would touch an operator-locked policy region.
+    lock_err = _locked_region_violation(content, new_content, label=target_label)
+    if lock_err:
+        logger.warning(
+            "skill_manage(patch) refused on '%s' (%s): operator-locked region change",
+            name, target_label,
+        )
+        return {"success": False, "error": lock_err}
+
+    _audit_locked_file_touch("patch", name, target_label, content)
     original_content = content  # for rollback
     _atomic_write_text(target, new_content)
 
@@ -787,6 +977,26 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     pinned_err = _pinned_guard(name)
     if pinned_err:
         return {"success": False, "error": pinned_err}
+
+    # Refuse to delete a skill that carries operator-locked policy — deleting it
+    # would drop the policy just as silently as rewriting it in place.
+    locked_files = _skill_dir_locked_files(existing["path"])
+    if locked_files:
+        logger.warning(
+            "skill_manage(delete) refused on '%s': %d operator-locked file(s)",
+            name, len(locked_files),
+        )
+        return {
+            "success": False,
+            "error": (
+                f"Refusing to delete skill '{name}': it carries operator-locked "
+                f"policy in {', '.join(locked_files)} "
+                f"({OPERATOR_LOCK_OPEN} … {OPERATOR_LOCK_CLOSE}). Deleting the "
+                f"skill would drop operator-authored safety policy. Lifting the "
+                f"lock is an operator action (git or the dashboard editor); only "
+                f"then can the skill be removed."
+            ),
+        }
 
     # Validate absorbed_into target when declared non-empty
     if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():
@@ -862,9 +1072,22 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # Back up for rollback
+    # Read current content (if any) BEFORE creating directories, so a refused
+    # write leaves nothing behind on disk.
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
+
+    # write_file can overwrite SKILL.md or any supporting file — guard it the
+    # same way as edit/patch so it can't be used to bypass the lock.
+    lock_err = _locked_region_violation(original_content or "", file_content, label=file_path)
+    if lock_err:
+        logger.warning(
+            "skill_manage(write_file) refused on '%s' (%s): operator-locked region change",
+            name, file_path,
+        )
+        return {"success": False, "error": lock_err}
+
+    _audit_locked_file_touch("write_file", name, file_path, original_content or "")
+    target.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(target, file_content)
 
     # Security scan — roll back on block
@@ -911,6 +1134,27 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
             "success": False,
             "error": f"File '{file_path}' not found in skill '{name}'.",
             "available_files": available if available else None,
+        }
+
+    # Refuse to remove a file that carries operator-locked policy.
+    try:
+        _existing = target.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        _existing = ""
+    if _has_lock_marker(_existing):
+        logger.warning(
+            "skill_manage(remove_file) refused on '%s' (%s): operator-locked content",
+            name, file_path,
+        )
+        return {
+            "success": False,
+            "error": (
+                f"Refusing to remove '{file_path}' from skill '{name}': it "
+                f"contains operator-locked policy ({OPERATOR_LOCK_OPEN} … "
+                f"{OPERATOR_LOCK_CLOSE}). Removing the file would drop operator-"
+                f"authored safety policy. Lifting the lock is an operator action "
+                f"(git or the dashboard editor)."
+            ),
         }
 
     target.unlink()
@@ -1126,7 +1370,16 @@ SKILL_MANAGE_SCHEMA = {
         "Pinned skills are protected from deletion only — skill_manage(action='delete') "
         "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
         "Patches and edits go through on pinned skills so you can still improve them as "
-        "pitfalls come up; pin only guards against irrecoverable loss."
+        "pitfalls come up; pin only guards against irrecoverable loss.\n\n"
+        "Operator-locked regions — text between `<!-- operator-locked -->` and "
+        "`<!-- /operator-locked -->` — are operator-authored safety policy. "
+        "patch/edit/write_file/remove_file/delete REFUSE any change that rewrites, drops, "
+        "or reorders a locked region; create/edit/write_file REFUSE content that mints new "
+        "lock markers. Edit only OUTSIDE the markers (append calibration notes after them). "
+        "Do NOT try to route around a lock — relocating a locked block or adding a "
+        "contradicting note nearby to neutralize it defeats operator policy and is logged "
+        "for review. Changing locked policy is an operator action (git or the dashboard "
+        "editor)."
     ),
     "parameters": {
         "type": "object",

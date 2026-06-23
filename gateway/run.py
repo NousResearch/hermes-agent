@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 import asyncio
 import dataclasses
 import inspect
+import hashlib
 import json
 import logging
 import os
@@ -35,6 +36,8 @@ import shlex
 import site
 import sys
 import signal
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -67,6 +70,240 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+
+
+def _coerce_gateway_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _gateway_auto_worktree_settings(user_config: Optional[dict]) -> dict:
+    """Return normalized gateway auto-worktree settings from config.yaml."""
+    cfg = user_config if isinstance(user_config, dict) else {}
+    gateway_cfg = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+    raw = gateway_cfg.get("auto_worktrees") if isinstance(gateway_cfg, dict) else None
+    if raw is None:
+        raw = gateway_cfg.get("auto_worktree") if isinstance(gateway_cfg, dict) else None
+    if isinstance(raw, bool):
+        raw = {"enabled": raw}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    repos = raw.get("repos") or raw.get("roots") or raw.get("only_repos") or []
+    if isinstance(repos, (str, os.PathLike)):
+        repos = [repos]
+    normalized_repos: list[str] = []
+    for repo in repos if isinstance(repos, list) else []:
+        try:
+            normalized_repos.append(str(Path(repo).expanduser().resolve()))
+        except Exception:
+            continue
+
+    return {
+        "enabled": _coerce_gateway_bool(raw.get("enabled"), False),
+        "sync_base": _coerce_gateway_bool(raw.get("sync_base"), False),
+        "repos": normalized_repos,
+    }
+
+
+def _git_repo_root_for_cwd(cwd: str) -> Optional[Path]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    root = result.stdout.strip()
+    if not root:
+        return None
+    try:
+        return Path(root).resolve()
+    except Exception:
+        return Path(root)
+
+
+def _is_linked_git_worktree(path: Path) -> bool:
+    gitfile = path / ".git"
+    if not gitfile.is_file():
+        return False
+    try:
+        return gitfile.read_text(encoding="utf-8", errors="ignore").startswith("gitdir:")
+    except Exception:
+        return False
+
+
+def _gateway_worktree_slug(session_key: str, session_id: str) -> str:
+    seed = session_id or session_key or "session"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", str(seed)).strip(".-_")
+    digest = hashlib.sha1(f"{session_key}\n{session_id}".encode("utf-8")).hexdigest()[:10]
+    if safe:
+        return f"{safe[:32]}-{digest}"
+    return digest
+
+
+def _copy_worktree_includes(repo_root: Path, worktree_path: Path) -> None:
+    include_file = repo_root / ".worktreeinclude"
+    if not include_file.exists():
+        return
+    try:
+        repo_root_resolved = repo_root.resolve()
+        worktree_resolved = worktree_path.resolve()
+        for line in include_file.read_text(encoding="utf-8").splitlines():
+            entry = line.strip()
+            if not entry or entry.startswith("#"):
+                continue
+            src = repo_root / entry
+            dst = worktree_path / entry
+            src_resolved = src.resolve(strict=False)
+            dst_resolved = dst.resolve(strict=False)
+            try:
+                src_resolved.relative_to(repo_root_resolved)
+                dst_resolved.relative_to(worktree_resolved)
+            except ValueError:
+                logger.warning("Skipping unsafe .worktreeinclude entry: %s", entry)
+                continue
+            if src.is_file():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(src), str(dst))
+            elif src.is_dir() and not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.symlink(str(src_resolved), str(dst))
+                except (OSError, NotImplementedError):
+                    shutil.copytree(str(src_resolved), str(dst), symlinks=True)
+    except Exception as exc:
+        logger.debug("Gateway auto-worktree .worktreeinclude copy failed: %s", exc)
+
+
+def _ensure_gateway_session_worktree(
+    *,
+    base_cwd: str,
+    session_key: str,
+    session_id: str,
+    user_config: Optional[dict],
+) -> str:
+    """Return a per-session worktree cwd for gateway turns when enabled.
+
+    The helper is deliberately fail-open: if config is disabled, cwd is not a
+    git repo, git is unavailable, or worktree creation fails, the original cwd is
+    returned so messaging remains usable. When enabled and successful, every
+    gateway session gets a deterministic ``<repo>/.worktrees/hermes-gw-*`` path
+    and a matching ``hermes/gateway/*`` branch, preventing concurrent users from
+    editing the same checkout.
+    """
+    settings = _gateway_auto_worktree_settings(user_config)
+    if not settings["enabled"]:
+        return base_cwd
+
+    try:
+        base_path = Path(base_cwd).expanduser().resolve()
+    except Exception:
+        return base_cwd
+    if not base_path.is_dir():
+        return base_cwd
+    if ".worktrees" in base_path.parts and _is_linked_git_worktree(base_path):
+        return str(base_path)
+
+    repo_root = _git_repo_root_for_cwd(str(base_path))
+    if repo_root is None:
+        return base_cwd
+    allowed_repos = settings.get("repos") or []
+    if allowed_repos and str(repo_root) not in allowed_repos:
+        return base_cwd
+
+    slug = _gateway_worktree_slug(session_key, session_id)
+    worktrees_dir = repo_root / ".worktrees"
+    worktree_path = worktrees_dir / f"hermes-gw-{slug}"
+    branch_name = f"hermes/gateway/{slug}"
+
+    if _is_linked_git_worktree(worktree_path):
+        return str(worktree_path)
+    if worktree_path.exists() and any(worktree_path.iterdir()):
+        logger.warning(
+            "Gateway auto-worktree target exists but is not a linked worktree: %s",
+            worktree_path,
+        )
+        return base_cwd
+
+    try:
+        worktrees_dir.mkdir(parents=True, exist_ok=True)
+        # Keep gateway-owned worktree bookkeeping local to this clone. Updating
+        # the project's tracked .gitignore from a background Slack turn would be
+        # surprising; .git/info/exclude hides .worktrees/ without creating a
+        # repository change that later agents might commit accidentally.
+        gitignore = repo_root / ".git" / "info" / "exclude"
+        gitignore.parent.mkdir(parents=True, exist_ok=True)
+        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+        if ".worktrees/" not in existing.splitlines():
+            with gitignore.open("a", encoding="utf-8") as fh:
+                if existing and not existing.endswith("\n"):
+                    fh.write("\n")
+                fh.write(".worktrees/\n")
+
+        base_ref = "HEAD"
+        if settings.get("sync_base"):
+            # Cheap best-effort freshness without making auto-worktree creation
+            # depend on network availability. If origin/HEAD is known locally,
+            # fetch it and branch from it; otherwise HEAD is still safe.
+            head = subprocess.run(
+                ["git", "-C", str(repo_root), "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if head.returncode == 0 and head.stdout.strip():
+                base_ref = head.stdout.strip().replace("refs/remotes/", "", 1)
+                if "/" in base_ref:
+                    remote, branch = base_ref.split("/", 1)
+                    subprocess.run(
+                        ["git", "-C", str(repo_root), "fetch", remote, branch],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "add", "-b", branch_name, str(worktree_path), base_ref],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0 and "already exists" in (result.stderr or ""):
+            result = subprocess.run(
+                ["git", "-C", str(repo_root), "worktree", "add", str(worktree_path), branch_name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        if result.returncode != 0:
+            logger.warning("Gateway auto-worktree creation failed: %s", result.stderr.strip())
+            return base_cwd
+
+        _copy_worktree_includes(repo_root, worktree_path)
+        subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "lock", "--reason", f"hermes gateway session={session_id}", str(worktree_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        logger.info(
+            "Gateway auto-worktree ready: session=%s branch=%s path=%s",
+            session_key,
+            branch_name,
+            worktree_path,
+        )
+        return str(worktree_path)
+    except Exception as exc:
+        logger.warning("Gateway auto-worktree setup failed: %s", exc)
+        return base_cwd
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -8950,16 +9187,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
-        
+
+        # Load config early so we can pin this gateway session to an isolated
+        # per-session worktree before the agent/system prompt/tools resolve cwd.
+        try:
+            _pcfg = _load_gateway_config()
+        except Exception:
+            _pcfg = {}
+        try:
+            from agent.runtime_cwd import resolve_agent_cwd
+
+            _base_cwd = str(resolve_agent_cwd())
+        except Exception:
+            _base_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        _session_cwd = _ensure_gateway_session_worktree(
+            base_cwd=_base_cwd,
+            session_key=session_key,
+            session_id=session_entry.session_id,
+            user_config=_pcfg if isinstance(_pcfg, dict) else {},
+        )
         # Set session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        _session_env_tokens = self._set_session_env(context, cwd=_session_cwd)
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
         persist_user_message = None
         persist_user_timestamp = None
         try:
-            _pcfg = _load_gateway_config()
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
         except Exception:
             pass
@@ -12711,7 +12965,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return delivered
 
-    def _set_session_env(self, context: SessionContext) -> list:
+    def _set_session_env(self, context: SessionContext, cwd: Optional[str] = None) -> list:
         """Set session context variables for the current async task.
 
         Uses ``contextvars`` instead of ``os.environ`` so that concurrent
@@ -12740,6 +12994,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            cwd=cwd or "",
             async_delivery=_async_delivery,
         )
 

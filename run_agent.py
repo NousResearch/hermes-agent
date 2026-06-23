@@ -3631,6 +3631,24 @@ class AIAgent:
             )
 
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
+        # Anthropic-native sessions use _anthropic_client, not self.client.
+        # Attempting to rebuild an OpenAI client here unconditionally fails
+        # with "OPENAI_API_KEY not set" on profiles that only have
+        # ANTHROPIC_API_KEY (e.g. reeve), and the error message is actively
+        # misleading — the real provider key is present, just not an OpenAI
+        # one.  Rebuild the correct client instead.
+        if getattr(self, "api_mode", "") == "anthropic_messages":
+            try:
+                self._rebuild_anthropic_client()
+            except Exception as exc:
+                logger.warning(
+                    "Failed to rebuild shared Anthropic client (%s) %s error=%s",
+                    reason,
+                    self._client_log_context(),
+                    exc,
+                )
+                return False
+            return True
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:

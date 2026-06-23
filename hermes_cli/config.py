@@ -1409,6 +1409,24 @@ DEFAULT_CONFIG = {
             "extra_body": {},      # OpenAI-compatible provider-specific request fields
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
+        "video": {
+            "provider": "auto",    # auto | openrouter | nous | codex | custom
+            "model": "",           # video-capable model, e.g. Gemini/Nemotron Omni
+            "base_url": "",        # direct OpenAI-compatible endpoint for video_url content
+            "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY/no-key-required)
+            "timeout": 300,        # seconds — video payloads and local omni models can be slow
+            "extra_body": {},
+            "download_timeout": 60,
+        },
+        "audio": {
+            "provider": "auto",    # auto | openrouter | nous | codex | custom
+            "model": "",           # audio-capable model, e.g. Gemini/Nemotron Omni
+            "base_url": "",        # direct OpenAI-compatible endpoint for audio_url content
+            "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY/no-key-required)
+            "timeout": 300,        # seconds — audio payloads and local omni models can be slow
+            "extra_body": {},
+            "download_timeout": 60,
+        },
         "web_extract": {
             "provider": "auto",
             "model": "",

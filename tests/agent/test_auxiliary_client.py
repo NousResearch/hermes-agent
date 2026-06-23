@@ -28,6 +28,7 @@ from agent.auxiliary_client import (
     _try_payment_fallback,
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
+    _resolve_task_provider_model,
     _CodexCompletionsAdapter,
 )
 
@@ -976,6 +977,42 @@ class TestGetTextAuxiliaryClient:
 
 class TestVisionClientFallback:
     """Vision client auto mode resolves known-good multimodal backends."""
+
+    @pytest.mark.parametrize("task", ["video", "audio"])
+    def test_resolve_vision_provider_client_honors_media_task_config(self, task):
+        client = MagicMock()
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("custom", "omni-model", "http://omni.local/v1", "local", None),
+            ) as mock_resolve,
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(client, "omni-model"),
+            ) as mock_provider,
+        ):
+            provider, resolved_client, model = resolve_vision_provider_client(task=task)
+
+        assert mock_resolve.call_args[0][0] == task
+        assert provider == "custom"
+        assert resolved_client is client
+        assert model == "omni-model"
+        assert mock_provider.call_args.kwargs["explicit_base_url"] == "http://omni.local/v1"
+
+    @pytest.mark.parametrize("provider", ["auto", "openrouter"])
+    def test_base_url_media_config_resolves_to_custom(self, provider):
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={
+                "provider": provider,
+                "model": "omni-model",
+                "base_url": "http://omni.local/v1",
+                "api_key": "",
+            },
+        ):
+            resolved = _resolve_task_provider_model("audio")
+
+        assert resolved == ("custom", "omni-model", "http://omni.local/v1", None, None)
 
     def test_vision_auto_includes_active_provider_when_configured(self, monkeypatch):
         """Active provider appears in available backends when credentials exist."""

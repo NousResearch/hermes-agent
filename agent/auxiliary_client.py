@@ -1,8 +1,8 @@
 """Shared auxiliary client router for side tasks.
 
 Provides a single resolution chain so every consumer (context compression,
-session search, web extraction, vision analysis, browser vision) picks up
-the best available backend without duplicating fallback logic.
+session search, web extraction, vision/audio/video analysis, browser vision)
+picks up the best available backend without duplicating fallback logic.
 
 Resolution order for text tasks (auto mode):
   1. User's main provider + main model (used regardless of provider type —
@@ -30,7 +30,8 @@ openai-codex (Step 1 above) or when a caller explicitly requests it with
 a model (auxiliary.<task>.provider + auxiliary.<task>.model).
 
 Per-task overrides are configured in config.yaml under the ``auxiliary:`` section
-(e.g. ``auxiliary.vision.provider``, ``auxiliary.compression.model``).
+(e.g. ``auxiliary.vision.provider``, ``auxiliary.video.base_url``,
+``auxiliary.audio.model``, ``auxiliary.compression.model``).
 Default "auto" follows the chains above.
 
 Payment / credit exhaustion fallback:
@@ -353,6 +354,17 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
 # Legacy alias — callers that haven't been updated to _get_aux_model_for_provider()
 # can still use this dict directly. Kept in sync with _FALLBACK above.
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALLBACK
+
+# Tasks that send non-text content blocks to an LLM and therefore need the
+# multimodal/vision-capable resolution path instead of the text-only auxiliary
+# chain.  ``video`` and ``audio`` are first-class config keys, but they share
+# the same provider capabilities and transport handling as image vision.
+_MULTIMODAL_AUX_TASKS = frozenset({"vision", "video", "audio"})
+
+
+def _is_multimodal_task(task: Optional[str]) -> bool:
+    return (task or "").strip().lower() in _MULTIMODAL_AUX_TASKS
+
 
 # Vision-specific model overrides for direct providers.
 # When the user's main provider has a dedicated vision/multimodal model that
@@ -2891,13 +2903,14 @@ def _retry_same_provider_sync(
     effective_timeout: float,
     effective_extra_body: dict,
 ) -> Any:
-    if task == "vision":
+    if _is_multimodal_task(task):
         _, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider,
             model=final_model,
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             async_mode=False,
+            task=task,
         )
     else:
         retry_client, retry_model = _get_cached_client(
@@ -2948,13 +2961,14 @@ async def _retry_same_provider_async(
     effective_timeout: float,
     effective_extra_body: dict,
 ) -> Any:
-    if task == "vision":
+    if _is_multimodal_task(task):
         _, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider,
             model=final_model,
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             async_mode=True,
+            task=task,
         )
     else:
         retry_client, retry_model = _get_cached_client(
@@ -4345,16 +4359,18 @@ def resolve_vision_provider_client(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     async_mode: bool = False,
+    task: str = "vision",
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
-    """Resolve the client actually used for vision tasks.
+    """Resolve the client actually used for multimodal auxiliary tasks.
 
     Direct endpoint overrides take precedence over provider selection. Explicit
     provider overrides still use the generic provider router for non-standard
     backends, so users can intentionally force experimental providers. Auto mode
-    stays conservative and only tries vision backends known to work today.
+    stays conservative and only tries multimodal backends known to work today.
     """
+    task_key = task if _is_multimodal_task(task) else "vision"
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        "vision", provider, model, base_url, api_key
+        task_key, provider, model, base_url, api_key
     )
     requested = _normalize_vision_provider(requested)
 
@@ -4954,14 +4970,12 @@ def _resolve_task_provider_model(
 
     if task:
         # Config.yaml is the primary source for per-task overrides.
-        if cfg_base_url and cfg_api_key:
-            # Both base_url and api_key explicitly set → custom endpoint.
+        if cfg_base_url:
+            # Direct base_url takes precedence over provider selection for
+            # auxiliary tasks. resolve_provider_client() will fall back to
+            # OPENAI_API_KEY or no-key-required for local OpenAI-compatible
+            # servers.
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
-        if cfg_base_url and cfg_provider and cfg_provider != "auto":
-            # base_url set without api_key but with a known provider — use
-            # the provider so it can resolve credentials from env vars
-            # (e.g. OPENROUTER_API_KEY) instead of locking into "custom".
-            return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
 
@@ -5286,8 +5300,9 @@ def call_llm(
     handles auth, request formatting, and model-specific arg adjustments.
 
     Args:
-        task: Auxiliary task name ("compression", "vision", "web_extract",
-              "session_search", "skills_hub", "mcp", "title_generation").
+        task: Auxiliary task name ("compression", "vision", "video", "audio",
+              "web_extract", "session_search", "skills_hub", "mcp",
+              "title_generation").
               Reads provider:model from config/env. Ignored if provider is set.
         provider: Explicit provider override.
         model: Explicit model override.
@@ -5309,23 +5324,28 @@ def call_llm(
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
-    if task == "vision":
+    is_multimodal_task = _is_multimodal_task(task)
+
+    if is_multimodal_task:
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
             model=resolved_model or model,
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
             async_mode=False,
+            task=task,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning(
-                "Vision provider %s unavailable, falling back to auto vision backends",
+                "Multimodal provider %s unavailable for task %s, falling back to auto multimodal backends",
                 resolved_provider,
+                task,
             )
             effective_provider, client, final_model = resolve_vision_provider_client(
                 provider="auto",
                 model=resolved_model,
                 async_mode=False,
+                task=task,
             )
         if client is None:
             raise RuntimeError(
@@ -5546,7 +5566,7 @@ def call_llm(
                 api_key=resolved_api_key,
                 api_mode=resolved_api_mode,
                 main_runtime=main_runtime,
-                is_vision=(task == "vision"),
+                is_vision=_is_multimodal_task(task),
             )
             if refreshed_client is not None:
                 logger.info("Auxiliary %s: refreshed Nous runtime credentials after 401, retrying",
@@ -5818,23 +5838,26 @@ async def async_call_llm(
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
-    if task == "vision":
+    if _is_multimodal_task(task):
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
             model=resolved_model or model,
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
             async_mode=True,
+            task=task,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning(
-                "Vision provider %s unavailable, falling back to auto vision backends",
+                "Multimodal provider %s unavailable for task %s, falling back to auto multimodal backends",
                 resolved_provider,
+                task,
             )
             effective_provider, client, final_model = resolve_vision_provider_client(
                 provider="auto",
                 model=resolved_model,
                 async_mode=True,
+                task=task,
             )
         if client is None:
             raise RuntimeError(
@@ -6025,7 +6048,7 @@ async def async_call_llm(
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
                 api_mode=resolved_api_mode,
-                is_vision=(task == "vision"),
+                is_vision=_is_multimodal_task(task),
             )
             if refreshed_client is not None:
                 logger.info("Auxiliary %s (async): refreshed Nous runtime credentials after 401, retrying",
@@ -6159,7 +6182,7 @@ async def async_call_llm(
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
                 # Convert sync fallback client to async
                 async_fb, async_fb_model = _to_async_client(
-                    fb_client, fb_model or "", is_vision=(task == "vision")
+                    fb_client, fb_model or "", is_vision=_is_multimodal_task(task)
                 )
                 if async_fb_model and async_fb_model != fb_kwargs.get("model"):
                     fb_kwargs["model"] = async_fb_model

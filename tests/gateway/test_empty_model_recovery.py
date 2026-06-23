@@ -22,6 +22,7 @@ def _make_runner():
     runner = object.__new__(gateway_run.GatewayRunner)
     runner._session_model_overrides = {}
     runner._last_resolved_model = {}
+    runner._last_resolved_model_ts = {}
     runner._service_tier = None
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
@@ -54,6 +55,8 @@ def test_normal_turn_caches_last_resolved_model(monkeypatch):
     # Cached per-session AND process-wide for first-seen-session recovery.
     assert runner._last_resolved_model[sk] == "deepseek/deepseek-v4-flash"
     assert runner._last_resolved_model["*"] == "deepseek/deepseek-v4-flash"
+    # Timestamp recorded for the process-wide slot.
+    assert runner._last_resolved_model_ts["*"] > 0
 
 
 def test_empty_model_recovers_session_last_good(monkeypatch):
@@ -81,6 +84,47 @@ def test_empty_model_new_session_recovers_global_last_good(monkeypatch):
     # A brand-new session that hits an empty config read still recovers via "*".
     _patch_resolution(monkeypatch, model_from_config="", provider="")
     model, _ = runner._resolve_session_agent_runtime(session_key="agent:main:discord:dm:999", user_config={})
+
+    assert model == "deepseek/deepseek-v4-flash"
+
+
+def test_stale_global_cache_not_used_for_recovery(monkeypatch):
+    """Process-wide "*" entry older than 5 minutes must NOT be used (#51188).
+
+    When a fallback model succeeds and is cached as "*", it should expire so
+    the next successful config resolution repopulates with the current primary
+    model instead of carrying the fallback indefinitely.
+    """
+    import time
+
+    runner = _make_runner()
+
+    # Simulate a stale "*" entry: model cached 10 minutes ago.
+    runner._last_resolved_model["*"] = "glm-5.2"
+    runner._last_resolved_model_ts["*"] = time.time() - 600
+
+    # Empty config read — should NOT recover the stale "*".
+    _patch_resolution(monkeypatch, model_from_config="", provider="")
+    model, _ = runner._resolve_session_agent_runtime(session_key="agent:main:discord:dm:1", user_config={})
+
+    assert model == "", "stale global cache (>5 min) must not be used for recovery"
+    # Stale entry should have been cleared.
+    assert "*" not in runner._last_resolved_model
+
+
+def test_fresh_global_cache_used_for_recovery(monkeypatch):
+    """Process-wide "*" entry within 5-minute TTL IS used for recovery."""
+    import time
+
+    runner = _make_runner()
+
+    # Simulate a fresh "*" entry: model cached 1 minute ago.
+    runner._last_resolved_model["*"] = "deepseek/deepseek-v4-flash"
+    runner._last_resolved_model_ts["*"] = time.time() - 60
+
+    # Empty config read — should recover via fresh "*".
+    _patch_resolution(monkeypatch, model_from_config="", provider="")
+    model, _ = runner._resolve_session_agent_runtime(session_key="agent:main:discord:dm:1", user_config={})
 
     assert model == "deepseek/deepseek-v4-flash"
 

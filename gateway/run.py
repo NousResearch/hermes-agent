@@ -2579,6 +2579,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # silent until the user manually re-sends. See #35314. ``"*"`` holds a
         # process-wide last-known-good for sessions seen for the first time.
         self._last_resolved_model: Dict[str, str] = {}
+        self._last_resolved_model_ts: Dict[str, float] = {}
         # Overflow buffer for explicit /queue commands.  The adapter-level
         # _pending_messages dict is a single slot per session (designed for
         # "next-turn" follow-ups where repeated sends collapse into one
@@ -3396,9 +3397,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # session goes silent until the user manually re-sends. ``getattr``
         # guards against bare test runners built via ``object.__new__``.
         _last_good = getattr(self, "_last_resolved_model", None)
+        _last_good_ts = getattr(self, "_last_resolved_model_ts", None)
         if _last_good is not None:
             if not model:
-                _recovered = _last_good.get(resolved_session_key or "") or _last_good.get("*")
+                _recovered = _last_good.get(resolved_session_key or "")
+                # Per-session entry has no TTL — it's session-scoped and
+                # safe.  Only fall through to the process-wide "*" slot if
+                # the per-session lookup came back empty.
+                if not _recovered:
+                    _global = _last_good.get("*")
+                    if _global:
+                        _ts = (_last_good_ts or {}).get("*", 0)
+                        if time.time() - _ts > 300:
+                            # Stale process-wide cache (>5 min).  Clear it
+                            # so the next successful resolution repopulates
+                            # with the current config rather than carrying a
+                            # fallback model indefinitely (#51188).
+                            _last_good.pop("*", None)
+                            if _last_good_ts:
+                                _last_good_ts.pop("*", None)
+                        else:
+                            _recovered = _global
                 if _recovered:
                     logger.warning(
                         "Empty model resolved for session=%s — recovering "
@@ -3412,6 +3431,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if resolved_session_key:
                     _last_good[resolved_session_key] = model
                 _last_good["*"] = model
+                if _last_good_ts is not None:
+                    _last_good_ts["*"] = time.time()
 
         return model, runtime_kwargs
 

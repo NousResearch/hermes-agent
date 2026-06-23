@@ -86,6 +86,28 @@ class TestPreflightDeferral:
 
         assert compressor.should_defer_preflight_to_real_usage(93_000) is False
 
+    def test_defers_immediately_after_compaction_with_stale_real_prompt(self, compressor):
+        """#36718: right after a compaction, last_real_prompt_tokens still holds
+        the stale pre-compression value (above threshold). The awaiting flag
+        must force deferral so preflight doesn't fire a SECOND compaction before
+        real post-compaction usage arrives."""
+        compressor.threshold_tokens = 85_000
+        # Stale pre-compression value — would hit the `>= threshold => False`
+        # short-circuit and defeat deferral without the flag guard.
+        compressor.last_real_prompt_tokens = 120_000
+        compressor.awaiting_real_usage_after_compression = True
+        assert compressor.should_defer_preflight_to_real_usage(95_000) is True
+
+    def test_resumes_normal_deferral_after_flag_cleared(self, compressor):
+        """Once update_from_response() clears the flag, the normal baseline/
+        growth deferral logic governs again (no permanent deferral)."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 120_000
+        compressor.awaiting_real_usage_after_compression = False
+        # Stale-high real prompt with the flag cleared => the >= threshold
+        # short-circuit applies => no deferral.
+        assert compressor.should_defer_preflight_to_real_usage(95_000) is False
+
 
 
 class TestCompress:
@@ -242,6 +264,59 @@ class TestCompress:
         assert c.should_compress(55000) is True
         assert c.should_compress(40000) is False
 
+    def test_max_tokens_reservation_lowers_threshold(self):
+        """#43547: the provider reserves max_tokens out of the window, so the
+        threshold must be based on (context_length - max_tokens), not the full
+        window. A 200K model reserving 65536 output tokens has a ~134K input
+        budget; at 50% that's ~67K, NOT 100K."""
+        # No reservation (provider default) → full-window behavior, unchanged.
+        assert ContextCompressor._compute_threshold_tokens(200000, 0.50) == 100000
+        assert ContextCompressor._compute_threshold_tokens(200000, 0.50, None) == 100000
+        # 65536 reserved → effective input budget 134464; 50% = 67232.
+        assert ContextCompressor._compute_threshold_tokens(200000, 0.50, 65536) == 67232
+
+    def test_max_tokens_reservation_with_small_window_floors(self):
+        """With a large reservation on a smaller window the effective budget
+        can drop near/below the minimum floor — the degenerate-window guard
+        then triggers at 85% of the EFFECTIVE budget, never the raw window."""
+        # 128K window, 65536 reserved → effective 62464 (< MINIMUM 64000).
+        # Floor (64000) >= effective window (62464) → 85% of effective.
+        t = ContextCompressor._compute_threshold_tokens(128000, 0.50, 65536)
+        assert t == int(62464 * 0.85)  # 53094
+        assert t < 62464
+
+    def test_max_tokens_exceeding_window_falls_back_to_full(self):
+        """Pathological: max_tokens >= context_length would make the effective
+        budget <= 0; fall back to the full window rather than produce a
+        non-positive threshold."""
+        t = ContextCompressor._compute_threshold_tokens(64000, 0.50, 70000)
+        # effective_window <= 0 → fall back to full context (64000) → 85% guard.
+        assert t == 54400  # 85% of 64000, same as no-reservation small-ctx case
+        assert t > 0
+
+    def test_max_tokens_coercion_treats_non_int_as_no_reservation(self):
+        """A non-int / non-positive max_tokens must coerce safely so the
+        threshold arithmetic never raises. Guards the path where a mocked
+        parent agent forwards a MagicMock max_tokens into a child
+        ContextCompressor (regression for the delegate-test TypeError:
+        '<=' not supported between MagicMock and int)."""
+        from unittest.mock import MagicMock
+        assert ContextCompressor._coerce_max_tokens(None) is None
+        assert ContextCompressor._coerce_max_tokens(0) is None
+        assert ContextCompressor._coerce_max_tokens(-5) is None
+        assert ContextCompressor._coerce_max_tokens("nope") is None
+        assert ContextCompressor._coerce_max_tokens(65536) == 65536
+        # The actual regression: building a compressor with a MagicMock
+        # max_tokens must NOT raise (the unmocked code did `ctx - MagicMock`
+        # then `MagicMock <= 0`). int(MagicMock()) returns 1, so coercion
+        # yields a harmless positive int rather than crashing — the threshold
+        # is computed cleanly with a 1-token reservation.
+        with patch("agent.context_compressor.get_model_context_length", return_value=200000):
+            c = ContextCompressor(model="m", quiet_mode=True, max_tokens=MagicMock())
+        assert isinstance(c.max_tokens, int)
+        assert isinstance(c.threshold_tokens, int)
+        assert c.threshold_tokens > 0  # no crash, sane value
+
     def test_compression_increments_count(self, compressor):
         msgs = self._make_messages(10)
         # Default config (abort_on_summary_failure=False) — fallback path
@@ -357,10 +432,40 @@ class TestNonStringContent:
         assert isinstance(summary, str)
         assert summary.startswith(SUMMARY_PREFIX)
 
-    def test_none_content_coerced_to_empty(self):
+    def test_none_content_treated_as_failure_not_empty_summary(self):
+        """Regression #11978/#11914: a well-formed response with ``content=None``
+        (some OpenAI-compatible proxies, e.g. cmkey.cn, return HTTP 200 with
+        null/empty content) must NOT be stored as a prefix-only summary that
+        silently wipes the compacted turns. It is treated as a summary failure
+        and routed through cooldown so the turns are dropped without a summary
+        rather than replaced by an empty one."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = None
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            # summary_model == model here, so no fallback path: straight to cooldown.
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary(messages)
+        # Empty content → failure → None (drop turns), NOT a prefix-only summary.
+        assert summary is None
+        assert summary != SUMMARY_PREFIX
+        # Transient cooldown engaged so we don't immediately retry the bad proxy.
+        assert c._summary_failure_cooldown_until > 0
+
+    def test_empty_string_content_treated_as_failure(self):
+        """An empty-string (or whitespace-only) ``content`` is handled the same
+        as ``None`` — failure, not an empty summary (#11978)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "   \n  "
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
@@ -372,9 +477,36 @@ class TestNonStringContent:
 
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
-        # None content → empty string → standardized compaction handoff prefix added
-        assert summary is not None
-        assert summary == SUMMARY_PREFIX
+        assert summary is None
+        assert c._summary_failure_cooldown_until > 0
+
+    def test_empty_content_falls_back_to_main_model(self):
+        """When the auxiliary summary model returns empty content and a distinct
+        main model is configured, compression falls back to the main model
+        before entering cooldown (#11978 glm-5.1 → glm-5 path)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="glm-5",
+                summary_model_override="glm-5.1",
+                quiet_mode=True,
+            )
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            summary = c._generate_summary(messages)
+        # Two calls: aux model (glm-5.1) then fallback to main (glm-5).
+        assert mock_call.call_count == 2
+        assert c._summary_model_fallen_back is True
+        assert summary is None
+        assert c._summary_failure_cooldown_until > 0
 
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()

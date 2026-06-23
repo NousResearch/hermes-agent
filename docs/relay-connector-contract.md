@@ -186,6 +186,45 @@ tenant**. Tenant is resolved from the event's own discriminator (Discord
 token/socket/process delivered it. This keeps one shared bot able to front many
 tenants (Phase 6) without overloading an existing field.
 
+### 3.2 Going-idle / buffered-flip primitive (§5.3)
+
+A scale-to-zero PRIMITIVE (not the behaviour — nothing here decides to sleep or
+suspends a machine; a later workstream consumes these frames). It lets a gateway
+enter a drain/idle transition without losing inbound that arrives while it is
+gone, by making the connector buffer for that instance and replay on reconnect.
+
+Three frames (all keyed by the connection's **authenticated** per-instance id —
+read off the stored secret record at the WS upgrade, never asserted in a frame):
+
+- `{"type":"going_idle"}` (gateway → connector) — emitted as part of the
+  gateway's EXISTING drain transition (the adapter sends it before tearing down
+  the socket). Asks the connector to flip this instance to **buffered-only**.
+- `{"type":"going_idle_ack"}` (connector → gateway) — the connector has flipped:
+  live delivery has stopped and subsequent inbound for this instance buffers
+  durably. The gateway **stays serving until this ack** (so an event landing in
+  the flip window is delivered live, not lost — the same SUBSCRIBE-before-serve
+  ordering discipline as the bus). Only after the ack is it safe to close.
+- `{"type":"inbound_ack", "bufferId"}` (gateway → connector) — durable receipt of
+  a buffered `inbound` delivery (which carries its `bufferId`) replayed on
+  reconnect. The connector acks the buffer entry only after this, giving
+  drain-without-dup on the **delivery leg**: an instance that dies mid-drain
+  redelivers exactly the unacked tail; an acked entry never redelivers.
+
+**Buffer + drain.** While flipped, the connector appends inbound to a durable
+per-instance delivery-leg buffer (`delivery:<instanceId>`) instead of pushing it
+live. On the gateway's **reconnect** (a NET-NEW reconnect loop re-dials +
+re-handshakes after an unexpected close), the new handshake triggers the
+connector to drain that backlog over the new socket **in order, ack-gated**,
+then clear the flip so live delivery resumes. This reuses the same
+`drainWithoutDup` machinery as the Discord→connector ingest leg, applied to the
+connector→gateway delivery leg. Connector-authoritative throughout: a gateway can
+only flip/drain ITS OWN instance.
+
+> NOT in scope (deferred behaviour): the autonomous idle timer that DECIDES to
+> drain, the actual machine suspend, and the NAS suspended-health model. The
+> primitive is "when the gateway drains, relay flips to buffered + replays on
+> reconnect, with no loss/dup"; WHAT triggers the drain is out of scope.
+
 ---
 
 ## 4. Outbound: action set

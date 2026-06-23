@@ -584,6 +584,11 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
                 bot_id,
                 gateway_id=gateway_id,
                 upgrade_secret=upgrade_secret,
+                # Phase 5 §5.3: re-dial + re-handshake after an unexpected socket
+                # close so a gateway that went idle/suspended re-establishes its
+                # relay socket — which triggers the connector's buffered-flip drain
+                # (the delivery-leg onResume) on the new handshake.
+                reconnect=True,
             )
         return RelayAdapter(config, placeholder, transport=transport)
 

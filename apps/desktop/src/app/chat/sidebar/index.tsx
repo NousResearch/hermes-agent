@@ -99,6 +99,7 @@ import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '..
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
+import { sidebarSessionsSectionRootClassName } from './classes'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { resolveManualSessionOrderIds } from './order'
@@ -1332,7 +1333,7 @@ function SidebarSessionsSection({
   const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-y-visible')
 
   return (
-    <SidebarGroup className={rootClassName}>
+    <SidebarGroup className={sidebarSessionsSectionRootClassName(rootClassName, open)}>
       <SidebarSectionHeader
         action={headerAction}
         icon={labelIcon}

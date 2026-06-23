@@ -6444,6 +6444,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             self._session_db.set_session_title(self.session_id, sanitized)
                             self._pending_title = None
                             title = sanitized
+                            self._fire_title_hook(sanitized)
                         except ValueError as e:
                             _cprint(f"  {e} — session started untitled.")
                             title = None
@@ -7901,6 +7902,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
                                     _cprint(f"  Session title set: {new_title}")
+                                    self._fire_title_hook(new_title)
                                 else:
                                     _cprint("  Session not found in database.")
                             except ValueError as e:
@@ -7914,6 +7916,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             else:
                                 self._pending_title = new_title
                                 _cprint(f"  Session title queued: {new_title} (will be saved on first message)")
+                                self._fire_title_hook(new_title)
                     else:
                         from hermes_state import format_session_db_unavailable
                         _cprint(f"  {format_session_db_unavailable()}")
@@ -11627,6 +11630,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         response,
                         self.conversation_history,
                         failure_callback=_title_failure_cb,
+                        title_callback=self._fire_title_hook,
                         main_runtime={
                             "model": self.model,
                             "provider": self.provider,
@@ -12184,6 +12188,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if self._resumed:
             if self._preload_resumed_session():
                 self._display_resumed_history()
+        else:
+            # Give fresh sessions a default title immediately (tmux-title
+            # plugin picks this up via on_session_title). Auto-title or
+            # /title will override it later.
+            self._fire_title_hook("Hermes")
 
         try:
             from hermes_cli.skin_engine import get_active_skin

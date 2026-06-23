@@ -314,10 +314,9 @@ def finalize_turn(
             logger.warning("transform_llm_output hook failed: %s", exc)
 
     # Plugin hook: post_llm_call
-    # Fired once per turn after the tool-calling loop completes.
-    # Plugins can use this to persist conversation data (e.g. sync
-    # to an external memory system).
-    if final_response and not interrupted:
+    # Fired once per turn after the tool-calling loop completes
+    # (including after interrupt, so plugins can reset state).
+    if final_response or interrupted:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _invoke_hook(

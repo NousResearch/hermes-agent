@@ -143,6 +143,12 @@ VALID_HOOKS: Set[str] = {
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    # Fired when a session title is set or changed — manually (/title),
+    # automatically (LLM-generated after first exchange), or when
+    # creating/branching sessions with a title. Also fires on session
+    # resume if the session already has a title.
+    # Kwargs: title: str, session_id: str, platform: str.
+    "on_session_title",
     "subagent_start",
     "subagent_stop",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent

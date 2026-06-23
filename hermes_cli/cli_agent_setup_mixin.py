@@ -499,6 +499,9 @@ class CLIAgentSetupMixin:
                 f"{len(restored)} total messages)[/]"
             )
             self._restore_session_cwd(session_meta)
+            # Sync resume title to tmux
+            if session_meta.get("title"):
+                self._fire_title_hook(session_meta["title"])
         else:
             accent_color = _accent_hex()
             self._console_print(

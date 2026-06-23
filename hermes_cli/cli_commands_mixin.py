@@ -477,6 +477,15 @@ class CLICommandsMixin:
         print(f"  Home:    {display}")
         print()
 
+    def _fire_title_hook(self, title: str) -> None:
+        """Fire on_session_title hook so plugins (e.g. tmux-title) can react."""
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_session_title",
+            title=title,
+            session_id=self.session_id,
+        )
+
     def _handle_handoff_command(self, cmd_original: str) -> bool:
         """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
 
@@ -896,6 +905,7 @@ class CLICommandsMixin:
         # Set title on the branch
         try:
             self._session_db.set_session_title(new_session_id, branch_title)
+            self._fire_title_hook(branch_title)
         except Exception:
             pass
 

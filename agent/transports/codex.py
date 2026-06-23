@@ -204,7 +204,7 @@ class ResponsesApiTransport(ProviderTransport):
                 replay_encrypted_reasoning=replay_encrypted_reasoning,
                 current_issuer_kind=issuer_kind,
             ),
-            "store": False,
+            # "store" omitted — some gateways (Friday) reject store:false
         }
         if response_tools:
             kwargs["tools"] = response_tools
@@ -240,7 +240,10 @@ class ResponsesApiTransport(ProviderTransport):
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
             else:
-                kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                # Friday / generic Responses gateways: use bare boolean.
+                # Dict forms like {"effort":"xhigh"} or {"enabled":true}
+                # are rejected as unknown parameters.
+                kwargs["reasoning"] = True
                 kwargs["include"] = (
                     ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
                 )
@@ -328,6 +331,18 @@ class ResponsesApiTransport(ProviderTransport):
                 merged_extra_body.update(existing_extra_body)
             merged_extra_body.setdefault("prompt_cache_key", session_id)
             kwargs["extra_body"] = merged_extra_body
+
+        # Friday / generic Responses gateways: inject x-context-provider
+        # for proper Azure-compatible routing (reasoning, text.format, etc.)
+        if not is_xai_responses and not is_codex_backend and not is_github_responses:
+            existing = kwargs.get("extra_headers")
+            merged: Dict[str, str] = {}
+            if isinstance(existing, dict):
+                merged.update(
+                    {str(k): str(v) for k, v in existing.items() if k and v is not None}
+                )
+            merged["x-context-provider"] = "Azure"
+            kwargs["extra_headers"] = merged
 
         return kwargs
 

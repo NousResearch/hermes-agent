@@ -867,12 +867,14 @@ def _preflight_codex_api_kwargs(
                 }
             )
 
-    store = api_kwargs.get("store", False)
-    if store is not False:
-        raise ValueError("Codex Responses contract requires 'store' to be false.")
+    store = api_kwargs.get("store")
+    if store is not None and store is not False:
+        raise ValueError("Codex Responses contract requires 'store' to be false or omitted.")
+    if store is True:
+        raise ValueError("Codex Responses contract requires 'store' to be false or omitted.")
 
     allowed_keys = {
-        "model", "instructions", "input", "tools", "store",
+        "model", "instructions", "input", "tools",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
         "extra_headers", "extra_body", "timeout",
@@ -881,8 +883,9 @@ def _preflight_codex_api_kwargs(
         "model": model,
         "instructions": instructions,
         "input": normalized_input,
-        "store": False,
     }
+    if store is not None:
+        normalized["store"] = store
     if normalized_tools is not None:
         normalized["tools"] = normalized_tools
 

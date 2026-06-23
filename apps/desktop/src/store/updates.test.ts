@@ -382,5 +382,33 @@ describe('applyBackendUpdate recovery', () => {
     expect(result.ok).toBe(false)
     expect($backendUpdateApply.get().stage).toBe('error')
   })
+
+  it('treats a 200 status with a null exit_code (registry wiped by the restart) as applied', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    // The dashboard restarted as the update's final step and wiped its in-memory
+    // action registry, so the poll lands on it and returns 200 with exit_code null.
+    getActionStatusSpy.mockResolvedValue({ name: 'update', running: false, exit_code: null })
+    checkHermesUpdateSpy.mockResolvedValue({ install_method: 'git', current_version: '0.16.0', behind: 0, update_available: false, can_apply: true, update_command: 'hermes update', message: null })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(5000)
+    const result = await promise
+
+    expect(result.ok).toBe(true)
+    expect($backendUpdateApply.get().stage).toBe('idle')
+    expect($backendUpdateApply.get().applying).toBe(false)
+  })
+
+  it('still reports failure on a genuine non-zero exit_code', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({ name: 'update', running: false, exit_code: 1 })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(5000)
+    const result = await promise
+
+    expect(result.ok).toBe(false)
+    expect($backendUpdateApply.get().stage).toBe('error')
+  })
 })
 

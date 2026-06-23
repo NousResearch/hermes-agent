@@ -494,8 +494,15 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       }
     }
 
-    const ok = !!last && (last.exit_code ?? 1) === 0
-    if (ok) {
+    // A null/undefined exit_code here means `hermes update` finished by restarting
+    // the dashboard (the backend serving these polls) as its final step, wiping the
+    // in-memory action registry before we could read the result — so the status poll
+    // lands on the restarted dashboard and returns HTTP 200 with exit_code === null
+    // even though the update applied. Treat that, and a clean exit 0, as
+    // "applied — confirm the backend came back" (the same recovery path as a dropped
+    // poll above), instead of reporting a false "Backend update failed.".
+    const exitCode = last?.exit_code
+    if (exitCode == null || exitCode === 0) {
       $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: true, stage: 'restart', message: translateNow('updates.applyStatus.restarting') })
 
       return finishBackendApply(await waitForBackendReturn())

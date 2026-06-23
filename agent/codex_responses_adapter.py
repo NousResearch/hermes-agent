@@ -776,7 +776,12 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
             if not isinstance(content, str):
                 content = str(content)
 
-            normalized.append({"role": role, "content": content})
+            # The Codex backend's Responses surface now rejects scalar message
+            # content with HTTP 400 "Unsupported content type".  Always send
+            # role-appropriate typed content parts, matching the list path
+            # above and the native Responses message schema.
+            text_type = "output_text" if role == "assistant" else "input_text"
+            normalized.append({"role": role, "content": [{"type": text_type, "text": content}]})
             continue
 
         raise ValueError(

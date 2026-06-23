@@ -2307,6 +2307,24 @@ def test_chat_messages_to_responses_input_deduplicates_reasoning_ids(monkeypatch
         assert "id" not in it
 
 
+def test_preflight_codex_input_converts_scalar_message_content_to_typed_parts(monkeypatch):
+    """Codex backend rejects scalar message content with 'Unsupported content type'."""
+    agent = _build_agent(monkeypatch)
+    raw_input = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "ok"},
+        {"type": "reasoning", "encrypted_content": "enc_a", "summary": []},
+        {"role": "assistant", "content": ""},
+    ]
+    from agent.codex_responses_adapter import _preflight_codex_input_items
+
+    normalized = _preflight_codex_input_items(raw_input)
+
+    assert normalized[0] == {"role": "user", "content": [{"type": "input_text", "text": "hello"}]}
+    assert normalized[1] == {"role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}
+    assert normalized[3] == {"role": "assistant", "content": [{"type": "output_text", "text": ""}]}
+
+
 def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     """_preflight_codex_input_items should also deduplicate reasoning items by ID."""
     agent = _build_agent(monkeypatch)

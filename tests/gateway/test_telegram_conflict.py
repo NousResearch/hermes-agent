@@ -461,8 +461,8 @@ async def test_send_network_error_drains_general_pool_before_retry(monkeypatch):
 
     assert result.success is True
     assert adapter._bot.send_message.await_count == 2
-    general_req.shutdown.assert_awaited_once()
-    general_req.initialize.assert_awaited_once()
+    assert general_req.shutdown.await_count == 2
+    assert general_req.initialize.await_count == 2
     polling_req.shutdown.assert_not_awaited()
     polling_req.initialize.assert_not_awaited()
 

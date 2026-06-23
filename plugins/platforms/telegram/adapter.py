@@ -2445,6 +2445,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, topics_err, exc_info=True,
                 )
 
+            await self._drain_general_connections()
             return True
             
         except Exception as e:
@@ -2822,6 +2823,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception:
                     pass  # Typing failures are non-fatal
 
+            await self._drain_general_connections()
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
@@ -2945,6 +2947,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=content,
                 )
+                await self._drain_general_connections()
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)
@@ -2972,6 +2975,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=_plain,
                 )
+            await self._drain_general_connections()
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -3008,6 +3012,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         message_id=int(message_id),
                         text=content,
                     )
+                    await self._drain_general_connections()
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
                     await self._drain_general_connections_if_pool_exhausted(retry_err, "edit flood-control retry")
@@ -3268,6 +3273,7 @@ class TelegramAdapter(BasePlatformAdapter):
             "[%s] Overflow split delivered %d chunks; last_id=%s",
             self.name, 1 + len(continuation_ids), last_id,
         )
+        await self._drain_general_connections()
         return SendResult(
             success=True,
             message_id=last_id,
@@ -5121,7 +5127,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_id,
                 "URL photo",
             )
-            return SendResult(success=True, message_id=str(msg.message_id))
+            result = SendResult(success=True, message_id=str(msg.message_id))
+            await self._drain_general_connections()
+            return result
         except Exception as e:
             logger.warning(
                 "[%s] URL-based send_photo failed, trying file upload: %s",
@@ -5159,7 +5167,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_to_id,
                     "uploaded photo",
                 )
-                return SendResult(success=True, message_id=str(msg.message_id))
+                result = SendResult(success=True, message_id=str(msg.message_id))
+                await self._drain_general_connections()
+                return result
             except Exception as e2:
                 logger.error(
                     "[%s] File upload send_photo also failed: %s",
@@ -5207,7 +5217,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_id,
                 "animation",
             )
-            return SendResult(success=True, message_id=str(msg.message_id))
+            result = SendResult(success=True, message_id=str(msg.message_id))
+            await self._drain_general_connections()
+            return result
         except Exception as e:
             logger.error(
                 "[%s] Failed to send Telegram animation, falling back to photo: %s",
@@ -5233,6 +5245,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     action="typing",
                     message_thread_id=message_thread_id,
                 )
+                await self._drain_general_connections()
             except Exception as e:
                 await self._drain_general_connections_if_pool_exhausted(e, "typing indicator")
                 # For DM topic lanes, Telegram may reject message_thread_id.
@@ -5244,6 +5257,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             chat_id=int(chat_id),
                             action="typing",
                         )
+                        await self._drain_general_connections()
                         return
                     except Exception:
                         pass

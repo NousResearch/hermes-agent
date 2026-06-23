@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover
 
 DEFAULT_CLOUD_BASE = "https://api.worldmonitor.app"
 DEFAULT_LOCAL_PORT = 46123
+DEFAULT_DEV_PORT = 3000
 ENV_API_BASE = "WORLDMONITOR_API_BASE"
 ENV_API_KEY = "WORLDMONITOR_API_KEY"
 ENV_LOCAL_PORT = "WORLDMONITOR_LOCAL_PORT"
@@ -62,6 +63,15 @@ def resolve_api_base(*, prefer_sidecar: bool = True) -> str:
         except Exception:
             pass
 
+        try:
+            from .dev_server import probe_dev_server
+
+            dev_probe = probe_dev_server(DEFAULT_DEV_PORT)
+            if dev_probe.get("running"):
+                return dev_probe["base_url"]
+        except Exception:
+            pass
+
     return DEFAULT_CLOUD_BASE
 
 
@@ -82,6 +92,7 @@ def connectivity_status() -> dict[str, Any]:
         "api_base": base,
         "api_key_configured": bool(key),
         "local_sidecar": base.startswith("http://127.0.0.1:") or base.startswith("http://localhost:"),
+        "local_dev": ":3000" in base or base.endswith(f":{DEFAULT_DEV_PORT}"),
         "cloud_api": base.rstrip("/") == DEFAULT_CLOUD_BASE,
     }
 
@@ -190,7 +201,7 @@ def snapshot_japan_security(*, news_lang: str = "en", news_limit: int = 12) -> d
     from . import free_web
 
     conn = connectivity_status()
-    has_paid = bool(conn.get("api_key_configured") or conn.get("local_sidecar"))
+    has_paid = bool(conn.get("api_key_configured") or conn.get("local_sidecar") or conn.get("local_dev"))
 
     if not has_paid:
         free = free_web.free_snapshot(

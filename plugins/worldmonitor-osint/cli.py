@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from . import core
 from . import auth_setup
 from .stack import enable_osint_stack
 from . import cron_setup
 from . import situation_report
+from . import dev_server
 
 
 def register_cli(subparser: argparse.ArgumentParser) -> None:
@@ -127,14 +129,84 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     auth = subs.add_parser("setup-auth", help="Configure WM API key, OAuth MCP, or local sidecar")
     auth.add_argument(
         "--mode",
-        choices=("auto", "oauth", "key", "sidecar"),
+        choices=("auto", "oauth", "key", "sidecar", "dev"),
         default="auto",
-        help="auto: sidecar → key → oauth MCP",
+        help="auto: dev → sidecar → key → oauth MCP",
     )
     auth.add_argument("--api-key", default="", help="wm_… World Monitor API key (mode=key)")
     auth.add_argument("--port", type=int, default=46123, help="Local sidecar port (mode=sidecar)")
     auth.add_argument("--dry-run", action="store_true")
     auth.add_argument("--skip-mcp", action="store_true", help="Do not register worldmonitor OAuth MCP")
+
+    dev = subs.add_parser("dev", help="Clone, install, and run local World Monitor (npm run dev)")
+    dev_subs = dev.add_subparsers(dest="wm_dev_command")
+    dev_subs.add_parser("status", help="Show repo + Vite dev server status")
+    dev_setup = dev_subs.add_parser("setup", help="Clone → npm install → npm run dev → configure API")
+    dev_setup.add_argument("--repo-url", default=dev_server.DEFAULT_REPO_URL)
+    dev_setup.add_argument("--repo", default="", help="Checkout path (default: sibling or ~/.hermes/worldmonitor)")
+    dev_setup.add_argument("--port", type=int, default=dev_server.DEFAULT_DEV_PORT)
+    dev_setup.add_argument(
+        "--variant",
+        choices=("", "tech", "finance", "happy", "commodity", "energy"),
+        default="",
+        help="Vite variant (default full dev server)",
+    )
+    dev_setup.add_argument("--skip-clone", action="store_true")
+    dev_setup.add_argument("--skip-install", action="store_true")
+    dev_setup.add_argument("--skip-start", action="store_true")
+    dev_setup.add_argument("--dry-run", action="store_true")
+    dev_setup.add_argument(
+        "--bind",
+        default="",
+        help="Vite listen address (default localhost; 0.0.0.0 for LAN/Tailscale)",
+    )
+    dev_setup.add_argument(
+        "--host",
+        default="",
+        help="Client-facing URL host (Tailscale IP or MagicDNS name)",
+    )
+    dev_setup.add_argument(
+        "--tailscale",
+        action="store_true",
+        help="Bind 0.0.0.0 and expose via this machine's Tailscale IPv4",
+    )
+    dev_setup.add_argument(
+        "--tailscale-serve",
+        action="store_true",
+        help="Register tailscale serve /worldmonitor → localhost (HTTPS tailnet)",
+    )
+    dev_clone = dev_subs.add_parser("clone", help="git clone koala73/worldmonitor")
+    dev_clone.add_argument("--repo-url", default=dev_server.DEFAULT_REPO_URL)
+    dev_clone.add_argument("--repo", default="")
+    dev_clone.add_argument("--dry-run", action="store_true")
+    dev_install = dev_subs.add_parser("install", help="npm install in checkout")
+    dev_install.add_argument("--repo", default="")
+    dev_install.add_argument("--dry-run", action="store_true")
+    dev_start = dev_subs.add_parser("start", help="Start npm run dev in background")
+    dev_start.add_argument("--repo", default="")
+    dev_start.add_argument("--port", type=int, default=dev_server.DEFAULT_DEV_PORT)
+    dev_start.add_argument(
+        "--variant",
+        choices=("", "tech", "finance", "happy", "commodity", "energy"),
+        default="",
+    )
+    dev_start.add_argument("--wait-seconds", type=float, default=45.0)
+    dev_start.add_argument("--no-configure-api", action="store_true")
+    dev_start.add_argument("--dry-run", action="store_true")
+    dev_start.add_argument("--bind", default="", help="Vite listen address (0.0.0.0 for LAN/Tailscale)")
+    dev_start.add_argument("--host", default="", help="Client-facing URL host override")
+    dev_start.add_argument(
+        "--tailscale",
+        action="store_true",
+        help="Bind 0.0.0.0 and use Tailscale IPv4 in saved API base URL",
+    )
+    dev_start.add_argument(
+        "--tailscale-serve",
+        action="store_true",
+        help="Also run tailscale serve /worldmonitor → localhost",
+    )
+    dev_stop = dev_subs.add_parser("stop", help="Stop recorded dev server process")
+    dev_stop.add_argument("--pid", type=int, default=0)
 
     subparser.set_defaults(func=worldmonitor_osint_command)
 
@@ -150,7 +222,7 @@ def worldmonitor_osint_command(args: argparse.Namespace) -> int:
         print(
             "usage: hermes worldmonitor-osint "
             "{status,snapshot,free-crawl,country-brief,fusion,situation-report,"
-            "setup-stack,setup-auth,cron}"
+            "setup-stack,setup-auth,dev,cron}"
         )
         return 2
 
@@ -263,4 +335,55 @@ def worldmonitor_osint_command(args: argparse.Namespace) -> int:
                 dry_run=bool(args.dry_run),
             )
         )
+    if command == "dev":
+        sub = getattr(args, "wm_dev_command", None)
+        repo = Path(args.repo).expanduser() if getattr(args, "repo", "") else None
+        if sub == "status":
+            return _print(dev_server.dev_status())
+        if sub == "clone":
+            return _print(
+                dev_server.clone_repo(
+                    repo_url=args.repo_url,
+                    target=repo,
+                    dry_run=bool(args.dry_run),
+                )
+            )
+        if sub == "install":
+            return _print(dev_server.install_deps(repo=repo, dry_run=bool(args.dry_run)))
+        if sub == "start":
+            return _print(
+                dev_server.start_dev(
+                    repo=repo,
+                    port=args.port,
+                    variant=args.variant,
+                    wait_seconds=args.wait_seconds,
+                    configure_api=not args.no_configure_api,
+                    dry_run=bool(args.dry_run),
+                    bind=args.bind,
+                    host=args.host,
+                    tailscale=bool(args.tailscale),
+                    tailscale_serve=bool(args.tailscale_serve),
+                )
+            )
+        if sub == "stop":
+            return _print(dev_server.stop_dev(pid=args.pid or None))
+        if sub == "setup":
+            return _print(
+                dev_server.setup_dev_stack(
+                    repo_url=args.repo_url,
+                    repo=repo,
+                    clone=not args.skip_clone,
+                    install=not args.skip_install,
+                    start=not args.skip_start,
+                    port=args.port,
+                    variant=args.variant,
+                    dry_run=bool(args.dry_run),
+                    bind=args.bind,
+                    host=args.host,
+                    tailscale=bool(args.tailscale),
+                    tailscale_serve=bool(args.tailscale_serve),
+                )
+            )
+        print("usage: hermes worldmonitor-osint dev {status|setup|clone|install|start|stop}")
+        return 2
     return 2

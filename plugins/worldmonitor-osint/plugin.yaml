@@ -5,13 +5,20 @@ author: "zapabob, Hermes plugin port"
 kind: standalone
 requires_env:
   - name: WORLDMONITOR_API_KEY
-    description: "World Monitor cloud API key (X-WorldMonitor-Key). Optional when using local sidecar on port 46123."
+    description: "World Monitor cloud API key (X-WorldMonitor-Key). Optional when using local sidecar on port 46123 or Vite dev on 3000."
     secret: true
   - name: WORLDMONITOR_API_BASE
-    description: "API base URL (default https://api.worldmonitor.app or http://127.0.0.1:46123 for local sidecar)."
+    description: "API base URL (default https://api.worldmonitor.app, http://127.0.0.1:46123 sidecar, or http://127.0.0.1:3000 dev)."
+    secret: false
+  - name: WORLDMONITOR_REPO
+    description: "Path to koala73/worldmonitor checkout for npm run dev (default ~/.hermes/worldmonitor)."
     secret: false
 provides_tools:
   - worldmonitor_status
   - worldmonitor_snapshot
+  - worldmonitor_free_crawl
   - worldmonitor_country_brief
   - worldmonitor_fusion_report
+  - worldmonitor_dev_status
+  - worldmonitor_dev_start
+  - worldmonitor_dev_stop

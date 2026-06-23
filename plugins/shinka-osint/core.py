@@ -11,19 +11,21 @@ from typing import Any
 from hermes_constants import get_hermes_home
 
 from . import bridge, providers
+from . import policy
 
 DOMAIN_ALIASES: dict[str, tuple[str, ...]] = {
     "national_security": ("国家安全", "経済安全", "サプライチェーン", "national_security"),
     "cyber_defense": ("サイバー", "cyber", "能動的防御"),
+    "ukraine": ("ウクライナ", "ukraine", "キーウ", "kyiv", "ゼレンスキー"),
     "ai_defense": ("AI", "LAWS", "ai_defense", "人工知能"),
     "cognitive_warfare": ("認知戦", "偽情報", "cognitive"),
-    "japan_russia": ("日ロ", "ロシア", "russia"),
-    "taiwan": ("台湾", "南西諸島", "taiwan"),
-    "north_korea": ("北朝鮮", "朝鮮", "north_korea", "dprk"),
+    "japan_russia": ("日ロ", "ロシア", "russia", "ウクライナ侵略"),
+    "taiwan": ("台湾", "南西諸島", "taiwan", "taiwan_contingency"),
+    "north_korea": ("北朝鮮", "朝鮮", "north_korea", "dprk", "dprk_chongryon", "総連"),
     "us_japan_alliance": ("日米同盟", "同盟", "alliance"),
-    "constitution_defense": ("憲法", "反撃能力", "専守防衛"),
+    "constitution_defense": ("憲法", "反撃能力", "専守防衛", "constitutional_defense"),
     "space_security": ("宇宙", "衛星", "space"),
-    "middle_east": ("中東", "ホルムズ", "イラン", "紅海", "middle_east", "iran"),
+    "middle_east": ("中東", "ホルムズ", "イラン", "紅海", "middle_east", "iran", "middle_east_sealane"),
 }
 
 STATUS_SCHEMA = {
@@ -178,7 +180,49 @@ def _scenario_records(example: str) -> list[dict[str, Any]]:
     scenarios = payload.get("scenarios") if isinstance(payload, dict) else None
     if not isinstance(scenarios, list):
         return []
-    return [item for item in scenarios if isinstance(item, dict)]
+    rows: list[dict[str, Any]] = []
+    for item in scenarios:
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        row.setdefault("scenario_id", row.get("id"))
+        if not row.get("query"):
+            row["query"] = row.get("description") or row.get("title") or ""
+        if not row.get("domain"):
+            sid = str(row.get("scenario_id") or "").lower()
+            if "ukraine" in sid or policy._scenario_matches_ukraine(row):
+                row["domain"] = "ukraine"
+            elif "taiwan" in sid:
+                row["domain"] = "taiwan"
+            elif "dprk" in sid or "north_korea" in sid:
+                row["domain"] = "north_korea"
+        rows.append(row)
+    return rows
+
+
+def _gather_scenarios(example: str, pol: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Collect scenarios from primary + supplemental examples, apply permitted policy."""
+    pol = pol or policy.load_policy()
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    examples = (example, *(pol.get("supplemental_examples") or ()))
+    for ex in examples:
+        if not ex:
+            continue
+        try:
+            raw_rows = _scenario_records(ex)
+        except Exception:
+            continue
+        for raw in raw_rows:
+            sid = str(raw.get("scenario_id") or "")
+            if not sid or sid in seen:
+                continue
+            row = dict(raw)
+            row["_example"] = ex
+            if policy.is_scenario_permitted(row, pol):
+                merged.append(row)
+                seen.add(sid)
+    return merged
 
 
 def _match_scenarios(
@@ -261,7 +305,8 @@ def status() -> dict[str, Any]:
 
 
 def list_scenarios(example: str, domain: str = "") -> dict[str, Any]:
-    scenarios = _scenario_records(example)
+    pol = policy.load_policy()
+    scenarios = _gather_scenarios(example, pol)
     domain_key = _normalize_domain(domain)
     if domain_key:
         scenarios = [
@@ -278,6 +323,12 @@ def list_scenarios(example: str, domain: str = "") -> dict[str, Any]:
         "domain_filter": domain_key or None,
         "count": len(scenarios),
         "scenarios": scenarios,
+        "policy": {
+            "permitted_domains": list(pol.get("permitted_domains") or ()),
+            "ensure_cyber_scenarios": pol.get("ensure_cyber_scenarios"),
+            "ensure_ukraine_scenarios": pol.get("ensure_ukraine_scenarios"),
+            "supplemental_examples": list(pol.get("supplemental_examples") or ()),
+        },
     }
 
 
@@ -287,10 +338,23 @@ def analyze(
     example: str,
     source_mode: str = "mock",
 ) -> dict[str, Any]:
+    pol = policy.load_policy()
+    allowed = _gather_scenarios(example, pol)
+    if not any(str(s.get("scenario_id") or "") == scenario_id for s in allowed):
+        return {
+            "success": False,
+            "error": f"scenario_id {scenario_id!r} is not in the permitted Shinka OSINT policy",
+            "scenario_id": scenario_id,
+        }
+    use_example = example
+    for row in allowed:
+        if str(row.get("scenario_id") or "") == scenario_id:
+            use_example = str(row.get("_example") or example)
+            break
     return bridge.call_tool(
         "shinka_evaluate",
         {
-            "example": example,
+            "example": use_example,
             "scenario_id": scenario_id,
             "source_mode": source_mode,
         },
@@ -308,14 +372,17 @@ def briefing(
     save_report: bool = False,
     llm_summary: bool = False,
 ) -> dict[str, Any]:
-    scenarios = _scenario_records(example)
+    pol = policy.load_policy()
+    cap = max(1, min(max_scenarios, 8))
+    scenarios = _gather_scenarios(example, pol)
     selected = _match_scenarios(
         scenarios,
         topic=topic,
         domain=domain,
         scenario_ids=scenario_ids,
-        max_scenarios=max(1, min(max_scenarios, 8)),
+        max_scenarios=cap,
     )
+    selected = policy.ensure_cyber_in_selection(selected, scenarios, max_scenarios=cap, policy=pol)
     if not selected:
         return {
             "success": False,
@@ -329,7 +396,8 @@ def briefing(
     total_score = 0.0
     for scenario in selected:
         sid = str(scenario.get("scenario_id") or "")
-        result = analyze(sid, example=example, source_mode=source_mode)
+        ex = str(scenario.get("_example") or example)
+        result = analyze(sid, example=ex, source_mode=source_mode)
         score_block = result.get("score") if isinstance(result, dict) else {}
         total = 0.0
         if isinstance(score_block, dict):
@@ -356,6 +424,11 @@ def briefing(
         "average_score": round(total_score / len(runs), 4) if runs else 0.0,
         "runs": runs,
         "llm": providers.provider_status(),
+        "policy": {
+            "permitted_domains": list(pol.get("permitted_domains") or ()),
+            "ensure_cyber_scenarios": pol.get("ensure_cyber_scenarios"),
+            "ensure_ukraine_scenarios": pol.get("ensure_ukraine_scenarios"),
+        },
     }
 
     if llm_summary:

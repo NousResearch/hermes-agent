@@ -71,6 +71,9 @@ def test_register_exposes_tools_and_cli_command():
         "worldmonitor_free_crawl",
         "worldmonitor_country_brief",
         "worldmonitor_fusion_report",
+        "worldmonitor_dev_status",
+        "worldmonitor_dev_start",
+        "worldmonitor_dev_stop",
     }
     assert all(tool["toolset"] == "worldmonitor_osint" for tool in ctx.tools)
     assert ctx.commands[0][0][0] == "worldmonitor-osint"
@@ -170,6 +173,92 @@ def test_free_crawl_offline():
         payload = core.free_crawl(news_limit=5)
     assert payload["tier"] == "free_web"
     assert payload["news_headlines"][0]["title"] == "t"
+
+
+def test_resolve_repo_path_honors_env(tmp_path, monkeypatch):
+    (tmp_path / "package.json").write_text("{}")
+    monkeypatch.setenv("WORLDMONITOR_REPO", str(tmp_path))
+    dev_spec = importlib.util.spec_from_file_location(
+        "worldmonitor_osint_dev_repo_test",
+        PLUGIN_DIR / "dev_server.py",
+        submodule_search_locations=[str(PLUGIN_DIR)],
+    )
+    assert dev_spec is not None and dev_spec.loader is not None
+    module = importlib.util.module_from_spec(dev_spec)
+    sys.modules["worldmonitor_osint_dev_repo_test"] = module
+    dev_spec.loader.exec_module(module)
+    assert module.resolve_repo_path() == tmp_path
+
+
+def test_probe_dev_server_offline():
+    dev_spec = importlib.util.spec_from_file_location(
+        "worldmonitor_osint_dev_probe_test",
+        PLUGIN_DIR / "dev_server.py",
+        submodule_search_locations=[str(PLUGIN_DIR)],
+    )
+    assert dev_spec is not None and dev_spec.loader is not None
+    dev_mod = importlib.util.module_from_spec(dev_spec)
+    sys.modules["worldmonitor_osint_dev_probe_test"] = dev_mod
+    dev_spec.loader.exec_module(dev_mod)
+    payload = dev_mod.probe_dev_server(port=31999)
+    assert payload["running"] is False
+    assert payload["port"] == 31999
+
+
+def test_resolve_bind_host_tailscale(monkeypatch):
+    dev_spec = importlib.util.spec_from_file_location(
+        "worldmonitor_osint_dev_bind_test",
+        PLUGIN_DIR / "dev_server.py",
+        submodule_search_locations=[str(PLUGIN_DIR)],
+    )
+    assert dev_spec is not None and dev_spec.loader is not None
+    dev_mod = importlib.util.module_from_spec(dev_spec)
+    sys.modules["worldmonitor_osint_dev_bind_test"] = dev_mod
+    dev_spec.loader.exec_module(dev_mod)
+    monkeypatch.setattr(dev_mod, "tailscale_ipv4", lambda: "100.91.183.75")
+    bind, ts_ip = dev_mod._resolve_bind_host(tailscale=True)
+    assert bind == "0.0.0.0"
+    assert ts_ip == "100.91.183.75"
+
+
+def test_vite_npm_command_includes_host_bind():
+    dev_spec = importlib.util.spec_from_file_location(
+        "worldmonitor_osint_dev_cmd_test",
+        PLUGIN_DIR / "dev_server.py",
+        submodule_search_locations=[str(PLUGIN_DIR)],
+    )
+    assert dev_spec is not None and dev_spec.loader is not None
+    dev_mod = importlib.util.module_from_spec(dev_spec)
+    sys.modules["worldmonitor_osint_dev_cmd_test"] = dev_mod
+    dev_spec.loader.exec_module(dev_mod)
+    cmd = dev_mod._vite_npm_command("npm", "dev", port=3000, bind="0.0.0.0")
+    assert cmd == ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "3000"]
+
+
+def test_start_dev_tailscale_dry_run(monkeypatch):
+    dev_spec = importlib.util.spec_from_file_location(
+        "worldmonitor_osint_dev_start_ts_test",
+        PLUGIN_DIR / "dev_server.py",
+        submodule_search_locations=[str(PLUGIN_DIR)],
+    )
+    assert dev_spec is not None and dev_spec.loader is not None
+    dev_mod = importlib.util.module_from_spec(dev_spec)
+    sys.modules["worldmonitor_osint_dev_start_ts_test"] = dev_mod
+    dev_spec.loader.exec_module(dev_mod)
+    repo = Path(__file__).resolve().parent / "_wm_dev_repo"
+    repo.mkdir(exist_ok=True)
+    (repo / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(dev_mod, "_npm_exe", lambda: "npm")
+    monkeypatch.setattr(dev_mod, "resolve_repo_path", lambda: repo)
+    monkeypatch.setattr(dev_mod, "tailscale_ipv4", lambda: "100.91.183.75")
+    monkeypatch.setattr(dev_mod, "tailscale_status", lambda: {"available": True, "ipv4": "100.91.183.75"})
+    monkeypatch.setattr(dev_mod, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(dev_mod, "probe_dev_server", lambda _port=None: {"running": False})
+    out = dev_mod.start_dev(dry_run=True, tailscale=True)
+    assert out["success"] is True
+    assert out["bind"] == "0.0.0.0"
+    assert out["url"] == "http://100.91.183.75:3000"
+    assert "--host" in out["command"]
 
 
 def test_snapshot_auto_uses_free_without_paid():

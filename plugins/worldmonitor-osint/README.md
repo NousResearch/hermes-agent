@@ -56,6 +56,58 @@ Browser opens **Sign in with World Monitor Pro**. Tokens are stored by Hermes MC
 
 Verify: `hermes worldmonitor-osint status` → `sidecar.running: true`.
 
+### Local dev server (npm run dev)
+
+Clone upstream, install deps, and run the Vite dev stack Hermes can call on **port 3000**:
+
+```powershell
+git clone https://github.com/koala73/worldmonitor.git
+cd worldmonitor
+npm install
+hermes plugins enable worldmonitor-osint
+hermes worldmonitor-osint dev setup --repo "C:\path\to\worldmonitor"
+# or step-by-step:
+hermes worldmonitor-osint dev install --repo .
+hermes worldmonitor-osint dev start --repo .
+```
+
+Dashboard: `http://127.0.0.1:3000` — API base auto-saved to `WORLDMONITOR_API_BASE`.
+
+#### Tailscale (phone / remote dev on tailnet)
+
+Hermes can bind Vite to all interfaces and reach it over your tailnet:
+
+```powershell
+# Option A — direct Tailscale IP (recommended for dev)
+hermes worldmonitor-osint dev start --repo "C:\path\to\worldmonitor" --tailscale
+# → http://100.x.x.x:3000  (this machine's tailscale ip -4)
+
+# Option B — tailscale serve HTTPS proxy (tailnet-only, no Windows firewall fuss)
+hermes worldmonitor-osint dev start --repo . --tailscale --tailscale-serve
+# → https://<machine>.<tailnet>.ts.net/worldmonitor
+
+# Manual Vite bind only
+hermes worldmonitor-osint dev start --bind 0.0.0.0 --host 100.91.183.75
+```
+
+Check status (includes `tailscale.ipv4`, `dev_server.tailscale_url`):
+
+```powershell
+tailscale status
+tailscale ip -4
+hermes worldmonitor-osint dev status
+```
+
+Env overrides: `WORLDMONITOR_DEV_BIND=0.0.0.0`, `WORLDMONITOR_DEV_HOST=<tailscale-ip>`.
+
+```powershell
+hermes worldmonitor-osint dev status
+hermes worldmonitor-osint setup-auth --mode dev
+hermes worldmonitor-osint dev stop
+```
+
+Agent tools: `worldmonitor_dev_status`, `worldmonitor_dev_start`, `worldmonitor_dev_stop`.
+
 ### Free web crawl (no Pro / no key)
 
 Collects public JSON from `https://worldmonitor.app` (news digest, GPS jamming, alerts) with browser-like HTTP — no OAuth or `wm_` key.

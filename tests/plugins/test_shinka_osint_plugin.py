@@ -101,6 +101,38 @@ def test_match_scenarios_by_topic_token():
     assert matched[0]["scenario_id"] == "b"
 
 
+def test_policy_ensure_ukraine_in_briefing():
+    spec = importlib.util.spec_from_file_location(
+        "shinka_osint_policy_test",
+        PLUGIN_DIR / "policy.py",
+        submodule_search_locations=[str(PLUGIN_DIR)],
+    )
+    assert spec is not None and spec.loader is not None
+    pol = importlib.util.module_from_spec(spec)
+    sys.modules["shinka_osint_policy_test"] = pol
+    spec.loader.exec_module(pol)
+
+    pool = [
+        {"scenario_id": "a", "domain": "middle_east", "query": "ホルムズ"},
+        {"scenario_id": "japan_russia_military_overview", "domain": "japan_russia", "query": "ウクライナ侵略後のロシア極東軍事態勢"},
+    ]
+    selected = [pool[0]]
+    policy = {"ensure_cyber_scenarios": False, "ensure_ukraine_scenarios": True}
+    out = pol.ensure_priority_in_selection(selected, pool, max_scenarios=2, policy=policy)
+    ids = [s["scenario_id"] for s in out]
+    assert "japan_russia_military_overview" in ids
+
+
+def test_normalize_domain_ukraine_topic():
+    core = load_core()
+    scenarios = [
+        {"scenario_id": "x", "domain": "middle_east", "query": "ホルムズ"},
+        {"scenario_id": "y", "domain": "japan_russia", "query": "ウクライナ情勢と極東"},
+    ]
+    matched = core._match_scenarios(scenarios, topic="ウクライナ情勢", max_scenarios=2)
+    assert matched[0]["scenario_id"] == "y"
+
+
 def test_handle_status_json():
     core = load_core()
     with patch.object(core.bridge, "root_status", return_value={"root_exists": False}):

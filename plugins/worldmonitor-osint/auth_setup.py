@@ -190,6 +190,11 @@ def auth_guidance() -> dict[str, Any]:
                 "summary": "Local desktop sidecar (no cloud key for local-first reads)",
                 "command": "hermes worldmonitor-osint setup-auth --mode sidecar",
             },
+            {
+                "mode": "dev",
+                "summary": "Local Vite dev server (npm run dev on port 3000)",
+                "command": "hermes worldmonitor-osint dev setup",
+            },
         ],
         "docs": {
             "auth": PRO_DOCS_URL,
@@ -218,20 +223,38 @@ def setup_auth(
         "next_steps": [],
     }
 
-    if mode in {"auto", "sidecar"}:
-        sidecar = probe_sidecar(port)
-        result["sidecar_probe"] = sidecar
-        if sidecar.get("running"):
-            result["actions"].append("sidecar_detected")
-            if not dry_run:
-                _save_sidecar_base(port)
-            result["success"] = True
-            result["auth_method"] = "local_sidecar"
-            result["next_steps"].append(
-                "Sidecar active. REST plugin uses local API; restart Hermes if you changed .env."
-            )
-            if mode == "sidecar":
-                return result
+    if mode in {"auto", "sidecar", "dev"}:
+        if mode in {"auto", "dev"}:
+            from . import dev_server
+
+            dev_probe = dev_server.probe_dev_server()
+            result["dev_probe"] = dev_probe
+            if dev_probe.get("running"):
+                result["actions"].append("dev_server_detected")
+                if not dry_run:
+                    dev_server._save_dev_base(dev_probe["port"])
+                result["success"] = True
+                result["auth_method"] = "vite_dev"
+                result["next_steps"].append(
+                    f"Dev server active at {dev_probe['base_url']}. REST plugin uses local Vite API."
+                )
+                if mode == "dev":
+                    return result
+
+        if mode == "sidecar" or (mode == "auto" and not result.get("success")):
+            sidecar = probe_sidecar(port)
+            result["sidecar_probe"] = sidecar
+            if sidecar.get("running"):
+                result["actions"].append("sidecar_detected")
+                if not dry_run:
+                    _save_sidecar_base(port)
+                result["success"] = True
+                result["auth_method"] = "local_sidecar"
+                result["next_steps"].append(
+                    "Sidecar active. REST plugin uses local API; restart Hermes if you changed .env."
+                )
+                if mode == "sidecar":
+                    return result
 
     if mode in {"auto", "key"} and (api_key or "").strip():
         ok, msg = validate_wm_key(api_key)
@@ -280,6 +303,8 @@ def setup_auth(
         "hermes worldmonitor-osint setup-auth --mode key --api-key wm_...",
         "Option C (local): Install World Monitor desktop app → sidecar on port 46123 → "
         "hermes worldmonitor-osint setup-auth --mode sidecar",
+        "Option D (dev): git clone + npm install + npm run dev → "
+        "hermes worldmonitor-osint dev setup",
         f"Docs: {MCP_DOCS_URL}",
     ]
     result["error"] = (

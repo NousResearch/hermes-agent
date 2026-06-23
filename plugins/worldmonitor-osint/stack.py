@@ -107,6 +107,7 @@ def enable_osint_stack(
     result["next_steps"] = [
         "SitDeck (no WM Pro): `hermes sitdeck-osint setup --email <gmail>` + crawl tools.",
         "Free tier (no Pro): `hermes worldmonitor-osint free-crawl` or fusion with `--wm-tier free`.",
+        "Local dev: `hermes worldmonitor-osint dev setup` (clone + npm install + npm run dev).",
         "Paid/sidecar: `hermes worldmonitor-osint setup-auth --mode sidecar` or `--mode key`.",
         "OAuth MCP (optional, Pro only): `hermes mcp login worldmonitor` — skipped by default.",
         "Run `hermes shinka-osint setup --root <ShinkaEvolve-OSINT path>` if not configured.",

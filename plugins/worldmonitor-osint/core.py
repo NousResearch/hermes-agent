@@ -214,6 +214,13 @@ def check_available() -> bool:
 def status() -> dict[str, Any]:
     conn = api.connectivity_status()
     sidecar = auth_setup.probe_sidecar()
+    dev = {}
+    try:
+        from . import dev_server
+
+        dev = dev_server.dev_status(probe=True)
+    except Exception as exc:
+        dev = {"error": str(exc)}
     mcp_oauth = auth_setup._mcp_oauth_configured()
     shinka_ready = False
     shinka_detail: dict[str, Any] = {}
@@ -234,6 +241,7 @@ def status() -> dict[str, Any]:
         "success": True,
         "worldmonitor": conn,
         "sidecar": sidecar,
+        "dev_server": dev,
         "mcp_oauth": mcp_oauth,
         "free_web": free_probe,
         "auth_guidance": auth_setup.auth_guidance(),
@@ -245,7 +253,9 @@ def status() -> dict[str, Any]:
         and (
             conn.get("api_key_configured")
             or conn.get("local_sidecar")
+            or conn.get("local_dev")
             or sidecar.get("running")
+            or (dev.get("dev_server") or {}).get("running")
             or mcp_oauth.get("configured")
             or free_probe.get("available")
         ),
@@ -273,7 +283,9 @@ def snapshot(
         return api.snapshot_japan_security(news_lang=news_lang, news_limit=news_limit)
 
     conn = api.connectivity_status()
-    has_paid = bool(conn.get("api_key_configured") or conn.get("local_sidecar"))
+    has_paid = bool(
+        conn.get("api_key_configured") or conn.get("local_sidecar") or conn.get("local_dev")
+    )
     if mode == "auto" and not has_paid:
         snap = free_web.free_snapshot(
             focus="general",

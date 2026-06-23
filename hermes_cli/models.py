@@ -25,7 +25,12 @@ _HERMES_USER_AGENT = f"hermes-cli/{_HERMES_VERSION}"
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
-COPILOT_EDITOR_VERSION = "vscode/1.104.1"
+# Single Copilot CLI identity (the `copilot-developer-cli` integration that
+# unlocks the full premium model catalog). copilot_auth.py is the authoritative
+# source; these mirror its fallback values for the degraded ImportError path in
+# copilot_default_headers() below, so the identity is identical everywhere.
+_COPILOT_INTEGRATION_ID = "copilot-developer-cli"
+_COPILOT_CLI_VERSION = "1.0.63"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
@@ -2732,9 +2737,13 @@ def copilot_default_headers() -> dict[str, str]:
         from hermes_cli.copilot_auth import copilot_request_headers
         return copilot_request_headers(is_agent_turn=True)
     except ImportError:
+        # copilot_auth is the single source of truth; this fallback only fires if
+        # it cannot be imported. Mirror its Copilot CLI identity shape (no
+        # Editor-* VS Code headers, CLI User-Agent) so the identity stays
+        # consistent even on the degraded path.
         return {
-            "Editor-Version": COPILOT_EDITOR_VERSION,
-            "User-Agent": "HermesAgent/1.0",
+            "User-Agent": f"copilot/{_COPILOT_CLI_VERSION}",
+            "Copilot-Integration-Id": _COPILOT_INTEGRATION_ID,
             "Openai-Intent": "conversation-edits",
             "x-initiator": "agent",
         }

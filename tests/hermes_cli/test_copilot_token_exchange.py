@@ -46,7 +46,8 @@ class TestExchangeCopilotToken:
         call_args = mock_urlopen.call_args
         req = call_args[0][0]
         assert req.get_header("Authorization") == "token gho_test123"
-        assert "GitHubCopilotChat" in req.get_header("User-agent")
+        assert req.get_header("User-agent").startswith("copilot/")
+        assert req.get_header("Copilot-integration-id") == "copilot-developer-cli"
 
     @patch("urllib.request.urlopen")
     def test_caches_result(self, mock_urlopen):

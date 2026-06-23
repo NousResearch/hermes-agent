@@ -23,6 +23,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -41,6 +42,107 @@ COPILOT_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
 # Polling constants
 _DEVICE_CODE_POLL_INTERVAL = 5  # seconds
 _DEVICE_CODE_POLL_SAFETY_MARGIN = 3  # seconds
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Single Copilot CLI identity.
+#
+# Every Copilot-facing request (inference, token exchange, device-OAuth flow)
+# presents ONE identity: the `copilot-developer-cli` integration with the real
+# `@github/copilot` CLI User-Agent. Previously several call sites each sent a
+# different ad-hoc identity (`GitHubCopilotChat/*`, `HermesAgent/1.0`,
+# `vscode-chat` + `Editor-*` VS Code Chat headers), which is inconsistent and
+# does not match what a CLI agent actually is.
+#
+# Copilot-Integration-Id is the lever the GitHub backend keys the visible model
+# catalog and per-model limits off of (not the User-Agent). A read-only
+# `GET /models` sweep across candidate integration ids found that
+# `copilot-developer-cli` returns a strict superset of the catalog (it is the
+# only id that exposes the newest models with the full reasoning-effort range),
+# so it is used uniformly. Override via HERMES_COPILOT_INTEGRATION_ID for an
+# account that needs a different integrator.
+#
+# The integration-id only unlocks the catalog when the request carries a valid
+# GitHub Bearer token (resolved by resolve_copilot_token()); without it the
+# premium models are not served regardless of the integration-id.
+_COPILOT_INTEGRATION_ID_DEFAULT = "copilot-developer-cli"
+
+# Latest @github/copilot CLI version, used for the User-Agent we present. The
+# real CLI reports `copilot/<ver> (<platform> <node>) term/<TERM_PROGRAM>`; we
+# reproduce that shape from real host values so it is authentic rather than
+# fabricated, degrading to the short `copilot/<ver>` form when node is absent.
+# Env-overridable for pinning. Fallback is the value shipped at time of writing.
+_COPILOT_CLI_VERSION_FALLBACK = "1.0.63"
+
+_copilot_node_version_memo: Optional[str] = None
+
+
+def _copilot_integration_id() -> str:
+    """Return the Copilot-Integration-Id to send (env-overridable)."""
+    override = os.getenv("HERMES_COPILOT_INTEGRATION_ID", "").strip()
+    return override or _COPILOT_INTEGRATION_ID_DEFAULT
+
+
+def _copilot_cli_version() -> str:
+    """Return the @github/copilot CLI version string for the User-Agent."""
+    return os.getenv("HERMES_COPILOT_CLI_VERSION", "").strip() or _COPILOT_CLI_VERSION_FALLBACK
+
+
+def _copilot_node_version() -> str:
+    """Return a ``v``-prefixed Node version for the CLI User-Agent.
+
+    The real ``@github/copilot`` CLI runs on Node and reports
+    ``process.version`` in the parenthetical UA segment. We resolve a real node
+    version from the host (``node --version``) so the value is authentic; if no
+    node is on PATH we return an empty string and the caller falls back to the
+    short UA form. Resolution order: ``HERMES_COPILOT_NODE_VERSION`` env
+    override, then ``node --version`` (cached in-process), then empty.
+    """
+    override = os.getenv("HERMES_COPILOT_NODE_VERSION", "").strip()
+    if override:
+        return override if override.startswith("v") else f"v{override}"
+
+    global _copilot_node_version_memo
+    if _copilot_node_version_memo is not None:
+        return _copilot_node_version_memo
+
+    ver = ""
+    node_path = shutil.which("node")
+    if node_path:
+        try:
+            out = subprocess.run(
+                [node_path, "--version"],
+                capture_output=True, text=True, timeout=2,
+            )
+            cand = (out.stdout or "").strip()
+            if cand.startswith("v"):
+                ver = cand
+        except Exception as exc:  # pragma: no cover - host-dependent
+            logger.debug("node --version probe failed: %s", exc)
+
+    _copilot_node_version_memo = ver
+    return ver
+
+
+def _copilot_user_agent() -> str:
+    """Build the @github/copilot CLI User-Agent presented on every request.
+
+    Reproduces the real CLI builder ``copilot/<ver> (<platform> <node>)
+    term/<TERM_PROGRAM>``. ``TERM_PROGRAM`` is read from the environment, else a
+    valid ``vscode`` default (never the literal ``unknown`` the raw CLI emits
+    when it cannot resolve a terminal). When no node runtime is available the
+    value degrades to the short ``copilot/<ver>`` form.
+    """
+    version = _copilot_cli_version()
+    node = _copilot_node_version()
+    if not node:
+        return f"copilot/{version}"
+    platform = "linux"
+    if sys.platform == "darwin":
+        platform = "darwin"
+    elif sys.platform.startswith("win"):
+        platform = "win32"
+    term = os.getenv("HERMES_COPILOT_TERM_PROGRAM", "").strip() or os.getenv("TERM_PROGRAM", "").strip() or "vscode"
+    return f"copilot/{version} ({platform} {node}) term/{term}"
 
 
 def validate_copilot_token(token: str) -> tuple[bool, str]:
@@ -183,7 +285,7 @@ def copilot_device_code_login(
         headers={
             "Accept": "application/json",
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "HermesAgent/1.0",
+            "User-Agent": _copilot_user_agent(),
         },
     )
 
@@ -229,7 +331,7 @@ def copilot_device_code_login(
             headers={
                 "Accept": "application/json",
                 "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "HermesAgent/1.0",
+                "User-Agent": _copilot_user_agent(),
             },
         )
 
@@ -282,10 +384,11 @@ def copilot_device_code_login(
 _jwt_cache: dict[str, tuple[str, float]] = {}
 _JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
 
-# Token exchange endpoint and headers (matching VS Code / Copilot CLI)
-_TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
-_EDITOR_VERSION = "vscode/1.104.1"
-_EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
+# Token exchange endpoint. We present our single Copilot CLI identity (the
+# `copilot-developer-cli` integration + `_copilot_user_agent()`), the same one
+# used on the inference path, so there is exactly one identity across every
+# Copilot-facing request.
+_TOKEN_EXCHANGE_URL="https:...oken"
 
 
 def _token_fingerprint(raw_token: str) -> str:
@@ -322,9 +425,9 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
         method="GET",
         headers={
             "Authorization": f"token {raw_token}",
-            "User-Agent": _EXCHANGE_USER_AGENT,
+            "User-Agent": _copilot_user_agent(),
             "Accept": "application/json",
-            "Editor-Version": _EDITOR_VERSION,
+            "Copilot-Integration-Id": _copilot_integration_id(),
         },
     )
 
@@ -380,9 +483,8 @@ def copilot_request_headers(
     Replicates the header set used by opencode and the Copilot CLI.
     """
     headers: dict[str, str] = {
-        "Editor-Version": "vscode/1.104.1",
-        "User-Agent": "HermesAgent/1.0",
-        "Copilot-Integration-Id": "vscode-chat",
+        "User-Agent": _copilot_user_agent(),
+        "Copilot-Integration-Id": _copilot_integration_id(),
         "Openai-Intent": "conversation-edits",
         "x-initiator": "agent" if is_agent_turn else "user",
     }

@@ -114,8 +114,16 @@ class TestRequestHeaders:
         from hermes_cli.copilot_auth import copilot_request_headers
         headers = copilot_request_headers()
         assert headers["Openai-Intent"] == "conversation-edits"
-        assert headers["User-Agent"] == "HermesAgent/1.0"
-        assert "Editor-Version" in headers
+
+    def test_default_headers_present_single_cli_identity(self):
+        """The unified Copilot CLI identity: developer-cli integration, CLI
+        User-Agent, and no VS Code Editor-* headers."""
+        from hermes_cli.copilot_auth import copilot_request_headers
+        headers = copilot_request_headers()
+        assert headers["Copilot-Integration-Id"] == "copilot-developer-cli"
+        assert headers["User-Agent"].startswith("copilot/")
+        assert "Editor-Version" not in headers
+        assert "Editor-Plugin-Version" not in headers
 
     def test_agent_turn_sets_initiator(self):
         from hermes_cli.copilot_auth import copilot_request_headers
@@ -136,6 +144,57 @@ class TestRequestHeaders:
         from hermes_cli.copilot_auth import copilot_request_headers
         headers = copilot_request_headers()
         assert "Copilot-Vision-Request" not in headers
+
+
+class TestCopilotCliIdentity:
+    """The single Copilot CLI identity builders."""
+
+    def test_integration_id_default(self, monkeypatch):
+        monkeypatch.delenv("HERMES_COPILOT_INTEGRATION_ID", raising=False)
+        from hermes_cli.copilot_auth import _copilot_integration_id
+        assert _copilot_integration_id() == "copilot-developer-cli"
+
+    def test_integration_id_env_override(self, monkeypatch):
+        monkeypatch.setenv("HERMES_COPILOT_INTEGRATION_ID", "vscode-chat")
+        from hermes_cli.copilot_auth import _copilot_integration_id
+        assert _copilot_integration_id() == "vscode-chat"
+
+    def test_cli_version_env_override(self, monkeypatch):
+        monkeypatch.setenv("HERMES_COPILOT_CLI_VERSION", "9.9.9")
+        from hermes_cli.copilot_auth import _copilot_cli_version
+        assert _copilot_cli_version() == "9.9.9"
+
+    def test_user_agent_full_form_with_node(self, monkeypatch):
+        monkeypatch.setenv("HERMES_COPILOT_NODE_VERSION", "v20.0.0")
+        monkeypatch.setenv("HERMES_COPILOT_CLI_VERSION", "1.2.3")
+        monkeypatch.setenv("HERMES_COPILOT_TERM_PROGRAM", "iTerm.app")
+        import hermes_cli.copilot_auth as ca
+        ca._copilot_node_version_memo = None
+        ua = ca._copilot_user_agent()
+        assert ua.startswith("copilot/1.2.3 (")
+        assert "v20.0.0" in ua
+        assert ua.endswith("term/iTerm.app")
+
+    def test_user_agent_short_form_without_node(self, monkeypatch):
+        monkeypatch.setenv("HERMES_COPILOT_NODE_VERSION", "")
+        monkeypatch.setenv("HERMES_COPILOT_CLI_VERSION", "1.2.3")
+        import hermes_cli.copilot_auth as ca
+        ca._copilot_node_version_memo = None
+        monkeypatch.setattr(ca.shutil, "which", lambda _: None)
+        assert ca._copilot_user_agent() == "copilot/1.2.3"
+
+    def test_node_version_override_gets_v_prefix(self, monkeypatch):
+        monkeypatch.setenv("HERMES_COPILOT_NODE_VERSION", "18.1.0")
+        import hermes_cli.copilot_auth as ca
+        ca._copilot_node_version_memo = None
+        assert ca._copilot_node_version() == "v18.1.0"
+
+    def test_models_fallback_mirrors_cli_identity(self):
+        """The degraded ImportError fallback in models.copilot_default_headers
+        presents the same CLI identity, never the old Editor-* / HermesAgent."""
+        from hermes_cli import models
+        assert models._COPILOT_INTEGRATION_ID == "copilot-developer-cli"
+        assert models._COPILOT_CLI_VERSION
 
 
 class TestCopilotDefaultHeaders:

@@ -190,8 +190,8 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
-def looks_like_gateway_command_line(command: str | None) -> bool:
-    """Return True only for a real ``gateway run`` process command line.
+def _gateway_command_subcommand(command: str | None) -> str | None:
+    """Return the Hermes gateway lifecycle subcommand from a command line.
 
     Lifecycle decisions (is the gateway up? did restart relaunch it?) must not
     fire on loose substring matches.  The previous ``"... gateway" in cmdline``
@@ -211,7 +211,7 @@ def looks_like_gateway_command_line(command: str | None) -> bool:
     either side of the ``gateway`` subcommand.
     """
     if not command:
-        return False
+        return None
 
     try:
         raw_tokens = shlex.split(command, posix=False)
@@ -220,15 +220,15 @@ def looks_like_gateway_command_line(command: str | None) -> bool:
     # Strip surrounding quotes, normalize slashes + case per token.
     tokens = [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
     if not tokens:
-        return False
+        return None
 
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
     for token in tokens:
         if token == "gateway/run.py" or token.endswith("/gateway/run.py"):
-            return True
+            return "run"
         basename = token.rsplit("/", 1)[-1]
         if basename in ("hermes-gateway", "hermes-gateway.exe"):
-            return True
+            return "run"
 
     joined = " ".join(tokens)
     has_gateway_entry = (
@@ -237,7 +237,7 @@ def looks_like_gateway_command_line(command: str | None) -> bool:
         or any(t.rsplit("/", 1)[-1] in ("hermes", "hermes.exe") for t in tokens)
     )
     if not has_gateway_entry:
-        return False
+        return None
 
     # Drop profile selectors anywhere: --profile X / -p X / --profile=X / -p=X.
     # This consumes a profile VALUE of "gateway" too, so the real subcommand
@@ -259,9 +259,28 @@ def looks_like_gateway_command_line(command: str | None) -> bool:
         if token != "gateway":
             continue
         if i + 1 >= len(filtered):
-            return True  # bare `hermes gateway` defaults to `run`
-        return filtered[i + 1] == "run"
-    return False
+            return "run"  # bare `hermes gateway` defaults to `run`
+        return filtered[i + 1]
+    return None
+
+
+def looks_like_gateway_command_line(command: str | None) -> bool:
+    """Return True only for a real ``gateway run`` process command line."""
+    return _gateway_command_subcommand(command) == "run"
+
+
+def looks_like_gateway_runtime_command_line(command: str | None) -> bool:
+    """Return True for command lines that can host the gateway runtime.
+
+    ``gateway restart`` is normally a management command, not the gateway
+    runtime. On hosts without a service manager, though, the manual restart
+    fallback executes ``run_gateway()`` in that same process, so its argv stays
+    as ``gateway restart`` while it owns the webhook port and writes runtime
+    state. Keep the public ``looks_like_gateway_command_line()`` strict, and
+    use this broader matcher only when validating Hermes-owned runtime records
+    or no-supervisor cleanup scans.
+    """
+    return _gateway_command_subcommand(command) in {"run", "restart"}
 
 
 def _looks_like_gateway_process(pid: int) -> bool:
@@ -282,7 +301,7 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
         return False
 
     cmdline = " ".join(str(part) for part in argv)
-    return looks_like_gateway_command_line(cmdline)
+    return looks_like_gateway_runtime_command_line(cmdline)
 
 
 def _build_pid_record() -> dict:
@@ -1213,6 +1232,10 @@ def get_running_pid(
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     lock_active = is_gateway_runtime_lock_active(resolved_lock_path)
     if not lock_active:
+        if pid_path is None:
+            runtime_pid = get_runtime_status_running_pid()
+            if runtime_pid is not None:
+                return runtime_pid
         _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
         return None
 
@@ -1236,6 +1259,10 @@ def get_running_pid(
             return pid
 
     _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
+    if pid_path is None:
+        runtime_pid = get_runtime_status_running_pid()
+        if runtime_pid is not None:
+            return runtime_pid
     return None
 
 

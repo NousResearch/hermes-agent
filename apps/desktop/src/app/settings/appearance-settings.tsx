@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { type FontOption, type FontSizeOption, useFont } from '@/components/font-provider'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
@@ -140,6 +141,7 @@ export function AppearanceSettings() {
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
+  const { font, setFont, fontSize, setFontSize } = useFont()
 
   // Themes save per profile. Surface that only when the user actually has more
   // than one profile (single-profile installs never see the distinction).
@@ -168,6 +170,42 @@ export function AppearanceSettings() {
             action={<LanguageSwitcher />}
             description={isSavingLocale ? t.language.saving : t.language.description}
             title={t.language.label}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('crisp')
+                  setFont(id)
+                }}
+                options={(Object.entries(a.fontOptions) as [FontOption, string][]).map(([id, label]) => ({
+                  id,
+                  label
+                }))}
+                value={font}
+              />
+            }
+            description={a.fontDesc}
+            title={a.fontTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('crisp')
+                  setFontSize(id)
+                }}
+                options={(Object.entries(a.fontSizeOptions) as [FontSizeOption, string][]).map(([id, label]) => ({
+                  id,
+                  label
+                }))}
+                value={fontSize}
+              />
+            }
+            description={a.fontSizeDesc}
+            title={a.fontSizeTitle}
           />
 
           <ListRow

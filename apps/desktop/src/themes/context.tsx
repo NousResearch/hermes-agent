@@ -21,6 +21,8 @@ import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAP
 import type { DesktopTheme, DesktopThemeColors } from './types'
 import { $userThemes, resolveTheme } from './user-themes'
 
+import { fontStore, fontSizeStore, FONT_OPTIONS, FONT_SIZE_OPTIONS } from '@/components/font-provider'
+
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
 // for any profile without its own assignment, so single-profile users and old
 // installs are unaffected.
@@ -222,6 +224,28 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     root.style.setProperty(k, v)
   }
 
+  const userFont = fontStore.get()
+  const userFontSize = fontSizeStore.get()
+
+  if (userFont !== 'system') {
+    const fontOption = FONT_OPTIONS.find(opt => opt.id === userFont)
+    if (fontOption) {
+      root.style.setProperty('--dt-font-sans', fontOption.value)
+    }
+  } else {
+    // Explicit reset to theme default when user picks system font.
+    root.style.setProperty('--dt-font-sans', typo.fontSans)
+  }
+
+  if (userFontSize) {
+    const fontSizeOption = FONT_SIZE_OPTIONS.find(opt => opt.id === userFontSize)
+    if (fontSizeOption) {
+      root.style.setProperty('--hermes-text-font-size', fontSizeOption.textSize)
+      root.style.setProperty('--hermes-tool-font-size', fontSizeOption.toolSize)
+      root.style.setProperty('--hermes-caption-font-size', fontSizeOption.captionSize)
+    }
+  }
+
   window.hermesDesktop?.setTitleBarTheme?.({
     background: c.background,
     foreground: c.foreground
@@ -343,7 +367,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // What actually gets painted (matches the `.dark` class applyTheme toggles).
   const renderedMode = useMemo(() => renderedModeFor(activeTheme.colors, resolvedMode), [activeTheme, resolvedMode])
 
-  useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
+  // Subscribe to font/fontSize stores so applyTheme re-runs on user changes.
+  const font = useStore(fontStore)
+  const fontSize = useStore(fontSizeStore)
+
+  useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode, font, fontSize])
 
   // Keep the native window appearance pinned to the app theme (vibrancy
   // material, titlebar, new-window pre-paint background).

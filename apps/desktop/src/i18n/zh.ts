@@ -345,6 +345,22 @@ export const zh: Translations = {
       intro: '这些是仅桌面端的显示偏好。模式控制明暗；主题控制强调色与对话界面样式。',
       colorMode: '颜色模式',
       colorModeDesc: '选择固定模式，或让 Hermes 跟随系统设置。',
+      fontTitle: '字体',
+      fontDesc: '选择界面字体。',
+      fontOptions: {
+        system: '系统默认',
+        lora: 'Lora',
+        'space-grotesk': 'Space Grotesk',
+        jetbrains: 'JetBrains Mono'
+      },
+      fontSizeTitle: '字体大小',
+      fontSizeDesc: '调整界面文字大小。',
+      fontSizeOptions: {
+        small: '小',
+        medium: '中',
+        large: '大',
+        extraLarge: '特大'
+      },
       toolViewTitle: '工具调用显示',
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       translucencyTitle: '窗口透明',

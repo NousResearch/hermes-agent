@@ -250,6 +250,12 @@ export interface Translations {
       intro: string
       colorMode: string
       colorModeDesc: string
+      fontTitle: string
+      fontDesc: string
+      fontOptions: { system: string; lora: string; 'space-grotesk': string; jetbrains: string }
+      fontSizeTitle: string
+      fontSizeDesc: string
+      fontSizeOptions: { small: string; medium: string; large: string; extraLarge: string }
       toolViewTitle: string
       toolViewDesc: string
       translucencyTitle: string

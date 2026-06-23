@@ -352,6 +352,22 @@ export const en: Translations = {
         'These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and chat surface styling.',
       colorMode: 'Color Mode',
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
+      fontTitle: 'Font',
+      fontDesc: 'Choose the interface font.',
+      fontOptions: {
+        system: 'System',
+        lora: 'Lora',
+        'space-grotesk': 'Space Grotesk',
+        jetbrains: 'JetBrains Mono'
+      },
+      fontSizeTitle: 'Font size',
+      fontSizeDesc: 'Adjust the interface text size.',
+      fontSizeOptions: {
+        small: 'Small',
+        medium: 'Medium',
+        large: 'Large',
+        extraLarge: 'Extra Large'
+      },
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
       translucencyTitle: 'Window Translucency',

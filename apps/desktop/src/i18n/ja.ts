@@ -266,6 +266,22 @@ export const ja = defineLocale({
         'デスクトップ専用の表示設定です。モードは明るさ、テーマはアクセントカラーとチャット面のスタイルを制御します。',
       colorMode: 'カラーモード',
       colorModeDesc: '固定モードを選ぶか、Hermes をシステム設定に合わせます。',
+      fontTitle: 'フォント',
+      fontDesc: 'インターフェースのフォントを選択します。',
+      fontOptions: {
+        system: 'システム',
+        lora: 'Lora',
+        'space-grotesk': 'Space Grotesk',
+        jetbrains: 'JetBrains Mono'
+      },
+      fontSizeTitle: 'フォントサイズ',
+      fontSizeDesc: 'インターフェースの文字サイズを調整します。',
+      fontSizeOptions: {
+        small: '小',
+        medium: '中',
+        large: '大',
+        extraLarge: '特大'
+      },
       toolViewTitle: 'ツール呼び出しの表示',
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
       translucencyTitle: 'ウィンドウの透過',

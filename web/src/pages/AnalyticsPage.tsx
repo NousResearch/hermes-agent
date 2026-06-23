@@ -36,7 +36,32 @@ const CHART_HEIGHT_PX = 160;
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
+  return n.toLocaleString();
+}
+
+function trueTokenTotal(entry: {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  reasoning_tokens?: number;
+  total_tokens?: number;
+}): number {
+  return entry.total_tokens ?? (
+    (entry.input_tokens ?? 0) +
+    (entry.output_tokens ?? 0) +
+    (entry.cache_read_tokens ?? 0) +
+    (entry.cache_write_tokens ?? 0) +
+    (entry.reasoning_tokens ?? 0)
+  );
+}
+
+function promptTokenTotal(entry: {
+  input_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+}): number {
+  return (entry.input_tokens ?? 0) + (entry.cache_read_tokens ?? 0) + (entry.cache_write_tokens ?? 0);
 }
 
 function formatDate(day: string): string {
@@ -132,7 +157,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
   if (daily.length === 0) return null;
 
   const maxTokens = Math.max(
-    ...daily.map((d) => d.input_tokens + d.output_tokens),
+    ...daily.map((d) => trueTokenTotal(d)),
     1,
   );
 
@@ -168,9 +193,10 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
           style={{ height: CHART_HEIGHT_PX }}
         >
           {daily.map((d) => {
-            const total = d.input_tokens + d.output_tokens;
+            const promptTokens = promptTokenTotal(d);
+            const total = trueTokenTotal(d);
             const inputH = Math.round(
-              (d.input_tokens / maxTokens) * CHART_HEIGHT_PX,
+              (promptTokens / maxTokens) * CHART_HEIGHT_PX,
             );
             const outputH = Math.round(
               (d.output_tokens / maxTokens) * CHART_HEIGHT_PX,
@@ -185,7 +211,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                   <div className="font-mondwest normal-case bg-card border border-border px-2.5 py-1.5 text-xs text-foreground shadow-lg whitespace-nowrap">
                     <div className="font-medium">{formatDate(d.day)}</div>
                     <div>
-                      {t.analytics.input}: {formatTokens(d.input_tokens)}
+                      {t.analytics.input}: {formatTokens(promptTokens)}
                     </div>
                     <div>
                       {t.analytics.output}: {formatTokens(d.output_tokens)}
@@ -201,7 +227,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                   style={{
                     backgroundColor:
                       "color-mix(in srgb, var(--series-input-token) 70%, transparent)",
-                    height: Math.max(inputH, total > 0 ? 1 : 0),
+                    height: Math.max(inputH, promptTokens > 0 ? 1 : 0),
                   }}
                 />
 
@@ -260,8 +286,10 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
               </tr>
             </thead>
             <tbody>
-              {sorted.map((d) => (
-                <tr
+              {sorted.map((d) => {
+                const promptTokens = promptTokenTotal(d);
+                return (
+                  <tr
                     key={d.day}
                     className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
                   >
@@ -273,7 +301,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                     </td>
                   <td className="text-right py-2 px-4">
                     <span style={{ color: "var(--series-input-token)" }}>
-                        {formatTokens(d.input_tokens)}
+                        {formatTokens(promptTokens)}
                       </span>
                   </td>
                   <td className="text-right py-2 pl-4">
@@ -282,7 +310,8 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                       </span>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -293,7 +322,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
 
 function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
   const { t } = useI18n();
-  const { sorted, sortKey, sortDir, toggle } = useTableSort(models, "input_tokens", "desc");
+  const { sorted, sortKey, sortDir, toggle } = useTableSort(models, "total_tokens", "desc");
 
   if (models.length === 0) return null;
 
@@ -314,7 +343,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
               <tr className="border-b border-border text-muted-foreground text-xs">
                 <SortHeader label={t.analytics.model} col="model" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
                 <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.tokens} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader label={t.analytics.tokens} col="total_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
               </tr>
             </thead>
             <tbody>
@@ -331,11 +360,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
                   </td>
                   <td className="text-right py-2 pl-4">
                     <span style={{ color: "var(--series-input-token)" }}>
-                      {formatTokens(m.input_tokens)}
-                    </span>
-                    {" / "}
-                    <span style={{ color: "var(--series-output-token)" }}>
-                      {formatTokens(m.output_tokens)}
+                      {formatTokens(trueTokenTotal(m))}
                     </span>
                   </td>
                 </tr>
@@ -545,13 +570,21 @@ export default function AnalyticsPage() {
                   items={[
                     {
                       label: t.analytics.totalTokens,
-                      value: formatTokens(
-                        data.totals.total_input + data.totals.total_output,
-                      ),
+                      value: formatTokens(data.totals.total_tokens ?? (
+                        (data.totals.total_input ?? 0) +
+                        (data.totals.total_output ?? 0) +
+                        (data.totals.total_cache_read ?? 0) +
+                        (data.totals.total_cache_write ?? 0) +
+                        (data.totals.total_reasoning ?? 0)
+                      )),
                     },
                     {
                       label: t.analytics.input,
-                      value: formatTokens(data.totals.total_input),
+                      value: formatTokens(
+                        (data.totals.total_input ?? 0) +
+                        (data.totals.total_cache_read ?? 0) +
+                        (data.totals.total_cache_write ?? 0)
+                      ),
                     },
                     {
                       label: t.analytics.output,

@@ -420,21 +420,27 @@ export interface AnalyticsDailyEntry {
   actual_cost: number
   api_calls: number
   cache_read_tokens: number
+  cache_write_tokens: number
   day: string
   estimated_cost: number
   input_tokens: number
   output_tokens: number
   reasoning_tokens: number
   sessions: number
+  total_tokens: number
 }
 
 export interface AnalyticsModelEntry {
   api_calls: number
+  cache_read_tokens: number
+  cache_write_tokens: number
   estimated_cost: number
   input_tokens: number
   model: string
   output_tokens: number
+  reasoning_tokens: number
   sessions: number
+  total_tokens: number
 }
 
 export interface AnalyticsResponse {
@@ -468,11 +474,13 @@ export interface AnalyticsTotals {
   total_actual_cost: number
   total_api_calls: null | number
   total_cache_read: null | number
+  total_cache_write: null | number
   total_estimated_cost: number
   total_input: null | number
   total_output: null | number
   total_reasoning: null | number
   total_sessions: number
+  total_tokens: null | number
 }
 
 export interface CronJob {

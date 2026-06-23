@@ -3755,6 +3755,45 @@ class TestNewEndpoints:
         assert row["api_calls"] == 9
         assert row["avg_tokens_per_session"] == 13_550
 
+    def test_analytics_usage_exposes_true_local_token_totals(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="analytics-token-total-test",
+                source="cli",
+                model="mimo-v2.5",
+            )
+            db.update_token_counts(
+                "analytics-token-total-test",
+                input_tokens=100,
+                output_tokens=25,
+                cache_read_tokens=40,
+                cache_write_tokens=5,
+                reasoning_tokens=7,
+                api_call_count=3,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/usage?days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+        row = next(r for r in data["by_model"] if r["model"] == "mimo-v2.5")
+        assert row["input_tokens"] == 100
+        assert row["output_tokens"] == 25
+        assert row["cache_read_tokens"] == 40
+        assert row["cache_write_tokens"] == 5
+        assert row["reasoning_tokens"] == 7
+        assert row["total_tokens"] == 177
+        assert data["totals"]["total_tokens"] == 177
+        assert data["totals"]["total_cache_write"] == 5
+        assert data["totals"]["total_api_calls"] == 3
+        day = data["daily"][0]
+        assert day["total_tokens"] == 177
+        assert day["cache_write_tokens"] == 5
+
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB
 

@@ -473,6 +473,36 @@ function formatInteger(value: null | number | undefined): string {
   return Number(value ?? 0).toLocaleString()
 }
 
+function trueTokenTotal(entry: {
+  input_tokens?: null | number
+  output_tokens?: null | number
+  cache_read_tokens?: null | number
+  cache_write_tokens?: null | number
+  reasoning_tokens?: null | number
+  total_input?: null | number
+  total_output?: null | number
+  total_cache_read?: null | number
+  total_cache_write?: null | number
+  total_reasoning?: null | number
+  total_tokens?: null | number
+}): number {
+  return Number(entry.total_tokens ?? (
+    Number(entry.input_tokens ?? entry.total_input ?? 0) +
+    Number(entry.output_tokens ?? entry.total_output ?? 0) +
+    Number(entry.cache_read_tokens ?? entry.total_cache_read ?? 0) +
+    Number(entry.cache_write_tokens ?? entry.total_cache_write ?? 0) +
+    Number(entry.reasoning_tokens ?? entry.total_reasoning ?? 0)
+  ))
+}
+
+function promptTokenTotal(entry: {
+  input_tokens?: null | number
+  cache_read_tokens?: null | number
+  cache_write_tokens?: null | number
+}): number {
+  return Number(entry.input_tokens ?? 0) + Number(entry.cache_read_tokens ?? 0) + Number(entry.cache_write_tokens ?? 0)
+}
+
 interface UsagePanelProps {
   error: string
   loading: boolean
@@ -494,7 +524,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
       return 1
     }
 
-    return daily.reduce((acc, entry) => Math.max(acc, (entry.input_tokens || 0) + (entry.output_tokens || 0)), 1)
+    return daily.reduce((acc, entry) => Math.max(acc, trueTokenTotal(entry)), 1)
   }, [daily])
 
   if (!totals) {
@@ -529,8 +559,11 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
         <UsageStat label={cc.statSessions} value={formatInteger(totals.total_sessions)} />
         <UsageStat label={cc.statApiCalls} value={formatInteger(totals.total_api_calls)} />
         <UsageStat
+          hint={`${formatTokens(
+            Number(totals.total_input ?? 0) + Number(totals.total_cache_read ?? 0) + Number(totals.total_cache_write ?? 0)
+          )} in / ${formatTokens(totals.total_output)} out`}
           label={cc.statTokens}
-          value={`${formatTokens(totals.total_input)} / ${formatTokens(totals.total_output)}`}
+          value={formatTokens(trueTokenTotal(totals))}
         />
         <UsageStat
           hint={totals.total_actual_cost > 0 ? cc.actualCost(formatCost(totals.total_actual_cost)) : undefined}
@@ -561,18 +594,19 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           <>
             <div className="flex h-24 items-end gap-px">
               {daily.map(entry => {
-                const inputH = Math.round(((entry.input_tokens || 0) / maxTokens) * 96)
+                const promptTokens = promptTokenTotal(entry)
+                const inputH = Math.round((promptTokens / maxTokens) * 96)
                 const outputH = Math.round(((entry.output_tokens || 0) / maxTokens) * 96)
 
                 return (
                   <div
                     className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
                     key={entry.day}
-                    title={`${entry.day} · in ${formatTokens(entry.input_tokens)} · out ${formatTokens(entry.output_tokens)}`}
+                    title={`${entry.day} · in ${formatTokens(promptTokens)} · out ${formatTokens(entry.output_tokens)}`}
                   >
                     <div
                       className="w-full rounded-t-[1px] bg-[color:var(--dt-primary)]/50"
-                      style={{ height: Math.max(inputH, entry.input_tokens > 0 ? 1 : 0) }}
+                      style={{ height: Math.max(inputH, promptTokens > 0 ? 1 : 0) }}
                     />
                     <div
                       className="w-full bg-emerald-500/60"
@@ -596,7 +630,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           rows={byModel.slice(0, 6).map(entry => ({
             key: entry.model,
             label: entry.model,
-            value: `${formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))} · ${formatCost(entry.estimated_cost)}`
+            value: `${formatTokens(trueTokenTotal(entry))} · ${formatCost(entry.estimated_cost)}`
           }))}
           title={cc.topModels}
         />

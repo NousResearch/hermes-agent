@@ -86,14 +86,16 @@ function TokenBar({
   input,
   output,
   cacheRead,
+  cacheWrite,
   reasoning,
 }: {
   input: number;
   output: number;
   cacheRead: number;
+  cacheWrite: number;
   reasoning: number;
 }) {
-  const total = input + output + cacheRead + reasoning;
+  const total = input + output + cacheRead + cacheWrite + reasoning;
   if (total === 0) return null;
 
   // Segments carry a CSS color value (hex or `var(--token)`) rather than
@@ -104,6 +106,7 @@ function TokenBar({
   // separate hex literals.
   const segments: Array<{ color: string; label: string; value: number }> = [
     { value: cacheRead, color: "#60a5fa", label: "Cache Read" }, // tailwind blue-400
+    { value: cacheWrite, color: "#38bdf8", label: "Cache Write" }, // tailwind sky-400
     { value: reasoning, color: "#c084fc", label: "Reasoning" }, // tailwind purple-400
     { value: input, color: "var(--series-input-token)", label: "Input" },
     { value: output, color: "var(--series-output-token)", label: "Output" },
@@ -374,7 +377,9 @@ function ModelCard({
 }) {
   const { t } = useI18n();
   const provider = entry.provider || modelVendor(entry.model);
-  const totalTokens = entry.input_tokens + entry.output_tokens;
+  const totalTokens = entry.total_tokens ?? (
+    entry.input_tokens + entry.output_tokens + entry.cache_read_tokens + entry.cache_write_tokens + entry.reasoning_tokens
+  );
   const caps = entry.capabilities;
 
   const isMain =
@@ -470,6 +475,7 @@ function ModelCard({
               input={entry.input_tokens}
               output={entry.output_tokens}
               cacheRead={entry.cache_read_tokens}
+              cacheWrite={entry.cache_write_tokens}
               reasoning={entry.reasoning_tokens}
             />
 
@@ -983,13 +989,13 @@ export default function ModelsPage() {
                         },
                         {
                           label: t.analytics.totalTokens,
-                          value: formatTokens(
-                            data.totals.total_input + data.totals.total_output,
-                          ),
+                          value: formatTokens(data.totals.total_tokens ?? (
+                            data.totals.total_input + data.totals.total_output + data.totals.total_cache_read + data.totals.total_cache_write + data.totals.total_reasoning
+                          )),
                         },
                         {
                           label: t.analytics.input,
-                          value: formatTokens(data.totals.total_input),
+                          value: formatTokens(data.totals.total_input + data.totals.total_cache_read + data.totals.total_cache_write),
                         },
                         {
                           label: t.analytics.output,

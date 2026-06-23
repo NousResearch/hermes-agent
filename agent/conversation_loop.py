@@ -74,6 +74,94 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _apply_context_routing(agent, approx_tokens: int) -> None:
+    """Route turn to heavy/light model based on context size (smart_model_routing).
+
+    Reads ``smart_model_routing`` from config.yaml. When enabled and
+    ``approx_tokens`` exceeds the threshold, switches the agent to the
+    configured heavy model.  When below threshold, restores the light
+    (primary) model.  Idempotent — no-ops when the agent is already on
+    the correct model for the current context size.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        smr = cfg.get("smart_model_routing")
+        if not isinstance(smr, dict) or not smr.get("enabled"):
+            return
+
+        threshold = smr.get("heavy_context_threshold_tokens")
+        if not isinstance(threshold, (int, float)) or threshold <= 0:
+            return
+
+        heavy = smr.get("heavy")
+        light = smr.get("light")
+        if not isinstance(heavy, dict) or not isinstance(light, dict):
+            return
+
+        heavy_model = (heavy.get("model") or "").strip()
+        heavy_provider = (heavy.get("provider") or "").strip().lower()
+        light_model = (light.get("model") or "").strip()
+        light_provider = (light.get("provider") or "").strip().lower()
+
+        if not heavy_model or not heavy_provider:
+            return
+        if not light_model or not light_provider:
+            return
+
+        current_model = (getattr(agent, "model", "") or "").strip()
+        current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+
+        is_heavy_context = approx_tokens > threshold
+
+        if is_heavy_context and current_provider == light_provider and current_model == light_model:
+            _do_context_route_switch(agent, heavy_provider, heavy_model, "heavy")
+        elif not is_heavy_context and current_provider == heavy_provider and current_model == heavy_model:
+            _do_context_route_switch(agent, light_provider, light_model, "light")
+    except Exception:
+        pass  # Never let routing logic break the agent loop
+
+
+def _do_context_route_switch(agent, target_provider: str, target_model: str, label: str) -> None:
+    """Switch agent to *target_provider*/*target_model* for context-based routing."""
+    import logging
+    _log = logging.getLogger(__name__)
+
+    try:
+        from agent.auxiliary_client import resolve_provider_client
+        client, _resolved_model = resolve_provider_client(
+            target_provider, model=target_model, raw_codex=True,
+        )
+        if client is None:
+            _log.warning("smart_model_routing: cannot resolve %s model %s", label, target_model)
+            return
+
+        from hermes_cli.model_normalize import normalize_model_for_provider
+        target_model = normalize_model_for_provider(target_model, target_provider)
+
+        api_key = getattr(client, "api_key", "") or ""
+        base_url = str(getattr(client, "base_url", "") or "")
+
+        # Determine api_mode (mirrors try_activate_fallback logic)
+        from hermes_cli.providers import determine_api_mode
+        api_mode = determine_api_mode(target_provider, base_url)
+
+        agent.switch_model(
+            new_model=target_model,
+            new_provider=target_provider,
+            api_key=api_key,
+            base_url=base_url,
+            api_mode=api_mode,
+        )
+        if hasattr(agent, "_buffer_vprint"):
+            agent._buffer_vprint(
+                f"   🔀 Smart routing: switched to {label} model "
+                f"({target_provider}/{target_model}) based on context size"
+            )
+    except Exception as exc:
+        _log.warning("smart_model_routing: switch to %s model failed: %s", label, exc)
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -968,6 +1056,9 @@ def run_conversation(
             except Exception:
                 pass
             break
+        
+        # ── Smart model routing: context-size-based provider switching ──
+        _apply_context_routing(agent, approx_request_tokens)
         
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None

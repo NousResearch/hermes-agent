@@ -1090,7 +1090,7 @@ class CodexAuxiliaryClient:
         adapter = _CodexCompletionsAdapter(real_client, model)
         self.chat = _CodexChatShim(adapter)
         self.api_key = real_client.api_key
-        self.base_url = real_client.base_url
+        self.base_url = str(real_client.base_url)
 
     def close(self):
         self._real_client.close()
@@ -1124,7 +1124,7 @@ class AsyncCodexAuxiliaryClient:
         async_adapter = _AsyncCodexCompletionsAdapter(sync_adapter)
         self.chat = _AsyncCodexChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
-        self.base_url = sync_wrapper.base_url
+        self.base_url = str(sync_wrapper.base_url)
         # Mirror the sync wrapper's _real_client so cache eviction by leaf
         # OpenAI client (e.g. _close_client_on_timeout in #23482) drops
         # this async entry too. Without this, sync and async cache entries
@@ -1267,7 +1267,7 @@ class AsyncAnthropicAuxiliaryClient:
         async_adapter = _AsyncAnthropicCompletionsAdapter(sync_adapter)
         self.chat = _AsyncAnthropicChatShim(async_adapter)
         self.api_key = sync_wrapper.api_key
-        self.base_url = sync_wrapper.base_url
+        self.base_url = str(sync_wrapper.base_url)
         # See AsyncCodexAuxiliaryClient: mirror _real_client so cache
         # eviction on a poisoned underlying client also drops this entry.
         self._real_client = sync_wrapper._real_client

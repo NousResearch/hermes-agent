@@ -105,6 +105,46 @@ const baseProps = {
   voiceLabel: ''
 }
 
+describe('StatusRule background-subagent indicator', () => {
+  it('renders ⛓ N on a wide terminal when subagents are running', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, active_subagents: 3 }
+    })
+
+    expect(textContent(element)).toContain('⛓ 3')
+  })
+
+  it('omits the segment when no subagents are running', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, active_subagents: 0 }
+    })
+
+    expect(textContent(element)).not.toContain('⛓')
+  })
+
+  it('omits the segment when the field is absent', () => {
+    const element = StatusRule({ ...baseProps })
+
+    expect(textContent(element)).not.toContain('⛓')
+  })
+
+  it('drops the subagent segment before the bg segment on a narrow terminal', () => {
+    // cols=44 is below the subagents breakpoint (92) but the bg breakpoint
+    // (88) too — both gone. Assert the lower-priority subagent indicator is
+    // not shown when space is tight even with a live count.
+    const element = StatusRule({
+      ...baseProps,
+      cols: 44,
+      bgCount: 1,
+      usage: { ...baseProps.usage, active_subagents: 2 }
+    })
+
+    expect(textContent(element)).not.toContain('⛓')
+  })
+})
+
 describe('StatusRule session count click target', () => {
   it('makes the live session count itself clickable', () => {
     const openSwitcher = vi.fn()

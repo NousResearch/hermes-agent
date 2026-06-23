@@ -1763,16 +1763,22 @@ def _provider_keys(provider: str) -> set[str]:
     return {k for k in (key, normalized) if k}
 
 
+def _model_lookup_key(model_id: str) -> str:
+    """Normalize model IDs for catalog comparisons."""
+    return _anthropic_display_model_id(model_id).lower()
+
+
 def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
+    lookup_key = _model_lookup_key(name_lower)
     return any(
-        name_lower == model.lower()
+        lookup_key == _model_lookup_key(model)
         for provider in providers
         for model in _PROVIDER_MODELS.get(provider, [])
     )
 
 
 _AGGREGATOR_PROVIDERS = frozenset(
-    {"nous", "openrouter", "copilot", "kilocode"}
+    {"nous", "openrouter", "copilot", "kilocode", "opencode-go", "opencode-zen"}
 )
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models
@@ -1891,6 +1897,7 @@ def detect_static_provider_for_model(
         current_provider == "custom"
         or current_provider.startswith("custom:")
     )
+    lookup_key = _model_lookup_key(name_lower)
     for pid, models in _PROVIDER_MODELS.items():
         if (
             pid in current_keys
@@ -1900,8 +1907,20 @@ def detect_static_provider_for_model(
             continue
         if _is_custom_current:
             continue
-        if any(name_lower == m.lower() for m in models):
-            return (pid, name)
+        for model in models:
+            model_lower = model.lower()
+            if lookup_key != _model_lookup_key(model_lower):
+                continue
+            if (
+                pid == "anthropic"
+                and "/" not in name_lower
+                and "." in name_lower
+                and name_lower == model_lower
+            ):
+                # Bare display-form Claude IDs also appear on OpenRouter. Let the
+                # OpenRouter lookup below expand them to a full provider slug.
+                continue
+            return (pid, model if name_lower != model_lower else name)
 
     # Borrow-list providers (re-expose other vendors' models) only after every
     # native-vendor catalog, and only when one is the current provider.
@@ -1964,17 +1983,18 @@ def _find_openrouter_slug(model_name: str) -> Optional[str]:
     name_lower = model_name.strip().lower()
     if not name_lower:
         return None
+    lookup_key = _model_lookup_key(name_lower)
 
     # Exact match (already has provider/ prefix)
     for mid in model_ids():
-        if name_lower == mid.lower():
+        if lookup_key == _model_lookup_key(mid):
             return mid
 
     # Try matching just the model part (after the /)
     for mid in model_ids():
         if "/" in mid:
             _, model_part = mid.split("/", 1)
-            if name_lower == model_part.lower():
+            if lookup_key == _model_lookup_key(model_part):
                 return mid
 
     return None

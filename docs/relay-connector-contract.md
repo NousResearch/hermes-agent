@@ -300,7 +300,90 @@ enrollment/rotation/kill-switch design: `docs/connector-gateway-auth-design.md`
 
 ---
 
-## 7. Versioning policy
+## 7. Per-instance delivery & the management plane (Phase 6)
+
+Phases 1–5 treat the connector as a single-tenant front: inbound events for a
+tenant fan out to that tenant's gateway socket(s). **Phase 6 makes delivery
+per-INSTANCE** — a shared bot can front many users/agents in one tenant (one
+Discord guild, one Telegram bot) without cross-delivery — and adds a small
+**management plane** the agent (or a managed Portal) uses to declare who-sees-what
+and what's-relevant. All of this lives **connector-side**; the gateway's only new
+responsibility is to **declare its relevance policy** at boot (§7.3).
+
+### 7.1 The delivery gate (connector-side, informational)
+
+For each inbound event the connector decides which instances receive it by
+composing three AND-ed filters. The gateway does not implement these — they run
+in the connector — but they define the delivery semantics the gateway relies on:
+
+| Layer | Question | Source of truth |
+| --- | --- | --- |
+| **owner / scope ∧ principal** | May this instance *see* this author here? | per-user `user_id → instance` bindings (the owner floor) + per-instance `(guild, channel)` scope grants + an `owner-only` / `allow-list` / `any` principal policy. |
+| **visibility floor** | Can the instance's bound owner actually `VIEW_CHANNEL` this in Discord? | live Discord ACL (effective permissions), fail-closed. Narrows an over-broad scope grant downward. |
+| **relevance** | *Given* it may see it, should the agent engage? | the relevance policy declared in §7.3 (address-gating / free-response / allow-bots). |
+
+The composition only ever **narrows** delivery (`deliver ⇔ authorized ∧ visible
+∧ relevant`); the **owner floor bypasses the relevance layer** (an author's own
+message always reaches their own instance — you don't @mention your own agent).
+A message authored by an unbound user reaches no instance (fail-closed). The
+full design + invariants live in the connector repo
+(`NousResearch/gateway-gateway`); this section is the gateway-facing summary.
+
+### 7.2 Management routes (connector-side, authenticated)
+
+The connector mounts authenticated management routes. They share the **same
+dual-auth** as the WS upgrade: either a managed NAS-signed `aud=agent:{instanceId}`
+RS256 JWT, **or** the gateway's own per-gateway secret bearer (§6.1
+`make_upgrade_token`). In both cases the connector resolves the authoritative
+`{tenant, instanceId}` from its **stored** record — **never** from the request
+body (a body-asserted `instanceId` is ignored).
+
+| Route | Purpose |
+| --- | --- |
+| `POST /manage/link` | Issue a short-lived code to bind a platform account to the authenticated instance (the `/link <code>` flow; the connector reads the authentic `user_id` off the inbound event). |
+| `POST /manage/scope`, `/manage/scope/release` | Claim / release a `(guild, channel)` scope for the authenticated instance. A channel is owned by at most one instance (non-overlap is a PK constraint). |
+| `POST /manage/principal` | Set the instance's principal policy (`owner-only` \| `allow-list` \| `any`). |
+| `POST /manage/dm-default` | Set the user's DM-default instance (DM tie-break when a user linked more than one). |
+| `POST /relay/policy` | Declare the instance's **relevance policy** (§7.3). |
+
+These are connector-owned (the management plane is not part of the gateway's
+agent path); the gateway only calls `POST /relay/policy` (§7.3). The others are
+driven by the managed Portal / `hermes` CLI.
+
+### 7.3 Relevance-policy declaration (the gateway's responsibility)
+
+The relevance layer (§7.1) is the per-tenant parity for the gateway's own
+behaviour knobs (`require_mention`, `free_response_channels`,
+`{PLATFORM}_ALLOW_BOTS`). So the **same** behaviour governs relay delivery, the
+gateway projects those knobs into a **platform-agnostic** policy and POSTs it to
+`POST /relay/policy` at boot (after its per-gateway secret is resolved).
+
+Body (`gateway/relay/__init__.py` `relay_relevance_policy()` → `send_relay_policy()`):
+
+| Field | Type | Projected from | Meaning |
+| --- | --- | --- | --- |
+| `platform` | string | the fronted platform (`relay_platform_identity`) | which platform this policy applies to. |
+| `requireAddress` | bool | `require_mention` | a non-owner message must @mention / reply-to the bot to be relevant. |
+| `freeResponseScopes` | string[] | `free_response_channels` | scope (channel) ids where `requireAddress` is waived. Same scope vocabulary as §7.1's scope grants. |
+| `allowOtherBots` | bool | `{PLATFORM}_ALLOW_BOTS ∈ {mentions, all}` | admit bot-authored messages (default off). |
+
+Auth is the per-gateway upgrade token (§6.1), so the connector attaches the
+policy to the authenticated instance. The gateway is the **source of truth** and
+re-declares **every boot** (a full replace, mirroring the `routeKeys` upsert at
+provision — self-healing). When the projected policy is all-default the gateway
+sends nothing (the connector's absent-row default already matches). The POST is
+**fail-soft**: a failure logs and boot proceeds — relevance is an optimization
+layered on the authorization gate (§7.1), never a boot dependency. There is **no
+new gateway inbound surface** and **no new credential** — it reuses the
+per-gateway secret and the same host as `/relay/provision`.
+
+> A relevance drop happens **before** the connector wakes a scaled-to-zero agent
+> (Phase 5), so excluded chatter never spins an agent up — relevance is the
+> primary scale-to-zero lever as well as a correctness filter.
+
+---
+
+## 8. Versioning policy
 
 - `contract_version` is an int; bump **only** for additive changes during the
   experimental phase (new optional fields, new `op`s).

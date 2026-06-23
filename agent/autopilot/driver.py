@@ -497,7 +497,7 @@ def maybe_continue(
 
     # DECEPTION SCAN — flag the known cheat tells in the candidate response so the
     # directive can name exactly what was caught and the ADR records it.
-    decep = deception.scan(final_response)
+    decep = deception.scan(final_response, user_name=getattr(agent, "_user_name", "") or "")
     if decep.detected:
         try:
             adr.record_decision(

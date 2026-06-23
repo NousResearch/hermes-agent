@@ -3389,6 +3389,38 @@ def github_model_reasoning_efforts(
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
 
 
+def _models_ssl_context():
+    """SSL context that trusts the system store *and* certifi's CA bundle.
+
+    Hermes's hand-rolled ``urllib`` probes otherwise rely on Python's default
+    OpenSSL trust store, which on many macOS python.org installs is empty (the
+    "Install Certificates.command" was never run). The live ``/models`` fetch
+    then fails with ``CERTIFICATE_VERIFY_FAILED`` even though the cert is valid
+    — and the picker silently degrades to the static fallback list. curl and
+    the chat path both work because the OpenAI SDK / httpx / requests already
+    bundle certifi; only these hand-rolled probes were left out.
+
+    ``certifi`` is a pinned dependency, so we union it *on top of* the system
+    roots: this fixes the empty-store case without dropping a corporate or
+    internal CA that only lives in the system store. Returns ``None`` (use
+    urllib's default) if anything goes wrong, so a probe that worked before
+    can never start failing.
+    """
+    try:
+        import ssl
+
+        ctx = ssl.create_default_context()
+        try:
+            import certifi
+
+            ctx.load_verify_locations(cafile=certifi.where())
+        except Exception:
+            pass
+        return ctx
+    except Exception:
+        return None
+
+
 def probe_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
@@ -3441,12 +3473,13 @@ def probe_api_models(
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
 
+    ssl_ctx = _models_ssl_context()
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
         tried.append(url)
         req = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout, context=ssl_ctx) as resp:
                 data = json.loads(resp.read().decode())
                 return {
                     "models": [m.get("id", "") for m in data.get("data", [])],

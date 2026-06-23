@@ -907,3 +907,29 @@ class TestNousRecommendedModels:
             patch("hermes_cli.models.check_nous_free_tier", side_effect=RuntimeError("boom")),
         ):
             assert get_nous_recommended_aux_model(vision=False) == "paid-model"
+
+
+class TestModelsSSLContext:
+    """The live /models probe must use certifi so it doesn't fail with
+    CERTIFICATE_VERIFY_FAILED on machines whose Python has an empty default
+    trust store (the common macOS python.org case)."""
+
+    def test_ssl_context_trusts_certifi_even_if_system_store_empty(self):
+        import ssl
+        ctx = _models_mod._models_ssl_context()
+        assert isinstance(ctx, ssl.SSLContext)
+        # certifi is unioned on top of the system store, so the trust store is
+        # never empty — the exact failure mode this fixes.
+        assert ctx.get_ca_certs(), "expected a non-empty trust store (certifi)"
+
+    def test_probe_passes_ssl_context_to_urlopen(self):
+        import ssl
+        captured = {}
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["context"] = context
+            raise OSError("stop after capturing")
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=fake_urlopen):
+            _models_mod.probe_api_models("k", "https://example.com/v1")
+        assert isinstance(captured.get("context"), ssl.SSLContext)

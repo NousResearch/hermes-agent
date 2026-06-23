@@ -2,7 +2,8 @@ const path = require('node:path')
 
 // Match the POSIX fallback surface used by the Python terminal environment.
 // macOS apps launched from Finder/Dock often inherit only /usr/bin:/bin:/usr/sbin:/sbin,
-// which misses Apple Silicon Homebrew and user-installed CLI tools such as codex.
+// which misses Apple Silicon Homebrew, ~/.local/bin tools such as cua-driver,
+// and user-installed CLI tools such as codex.
 const POSIX_SANE_PATH_ENTRIES = Object.freeze([
   '/opt/homebrew/bin',
   '/opt/homebrew/sbin',
@@ -49,8 +50,20 @@ function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
   return ordered.join(delimiter)
 }
 
+function userLocalBinFromHome({
+  homeDir,
+  hermesHome,
+  platform = process.platform,
+  pathModule = pathModuleForPlatform(platform)
+} = {}) {
+  if (platform === 'win32') return null
+  const baseHome = homeDir || (hermesHome ? pathModule.dirname(hermesHome) : null)
+  return baseHome ? pathModule.join(baseHome, '.local', 'bin') : null
+}
+
 function buildDesktopBackendPath({
   hermesHome,
+  homeDir,
   venvRoot,
   currentPath = '',
   platform = process.platform,
@@ -59,10 +72,11 @@ function buildDesktopBackendPath({
   const delimiter = delimiterForPlatform(platform)
   const hermesNodeBin = hermesHome ? pathModule.join(hermesHome, 'node', 'bin') : null
   const venvBin = venvRoot ? pathModule.join(venvRoot, platform === 'win32' ? 'Scripts' : 'bin') : null
+  const userLocalBin = userLocalBinFromHome({ homeDir, hermesHome, platform, pathModule })
   const saneEntries = platform === 'win32' ? [] : POSIX_SANE_PATH_ENTRIES
 
   return appendUniquePathEntries(
-    [hermesNodeBin, venvBin, currentPath, saneEntries],
+    [hermesNodeBin, venvBin, userLocalBin, currentPath, saneEntries],
     { delimiter }
   )
 }
@@ -93,6 +107,7 @@ function buildDesktopBackendEnv({
     PYTHONPATH: appendUniquePathEntries([...pythonPathEntries, currentPythonPath], { delimiter }),
     [key]: buildDesktopBackendPath({
       hermesHome,
+      homeDir: currentEnv?.HOME,
       venvRoot,
       currentPath: currentPathValue(currentEnv, platform),
       platform,
@@ -108,5 +123,6 @@ module.exports = {
   buildDesktopBackendPath,
   delimiterForPlatform,
   normalizeHermesHomeRoot,
-  pathEnvKey
+  pathEnvKey,
+  userLocalBinFromHome
 }

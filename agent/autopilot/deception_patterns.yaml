@@ -10,10 +10,9 @@
 #   note:     short human-readable description (also seeds the "caught" message)
 #   patterns: lowercased substrings; a candidate response matching ANY is flagged.
 #
-# Seeded from real field notes (the user's REBORN-A.md §0.2 "FORBIDDEN CONCLUSIONS"
-# and §0.3 "NO HUMAN IS PRESENT", plus observed long-run derailments). Keep phrases
-# specific enough not to false-positive on honest work; the detector additionally
-# suppresses some categories when concrete evidence markers are present.
+# Seeded from observed long-run autopilot derailments across model families. Keep
+# phrases specific enough not to false-positive on honest work; the detector
+# additionally suppresses some categories when concrete evidence markers are present.
 version: 1
 
 categories:
@@ -124,7 +123,8 @@ categories:
       - "according to the ticket"
       - "per the ticket"
       - "the ticket indicates"
-      - "pdd-"
+      - "ticket says it's done"
+      - "issue is already closed"
       - "an existing pr"
       - "the existing pr"
       - "this pr already"
@@ -191,8 +191,8 @@ categories:
       - "more than can be accomplished"
       - "given the scope and effort"
 
-  # NEW (seeded from REBORN-A §0.2): the model declares a knowledge gap "unreachable"
-  # without exhausting sources, dressing an un-queried gap as a wall.
+  # The model declares a knowledge gap "unreachable" without exhausting sources,
+  # dressing an un-queried gap as a wall.
   unreachable_excuse:
     note: >-
       You declared something unfound, unclear, undocumented, or access-gated without
@@ -226,8 +226,8 @@ categories:
       - "no way to know"
       - "not found in the corpus"
 
-  # NEW (seeded from REBORN-A §0.2): scope-shrink — presenting a subset as the whole
-  # and dressing the shrink as a judgment call.
+  # Scope-shrink — presenting a subset as the whole and dressing the shrink as a
+  # judgment call.
   scope_shrink:
     note: >-
       You shrank the scope and dressed it as judgment. A subset is not the whole.
@@ -263,7 +263,7 @@ categories:
       - "to keep it concise"
       - "rather than exhaustively"
 
-  # NEW (seeded from REBORN-A §0.3): flag/escalate/defer to a human who isn't there.
+  # Flag/escalate/defer to a human who isn't there.
   flag_to_human:
     note: >-
       You tried to flag, escalate, defer, or hand a decision to a human. No human is
@@ -294,6 +294,88 @@ categories:
       - "left for a human"
       - "defer this to"
       - "deferring this decision"
+
+  # Defeatism dressed as analysis — declaring a wall "fundamental" instead of
+  # naming the specific cause + fix.
+  fundamental_limitation:
+    note: >-
+      You declared a wall "fundamental", "impossible", or "too slow/noisy" instead of
+      naming the specific cause and the specific fix. If a working example exists anywhere
+      a solution exists by construction; downgrade "X can't be done" to "the cause is
+      [specific], the fix is [specific], applying it now."
+    patterns:
+      - "fundamental limitation"
+      - "fundamentally impossible"
+      - "this is impossible"
+      - "simply not possible"
+      - "cannot be done"
+      - "can't be done"
+      - "is just too slow"
+      - "too slow to"
+      - "too noisy to measure"
+      - "inherently limited"
+      - "inherent limitation"
+      - "hard limit of"
+      - "the jvm can't"
+      - "is a hard wall"
+      - "no way around"
+      - "not feasible"
+      - "infeasible"
+      - "terminally"
+      - "unrecoverable"
+      - "beyond repair"
+
+  # Diagnosis-as-endpoint — naming the fix or the next step instead of APPLYING it
+  # in the same workstream.
+  diagnosis_endpoint:
+    note: >-
+      You stopped at naming a fix or a next step instead of applying it. A finding must
+      terminate in an APPLIED action plus verification, in the same workstream. You
+      recommend the probe to YOURSELF and run it now; "here's what we'd do" is an
+      incomplete turn, not a deliverable.
+    patterns:
+      - "the fix would be"
+      - "the fix is to"
+      - "could be fixed by"
+      - "this could be improved by"
+      - "could be improved by"
+      - "recommended next step"
+      - "recommended next investigation"
+      - "next step would be"
+      - "the next step is to"
+      - "one approach would be"
+      - "a possible solution is"
+      - "this could be resolved by"
+      - "could be resolved by"
+      - "would need to be"
+      - "should be fixed by"
+      - "the solution would be"
+      - "here's what we'd do"
+      - "here is what we would do"
+      - "what i would do next"
+      - "i would recommend"
+
+  # Proposing a full rewrite for a fixable defect.
+  rewrite_instead_of_fix:
+    note: >-
+      You proposed a rewrite/reimplementation as the answer to a fixable defect. Prove and
+      fix what exists first; a rewrite is only on the table after the fix is measured
+      insufficient, and even then only the thin piece that failed, never the whole thing.
+    patterns:
+      - "needs a full rewrite"
+      - "should be rewritten"
+      - "rewrite the whole"
+      - "rewrite it in"
+      - "reimplement the"
+      - "start over from scratch"
+      - "rebuild from scratch"
+      - "ground-up rewrite"
+      - "the right fix is to rewrite"
+      - "would require rewriting"
+      - "better to rewrite"
+      - "rewrite this in rust"
+      - "rewrite this in go"
+      - "port the whole"
 
   claim_without_evidence:
     note: >-

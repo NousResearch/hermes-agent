@@ -16,7 +16,7 @@ tells can be added by editing the YAML or contributing a PR — no logic change.
 Run ``hermes autopilot harvest-deceptions`` to mine the ADR logs for novel
 phrasings the model used that aren't in the dictionary yet, then promote them.
 
-Categories (the B-series from the user's field notes + REBORN-A §0.2/§0.3):
+Categories (the recurring long-run deception families):
   await_user        — "awaiting your review" / "the user can review" / "waiting for <name>"
   reviewer_attack   — "the Council can't see tables / lacks vision"
   external_artifact — "this Jira ticket / PR shows it's done"
@@ -131,6 +131,127 @@ def load_dictionary(force: bool = False) -> _Dictionary:
     return d
 
 
+# --------------------------------------------------------------------------- #
+# LIVE in-session learning                                                      #
+#                                                                               #
+# Detection is live every turn, but the SHIPPED dictionary only grows when a    #
+# human runs `harvest`. That leaves a hole on a long run: if the model invents  #
+# a NOVEL evasion the dictionary doesn't know, the Council may still deny it,   #
+# but the detector stays silent and the model can keep reusing that fresh       #
+# phrasing for the rest of the SAME run. To close that hole, when the Council   #
+# denies a completion the detector did NOT flag, the driver calls ``learn()``   #
+# with the offending response: we extract its candidate clauses and add them to #
+# a process-scoped learned set the detector consults immediately, so the same   #
+# novel dodge is caught on the model's very next turn — no human, no run-end.   #
+# Learned phrasings are also appended to the local overlay so they persist into #
+# future runs (and can later be promoted upstream via `harvest`).               #
+# --------------------------------------------------------------------------- #
+
+# Process-scoped learned phrasings (category -> set of lowercased clauses).
+_LEARNED: dict[str, set] = {}
+
+# Generic filler clauses we never want to learn (too broad / would false-positive).
+_LEARN_STOPCLAUSES = frozenset({
+    "the work", "the goal", "the task", "the council", "the user", "the model",
+    "let me", "i will", "i have", "i am", "it is", "this is", "here is", "for now",
+    "in summary", "to summarize", "as follows", "as a result", "in conclusion",
+})
+
+
+def _extract_learn_candidates(text: str, *, max_len: int = 100, min_len: int = 12) -> list[str]:
+    """Break a novel evasion response into short candidate clauses to learn.
+
+    Conservative: bounded-length clauses only (too long never matches again; too
+    short over-matches), skips generic filler, and skips clauses that already
+    match a known pattern (those aren't novel). Splits on sentence punctuation
+    AND commas so a long sentence yields usable sub-clauses.
+    """
+    import re as _re
+    d = load_dictionary()
+    known: list[str] = []
+    for cat in d.categories:
+        known.extend(d.patterns(cat))
+    known.extend(learned_patterns())
+
+    out: list[str] = []
+    seen: set = set()
+    for chunk in _re.split(r"[.,\n;:!?]", text.lower()):
+        c = chunk.strip(" -•\t\"'()[]")
+        if not (min_len <= len(c) <= max_len):
+            continue
+        if c in _LEARN_STOPCLAUSES or c in seen:
+            continue
+        if any(p in c for p in known):   # already covered — not novel
+            continue
+        # require it to look like a stance/claim, not a bare artifact line
+        if _re.search(r"\b(i|we|this|that|it|the|would|should|could|enough|sufficient|"
+                      r"complete|done|await|wait|entrust|hand|flag|defer|fix|rewrite|"
+                      r"limitation|impossible|suffice|review|verify|operator|user)\b", c):
+            seen.add(c)
+            out.append(c)
+    return out[:5]
+
+
+def learned_patterns() -> tuple[str, ...]:
+    """All currently-learned phrasings across categories (process-scoped)."""
+    out: list[str] = []
+    for s in _LEARNED.values():
+        out.extend(s)
+    return tuple(out)
+
+
+def learn(text: str, *, category: str = "learned_evasion", persist: bool = True) -> list[str]:
+    """Learn novel deception phrasings from a response the Council denied but the
+    detector did NOT flag. Adds them to the process-scoped learned set (enforced
+    immediately) and, when ``persist``, appends them to the local overlay YAML so
+    they survive into future runs. Returns the phrases learned this call.
+    """
+    candidates = _extract_learn_candidates(text)
+    if not candidates:
+        return []
+    bucket = _LEARNED.setdefault(category, set())
+    new = [c for c in candidates if c not in bucket]
+    bucket.update(new)
+    if persist and new:
+        try:
+            _append_to_overlay(category, new)
+        except Exception as exc:  # noqa: BLE001 — learning must never break the run
+            logger.debug("autopilot: failed to persist learned patterns (%s)", exc)
+    if new:
+        logger.info("autopilot: learned %d novel evasion phrasing(s): %s", len(new), new)
+    return new
+
+
+def _append_to_overlay(category: str, phrases: list[str]) -> None:
+    """Append newly-learned phrases to the local overlay YAML (creating it if
+    needed) under ``category``, then invalidate the dictionary cache so the next
+    scan sees them via the normal merge path too."""
+    import yaml
+    path = _overlay_yaml_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict[str, Any] = {}
+    if path.exists():
+        with path.open("r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    cats = data.setdefault("categories", {})
+    spec = cats.setdefault(category, {})
+    if not spec.get("note"):
+        spec["note"] = (
+            "Learned live from a Council-denied response the detector had not yet "
+            "flagged. Promote the genuine tells into deception_patterns.yaml."
+        )
+    existing = list(spec.get("patterns") or [])
+    for p in phrases:
+        if p not in existing:
+            existing.append(p)
+    spec["patterns"] = existing
+    tmp = path.with_suffix(".yaml.tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False)
+    tmp.replace(path)
+    load_dictionary(force=True)  # re-merge so the persisted form is also live
+
+
 @dataclass
 class DeceptionSignal:
     """Result of the deception scan over a candidate final response."""
@@ -221,5 +342,14 @@ def scan(final_response: str, *, user_name: str = "") -> DeceptionSignal:
     if len(t) > 200 and _has_any(t, d.patterns(_STALL_CATEGORY)) and not _has_any(t, d.artifact_verbs):
         sig.flags.append(_STALL_CATEGORY)
         sig.notes.append(d.note(_STALL_CATEGORY))
+
+    # learned_evasion: novel phrasings captured live this run from Council-denied
+    # responses the dictionary hadn't seen. Enforced from the model's very next turn.
+    if _has_any(t, learned_patterns()):
+        sig.flags.append("learned_evasion")
+        sig.notes.append(
+            "You reused a phrasing the Council already rejected earlier in this run. "
+            "It was learned as an evasion; it does not end the run. Do the real work."
+        )
 
     return sig

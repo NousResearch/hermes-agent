@@ -509,6 +509,25 @@ def maybe_continue(
         except Exception as exc:  # noqa: BLE001
             logger.debug("autopilot: ADR deception record failed (%s)", exc)
         logger.warning("autopilot: deception flags=%s", decep.flags)
+    else:
+        # LIVE LEARNING: the Council denied (we are in the not-complete branch) but
+        # the detector flagged NOTHING — the model evaded with a phrasing the
+        # dictionary doesn't know yet. Capture it now so the SAME novel dodge is
+        # caught on the next turn of THIS run, instead of waiting for a human to
+        # run `harvest` after the run ends. Best-effort; never breaks the gate.
+        try:
+            learned = deception.learn(final_response)
+            if learned:
+                adr.record_decision(
+                    agent, kind="deception", goal=goal,
+                    gap="learned novel evasion (Council denied, detector silent)",
+                    rationale="newly learned phrasings: " + " | ".join(learned),
+                    source="live-learning",
+                    chosen="continue — novel evasion learned + enforced for the rest of this run",
+                )
+                logger.warning("autopilot: live-learned %d novel evasion phrasing(s)", len(learned))
+        except Exception as exc:  # noqa: BLE001 — learning must never break the gate
+            logger.debug("autopilot: live-learning failed (%s)", exc)
 
     if agent._autopilot_stall >= no_progress_k:
         _emit(agent, f"⚠️ Autopilot: no real artifact progress after {agent._autopilot_stall} attempts — stopping and surfacing.")

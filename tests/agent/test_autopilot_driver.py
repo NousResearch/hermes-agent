@@ -608,3 +608,49 @@ def test_reinforcement_disabled_when_zero(monkeypatch):
     d = driver.maybe_continue(a, msgs, "clean response with real work", "g")
     # No deception, cadence disabled -> no contract reminder.
     assert "CONTRACT REMINDER" not in (d or "")
+
+
+# --------------------------------------------------------------------------- #
+# Live learning wiring (Council denied + detector silent -> learn novel evasion) #
+# --------------------------------------------------------------------------- #
+def test_live_learning_captures_novel_evasion(monkeypatch, tmp_path):
+    from agent.autopilot import deception
+    overlay = tmp_path / "deception-patterns.local.yaml"
+    monkeypatch.setattr(deception, "_overlay_yaml_path", lambda: overlay)
+    deception._LEARNED.clear()
+    deception.load_dictionary(force=True)
+
+    a = make_agent(_autopilot_goal="ship it")
+    monkeypatch.setattr(driver, "judge_completion",
+                        lambda *args, **kw: CompletionVerdict(complete=False, directive="keep going", verdict="deny"))
+    # A novel evasion the dictionary doesn't know (no known tell present).
+    novel = "Honestly, I shall entrust the verification to the esteemed operator henceforth."
+    driver.maybe_continue(a, [{"role": "user", "content": "go"}], novel, "ship it")
+    # The phrasing was learned and is now enforced on the next scan.
+    assert "learned_evasion" in deception.scan(novel).flags
+
+    deception._LEARNED.clear()
+    monkeypatch.undo()
+    deception.load_dictionary(force=True)
+
+
+def test_live_learning_skips_when_detector_already_fired(monkeypatch, tmp_path):
+    from agent.autopilot import deception
+    overlay = tmp_path / "deception-patterns.local.yaml"
+    monkeypatch.setattr(deception, "_overlay_yaml_path", lambda: overlay)
+    deception._LEARNED.clear()
+    deception.load_dictionary(force=True)
+
+    a = make_agent(_autopilot_goal="ship it")
+    monkeypatch.setattr(driver, "judge_completion",
+                        lambda *args, **kw: CompletionVerdict(complete=False, directive="x", verdict="deny"))
+    # A KNOWN tell — the detector fires, so live-learning must NOT also run.
+    driver.maybe_continue(a, [{"role": "user", "content": "go"}],
+                          "It's complete and ready for your review.", "ship it")
+    # Nothing novel learned (the await/claim tells were already known).
+    assert deception._LEARNED.get("learned_evasion", set()) == set() or \
+        not any("ready for your review" in p for p in deception.learned_patterns())
+
+    deception._LEARNED.clear()
+    monkeypatch.undo()
+    deception.load_dictionary(force=True)

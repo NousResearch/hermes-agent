@@ -467,6 +467,9 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["script"] = job["script"]
     if job.get("no_agent"):
         result["no_agent"] = True
+    if job.get("ambient"):
+        result["ambient"] = True
+        result["max_messages"] = job.get("max_messages", 3)
     if job.get("enabled_toolsets"):
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
@@ -539,6 +542,8 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    ambient: Optional[bool] = None,
+    max_messages: Optional[int] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -605,6 +610,8 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                ambient=bool(ambient),
+                max_messages=3 if max_messages is None else max_messages,
             )
             _notify_provider_jobs_changed_safe()
             return json.dumps(
@@ -771,6 +778,13 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if ambient is not None:
+                updates["ambient"] = bool(ambient)
+            if max_messages is not None:
+                try:
+                    updates["max_messages"] = max(0, int(max_messages))
+                except (TypeError, ValueError):
+                    return tool_error("max_messages must be an integer", success=False)
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -888,6 +902,14 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                     "WHEN TO USE True: recurring script-only pings where the script itself produces the exact message text (memory/disk/GPU watchdogs, threshold alerts, heartbeats, CI notifications, API pollers with a fixed output shape). "
                     "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
                 ),
+            },
+            "ambient": {
+                "type": "boolean",
+                "description": "When true, run this as an ambient initiative wake on the normal cron scheduler. The agent decides whether to report anything; [SILENT] suppresses delivery.",
+            },
+            "max_messages": {
+                "type": "integer",
+                "description": "Soft visible-message budget for ambient cron jobs. Default: 3. The scheduler still delivers through the normal cron delivery path.",
             },
             "context_from": {
                 "type": "array",

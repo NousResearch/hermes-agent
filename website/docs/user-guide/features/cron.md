@@ -17,6 +17,8 @@ Cron jobs can:
 - attach zero, one, or multiple skills to a job
 - deliver results back to the origin chat, local files, or configured platform targets
 - run in fresh agent sessions with the normal static tool list
+- run in **ambient mode** — a low-priority initiative wake where the agent can
+  decide to send nothing by returning `[SILENT]`
 - run in **no-agent mode** — a script on a schedule, its stdout delivered verbatim, zero LLM involvement (see the [no-agent mode](#no-agent-mode-script-only-jobs) section below)
 
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
@@ -92,6 +94,25 @@ cronjob(
 ```
 
 This is useful when you want a scheduled agent to inherit reusable workflows without stuffing the full skill text into the cron prompt itself.
+
+## Ambient cron jobs
+
+Ambient cron jobs reuse the normal scheduler, agent run, delivery, and audit
+paths, but change the prompt contract from "produce a scheduled report" to
+"wake, inspect context, and decide whether anything should be sent." If nothing
+should be visible, the agent returns exactly `[SILENT]` and delivery is
+suppressed.
+
+```python
+cronjob(
+    action="create",
+    schedule="every 2h",
+    name="Ambient check-in",
+    prompt="Use persona, memory, and recent context to decide whether a natural check-in or light update would be useful.",
+    ambient=True,
+    max_messages=3,
+)
+```
 
 ## Running a job inside a project directory
 

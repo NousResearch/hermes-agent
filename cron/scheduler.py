@@ -1421,17 +1421,35 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
-    cron_hint = (
-        "[IMPORTANT: You are running as a scheduled cron job. "
-        "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
-        "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
-    )
+    if job.get("ambient"):
+        try:
+            max_messages = max(0, int(job.get("max_messages", 3)))
+        except (TypeError, ValueError):
+            max_messages = 3
+        cron_hint = (
+            "[IMPORTANT: You are running as an ambient initiative cron wake. "
+            "This is a low-priority scheduled check, not a mandatory report. "
+            "First decide whether any action is natural and useful from persona, "
+            "memory, recent context, and the job prompt. "
+            f"VISIBLE MESSAGE BUDGET: {max_messages}. "
+            "The scheduler will automatically deliver your final response, so do "
+            "NOT use send_message or try to deliver output yourself. "
+            "If nothing should be sent, respond with exactly \"[SILENT]\" "
+            "(nothing else) to suppress delivery. Never combine [SILENT] with "
+            "content. Do not send content just to use the budget.]\n\n"
+        )
+    else:
+        cron_hint = (
+            "[IMPORTANT: You are running as a scheduled cron job. "
+            "DELIVERY: Your final response will be automatically delivered "
+            "to the user — do NOT use send_message or try to deliver "
+            "the output yourself. Just produce your report/output as your "
+            "final response and the system handles the rest. "
+            "SILENT: If there is genuinely nothing new to report, respond "
+            "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+            "Never combine [SILENT] with content — either report your "
+            "findings normally, or say [SILENT] and nothing more.]\n\n"
+        )
     prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")

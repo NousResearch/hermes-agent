@@ -520,6 +520,25 @@ class TestDisabledToolsetsPlatformBundle:
             f"Web tools not removed: {present_web - removed}"
         )
 
+    def test_inactive_posture_disable_does_not_strip_leaf_toolsets(self):
+        """A stale Blank Slate ``coding`` disable must not erase file/terminal."""
+        from model_tools import get_tool_definitions
+
+        tools = get_tool_definitions(
+            enabled_toolsets=["file", "terminal"],
+            disabled_toolsets=["coding"],
+            quiet_mode=True,
+        )
+        names = sorted(t["function"]["name"] for t in tools)
+
+        assert names == [
+            "patch",
+            "process",
+            "read_file",
+            "search_files",
+            "terminal",
+            "write_file",
+        ]
 
     def test_disabling_bundle_removes_platform_tools_but_keeps_core(self):
         """Disabling hermes-discord (when enabled) removes discord/discord_admin

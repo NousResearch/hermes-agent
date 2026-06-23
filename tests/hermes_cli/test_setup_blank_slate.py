@@ -27,6 +27,9 @@ class TestBlankSlateMinimalToolsets:
         # The two kept toolsets must NOT be in the disabled list.
         assert "file" not in disabled
         assert "terminal" not in disabled
+        # Posture bundles overlap the kept leaf toolsets and must not be used
+        # as hard disables, or model_tools would subtract file/terminal too.
+        assert "coding" not in disabled
         # A representative spread of capabilities must be suppressed.
         for ts in ("web", "browser", "code_execution", "vision", "memory",
                    "delegation", "cronjob", "skills", "image_gen"):
@@ -51,7 +54,9 @@ class TestBlankSlateMinimalToolsets:
         _blank_slate_minimize_config(cfg)
         enabled = sorted(_get_platform_tools(cfg, "cli"))
         defs = model_tools.get_tool_definitions(
-            enabled_toolsets=enabled, disabled_toolsets=None, quiet_mode=True
+            enabled_toolsets=enabled,
+            disabled_toolsets=cfg["agent"]["disabled_toolsets"],
+            quiet_mode=True,
         )
         names = sorted(
             {(d.get("function") or {}).get("name") or d.get("name") for d in defs}

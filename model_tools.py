@@ -30,7 +30,7 @@ import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
-from toolsets import resolve_toolset, validate_toolset
+from toolsets import get_toolset, resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +396,14 @@ def _compute_tool_definitions(
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
+                ts_def = get_toolset(toolset_name)
+                if (
+                    enabled_toolsets is not None
+                    and toolset_name not in enabled_toolsets
+                    and isinstance(ts_def, dict)
+                    and ts_def.get("posture")
+                ):
+                    continue
                 if toolset_name.startswith("hermes-"):
                     # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, so
                     # subtracting the whole bundle would strip core tools shared

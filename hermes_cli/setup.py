@@ -3019,6 +3019,8 @@ def _blank_slate_minimal_toolsets(config: dict):
                 continue  # platform composites — not user-facing toolsets
             if isinstance(tdef, dict) and tdef.get("includes"):
                 continue  # composite groupings, not leaf toolsets
+            if isinstance(tdef, dict) and tdef.get("posture"):
+                continue  # posture bundles overlap leaf toolsets like file/terminal
             all_keys.add(k)
 
         disabled = sorted(all_keys - keep)

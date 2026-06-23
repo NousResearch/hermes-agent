@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Graphnosis, Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or graphnosis, honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
 ```
 
 ## How It Works
@@ -587,12 +587,42 @@ hermes config set memory.provider memori
 hermes memory setup
 ```
 
+### Graphnosis
+
+Local encrypted engram graph — recall, remember, auto-prefetch. Requires the [Graphnosis](https://graphnosis.com/download) desktop app running with cortex unlocked. No API key.
+
+| | |
+|---|---|
+| **Best for** | Personal encrypted memory, cross-session recall, engram routing |
+| **Requires** | [Graphnosis](https://graphnosis.com/download) app + Node 18+ for `npx @graphnosis/mcp-relay` (MCP catalog path) |
+| **Data storage** | Local encrypted cortex on your machine |
+| **Cost** | Free (Graphnosis app) |
+
+**Tools (3):** `graphnosis_recall`, `graphnosis_remember`, `graphnosis_stats`
+
+Also install the MCP catalog for the full tool surface (`edit`, `forget`, `cross_search`, skills, consent):
+
+```bash
+hermes mcp install graphnosis
+```
+
+**Setup:**
+```bash
+hermes memory setup    # select "graphnosis"
+hermes graphnosis status
+```
+
+**Config:** `$HERMES_HOME/graphnosis.json` (`socket_path`, `default_engram`, `prefetch_max_tokens`).
+
+See [Graphnosis + Hermes integration](/user-guide/integrations/graphnosis).
+
 ---
 
 ## Provider Comparison
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
+| **Graphnosis** | Local | Free | 3 | Graphnosis app + `@graphnosis/mcp-relay` | Local encrypted engrams + auto-prefetch |
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud/Self-hosted | Free/Paid | 5 | `mem0ai` | Server-side LLM extraction + OSS mode |
@@ -608,7 +638,7 @@ hermes memory setup
 Each provider's data is isolated per [profile](/user-guide/profiles):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
-- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
+- **Config file providers** (Graphnosis, Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
 

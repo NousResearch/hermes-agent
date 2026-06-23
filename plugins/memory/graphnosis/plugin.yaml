@@ -1,0 +1,6 @@
+name: graphnosis
+version: 1.0.0
+description: "Local encrypted engram graph — recall, remember, and auto-prefetch via Graphnosis."
+hooks:
+  - prefetch
+  - on_memory_write

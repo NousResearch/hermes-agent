@@ -1,0 +1,35 @@
+manifest_version: 1
+
+name: graphnosis
+description: Local encrypted memory — recall, remember, edit, engrams, skills. Requires Graphnosis app.
+source: https://graphnosis.com/getting-started/connect-ai
+
+transport:
+  type: stdio
+  command: npx
+  args: ["-y", "@graphnosis/mcp-relay", "${HOME}/.graphnosis/mcp.sock"]
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - recall
+    - remind
+    - remember
+    - edit
+    - forget
+    - stats
+    - cross_search
+    - confirm_data_access
+
+post_install: |
+  Install Graphnosis from https://graphnosis.com/download and unlock your cortex.
+
+  Recommended: also enable the memory provider for auto-prefetch:
+    hermes memory setup    # select graphnosis
+
+  Optional skill (recall hygiene + consent):
+    hermes skills install https://graphnosis.com/skills/graphnosis/SKILL.md
+
+  Start a new Hermes chat session to load MCP tools.

@@ -38,6 +38,10 @@ _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
         "command": "codex",
         "args": ["mcp-server"],
     },
+    "graphnosis": {
+        "command": "npx",
+        "args": ["-y", "@graphnosis/mcp-relay", "${HOME}/.graphnosis/mcp.sock"],
+    },
 }
 
 

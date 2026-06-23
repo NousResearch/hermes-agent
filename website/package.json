@@ -37,7 +37,11 @@
   },
   "overrides": {
     "serialize-javascript": "^7.0.5",
-    "uuid": "^14.0.0"
+    "uuid": "^14.0.0",
+    "undici": "7.28.0",
+    "webpack-bundle-analyzer": {
+      "ws": "7.5.11"
+    }
   },
   "browserslist": {
     "production": [

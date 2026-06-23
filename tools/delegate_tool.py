@@ -569,11 +569,11 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
     the names of any individual toolsets whose tools are a *subset* of the
     parent's available tools.  The original parent toolset names are preserved.
     """
+    from toolsets import resolve_toolset
+
     parent_tool_names: set = set()
     for ts_name in parent_toolsets:
-        ts_def = TOOLSETS.get(ts_name)
-        if ts_def:
-            parent_tool_names.update(ts_def.get("tools", []))
+        parent_tool_names.update(resolve_toolset(ts_name))
 
     if not parent_tool_names:
         return set(parent_toolsets)
@@ -586,6 +586,38 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
         if ts_tools and set(ts_tools).issubset(parent_tool_names):
             expanded.add(ts_name)
     return expanded
+
+
+def _get_allowed_child_toolset_scope() -> Optional[set[str]]:
+    """Return operator-configured child-only toolsets, expanded to leaves.
+
+    By default delegate_task is strictly non-escalating: children can only use
+    toolsets already present on the parent. Lean router sessions intentionally
+    keep the parent small (often just ``router`` + ``delegation``) and need an
+    explicit, audited allowlist for subtools they may grant to children.
+
+    Config key: ``delegation.allowed_child_toolsets``. Empty/missing preserves
+    the historical strict parent-intersection behavior.
+    """
+    raw = _load_config().get("allowed_child_toolsets")
+    if not isinstance(raw, list) or not raw:
+        return None
+    configured = {str(name).strip() for name in raw if str(name).strip()}
+    if not configured:
+        return None
+    return configured | _expand_parent_toolsets(configured)
+
+
+def _scope_requested_toolsets(
+    requested_toolsets: List[str], parent_toolsets: set[str]
+) -> List[str]:
+    """Limit requested child toolsets to parent scope plus optional allowlist."""
+    expanded_parent = _expand_parent_toolsets(parent_toolsets)
+    allowed = set(expanded_parent)
+    configured_scope = _get_allowed_child_toolset_scope()
+    if configured_scope:
+        allowed.update(configured_scope)
+    return [t for t in requested_toolsets if t in allowed]
 
 
 def _preserve_parent_mcp_toolsets(
@@ -766,14 +798,53 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
-    """Remove toolsets that contain only blocked tools."""
+    """Remove blocked toolsets, including blocked members of composites.
+
+    Composite toolsets such as ``router`` can include blocked child toolsets
+    (for example ``delegation`` or ``messaging``). Passing the composite name
+    through unchanged would re-enable those blocked tools for leaf children, so
+    composites are expanded to their safe included toolsets when needed.
+    """
     blocked_toolset_names = {
         "delegation",
         "clarify",
         "memory",
         "code_execution",
+        "messaging",
     }
-    return [t for t in toolsets if t not in blocked_toolset_names]
+
+    def _sanitize(name: str, seen: Optional[set[str]] = None) -> List[str]:
+        if name in blocked_toolset_names:
+            return []
+        if seen is None:
+            seen = set()
+        if name in seen:
+            return []
+        seen.add(name)
+
+        ts_def = TOOLSETS.get(name)
+        includes = list((ts_def or {}).get("includes", []) or [])
+        if not includes:
+            return [name]
+
+        safe_includes: List[str] = []
+        for included in includes:
+            safe_includes.extend(_sanitize(included, seen.copy()))
+
+        # Keep composites with their own direct tools (e.g. debugging), but do
+        # not keep include-only composites (e.g. router) because that would also
+        # keep their blocked includes active.
+        direct_tools = list((ts_def or {}).get("tools", []) or [])
+        if direct_tools:
+            return [name, *safe_includes]
+        return safe_includes
+
+    stripped: List[str] = []
+    for toolset_name in toolsets:
+        for safe_name in _sanitize(toolset_name):
+            if safe_name not in stripped:
+                stripped.append(safe_name)
+    return stripped
 
 
 def _build_child_progress_callback(
@@ -1054,11 +1125,12 @@ def _build_child_agent(
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
     if toolsets:
-        # Intersect with parent — subagent must not gain tools the parent lacks.
-        # Expand composite toolsets (e.g. hermes-cli) so that individual
-        # toolset names (e.g. web, terminal) are recognised during intersection.
-        expanded_parent = _expand_parent_toolsets(parent_toolsets)
-        child_toolsets = [t for t in toolsets if t in expanded_parent]
+        # Intersect with parent by default so subagents cannot gain tools the
+        # parent lacks. If delegation.allowed_child_toolsets is configured,
+        # also allow explicitly requested child toolsets from that allowlist;
+        # this is the intentional "lean router parent -> narrow subtool child"
+        # architecture and is opt-in for operators.
+        child_toolsets = _scope_requested_toolsets(toolsets, parent_toolsets)
         if _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
@@ -2937,6 +3009,9 @@ def _build_top_level_description() -> str:
         "delegation.orchestrator_enabled=false.\n"
         "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
+        "- Toolsets are parent-scoped by default. If delegation.allowed_child_toolsets "
+        "is configured, a lean router parent may grant explicitly requested child "
+        "toolsets from that allowlist without exposing those schemas in the parent.\n"
         "- Results are always returned as an array, one entry per task."
     )
 

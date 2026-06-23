@@ -241,6 +241,20 @@ TOOLSETS = {
         "includes": []
     },
 
+    "router": {
+        "description": (
+            "Lean parent-agent router: planning, memory/session recall, skills, "
+            "clarification, messaging/cron, and delegation. Use this when the "
+            "parent should stay context-light and hand detailed file/web/terminal "
+            "work to explicitly scoped subagents."
+        ),
+        "tools": [],
+        "includes": [
+            "skills", "todo", "memory", "session_search", "clarify",
+            "delegation", "cronjob", "messaging",
+        ],
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 

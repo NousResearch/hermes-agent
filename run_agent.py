@@ -5445,6 +5445,12 @@ class AIAgent:
             opts = self._lmstudio_reasoning_options_cached()
             # "off-only" (or absent) means no real reasoning capability.
             return any(opt and opt != "off" for opt in opts)
+        # Ollama Cloud (and any Ollama-compatible server): the native
+        # /api/show capabilities list is authoritative — emit reasoning_effort
+        # only for models that declare the "thinking" capability. deepseek-v4
+        # has it; gemma3 / qwen3-coder don't. Cached per (model, base_url).
+        if base_url_host_matches(self._base_url_lower, "ollama.com"):
+            return self._ollama_supports_thinking_cached()
         if "openrouter" not in self._base_url_lower:
             return False
         if "api.mistral.ai" in self._base_url_lower:
@@ -5497,6 +5503,37 @@ class AIAgent:
             opts = []
         cache[key] = (opts, _time.monotonic())
         return opts
+
+    def _ollama_supports_thinking_cached(self) -> bool:
+        """Probe Ollama's ``/api/show`` capabilities once per (model, base_url).
+
+        Returns True only when the model declares the ``thinking`` capability.
+        Caching mirrors the LM Studio probe: a True/False result is permanent
+        (capabilities don't change), while a probe failure (None) is cached
+        with a 60-second TTL so a transient outage doesn't suppress reasoning
+        for the rest of the session but also doesn't round-trip every turn.
+        """
+        import time as _time
+
+        cache = getattr(self, "_ollama_thinking_cache", None)
+        if cache is None:
+            cache = self._ollama_thinking_cache = {}
+        key = (self.model, self.base_url)
+        cached = cache.get(key)
+        if cached is not None:
+            supported, ts = cached
+            # Definitive True/False → permanent. Unknown (None) → 60s TTL.
+            if supported is not None or (_time.monotonic() - ts) < 60:
+                return bool(supported)
+        try:
+            from hermes_cli.models import ollama_model_supports_thinking
+            supported = ollama_model_supports_thinking(
+                self.model, self.base_url, getattr(self, "api_key", "")
+            )
+        except Exception:
+            supported = None
+        cache[key] = (supported, _time.monotonic())
+        return bool(supported)
 
     def _resolve_lmstudio_summary_reasoning_effort(self) -> Optional[str]:
         """Resolve a safe top-level ``reasoning_effort`` for LM Studio.

@@ -39,6 +39,7 @@ the *Retired* section at the bottom with the upstream PR/commit reference.
 | [D6](#d-6) | feat(state) | pg_trgm GIN-indexed search migrations (v17/v18) | depends-on D1 |
 | [D7](#d-7) | fix(state) | Translate SQLite `X'0A'`/`X'0D'` hex literals to `chr()` for Postgres | depends-on D1 |
 | [D8](#d-8) | feat(plugins) | `system_prompt` plugin hook for dynamic system-prompt injection | open-upstream (witt3rd/hermes-agent#1) |
+| [D9](#d-9) | fix(docker) | Honor passwd home in container wrappers instead of hardcoding `/opt/data` | candidate-upstream |
 
 ---
 
@@ -172,6 +173,32 @@ the *Retired* section at the bottom with the upstream PR/commit reference.
 - **Upstream disposition:** the matching design is open as
   witt3rd/hermes-agent#1 against `NousResearch/hermes-agent`. When that
   lands, this delta retires.
+
+<a id="d-9"></a>
+### D9 — fix(docker): honor passwd home in container wrappers instead of hardcoding `/opt/data`
+
+- **Status:** active, **candidate for upstream PR**.
+- **Fork-local touchpoints:**
+  - `docker/main-wrapper.sh` — the `export HOME=/opt/data` override before
+    privilege drop.
+  - `docker/hermes-exec-shim.sh` — same pattern, mirroring `main-wrapper.sh`.
+  - `docker/s6-rc.d/dashboard/run` — same pattern in the dashboard service.
+- **Why:** All three container entrypoints unconditionally `export
+  HOME=/opt/data` before dropping privileges, to keep `HOME`-anchored writes
+  (XDG caches, lockfiles, `.config`) from landing under `/root` when
+  `with-contenv` repopulates `HOME` from `/init`'s context. The override is
+  necessary; the hardcoded value is the bug. Multi-tenant embedders that
+  point the hermes user's passwd home at a per-tenant path (e.g. a layout
+  that splits durable identity in one path from ephemeral per-session work
+  in another) end up with `$HOME` contradicting `/etc/passwd` — the user's
+  passwd home is created and chowned, then silently never honored as
+  `$HOME`. Replace the hardcoded path with a passwd lookup that falls back
+  to `/opt/data` when the lookup fails, so the stock Hermes image (which
+  sets the hermes user's passwd home to `/opt/data`) behaves identically
+  and embedders get the home dir they declared.
+- **Upstream disposition:** clean candidate for extraction; the fix is
+  general (honoring passwd over hardcoded paths is the obviously-correct
+  shape) and not coupled to any other fork-local feature.
 
 ## Retired
 

@@ -20,8 +20,16 @@ case "${HERMES_DASHBOARD:-}" in
 esac
 
 # with-contenv repopulates HOME from /init as /root. Reset it before
-# dropping privileges so HOME-anchored state lands under /opt/data.
-export HOME=/opt/data
+# dropping privileges so HOME-anchored state lands under the hermes
+# user's home dir.
+#
+# Resolve from passwd rather than hardcoding /opt/data — see
+# main-wrapper.sh for the full rationale (embedders may customize the
+# hermes user's home). Default Hermes images set the passwd home to
+# /opt/data, so behavior is unchanged for the stock image.
+_hermes_passwd_home="$(getent passwd hermes 2>/dev/null | cut -d: -f6)"
+export HOME="${_hermes_passwd_home:-/opt/data}"
+unset _hermes_passwd_home
 
 cd /opt/data
 # shellcheck disable=SC1091

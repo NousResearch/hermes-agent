@@ -53,7 +53,17 @@ fi
 # to the hermes user's home before dropping privileges so libraries that
 # resolve paths via $HOME (e.g. discord lockfile under XDG_STATE_HOME)
 # don't try to write to /root.
-export HOME=/opt/data
+#
+# Resolve from passwd rather than hardcoding /opt/data, so embedders that
+# customize the hermes user's home directory in /etc/passwd (multi-tenant
+# deployments that split durable identity in one path from ephemeral
+# per-session work in another) get the home dir they declared. Default
+# Hermes images set the hermes user's passwd home to /opt/data, so
+# behavior is unchanged for the stock image. Fall back to /opt/data if
+# the passwd lookup fails for any reason.
+_hermes_passwd_home="$(getent passwd hermes 2>/dev/null | cut -d: -f6)"
+export HOME="${_hermes_passwd_home:-/opt/data}"
+unset _hermes_passwd_home
 
 # Save the Docker -w (or default) working directory before init
 # scripts cd to /opt/data, so the container starts in the

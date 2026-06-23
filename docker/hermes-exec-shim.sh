@@ -82,6 +82,11 @@ fi
 # this, $HOME stays /root and any library that resolves paths off $HOME
 # (XDG caches, lockfiles, .config writes) will try to write to /root and
 # fail with EACCES. Mirrors main-wrapper.sh.
-export HOME=/opt/data
+#
+# Resolve from passwd rather than hardcoding /opt/data — see main-wrapper.sh
+# for the full rationale (embedders may customize the hermes user's home).
+_hermes_passwd_home="$(getent passwd hermes 2>/dev/null | cut -d: -f6)"
+export HOME="${_hermes_passwd_home:-/opt/data}"
+unset _hermes_passwd_home
 
 exec "$S6_SUID" hermes "$REAL" "$@"

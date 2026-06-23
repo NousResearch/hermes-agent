@@ -33,6 +33,33 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_WINDOWS_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_WINDOWS_UNC_PATH_RE = re.compile(r"^\\\\[^\\]+\\[^\\]+")
+
+
+def _looks_like_windows_host_path(path: str) -> bool:
+    if not isinstance(path, str):
+        return False
+    value = path.strip()
+    return bool(_WINDOWS_DRIVE_PATH_RE.match(value) or _WINDOWS_UNC_PATH_RE.match(value))
+
+
+def _same_host_path(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(right))
+
+
+def _is_user_home_path(path: str) -> bool:
+    if not path:
+        return False
+
+    home_candidates = {
+        os.path.expanduser("~"),
+        os.environ.get("HOME", ""),
+        os.environ.get("USERPROFILE", ""),
+    }
+    return any(_same_host_path(path, home) for home in home_candidates if home)
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -534,6 +561,9 @@ class DockerEnvironment(BaseEnvironment):
     ):
         if cwd == "~":
             cwd = "/root"
+        if _looks_like_windows_host_path(cwd):
+            logger.info("Ignoring Windows host cwd for Docker backend: %s", cwd)
+            cwd = "/workspace"
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes
@@ -599,10 +629,13 @@ class DockerEnvironment(BaseEnvironment):
             auto_mount_cwd
             and bool(host_cwd_abs)
             and os.path.isdir(host_cwd_abs)
+            and not _is_user_home_path(host_cwd_abs)
             and not workspace_explicitly_mounted
         )
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
             logger.debug(f"Skipping docker cwd mount: host_cwd is not a valid directory: {host_cwd}")
+        elif auto_mount_cwd and host_cwd_abs and _is_user_home_path(host_cwd_abs):
+            logger.warning("Skipping docker cwd mount for host home directory: %s", host_cwd_abs)
 
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None

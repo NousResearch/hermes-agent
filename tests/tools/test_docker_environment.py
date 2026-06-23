@@ -135,6 +135,41 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     assert f"{project_dir}:/workspace" in run_args_str
 
 
+def test_auto_mount_skips_host_home_directory(monkeypatch, tmp_path):
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("USERPROFILE", str(home_dir))
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        cwd="/workspace",
+        host_cwd=str(home_dir),
+        auto_mount_cwd=True,
+    )
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
+    assert f"{home_dir}:/workspace" not in run_args_str
+    assert "/workspace:rw,exec,size=10g" in run_args_str
+
+
+def test_windows_host_cwd_is_not_passed_to_docker_workdir(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(cwd=r"C:\Users\alice", auto_mount_cwd=False)
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_cmd = run_calls[0][0]
+    assert env.cwd == "/workspace"
+    assert run_cmd[run_cmd.index("-w") + 1] == "/workspace"
+
+
 def test_auto_mount_disabled_by_default(monkeypatch, tmp_path):
     """Host cwd should not be mounted unless the caller explicitly opts in."""
     project_dir = tmp_path / "my-project"

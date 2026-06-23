@@ -49,7 +49,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes auth` | Manage credentials — add, list, remove, reset, status, logout. Handles OAuth flows for Codex/Nous/Anthropic. |
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes send` | Send a one-shot message to a configured messaging platform (Telegram, Discord, Slack, Signal, SMS, …). Useful from shell scripts, cron jobs, CI hooks, and monitoring daemons — no agent loop, no LLM. |
-| `hermes secrets` | Manage external secret sources (currently Bitwarden Secrets Manager) for pulling API keys at process startup instead of from `~/.hermes/.env`. |
+| `hermes secrets` | Manage external secret sources for pulling API keys at process startup instead of from `~/.hermes/.env`. Bitwarden has a CLI wizard; 1Password and macOS Keychain are configured via `config.yaml` references. |
 | `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
@@ -409,7 +409,7 @@ hermes secrets bitwarden <subcommand>
 hermes secrets bw <subcommand>          # short alias
 ```
 
-Pull API keys from an external secret manager at process startup instead of storing them in `~/.hermes/.env`. Currently supports **Bitwarden Secrets Manager**. See the full guide: [Bitwarden integration](../user-guide/secrets/bitwarden.md).
+Pull API keys from an external secret manager at process startup instead of storing them in `~/.hermes/.env`. **Bitwarden Secrets Manager** has CLI subcommands; **1Password CLI** and **macOS Keychain** are configured in `config.yaml` with non-secret references/lookup metadata. See the full guides: [Bitwarden integration](../user-guide/secrets/bitwarden.md), [1Password CLI](../user-guide/secrets/1password.md), and [macOS Keychain](../user-guide/secrets/keychain.md).
 
 `bitwarden` (alias `bw`) subcommands:
 

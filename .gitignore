@@ -103,6 +103,7 @@ models-dev-upstream/
 .mcp.json
 opencode.json
 config/mcporter.json
+workers.json
 
 hermes_cli/tui_dist/*
 hermes_cli/scripts/

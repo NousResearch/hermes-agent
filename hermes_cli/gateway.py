@@ -3299,6 +3299,7 @@ _LAUNCHD_JOB_UNLOADED_EXIT_CODES = frozenset({3, 113, 125})
 # supervise the gateway at all, so we degrade to a detached background process
 # (the documented `nohup hermes gateway run` workaround). See #23387.
 _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES = frozenset({5, 125})
+_LAUNCHD_REFRESH_STARTED_DETACHED_FALLBACK = False
 
 
 def _launchd_error_indicates_unloaded(exc: subprocess.CalledProcessError) -> bool:
@@ -3314,6 +3315,11 @@ def _launchctl_domain_unsupported(returncode: int) -> bool:
     unavailable" and degrade gracefully to a detached process.
     """
     return returncode in _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES
+
+
+def _launchd_refresh_started_detached_fallback() -> bool:
+    """True when the most recent launchd plist refresh spawned fallback."""
+    return _LAUNCHD_REFRESH_STARTED_DETACHED_FALLBACK
 
 
 def _gateway_run_command() -> list[str]:
@@ -3507,6 +3513,9 @@ def refresh_launchd_plist_if_needed() -> bool:
     ``launchctl kickstart`` cycle — no daemon-reload is needed. We still bootout/
     bootstrap to make launchd re-read the updated plist immediately.
     """
+    global _LAUNCHD_REFRESH_STARTED_DETACHED_FALLBACK
+    _LAUNCHD_REFRESH_STARTED_DETACHED_FALLBACK = False
+
     plist_path = get_launchd_plist_path()
     if not plist_path.exists() or launchd_plist_is_current():
         return False
@@ -3569,15 +3578,32 @@ def refresh_launchd_plist_if_needed() -> bool:
         check=False,
         timeout=90,
     )
-    subprocess.run(
+    bootstrap = subprocess.run(
         ["launchctl", "bootstrap", domain, str(plist_path)],
         check=False,
         timeout=30,
     )
+    if _launchctl_domain_unsupported(bootstrap.returncode):
+        if _launchd_fallback_to_detached(
+            f"launchctl bootstrap exit {bootstrap.returncode}",
+            exit_on_failure=False,
+        ):
+            _LAUNCHD_REFRESH_STARTED_DETACHED_FALLBACK = True
     print(
         "↻ Updated gateway launchd service definition to match the current Hermes install"
     )
     return True
+
+
+def _detached_gateway_running_without_launchd_service() -> bool:
+    """True when launchd fallback has already started a gateway process."""
+    try:
+        from gateway.status import get_running_pid
+
+        return get_running_pid() is not None and not _probe_launchd_service_running()
+    except Exception:
+        logger.debug("detached gateway fallback probe failed", exc_info=True)
+        return False
 
 
 def launchd_install(force: bool = False):
@@ -3670,6 +3696,11 @@ def launchd_start():
         return
 
     refresh_launchd_plist_if_needed()
+    if (
+        _launchd_refresh_started_detached_fallback()
+        or _detached_gateway_running_without_launchd_service()
+    ):
+        return
     try:
         subprocess.run(
             ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],

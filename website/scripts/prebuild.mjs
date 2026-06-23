@@ -29,6 +29,7 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const websiteDir = resolve(scriptDir, "..");
+const repoDir = resolve(websiteDir, "..");
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
 const cronBlueprintsScript = join(scriptDir, "extract-automation-blueprints.py");
@@ -37,6 +38,20 @@ const unifiedIndexFile = join(websiteDir, "static", "api", "skills-index.json");
 const UNIFIED_INDEX_URL =
   "https://hermes-agent.nousresearch.com/docs/api/skills-index.json";
 const UNIFIED_INDEX_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h
+
+const pythonCandidates = [
+  join(repoDir, ".venv", "bin", "python3"),
+  join(repoDir, ".venv", "bin", "python"),
+  join(repoDir, "venv", "bin", "python3"),
+  join(repoDir, "venv", "bin", "python"),
+  "python3",
+];
+const pythonCommand = pythonCandidates.find((candidate) => {
+  if (candidate === "python3") {
+    return true;
+  }
+  return existsSync(candidate);
+});
 
 function writeEmptyFallback(reason) {
   mkdirSync(dirname(outputFile), { recursive: true });
@@ -52,7 +67,7 @@ function runPython(script, label) {
     console.warn(`[prebuild] ${label} skipped (script missing)`);
     return false;
   }
-  const r = spawnSync("python3", [script], { stdio: "inherit", cwd: websiteDir });
+  const r = spawnSync(pythonCommand, [script], { stdio: "inherit", cwd: websiteDir });
   if (r.error && r.error.code === "ENOENT") {
     console.warn(`[prebuild] ${label} skipped (python3 not found)`);
     return false;
@@ -126,7 +141,7 @@ await ensureUnifiedIndex();
 if (!existsSync(extractScript)) {
   writeEmptyFallback("extract script missing");
 } else {
-  const r = spawnSync("python3", [extractScript], {
+  const r = spawnSync(pythonCommand, [extractScript], {
     stdio: "inherit",
     cwd: websiteDir,
   });

@@ -154,12 +154,27 @@ Select **Telegram** when prompted. The wizard asks for your bot token and allowe
 
 ### Option B: Manual Configuration
 
-Add the following to `~/.hermes/.env`:
+Recommended: keep the bot token in 1Password and put only a non-secret
+reference in `~/.hermes/config.yaml`:
+
+```yaml
+secrets:
+  onepassword:
+    enabled: true
+    env:
+      TELEGRAM_BOT_TOKEN: "op://Employee/Hermes Telegram/credential"
+```
+
+Then keep non-secret routing/access settings in `~/.hermes/.env`:
 
 ```bash
-TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
 TELEGRAM_ALLOWED_USERS=123456789    # Comma-separated for multiple users
 ```
+
+If you are not using an external secret manager, you can still set
+`TELEGRAM_BOT_TOKEN` directly in `.env`, but do not put raw tokens in service
+wrappers, launchd plists, shell scripts, or checked-in files. See
+[1Password CLI secrets](../secrets/1password) for the `op://` reference mode.
 
 ### Start the Gateway
 

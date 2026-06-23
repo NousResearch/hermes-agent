@@ -7,6 +7,7 @@ don't see an unexplained "credentials ✓" line when their .env is empty.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -53,6 +54,22 @@ def test_format_secret_source_suffix_bitwarden_uses_proper_name():
     )
 
 
+def test_format_secret_source_suffix_onepassword_uses_proper_name():
+    env_loader._SECRET_SOURCES["OPENAI_API_KEY"] = "1password"
+    assert (
+        env_loader.format_secret_source_suffix("OPENAI_API_KEY")
+        == " (from 1Password)"
+    )
+
+
+def test_format_secret_source_suffix_keychain_uses_proper_name():
+    env_loader._SECRET_SOURCES["TELEGRAM_BOT_TOKEN"] = "keychain"
+    assert (
+        env_loader.format_secret_source_suffix("TELEGRAM_BOT_TOKEN")
+        == " (from macOS Keychain)"
+    )
+
+
 def test_format_secret_source_suffix_generic_label_for_future_sources():
     # Future-proofing: a new secret source (e.g. "vault") should still
     # produce a sensible label without needing to edit every call site.
@@ -61,6 +78,14 @@ def test_format_secret_source_suffix_generic_label_for_future_sources():
         env_loader.format_secret_source_suffix("OPENAI_API_KEY")
         == " (from vault)"
     )
+
+
+def test_reset_secret_source_cache_clears_origin_labels():
+    env_loader._SECRET_SOURCES["OPENAI_API_KEY"] = "1password"
+
+    env_loader.reset_secret_source_cache()
+
+    assert env_loader.format_secret_source_suffix("OPENAI_API_KEY") == ""
 
 
 def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkeypatch):
@@ -102,6 +127,84 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
         env_loader.format_secret_source_suffix("ANTHROPIC_API_KEY")
         == " (from Bitwarden)"
     )
+
+
+def test_apply_external_secret_sources_records_onepassword_and_keychain_origins(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  '1password':\n"
+        "    enabled: true\n"
+        "    timeout_seconds: 3\n"
+        "    override_existing: true\n"
+        "    resolve_env_references: false\n"
+        "    env:\n"
+        "      OP_API_KEY: 'op://Vault/Item/key'\n"
+        "  keychain:\n"
+        "    enabled: true\n"
+        "    timeout_seconds: 4\n"
+        "    env:\n"
+        "      KEYCHAIN_TOKEN:\n"
+        "        service: halvo-shared\n"
+        "        account: HERMES_MBP_TELEGRAM_BOT_TOKEN\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("OP_API_KEY", raising=False)
+    monkeypatch.delenv("KEYCHAIN_TOKEN", raising=False)
+
+    from agent.secret_sources.keychain import FetchResult as KeychainFetchResult
+    from agent.secret_sources.onepassword import FetchResult as OnePasswordFetchResult
+
+    calls = []
+
+    def fake_op_apply(**kwargs):
+        calls.append(("op", kwargs))
+        os.environ["OP_API_KEY"] = "from-op"
+        return OnePasswordFetchResult(
+            secrets={"OP_API_KEY": "from-op"},
+            applied=["OP_API_KEY"],
+        )
+
+    def fake_keychain_apply(**kwargs):
+        calls.append(("keychain", kwargs))
+        os.environ["KEYCHAIN_TOKEN"] = "from-keychain"
+        return KeychainFetchResult(
+            secrets={"KEYCHAIN_TOKEN": "from-keychain"},
+            applied=["KEYCHAIN_TOKEN"],
+        )
+
+    monkeypatch.setattr(
+        "agent.secret_sources.onepassword.apply_onepassword_secrets",
+        fake_op_apply,
+    )
+    monkeypatch.setattr(
+        "agent.secret_sources.keychain.apply_keychain_secrets",
+        fake_keychain_apply,
+    )
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert os.environ["OP_API_KEY"] == "from-op"
+    assert os.environ["KEYCHAIN_TOKEN"] == "from-keychain"
+    assert env_loader.get_secret_source("OP_API_KEY") == "1password"
+    assert env_loader.get_secret_source("KEYCHAIN_TOKEN") == "keychain"
+    assert env_loader.format_secret_source_suffix("OP_API_KEY") == " (from 1Password)"
+    assert env_loader.format_secret_source_suffix("KEYCHAIN_TOKEN") == " (from macOS Keychain)"
+    assert [kind for kind, _kwargs in calls] == ["op", "keychain"]
+    assert calls[0][1]["timeout_seconds"] == 3
+    assert calls[0][1]["override_existing"] is True
+    assert calls[0][1]["resolve_env_references"] is False
+    assert calls[1][1]["timeout_seconds"] == 4
+
+    stderr = capsys.readouterr().err
+    assert "1Password CLI: applied 1 secret (OP_API_KEY)" in stderr
+    assert "macOS Keychain: applied 1 secret (KEYCHAIN_TOKEN)" in stderr
+    assert "from-op" not in stderr
+    assert "from-keychain" not in stderr
 
 
 def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch):
@@ -153,6 +256,7 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
         )
 
     import agent.secret_sources.bitwarden as bw_module
+
     monkeypatch.setattr(bw_module, "apply_bitwarden_secrets", _fake_apply)
 
     # Five calls in a row, simulating module-import-time invocations from

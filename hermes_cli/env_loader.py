@@ -21,7 +21,7 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 # tests) don't spam the same warning multiple times.
 _WARNED_KEYS: set[str] = set()
 
-# Map of env-var name → source label ("bitwarden", etc.) for credentials
+# Map of env-var name → source label ("bitwarden", "1password", etc.) for credentials
 # that were injected by an external secret source during load_hermes_dotenv().
 # Used by setup / `hermes model` flows to label detected credentials so
 # users understand WHERE a key came from when their .env doesn't contain it
@@ -42,9 +42,11 @@ _APPLIED_HOMES: set[str] = set()
 def get_secret_source(env_var: str) -> str | None:
     """Return the label of the secret source that supplied ``env_var``, if any.
 
-    Returns ``"bitwarden"`` for keys pulled from Bitwarden Secrets Manager
-    during the current process's ``load_hermes_dotenv()`` call.  Returns
-    ``None`` for keys that came from ``.env``, the shell environment, or
+    Returns ``"bitwarden"`` for keys pulled from Bitwarden Secrets Manager,
+    ``"1password"`` for keys resolved through 1Password CLI references, or
+    ``"keychain"`` for keys resolved through macOS Keychain during the
+    current process's ``load_hermes_dotenv()`` call.  Returns ``None`` for
+    keys that came from ``.env``, the shell environment, or
     aren't tracked.  The returned label is metadata only: credential-pool
     persistence may store it to explain the origin of a borrowed secret, but
     must never treat it as authorization to persist the raw value.
@@ -63,6 +65,7 @@ def reset_secret_source_cache() -> None:
     that want to refresh after a config change.
     """
     _APPLIED_HOMES.clear()
+    _SECRET_SOURCES.clear()
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -78,6 +81,10 @@ def format_secret_source_suffix(env_var: str) -> str:
         return ""
     if source == "bitwarden":
         return " (from Bitwarden)"
+    if source == "1password":
+        return " (from 1Password)"
+    if source == "keychain":
+        return " (from macOS Keychain)"
     # Generic fallback — future-proofing for additional secret sources
     # (e.g. 1Password, HashiCorp Vault) without having to update every
     # call site.
@@ -281,20 +288,23 @@ def _apply_managed_env() -> None:
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:
-    """Pull secrets from external sources (currently Bitwarden) into env.
+    """Pull secrets from external sources into env.
+
+    Supported sources currently include Bitwarden Secrets Manager, 1Password
+    references, and macOS Keychain generic-password items.
 
     Runs AFTER dotenv loads so .env values are visible (we use them to
     locate the access token) but BEFORE the rest of Hermes reads
-    ``os.environ`` for credentials.  Any failure here is logged and
+    ``os.environ`` for credentials.  Any failure here is reported and
     swallowed — external secret sources must never block startup.
 
     Idempotent within a process: subsequent calls for the same
     ``home_path`` are no-ops.  ``load_hermes_dotenv()`` runs at import
     time from several hot modules (cli.py, hermes_cli/main.py,
     run_agent.py, trajectory_compressor.py, ...), so without this guard
-    the Bitwarden status line would print 3-5x per CLI startup.  Use
+    the secret-source status line would print 3-5x per CLI startup.  Use
     ``reset_secret_source_cache()`` if you need to force a re-pull
-    (tests, future ``hermes secrets bitwarden sync`` from a long-running
+    (tests, future secret-source sync commands from a long-running
     process).
     """
     home_key = str(Path(home_path).resolve())
@@ -307,53 +317,138 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     except Exception:  # noqa: BLE001 — config errors must not block startup
         return
 
-    bw_cfg = (cfg or {}).get("bitwarden") or {}
-    if not bw_cfg.get("enabled"):
-        return
+    cfg = cfg or {}
 
-    try:
-        from agent.secret_sources.bitwarden import apply_bitwarden_secrets
-    except ImportError:
-        return
+    bw_cfg = cfg.get("bitwarden") or {}
+    if bw_cfg.get("enabled"):
+        try:
+            from agent.secret_sources.bitwarden import apply_bitwarden_secrets
+        except ImportError:
+            apply_bitwarden_secrets = None  # type: ignore[assignment]
 
-    result = apply_bitwarden_secrets(
-        enabled=True,
-        access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
-        project_id=bw_cfg.get("project_id", ""),
-        override_existing=bool(bw_cfg.get("override_existing", False)),
-        cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
-        auto_install=bool(bw_cfg.get("auto_install", True)),
-        server_url=str(bw_cfg.get("server_url", "") or "").strip(),
-        home_path=home_path,
-    )
+        if apply_bitwarden_secrets is not None:
+            result = apply_bitwarden_secrets(
+                enabled=True,
+                access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
+                project_id=bw_cfg.get("project_id", ""),
+                override_existing=bool(bw_cfg.get("override_existing", False)),
+                cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
+                auto_install=bool(bw_cfg.get("auto_install", True)),
+                server_url=str(bw_cfg.get("server_url", "") or "").strip(),
+                home_path=home_path,
+            )
 
-    if result.applied:
-        # Re-run the ASCII sanitization pass: BSM values are user-supplied
-        # and might have the same copy-paste corruption as a manually
-        # edited .env (see #6843).
-        _sanitize_loaded_credentials()
-        # Remember where these came from so the setup / `hermes model`
-        # flows can label detected credentials with "(from Bitwarden)" —
-        # otherwise users see "credentials ✓" with no hint that the value
-        # came from BSM rather than .env.
-        for name in result.applied:
-            _SECRET_SOURCES[name] = "bitwarden"
-        print(
-            f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
-            f"secret{'s' if len(result.applied) != 1 else ''} "
-            f"({', '.join(sorted(result.applied))})",
-            file=sys.stderr,
-        )
-    if result.error:
-        print(
-            f"  Bitwarden Secrets Manager: {result.error}",
-            file=sys.stderr,
-        )
-    for warn in result.warnings:
-        print(
-            f"  Bitwarden Secrets Manager: {warn}",
-            file=sys.stderr,
-        )
+            if result.applied:
+                # Re-run the ASCII sanitization pass: BSM values are user-supplied
+                # and might have the same copy-paste corruption as a manually
+                # edited .env (see #6843).
+                _sanitize_loaded_credentials()
+                # Remember where these came from so setup / `hermes model`
+                # flows can label detected credentials with "(from Bitwarden)".
+                for name in result.applied:
+                    _SECRET_SOURCES[name] = "bitwarden"
+                print(
+                    f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
+                    f"secret{'s' if len(result.applied) != 1 else ''} "
+                    f"({', '.join(sorted(result.applied))})",
+                    file=sys.stderr,
+                )
+            if result.error:
+                print(
+                    f"  Bitwarden Secrets Manager: {result.error}",
+                    file=sys.stderr,
+                )
+            for warn in result.warnings:
+                print(
+                    f"  Bitwarden Secrets Manager: {warn}",
+                    file=sys.stderr,
+                )
+
+    op_cfg = cfg.get("onepassword") or cfg.get("1password") or {}
+    if op_cfg.get("enabled"):
+        try:
+            from agent.secret_sources.onepassword import apply_onepassword_secrets
+        except ImportError:
+            apply_onepassword_secrets = None  # type: ignore[assignment]
+
+        if apply_onepassword_secrets is not None:
+            result = apply_onepassword_secrets(
+                enabled=True,
+                env=op_cfg.get("env"),
+                mappings=op_cfg.get("mappings"),
+                references=op_cfg.get("references"),
+                override_existing=bool(op_cfg.get("override_existing", False)),
+                timeout_seconds=float(op_cfg.get("timeout_seconds", 8)),
+                op_path=str(op_cfg.get("op_path", "") or "").strip(),
+                account=str(op_cfg.get("account", "") or "").strip(),
+                resolve_env_references=bool(op_cfg.get("resolve_env_references", True)),
+            )
+
+            if result.applied:
+                # 1Password values are resolved only into this process.  They
+                # may still have copy/paste corruption, so apply the same ASCII
+                # credential cleanup as dotenv/Bitwarden values.
+                _sanitize_loaded_credentials()
+                for name in result.applied:
+                    _SECRET_SOURCES[name] = "1password"
+                print(
+                    f"  1Password CLI: applied {len(result.applied)} "
+                    f"secret{'s' if len(result.applied) != 1 else ''} "
+                    f"({', '.join(sorted(result.applied))})",
+                    file=sys.stderr,
+                )
+            if result.error:
+                print(
+                    f"  1Password CLI: {result.error}",
+                    file=sys.stderr,
+                )
+            for warn in result.warnings:
+                print(
+                    f"  1Password CLI: {warn}",
+                    file=sys.stderr,
+                )
+
+    keychain_cfg = cfg.get("keychain") or {}
+    if keychain_cfg.get("enabled"):
+        try:
+            from agent.secret_sources.keychain import apply_keychain_secrets
+        except ImportError:
+            apply_keychain_secrets = None  # type: ignore[assignment]
+
+        if apply_keychain_secrets is not None:
+            result = apply_keychain_secrets(
+                enabled=True,
+                env=keychain_cfg.get("env"),
+                mappings=keychain_cfg.get("mappings"),
+                references=keychain_cfg.get("references"),
+                override_existing=bool(keychain_cfg.get("override_existing", False)),
+                timeout_seconds=float(keychain_cfg.get("timeout_seconds", 6)),
+                security_path=str(keychain_cfg.get("security_path", "") or "").strip(),
+            )
+
+            if result.applied:
+                # Keychain values are machine-local and process-only.  They may
+                # still have copy/paste corruption, so normalize like other
+                # secret sources.
+                _sanitize_loaded_credentials()
+                for name in result.applied:
+                    _SECRET_SOURCES[name] = "keychain"
+                print(
+                    f"  macOS Keychain: applied {len(result.applied)} "
+                    f"secret{'s' if len(result.applied) != 1 else ''} "
+                    f"({', '.join(sorted(result.applied))})",
+                    file=sys.stderr,
+                )
+            if result.error:
+                print(
+                    f"  macOS Keychain: {result.error}",
+                    file=sys.stderr,
+                )
+            for warn in result.warnings:
+                print(
+                    f"  macOS Keychain: {warn}",
+                    file=sys.stderr,
+                )
 
 
 def _load_secrets_config(home_path: Path) -> dict:

@@ -68,6 +68,7 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
 
         calls = []
 
@@ -91,6 +92,7 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
 
         calls = []
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -719,6 +721,109 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "bootstrap", domain, str(plist_path)],
         ]
 
+    def test_refresh_falls_back_to_detached_when_bootstrap_domain_unsupported(
+        self, tmp_path, monkeypatch
+    ):
+        """macOS 26 can return launchctl bootstrap exit 5 after a plist refresh.
+
+        In that case launchd cannot supervise the gateway, so the refresh path
+        must degrade to the same detached fallback used by launchd_start().
+        """
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_launchd_plist",
+            lambda: (
+                "<plist>--replace\n<key>HERMES_HOME</key>"
+                "<string>/Users/alice/.hermes</string></plist>"
+            ),
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: None)
+        monkeypatch.setattr(
+            gateway_cli, "_LAUNCHD_REFRESH_STARTED_DETACHED_FALLBACK", False
+        )
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd and cmd[:2] == ["launchctl", "bootstrap"]:
+                return SimpleNamespace(returncode=5, stdout="", stderr="Input/output error")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        fallback_reasons = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchd_fallback_to_detached",
+            lambda reason, exit_on_failure=True: fallback_reasons.append(
+                (reason, exit_on_failure)
+            )
+            or True,
+        )
+
+        result = gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert result is True
+        assert ["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)] in calls
+        assert fallback_reasons == [("launchctl bootstrap exit 5", False)]
+        assert gateway_cli._launchd_refresh_started_detached_fallback() is True
+
+    def test_launchd_start_returns_if_refresh_started_detached_fallback(
+        self, tmp_path, monkeypatch
+    ):
+        """Do not kickstart launchd after refresh has already spawned fallback."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli, "_detached_gateway_running_without_launchd_service", lambda: True
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("launchd_start should not kickstart after fallback")
+            ),
+        )
+
+        gateway_cli.launchd_start()
+
+    def test_launchd_start_returns_if_refresh_marker_reports_detached_fallback(
+        self, tmp_path, monkeypatch
+    ):
+        """Avoid kickstart races before the detached gateway has written its PID."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        def fake_refresh():
+            gateway_cli._LAUNCHD_REFRESH_STARTED_DETACHED_FALLBACK = True
+            return True
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli, "_LAUNCHD_REFRESH_STARTED_DETACHED_FALLBACK", False
+        )
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", fake_refresh)
+        monkeypatch.setattr(
+            gateway_cli, "_detached_gateway_running_without_launchd_service", lambda: False
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("launchd_start should not kickstart after fallback")
+            ),
+        )
+
+        gateway_cli.launchd_start()
+
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
@@ -1249,6 +1354,7 @@ class TestGatewaySystemServiceRouting:
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(
@@ -1294,6 +1400,7 @@ class TestGatewaySystemServiceRouting:
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 10.0)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -1353,6 +1460,7 @@ class TestGatewaySystemServiceRouting:
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
         monkeypatch.setattr(gateway_cli, "_recover_pending_systemd_restart", lambda system=False, previous_pid=None: False)
@@ -1383,6 +1491,7 @@ class TestGatewaySystemServiceRouting:
     def test_systemd_restart_recovers_failed_planned_restart(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(
             "gateway.status.read_runtime_status",

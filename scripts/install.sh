@@ -2593,27 +2593,12 @@ install_desktop() {
     fi
     log_success "Desktop app built: $app"
 
-    # Linux: Electron's chrome-sandbox helper needs root:root 4755 or the
-    # sandboxed renderer will abort on startup.  Check the file is a regular
-    # file (not a symlink) before chown/chmod so we don't follow an
-    # attacker-controlled link to an arbitrary path.
+    # Linux: configure Electron's chrome-sandbox helper and install the .desktop
+    # launcher via the shared Python module (same path as `hermes desktop`).
     if [ "$OS" = "linux" ]; then
-        local sandbox="$desktop_dir/release/linux-unpacked/chrome-sandbox"
-        if [ -f "$sandbox" ] && [ ! -L "$sandbox" ]; then
-            if [ "$(id -u)" -eq 0 ]; then
-                chown root:root "$sandbox" && chmod 4755 "$sandbox" || {
-                    log_error "Cannot configure Electron sandbox helper: $sandbox"
-                    return 1
-                }
-            elif command -v sudo >/dev/null 2>&1; then
-                sudo chown root:root "$sandbox" && sudo chmod 4755 "$sandbox" || {
-                    log_error "Cannot configure Electron sandbox helper (sudo failed): $sandbox"
-                    return 1
-                }
-            else
-                log_error "Cannot configure Electron sandbox helper without sudo: $sandbox"
-                return 1
-            fi
+        if ! "$INSTALL_DIR/venv/bin/python" -m hermes_cli.linux_desktop_launcher finalize-build "$INSTALL_DIR"; then
+            log_error "Cannot finalize Linux desktop launcher/sandbox helper"
+            return 1
         fi
     fi
 

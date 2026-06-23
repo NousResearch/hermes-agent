@@ -142,12 +142,9 @@ def packaged_gui_app_paths() -> "list[Path]":
         # hint rather than guessing. deb/rpm installs are owned by the system
         # package manager and must be removed via apt/dnf — see the message in
         # ``uninstall_gui``.
-        data = os.environ.get("XDG_DATA_HOME")
-        data_base = Path(data) if data else (home / ".local" / "share")
-        paths += [
-            data_base / "applications" / "hermes.desktop",
-            data_base / "applications" / "Hermes.desktop",
-        ]
+        from hermes_cli.linux_desktop_launcher import linux_desktop_shortcut_paths
+
+        paths += linux_desktop_shortcut_paths()
     return paths
 
 

@@ -392,7 +392,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
+    if _gateway_platform_value(platform) not in ("telegram", "discord"):
         return text
 
     text = _redact_gateway_user_facing_secrets(text)

@@ -6477,6 +6477,7 @@ class SessionDB:
     def list_sessions_rich(
         self,
         source: str = None,
+        sources: List[str] = None,
         exclude_sources: List[str] = None,
         cwd_prefix: str = None,
         limit: int = 20,
@@ -6554,9 +6555,11 @@ class SessionDB:
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
 
-        if source:
-            where_clauses.append("s.source = ?")
-            params.append(source)
+        include_sources = [source] if source else list(sources or [])
+        if include_sources:
+            placeholders = ",".join("?" for _ in include_sources)
+            where_clauses.append(f"s.source IN ({placeholders})")
+            params.extend(include_sources)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -9243,6 +9246,9 @@ class SessionDB:
         query: str,
         limit: int = 20,
         include_archived: bool = True,
+        source: str = None,
+        sources: List[str] = None,
+        exclude_sources: List[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search surfaced sessions by exact/prefix/substring session id.
 
@@ -9263,6 +9269,9 @@ class SessionDB:
         # in-Python exact/prefix/substring ranking below has enough candidates
         # to order, then truncate.
         candidates = self.list_sessions_rich(
+            source=source,
+            sources=sources,
+            exclude_sources=exclude_sources,
             limit=max(limit * 4, limit),
             offset=0,
             include_archived=include_archived,
@@ -9338,6 +9347,7 @@ class SessionDB:
     def session_count(
         self,
         source: str = None,
+        sources: List[str] = None,
         cwd_prefix: str = None,
         min_message_count: int = 0,
         include_archived: bool = False,
@@ -9368,9 +9378,11 @@ class SessionDB:
             # children (parent ended with end_reason='branched').
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
-        if source:
-            where_clauses.append("s.source = ?")
-            params.append(source)
+        include_sources = [source] if source else list(sources or [])
+        if include_sources:
+            placeholders = ",".join("?" for _ in include_sources)
+            where_clauses.append(f"s.source IN ({placeholders})")
+            params.extend(include_sources)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")

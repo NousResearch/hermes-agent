@@ -39,6 +39,19 @@ def _configured_tools_config(*, init_on_session_start: bool = False) -> _FakeHon
     return cfg
 
 
+def test_honcho_is_unavailable_when_sdk_dependency_is_missing(monkeypatch):
+    provider = HonchoMemoryProvider()
+    cfg = _configured_hybrid_config()
+
+    monkeypatch.setattr(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        lambda: cfg,
+    )
+    monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
+
+    assert provider.is_available() is False
+
+
 def test_honcho_hybrid_initialize_returns_without_waiting_for_session_init(monkeypatch):
     """Slow Honcho session creation must not block agent startup."""
     provider = HonchoMemoryProvider()

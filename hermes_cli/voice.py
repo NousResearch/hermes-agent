@@ -25,6 +25,7 @@ import logging
 import os
 import sys
 import threading
+from utils import is_truthy_value
 from typing import Any, Callable, Optional
 
 # Modifier aliases mirrored from the TUI parser (``ui-tui/src/lib/platform.ts``)
@@ -251,7 +252,7 @@ def _beeps_enabled() -> bool:
 
         voice_cfg = load_config().get("voice", {})
         if isinstance(voice_cfg, dict):
-            return bool(voice_cfg.get("beep_enabled", True))
+            return is_truthy_value(voice_cfg.get("beep_enabled"), default=True)
     except Exception:
         pass
     return True

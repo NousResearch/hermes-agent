@@ -384,7 +384,7 @@ def resolve_persist_behavior(is_global: bool, is_session: bool) -> bool:
 
         model_cfg = load_config().get("model")
         if isinstance(model_cfg, dict):
-            return bool(model_cfg.get("persist_switch_by_default", True))
+            return is_truthy_value(model_cfg.get("persist_switch_by_default"), default=True)
     except Exception:
         pass
     return True
@@ -1189,6 +1189,7 @@ def switch_model(
 # process — mirrors run_agent's _openrouter_prewarm_done. Without a guard a
 # long-lived process (or repeated triggers) would leak one OS thread per call.
 import threading as _threading  # noqa: E402
+from utils import is_truthy_value
 
 _picker_prewarm_done = _threading.Event()
 

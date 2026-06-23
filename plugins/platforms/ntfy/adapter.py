@@ -50,6 +50,7 @@ import logging
 import os
 import time
 import uuid
+from utils import is_truthy_value
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -528,7 +529,7 @@ async def _standalone_send(
 
     token = extra.get("token") or os.getenv("NTFY_TOKEN", "")
     markdown_env = os.getenv("NTFY_MARKDOWN", "").strip().lower()
-    markdown_enabled = bool(extra.get("markdown")) or markdown_env in ("1", "true", "yes")
+    markdown_enabled = is_truthy_value(extra.get("markdown")) or markdown_env in ("1", "true", "yes")
 
     headers = {"Content-Type": "text/plain; charset=utf-8", "X-Tags": _ECHO_TAG, **_build_auth_header(token)}
     if markdown_enabled:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from utils import is_truthy_value
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
@@ -152,7 +153,7 @@ def _parse_auto_reload(raw: Any) -> Optional[AutoReload]:
     if not isinstance(raw, dict):
         return None
     return AutoReload(
-        enabled=bool(raw.get("enabled")),
+        enabled=is_truthy_value(raw.get("enabled")),
         threshold_usd=parse_money(raw.get("thresholdUsd")),
         reload_to_usd=parse_money(raw.get("reloadToUsd")),
     )

@@ -40,6 +40,7 @@ import json
 import logging
 import sqlite3
 import time
+from utils import is_truthy_value
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
@@ -1705,9 +1706,9 @@ def get_config():
     k_cfg = dash_cfg.get("kanban") or {}
     return {
         "default_tenant": k_cfg.get("default_tenant") or "",
-        "lane_by_profile": bool(k_cfg.get("lane_by_profile", True)),
-        "include_archived_by_default": bool(k_cfg.get("include_archived_by_default", False)),
-        "render_markdown": bool(k_cfg.get("render_markdown", True)),
+        "lane_by_profile": is_truthy_value(k_cfg.get("lane_by_profile"), default=True),
+        "include_archived_by_default": is_truthy_value(k_cfg.get("include_archived_by_default"), default=False),
+        "render_markdown": is_truthy_value(k_cfg.get("render_markdown"), default=True),
     }
 
 
@@ -2274,8 +2275,8 @@ def get_orchestration_settings():
     kanban_cfg = (cfg.get("kanban") or {}) if isinstance(cfg, dict) else {}
     explicit_orch = (kanban_cfg.get("orchestrator_profile") or "").strip()
     explicit_default = (kanban_cfg.get("default_assignee") or "").strip()
-    auto_decompose = bool(kanban_cfg.get("auto_decompose", True))
-    auto_promote_children = bool(kanban_cfg.get("auto_promote_children", True))
+    auto_decompose = is_truthy_value(kanban_cfg.get("auto_decompose"), default=True)
+    auto_promote_children = is_truthy_value(kanban_cfg.get("auto_promote_children"), default=True)
 
     # Resolve fallbacks the same way the decomposer does.
     resolved_orch = explicit_orch

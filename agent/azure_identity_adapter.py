@@ -35,6 +35,7 @@ import functools
 import logging
 import os
 import threading
+from utils import is_truthy_value
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
@@ -164,7 +165,7 @@ class EntraIdentityConfig:
                   *, default_scope: Optional[str] = None) -> "EntraIdentityConfig":
         data = data or {}
         scope = str(data.get("scope") or "").strip() or default_scope or SCOPE_AI_AZURE_DEFAULT
-        exclude_browser = bool(data.get("exclude_interactive_browser", True))
+        exclude_browser = is_truthy_value(data.get("exclude_interactive_browser"), default=True)
         return cls(
             scope=scope,
             exclude_interactive_browser=exclude_browser,

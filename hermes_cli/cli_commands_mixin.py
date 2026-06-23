@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import uuid
+from utils import is_truthy_value
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -2176,7 +2177,7 @@ class CLICommandsMixin:
 
         cfg = load_config() or {}
         footer_cfg = ((cfg.get("display") or {}).get("runtime_footer") or {})
-        current = bool(footer_cfg.get("enabled", False))
+        current = is_truthy_value(footer_cfg.get("enabled"), default=False)
         fields = footer_cfg.get("fields") or ["model", "context_pct", "cwd"]
 
         if arg in {"status", "?"}:

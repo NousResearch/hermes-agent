@@ -44,6 +44,7 @@ import logging
 import re
 import shutil
 import tarfile
+from utils import is_truthy_value
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -158,7 +159,7 @@ def _load_config() -> Dict[str, Any]:
 
 def is_enabled() -> bool:
     """Default ON — the whole point of the backup is safety by default."""
-    return bool(_load_config().get("enabled", True))
+    return is_truthy_value(_load_config().get("enabled"), default=True)
 
 
 def get_keep() -> int:

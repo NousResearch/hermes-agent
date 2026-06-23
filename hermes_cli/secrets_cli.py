@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+from utils import is_truthy_value
 from pathlib import Path
 from typing import List, Optional
 
@@ -293,7 +294,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     cfg = load_config()
     bw_cfg = (cfg.get("secrets") or {}).get("bitwarden") or {}
 
-    enabled = bool(bw_cfg.get("enabled"))
+    enabled = is_truthy_value(bw_cfg.get("enabled"))
     token_env = bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN")
     project_id = bw_cfg.get("project_id", "")
     server_url = str(bw_cfg.get("server_url", "") or "").strip()
@@ -310,9 +311,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         "Server URL",
         server_url or "[dim]default (US Cloud, https://vault.bitwarden.com)[/dim]",
     )
-    table.add_row("Override existing", _yn(bool(bw_cfg.get("override_existing", False))))
+    table.add_row("Override existing", _yn(is_truthy_value(bw_cfg.get("override_existing"), default=False)))
     table.add_row("Cache TTL (s)",   str(bw_cfg.get("cache_ttl_seconds", 300)))
-    table.add_row("Auto-install",    _yn(bool(bw_cfg.get("auto_install", True))))
+    table.add_row("Auto-install",    _yn(is_truthy_value(bw_cfg.get("auto_install"), default=True)))
 
     binary = bw.find_bws(install_if_missing=False)
     if binary:

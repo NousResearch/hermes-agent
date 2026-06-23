@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from utils import atomic_replace
+from utils import is_truthy_value,  atomic_replace
 
 
 # Env var name suffixes that indicate credential values.  These are the
@@ -320,9 +320,9 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         enabled=True,
         access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
         project_id=bw_cfg.get("project_id", ""),
-        override_existing=bool(bw_cfg.get("override_existing", False)),
+        override_existing=is_truthy_value(bw_cfg.get("override_existing"), default=False),
         cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
-        auto_install=bool(bw_cfg.get("auto_install", True)),
+        auto_install=is_truthy_value(bw_cfg.get("auto_install"), default=True),
         server_url=str(bw_cfg.get("server_url", "") or "").strip(),
         home_path=home_path,
     )

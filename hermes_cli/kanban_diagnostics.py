@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 import json
 import time
+from utils import is_truthy_value
 
 
 # Severity rungs, ordered least → most urgent. The UI colors them
@@ -304,7 +305,7 @@ def triage_aux_status(config: Optional[dict]) -> Optional[dict]:
     # ``auto_decompose`` defaults to True per kanban DEFAULT_CONFIG.
     auto_decompose = True
     if isinstance(kanban_cfg, dict) and "auto_decompose" in kanban_cfg:
-        auto_decompose = bool(kanban_cfg.get("auto_decompose"))
+        auto_decompose = is_truthy_value(kanban_cfg.get("auto_decompose"))
 
     return {
         "auto_decompose": auto_decompose,
@@ -393,10 +394,10 @@ def _rule_triage_aux_unavailable(task, events, runs, now, cfg) -> list[Diagnosti
     if status is None:
         return []
 
-    auto_decompose = bool(status.get("auto_decompose"))
-    decomposer_explicit = bool(status.get("decomposer_explicit"))
-    specifier_explicit = bool(status.get("specifier_explicit"))
-    main_visible = bool(status.get("main_model_visible"))
+    auto_decompose = is_truthy_value(status.get("auto_decompose"))
+    decomposer_explicit = is_truthy_value(status.get("decomposer_explicit"))
+    specifier_explicit = is_truthy_value(status.get("specifier_explicit"))
+    main_visible = is_truthy_value(status.get("main_model_visible"))
 
     # Determine the primary slot and whether it is usable.
     if auto_decompose:

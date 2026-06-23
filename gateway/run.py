@@ -736,7 +736,7 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
         return False
     mt = gw.get("message_timestamps")
     if isinstance(mt, dict):
-        return bool(mt.get("enabled", False))
+        return is_truthy_value(mt.get("enabled"), default=False)
     # Allow a bare ``message_timestamps: true`` shorthand.
     return bool(mt)
 
@@ -1284,7 +1284,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
-from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
+from utils import is_truthy_value,  atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.

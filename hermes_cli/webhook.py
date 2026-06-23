@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Dict
 
 from hermes_constants import display_hermes_home
-from utils import atomic_replace
+from utils import is_truthy_value,  atomic_replace
 from hermes_cli.config import cfg_get
 
 
@@ -91,7 +91,7 @@ def _get_webhook_config() -> dict:
 
 
 def _is_webhook_enabled() -> bool:
-    return bool(_get_webhook_config().get("enabled"))
+    return is_truthy_value(_get_webhook_config().get("enabled"))
 
 
 def _get_webhook_base_url() -> str:

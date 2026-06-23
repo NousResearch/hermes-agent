@@ -1,13 +1,9 @@
 name: Detect affected areas
 description: >-
-  Classify a PR's changed files into CI work categories (python, frontend,
-  site) so heavy jobs can skip work they cannot be affected by. Outputs are
-  always "true" on push/dispatch events and fail open (everything "true") when
-  the diff cannot be computed — a skipped category must never be a false
-  negative.
-
-# The caller must check out the repo with `fetch-depth: 0` BEFORE using this
-# action, so both the PR base and head commits are present for `git diff`.
+  Classify a PR's changed files into CI work lanes (python, frontend, site,
+  scan, deps, mcp_catalog) so the orchestrator can conditionally call only
+  the sub-workflows a PR can affect. Outputs are always "true" on push/dispatch
+  events and fail open (everything "true") when the diff cannot be computed.
 
 outputs:
   python:
@@ -16,9 +12,21 @@ outputs:
   frontend:
     description: Run the TypeScript typecheck matrix + desktop build.
     value: ${{ steps.classify.outputs.frontend }}
+  docker_meta:
+    description: Docker setup and meta files have changed.
+    value: ${{ steps.classify.outputs.docker_meta }}
   site:
     description: Build the Docusaurus docs site.
     value: ${{ steps.classify.outputs.site }}
+  scan:
+    description: Run the supply-chain critical-pattern scanner.
+    value: ${{ steps.classify.outputs.scan }}
+  deps:
+    description: Check pyproject.toml dependency upper bounds.
+    value: ${{ steps.classify.outputs.deps }}
+  mcp_catalog:
+    description: Require MCP catalog security review label.
+    value: ${{ steps.classify.outputs.mcp_catalog }}
 
 runs:
   using: composite
@@ -27,22 +35,28 @@ runs:
       id: classify
       shell: bash
       env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
         EVENT_NAME: ${{ github.event_name }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
         set -euo pipefail
+
         # Only pull_request events are gated. Other events (push, release,
         # dispatch) leave CHANGED empty, so the classifier fails open and every
-        # lane runs — post-merge / on-demand validation is never weakened.
+        # lane runs. Post-merge / on-demand validation is never weakened.
         if [ "$EVENT_NAME" = "pull_request" ]; then
-          # Three-dot diff = what the PR introduces vs its merge base, matching
-          # how a reviewer reads it. An uncomputable diff (shallow clone, etc.)
-          # yields an empty list, which the classifier also fails open on.
-          CHANGED="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" || true)"
+          # Use the compare endpoint with the pinned base/head SHAs from the
+          # event payload instead of the "current PR files" endpoint. The SHAs
+          # are frozen at trigger time, so the file list is deterministic even
+          # if the PR receives a new push between trigger and detect.
+          CHANGED="$(gh api \
+            --paginate \
+            "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" \
+            --jq '.files[].filename' || true)"
         fi
+
         echo "Changed files:"
         printf '%s\n' "${CHANGED:-(none)}"
-        # Caller already checked out the repo, so the classifier is at its
-        # repo-relative path. It is the single source of the fail-open default.
         printf '%s\n' "${CHANGED:-}" | python3 scripts/ci/classify_changes.py

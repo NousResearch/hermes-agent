@@ -554,6 +554,36 @@ class TestProbeEnvResolution:
         assert tools == [("do_thing", "a tool")]
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
+    def test_probe_uses_configured_connect_timeout(self, monkeypatch):
+        """Config-time probes should honor per-server connect_timeout."""
+        import hermes_cli.mcp_config as mc
+
+        seen = {}
+
+        class _FakeServer:
+            _tools = []
+
+            async def shutdown(self):
+                return None
+
+        async def _fake_connect(name, config):
+            return _FakeServer()
+
+        async def _fake_wait_for(awaitable, timeout):
+            seen["timeout"] = timeout
+            return await awaitable
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+        monkeypatch.setattr(mc.asyncio, "wait_for", _fake_wait_for)
+
+        tools = mc._probe_single_server(
+            "slow",
+            {"url": "https://mcp.example.com/mcp", "connect_timeout": "7"},
+        )
+
+        assert tools == []
+        assert seen["timeout"] == 7.0
+
 
 class TestStripBearerPrefix:
     """Pasted tokens that already include ``Bearer `` would otherwise produce

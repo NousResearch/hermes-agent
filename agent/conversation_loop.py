@@ -35,6 +35,7 @@ from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
+    _looks_like_image_rejection_error,
     _repair_tool_call_arguments,
     _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates,
@@ -2172,46 +2173,7 @@ def run_conversation(
                 except Exception:
                     pass
                 _err_status = getattr(api_error, "status_code", None)
-                _IMAGE_REJECTION_PHRASES = (
-                    "only 'text' content type is supported",
-                    "only text content type is supported",
-                    "image_url is not supported",
-                    "image content is not supported",
-                    "multimodal is not supported",
-                    "multimodal content is not supported",
-                    "multimodal input is not supported",
-                    "vision is not supported",
-                    "vision input is not supported",
-                    "does not support images",
-                    "does not support image input",
-                    "does not support multimodal",
-                    "does not support vision",
-                    "model does not support image",
-                    # ChatGPT-account Codex backend
-                    # (https://chatgpt.com/backend-api/codex) rejects
-                    # data:image/...base64 URLs in input_image fields
-                    # with HTTP 400 "Invalid 'input[N].content[K].image_url'.
-                    # Expected a valid URL, but got a value with an
-                    # invalid format." The OpenAI Responses API on the
-                    # public endpoint accepts data URLs, but the
-                    # ChatGPT-account variant does not. Without this
-                    # phrase the agent cascaded into compression /
-                    # context-too-large recovery instead of just
-                    # stripping the images. Match is narrow on
-                    # purpose — keyed on the field-path apostrophe so
-                    # we don't false-trip on other URL validation
-                    # errors. (issue #23570)
-                    "image_url'. expected",
-                    # DeepSeek's OpenAI-compatible API reports text-only
-                    # request-body variants as:
-                    # "unknown variant `image_url`, expected `text`".
-                    "unknown variant `image_url`, expected `text`",
-                    "unknown variant image_url, expected text",
-                )
-                _err_lower = _err_body.lower()
-                _looks_like_image_rejection = any(
-                    p in _err_lower for p in _IMAGE_REJECTION_PHRASES
-                )
+                _looks_like_image_rejection = _looks_like_image_rejection_error(_err_body)
                 # 4xx-only gate: never interpret 5xx/timeout as "server
                 # said no to images" — those are transient and must
                 # route to the normal retry path.

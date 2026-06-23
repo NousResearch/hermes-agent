@@ -10,6 +10,7 @@ configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
 
 import asyncio
 import logging
+import math
 import os
 import re
 import time
@@ -39,6 +40,18 @@ _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
         "args": ["mcp-server"],
     },
 }
+
+
+def _connect_timeout_from_config(
+    config: dict, explicit: Optional[float] = None, default: float = 30.0
+) -> float:
+    """Return a finite positive MCP connect timeout for config-time probes."""
+    value = explicit if explicit is not None else config.get("connect_timeout", default)
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return timeout if math.isfinite(timeout) and timeout > 0 else default
 
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
@@ -214,7 +227,7 @@ def _resolve_mcp_server_config(config: dict) -> dict:
 
 
 def _probe_single_server(
-    name: str, config: dict, connect_timeout: float = 30
+    name: str, config: dict, connect_timeout: Optional[float] = None
 ) -> List[Tuple[str, str]]:
     """Temporarily connect to one MCP server, list its tools, disconnect.
 
@@ -233,6 +246,7 @@ def _probe_single_server(
     )
 
     config = _resolve_mcp_server_config(config)
+    connect_timeout = _connect_timeout_from_config(config, connect_timeout)
 
     _ensure_mcp_loop()
 

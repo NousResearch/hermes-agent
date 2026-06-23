@@ -111,6 +111,19 @@ class TestVisionAnalyzeNative:
         url = next(p["image_url"]["url"] for p in parts if p.get("type") == "image_url")
         assert url.startswith("data:image/")
 
+    def test_invalid_image_bytes_return_error_string(self, tmp_path):
+        img = tmp_path / "broken.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nthis is not a decodable png")
+
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(img), "what is this?")
+        )
+
+        assert isinstance(result, str)
+        parsed = json.loads(result)
+        assert parsed.get("success") is False
+        assert "real image files" in parsed.get("error", "")
+
     def test_missing_file_returns_error_string(self, tmp_path):
         result = asyncio.get_event_loop().run_until_complete(
             _vision_analyze_native(str(tmp_path / "nope.png"), "?")

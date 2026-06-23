@@ -29,6 +29,7 @@ Usage:
 """
 
 import base64
+import io
 import json
 import logging
 import os
@@ -72,6 +73,12 @@ _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
 # Hard cap on downloaded image file size (50 MB). Prevents OOM from
 # attacker-hosted multi-gigabyte files or decompression bombs.
 _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+_SUPPORTED_NATIVE_IMAGE_MIMES = frozenset({
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+})
 
 
 def _image_url_shape_ok(url: str) -> bool:
@@ -108,24 +115,30 @@ async def _validate_image_url_async(url: str) -> bool:
 
 def _detect_image_mime_type(image_path: Path) -> Optional[str]:
     """Return a MIME type when the file looks like a supported image."""
-    with image_path.open("rb") as f:
-        header = f.read(64)
+    data = image_path.read_bytes()
+    header = data[:64]
 
     if header.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if header.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if header.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if header.startswith(b"BM"):
-        return "image/bmp"
-    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
-        return "image/webp"
-    if image_path.suffix.lower() == ".svg":
-        head = image_path.read_text(encoding="utf-8", errors="ignore")[:4096].lower()
-        if "<svg" in head:
-            return "image/svg+xml"
-    return None
+        mime = "image/png"
+    elif header.startswith(b"\xff\xd8\xff"):
+        mime = "image/jpeg"
+    elif header.startswith((b"GIF87a", b"GIF89a")):
+        mime = "image/gif"
+    elif len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        mime = "image/webp"
+    else:
+        return None
+
+    if mime not in _SUPPORTED_NATIVE_IMAGE_MIMES:
+        return None
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as img:
+            img.verify()
+    except Exception:
+        return None
+    return mime
 
 
 def _is_retryable_download_error(error: Exception) -> bool:

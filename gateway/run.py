@@ -17217,6 +17217,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _NOTIFY_INTERVAL = None
             _NOTIFY_INITIAL_DELAY = None
         _notify_start = time.time()
+        try:
+            from gateway.long_run_status import (
+                config_from_gateway_config as _status_enrichment_config_from_gateway_config,
+                enrich_long_run_status as _enrich_long_run_status,
+            )
+            _status_enrichment_config = _status_enrichment_config_from_gateway_config(user_config)
+        except Exception as _status_enrich_cfg_err:
+            logger.debug("Long-running status enrichment config failed: %s", _status_enrich_cfg_err)
+            _status_enrichment_config = None
+            _enrich_long_run_status = None
+        _status_enrichment_tasks: set[asyncio.Task] = set()
 
         async def _notify_long_running():
             if _NOTIFY_INITIAL_DELAY is None:
@@ -17231,6 +17242,67 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # adapter.
             _heartbeat_msg_id: Optional[str] = None
             _first_notice = True
+
+            async def _enrich_and_edit_status(
+                message_id: str,
+                initial_notice: bool,
+                snapshot: dict[str, Any],
+            ) -> None:
+                if not _status_enrichment_config or not _enrich_long_run_status:
+                    return
+                try:
+                    enriched_detail = await _enrich_long_run_status(
+                        snapshot,
+                        _status_enrichment_config,
+                    )
+                    if not enriched_detail:
+                        return
+                    try:
+                        _exec_ref = _executor_task
+                    except NameError:
+                        _exec_ref = None
+                    if not self._should_emit_long_running_notification(
+                        session_key, agent_holder[0], _exec_ref
+                    ):
+                        return
+                    enriched_text = _format_long_running_notification(
+                        elapsed_seconds=float(
+                            snapshot.get("elapsed_seconds", time.time() - _notify_start)
+                        ),
+                        status_detail=enriched_detail,
+                        initial=initial_notice,
+                    )
+                    await _notify_adapter.edit_message(
+                        source.chat_id,
+                        message_id,
+                        enriched_text,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as _enrich_err:
+                    logger.debug("Long-running status enrichment skipped: %s", _enrich_err)
+
+            def _schedule_status_enrichment(
+                message_id: Optional[str],
+                initial_notice: bool,
+                snapshot: dict[str, Any],
+            ) -> None:
+                if (
+                    not message_id
+                    or not _status_enrichment_config
+                    or not getattr(_status_enrichment_config, "enabled", False)
+                ):
+                    return
+                # Do not stack model calls. One tiny enrich attempt per status
+                # interval is plenty; the deterministic heartbeat already landed.
+                if any(not task.done() for task in _status_enrichment_tasks):
+                    return
+                task = asyncio.create_task(
+                    _enrich_and_edit_status(message_id, initial_notice, snapshot)
+                )
+                _status_enrichment_tasks.add(task)
+                task.add_done_callback(_status_enrichment_tasks.discard)
+
             while True:
                 _sleep_for = _NOTIFY_INITIAL_DELAY if _first_notice else _NOTIFY_INTERVAL
                 if _sleep_for is None:
@@ -17253,6 +17325,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # who want it can opt in per platform.
                 _agent_ref = agent_holder[0]
                 _status_detail = ""
+                _activity_snapshot: dict[str, Any] = {
+                    "elapsed_seconds": time.time() - _notify_start,
+                    "platform": platform_key,
+                }
                 _want_iteration_detail = bool(
                     resolve_display_setting(
                         user_config,
@@ -17264,6 +17340,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
                         _a = _agent_ref.get_activity_summary()
+                        if isinstance(_a, dict):
+                            for _k in (
+                                "api_call_count",
+                                "max_iterations",
+                                "current_tool",
+                                "last_activity_desc",
+                            ):
+                                if _k in _a:
+                                    _activity_snapshot[_k] = _a.get(_k)
                         _parts = []
                         if _want_iteration_detail:
                             _parts.append(
@@ -17305,6 +17390,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _heartbeat_msg_id = str(_notify_res.message_id)
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(_heartbeat_msg_id)
+                    _schedule_status_enrichment(
+                        _heartbeat_msg_id,
+                        _first_notice,
+                        _activity_snapshot,
+                    )
                     _first_notice = False
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
@@ -17770,6 +17860,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 progress_task.cancel()
             interrupt_monitor.cancel()
             _notify_task.cancel()
+            for _status_task in list(_status_enrichment_tasks):
+                _status_task.cancel()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
@@ -17814,7 +17906,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._update_runtime_status("draining")
             
             # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task, _notify_task]:
+            for task in [progress_task, interrupt_monitor, tracking_task, _notify_task, *list(_status_enrichment_tasks)]:
                 if task:
                     try:
                         await task

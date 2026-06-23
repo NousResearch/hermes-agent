@@ -7665,7 +7665,7 @@ def _default_spawn(
     *,
     board: Optional[str] = None,
 ) -> Optional[int]:
-    """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
+    """Fire-and-forget ``hermes -p <profile> chat -Q -q ...`` subprocess.
 
     Returns the spawned child's PID so the dispatcher can detect crashes
     before the claim TTL expires. The child's completion is still observed
@@ -7793,6 +7793,16 @@ def _default_spawn(
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend([
         "chat",
+        # Kanban workers are automation wrappers, not interactive one-shots.
+        # The quiet path is the only single-query path that returns a
+        # reliable non-zero process exit when the agent/provider fails.  The
+        # human-facing ``chat -q`` path prints a Rich error box but returns 0,
+        # which makes the dispatcher misclassify backend/auth failures as a
+        # clean protocol violation ("worker exited cleanly without calling
+        # kanban_complete/kanban_block").  Keep stdout/stderr in the worker log,
+        # but use ``-Q`` so provider 401/429/etc. propagate as machine-readable
+        # exit codes for the reap classifier.
+        "-Q",
         "-q", prompt,
     ])
     # Redirect output to a per-task log under <board-root>/logs/.

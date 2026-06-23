@@ -83,10 +83,21 @@ agent:
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
-    assert "--toolsets" in captured["cmd"]
-    pinned = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")
+    cmd = captured["cmd"]
+    assert "--toolsets" in cmd
+    pinned = cmd[cmd.index("--toolsets") + 1].split(",")
     for required in ("terminal", "web", "file", "skills", "code_execution", "delegation"):
         assert required in pinned
+
+    # Kanban workers are automation. They must use the quiet single-query path
+    # so provider/backend failures return a non-zero process status instead of
+    # looking like a clean rc=0 protocol violation to the dispatcher.
+    assert cmd[cmd.index("chat") : cmd.index("chat") + 4] == [
+        "chat",
+        "-Q",
+        "-q",
+        "work kanban task t_spawn_tools",
+    ]
 
 
 def test_resolve_worker_cli_toolsets_uses_profile_home_not_parent_config(monkeypatch, tmp_path):

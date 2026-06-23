@@ -91,20 +91,49 @@ def test_find_install_script_returns_none_when_missing(tmp_path):
         assert result == (None, None)
 
 
-def test_has_system_browser_checks_windows_names():
-    from hermes_cli.dep_ensure import _has_system_browser
-    with patch("hermes_cli.dep_ensure._IS_WINDOWS", True), \
-         patch("hermes_cli.dep_ensure.shutil") as mock_shutil:
-        mock_shutil.which.side_effect = lambda name: "/fake/msedge.exe" if name == "msedge" else None
-        assert _has_system_browser() is True
+def test_browser_dep_rejects_system_chrome_without_agent_browser():
+    """A system Chrome/Edge must NOT satisfy the browser dep.
+
+    The runtime gate (tools.browser_tool.check_browser_requirements) hard-requires
+    the agent-browser CLI, so a bare system browser must leave the dep unsatisfied
+    — otherwise bootstrap falsely reports success and the lazy installer is skipped.
+    """
+    from hermes_cli.dep_ensure import ensure_dependency
+
+    def fake_which(name, path=None):
+        # System Chrome is present; agent-browser is not.
+        if name in ("google-chrome", "google-chrome-stable", "chromium",
+                    "chromium-browser", "chrome", "msedge"):
+            return f"/usr/bin/{name}"
+        return None
+
+    with patch("hermes_cli.dep_ensure.shutil.which", side_effect=fake_which), \
+         patch("hermes_cli.dep_ensure._has_hermes_agent_browser", return_value=False), \
+         patch("hermes_cli.dep_ensure._find_install_script", return_value=(None, None)):
+        assert ensure_dependency("browser", interactive=False) is False
 
 
-def test_has_system_browser_checks_posix_names():
-    from hermes_cli.dep_ensure import _has_system_browser
+def test_browser_dep_satisfied_by_agent_browser_on_path():
+    """agent-browser on PATH satisfies the browser dep without an install."""
+    from hermes_cli.dep_ensure import ensure_dependency
+
+    def fake_which(name, path=None):
+        return "/usr/local/bin/agent-browser" if name == "agent-browser" else None
+
+    with patch("hermes_cli.dep_ensure.shutil.which", side_effect=fake_which):
+        assert ensure_dependency("browser", interactive=False) is True
+
+
+def test_browser_dep_satisfied_by_hermes_managed_agent_browser(tmp_path):
+    """A hermes-managed agent-browser (off PATH) satisfies the browser dep."""
+    from hermes_cli.dep_ensure import ensure_dependency
+    bin_dir = tmp_path / "node" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "agent-browser").write_text("#!/bin/sh")
     with patch("hermes_cli.dep_ensure._IS_WINDOWS", False), \
-         patch("hermes_cli.dep_ensure.shutil") as mock_shutil:
-        mock_shutil.which.return_value = None
-        assert _has_system_browser() is False
+         patch("hermes_cli.dep_ensure.shutil.which", return_value=None), \
+         patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+        assert ensure_dependency("browser", interactive=False) is True
 
 
 def test_has_hermes_agent_browser_windows_path(tmp_path):

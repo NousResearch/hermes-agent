@@ -153,3 +153,32 @@ def test_main_setup_browser_propagates_browser_failure(monkeypatch):
     with pytest.raises(SystemExit) as excinfo:
         entry.main(["--setup-browser"])
     assert excinfo.value.code == 1
+
+
+def test_main_setup_browser_fails_with_only_system_chrome(monkeypatch):
+    """Regression: a system Chrome/Edge must not let browser bootstrap report
+    success when agent-browser is absent.
+
+    Drives the real ``dep_ensure.ensure_dependency`` (not a stub) so the
+    bootstrap success criterion stays aligned with the runtime gate in
+    ``tools.browser_tool.check_browser_requirements``, which hard-requires the
+    agent-browser CLI.
+    """
+    def fake_which(name, path=None):
+        if name == "node":
+            return "/usr/bin/node"
+        # System browser is present; agent-browser / npx are not.
+        if name in ("google-chrome", "google-chrome-stable", "chromium",
+                    "chromium-browser", "chrome", "msedge"):
+            return f"/usr/bin/{name}"
+        return None
+
+    monkeypatch.setattr("hermes_cli.dep_ensure.shutil.which", fake_which)
+    monkeypatch.setattr("hermes_cli.dep_ensure._has_hermes_agent_browser", lambda: False)
+    # No install script available, so the missing agent-browser cannot be
+    # installed and the dep stays unsatisfied.
+    monkeypatch.setattr("hermes_cli.dep_ensure._find_install_script", lambda *a, **k: (None, None))
+
+    with pytest.raises(SystemExit) as excinfo:
+        entry.main(["--setup-browser", "--yes"])
+    assert excinfo.value.code == 1

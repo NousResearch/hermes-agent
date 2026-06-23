@@ -26,9 +26,16 @@ _IS_WINDOWS = platform.system() == "Windows"
 
 _DEP_CHECKS = {
     "node": lambda: shutil.which("node") is not None,
+    # The browser toolset's hard dependency is the agent-browser CLI, not a
+    # system browser. A system Chrome/Edge only provides the engine that
+    # agent-browser drives — it is not a substitute for the CLI itself. The
+    # runtime gate (tools.browser_tool.check_browser_requirements) returns
+    # False without agent-browser, so accepting a bare system browser here
+    # would make bootstrap falsely report success and would short-circuit the
+    # lazy installer in browser_tool._find_agent_browser() (it never runs the
+    # install script, then fails to resolve agent-browser anyway).
     "browser": lambda: (
         shutil.which("agent-browser") is not None
-        or _has_system_browser()
         or _has_hermes_agent_browser()
     ),
     "ripgrep": lambda: shutil.which("rg") is not None,
@@ -37,21 +44,10 @@ _DEP_CHECKS = {
 
 _DEP_DESCRIPTIONS = {
     "node": "Node.js (required for browser tools and TUI)",
-    "browser": "Browser engine (Chromium, for web browsing tools)",
+    "browser": "Browser tools (agent-browser CLI + Chromium)",
     "ripgrep": "ripgrep (fast file search)",
     "ffmpeg": "ffmpeg (TTS voice messages)",
 }
-
-
-def _has_system_browser() -> bool:
-    if _IS_WINDOWS:
-        names = ("chrome", "msedge", "chromium")
-    else:
-        names = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")
-    for name in names:
-        if shutil.which(name):
-            return True
-    return False
 
 
 def _has_hermes_agent_browser() -> bool:

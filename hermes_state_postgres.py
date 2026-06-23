@@ -206,9 +206,9 @@ _PG_ONLY_MIGRATIONS: List[PostgresMigration] = [
     # v19 — Native FTS column for tokenized AND-search (parity with SQLite FTS5).
     # ADD COLUMN with no DEFAULT is a metadata-only change on PG 11+ — no table
     # rewrite, no ACCESS EXCLUSIVE lock beyond milliseconds. The GIN index build
-    # is CONCURRENTLY (non-blocking). Existing rows are backfilled by the
-    # Python-side UPDATE in _update_fts_content (called after each message
-    # INSERT) or via the manual backfill runbook. optional=True so a transient
+    # is CONCURRENTLY (non-blocking). New rows are kept up to date by the
+    # cursor hook (_update_fts_content called after each message INSERT). Existing
+    # rows require a one-time backfill (see runbook) to become searchable via FTS.
     # CONCURRENTLY failure retries next connect without hard-failing startup.
     # Uses 'simple' dictionary (lowercase only, no stemming) — correct for a
     # multilingual corpus with code identifiers, proper nouns, and Hebrew names.

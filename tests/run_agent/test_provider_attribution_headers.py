@@ -110,6 +110,31 @@ def test_routed_client_preserves_openai_sdk_custom_headers(mock_openai):
 
 
 @patch("run_agent.OpenAI")
+def test_routed_client_preserves_openai_sdk_default_headers(mock_openai):
+    mock_openai.return_value = MagicMock()
+    routed_client = SimpleNamespace(
+        api_key="test-key",
+        base_url="https://api.githubcopilot.com",
+        default_headers={"copilot-integration-id": "vscode-chat"},
+    )
+
+    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(
+        routed_client,
+        "claude-opus-4.7",
+    )):
+        agent = AIAgent(
+            provider="copilot",
+            model="claude-opus-4.7",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["copilot-integration-id"] == "vscode-chat"
+
+
+@patch("run_agent.OpenAI")
 def test_gmi_base_url_picks_up_profile_user_agent(mock_openai):
     """GMI declares User-Agent on its ProviderProfile.default_headers.
 

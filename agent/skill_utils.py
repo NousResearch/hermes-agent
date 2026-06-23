@@ -43,14 +43,20 @@ EXCLUDED_SKILL_DIRS = frozenset(
     )
 )
 
+# Supporting files live inside a skill package and are loaded explicitly via
+# skill_view(skill, file_path=...). They are not standalone skills and must not
+# be scanned for active SKILL.md/DESCRIPTION.md entries, even if a Curator or
+# archive workflow preserves a complete old skill package under references/.
+SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
+
 
 def is_excluded_skill_path(path) -> bool:
-    """True if any component of *path* is in EXCLUDED_SKILL_DIRS.
+    """True if *path* should be skipped by active skill scanners.
 
-    Use this on every SKILL.md path produced by ``rglob`` to prune
-    dependency, virtualenv, VCS, and cache directories. Centralising the
-    check here keeps every skill-scanning site in sync with the shared
-    exclusion set.
+    Use this on every ``SKILL.md`` path produced by direct ``rglob`` scans to
+    prune dependency, virtualenv, VCS, cache, and progressive-disclosure
+    support-package paths. Centralising the check here keeps every
+    skill-scanning site in sync with the shared exclusion set.
 
     Accepts a Path or string.
     """
@@ -59,7 +65,36 @@ def is_excluded_skill_path(path) -> bool:
     except AttributeError:
         from pathlib import PurePath
         parts = PurePath(str(path)).parts
-    return any(part in EXCLUDED_SKILL_DIRS for part in parts)
+    return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(
+        path
+    )
+
+
+def is_skill_support_path(path) -> bool:
+    """True if *path* is under a support dir of an actual skill root.
+
+    ``references/``, ``templates/``, ``assets/``, and ``scripts/`` are
+    progressive-disclosure support areas when they sit directly inside a skill
+    directory containing ``SKILL.md``. They are not active discovery roots for
+    standalone skills. A preserved package such as
+    ``some-skill/references/old-skill-package/SKILL.md`` is documentation data
+    unless the caller explicitly loads it via ``file_path``.
+
+    Legitimate categories or skill names such as ``skills/scripts/foo`` remain
+    discoverable because their ``scripts`` component is not directly under a
+    directory that contains ``SKILL.md``.
+    """
+    path_obj = path if isinstance(path, Path) else Path(str(path))
+    parts = path_obj.parts
+    # Last component may be a file or candidate skill directory name. Only
+    # components before the leaf can be containing support directories.
+    for idx, part in enumerate(parts[:-1]):
+        if part not in SKILL_SUPPORT_DIRS or idx == 0:
+            continue
+        skill_root = Path(*parts[:idx])
+        if (skill_root / "SKILL.md").exists():
+            return True
+    return False
 
 
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
@@ -245,9 +280,9 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     This is an OFFER-time filter: it controls whether a skill shows up in the
     skills index / autocomplete / slash-command list. It is intentionally NOT
     enforced by ``skill_view`` or ``--skills`` preloading — an explicit load is
-    explicit consent, and load-bearing force-loads (e.g. the kanban dispatcher
-    injecting ``--skills kanban-worker``) must always succeed regardless of how
-    the offer surfaces filter the skill.
+    explicit consent, and load-bearing force-loads (e.g. a dispatcher pinning
+    a task to a specialist skill via ``--skills``) must always succeed
+    regardless of how the offer surfaces filter the skill.
 
     A skill matches when ANY of its declared environments is currently active
     (OR semantics, mirroring ``platforms``). Unknown env tags fail open.
@@ -272,27 +307,65 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
 # ── Disabled skills ───────────────────────────────────────────────────────
 
 
+_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+
+
+def _raw_config_cache_clear() -> None:
+    """Test hook — drop the shared raw config cache."""
+    _RAW_CONFIG_CACHE.clear()
+
+
+def _load_raw_config() -> Dict[str, Any]:
+    """Read config.yaml with a shared mtime+size keyed cache.
+
+    This module intentionally avoids importing ``hermes_cli.config`` on the
+    skill prompt/build path. A tiny local cache gives the same repeated-read
+    win without pulling the heavier CLI config stack into startup.
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return {}
+    try:
+        stat = config_path.stat()
+        cache_key = (str(config_path), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        cache_key = None
+
+    if cache_key is not None:
+        cached = _RAW_CONFIG_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug("Could not read skill config %s: %s", config_path, e)
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    if cache_key is not None:
+        _RAW_CONFIG_CACHE.clear()
+        _RAW_CONFIG_CACHE[cache_key] = parsed
+    return parsed
+
+
 def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     """Read disabled skill names from config.yaml.
 
     Args:
         platform: Explicit platform name (e.g. ``"telegram"``).  When
             *None*, resolves from ``HERMES_PLATFORM`` or
-            ``HERMES_SESSION_PLATFORM`` env vars.  Falls back to the
-            global disabled list when no platform is determined.
+            ``HERMES_SESSION_PLATFORM`` env vars.  Returns the global
+            disabled list, unioned with the platform-specific list when a
+            platform is resolved (a globally-disabled skill stays disabled
+            on every platform).
 
     Reads the config file directly (no CLI config imports) to stay
     lightweight.
     """
-    config_path = get_config_path()
-    if not config_path.exists():
-        return set()
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        logger.debug("Could not read skill config %s: %s", config_path, e)
-        return set()
-    if not isinstance(parsed, dict):
+    parsed = _load_raw_config()
+    if not parsed:
         return set()
 
     skills_cfg = parsed.get("skills")
@@ -305,13 +378,14 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
         or os.getenv("HERMES_PLATFORM")
         or get_session_env("HERMES_SESSION_PLATFORM")
     )
+    global_disabled = _normalize_string_set(skills_cfg.get("disabled"))
     if resolved_platform:
         platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
             resolved_platform
         )
         if platform_disabled is not None:
-            return _normalize_string_set(platform_disabled)
-    return _normalize_string_set(skills_cfg.get("disabled"))
+            return global_disabled | _normalize_string_set(platform_disabled)
+    return global_disabled
 
 
 def _normalize_string_set(values) -> Set[str]:
@@ -336,6 +410,7 @@ _EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
 def _external_dirs_cache_clear() -> None:
     """Test hook — drop the in-process cache."""
     _EXTERNAL_DIRS_CACHE.clear()
+    _raw_config_cache_clear()
 
 
 def get_external_skills_dirs() -> List[Path]:
@@ -368,11 +443,8 @@ def get_external_skills_dirs() -> List[Path]:
             # Return a copy so callers can't mutate the cached list.
             return list(cached)
 
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(parsed, dict):
+    parsed = _load_raw_config()
+    if not parsed:
         return []
 
     skills_cfg = parsed.get("skills")
@@ -584,15 +656,7 @@ def resolve_skill_config_values(
     current values (or the declared default if the key isn't set).
     Path values are expanded via ``os.path.expanduser``.
     """
-    config_path = get_config_path()
-    config: Dict[str, Any] = {}
-    if config_path.exists():
-        try:
-            parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-            if isinstance(parsed, dict):
-                config = parsed
-        except Exception:
-            pass
+    config = _load_raw_config()
 
     resolved: Dict[str, Any] = {}
     for var in config_vars:
@@ -632,12 +696,21 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
-    Excludes Hermes metadata, VCS, virtualenv/dependency, and cache
-    directories so dependencies cannot register nested skills.
+    Excludes Hermes metadata, VCS, virtualenv/dependency, cache, and skill
+    support directories. Support directories (references/templates/assets/
+    scripts) can contain arbitrary markdown and even archived package
+    ``SKILL.md`` files, but they are progressive-disclosure data loaded through
+    ``skill_view(..., file_path=...)`` rather than active skill roots.
     """
     matches = []
     for root, dirs, files in os.walk(skills_dir, followlinks=True):
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
+        has_skill_md = "SKILL.md" in files
+        dirs[:] = [
+            d
+            for d in dirs
+            if d not in EXCLUDED_SKILL_DIRS
+            and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
+        ]
         if filename in files:
             matches.append(Path(root) / filename)
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):

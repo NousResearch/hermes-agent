@@ -7,6 +7,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -131,6 +132,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "OPENAI_ORGANIZATION",
         "OPENROUTER_API_KEY",
         "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_KEY",
         "ANTHROPIC_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "LLM_MODEL",
@@ -227,11 +229,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     _inject_context_hermes_home(sanitized)
 
-    # Per-profile HOME isolation for background processes (same as _make_run_env).
-    from hermes_constants import get_subprocess_home
-    _profile_home = get_subprocess_home()
-    if _profile_home:
-        sanitized["HOME"] = _profile_home
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(sanitized)
 
     return sanitized
 
@@ -299,6 +298,151 @@ _SANE_PATH = (
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
 
+# Cached directory containing the ``hermes`` console-script.
+# ``_SENTINEL`` distinguishes "not resolved yet" from a resolved ``None``.
+_SENTINEL = object()
+_HERMES_BIN_DIR: "str | None | object" = _SENTINEL
+
+
+def _resolve_hermes_bin_dir() -> str | None:
+    """Return the directory holding the ``hermes`` console-script, or None.
+
+    The terminal tool runs in a freshly-spawned subshell whose PATH is the
+    agent process's PATH plus a static set of system dirs (``_SANE_PATH``).
+    When the gateway is launched by something that does NOT source the user's
+    shell rc — systemd, a service manager, a desktop launcher, cron — the
+    hermes install dir (``~/.local/bin``, the venv ``bin``/``Scripts``, pipx,
+    nix) is absent from that PATH, so plugins shelling out to bare ``hermes``
+    via the terminal tool hit ``command not found`` (exit 127) even though
+    ``hermes`` works fine in the user's own interactive terminal.
+
+    We resolve the install dir once (it never changes within a process) and
+    prepend-if-missing it to the subshell PATH so bare ``hermes`` resolves
+    regardless of how the gateway was started.
+
+    Resolution order (cheap, no heavy imports):
+      1. ``shutil.which("hermes")`` — normal PATH-installed shim.
+      2. The directory of ``sys.argv[0]`` when it's an absolute path to a
+         real ``hermes`` executable (covers nix-store / venv wrappers).
+      3. The directory of ``sys.executable`` — the running interpreter's
+         venv ``bin``/``Scripts`` is where its console-scripts live.
+    """
+    global _HERMES_BIN_DIR
+    if _HERMES_BIN_DIR is not _SENTINEL:
+        return _HERMES_BIN_DIR  # type: ignore[return-value]
+
+    candidate: str | None = None
+
+    which = shutil.which("hermes")
+    if which:
+        candidate = os.path.dirname(which)
+
+    if candidate is None:
+        argv0 = sys.argv[0] if sys.argv else ""
+        base = os.path.basename(argv0).lower()
+        if (
+            os.path.isabs(argv0)
+            and (base == "hermes" or base.startswith("hermes."))
+            and os.path.isfile(argv0)
+        ):
+            candidate = os.path.dirname(argv0)
+
+    if candidate is None:
+        exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
+        if exe_dir:
+            shim = "hermes.exe" if _IS_WINDOWS else "hermes"
+            if os.path.isfile(os.path.join(exe_dir, shim)):
+                candidate = exe_dir
+
+    if candidate and not os.path.isdir(candidate):
+        candidate = None
+
+    _HERMES_BIN_DIR = candidate
+    return candidate
+
+
+def _prepend_hermes_bin_dir(existing_path: str) -> str:
+    """Prepend the hermes install dir to ``existing_path`` if it's missing.
+
+    Cross-platform (uses ``os.pathsep``). First-occurrence wins, so a PATH
+    that already contains the dir is returned unchanged. Returns the input
+    unchanged when the install dir can't be resolved.
+    """
+    bin_dir = _resolve_hermes_bin_dir()
+    if not bin_dir:
+        return existing_path
+    sep = os.pathsep
+    entries = [e for e in existing_path.split(sep) if e] if existing_path else []
+    if bin_dir in entries:
+        return existing_path
+    return sep.join([bin_dir, *entries])
+
+
+def _append_missing_sane_path_entries(existing_path: str) -> str:
+    """Return a normalised POSIX PATH with missing sane entries appended.
+
+    On POSIX the caller-supplied PATH is rewritten (not merely appended to):
+    empty entries and duplicate entries are dropped, preserving
+    first-occurrence order, then each missing ``_SANE_PATH`` entry is appended
+    once at the end so existing entries keep their precedence.
+
+    Two intentional normalisations beyond the bare "add Homebrew dirs" fix:
+
+    - **Empty entries are stripped.** A leading/trailing/double ``:`` encodes
+      an empty PATH element, which POSIX shells interpret as the current
+      working directory — a mild foot-gun in a default terminal environment.
+      We drop these rather than carry them through.
+    - **Duplicates are collapsed** (first occurrence wins), so a caller PATH
+      that already contains repeats is not propagated verbatim.
+
+    For a well-formed PATH (no empties, no duplicates) the leading segment is
+    byte-identical to the input and ordering is preserved; only the missing
+    sane entries are appended. On Windows this is a no-op passthrough (the
+    separator is ``;`` and the native PATH must not be touched).
+    """
+    if _IS_WINDOWS:
+        return existing_path
+
+    sane_entries = [entry for entry in _SANE_PATH.split(":") if entry]
+    if not existing_path:
+        return ":".join(sane_entries)
+
+    # De-duplicate the caller PATH (first occurrence wins) and drop empty
+    # entries before merging in the sane fallbacks.
+    seen: set[str] = set()
+    ordered_entries: list[str] = []
+    for entry in existing_path.split(":"):
+        if not entry or entry in seen:
+            continue
+        seen.add(entry)
+        ordered_entries.append(entry)
+
+    # _SANE_PATH is a static, duplicate-free constant, so a membership check
+    # against the caller entries is sufficient — no need to track `seen` here.
+    for entry in sane_entries:
+        if entry not in seen:
+            ordered_entries.append(entry)
+
+    return ":".join(ordered_entries)
+
+
+def _path_env_key(run_env: dict) -> str | None:
+    """Return the PATH env key to update without altering Windows casing.
+
+    Note: this is deliberately a *second* Windows guard, distinct from the
+    early-return in ``_append_missing_sane_path_entries``. Its job is to pick
+    the correctly-cased key (``Path`` vs ``PATH``) so completion writes back to
+    the key the caller already used; the helper's guard makes that helper safe
+    to call standalone (it is, e.g. in the Windows unit tests). Both are
+    intentional.
+    """
+    if not _IS_WINDOWS:
+        return "PATH"
+    for key in run_env:
+        if key.upper() == "PATH":
+            return key
+    return None
+
 
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
@@ -315,27 +459,18 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
-    existing_path = run_env.get("PATH", "")
-    # The "/usr/bin not already present → inject sane POSIX path" heuristic
-    # only makes sense on POSIX.  On Windows the PATH separator is ";"
-    # (the split(":") above turns a full Windows PATH into a single
-    # unrecognisable chunk, which then triggers prepending POSIX paths
-    # to a Windows PATH — completely wrong).  Skip the injection entirely
-    # on Windows; the native PATH already points at whatever shell
-    # Hermes is driving via _find_bash (Git Bash), and Git Bash itself
-    # prepends its MSYS2 /usr/bin equivalent via the shell-init files.
-    if not _IS_WINDOWS and "/usr/bin" not in existing_path.split(":"):
-        run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+    path_key = _path_env_key(run_env)
+    if path_key is not None:
+        new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
+        # Ensure the hermes install dir is reachable so plugins can shell out
+        # to bare ``hermes`` via the terminal tool even when the gateway was
+        # launched without it on PATH (systemd, service managers, cron, etc.).
+        run_env[path_key] = _prepend_hermes_bin_dir(new_path)
 
     _inject_context_hermes_home(run_env)
 
-    # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
-    # npm …) into {HERMES_HOME}/home/ when that directory exists.  Only the
-    # subprocess sees the override — the Python process keeps the real HOME.
-    from hermes_constants import get_subprocess_home
-    _profile_home = get_subprocess_home()
-    if _profile_home:
-        run_env["HOME"] = _profile_home
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(run_env)
 
     # Inject ContextVar-based session vars into subprocess env.
     # ContextVars don't propagate to child processes, so we bridge them here.

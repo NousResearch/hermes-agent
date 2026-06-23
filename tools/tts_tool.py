@@ -187,9 +187,18 @@ DEFAULT_XAI_SAMPLE_RATE = 24000
 DEFAULT_XAI_BIT_RATE = 128000
 DEFAULT_XAI_AUTO_SPEECH_TAGS = False
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
+# xAI TTS `speed` accepts 0.7..1.5; 1.0 is the API default (omitted => default).
+DEFAULT_XAI_SPEED_MIN = 0.7
+DEFAULT_XAI_SPEED_MAX = 1.5
+DEFAULT_XAI_SPEED_DEFAULT = 1.0
+# xAI TTS `optimize_streaming_latency` accepts 0, 1, or 2; 0 (best quality) is
+# the API default (omitted => default). Values >0 trade quality for time-to-first-audio.
+DEFAULT_XAI_OPTIMIZE_STREAMING_LATENCY_DEFAULT = 0
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_GEMINI_AUDIO_TAGS = False
+GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -204,8 +213,8 @@ DEFAULT_OUTPUT_DIR = _get_default_output_dir()
 # ---------------------------------------------------------------------------
 # Per-provider input-character limits (from official provider docs).
 # A single global cap was wrong: OpenAI is 4096, xAI is 15k, MiniMax is 10k,
-# ElevenLabs is model-dependent (5k / 10k / 30k / 40k), Gemini caps at ~8k
-# input tokens.  Users can override any of these via
+# ElevenLabs is model-dependent (5k / 10k / 30k / 40k), Gemini has a 32k-token
+# context window.  Users can override any of these via
 # ``tts.<provider>.max_text_length`` in config.yaml.
 # ---------------------------------------------------------------------------
 PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
@@ -214,7 +223,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "xai": 15000,         # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
     "minimax": 10000,     # https://platform.minimax.io/docs/api-reference/speech-t2a-http (sync)
     "mistral": 4000,      # conservative; no published per-request cap
-    "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
+    "gemini": 32000,      # Gemini TTS has a 32k-token context window; char cap is conservative
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
@@ -232,6 +241,23 @@ ELEVENLABS_MODEL_MAX_TEXT_LENGTH: Dict[str, int] = {
     "eleven_flash_v2": 30000,
     "eleven_flash_v2_5": 40000,
 }
+
+
+def _config_bool(value: Any, default: bool = False) -> bool:
+    """Coerce common YAML/env bool spellings without treating random strings as true."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled"}:
+            return False
+    return default
 
 # Final fallback when provider isn't recognised at all.
 FALLBACK_MAX_TEXT_LENGTH = 4000
@@ -693,6 +719,7 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=5,
+                stdin=subprocess.DEVNULL,
             )
         except Exception:
             proc.kill()
@@ -745,7 +772,7 @@ def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProces
     else:
         popen_kwargs["start_new_session"] = True
 
-    proc = subprocess.Popen(command, **popen_kwargs)
+    proc = subprocess.Popen(command, **popen_kwargs, stdin=subprocess.DEVNULL)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
@@ -882,6 +909,7 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
             ["ffmpeg", "-i", mp3_path, "-acodec", "libopus",
              "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
             capture_output=True, timeout=30,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
             logger.warning("ffmpeg conversion failed with return code %d: %s", 
@@ -1067,39 +1095,75 @@ _XAI_FIRST_SENTENCE_RE = re.compile(r"^(.{12,120}?[.!?…])\s+(?=\S)", flags=re.
 
 
 def _xai_bool_config(value: Any, default: bool = False) -> bool:
-    """Coerce common YAML/env bool spellings without treating random strings as true."""
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on", "enabled"}:
-            return True
-        if normalized in {"0", "false", "no", "off", "disabled"}:
-            return False
-    return default
+    return _config_bool(value, default=default)
 
 
 def _apply_xai_auto_speech_tags(text: str) -> str:
-    """Add light xAI speech tags for more natural voice-mode replies.
+    """Add xAI speech tags for more natural voice-mode replies.
 
-    The transform is intentionally conservative: it only inserts pauses. It
-    never fabricates laughter or whispering, and it leaves explicit user/model
-    speech tags untouched.
+    First applies a conservative local transform (inserts [pause] between
+    paragraphs and after the first sentence). Then, if the result contains
+    no explicit user/model speech tags, asks the configured auxiliary model
+    to rewrite the transcript with a richer set of xAI-supported tags
+    (laughs, sighs, whispers, soft/loud, slow/fast, etc.) so the voice
+    output sounds more expressive. Falls back to the local result on any
+    auxiliary-model failure.
     """
     clean = text.strip()
-    if not clean or _XAI_SPEECH_TAG_RE.search(clean):
+    if not clean:
         return text
 
-    clean = re.sub(r"\n\s*\n+", " [pause] ", clean)
-    clean = re.sub(r"\s*\n\s*", " ", clean)
-    if not _XAI_SPEECH_TAG_RE.search(clean):
-        clean = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", clean, count=1)
-    clean = re.sub(r"\s{2,}", " ", clean).strip()
-    return clean
+    # Local conservative pass: pauses only.
+    local = clean
+    local = re.sub(r"\n\s*\n+", " [pause] ", local)
+    local = re.sub(r"\s*\n\s*", " ", local)
+    if not _XAI_SPEECH_TAG_RE.search(local):
+        local = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", local, count=1)
+    local = re.sub(r"\s{2,}", " ", local).strip()
+
+    # If the user/model already supplied explicit speech tags, trust them
+    # and don't re-rewrite.
+    if _XAI_SPEECH_TAG_RE.search(clean):
+        return local
+
+    # Auxiliary rewrite for richer emotion tags (mirrors the Gemini path).
+    inline = ", ".join(_XAI_INLINE_SPEECH_TAGS)
+    wrapping = ", ".join(_XAI_WRAPPING_SPEECH_TAGS)
+    system_prompt = (
+        "You rewrite transcripts for the xAI /v1/tts endpoint by inserting "
+        "expressive speech tags.\n\n"
+        "Valid inline tags (use as `[tag]`): " + inline + ".\n"
+        "Valid wrapping tags (use as `[tag]...[/tag]`): " + wrapping + ".\n\n"
+        "Rules:\n"
+        "- Preserve the spoken words, order, and meaning.\n"
+        "- Do not add new spoken sentences or remove existing spoken words.\n"
+        "- Use inline `[tag]` for short modifiers (laughs, sighs, pause, etc.).\n"
+        "- Use wrapping `[tag]...[/tag]` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
+        "- Do not use angle-bracket tags like `<tag>...</tag>` — xAI uses BBCode-style closing tags with `[/tag]`.\n"
+        "- Do not use SSML.\n"
+        "- Do not explain or comment.\n"
+        "- Return only the tagged TTS script."
+    )
+    try:
+        from agent.auxiliary_client import call_llm
+
+        response = call_llm(
+            task="tts_audio_tags",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"TRANSCRIPT TO TAG:\n{local}"},
+            ],
+            temperature=0.7,
+        )
+        tagged = _extract_auxiliary_message_content(response).strip()
+        # Strip markdown fences if the LLM wrapped the response.
+        fence = re.fullmatch(r"```(?:[A-Za-z0-9_-]+)?\s*(.*?)\s*```", tagged, flags=re.DOTALL)
+        if fence:
+            tagged = fence.group(1).strip()
+        return tagged or local
+    except Exception as exc:
+        logger.debug("xAI TTS audio tag rewrite failed; using locally-tagged text: %s", exc)
+        return local
 
 
 def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -1127,6 +1191,31 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         xai_config.get("auto_speech_tags", xai_config.get("speech_tags")),
         DEFAULT_XAI_AUTO_SPEECH_TAGS,
     )
+    # ``tts.xai.speed`` overrides global ``tts.speed``; the xAI TTS API
+    # accepts 0.7..1.5 (1.0 = normal). Out-of-range values are clamped so a
+    # misconfigured agent can't 400 the request — the API would reject
+    # anything outside the band.
+    speed = xai_config.get("speed", tts_config.get("speed"))
+    if speed is not None and speed != "":
+        try:
+            speed = float(speed)
+        except (TypeError, ValueError):
+            speed = None
+    if speed is not None:
+        speed = max(DEFAULT_XAI_SPEED_MIN, min(DEFAULT_XAI_SPEED_MAX, speed))
+    # ``tts.xai.optimize_streaming_latency`` is 0, 1, or 2 (xAI-specific;
+    # trades chunk-boundary quality for time-to-first-audio).
+    optimize_streaming_latency = xai_config.get(
+        "optimize_streaming_latency",
+        tts_config.get("optimize_streaming_latency"),
+    )
+    if optimize_streaming_latency is not None and optimize_streaming_latency != "":
+        try:
+            optimize_streaming_latency = int(optimize_streaming_latency)
+        except (TypeError, ValueError):
+            optimize_streaming_latency = None
+    if optimize_streaming_latency is not None:
+        optimize_streaming_latency = max(0, min(2, optimize_streaming_latency))
     if auto_speech_tags:
         text = _apply_xai_auto_speech_tags(text)
     base_url = str(
@@ -1155,6 +1244,18 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         if codec == "mp3" and bit_rate:
             output_format["bit_rate"] = bit_rate
         payload["output_format"] = output_format
+    # Only attach `speed` when the caller asked for something other than the
+    # API default (1.0). Keeps the existing minimal-payload contract for
+    # users who never touch the knob.
+    if speed is not None and speed != DEFAULT_XAI_SPEED_DEFAULT:
+        payload["speed"] = speed
+    # Only attach `optimize_streaming_latency` when the caller explicitly
+    # opts in to a non-default value (anything other than 0).
+    if (
+        optimize_streaming_latency is not None
+        and optimize_streaming_latency != DEFAULT_XAI_OPTIMIZE_STREAMING_LATENCY_DEFAULT
+    ):
+        payload["optimize_streaming_latency"] = optimize_streaming_latency
 
     response = requests.post(
         f"{base_url}/tts",
@@ -1392,6 +1493,160 @@ def _wrap_pcm_as_wav(
     return riff_header + fmt_chunk + data_chunk_header + pcm_bytes
 
 
+def _resolve_gemini_persona_prompt_path(gemini_config: Dict[str, Any]) -> Optional[Path]:
+    """Return the configured persona prompt file path, if any."""
+    raw = gemini_config.get("persona_prompt_file")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+
+    expanded = os.path.expandvars(raw.strip())
+    path = Path(expanded).expanduser()
+    if not path.is_absolute():
+        try:
+            from hermes_constants import get_hermes_home
+            path = get_hermes_home() / path
+        except Exception:
+            path = Path.cwd() / path
+    return path
+
+
+def _read_gemini_persona_prompt(gemini_config: Dict[str, Any]) -> str:
+    """Read the Gemini persona prompt file, failing soft on config mistakes."""
+    path = _resolve_gemini_persona_prompt_path(gemini_config)
+    if path is None:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.warning(
+            "Gemini TTS persona prompt file unavailable at %s: %s",
+            path,
+            exc,
+        )
+        return ""
+
+
+def _gemini_model_supports_audio_tags(model: str) -> bool:
+    """Return True for Gemini TTS models known to support expressive audio tags."""
+    normalized = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return "gemini-3.1" in normalized and "tts" in normalized
+
+
+def _gemini_audio_tags_enabled(gemini_config: Dict[str, Any], model: str) -> bool:
+    raw = gemini_config.get("audio_tags")
+    if isinstance(raw, dict):
+        raw = raw.get("enabled")
+    enabled = _config_bool(raw, default=DEFAULT_GEMINI_AUDIO_TAGS)
+    if not enabled:
+        return False
+    if not _gemini_model_supports_audio_tags(model):
+        logger.warning(
+            "Gemini TTS audio_tags enabled, but model %s is not known to support "
+            "Gemini audio tags; skipping hidden tag rewrite",
+            model,
+        )
+        return False
+    return True
+
+
+def _clean_gemini_audio_tag_rewrite(content: str) -> str:
+    clean = (content or "").strip()
+    fence = re.fullmatch(r"```(?:[A-Za-z0-9_-]+)?\s*(.*?)\s*```", clean, flags=re.DOTALL)
+    if fence:
+        clean = fence.group(1).strip()
+    return clean
+
+
+def _extract_auxiliary_message_content(response: Any) -> str:
+    try:
+        choice = response.choices[0]
+        message = getattr(choice, "message", None)
+        if isinstance(message, dict):
+            return str(message.get("content") or "")
+        return str(getattr(message, "content", "") or "")
+    except Exception:
+        return ""
+
+
+def _rewrite_gemini_tts_audio_tags(text: str, persona_prompt: str = "") -> str:
+    """Use the configured auxiliary model to insert Gemini audio tags."""
+    transcript = text.strip()
+    if not transcript:
+        return text
+
+    system_prompt = (
+        "You rewrite transcripts for Gemini 3.1 Flash TTS by inserting expressive "
+        "audio tags.\n\n"
+        "Audio tags are inline square-bracket modifiers such as [whispers], "
+        "[excitedly], [very slow], [sarcastically], [laughs], [sighs], or [gasp]. "
+        "There is no fixed allowlist. Use creative freeform tags generously but "
+        "naturally to control tone, pace, emotional vibe, emphasis, section-level "
+        "delivery, and non-verbal sounds. Use English audio tags even when the "
+        "spoken transcript is not English.\n\n"
+        "Rules:\n"
+        "- Preserve the spoken words, order, and meaning.\n"
+        "- Do not add new spoken sentences or remove existing spoken words.\n"
+        "- Use square brackets for every audio tag.\n"
+        "- Do not use SSML or XML tags.\n"
+        "- Do not explain or comment.\n"
+        "- Return only the tagged TTS script."
+    )
+    context = persona_prompt.strip() or "(none)"
+    user_prompt = (
+        "PERSONA AND DIRECTOR CONTEXT:\n"
+        f"{context}\n\n"
+        "TRANSCRIPT TO TAG:\n"
+        f"{transcript}"
+    )
+    try:
+        from agent.auxiliary_client import call_llm
+
+        response = call_llm(
+            task=GEMINI_AUDIO_TAG_REWRITE_TASK,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.7,
+        )
+        tagged = _clean_gemini_audio_tag_rewrite(_extract_auxiliary_message_content(response))
+        return tagged or text
+    except Exception as exc:
+        logger.warning("Gemini TTS audio tag rewrite failed; using untagged text: %s", exc)
+        return text
+
+
+def _compose_gemini_tts_prompt(
+    text: str,
+    gemini_config: Dict[str, Any],
+    persona_prompt: Optional[str] = None,
+) -> str:
+    """Build the Gemini prompt from persona direction plus the live transcript."""
+    transcript = text.strip()
+    if persona_prompt is None:
+        persona_prompt = _read_gemini_persona_prompt(gemini_config)
+    if not persona_prompt:
+        return transcript
+
+    preamble = (
+        "Synthesize speech from the TRANSCRIPT only. Treat AUDIO PROFILE, "
+        "SCENE, DIRECTOR'S NOTES, and SAMPLE CONTEXT as performance direction; "
+        "do not speak those sections aloud."
+    )
+
+    placeholder_patterns = (
+        re.compile(r"\{\{\s*transcript\s*\}\}", flags=re.IGNORECASE),
+        re.compile(r"\{\s*transcript\s*\}", flags=re.IGNORECASE),
+    )
+    prompt = persona_prompt
+    for pattern in placeholder_patterns:
+        if pattern.search(prompt):
+            prompt = pattern.sub(transcript, prompt)
+            return f"{preamble}\n\n{prompt}".strip()
+
+    return f"{preamble}\n\n{persona_prompt}\n\n#### TRANSCRIPT\n{transcript}".strip()
+
+
 def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate audio using Google Gemini TTS.
 
@@ -1417,7 +1672,8 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
         )
 
-    gemini_config = tts_config.get("gemini", {})
+    raw_gemini_config = tts_config.get("gemini", {})
+    gemini_config = raw_gemini_config if isinstance(raw_gemini_config, dict) else {}
     model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
     voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
     base_url = str(
@@ -1425,9 +1681,25 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         or get_env_value("GEMINI_BASE_URL")
         or DEFAULT_GEMINI_TTS_BASE_URL
     ).strip().rstrip("/")
+    persona_prompt = _read_gemini_persona_prompt(gemini_config)
+    tts_script = text
+    if _gemini_audio_tags_enabled(gemini_config, model):
+        tts_script = _rewrite_gemini_tts_audio_tags(text, persona_prompt=persona_prompt)
+    prompt_text = _compose_gemini_tts_prompt(
+        tts_script,
+        gemini_config,
+        persona_prompt=persona_prompt,
+    )
+    max_len = _resolve_max_text_length("gemini", tts_config)
+    if len(prompt_text) > max_len:
+        logger.warning(
+            "Gemini TTS composed prompt too long (%d chars), truncating to %d",
+            len(prompt_text), max_len,
+        )
+        prompt_text = prompt_text[:max_len]
 
     payload: Dict[str, Any] = {
-        "contents": [{"parts": [{"text": text}]}],
+        "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {
@@ -1504,7 +1776,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
                 ]
             else:
                 cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            result = subprocess.run(cmd, capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
             if result.returncode != 0:
                 stderr = result.stderr.decode("utf-8", errors="ignore")[:300]
                 raise RuntimeError(f"ffmpeg conversion failed: {stderr}")
@@ -1587,7 +1859,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
         "--device", device,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         stderr = result.stderr.strip()
         # Filter out the "OK:" line from stderr
@@ -1599,7 +1871,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30)
+            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
             os.remove(wav_path)
         else:
             # No ffmpeg — just rename the WAV to the expected path
@@ -1670,6 +1942,7 @@ def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
             [_sys.executable, "-m", "piper.download_voices", voice,
              "--download-dir", str(download_dir)],
             capture_output=True, text=True, timeout=300,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
@@ -1709,6 +1982,18 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 
     model_path = _resolve_piper_voice_path(voice_name, download_dir)
 
+    # Tolerant speaker_id parse: drop bad input (non-int strings, lists, dicts)
+    # to 0 (Piper's own default). Booleans are rejected outright — True/False
+    # would silently coerce to 1/0 and hide a config mistake.
+    _raw_speaker = piper_config.get("speaker_id", 0)
+    if isinstance(_raw_speaker, bool) or not isinstance(_raw_speaker, int):
+        speaker_id = 0
+    else:
+        speaker_id = _raw_speaker
+
+    # speaker_id is applied per-call via syn_config.speaker_id — the same
+    # PiperVoice instance serves all speakers, so it stays out of the cache
+    # key. Multi-speaker workflows share one model load.
     cache_key = f"{model_path}::cuda={use_cuda}"
     global _piper_voice_cache
     if cache_key not in _piper_voice_cache:
@@ -1723,7 +2008,14 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
     syn_config = None
     has_advanced = any(
         k in piper_config
-        for k in ("length_scale", "noise_scale", "noise_w_scale", "volume", "normalize_audio")
+        for k in (
+            "length_scale",
+            "noise_scale",
+            "noise_w_scale",
+            "volume",
+            "normalize_audio",
+            "speaker_id",
+        )
     )
     if has_advanced:
         try:
@@ -1734,6 +2026,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
                 noise_w_scale=float(piper_config.get("noise_w_scale", 0.8)),
                 volume=float(piper_config.get("volume", 1.0)),
                 normalize_audio=bool(piper_config.get("normalize_audio", True)),
+                speaker_id=speaker_id,
             )
         except ImportError:
             logger.warning(
@@ -1757,7 +2050,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30)
+            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
             try:
                 os.remove(wav_path)
             except OSError:
@@ -1823,7 +2116,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30)
+            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
             os.remove(wav_path)
         else:
             # No ffmpeg — rename the WAV to the expected path

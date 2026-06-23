@@ -1175,6 +1175,296 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     )
 
 
+# Attribute stored on live execution environments so a config/profile/backend
+# change cannot accidentally reuse a sandbox/SSH shell created for a different
+# runtime. The cache key remains the session/task id; the signature is the
+# compatibility guard for the cached value behind that key.
+_ENV_SIGNATURE_ATTR = "_hermes_terminal_env_signature"
+
+
+def _normalize_signature_value(value: Any) -> str:
+    """Return a stable string for runtime signature values."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple, dict)):
+        try:
+            return json.dumps(value, sort_keys=True, separators=(",", ":"))
+        except TypeError:
+            return str(value)
+    return str(value)
+
+
+def _runtime_image_for_config(config: Dict[str, Any], overrides: Optional[Dict[str, Any]] = None) -> str:
+    """Return the selected backend image for the current config/overrides."""
+    overrides = overrides or {}
+    env_type = config.get("env_type") or "local"
+    if env_type == "docker":
+        return overrides.get("docker_image") or config.get("docker_image") or ""
+    if env_type == "singularity":
+        return overrides.get("singularity_image") or config.get("singularity_image") or ""
+    if env_type == "modal":
+        return overrides.get("modal_image") or config.get("modal_image") or ""
+    if env_type == "daytona":
+        return overrides.get("daytona_image") or config.get("daytona_image") or ""
+    return ""
+
+
+def _container_config_for_runtime(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the complete container config passed to environment creation."""
+    return {
+        "container_cpu": config.get("container_cpu", 1),
+        "container_memory": config.get("container_memory", 5120),
+        "container_disk": config.get("container_disk", 51200),
+        "container_persistent": config.get("container_persistent", True),
+        "modal_mode": config.get("modal_mode", "auto"),
+        "docker_volumes": config.get("docker_volumes", []),
+        "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+        "docker_forward_env": config.get("docker_forward_env", []),
+        "docker_env": config.get("docker_env", {}),
+        "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+        "docker_extra_args": config.get("docker_extra_args", []),
+        "docker_network": config.get("docker_network", True),
+        "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+        "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+    }
+
+
+def _ssh_config_for_runtime(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return SSH config passed to environment creation."""
+    return {
+        "host": config.get("ssh_host", ""),
+        "user": config.get("ssh_user", ""),
+        "port": config.get("ssh_port", 22),
+        "key": config.get("ssh_key", ""),
+        "persistent": config.get("ssh_persistent", False),
+    }
+
+
+def _local_config_for_runtime(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return local backend config passed to environment creation."""
+    return {
+        "persistent": config.get("local_persistent", False),
+    }
+
+
+def _terminal_env_signature(
+    config: Dict[str, Any],
+    *,
+    task_id: str = "default",
+    overrides: Optional[Dict[str, Any]] = None,
+    image: Optional[str] = None,
+    cwd: Optional[str] = None,
+) -> Dict[str, str]:
+    """Build the runtime signature for a cached terminal environment."""
+    overrides = overrides or {}
+    env_type = config.get("env_type") or "local"
+    if image is None:
+        image = _runtime_image_for_config(config, overrides)
+    if cwd is None:
+        cwd = overrides.get("cwd") or config.get("cwd") or ""
+    fields = {
+        "task_id": task_id or "default",
+        "hermes_home": os.getenv("HERMES_HOME", ""),
+        "hermes_config_path": os.getenv("HERMES_CONFIG_PATH", ""),
+        "session_profile": os.getenv("HERMES_SESSION_PROFILE", ""),
+        "env_type": env_type,
+        "cwd": cwd,
+        "host_cwd": config.get("host_cwd"),
+        "image": image,
+        "modal_mode": config.get("modal_mode"),
+        "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace"),
+        "docker_volumes": config.get("docker_volumes"),
+        "docker_forward_env": config.get("docker_forward_env"),
+        "docker_env": config.get("docker_env"),
+        "docker_run_as_host_user": config.get("docker_run_as_host_user"),
+        "docker_network": config.get("docker_network"),
+        "docker_extra_args": config.get("docker_extra_args"),
+        "docker_persist_across_processes": config.get("docker_persist_across_processes"),
+        "docker_orphan_reaper": config.get("docker_orphan_reaper"),
+        "container_cpu": config.get("container_cpu"),
+        "container_memory": config.get("container_memory"),
+        "container_disk": config.get("container_disk"),
+        "container_persistent": config.get("container_persistent"),
+        "ssh_host": config.get("ssh_host"),
+        "ssh_user": config.get("ssh_user"),
+        "ssh_port": config.get("ssh_port"),
+        # Do not include raw key path/material in logs or signatures. Presence
+        # distinguishes key-backed SSH from agent/password auth.
+        "ssh_key_present": bool(config.get("ssh_key")),
+        "ssh_persistent": config.get("ssh_persistent"),
+        "local_persistent": config.get("local_persistent"),
+    }
+    return {key: _normalize_signature_value(value) for key, value in fields.items()}
+
+
+def resolve_terminal_runtime_identity(
+    config: Dict[str, Any],
+    *,
+    raw_task_id: Optional[str] = "default",
+    cwd_fallback: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve current runtime identity and creation inputs for terminal envs."""
+    raw_task_id = raw_task_id or "default"
+    effective_task_id = _resolve_container_task_id(raw_task_id)
+    overrides = resolve_task_overrides(raw_task_id)
+    env_type = config["env_type"]
+    image = _runtime_image_for_config(config, overrides)
+    signature_cwd = overrides.get("cwd") or config["cwd"]
+    cwd = overrides.get("cwd") or cwd_fallback or config["cwd"]
+
+    if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+        if cwd != config["cwd"]:
+            logger.info(
+                "Ignoring host/relative cwd override %r for %s backend "
+                "(won't exist in sandbox). Using %r instead.",
+                cwd, env_type, config["cwd"],
+            )
+        cwd = config["cwd"]
+    if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(signature_cwd):
+        signature_cwd = config["cwd"]
+
+    container_config = (
+        _container_config_for_runtime(config)
+        if env_type in _CONTAINER_BACKENDS
+        else None
+    )
+    ssh_config = _ssh_config_for_runtime(config) if env_type == "ssh" else None
+    local_config = _local_config_for_runtime(config) if env_type == "local" else None
+    signature = _terminal_env_signature(
+        config,
+        task_id=effective_task_id,
+        overrides=overrides,
+        image=image,
+        cwd=signature_cwd,
+    )
+
+    return {
+        "raw_task_id": raw_task_id,
+        "effective_task_id": effective_task_id,
+        "overrides": overrides,
+        "env_type": env_type,
+        "image": image,
+        "cwd": cwd,
+        "container_config": container_config,
+        "ssh_config": ssh_config,
+        "local_config": local_config,
+        "signature": signature,
+    }
+
+
+def _safe_signature_for_log(signature: Optional[Dict[str, str]]) -> Dict[str, str]:
+    """Return a compact redacted signature suitable for warning logs."""
+    if not signature:
+        return {}
+    safe_keys = (
+        "hermes_home",
+        "session_profile",
+        "env_type",
+        "cwd",
+        "host_cwd",
+        "image",
+        "docker_network",
+        "docker_extra_args",
+        "docker_persist_across_processes",
+        "docker_orphan_reaper",
+        "ssh_host",
+        "ssh_user",
+        "ssh_port",
+        "ssh_key_present",
+        "local_persistent",
+        "ssh_persistent",
+    )
+    return {key: signature.get(key, "") for key in safe_keys if signature.get(key, "")}
+
+
+def _clear_file_ops_cache_for_task(task_id: str) -> None:
+    """Best-effort invalidation for file_tools' wrapper around terminal envs."""
+    try:
+        from tools.file_tools import clear_file_ops_cache
+
+        clear_file_ops_cache(task_id)
+    except Exception:
+        logger.debug("Could not clear file ops cache for task %s", task_id, exc_info=True)
+
+
+def _cleanup_replaced_environment(task_id: str, env: Any) -> None:
+    """Best-effort cleanup for an environment removed from the active cache."""
+    cleanup = getattr(env, "cleanup", None)
+    if callable(cleanup):
+        try:
+            cleanup()
+        except Exception:
+            logger.debug("Error cleaning replaced terminal environment for %s", task_id, exc_info=True)
+
+
+def _active_environment_key(effective_task_id: str, raw_task_id: Optional[str] = None) -> str | None:
+    """Return the cache key for a live env, preserving raw-id fallback semantics."""
+    if effective_task_id in _active_environments:
+        return effective_task_id
+    if raw_task_id and raw_task_id in _active_environments:
+        return raw_task_id
+    return None
+
+
+def _get_active_environment_if_compatible(
+    effective_task_id: str,
+    signature: Dict[str, str],
+    *,
+    raw_task_id: Optional[str] = None,
+) -> Any | None:
+    """Return cached env only when its runtime signature matches."""
+    stale_env = None
+    stale_signature = None
+    stale_key = None
+    with _env_lock:
+        existing_key = _active_environment_key(effective_task_id, raw_task_id)
+        if existing_key is None:
+            return None
+        env = _active_environments[existing_key]
+        existing_signature = getattr(env, _ENV_SIGNATURE_ATTR, None)
+        if not isinstance(existing_signature, dict):
+            try:
+                setattr(env, _ENV_SIGNATURE_ATTR, dict(signature))
+            except Exception:
+                logger.debug("Could not backfill terminal env signature for task %s", existing_key, exc_info=True)
+            _last_activity[existing_key] = time.time()
+            return env
+        if existing_signature == signature:
+            _last_activity[existing_key] = time.time()
+            return env
+        stale_key = existing_key
+        stale_env = _active_environments.pop(existing_key, None)
+        _last_activity.pop(existing_key, None)
+        stale_signature = existing_signature
+
+    if stale_key is not None:
+        for key in {stale_key, effective_task_id, raw_task_id or ""}:
+            if key:
+                _clear_file_ops_cache_for_task(key)
+        logger.warning(
+            "Discarding cached terminal environment for task %s because runtime signature changed: old=%s new=%s",
+            stale_key[:8],
+            _safe_signature_for_log(stale_signature),
+            _safe_signature_for_log(signature),
+        )
+    if stale_env is not None:
+        _cleanup_replaced_environment(stale_key or effective_task_id, stale_env)
+    return None
+
+
+def _store_active_environment(task_id: str, env: Any, signature: Dict[str, str]) -> None:
+    """Store env in the active cache with its runtime signature."""
+    try:
+        setattr(env, _ENV_SIGNATURE_ATTR, dict(signature))
+    except Exception:
+        logger.debug("Could not attach terminal env signature for task %s", task_id, exc_info=True)
+    with _env_lock:
+        _active_environments[task_id] = env
+        _last_activity[task_id] = time.time()
+
+
 # Configuration from environment variables
 
 def _parse_env_var(name: str, default: str, converter: Any = int, type_label: str = "integer"):
@@ -2067,52 +2357,11 @@ def terminal_tool(
         config = _get_env_config()
         env_type = config["env_type"]
 
-        # Use task_id for environment isolation. By default all subagent
-        # task_ids collapse back to "default" so the top-level agent and
-        # every delegate_task child share one container; only task_ids with
-        # a registered env override (RL benchmarks) get isolated sandboxes.
-        effective_task_id = _resolve_container_task_id(task_id)
-
-        # Check per-task overrides (set by environments like TerminalBench2Env)
-        # before falling back to global env var config. ``resolve_task_overrides``
-        # reads the raw task id first then the collapsed container id, so a
-        # CWD-only override (which collapses ``effective_task_id`` to
-        # ``"default"``) is still found under its originating session id while
-        # isolation-keyed RL/benchmark overrides keep resolving as before.
-        overrides = resolve_task_overrides(task_id)
-        
-        # Select image based on env type, with per-task override support
-        if env_type == "docker":
-            image = overrides.get("docker_image") or config["docker_image"]
-        elif env_type == "singularity":
-            image = overrides.get("singularity_image") or config["singularity_image"]
-        elif env_type == "modal":
-            image = overrides.get("modal_image") or config["modal_image"]
-        elif env_type == "daytona":
-            image = overrides.get("daytona_image") or config["daytona_image"]
-        else:
-            image = ""
-
-        cwd = overrides.get("cwd") or config["cwd"]
-        # A per-task cwd override (registered by the gateway/TUI for workspace
-        # tracking, or by RL/benchmark envs) wins over config["cwd"] — but
-        # config["cwd"] was already sanitized for container backends in
-        # _get_env_config() while the override is raw. On a container backend a
-        # raw host path (e.g. a Windows desktop session's C:\Users\<user>, or a
-        # POSIX /home/<user>) reaches `docker run -w <host-path>` and the
-        # container fails to start (exit 125). Re-apply the same host/relative
-        # path guard to the *resolved* cwd so the override can't bypass it.
-        # Valid in-container override paths (RL/benchmark sandboxes that set
-        # cwd to /workspace, /root, etc.) are absolute non-host paths and pass
-        # through untouched.
-        if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
-            if cwd != config["cwd"]:
-                logger.info(
-                    "Ignoring host/relative cwd override %r for %s backend "
-                    "(won't exist in sandbox). Using %r instead.",
-                    cwd, env_type, config["cwd"],
-                )
-            cwd = config["cwd"]
+        runtime = resolve_terminal_runtime_identity(config, raw_task_id=task_id)
+        effective_task_id = runtime["effective_task_id"]
+        image = runtime["image"]
+        cwd = runtime["cwd"]
+        env_signature = runtime["signature"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
@@ -2146,22 +2395,12 @@ def terminal_tool(
         # Use a per-task creation lock so concurrent tool calls for the same
         # task_id wait for the first one to finish creating the sandbox,
         # instead of each creating their own (wasting Modal resources).
-        with _env_lock:
-            # Prefer the collapsed container id, but fall back to an env cached
-            # under the raw task_id. Per-session surfaces (ACP/gateway/dashboard)
-            # with a CWD-only override collapse to "default" for container
-            # sharing, yet an env may already be cached under the originating
-            # task_id; honor it instead of spawning a duplicate.
-            _existing_key = (
-                effective_task_id if effective_task_id in _active_environments
-                else (task_id if task_id and task_id in _active_environments else None)
-            )
-            if _existing_key is not None:
-                _last_activity[_existing_key] = time.time()
-                env = _active_environments[_existing_key]
-                needs_creation = False
-            else:
-                needs_creation = True
+        env = _get_active_environment_if_compatible(
+            effective_task_id,
+            env_signature,
+            raw_task_id=task_id,
+        )
+        needs_creation = env is None
 
         if needs_creation:
             # Per-task lock: only one thread creates the sandbox, others wait
@@ -2172,64 +2411,26 @@ def terminal_tool(
 
             with task_lock:
                 # Double-check after acquiring the per-task lock
-                with _env_lock:
-                    _existing_key = (
-                        effective_task_id if effective_task_id in _active_environments
-                        else (task_id if task_id and task_id in _active_environments else None)
-                    )
-                    if _existing_key is not None:
-                        _last_activity[_existing_key] = time.time()
-                        env = _active_environments[_existing_key]
-                        needs_creation = False
+                env = _get_active_environment_if_compatible(
+                    effective_task_id,
+                    env_signature,
+                    raw_task_id=task_id,
+                )
+                needs_creation = env is None
 
                 if needs_creation:
                     if env_type == "singularity":
                         _check_disk_usage_warning()
                     logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
                     try:
-                        ssh_config = None
-                        if env_type == "ssh":
-                            ssh_config = {
-                                "host": config.get("ssh_host", ""),
-                                "user": config.get("ssh_user", ""),
-                                "port": config.get("ssh_port", 22),
-                                "key": config.get("ssh_key", ""),
-                                "persistent": config.get("ssh_persistent", False),
-                            }
-
-                        container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona"}:
-                            container_config = {
-                                "container_cpu": config.get("container_cpu", 1),
-                                "container_memory": config.get("container_memory", 5120),
-                                "container_disk": config.get("container_disk", 51200),
-                                "container_persistent": config.get("container_persistent", True),
-                                "modal_mode": config.get("modal_mode", "auto"),
-                                "docker_volumes": config.get("docker_volumes", []),
-                                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                                "docker_forward_env": config.get("docker_forward_env", []),
-                                "docker_env": config.get("docker_env", {}),
-                                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                                "docker_extra_args": config.get("docker_extra_args", []),
-                                "docker_network": config.get("docker_network", True),
-                                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
-                                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
-                            }
-
-                        local_config = None
-                        if env_type == "local":
-                            local_config = {
-                                "persistent": config.get("local_persistent", False),
-                            }
-
                         new_env = _create_environment(
                             env_type=env_type,
                             image=image,
                             cwd=cwd,
                             timeout=effective_timeout,
-                            ssh_config=ssh_config,
-                            container_config=container_config,
-                            local_config=local_config,
+                            ssh_config=runtime["ssh_config"],
+                            container_config=runtime["container_config"],
+                            local_config=runtime["local_config"],
                             task_id=effective_task_id,
                             host_cwd=config.get("host_cwd"),
                         )
@@ -2241,10 +2442,8 @@ def terminal_tool(
                             "status": "disabled"
                         }, ensure_ascii=False)
 
-                    with _env_lock:
-                        _active_environments[effective_task_id] = new_env
-                        _last_activity[effective_task_id] = time.time()
-                        env = new_env
+                    _store_active_environment(effective_task_id, new_env, env_signature)
+                    env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes

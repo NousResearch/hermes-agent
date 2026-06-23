@@ -632,19 +632,28 @@ def _get_or_create_env(task_id: str):
     Returns ``(env, env_type)`` tuple.
     """
     from tools.terminal_tool import (
-        _active_environments, _env_lock, _create_environment,
-        _get_env_config, _last_activity, _start_cleanup_thread,
-        _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id,
+        _create_environment,
+        _get_env_config,
+        _start_cleanup_thread,
+        _creation_locks,
+        _creation_locks_lock,
+        _get_active_environment_if_compatible,
+        _store_active_environment,
+        resolve_terminal_runtime_identity,
     )
 
-    effective_task_id = _resolve_container_task_id(task_id)
+    config = _get_env_config()
+    runtime = resolve_terminal_runtime_identity(
+        config,
+        raw_task_id=task_id,
+    )
+    effective_task_id = runtime["effective_task_id"]
+    env_signature = runtime["signature"]
 
-    # Fast path: environment already exists
-    with _env_lock:
-        if effective_task_id in _active_environments:
-            _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], _get_env_config()["env_type"]
+    # Fast path: environment already exists and still matches current runtime.
+    env = _get_active_environment_if_compatible(effective_task_id, env_signature)
+    if env is not None:
+        return env, config["env_type"]
 
     # Slow path: create environment (same pattern as file_tools._get_file_ops)
     with _creation_locks_lock:
@@ -653,73 +662,27 @@ def _get_or_create_env(task_id: str):
         task_lock = _creation_locks[effective_task_id]
 
     with task_lock:
-        with _env_lock:
-            if effective_task_id in _active_environments:
-                _last_activity[effective_task_id] = time.time()
-                return _active_environments[effective_task_id], _get_env_config()["env_type"]
+        env = _get_active_environment_if_compatible(effective_task_id, env_signature)
+        if env is not None:
+            return env, config["env_type"]
 
-        config = _get_env_config()
         env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
-
-        if env_type == "docker":
-            image = overrides.get("docker_image") or config["docker_image"]
-        elif env_type == "singularity":
-            image = overrides.get("singularity_image") or config["singularity_image"]
-        elif env_type == "modal":
-            image = overrides.get("modal_image") or config["modal_image"]
-        elif env_type == "daytona":
-            image = overrides.get("daytona_image") or config["daytona_image"]
-        else:
-            image = ""
-
-        cwd = overrides.get("cwd") or config["cwd"]
-
-        container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona"}:
-            container_config = {
-                "container_cpu": config.get("container_cpu", 1),
-                "container_memory": config.get("container_memory", 5120),
-                "container_disk": config.get("container_disk", 51200),
-                "container_persistent": config.get("container_persistent", True),
-                "docker_volumes": config.get("docker_volumes", []),
-                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                "docker_network": config.get("docker_network", True),
-            }
-
-        ssh_config = None
-        if env_type == "ssh":
-            ssh_config = {
-                "host": config.get("ssh_host", ""),
-                "user": config.get("ssh_user", ""),
-                "port": config.get("ssh_port", 22),
-                "key": config.get("ssh_key", ""),
-                "persistent": config.get("ssh_persistent", False),
-            }
-
-        local_config = None
-        if env_type == "local":
-            local_config = {
-                "persistent": config.get("local_persistent", False),
-            }
 
         logger.info("Creating new %s environment for execute_code task %s...",
                      env_type, effective_task_id[:8])
         env = _create_environment(
             env_type=env_type,
-            image=image,
-            cwd=cwd,
+            image=runtime["image"],
+            cwd=runtime["cwd"],
             timeout=config["timeout"],
-            ssh_config=ssh_config,
-            container_config=container_config,
-            local_config=local_config,
+            ssh_config=runtime["ssh_config"],
+            container_config=runtime["container_config"],
+            local_config=runtime["local_config"],
             task_id=effective_task_id,
             host_cwd=config.get("host_cwd"),
         )
 
-        with _env_lock:
-            _active_environments[effective_task_id] = env
-            _last_activity[effective_task_id] = time.time()
+        _store_active_environment(effective_task_id, env, env_signature)
 
         _start_cleanup_thread()
         logger.info("%s environment ready for execute_code task %s",

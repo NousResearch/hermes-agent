@@ -1,0 +1,30 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: apple-photos
+description: Query, search, export, and inspect the macOS Photos library.
+source: https://github.com/sweetrb/apple-photos-mcp
+
+# Published npm package — npx fetches and runs it. No install/clone step is
+# needed (transport.command IS the install, per the npm/uvx note).
+transport:
+  type: stdio
+  command: "npx"
+  args:
+    - "-y"
+    - "apple-photos-mcp"
+
+# Reads the Photos library via an osxphotos Python sidecar; no credentials.
+auth:
+  type: none
+
+post_install: |
+  Requires macOS, Python 3.11+, and Full Disk Access for the process that
+  launches Hermes — the Photos library database lives in a protected location.
+  The server uses an osxphotos Python sidecar and bootstraps a local venv on
+  first run (~a minute). All tools are read-only except `export`.
+
+  Start a new Hermes session to load the Apple Photos tools.

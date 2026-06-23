@@ -1,0 +1,30 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: apple-notes
+description: Create, search, read, update, and organize Apple Notes on macOS.
+source: https://github.com/sweetrb/apple-notes-mcp
+
+# Published npm package — npx fetches and runs it. No install/clone step is
+# needed (transport.command IS the install, per the npm/uvx note).
+transport:
+  type: stdio
+  command: "npx"
+  args:
+    - "-y"
+    - "apple-notes-mcp"
+
+# Drives Apple Notes locally via AppleScript; no credentials.
+auth:
+  type: none
+
+post_install: |
+  Requires macOS — the server controls Apple Notes via AppleScript and will
+  prompt for Automation access to Notes on first use. A couple of read tools
+  (checklist state, markdown export) also use Full Disk Access when granted, but
+  degrade gracefully without it.
+
+  Start a new Hermes session to load the Apple Notes tools.

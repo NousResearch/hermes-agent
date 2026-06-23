@@ -1,0 +1,31 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: apple-numbers
+description: Read, write, search, and format Apple Numbers (.numbers) spreadsheets on macOS.
+source: https://github.com/sweetrb/apple-numbers-mcp
+
+# Published npm package — npx fetches and runs it. No install/clone step is
+# needed (transport.command IS the install, per the npm/uvx note).
+transport:
+  type: stdio
+  command: "npx"
+  args:
+    - "-y"
+    - "apple-numbers-mcp"
+
+# Reads/writes .numbers files via a numbers-parser Python sidecar plus
+# AppleScript for formatting/formulas; no credentials.
+auth:
+  type: none
+
+post_install: |
+  Requires macOS and Python 3.11+ — the server uses a numbers-parser Python
+  sidecar and bootstraps a local venv on first run (this can take ~a minute).
+  The formatting/formula tools also drive Numbers via AppleScript and will
+  prompt for Automation access.
+
+  Start a new Hermes session to load the Apple Numbers tools.

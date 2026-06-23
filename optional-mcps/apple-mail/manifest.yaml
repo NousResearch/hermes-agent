@@ -1,0 +1,30 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: apple-mail
+description: Read, search, send, reply, forward, and organize Apple Mail on macOS.
+source: https://github.com/sweetrb/apple-mail-mcp
+
+# Published npm package — npx fetches and runs it. No install/clone step is
+# needed (transport.command IS the install, per the npm/uvx note).
+transport:
+  type: stdio
+  command: "npx"
+  args:
+    - "-y"
+    - "apple-mail-mcp"
+
+# Drives Apple Mail locally via AppleScript; no credentials.
+auth:
+  type: none
+
+post_install: |
+  Requires macOS — the server controls Apple Mail via AppleScript and will
+  prompt for Automation access to Mail on first use. It exposes send / reply /
+  forward / delete / move tools that act on your real mailbox; the install-time
+  checklist lets you prune those if you want a read-only surface.
+
+  Start a new Hermes session to load the Apple Mail tools.

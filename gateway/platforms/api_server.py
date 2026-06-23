@@ -2170,7 +2170,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "created": created, "model": model,
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
-            await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
+            await response.write(f"data: {json.dumps(role_chunk, ensure_ascii=False)}\n\n".encode())
             last_activity = time.monotonic()
 
             # Helper — route a queue item to the correct SSE event.
@@ -2185,7 +2185,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    event_data = json.dumps(item[1])
+                    event_data = json.dumps(item[1], ensure_ascii=False)
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
@@ -2195,7 +2195,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "created": created, "model": model,
                         "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
                     }
-                    await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                    await response.write(f"data: {json.dumps(content_chunk, ensure_ascii=False)}\n\n".encode())
                 return time.monotonic()
 
             # Stream content chunks as they arrive from the agent
@@ -2244,7 +2244,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "total_tokens": usage.get("total_tokens", 0),
                 },
             }
-            await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
+            await response.write(f"data: {json.dumps(finish_chunk, ensure_ascii=False)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             # Client disconnected mid-stream.  Interrupt the agent so it
@@ -2275,7 +2275,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "created": created, "model": model,
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
                 }
-                await response.write(f"data: {json.dumps(error_chunk)}\n\n".encode())
+                await response.write(f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n".encode())
                 await response.write(b"data: [DONE]\n\n")
             except Exception:
                 pass
@@ -2373,7 +2373,10 @@ class APIServerAdapter(BasePlatformAdapter):
             if "sequence_number" not in data:
                 data["sequence_number"] = sequence_number
             sequence_number += 1
-            payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+            # ``ensure_ascii=False`` preserves non-ASCII characters in
+            # text deltas / item payloads so OpenAI-compatible web UIs
+            # don't re-render them as ``\uXXXX`` escape sequences (#28646).
+            payload = f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
             await response.write(payload.encode())
 
         def _envelope(status: str) -> Dict[str, Any]:
@@ -2502,7 +2505,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 call_id = payload.get("tool_call_id") or f"call_{response_id[5:]}_{call_counter}"
                 args = payload.get("arguments", {})
                 if isinstance(args, dict):
-                    arguments_str = json.dumps(args)
+                    # ``ensure_ascii=False`` keeps non-ASCII characters
+                    # (CJK, accented Latin, emoji, …) as native Unicode in
+                    # the ``arguments`` JSON string that OpenAI-compatible
+                    # clients display verbatim.  Without this, ``echo "无
+                    # kanban 目录"`` round-trips through Python's default
+                    # ``json.dumps`` as ``echo "\u65e0 kanban \u76ee\u5f55"``
+                    # — exactly the mojibake reported in #28646 by web UIs
+                    # that don't second-parse the arguments string.
+                    arguments_str = json.dumps(args, ensure_ascii=False)
                 else:
                     arguments_str = str(args)
                 item = {
@@ -2568,7 +2579,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 })
 
                 # function_call_output added (result)
-                result_str = result if isinstance(result, str) else json.dumps(result)
+                # ``ensure_ascii=False`` so non-ASCII tool output (CJK,
+                # accented Latin, emoji, …) reaches the client as native
+                # Unicode instead of ``\uXXXX`` escape sequences — same
+                # mojibake class as the arguments path (#28646).
+                result_str = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
                 output_parts = [{"type": "input_text", "text": result_str}]
                 output_item = {
                     "id": f"fco_{uuid.uuid4().hex[:24]}",
@@ -2748,7 +2763,11 @@ class APIServerAdapter(BasePlatformAdapter):
                             for _k in ("content", "query", "pattern", "old_string", "new_string"):
                                 if isinstance(_args.get(_k), str) and len(_args[_k]) > 500:
                                     _args[_k] = "[" + str(len(_args[_k])) + " chars — truncated for response.completed]"
-                            _item["arguments"] = json.dumps(_args)
+                            # Match the encoding used by ``_emit_tool_started``
+                            # so the trimmed copy in ``response.completed``
+                            # doesn't reintroduce the ``\uXXXX`` mojibake
+                            # fixed for the streaming path (#28646).
+                            _item["arguments"] = json.dumps(_args, ensure_ascii=False)
                     except Exception:
                         pass
                 elif _item.get("type") == "function_call_output":
@@ -4194,7 +4213,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     # Run finished — send final SSE comment and close
                     await response.write(b": stream closed\n\n")
                     break
-                payload = f"data: {json.dumps(event)}\n\n"
+                payload = f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 await response.write(payload.encode())
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)

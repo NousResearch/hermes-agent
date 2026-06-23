@@ -159,6 +159,34 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+@pytest.mark.parametrize(
+    ("command", "reason", "expected_error"),
+    [
+        ("block", "need-human", "cannot block"),
+        ("schedule", "later", "cannot schedule"),
+    ],
+)
+def test_run_slash_does_not_add_audit_comment_when_transition_fails(
+    kanban_home,
+    command,
+    reason,
+    expected_error,
+):
+    payload = json.loads(kc.run_slash("create 'x' --assignee alice --json"))
+    tid = payload["id"]
+    assert "Completed" in kc.run_slash(f"complete {tid}")
+
+    out = kc.run_slash(f"{command} {tid} {reason}")
+    assert expected_error in out
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        comments = kb.list_comments(conn, tid)
+    assert task is not None
+    assert task.status == "done"
+    assert comments == []
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

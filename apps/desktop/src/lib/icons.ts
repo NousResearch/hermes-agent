@@ -9,6 +9,7 @@ import {
   IconAt as AtSign,
   IconWaveSine as AudioLines,
   IconChartBar as BarChart3,
+  IconBell as Bell,
   IconBrain as Brain,
   IconBug as Bug,
   IconCheck as Check,
@@ -49,6 +50,7 @@ import {
   IconLoader2 as Loader2,
   IconLoader2 as Loader2Icon,
   IconLock as Lock,
+  IconLogin as LogIn,
   IconMessageCircle as MessageCircle,
   IconMessage2 as MessageSquareText,
   IconMicrophone as Mic,
@@ -82,6 +84,7 @@ import {
   IconAdjustmentsHorizontal as SlidersHorizontal,
   IconSparkles as Sparkles,
   IconSquare as Square,
+  IconSteeringWheel as SteeringWheel,
   IconSun as Sun,
   IconTerminal2 as Terminal,
   IconTrash as Trash2,
@@ -93,7 +96,8 @@ import {
   IconTool as Wrench,
   IconX as X,
   IconX as XIcon,
-  IconBolt as Zap
+  IconBolt as Zap,
+  IconBoltFilled as ZapFilled
 } from '@tabler/icons-react'
 
 export {
@@ -107,6 +111,7 @@ export {
   AtSign,
   AudioLines,
   BarChart3,
+  Bell,
   Brain,
   Bug,
   Check,
@@ -147,6 +152,7 @@ export {
   Loader2,
   Loader2Icon,
   Lock,
+  LogIn,
   MessageCircle,
   MessageSquareText,
   Mic,
@@ -180,6 +186,7 @@ export {
   SlidersHorizontal,
   Sparkles,
   Square,
+  SteeringWheel,
   Sun,
   Terminal,
   Trash2,
@@ -191,7 +198,8 @@ export {
   Wrench,
   X,
   XIcon,
-  Zap
+  Zap,
+  ZapFilled
 }
 
 export type { Icon as IconComponent } from '@tabler/icons-react'

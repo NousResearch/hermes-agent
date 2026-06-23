@@ -379,6 +379,12 @@ A bundle is just a YAML alias — it doesn't install skills for you. The skills 
 
 The agent can create, update, and delete its own skills via the `skill_manage` tool. This is the agent's **procedural memory** — when it figures out a non-trivial workflow, it saves the approach as a skill for future reuse.
 
+Skills and memory work together in the self-improvement loop: memory stores
+small durable facts that should always be in context, while skills store longer
+procedures that should load only when relevant. The background review can
+suggest or stage skill changes after a session, but the write-approval gate
+below lets you require human review before those changes land.
+
 ### When the Agent Creates Skills
 
 - After completing a complex task (5+ tool calls) successfully
@@ -400,6 +406,43 @@ The agent can create, update, and delete its own skills via the `skill_manage` t
 :::tip
 The `patch` action is preferred for updates — it's more token-efficient than `edit` because only the changed text appears in the tool call.
 :::
+
+### Gating agent skill writes (`skills.write_approval`)
+
+By default the agent writes skills freely — including from the [background
+self-improvement review](/user-guide/features/memory#controlling-memory-writes-write_approval)
+that runs after a turn. If you'd rather approve every skill write first
+(small models that misjudge what they learned, secure environments, or just
+wanting eyes on the self-improvement loop), turn on the write-approval gate:
+
+```yaml
+skills:
+  write_approval: false     # false = write freely (default) | true = require approval
+```
+
+When `write_approval: true`, every `skill_manage` write (create / edit /
+patch / delete / write_file / remove_file) is **staged** instead of committed —
+a SKILL.md is too large to review inline, so staging applies regardless of
+whether the write came from a foreground turn or the background review.
+Staged writes survive restarts under `~/.hermes/pending/skills/` and are
+reviewed with the same familiar approve/deny flow as dangerous commands:
+
+```
+/skills pending             # list staged skill writes + a one-line gist each
+/skills diff <id>           # full unified diff (best viewed in CLI or dashboard)
+/skills approve <id>        # apply it (or 'all')
+/skills reject <id>         # drop it (or 'all')
+/skills approval on         # turn the gate on (or 'off') and persist it
+```
+
+The review surface works in the interactive CLI and on messaging platforms
+(diff output is truncated for chat bubbles — read the full diff on the CLI or
+in the pending JSON file). Memory writes have the same gate under
+`memory.write_approval` — see [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+
+> The separate `skills.guard_agent_created` setting is a content scanner
+> (dangerous-pattern heuristics), not an approval gate — the two are
+> independent. See [Guard on agent-created skill writes](/user-guide/configuration#guard-on-agent-created-skill-writes).
 
 ## Skills Hub
 

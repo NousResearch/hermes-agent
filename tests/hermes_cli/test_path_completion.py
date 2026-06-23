@@ -59,6 +59,32 @@ class TestExtractPathWord:
     def test_just_tilde_slash(self):
         assert SlashCommandCompleter._extract_path_word("~/") == "~/"
 
+    def test_url_is_not_treated_as_path(self):
+        # A URL contains "/" so the bare slash heuristic would otherwise return
+        # it as a path word, firing os.listdir("https:") on every keystroke.
+        assert SlashCommandCompleter._extract_path_word("see https://paste.rs/abc") is None
+
+    def test_http_url_is_not_treated_as_path(self):
+        assert SlashCommandCompleter._extract_path_word("ref http://example.com/x") is None
+
+    def test_scheme_alone_is_enough_to_reject(self):
+        # The "://" scheme separator is the signal, even before any path part
+        # has been typed.
+        assert SlashCommandCompleter._extract_path_word("ssh://host") is None
+
+    def test_path_word_with_colon_but_no_scheme_still_resolves(self):
+        # Only the "://" scheme separator should reject; a bare colon inside a
+        # real path token must not regress path detection.
+        assert (
+            SlashCommandCompleter._extract_path_word("open ./a:b/c.py") == "./a:b/c.py"
+        )
+
+    def test_ordinary_path_unaffected_by_url_guard(self):
+        assert (
+            SlashCommandCompleter._extract_path_word("edit src/pkg/mod.py")
+            == "src/pkg/mod.py"
+        )
+
 
 class TestPathCompletions:
     def test_lists_current_directory(self, tmp_path):
@@ -154,6 +180,23 @@ class TestIntegration:
         event = MagicMock()
         completions = list(completer.get_completions(doc, event))
         assert completions == []
+
+    def test_url_does_not_touch_filesystem(self, completer, monkeypatch):
+        # Regression for laggy typing: a URL token contains "/", so before the
+        # scheme guard it reached _path_completions and called os.listdir on
+        # every keystroke. Assert no completions AND that the filesystem is
+        # never touched while a URL is under the cursor.
+        import hermes_cli.commands as commands_mod
+
+        def _fail(*_args, **_kwargs):
+            raise AssertionError("os.listdir must not run for a URL token")
+
+        monkeypatch.setattr(commands_mod.os, "listdir", _fail)
+
+        text = "open https://paste.rs/abc"
+        doc = Document(text, cursor_position=len(text))
+        event = MagicMock()
+        assert list(completer.get_completions(doc, event)) == []
 
     def test_absolute_path_triggers_completion(self, completer):
         doc = Document("check /etc/hos", cursor_position=14)

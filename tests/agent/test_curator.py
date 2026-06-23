@@ -390,6 +390,50 @@ def test_prune_builtins_restore_clears_suppression(curator_env, monkeypatch):
     assert "bundled" not in u.read_suppressed_names()
 
 
+def test_protected_builtin_never_archived_even_when_stale(curator_env, monkeypatch):
+    """A protected built-in (e.g. `plan`) is never archived, even when it is a
+    stale bundled skill under prune_builtins — it backs a load-bearing slash
+    command and must survive every curator pass."""
+    u = curator_env["usage"]
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    name = next(iter(u.PROTECTED_BUILTIN_SKILLS))  # the real protected name(s)
+    _write_skill(skills_dir, name)
+    (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    # Force a record that is far past the archive cutoff.
+    super_old = (datetime.now(timezone.utc) - timedelta(days=500)).isoformat()
+    data = u.load_usage()
+    data[name] = u._empty_record()
+    data[name]["last_used_at"] = super_old
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] == 0
+    # Not even enumerated as a candidate → not "checked".
+    assert name not in u.list_agent_created_skill_names()
+    assert (skills_dir / name).exists()
+    assert name not in u.read_suppressed_names()
+
+
+def test_protected_builtin_is_not_curation_eligible(curator_env, monkeypatch):
+    """is_curation_eligible() returns False for protected built-ins regardless
+    of prune_builtins, and archive_skill() refuses them directly."""
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    name = next(iter(u.PROTECTED_BUILTIN_SKILLS))
+    _write_skill(skills_dir, name)
+    (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    assert u.is_protected_builtin(name) is True
+    assert u.is_curation_eligible(name) is False
+    ok, msg = u.archive_skill(name)
+    assert ok is False
+    assert (skills_dir / name).exists()
+
+
 def test_prune_builtins_never_touches_hub_skills(curator_env, monkeypatch):
     u = curator_env["usage"]
     skills_dir = curator_env["home"] / "skills"
@@ -476,7 +520,7 @@ def test_dry_run_injects_report_only_banner(curator_env, monkeypatch):
                 "tool_calls": [], "error": None}
     monkeypatch.setattr(c, "_run_llm_review", _stub)
 
-    c.run_curator_review(synchronous=True, dry_run=True)
+    c.run_curator_review(synchronous=True, dry_run=True, consolidate=True)
     assert "DRY-RUN" in captured["prompt"]
     assert "DO NOT" in captured["prompt"]
 
@@ -527,7 +571,11 @@ def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
     monkeypatch.setattr(c, "_run_llm_review", _stub)
 
     captured = []
-    c.run_curator_review(on_summary=lambda s: captured.append(s), synchronous=True)
+    c.run_curator_review(
+        on_summary=lambda s: captured.append(s),
+        synchronous=True,
+        consolidate=True,
+    )
 
     assert len(calls) == 1
     assert "skill CURATOR" in calls[0] or "CURATOR" in calls[0]
@@ -549,6 +597,69 @@ def test_run_review_skips_llm_when_no_candidates(curator_env, monkeypatch):
 
     assert calls == []  # LLM not invoked
     assert any("skipped" in s for s in captured)
+
+
+def test_consolidate_default_off(curator_env):
+    """Consolidation (the LLM umbrella pass) is OFF by default — only the
+    deterministic inactivity prune runs unless the user opts in."""
+    c = curator_env["curator"]
+    assert c.get_consolidate() is False
+
+
+def test_consolidate_enabled_via_config(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"consolidate": True})
+    assert c.get_consolidate() is True
+
+
+def test_run_review_skips_llm_when_consolidate_off(curator_env, monkeypatch):
+    """With consolidation off (the default), a run does the deterministic
+    prune but never spawns the LLM consolidation fork — even with candidates
+    present. The run is still recorded and a 'consolidation off' summary is
+    surfaced."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
+
+    calls = []
+    monkeypatch.setattr(
+        c, "_run_llm_review",
+        lambda prompt: (calls.append(prompt), "never-called")[1],
+    )
+
+    captured = []
+    c.run_curator_review(on_summary=lambda s: captured.append(s), synchronous=True)
+
+    assert calls == []  # LLM consolidation fork not invoked
+    assert any("consolidation off" in s for s in captured)
+    # The run is still recorded (deterministic prune happened).
+    state = c.load_state()
+    assert state["last_run_at"] is not None
+    assert state["run_count"] >= 1
+
+
+def test_run_review_consolidate_override_runs_llm(curator_env, monkeypatch):
+    """Passing consolidate=True overrides the config default (off) and drives
+    the LLM consolidation pass — mirrors `hermes curator run --consolidate`."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
+
+    calls = []
+    monkeypatch.setattr(
+        c, "_run_llm_review",
+        lambda prompt: (calls.append(prompt), {
+            "final": "", "summary": "s", "model": "", "provider": "",
+            "tool_calls": [], "error": None,
+        })[1],
+    )
+
+    c.run_curator_review(synchronous=True, consolidate=True)
+    assert len(calls) == 1
 
 
 def test_maybe_run_curator_respects_disabled(curator_env, monkeypatch):
@@ -624,8 +735,8 @@ def test_state_atomic_write_no_tmp_leftovers(curator_env):
     c = curator_env["curator"]
     c.save_state({"paused": True})
     parent = c._state_file().parent
-    for p in parent.iterdir():
-        assert not p.name.startswith(".curator_state_"), f"tmp leftover: {p.name}"
+    tmp_files = [p.name for p in parent.iterdir() if p.name.endswith(".tmp")]
+    assert tmp_files == []
 
 
 def test_state_preserves_last_report_path(curator_env):

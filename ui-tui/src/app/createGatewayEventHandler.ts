@@ -10,8 +10,9 @@ import type {
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
+import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
-import { formatToolCall, stripAnsi } from '../lib/text.js'
+import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
@@ -86,6 +87,35 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   let pendingThinkingStatus = ''
   let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
   let startupPromptSubmitted = false
+
+  // Request IDs of clarify prompts we've already flushed to the transcript as
+  // an abandoned-prompt record, so the tool.complete and message.complete
+  // paths can't both persist the same prompt twice.
+  const persistedAbandonedClarify = new Set<string>()
+
+  // When a clarify prompt is dismissed without an answer (the backend _block
+  // timed out and returned an empty string), the live ClarifyPrompt overlay is
+  // left set until the next turn's idle() silently nulls it — so the question
+  // and options vanish from the screen while the agent's follow-up still refers
+  // to them.  The reliable signal is the clarify tool's own tool.complete (and,
+  // as a backstop, message.complete): at those points the overlay is provably
+  // still set on a timeout, but already cleared by answerClarify() on a real
+  // answer (so this no-ops there).  Flush the question + options into the
+  // transcript as a persistent system line, then clear the overlay.
+  const flushAbandonedClarify = () => {
+    const { clarify } = getOverlayState()
+
+    if (!clarify || persistedAbandonedClarify.has(clarify.requestId)) {
+      return
+    }
+
+    persistedAbandonedClarify.add(clarify.requestId)
+    appendMessage({
+      role: 'system',
+      text: formatAbandonedClarify(clarify.question, clarify.choices, 'timed out')
+    })
+    patchOverlayState({ clarify: null })
+  }
 
   // Inject the disk-save callback into turnController so recordMessageComplete
   // can fire-and-forget a persist without having to plumb a gateway ref around.
@@ -190,11 +220,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     agentsNudgedThisTurn = false
   }
 
-  // Kick off the config fetch eagerly at handler creation so the flag is
-  // resolved well before the first delegation of any real session (which
-  // only happens after gateway.ready + a user turn).
-  ensureAgentsNudgeConfig()
-
   const refreshDelegationStatus = (force = false) => {
     const now = Date.now()
 
@@ -282,6 +307,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     if (skin) {
       applySkin(skin)
     }
+
+    // Kick off the config fetch once the gateway is actually ready. If handler
+    // construction does this during React render, a startup transport error can
+    // report through sys(), mutate transcript state, and trip React's
+    // "too many re-renders" guard in embedded dashboard PTYs.
+    ensureAgentsNudgeConfig()
 
     rpc<CommandsCatalogResponse>('commands.catalog', {})
       .then(r => {
@@ -474,6 +505,58 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'notification.show': {
+        // Credits/usage notice from the gateway. Payload is snake_case on the
+        // wire and stays snake_case in UiState.notice (no mapping layer). The
+        // text already carries its own glyph; turnController decides whether to
+        // show now or hold until turn end (FaceTicker wins while busy).
+        const p = ev.payload
+
+        if (!p?.text) {
+          return
+        }
+
+        turnController.showNotice({
+          id: p.id,
+          key: p.key,
+          kind: p.kind ?? 'sticky',
+          level: p.level ?? 'info',
+          text: p.text,
+          ttl_ms: p.ttl_ms ?? null
+        })
+
+        return
+      }
+
+      case 'notification.clear':
+        // Key-matched clear only — a stale/late clear must not wipe a newer
+        // notice (turnController guards the key match).
+        turnController.clearNotice(ev.payload?.key)
+
+        return
+      case 'billing.step_up.verification': {
+        // The billing step-up device flow runs in the headless gateway, so it
+        // can't open a browser or print the URL where the user sees it. Surface
+        // the link here (clickable/copyable in the transcript) and best-effort
+        // open it via the TUI process's own opener. This event arrives while the
+        // billing.step_up RPC is still polling (and may even outlive the RPC's
+        // 120s timeout), so the link — not the RPC result — is the source of truth.
+        const url = ev.payload.verification_url
+        const code = ev.payload.user_code
+
+        if (!url) {
+          return
+        }
+
+        sys('💳 Open this link to grant terminal billing access:')
+        sys(url)
+        if (code) {
+          sys(`If prompted, enter code: ${code}`)
+        }
+        void openExternalUrl(url)
+
+        return
+      }
       case 'gateway.stderr': {
         const line = String(ev.payload.line).slice(0, 120)
 
@@ -624,6 +707,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'tool.complete': {
+        // The clarify tool finishing with its overlay still live means it was
+        // abandoned (backend _block timed out, empty answer). A real answer
+        // clears the overlay in answerClarify() before this fires, so this
+        // no-ops there. Persist the question + options so they don't vanish.
+        if (ev.payload.name === 'clarify') {
+          flushAbandonedClarify()
+        }
+
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
@@ -662,8 +753,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       case 'approval.request': {
         const description = String(ev.payload.description ?? 'dangerous command')
+        // Only an explicit false (tirith warning) drops the permanent-allow option.
+        const allowPermanent = ev.payload.allow_permanent !== false
 
-        patchOverlayState({ approval: { command: String(ev.payload.command ?? ''), description } })
+        patchOverlayState({
+          approval: { allowPermanent, command: String(ev.payload.command ?? ''), description }
+        })
         setStatus('approval needed')
 
         return

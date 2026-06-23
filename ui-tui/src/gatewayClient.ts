@@ -4,6 +4,8 @@ import { existsSync } from 'node:fs'
 import { delimiter, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
+import { WebSocket as UndiciWebSocket } from 'undici'
+
 import type { GatewayEvent } from './gatewayTypes.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
@@ -18,6 +20,9 @@ const WS_CONNECTING = 0
 const WS_OPEN = 1
 const WS_CLOSING = 2
 const WS_CLOSED = 3
+
+const getWebSocketCtor = (): typeof WebSocket =>
+  typeof WebSocket === 'undefined' ? (UndiciWebSocket as unknown as typeof WebSocket) : WebSocket
 
 const truncateLine = (line: string) =>
   line.length > MAX_LOG_LINE_BYTES ? `${line.slice(0, MAX_LOG_LINE_BYTES)}… [truncated ${line.length} bytes]` : line
@@ -79,12 +84,8 @@ const asWireText = (raw: unknown): string | null => {
     return raw
   }
 
-  if (raw instanceof ArrayBuffer) {
-    return _wireDecoder.decode(raw)
-  }
-
-  if (ArrayBuffer.isView(raw)) {
-    return _wireDecoder.decode(raw)
+  if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
+    return _wireDecoder.decode(raw as any as ArrayBuffer)
   }
 
   return null
@@ -266,14 +267,16 @@ export class GatewayClient extends EventEmitter {
       return
     }
 
-    if (typeof WebSocket === 'undefined') {
+    const WebSocketCtor = getWebSocketCtor()
+
+    if (typeof WebSocketCtor === 'undefined') {
       this.pushLog(`[sidecar] WebSocket unavailable; skipping mirror to ${redactUrl(this.sidecarUrl)}`)
 
       return
     }
 
     try {
-      const ws = new WebSocket(this.sidecarUrl)
+      const ws = new WebSocketCtor(this.sidecarUrl)
 
       this.sidecarWs = ws
       ws.addEventListener('close', () => {
@@ -302,6 +305,13 @@ export class GatewayClient extends EventEmitter {
     } catch {
       // best effort
     }
+  }
+
+  publishLocalEvent(ev: GatewayEvent) {
+    const frame = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: ev })
+
+    this.mirrorEventToSidecar(frame)
+    this.publish(ev)
   }
 
   private handleWebSocketFrame(raw: unknown) {
@@ -406,7 +416,9 @@ export class GatewayClient extends EventEmitter {
     const safeAttachUrl = redactUrl(attachUrl)
     this.startReadyTimer('websocket', safeAttachUrl)
 
-    if (typeof WebSocket === 'undefined') {
+    const WebSocketCtor = getWebSocketCtor()
+
+    if (typeof WebSocketCtor === 'undefined') {
       const line = `[startup] WebSocket API unavailable; cannot attach to ${safeAttachUrl}`
 
       this.pushLog(line)
@@ -417,7 +429,7 @@ export class GatewayClient extends EventEmitter {
     }
 
     try {
-      const ws = new WebSocket(attachUrl)
+      const ws = new WebSocketCtor(attachUrl)
       let settled = false
 
       this.ws = ws

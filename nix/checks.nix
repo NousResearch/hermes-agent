@@ -160,6 +160,53 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # Verify bundled i18n locale catalogs are present and resolvable.
+        # Regression for #23943 / #27632 / #35374 — sealed Nix venvs dropped
+        # locales/, surfacing raw i18n keys like gateway.reset.header_default.
+        bundled-locales = pkgs.runCommand "hermes-bundled-locales" { } ''
+          set -e
+          echo "=== Checking bundled locales ==="
+          test -d ${hermes-agent}/share/hermes-agent/locales || (echo "FAIL: locales directory missing"; exit 1)
+          echo "PASS: locales directory exists"
+
+          LOC_COUNT=$(find ${hermes-agent}/share/hermes-agent/locales -name "*.yaml" | wc -l)
+          test "$LOC_COUNT" -ge 16 || (echo "FAIL: expected >=16 catalogs, found $LOC_COUNT"; exit 1)
+          echo "PASS: $LOC_COUNT locale catalogs found"
+
+          test -f ${hermes-agent}/share/hermes-agent/locales/en.yaml || (echo "FAIL: en.yaml missing"; exit 1)
+          echo "PASS: en.yaml present"
+
+          grep -q "HERMES_BUNDLED_LOCALES" ${hermes-agent}/bin/hermes || \
+            (echo "FAIL: HERMES_BUNDLED_LOCALES not in wrapper"; exit 1)
+          echo "PASS: HERMES_BUNDLED_LOCALES set in wrapper"
+
+          echo "=== Rendering via the wrapper override (HERMES_BUNDLED_LOCALES) ==="
+          export HOME=$(mktemp -d)
+          RENDERED=$(cd "$HOME" && HERMES_BUNDLED_LOCALES=${hermes-agent}/share/hermes-agent/locales \
+            ${hermesVenv}/bin/python3 -c "from agent import i18n; print(i18n.t('gateway.reset.header_default', lang='en'))")
+          echo "rendered: $RENDERED"
+          test "$RENDERED" != "gateway.reset.header_default" || (echo "FAIL: i18n returned the raw key with HERMES_BUNDLED_LOCALES set"; exit 1)
+          echo "PASS: i18n renders a human string via the wrapper override"
+
+          # Defense-in-depth check: the sealed venv must ALSO resolve catalogs
+          # with NO env var, via the wheel's setuptools data-files materialized
+          # into the venv data scheme. If a future uv2nix bump drops data-files,
+          # the wrapper override above would mask the regression at runtime while
+          # `pip install`/other sealed paths silently break — this catches it.
+          echo "=== Rendering WITHOUT the env var (data-files materialization) ==="
+          BARE_DIR=$(cd "$HOME" && ${hermesVenv}/bin/python3 -c "from agent import i18n; print(i18n._locales_dir())")
+          BARE=$(cd "$HOME" && ${hermesVenv}/bin/python3 -c "from agent import i18n; print(i18n.t('gateway.reset.header_default', lang='en'))")
+          echo "resolved dir (no env var): $BARE_DIR"
+          echo "rendered: $BARE"
+          test "$BARE" != "gateway.reset.header_default" || \
+            (echo "FAIL: sealed venv could not resolve locales without HERMES_BUNDLED_LOCALES — data-files materialization regressed"; exit 1)
+          echo "PASS: sealed venv resolves locales via data-files without the env var"
+
+          echo "=== All bundled locales checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
         # Verify bundled TUI is present and compiled
         bundled-tui = pkgs.runCommand "hermes-bundled-tui" { } ''
           set -e

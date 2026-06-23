@@ -66,8 +66,8 @@ from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
-from utils import is_truthy_value
-from hermes_cli.config import cfg_get
+from utils import env_int, is_truthy_value
+from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 
 try:
     from tools.website_policy import check_website_access
@@ -78,10 +78,12 @@ try:
     from tools.url_safety import (
         is_safe_url as _is_safe_url,
         is_always_blocked_url as _is_always_blocked_url,
+        normalize_url_for_request as _normalize_url_for_request,
     )
 except Exception:
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
     _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
+    _normalize_url_for_request = lambda url: url  # noqa: E731 — best-effort fallback
 # Browser-provider ABC + registry — PR #25214 moved the per-vendor providers
 # (Browserbase / Browser Use / Firecrawl) out of ``tools/browser_providers/``
 # and into ``plugins/browser/<vendor>/``. The dispatcher consults the
@@ -617,7 +619,7 @@ def _is_local_mode() -> bool:
 
 
 def _is_local_backend() -> bool:
-    """Return True when the browser runs locally (no cloud provider).
+    """Return True when the browser runs locally AND the terminal is also local.
 
     SSRF protection is only meaningful for cloud backends (Browserbase,
     BrowserUse) where the agent could reach internal resources on a remote
@@ -625,8 +627,20 @@ def _is_local_backend() -> bool:
     Chromium without a cloud provider — the user already has full terminal
     and network access on the same machine, so the check adds no security
     value.
+
+    However, when the terminal runs in a container (docker, modal, daytona,
+    ssh, singularity), the browser on the host can access internal networks
+    that the terminal cannot.  In this case, SSRF protection should be
+    enabled even though the browser is technically "local".
     """
-    return _is_camofox_mode() or _get_cloud_provider() is None
+    if _is_camofox_mode():
+        return True
+    if _get_cloud_provider() is not None:
+        return False
+    # When terminal runs in a container, browser on host can access
+    # internal networks the terminal can't → treat as non-local.
+    terminal_backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
+    return terminal_backend in ("local", "")
 
 
 _auto_local_for_private_urls_resolved = False
@@ -1175,10 +1189,28 @@ _cleanup_done = False
 # Inactivity Timeout Configuration
 # =============================================================================
 
-# Session inactivity timeout (seconds) - cleanup if no activity for this long
-# Default: 5 minutes. Needs headroom for LLM reasoning between browser commands,
-# especially when subagents are doing multi-step browser tasks.
-BROWSER_SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "300"))
+# Session inactivity timeout (seconds) - cleanup if no activity for this long.
+# config.yaml is authoritative; BROWSER_INACTIVITY_TIMEOUT remains a legacy
+# fallback so old deployments keep working if they have not migrated yet.
+DEFAULT_SESSION_INACTIVITY_TIMEOUT = int(
+    DEFAULT_CONFIG.get("browser", {}).get("inactivity_timeout", 120)
+)
+
+
+def _get_session_inactivity_timeout() -> int:
+    result = env_int("BROWSER_INACTIVITY_TIMEOUT", DEFAULT_SESSION_INACTIVITY_TIMEOUT)
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg_get(cfg, "browser", "inactivity_timeout")
+        if val is not None:
+            result = max(int(val), 30)  # Floor at 30s to avoid instant reaping
+    except Exception as e:
+        logger.debug("Could not read inactivity_timeout from config: %s", e)
+    return result
+
+
+BROWSER_SESSION_INACTIVITY_TIMEOUT = _get_session_inactivity_timeout()
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
@@ -1288,6 +1320,92 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
                      session_name, exc)
 
 
+def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
+                                    session_name: str) -> bool:
+    """Confirm a live PID is genuinely *this* session's agent-browser daemon.
+
+    The orphan reaper scans world-writable, predictably-named temp paths
+    (``/tmp/agent-browser-h_*`` etc.) and reads a daemon PID from a ``.pid``
+    file we do not write ourselves — the agent-browser daemon writes it.  A
+    same-user actor can therefore plant a fake socket dir whose ``.pid`` points
+    at an arbitrary victim process, or a recycled PID can land on an unrelated
+    process after the real daemon exits.  Either way, terminating that PID
+    (a *tree* kill via ``_terminate_host_pid``) is an arbitrary-process DoS.
+
+    Before reaping we require, via ``psutil`` (a hard dependency, cross-platform
+    for same-user processes — the only processes the reaper can signal):
+
+      1. **Identity** — the process looks like agent-browser: ``agent-browser``
+         appears in its name or command line.
+      2. **Binding** — the process is bound to *this* session's socket dir: the
+         socket dir path (or its basename) appears in the command line, or in
+         ``AGENT_BROWSER_SOCKET_DIR`` in the process environment.
+
+    Requirement (2) is the real spoof defense: a planted process pointing at a
+    victim PID will not have the victim's cmdline/environ referencing our
+    socket dir.  An attacker would need a process that genuinely embeds this
+    exact session path — i.e. a real daemon they already own and could signal
+    directly.  Fail-closed: any ambiguity (unreadable cmdline, no match) means
+    we refuse to reap and leave the process and its socket dir alone.
+
+    Returns ``True`` only when both checks pass.
+    """
+    try:
+        import psutil
+    except ImportError:  # psutil is a hard dep; defensive only
+        logger.warning(
+            "Refusing to reap browser daemon PID %d (session %s): "
+            "psutil unavailable for identity verification",
+            daemon_pid, session_name)
+        return False
+
+    try:
+        proc = psutil.Process(daemon_pid)
+        name = (proc.name() or "").lower()
+        cmdline = " ".join(proc.cmdline() or []).lower()
+    except psutil.NoSuchProcess:
+        # Vanished between the liveness check and now — nothing to reap.
+        return False
+    except (psutil.AccessDenied, OSError) as exc:
+        logger.warning(
+            "Refusing to reap browser daemon PID %d (session %s): "
+            "could not read process identity (%s)",
+            daemon_pid, session_name, exc)
+        return False
+
+    looks_like_browser = "agent-browser" in name or "agent-browser" in cmdline
+    if not looks_like_browser:
+        logger.warning(
+            "Refusing to reap PID %d (session %s): not an agent-browser "
+            "process (name=%r)", daemon_pid, session_name, name)
+        return False
+
+    # Binding check: the live process must reference *this* socket dir.
+    socket_dir_l = socket_dir.lower()
+    socket_base_l = os.path.basename(socket_dir).lower()
+    bound = socket_dir_l in cmdline or (
+        socket_base_l and socket_base_l in cmdline)
+    if not bound:
+        try:
+            env_dir = (proc.environ() or {}).get(
+                "AGENT_BROWSER_SOCKET_DIR", "")
+            bound = bool(env_dir) and os.path.normpath(env_dir) == \
+                os.path.normpath(socket_dir)
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            # environ() can be denied even same-user on some platforms.
+            # cmdline already failed to bind — fail closed.
+            bound = False
+
+    if not bound:
+        logger.warning(
+            "Refusing to reap agent-browser PID %d: not bound to session "
+            "socket dir %s (possible recycled PID or planted pid file)",
+            daemon_pid, socket_dir)
+        return False
+
+    return True
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -1381,6 +1499,17 @@ def _reap_orphaned_browser_sessions():
         from gateway.status import _pid_exists
         if not _pid_exists(daemon_pid):
             shutil.rmtree(socket_dir, ignore_errors=True)
+            continue
+
+        # The PID is live — but the .pid file lives in a world-writable,
+        # predictably-named temp dir we don't write ourselves, and PIDs get
+        # recycled after the real daemon exits.  Verify the process really is
+        # *this* session's agent-browser daemon before tree-killing it; refuse
+        # otherwise (don't touch the process, leave the socket dir for a later
+        # sweep once the imposter PID is gone).  Fixes the arbitrary same-user
+        # process DoS in issue #14073.
+        if not _verify_reapable_browser_daemon(
+                daemon_pid, socket_dir, session_name):
             continue
 
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.
@@ -2305,6 +2434,14 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     from agent.redact import _PREFIX_RE
     url_decoded = urllib.parse.unquote(url)
     if _PREFIX_RE.search(url) or _PREFIX_RE.search(url_decoded):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: URL contains what appears to be an API key or token. "
+                     "Secrets must not be sent in URLs.",
+        })
+    url = _normalize_url_for_request(url)
+    normalized_decoded = urllib.parse.unquote(url)
+    if _PREFIX_RE.search(url) or _PREFIX_RE.search(normalized_decoded):
         return json.dumps({
             "success": False,
             "error": "Blocked: URL contains what appears to be an API key or token. "

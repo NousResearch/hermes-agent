@@ -127,14 +127,21 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
     return converted
 
 
-def _summarize_user_message_for_log(content: Any) -> str:
-    """Return a short text summary of a user message for logging/trajectory.
+def _summarize_user_message_for_log(content: Any, *, sep: str = " ") -> str:
+    """Flatten message content to a plain-text summary.
 
     Multimodal messages arrive as a list of ``{type:"text"|"image_url", ...}``
-    parts from the API server.  Logging, spinner previews, and trajectory
-    files all want a plain string — this helper extracts the first chunk of
-    text and notes any attached images.  Returns an empty string for empty
-    lists and ``str(content)`` for unexpected scalar types.
+    parts from the API server.  Several consumers want a plain string:
+
+    - Logging, spinner previews, and trajectory files (the default ``sep=" "``).
+    - External memory providers, which feed the text to regexes
+      (``sanitize_context``) and text APIs — a raw list crashes the sync with
+      ``expected string or bytes-like object, got 'list'`` (use ``sep="\\n"``).
+
+    Text parts are joined with ``sep``; images become a ``[N image(s)]`` marker
+    so the turn isn't recorded as if the attachment never existed.  Returns an
+    empty string for empty lists and ``str(content)`` for unexpected scalar
+    types.
     """
     if content is None:
         return ""
@@ -157,7 +164,7 @@ def _summarize_user_message_for_log(content: Any) -> str:
                     text_bits.append(text)
             elif ptype in {"image_url", "input_image"}:
                 image_count += 1
-        summary = " ".join(text_bits).strip()
+        summary = sep.join(text_bits).strip()
         if image_count:
             note = f"[{image_count} image{'s' if image_count != 1 else ''}]"
             summary = f"{note} {summary}" if summary else note
@@ -253,6 +260,26 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
             "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
         })
     return converted or None
+
+
+# Provider-executed built-in tool *declaration* types accepted on the
+# Responses ``tools`` array.  These are declared by ``type`` alone (no
+# client-side name/parameters schema) and run server-side — the provider
+# owns the implementation and reports progress via the matching ``*_call``
+# output items.  Hermes injects xAI's native ``web_search`` for the xAI
+# transport (see agent/transports/codex.py); the rest are listed so the
+# preflight validator passes them through rather than rejecting them as
+# "unsupported type".  Mirrors the ``*_call`` item-type set used in
+# _normalize_codex_response.
+_RESPONSES_BUILTIN_TOOL_TYPES = {
+    "web_search",
+    "web_search_preview",
+    "file_search",
+    "code_interpreter",
+    "image_generation",
+    "computer_use_preview",
+    "local_shell",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -795,7 +822,22 @@ def _preflight_codex_api_kwargs(
         for idx, tool in enumerate(tools):
             if not isinstance(tool, dict):
                 raise ValueError(f"Codex Responses tools[{idx}] must be an object.")
-            if tool.get("type") != "function":
+
+            tool_type = tool.get("type")
+
+            # Provider-executed built-in tools (xAI native web_search, code
+            # interpreter, etc.) are declared by ``type`` alone and carry no
+            # ``name``/``parameters`` schema — the provider owns the
+            # implementation.  Pass them through verbatim instead of forcing
+            # them through the function-tool validation below (which would
+            # otherwise reject them with "unsupported type").  See
+            # agent/transports/codex.py for where xAI's native web_search is
+            # injected.
+            if tool_type in _RESPONSES_BUILTIN_TOOL_TYPES:
+                normalized_tools.append(dict(tool))
+                continue
+
+            if tool_type != "function":
                 raise ValueError(f"Codex Responses tools[{idx}] has unsupported type {tool.get('type')!r}.")
 
             name = tool.get("name")
@@ -1074,9 +1116,37 @@ def _normalize_codex_response(
     message_items_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
+    saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
     saw_commentary_phase = False
     saw_final_answer_phase = False
     saw_reasoning_item = False
+
+    # Server-side built-in tool calls (xAI's native web_search, code
+    # interpreter, etc.) are executed by the provider and reported as
+    # discrete ``*_call`` output items.  xAI's /v1/responses surface
+    # (e.g. grok-composer-2.5-fast on SuperGrok OAuth) routinely leaves
+    # these items at ``status="in_progress"`` even when the overall
+    # ``response.status == "completed"`` — the search ran to completion
+    # server-side, the per-item status simply isn't reconciled.  These
+    # are NOT a signal that the model's turn is unfinished, so they must
+    # not flip ``has_incomplete_items``.  Only the response-level status
+    # and genuine model output items (message/reasoning/function_call)
+    # govern the incomplete verdict.  Without this guard, any turn where
+    # grok-composer invokes server-side search is misclassified as
+    # ``finish_reason="incomplete"`` and burns 3 fruitless continuation
+    # retries before failing with "Codex response remained incomplete
+    # after 3 continuation attempts".  client-side function/custom tool
+    # calls keep their own in_progress handling below (they are skipped,
+    # not awaited).
+    _SERVER_SIDE_TOOL_CALL_TYPES = {
+        "web_search_call",
+        "file_search_call",
+        "code_interpreter_call",
+        "image_generation_call",
+        "computer_call",
+        "local_shell_call",
+        "mcp_call",
+    }
 
     for item in output:
         item_type = getattr(item, "type", None)
@@ -1086,8 +1156,12 @@ def _normalize_codex_response(
         else:
             item_status = None
 
-        if item_status in {"queued", "in_progress", "incomplete"}:
+        if (
+            item_status in {"queued", "in_progress", "incomplete"}
+            and item_type not in _SERVER_SIDE_TOOL_CALL_TYPES
+        ):
             has_incomplete_items = True
+            saw_streaming_or_item_incomplete = True
 
         if item_type == "message":
             item_phase = getattr(item, "phase", None)
@@ -1245,7 +1319,9 @@ def _normalize_codex_response(
         finish_reason = "tool_calls"
     elif leaked_tool_call_text:
         finish_reason = "incomplete"
-    elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
+    elif saw_streaming_or_item_incomplete:
+        finish_reason = "incomplete"
+    elif (has_incomplete_items or saw_commentary_phase) and not saw_final_answer_phase:
         finish_reason = "incomplete"
     elif (reasoning_items_raw or reasoning_parts or saw_reasoning_item) and not final_text:
         # Response contains only reasoning (encrypted thinking state and/or

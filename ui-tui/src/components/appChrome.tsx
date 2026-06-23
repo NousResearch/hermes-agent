@@ -423,6 +423,7 @@ export function StatusRule({
   showCost,
   turnStartedAt,
   voiceLabel,
+  yolo,
   onSessionCountClick,
   t
 }: StatusRuleProps) {
@@ -576,6 +577,12 @@ export function StatusRule({
             <Text color={t.color.muted} wrap="truncate-end">
               {' │ '}
               {ctxLabel}
+            </Text>
+          ) : null}
+          {yolo ? (
+            <Text color={t.color.warn} wrap="truncate-end">
+              {' │ '}
+              {'⚠ YOLO'}
             </Text>
           ) : null}
         </Box>
@@ -779,6 +786,7 @@ interface StatusRuleProps {
   turnStartedAt?: null | number
   usage: Usage
   voiceLabel?: string
+  yolo?: boolean
   onSessionCountClick?: () => void
 }
 

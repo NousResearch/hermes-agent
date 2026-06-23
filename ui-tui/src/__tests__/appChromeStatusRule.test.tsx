@@ -201,6 +201,56 @@ describe('StatusRule session count click target', () => {
     expect(rendered).not.toContain('3 sessions')
     expect(rendered).not.toContain('$0.5000')
   })
+
+  it('renders the YOLO indicator when enabled', () => {
+    const element = StatusRule({
+      bgCount: 0,
+      busy: false,
+      cols: 160,
+      cwdLabel: '~/repo',
+      liveSessionCount: 1,
+      model: 'opus-4.8',
+      onSessionCountClick: vi.fn(),
+      sessionStartedAt: null,
+      showCost: false,
+      status: 'ready',
+      statusColor: DEFAULT_THEME.color.ok,
+      t: DEFAULT_THEME,
+      turnStartedAt: null,
+      usage: { total: 0 },
+      voiceLabel: '',
+      yolo: true
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('YOLO')
+  })
+
+  it('omits the YOLO indicator when disabled', () => {
+    const element = StatusRule({
+      bgCount: 0,
+      busy: false,
+      cols: 160,
+      cwdLabel: '~/repo',
+      liveSessionCount: 1,
+      model: 'opus-4.8',
+      onSessionCountClick: vi.fn(),
+      sessionStartedAt: null,
+      showCost: false,
+      status: 'ready',
+      statusColor: DEFAULT_THEME.color.ok,
+      t: DEFAULT_THEME,
+      turnStartedAt: null,
+      usage: { total: 0 },
+      voiceLabel: '',
+      yolo: false
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).not.toContain('YOLO')
+  })
 })
 
 describe('StatusRule credits notice render priority', () => {

@@ -58,7 +58,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
-from hermes_constants import PARTIAL_STREAM_STUB_ID
+from hermes_constants import PARTIAL_STREAM_STUB_ID, get_hermes_home
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
@@ -1112,6 +1112,19 @@ def run_conversation(
                         agent.thinking_callback("")
 
                 _use_streaming = True
+                # Respect streaming.enabled from config.yaml — master switch for
+                # turning off SSE streaming globally.  When false, use non-streaming
+                # API calls which avoids reasoning_content / content splitting issues
+                # on providers that return long chain-of-thought (GLM-5.2, etc.).
+                try:
+                    import yaml as _yaml
+                    _cfg_path = get_hermes_home() / "config.yaml"
+                    if _cfg_path.exists():
+                        _cfg = _yaml.safe_load(_cfg_path.read_text()) or {}
+                        if not _cfg.get("streaming", {}).get("enabled", True):
+                            _use_streaming = False
+                except Exception:
+                    pass
                 # Provider signaled "stream not supported" on a previous
                 # attempt — switch to non-streaming for the rest of this
                 # session instead of re-failing every retry.

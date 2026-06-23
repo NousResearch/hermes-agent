@@ -731,6 +731,38 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
+def load_on_disk_store() -> "MemoryStore":
+    """Build a fresh on-disk :class:`MemoryStore`, honoring configured char limits.
+
+    Use this from any context that has no live agent (the messaging gateway, the
+    Desktop GUI, the bare CLI ``/memory`` handler) but still needs to read or
+    apply approved memory writes. Mirrors how the live agent constructs its store
+    in ``agent/agent_init.py`` — including the user's ``memory.memory_char_limit``
+    / ``memory.user_char_limit`` overrides — so an approval applied without a live
+    agent enforces the SAME caps as one applied with one.
+
+    Falls back to the built-in defaults if config can't be loaded, so this can
+    never raise on a missing/unreadable config.
+    """
+    memory_char_limit = 2200
+    user_char_limit = 1375
+    try:
+        from hermes_cli.config import load_config
+
+        mem_cfg = (load_config() or {}).get("memory", {}) or {}
+        memory_char_limit = int(mem_cfg.get("memory_char_limit", memory_char_limit))
+        user_char_limit = int(mem_cfg.get("user_char_limit", user_char_limit))
+    except Exception:
+        pass  # config optional — fall back to defaults rather than break /memory
+
+    store = MemoryStore(
+        memory_char_limit=memory_char_limit,
+        user_char_limit=user_char_limit,
+    )
+    store.load_from_disk()
+    return store
+
+
 def _apply_write_gate(action: str, target: str, content: Optional[str],
                       old_text: Optional[str]) -> Optional[str]:
     """Evaluate the memory write gate. Returns a JSON tool-result string when

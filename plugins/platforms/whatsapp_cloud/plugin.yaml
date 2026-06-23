@@ -1,0 +1,61 @@
+name: whatsapp_cloud
+label: WhatsApp Cloud API
+kind: platform
+version: 1.0.0
+description: >
+  WhatsApp Business Cloud API adapter for Hermes Agent.
+  Connects to WhatsApp via Meta's official Graph API and webhook,
+  relaying messages between WhatsApp chats and the Hermes agent.
+  Requires a Meta Business account, a public webhook URL, and a
+  System User access token.
+author: NousResearch
+requires_env:
+  - name: WHATSAPP_CLOUD_PHONE_NUMBER_ID
+    description: "Phone number ID for the WhatsApp Cloud API (Graph URL path component)"
+    prompt: "Phone number ID"
+    password: false
+  - name: WHATSAPP_CLOUD_ACCESS_TOKEN
+    description: "System User permanent access token for the Graph API"
+    prompt: "Access token"
+    password: true
+optional_env:
+  - name: WHATSAPP_CLOUD_APP_ID
+    description: "Meta app ID associated with the WhatsApp Business app"
+    prompt: "App ID"
+    password: false
+  - name: WHATSAPP_CLOUD_APP_SECRET
+    description: "Meta app secret, used as the HMAC key for X-Hub-Signature-256 webhook verification"
+    prompt: "App secret"
+    password: true
+  - name: WHATSAPP_CLOUD_WABA_ID
+    description: "WhatsApp Business Account ID (analytics / future use)"
+    prompt: "WABA ID"
+    password: false
+  - name: WHATSAPP_CLOUD_VERIFY_TOKEN
+    description: "Shared secret for Meta's hub.verify_token webhook subscription handshake"
+    prompt: "Verify token"
+    password: true
+  - name: WHATSAPP_CLOUD_WEBHOOK_HOST
+    description: "Host/interface for the inbound webhook server to bind (default 0.0.0.0)"
+    prompt: "Webhook host"
+    password: false
+  - name: WHATSAPP_CLOUD_PORT
+    description: "Port for the inbound webhook server to listen on (default 8090)"
+    prompt: "Webhook port"
+    password: false
+  - name: WHATSAPP_CLOUD_PATH
+    description: "URL path for the inbound webhook server (default /whatsapp/webhook)"
+    prompt: "Webhook path"
+    password: false
+  - name: WHATSAPP_CLOUD_API_VERSION
+    description: "Graph API version to use (default v20.0)"
+    prompt: "API version"
+    password: false
+  - name: WHATSAPP_CLOUD_HOME_CHANNEL
+    description: "Default chat ID for cron / notification delivery"
+    prompt: "Home channel ID"
+    password: false
+  - name: WHATSAPP_CLOUD_HOME_CHANNEL_NAME
+    description: "Display name for the WhatsApp Cloud home channel"
+    prompt: "Home channel display name"
+    password: false

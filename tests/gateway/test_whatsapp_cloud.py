@@ -29,7 +29,7 @@ def _make_adapter(**overrides):
 
     Mirrors the pattern in tests/gateway/test_whatsapp_*.py.
     """
-    from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+    from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
     adapter = WhatsAppCloudAdapter.__new__(WhatsAppCloudAdapter)
     adapter.platform = Platform.WHATSAPP_CLOUD
@@ -566,7 +566,7 @@ class TestWebhookReplay:
         assert adapter._accepted_count == 1
 
     def test_dedup_cache_evicts_oldest(self):
-        from gateway.platforms.whatsapp_cloud import WAMID_DEDUP_CACHE_SIZE
+        from plugins.platforms.whatsapp_cloud.adapter import WAMID_DEDUP_CACHE_SIZE
         adapter = _make_adapter()
         # Fill the cache plus 5 extra
         for i in range(WAMID_DEDUP_CACHE_SIZE + 5):
@@ -1200,7 +1200,7 @@ class TestDownloadMedia:
 
     @pytest.mark.asyncio
     async def test_two_step_download_writes_cache_file(self, tmp_path):
-        from gateway.platforms import whatsapp_cloud as wac
+        from plugins.platforms.whatsapp_cloud import adapter as wac
 
         adapter = _make_adapter()
         adapter._http_client = MagicMock()
@@ -1244,7 +1244,7 @@ class TestDownloadMedia:
 
     @pytest.mark.asyncio
     async def test_bytes_failure_returns_none(self, tmp_path):
-        from gateway.platforms import whatsapp_cloud as wac
+        from plugins.platforms.whatsapp_cloud import adapter as wac
 
         adapter = _make_adapter()
         adapter._http_client = MagicMock()
@@ -1285,7 +1285,7 @@ class TestDownloadMedia:
         ("image/jpeg", ".jpg"),
     ])
     async def test_extension_overrides_for_real_world_mimes(self, tmp_path, mime, expected_ext):
-        from gateway.platforms import whatsapp_cloud as wac
+        from plugins.platforms.whatsapp_cloud import adapter as wac
 
         adapter = _make_adapter()
         adapter._http_client = MagicMock()
@@ -1311,7 +1311,7 @@ class TestInboundMediaDispatch:
 
     @pytest.mark.asyncio
     async def test_inbound_image_populates_media_urls(self, tmp_path):
-        from gateway.platforms import whatsapp_cloud as wac
+        from plugins.platforms.whatsapp_cloud import adapter as wac
 
         adapter = _make_adapter(app_secret="key")
         captured: list = []
@@ -1381,7 +1381,7 @@ class TestInboundMediaDispatch:
     @pytest.mark.asyncio
     async def test_inbound_text_document_injected_into_body(self, tmp_path):
         """A .txt document should have its content prepended to the body."""
-        from gateway.platforms import whatsapp_cloud as wac
+        from plugins.platforms.whatsapp_cloud import adapter as wac
 
         adapter = _make_adapter(app_secret="key")
         captured: list = []
@@ -1445,7 +1445,7 @@ class TestInboundMediaDispatch:
     async def test_inbound_image_download_failure_still_dispatches(self, tmp_path):
         """If the binary fetch fails we still want the agent to see the
         message metadata + caption — better than silently dropping."""
-        from gateway.platforms import whatsapp_cloud as wac
+        from plugins.platforms.whatsapp_cloud import adapter as wac
 
         adapter = _make_adapter(app_secret="key")
         captured: list = []
@@ -2256,7 +2256,7 @@ class TestSendTyping:
 
 class TestAllowlistNormalization:
     def test_normalize_allow_ids_strips_jid_suffix_and_punctuation(self):
-        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+        from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
         ids = {"15551234567@s.whatsapp.net", "+1 (555) 765-4321", "15550000000"}
         normalized = WhatsAppCloudAdapter._normalize_allow_ids(ids)
@@ -2265,7 +2265,7 @@ class TestAllowlistNormalization:
     def test_dm_allowlist_matches_bare_wa_id_against_jid_entry(self):
         """A Baileys-style JID in the allowlist must match the Cloud API's
         bare wa_id sender — users share allowlists between both adapters."""
-        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+        from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
         adapter = _make_adapter()
         adapter._dm_policy = "allowlist"
@@ -2278,7 +2278,7 @@ class TestAllowlistNormalization:
     def test_cloud_env_overrides_take_precedence(self, monkeypatch):
         """WHATSAPP_CLOUD_DM_POLICY wins over the shared WHATSAPP_DM_POLICY
         so both adapters can run in parallel with independent policies."""
-        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+        from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
         monkeypatch.setenv("WHATSAPP_DM_POLICY", "allowlist")
         monkeypatch.setenv("WHATSAPP_CLOUD_DM_POLICY", "open")
@@ -2298,7 +2298,7 @@ class TestBoundedInteractiveState:
     def test_bounded_put_evicts_oldest(self):
         from collections import OrderedDict
 
-        from gateway.platforms.whatsapp_cloud import (
+        from plugins.platforms.whatsapp_cloud.adapter import (
             INTERACTIVE_STATE_CACHE_SIZE,
             WhatsAppCloudAdapter,
         )

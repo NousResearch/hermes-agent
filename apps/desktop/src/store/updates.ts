@@ -417,18 +417,43 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
   }
 }
 
-const BACKEND_RETURN_POLL_MS = 1500
-const BACKEND_RETURN_MAX_ATTEMPTS = 40
+// `hermes update` runs git pull + uv sync + npm install + vite build, then drains and
+// restarts the gateway ("up to 195s") before finally tearing down the dashboard it is
+// serving us from. That routinely takes well over a minute, so these budgets are
+// generous on purpose: the old 30×1.5s≈45s poll cap expired mid-update and reported a
+// false failure while the update was still succeeding.
+const ACTION_POLL_MS = 1500
+// Upper bound on how long we watch the update action itself — only a guard against an
+// action that never terminates. Normal updates finish (or drop the connection on
+// restart) long before this.
+const ACTION_MAX_MS = 6 * 60 * 1000
+const RETURN_POLL_MS = 1500
+// How long we wait for the backend to come back AND report itself up to date after the
+// restart. Covers a cold dashboard boot plus any stale-keepalive socket recycling.
+const RETURN_MAX_MS = 4 * 60 * 1000
 
+/**
+ * Poll the backend after a restart until it's reachable AND reports that no update is
+ * available — i.e. the new code is live. We can't compare versions (the backend
+ * `__version__` only bumps on release commits, not per-commit), so `update_available
+ * === false` from a forced, cache-busted check is the authoritative "we're current"
+ * signal. A bare "the request didn't throw" is not enough: right after `hermes update`
+ * the dashboard is mid-restart and a reused-but-dead keepalive socket can answer late.
+ */
 async function waitForBackendReturn(): Promise<boolean> {
-  for (let attempt = 0; attempt < BACKEND_RETURN_MAX_ATTEMPTS; attempt += 1) {
-    await new Promise(resolve => globalThis.setTimeout(resolve, BACKEND_RETURN_POLL_MS))
-    try {
-      await checkHermesUpdate()
+  const deadline = Date.now() + RETURN_MAX_MS
 
-      return true
+  while (Date.now() < deadline) {
+    await new Promise(resolve => globalThis.setTimeout(resolve, RETURN_POLL_MS))
+
+    try {
+      const res = await checkHermesUpdate(true)
+
+      if (res.update_available === false) {
+        return true
+      }
     } catch {
-      continue
+      // Backend still restarting (connection refused / 5xx / timeout) — keep waiting.
     }
   }
 
@@ -472,44 +497,64 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 
     $backendUpdateApply.set({ ...IDLE, applying: true, stage: 'pull', message: translateNow('updates.applyStatus.pulling') })
 
+    const enterRestart = () =>
+      $backendUpdateApply.set({
+        ...$backendUpdateApply.get(),
+        applying: true,
+        stage: 'restart',
+        message: translateNow('updates.applyStatus.restarting')
+      })
+
+    const fail = (): DesktopUpdateApplyResult => {
+      $backendUpdateApply.set({
+        ...$backendUpdateApply.get(),
+        applying: false,
+        stage: 'error',
+        error: 'apply-failed',
+        message: translateNow('updates.applyStatus.failed')
+      })
+
+      return { ok: false, error: 'apply-failed', message: 'Backend update failed.' }
+    }
+
+    // Phase A — watch the update action until it terminates. A still-running action is
+    // NOT a failure: `hermes update` legitimately runs for minutes. We only leave on a
+    // terminal signal — the action exits, or the connection drops because the update
+    // tore down the dashboard we poll through for its restart.
+    const actionDeadline = Date.now() + ACTION_MAX_MS
     let last: Awaited<ReturnType<typeof getActionStatus>> | null = null
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      await new Promise(resolve => globalThis.setTimeout(resolve, 1500))
+
+    while (Date.now() < actionDeadline) {
+      await new Promise(resolve => globalThis.setTimeout(resolve, ACTION_POLL_MS))
+
       try {
         last = await getActionStatus(started.name, 200)
       } catch {
-        // The dashboard restarts mid-update, dropping this connection — expected, not a failure.
-        $backendUpdateApply.set({
-          ...$backendUpdateApply.get(),
-          applying: true,
-          stage: 'restart',
-          message: translateNow('updates.applyStatus.restarting')
-        })
+        // Connection dropped: the update reached its restart step, not a failure.
+        enterRestart()
 
         return finishBackendApply(await waitForBackendReturn())
       }
 
       if (last && !last.running) {
-        break
+        // The action exited. A non-zero exit is the one true failure here; exit 0 means
+        // confirm the backend comes back up to date (systemd-managed deploys restart it).
+        if ((last.exit_code ?? 1) !== 0) {
+          return fail()
+        }
+
+        enterRestart()
+
+        return finishBackendApply(await waitForBackendReturn())
       }
     }
 
-    const ok = !!last && (last.exit_code ?? 1) === 0
-    if (ok) {
-      $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: true, stage: 'restart', message: translateNow('updates.applyStatus.restarting') })
+    // The action never reported completion within ACTION_MAX_MS (a stuck update). Don't
+    // claim failure — hand off to the restart-confirm net, which either confirms the
+    // backend is current or reports it never came back.
+    enterRestart()
 
-      return finishBackendApply(await waitForBackendReturn())
-    }
-
-    $backendUpdateApply.set({
-      ...$backendUpdateApply.get(),
-      applying: false,
-      stage: 'error',
-      error: 'apply-failed',
-      message: translateNow('updates.applyStatus.failed')
-    })
-
-    return { ok: false, error: 'apply-failed', message: 'Backend update failed.' }
+    return finishBackendApply(await waitForBackendReturn())
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     $backendUpdateApply.set({ ...$backendUpdateApply.get(), applying: false, stage: 'error', error: 'apply-failed', message })

@@ -376,11 +376,58 @@ describe('applyBackendUpdate recovery', () => {
     checkHermesUpdateSpy.mockRejectedValue(new Error('ECONNREFUSED'))
 
     const promise = applyBackendUpdate()
-    await vi.advanceTimersByTimeAsync(70000)
+    // Exhaust the full restart-confirm budget (RETURN_MAX_MS = 4 min) before asserting.
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000)
     const result = await promise
 
     expect(result.ok).toBe(false)
     expect($backendUpdateApply.get().stage).toBe('error')
+  })
+
+  it('keeps waiting through a long-running update instead of failing at the old ~45s cap', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+
+    // The dashboard stays up and the action keeps reporting `running` well past the old
+    // 30×1.5s≈45s budget, then the connection drops when the update restarts it.
+    let polls = 0
+    getActionStatusSpy.mockImplementation(async () => {
+      polls += 1
+
+      if (polls > 40) {
+        throw new Error('ECONNREFUSED')
+      }
+
+      return { name: 'update', running: true, exit_code: null, pid: 1, lines: [] }
+    })
+    checkHermesUpdateSpy.mockResolvedValue({ install_method: 'git', current_version: '0.16.0', behind: 0, update_available: false, can_apply: true, update_command: 'hermes update', message: null })
+
+    const promise = applyBackendUpdate()
+
+    // Past the old cap the overlay must still be applying — not an error.
+    await vi.advanceTimersByTimeAsync(50000)
+    expect($backendUpdateApply.get().stage).not.toBe('error')
+    expect($backendUpdateApply.get().applying).toBe(true)
+
+    // Let the action run on, drop the connection, and the backend come back current.
+    await vi.advanceTimersByTimeAsync(30000)
+    const result = await promise
+
+    expect(result.ok).toBe(true)
+    expect($backendUpdateApply.get().stage).toBe('idle')
+  })
+
+  it('reports failure only when the update action itself exits non-zero', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({ name: 'update', running: false, exit_code: 1, pid: 1, lines: [] })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(5000)
+    const result = await promise
+
+    expect(result.ok).toBe(false)
+    expect($backendUpdateApply.get().stage).toBe('error')
+    // A real action failure must not be masked by the restart-confirm path.
+    expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
   })
 })
 

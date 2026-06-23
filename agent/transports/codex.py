@@ -57,7 +57,8 @@ def _compute_prompt_cache_key(
             content.encode("utf-8", errors="replace")
         ).hexdigest()[:24]
         return f"pck_{digest}"
-    except Exception:
+    except Exception as exc:
+        logger.debug("_compute_prompt_cache_key failed, falling back to session_id: %s", exc)
         return None
 
 
@@ -281,9 +282,12 @@ class ResponsesApiTransport(ProviderTransport):
         #      all OS (Linux / macOS / Windows).
         #   3. session_id — last-resort fallback when there is literally no
         #      static content to hash (empty instructions, zero tools).
+        #      In practice this branch is unreachable: DEFAULT_AGENT_IDENTITY
+        #      always populates instructions, so _compute_prompt_cache_key
+        #      returns a real hash.  The fallback is a safety net only.
         #
-        # session_id itself is NEVER used as prompt_cache_key; it keeps its
-        # per-fire timestamp so session-isolation headers stay unique.
+        # session_id keeps its per-fire timestamp for SQLite isolation and
+        # logs; it is not the preferred cache key.
         cache_key = (
             params.get("cache_key")
             or _compute_prompt_cache_key(instructions, response_tools)
@@ -397,10 +401,13 @@ class ResponsesApiTransport(ProviderTransport):
             merged_extra_headers["x-grok-conv-id"] = session_id
             kwargs["extra_headers"] = merged_extra_headers
 
+        if is_xai_responses and cache_key:
             # xAI Responses cache-routing — body-level field per
             # https://docs.x.ai/developers/advanced-api-usage/prompt-caching/maximizing-cache-hits.
             # Sent via extra_body (not the typed kwarg) so it survives openai
             # SDK builds whose Responses.stream() signature has dropped the field.
+            # Gated on cache_key (not session_id) so cron fires and one-shot
+            # calls without a session_id still get prefix-cache routing.
             existing_extra_body = kwargs.get("extra_body")
             merged_extra_body: Dict[str, Any] = {}
             if isinstance(existing_extra_body, dict):

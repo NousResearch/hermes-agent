@@ -1,9 +1,14 @@
-import os
 import sys
+import os
 
-# Guard against a local utils/ (or other package) in CWD shadowing installed
-# hermes modules.  hermes_cli sets HERMES_PYTHON_SRC_ROOT before spawning this
-# subprocess; inserting it first ensures the installed packages win.
+# Fix #51286: prevent cwd packages from shadowing Hermes internal modules.
+# Python puts "" (cwd) at sys.path[0] unconditionally. If the user runs
+# `hermes` from a directory that happens to contain a `utils/`, `proxy/`,
+# or `ui/` package, our internal imports will resolve to the wrong module
+# and crash with ImportError.
+_HERMES_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if sys.path[0] != _HERMES_ROOT:
+    sys.path.insert(0, _HERMES_ROOT)
 _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
 if _src_root and _src_root not in sys.path:
     sys.path.insert(0, _src_root)

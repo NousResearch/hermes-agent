@@ -238,6 +238,30 @@ class TestMemorySearch:
         assert result["success"] is False
         assert "query" in result["error"].lower()
 
+    def test_search_multiple_matches(self, tmp_path, monkeypatch):
+        """search returns all entries matching the query, not just the first."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        _write_memory_file(tmp_path / "MEMORY.md", [
+            "Python: use pytest for testing",
+            "Go: use go test for testing",
+            "Rust: use cargo test for testing",
+            "Unrelated entry about lunch",
+        ])
+        _write_memory_file(tmp_path / "USER.md", [])
+        store = MemoryStore()
+        store.load_from_disk()
+
+        result = json.loads(memory_tool(
+            action="search",
+            target="memory",
+            query="testing",
+            store=store,
+        ))
+        assert result["success"] is True
+        assert len(result["matches"]) == 3
+        assert all("testing" in m.lower() for m in result["matches"])
+        assert "lunch" not in " ".join(result["matches"]).lower()
+
     def test_search_user_target(self, tmp_path, monkeypatch):
         """search works on user target too."""
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)

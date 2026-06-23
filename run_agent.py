@@ -4791,7 +4791,7 @@ class AIAgent:
         """Return True when the base URL targets Qwen Portal."""
         return base_url_host_matches(self._base_url_lower, "portal.qwen.ai")
 
-    def _qwen_prepare_chat_messages(self, api_messages: list) -> list:
+    def _cache_prepare_chat_messages(self, api_messages: list) -> list:
         prepared = copy.deepcopy(api_messages)
         if not prepared:
             return prepared
@@ -4824,7 +4824,7 @@ class AIAgent:
 
         return prepared
 
-    def _qwen_prepare_chat_messages_inplace(self, messages: list) -> None:
+    def _cache_prepare_chat_messages_inplace(self, messages: list) -> None:
         """In-place variant — mutates an already-copied message list."""
         if not messages:
             return

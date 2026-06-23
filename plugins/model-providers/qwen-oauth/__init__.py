@@ -15,7 +15,7 @@ class QwenProfile(ProviderProfile):
 
         Inject cache_control on system message.
 
-        Matches the behavior of run_agent.py:_qwen_prepare_chat_messages().
+        Matches the behavior of run_agent.py:_cache_prepare_chat_messages().
         """
         prepared = copy.deepcopy(messages)
         if not prepared:

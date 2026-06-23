@@ -664,6 +664,16 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
 
     # Provider detection flags
     _is_qwen = agent._is_qwen_portal()
+    _is_deepseek = (
+        (agent.provider or "").lower() == "deepseek"
+        or "deepseek" in (agent.model or "").lower()
+        or base_url_host_matches(agent._base_url_lower, "api.deepseek.com")
+        or base_url_host_matches(agent._base_url_lower, "api.deepseek.ai")
+    )
+    # Qwen Portal & DeepSeek support cache_control: {type: "ephemeral"}
+    # on the system message for prompt caching; the existing
+    # _qwen_prepare_* functions handle the message normalization + injection.
+    _cache_system = _is_qwen or _is_deepseek
     _is_or = agent._is_openrouter_url()
     _is_gh = (
         base_url_host_matches(agent._base_url_lower, "models.github.ai")
@@ -798,8 +808,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         ollama_num_ctx=agent._ollama_num_ctx,
         provider_preferences=_prefs or None,
         openrouter_min_coding_score=agent.openrouter_min_coding_score,
-        qwen_prepare_fn=agent._qwen_prepare_chat_messages if _is_qwen else None,
-        qwen_prepare_inplace_fn=agent._qwen_prepare_chat_messages_inplace if _is_qwen else None,
+        qwen_prepare_fn=agent._cache_prepare_chat_messages if _cache_system else None,
+        qwen_prepare_inplace_fn=agent._cache_prepare_chat_messages_inplace if _cache_system else None,
         qwen_session_metadata=_qwen_meta,
         fixed_temperature=_fixed_temp,
         omit_temperature=_omit_temp,

@@ -45,7 +45,49 @@ def _model_supports_thinking(model: str | None) -> bool:
 
 
 class DeepSeekProfile(ProviderProfile):
-    """DeepSeek — extra_body.thinking + top-level reasoning_effort."""
+    """DeepSeek — message normalization, context caching, extra_body.thinking."""
+
+    def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Normalize content to list-of-dicts format.
+
+        Inject cache_control on system message for prompt caching —
+        DeepSeek supports cache_control: {type: "ephemeral"} on system
+        messages, giving ~50% input token discount on multi-turn conversations.
+        """
+        import copy
+        prepared = copy.deepcopy(messages)
+        if not prepared:
+            return prepared
+
+        for msg in prepared:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                msg["content"] = [{"type": "text", "text": content}]
+            elif isinstance(content, list):
+                normalized_parts = []
+                for part in content:
+                    if isinstance(part, str):
+                        normalized_parts.append({"type": "text", "text": part})
+                    elif isinstance(part, dict):
+                        normalized_parts.append(part)
+                if normalized_parts:
+                    msg["content"] = normalized_parts
+
+        # Inject cache_control on the last part of the system message.
+        for msg in prepared:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                content = msg.get("content")
+                if (
+                    isinstance(content, list)
+                    and content
+                    and isinstance(content[-1], dict)
+                ):
+                    content[-1]["cache_control"] = {"type": "ephemeral"}
+                break
+
+        return prepared
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context

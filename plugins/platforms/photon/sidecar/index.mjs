@@ -347,6 +347,15 @@ async function normalizeEvent(space, message) {
 // iterator itself throws or ends, this consumer would stop forever. Wrap it in
 // a re-subscribe loop with capped exponential backoff + jitter so inbound
 // always recovers (the adapter dedupes any catch-up replay).
+const DISABLE_INBOUND = ["1", "true", "yes"].includes(
+  String(process.env.PHOTON_SIDECAR_DISABLE_INBOUND || "").toLowerCase()
+);
+if (DISABLE_INBOUND) {
+  console.error(
+    "photon-sidecar: inbound stream DISABLED (PHOTON_SIDECAR_DISABLE_INBOUND) — " +
+      "webhook mode, outbound /send only"
+  );
+} else
 (async () => {
   let backoff = 1000;
   for (;;) {

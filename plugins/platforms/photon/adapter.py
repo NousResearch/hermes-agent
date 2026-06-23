@@ -6,13 +6,22 @@ Both directions of traffic flow through a small supervised Node sidecar
 TypeScript-only and there is no public HTTP message API, so a sidecar is
 unavoidable.
 
-Inbound:
+Inbound (default — ``PHOTON_INBOUND_MODE=stream``):
     The SDK's ``app.messages`` is a long-lived **gRPC** stream. The sidecar
     serializes each message to a normalized JSON event and streams it to this
     adapter over a loopback ``GET /inbound`` (NDJSON). A background task here
     consumes that stream, dedupes on ``messageId``, and dispatches a
     ``MessageEvent`` to the gateway via ``BasePlatformAdapter.handle_message``.
-    No webhook, no public URL, no signing secret.
+
+Inbound (opt-in — ``PHOTON_INBOUND_MODE=webhook``):
+    Spectrum pushes signed HTTPS POSTs to a URL you register in the Photon
+    dashboard (see ``webhook.py``). This avoids the long-lived
+    ``catchUpEvents`` stream entirely — no 16-stream concurrency limit, no
+    zombie/"Live stream ended" reconnect spirals. Requires a public HTTPS
+    ingress to ``PHOTON_WEBHOOK_PORT`` (e.g. a tunnel) and
+    ``PHOTON_WEBHOOK_SECRET``. Set ``PHOTON_SIDECAR_DISABLE_INBOUND=1`` so the
+    sidecar stops its (now unused) inbound subscription; outbound still uses
+    the sidecar below.
 
 Outbound:
     ``send`` / ``send_typing`` are loopback POSTs to the sidecar's control
@@ -72,6 +81,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_SIDECAR_PORT = 8789
 _DEFAULT_SIDECAR_BIND = "127.0.0.1"
+_DEFAULT_WEBHOOK_PORT = 8788
+_DEFAULT_WEBHOOK_PATH = "/photon/webhook"
+_DEFAULT_SIDECAR_SEND_TIMEOUT = 120.0
 
 # Photon iMessage messages from the SDK side have no documented hard
 # limit, but the underlying iMessage protocol limits practical message
@@ -227,6 +239,27 @@ class PhotonAdapter(BasePlatformAdapter):
         ).lower() not in ("0", "false", "no")
         self._node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node") or "node"
 
+        # Inbound transport: "stream" (default — sidecar gRPC/WS) or "webhook"
+        # (Photon pushes signed HTTPS POSTs; no long-lived catchUpEvents stream,
+        # so no 16-stream limit / zombie-stream death spirals). Outbound always
+        # stays on the sidecar — Photon has no public HTTP send endpoint.
+        self._inbound_mode = (
+            str(extra.get("inbound_mode") or os.getenv("PHOTON_INBOUND_MODE") or "stream")
+            .strip().lower()
+        )
+        self._webhook_port = _coerce_port(
+            extra.get("webhook_port") or os.getenv("PHOTON_WEBHOOK_PORT"),
+            _DEFAULT_WEBHOOK_PORT,
+        )
+        self._webhook_bind = _DEFAULT_SIDECAR_BIND  # loopback; Funnel fronts it
+        self._webhook_path = (
+            str(extra.get("webhook_path") or os.getenv("PHOTON_WEBHOOK_PATH") or _DEFAULT_WEBHOOK_PATH)
+        )
+        self._webhook_secret = (
+            os.getenv("PHOTON_WEBHOOK_SECRET") or extra.get("webhook_secret") or ""
+        )
+        self._webhook_server = None
+
         # With markdown on, format_message preserves fences and the sidecar's
         # markdown() builder renders them (or degrades them readably).
         self.supports_code_blocks = _markdown_enabled()
@@ -365,6 +398,37 @@ class PhotonAdapter(BasePlatformAdapter):
                 "[photon] sidecar autostart disabled — inbound + outbound will fail"
             )
 
+        # Inbound: webhook (push) or the sidecar gRPC/WS stream (pull).
+        if self._inbound_mode == "webhook":
+            if not self._webhook_secret:
+                self._set_fatal_error(
+                    "MISSING_WEBHOOK_SECRET",
+                    "PHOTON_INBOUND_MODE=webhook requires PHOTON_WEBHOOK_SECRET "
+                    "(the per-webhook signing secret from app.photon.codes).",
+                    retryable=False,
+                )
+                await client.aclose()
+                self._http_client = None
+                return False
+            from .webhook import PhotonWebhookServer
+
+            self._webhook_server = PhotonWebhookServer(
+                self,
+                host=self._webhook_bind,
+                port=self._webhook_port,
+                path=self._webhook_path,
+                secret=self._webhook_secret,
+            )
+            await self._webhook_server.start()
+            self._mark_connected()
+            logger.info(
+                "[photon] connected — sidecar on %s:%d (outbound), inbound via "
+                "webhook on %s:%d%s",
+                self._sidecar_bind, self._sidecar_port,
+                self._webhook_bind, self._webhook_port, self._webhook_path,
+            )
+            return True
+
         # Start consuming the inbound gRPC stream from the sidecar.
         self._inbound_running = True
         self._inbound_task = asyncio.get_event_loop().create_task(
@@ -389,6 +453,12 @@ class PhotonAdapter(BasePlatformAdapter):
             except Exception:
                 pass
             self._inbound_task = None
+        if self._webhook_server is not None:
+            try:
+                await self._webhook_server.stop()
+            except Exception:
+                pass
+            self._webhook_server = None
         await self._stop_sidecar()
         if self._http_client is not None:
             try:

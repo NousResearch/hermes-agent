@@ -19,11 +19,27 @@ import { PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
 import { ComputerUsePanel } from '../settings/computer-use-panel'
 import { asText, includesQuery, prettyName, toolNames, toolsetDisplayLabel } from '../settings/helpers'
+import { LearnPanel } from '../settings/learn-panel'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 const SKILLS_MODES = ['skills', 'toolsets'] as const
 type SkillsMode = (typeof SKILLS_MODES)[number]
+const LEARN_SURFACE_ID = '__learn_surface__'
+const LEARN_SURFACE_SEARCH_TEXT = [
+  'learn',
+  'workflow',
+  'workflows',
+  'automation',
+  'automations',
+  'memory',
+  'memories',
+  'skills',
+  'cron',
+  'suggestions',
+  'teach',
+  'approval'
+].join(' ')
 
 function categoryFor(skill: SkillInfo): string {
   return asText(skill.category) || 'general'
@@ -67,6 +83,12 @@ function filteredToolsets(toolsets: ToolsetInfo[], query: string): ToolsetInfo[]
       )
     })
     .sort((a, b) => toolsetDisplayLabel(a).localeCompare(toolsetDisplayLabel(b)))
+}
+
+function learnSurfaceMatches(query: string): boolean {
+  const q = query.trim().toLowerCase()
+
+  return !q || LEARN_SURFACE_SEARCH_TEXT.includes(q)
 }
 
 interface SkillsViewProps extends React.ComponentProps<'section'> {
@@ -135,6 +157,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   )
 
   const visibleToolsets = useMemo(() => (toolsets ? filteredToolsets(toolsets, query) : []), [query, toolsets])
+  const showLearnSurface = learnSurfaceMatches(query)
 
   const skillGroups = useMemo(() => {
     const groups = new Map<string, SkillInfo[]>()
@@ -281,14 +304,24 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         </div>
       ) : (
         <div className={cn('h-full overflow-y-auto py-3', PAGE_INSET_X)}>
-          {visibleToolsets.length === 0 ? (
+          {visibleToolsets.length === 0 && !showLearnSurface ? (
             <EmptyState description={t.skills.noToolsetsDesc} title={t.skills.noToolsetsTitle} />
           ) : (
             <div className="space-y-2">
-              <div className="text-xs text-muted-foreground">
-                {t.skills.toolsetsEnabled(enabledToolsets, toolsets.length)}
-              </div>
+              {toolsets.length > 0 && (
+                <div className="text-xs text-muted-foreground">
+                  {t.skills.toolsetsEnabled(enabledToolsets, toolsets.length)}
+                </div>
+              )}
               <div>
+                {showLearnSurface && (
+                  <LearnSurfaceRow
+                    expanded={expandedToolset === LEARN_SURFACE_ID}
+                    onToggle={() =>
+                      setExpandedToolset(current => (current === LEARN_SURFACE_ID ? null : LEARN_SURFACE_ID))
+                    }
+                  />
+                )}
                 {visibleToolsets.map(toolset => {
                   const tools = toolNames(toolset)
                   const label = toolsetDisplayLabel(toolset)
@@ -348,6 +381,31 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         </div>
       )}
     </PageSearchShell>
+  )
+}
+
+function LearnSurfaceRow({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
+  return (
+    <div className="px-0 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium">Learn</div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Identify repeat workflows and draft skills or automations for approval.
+          </p>
+        </div>
+        <button
+          aria-expanded={expanded}
+          aria-label="Configure Learn"
+          className="shrink-0 cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          onClick={onToggle}
+          type="button"
+        >
+          <StatusPill active={false}>Preview</StatusPill>
+        </button>
+      </div>
+      {expanded && <LearnPanel />}
+    </div>
   )
 }
 

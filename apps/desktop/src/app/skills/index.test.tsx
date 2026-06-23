@@ -92,6 +92,19 @@ describe('SkillsView toolset management', () => {
     expect(screen.getByText('Configured')).toBeTruthy()
   })
 
+  it('renders the Learn surface without requiring a backend toolset', async () => {
+    getToolsets.mockResolvedValue([])
+
+    await renderSkills()
+
+    expect(await screen.findByText('Learn')).toBeTruthy()
+    expect(screen.queryByText('No toolsets found')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Configure Learn' }))
+
+    expect(await screen.findByText(/No background sampler, storage, or automation/)).toBeTruthy()
+  })
+
   it('expands the provider config panel when the configured pill is clicked', async () => {
     await renderSkills()
 

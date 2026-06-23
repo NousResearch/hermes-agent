@@ -378,10 +378,18 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """
     if not text:
         return text
-    if _gateway_platform_value(platform) != "telegram":
-        return text
+    platform_value = _gateway_platform_value(platform)
+    redacted = str(text)
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    if platform_value in {"feishu", "wecom", "wecom_callback", "weixin"}:
+        from agent.memory_manager import scrub_internal_context_blocks
+
+        redacted = scrub_internal_context_blocks(redacted)
+
+    if platform_value != "telegram":
+        return redacted
+
+    redacted = _redact_gateway_user_facing_secrets(redacted)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted

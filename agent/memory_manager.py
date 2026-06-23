@@ -121,10 +121,22 @@ _INTERNAL_NOTE_RE = re.compile(
 )
 
 
-def sanitize_context(text: str) -> str:
-    """Strip fence tags, injected context blocks, and system notes from provider output."""
+def scrub_internal_context_blocks(text: str) -> str:
+    """Strip only full internal memory-context injections from visible text.
+
+    This preserves literal mentions of the ``<memory-context>`` tag name unless
+    they arrive as a complete injected block (or the standalone system-note
+    line). Use this on user-visible output paths where raw fence leakage is a
+    bug, but literal documentation text should remain intact.
+    """
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
+    return text
+
+
+def sanitize_context(text: str) -> str:
+    """Strip fence tags, injected context blocks, and system notes from provider output."""
+    text = scrub_internal_context_blocks(text)
     text = _FENCE_TAG_RE.sub('', text)
     return text
 

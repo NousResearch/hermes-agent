@@ -827,7 +827,7 @@ class TestLoadGatewayConfig:
             config = load_gateway_config()
             platform = Platform("unit_disconnected")
 
-            assert config.platforms[platform].enabled is False
+            assert platform not in config.platforms
         finally:
             platform_registry._entries.clear()
             platform_registry._entries.update(original_entries)

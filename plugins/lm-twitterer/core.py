@@ -859,6 +859,40 @@ def _strip_optional_placeholder_keys(value: Any) -> Any:
     return value
 
 
+def _x_client_transaction_id(method: str, path: str) -> str:
+    """Best-effort x-client-transaction-id generation for CreateTweet."""
+    try:
+        import bs4
+        import requests
+        from x_client_transaction import ClientTransaction
+        from x_client_transaction.utils import generate_headers, get_ondemand_file_url
+
+        session = requests.Session()
+        session.headers = generate_headers()  # type: ignore[assignment]
+        home_page = session.get("https://x.com/home", timeout=30)
+        home_page.raise_for_status()
+        home_page_response = bs4.BeautifulSoup(home_page.content, "html.parser")
+        ondemand_file_url = get_ondemand_file_url(response=home_page_response)
+        ondemand_file = session.get(url=ondemand_file_url, timeout=30)
+        ondemand_file.raise_for_status()
+        ct = ClientTransaction(
+            home_page_response=home_page_response,
+            ondemand_file_response=ondemand_file.text,
+        )
+        return str(ct.generate_transaction_id(method, path) or "")
+    except Exception:
+        return ""
+
+
+def _create_tweet_headers(cfg: Settings, query_id: str) -> dict[str, str]:
+    headers = _twitter_web_headers(cfg, content_type="application/json")
+    path = f"/i/api/graphql/{query_id}/CreateTweet"
+    tid = _x_client_transaction_id("POST", path)
+    if tid:
+        headers["x-client-transaction-id"] = tid
+    return headers
+
+
 def _create_tweet_with_cookies(
     cfg: Settings,
     *,
@@ -866,10 +900,10 @@ def _create_tweet_with_cookies(
     media_ids: Iterable[str] | None = None,
     in_reply_to_tweet_id: str | None = None,
 ) -> dict[str, Any]:
-    """Create a tweet via X GraphQL without x-client-transaction scraping.
+    """Create a tweet via X GraphQL with direct cookie auth.
 
     twitter-openapi-python currently initializes its client by scraping X's
-    on-demand JavaScript bundle for a transaction-id generator. X changes that
+
     page frequently; when the regex fails, client construction raises
     ``AttributeError: 'NoneType' object has no attribute 'group'`` before a post
     can be attempted. Posting does not need that initialization step, so this
@@ -915,7 +949,7 @@ def _create_tweet_with_cookies(
     request = urllib.request.Request(
         f"https://x.com/i/api/graphql/{query_id}/CreateTweet",
         data=body,
-        headers=_twitter_web_headers(cfg, content_type="application/json"),
+        headers=_create_tweet_headers(cfg, query_id),
         method="POST",
     )
     try:

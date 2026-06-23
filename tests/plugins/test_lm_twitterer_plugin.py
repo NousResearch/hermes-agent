@@ -535,6 +535,14 @@ def test_create_tweet_with_cookies_uses_raw_graphql_without_optional_placeholder
             "features": {"good_feature": True, "draft_feature?": False},
         }
     }
+    fake_client_module = types.SimpleNamespace(
+        TwitterOpenapiPython=lambda: types.SimpleNamespace(
+            placeholder_url="https://x.example/{hash}.json",
+            hash="placeholder",
+        )
+    )
+    monkeypatch.setitem(sys.modules, "twitter_openapi_python", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "twitter_openapi_python.client", fake_client_module)
 
     def fake_urlopen(request, timeout=None):
         if isinstance(request, str):
@@ -546,6 +554,7 @@ def test_create_tweet_with_cookies_uses_raw_graphql_without_optional_placeholder
         )
 
     monkeypatch.setattr(core.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(core, "_x_client_transaction_id", lambda method, path: "tid")
     monkeypatch.setattr(core, "_twitter_web_headers", lambda cfg_arg, content_type="application/json": {"Content-Type": content_type})
 
     created = core._create_tweet_with_cookies(cfg, tweet_text="hello", media_ids=["12345"])

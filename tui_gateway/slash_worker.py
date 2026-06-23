@@ -3,12 +3,25 @@
 Protocol: reads JSON lines from stdin {id, command}, writes {id, ok, output|error} to stdout.
 """
 
+import os
+import sys
+
+# Guard against a local ``utils/`` (or other) package in the spawn CWD shadowing
+# installed hermes modules. This worker is spawned as ``-m tui_gateway.slash_worker``
+# and inherits the user's CWD, so the ``import cli`` below would otherwise resolve
+# ``utils`` to a colliding local package and crash the child (issue #51286). The
+# sibling entrypoint ``tui_gateway/entry.py`` applies the same guard; #15989 added
+# it there but missed this child.
+_src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
+if _src_root and _src_root not in sys.path:
+    sys.path.insert(0, _src_root)
+# '' and '.' both resolve to CWD at import time and can shadow installed packages.
+sys.path = [p for p in sys.path if p not in {"", "."}]
+
 import argparse
 import contextlib
 import io
 import json
-import os
-import sys
 import threading
 import time
 

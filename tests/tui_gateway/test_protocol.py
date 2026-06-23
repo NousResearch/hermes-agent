@@ -1074,6 +1074,19 @@ def test_config_roundtrip(server, tmp_path):
     assert server._load_cfg()["model"] == "test/model"
 
 
+def test_save_cfg_preserves_key_order(server, tmp_path):
+    """_save_cfg must not sort keys alphabetically — user-defined ordering is intentional."""
+    server._hermes_home = tmp_path
+    # Use an OrderedDict-like sequence that would break if sorted
+    ordered = {"zebra": 1, "alpha": 2, "middleware": 3, "beta": 4}
+    server._save_cfg(ordered)
+    raw = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    lines = [l.split(":")[0].strip() for l in raw.strip().splitlines() if ":" in l]
+    assert lines == ["zebra", "alpha", "middleware", "beta"], (
+        f"Key order should be preserved, got: {lines}"
+    )
+
+
 # ── _cli_exec_blocked ────────────────────────────────────────────────
 
 

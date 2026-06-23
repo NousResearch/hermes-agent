@@ -200,6 +200,12 @@ $GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
 
 ### Calendar
 
+Calendar/GOG auth failure rule:
+- If a Calendar command fails with GOG/OAuth/keyring/auth errors such as `aes.KeyUnwrap(): integrity check failed`, `token source`, `read token`, `invalid_grant`, expired/revoked token, or a missing/unlockable keyring, stop retrying Calendar mutations after the first clear failure.
+- Tell the user directly that Google Calendar/GOG auth expired or is broken and that they need to re-authenticate on the host/profile running the agent. Do not burn tool/API loops trying AppleScript, browser, alternate flags, or repeated `gog calendar create` calls unless the user explicitly asks for a manual fallback.
+- For Isac's personal calendar, prefer account `isacbravado@gmail.com` unless he says otherwise. Re-auth pattern: `gog auth add isacbravado@gmail.com --services calendar --remote --step 1 --json --force-consent`, send the returned auth URL, then complete step 2 with the pasted redirect URL and verify with `gog calendar list --account isacbravado@gmail.com --json --max 1` before claiming the event was added.
+- If re-auth is not completed in-session, return a concise blocked status plus the exact event details (title/start/end/timezone/location) so the user can add it manually; do not claim success.
+
 ```bash
 # List events (defaults to next 7 days)
 $GAPI calendar list

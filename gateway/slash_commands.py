@@ -3945,7 +3945,7 @@ class GatewaySlashCommandsMixin:
         if event.message_id:
             pending["message_id"] = event.message_id
         _tmp_pending = pending_path.with_suffix(".tmp")
-        _tmp_pending.write_text(json.dumps(pending))
+        _tmp_pending.write_text(json.dumps(pending), encoding='utf-8')
         _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
 

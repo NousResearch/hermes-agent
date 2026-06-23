@@ -3,11 +3,13 @@ import { useState } from 'react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Switch } from '@/components/ui/switch'
+import { getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, $profileBrandingEnabled, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
 import { useTheme } from '@/themes/context'
@@ -17,6 +19,32 @@ import { isUserTheme, removeUserTheme, resolveTheme } from '@/themes/user-themes
 import { MODE_OPTIONS } from './constants'
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
 
+async function updateBackendTheme(name: string) {
+  try {
+    const config = await getHermesConfigRecord()
+    config.dashboard = {
+      ...((config.dashboard as Record<string, unknown>) || {}),
+      theme: name
+    }
+    await saveHermesConfig(config)
+  } catch {
+    // Ignore save errors
+  }
+}
+
+async function updateProfileBranding(enabled: boolean) {
+  try {
+    const config = await getHermesConfigRecord()
+    config.dashboard = {
+      ...((config.dashboard as Record<string, unknown>) || {}),
+      profile_branding: enabled
+    }
+    await saveHermesConfig(config)
+    $profileBrandingEnabled.set(enabled)
+  } catch {
+    // Ignore save errors
+  }
+}
 function ThemePreview({ name }: { name: string }) {
   const t = resolveTheme(name)
 
@@ -80,6 +108,7 @@ function VscodeThemeInstaller() {
 
       triggerHaptic('crisp')
       setTheme(theme.name)
+      void updateBackendTheme(theme.name)
       setStatus({ kind: 'success', text: a.installed(theme.label) })
       setId('')
     } catch (error) {
@@ -138,6 +167,7 @@ export function AppearanceSettings() {
   const toolViewMode = useStore($toolViewMode)
   const translucency = useStore($translucency)
   const profiles = useStore($profiles)
+  const profileBranding = useStore($profileBrandingEnabled)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
 
@@ -212,6 +242,22 @@ export function AppearanceSettings() {
           />
 
           <ListRow
+            action={
+              <div className="flex items-center justify-end">
+                <Switch
+                  checked={profileBranding}
+                  onCheckedChange={value => {
+                    triggerHaptic('crisp')
+                    void updateProfileBranding(value)
+                  }}
+                />
+              </div>
+            }
+            description="Use your active profile's custom name in welcome screens and chat placeholders."
+            title="Personalize Agent Name"
+          />
+
+          <ListRow
             below={
               <>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -229,6 +275,7 @@ export function AppearanceSettings() {
                           onClick={() => {
                             triggerHaptic('crisp')
                             setTheme(theme.name)
+                            void updateBackendTheme(theme.name)
                           }}
                           type="button"
                         >
@@ -260,6 +307,7 @@ export function AppearanceSettings() {
                               // Re-normalize off the now-missing skin → default.
                               if (active) {
                                 setTheme(theme.name)
+                                void updateBackendTheme(theme.name)
                               }
                             }}
                             title={a.removeTheme}

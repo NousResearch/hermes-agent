@@ -84,7 +84,7 @@ function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
   const midground = seed.colors.midground ?? accent
 
   return {
-    background: '#ffffff',
+    background: mix('#ffffff', accent, 0.05),
     foreground: '#161616',
     card: '#ffffff',
     cardForeground: '#161616',
@@ -105,7 +105,7 @@ function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
     midgroundForeground: readableOn(midground),
     destructive: '#b94a3a',
     destructiveForeground: '#ffffff',
-    sidebarBackground: mix('#fafafa', accent, 0.05),
+    sidebarBackground: mix('#ffffff', accent, 0.15),
     sidebarBorder: border,
     userBubble: soft,
     userBubbleBorder: border

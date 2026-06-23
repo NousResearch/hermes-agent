@@ -62,6 +62,12 @@ import {
 import { $statusItemsBySession } from '@/store/composer-status'
 import { $previewStatusBySession } from '@/store/preview-status'
 import { notify } from '@/store/notifications'
+import {
+  $activeGatewayProfile,
+  $profileBrandingEnabled,
+  getDesktopProfileIdentity,
+  normalizeProfileKey
+} from '@/store/profile'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
@@ -303,6 +309,8 @@ export function ChatBar({
 
   const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
+  const activeProfile = useStore($activeGatewayProfile)
+  const profileBranding = useStore($profileBrandingEnabled)
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
   const reconnecting = gatewayState === 'closed' || gatewayState === 'error'
@@ -337,16 +345,22 @@ export function ChatBar({
     setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
   }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
 
+  const activeProfileKey = normalizeProfileKey(activeProfile)
+  const identity = getDesktopProfileIdentity(activeProfileKey)
+  const profileTitle = profileBranding && identity.title !== 'Default' ? identity.title : 'Hermes'
+
   // When the transport is disabled it's because the gateway isn't open.
   // Distinguish a cold start ("Starting Hermes...") from a dropped connection
   // we're trying to restore. During reconnect, keep the textbox editable so a
   // flaky network doesn't block drafting; only submit/backend actions stay
   // disabled until the gateway is open again.
-  const placeholder = disabled
+  const rawPlaceholder = disabled
     ? reconnecting
       ? t.composer.placeholderReconnecting
       : t.composer.placeholderStarting
     : restingPlaceholder
+
+  const placeholder = rawPlaceholder.replace(/\bHermes\b/g, profileTitle)
 
   const focusInput = useCallback(() => {
     focusComposerInput(editorRef.current)
@@ -785,8 +799,7 @@ export function ChatBar({
   // Suppress the "No matches" empty state once a slash command is past its name:
   // a no-arg command has nothing to offer, and a fully-typed arg commits on
   // Space/Tab — neither should dead-end on a popover.
-  const argStageEmpty =
-    trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !triggerItems.length
+  const argStageEmpty = trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !triggerItems.length
 
   const closeTrigger = () => {
     setTrigger(null)
@@ -813,7 +826,14 @@ export function ChatBar({
       id: text,
       type: 'slash',
       label: text.slice(1),
-      metadata: { command: slashCommandToken(trigger.query), display: text, meta: '', group: '', action: '', rawText: text }
+      metadata: {
+        command: slashCommandToken(trigger.query),
+        display: text,
+        meta: '',
+        group: '',
+        action: '',
+        rawText: text
+      }
     })
   }
 
@@ -953,10 +973,7 @@ export function ChatBar({
 
     // Non-collapsed Backspace/Delete: native selection-delete is ~O(n²) on large
     // drafts (Ctrl+A → Delete froze ~1.3s). Collapsed carets fall through.
-    if (
-      (event.key === 'Backspace' || event.key === 'Delete') &&
-      deleteSelectionInEditor(event.currentTarget)
-    ) {
+    if ((event.key === 'Backspace' || event.key === 'Delete') && deleteSelectionInEditor(event.currentTarget)) {
       event.preventDefault()
       flushEditorToDraft(event.currentTarget)
 
@@ -2072,7 +2089,9 @@ export function ChatBar({
               <div
                 className={cn(
                   'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
-                  scrolledUp ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer-surface:opacity-100' : 'opacity-100'
+                  scrolledUp
+                    ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer-surface:opacity-100'
+                    : 'opacity-100'
                 )}
                 data-slot="composer-fade"
               >

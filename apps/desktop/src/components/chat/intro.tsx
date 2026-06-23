@@ -1,4 +1,12 @@
+import { useStore } from '@nanostores/react'
 import { type CSSProperties, useState } from 'react'
+
+import {
+  $activeGatewayProfile,
+  $profileBrandingEnabled,
+  getDesktopProfileIdentity,
+  normalizeProfileKey
+} from '@/store/profile'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
 
@@ -13,6 +21,7 @@ type IntroCopyRecord = IntroCopy & {
 
 export type IntroProps = {
   personality?: string
+  profileName?: string
   seed?: number
 }
 
@@ -28,7 +37,7 @@ const FALLBACK_COPY: IntroCopy[] = [
     body: "Bring the code, question, or stuck part. I'll read the room before making changes."
   },
   {
-    headline: 'What should Hermes look at?',
+    headline: 'What should we look at?',
     body: "Send the task, failing path, or half-formed plan. I'll help turn it into action."
   },
   {
@@ -120,7 +129,7 @@ function fallbackCopyForPersonality(personalityKey: string): IntroCopy[] {
       body: "Send the task, file, or rough idea. I'll use your configured voice and keep the work grounded in this repo."
     },
     {
-      headline: `What does ${label} Hermes need to see?`,
+      headline: `What does ${label} need to see?`,
       body: "Bring the context or the stuck part. I'll adapt to your configured personality."
     },
     {
@@ -128,7 +137,7 @@ function fallbackCopyForPersonality(personalityKey: string): IntroCopy[] {
       body: "Send the problem, file, or idea. I'll follow the personality you've configured."
     },
     {
-      headline: `What should ${label} Hermes tackle?`,
+      headline: `What should ${label} tackle?`,
       body: "Drop the task here. I'll keep the work grounded in the repo."
     },
     {
@@ -142,7 +151,20 @@ function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
   return copies[Math.abs(seed) % copies.length] || FALLBACK_COPY[0]
 }
 
-const WORDMARK = 'HERMES AGENT'
+const DEFAULT_WORDMARK = 'HERMES AGENT'
+
+function profileWordmark(profileKey: string): string {
+  const identity = getDesktopProfileIdentity(profileKey)
+  const title = identity.title.toUpperCase()
+
+  // Named production profiles get "<NAME> AGENT"; the default/unknown keep
+  // the generic "HERMES AGENT" wordmark so nothing looks broken.
+  if (profileKey === 'default' || title === 'DEFAULT') {
+    return DEFAULT_WORDMARK
+  }
+
+  return `${title} AGENT`
+}
 
 function resolveCopy(personality?: string, seed?: number): IntroCopy {
   const personalityKey = normalizeKey(personality)
@@ -154,7 +176,11 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
   return pickCopy(copies, seed)
 }
 
-export function Intro({ personality, seed }: IntroProps) {
+export function Intro({ personality, profileName, seed }: IntroProps) {
+  const activeProfile = useStore($activeGatewayProfile)
+  const profileBranding = useStore($profileBrandingEnabled)
+  const profileKey = normalizeProfileKey(profileName ?? activeProfile)
+  const wordmark = profileBranding ? profileWordmark(profileKey) : DEFAULT_WORDMARK
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
   const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
 
@@ -165,14 +191,14 @@ export function Intro({ personality, seed }: IntroProps) {
     >
       <div className="w-full min-w-0">
         <p
-          aria-label={WORDMARK}
+          aria-label={wordmark}
           className="fit-text mx-auto mb-1 w-[calc(100%-1rem)] font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
           style={{ '--fit-min': '2.75rem' } as CSSProperties}
         >
           <span>
-            <span>{WORDMARK}</span>
+            <span>{wordmark}</span>
           </span>
-          <span aria-hidden="true">{WORDMARK}</span>
+          <span aria-hidden="true">{wordmark}</span>
         </p>
 
         <p className="m-0 text-center leading-normal tracking-tight">{copy.body}</p>

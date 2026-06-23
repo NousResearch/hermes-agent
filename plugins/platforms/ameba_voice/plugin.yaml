@@ -1,0 +1,33 @@
+name: voice-device-platform
+label: Voice Device
+kind: platform
+version: 0.1.0
+description: >
+  WebSocket gateway adapter for embedded voice devices (Realtek Ameba, etc.).
+  Each connected device is treated as a chat. The adapter receives PCM/WAV
+  audio over a WebSocket binary stream, hands it to the gateway as a
+  MessageType.VOICE event so the standard run.py auto-transcribes it,
+  then streams the agent's TTS reply back as binary chunks.
+author: Hermes / Ameba integration
+requires_env:
+  - name: VOICE_DEVICE_PORT
+    description: "TCP port the voice WebSocket server listens on (e.g. 8080)"
+    prompt: "Port"
+    password: false
+optional_env:
+  - name: VOICE_DEVICE_HOST
+    description: "Bind address (default 0.0.0.0)"
+    prompt: "Bind host"
+    password: false
+  - name: VOICE_DEVICE_PATH
+    description: "WebSocket path (default /v1/voice/ws)"
+    prompt: "WS path"
+    password: false
+  - name: VOICE_DEVICE_ALLOWED_DEVICES
+    description: "Comma-separated device_id allowlist (empty = deny all unless ALLOW_ALL)"
+    prompt: "Allowed device IDs (comma-separated)"
+    password: false
+  - name: VOICE_DEVICE_ALLOW_ALL
+    description: "Allow any device_id to connect (dev only). 1/true/yes to enable"
+    prompt: "Allow all devices?"
+    password: false

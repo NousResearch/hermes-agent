@@ -454,6 +454,31 @@ def _upsert_skill(conn: sqlite3.Connection, name: str, path: Path, now: float) -
             (term_text, name, strength, source),
         )
 
+    # Hook: run optional index_hook.py in the skill directory.
+    # The hook receives (conn, skill_dir_path, skill_name, info, content) and
+    # can either write directly to conn (old style) or return a dict with
+    #       "terms": [(term, strength, source), ...}
+    # for skill-graph to index centrally.
+    _hook_path = path.parent / "index_hook.py"
+    if _hook_path.is_file():
+        try:
+            import importlib.util as _iu
+            _spec = _iu.spec_from_file_location(f"_graph_hook_{name}", str(_hook_path))
+            if _spec and _spec.loader:
+                _mod = _iu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                if hasattr(_mod, "on_graph_index"):
+                    _hook_content = path.read_text(encoding="utf-8", errors="replace")
+                    _result = _mod.on_graph_index(conn, path.parent, name, info, _hook_content)
+                    if isinstance(_result, dict):
+                        for _t, _s, _src in _result.get("terms", []):
+                            conn.execute(
+                                "INSERT OR IGNORE INTO skill_terms (term, skill_name, strength, source) VALUES (?, ?, ?, ?)",
+                                (_t.lower(), name, _s, _src),
+                            )
+        except Exception:
+            logger.exception("skill-graph: index_hook failed for '%s'", name)
+
     return info
 
 
@@ -653,7 +678,9 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
             }
             expansion_queue.append(target)
 
-    # Phase 3: Tag match (existing)
+    # Phase 3: Tag match (existing) — uses its own dedup set so it doesn't
+    # block Phase 4 from finding higher-scoring term matches.
+    _tag_seen: set[str] = set()
     terms = _extract_terms(query)
     for term in terms:
         cursor = conn.execute(
@@ -661,8 +688,8 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
             (json.dumps(term),),
         )
         for row in cursor:
-            if row["name"] not in seen:
-                seen.add(row["name"])
+            if row["name"] not in _tag_seen:
+                _tag_seen.add(row["name"])
                 info = _get_node_info(conn, row["name"])
                 if info:
                     info["relevance"] = "tag_match"
@@ -695,6 +722,16 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
             )
         for row in cursor:
             sname = row["skill_name"]
+            _term_score = 0.8 * row["strength"]
+            if sname in results:
+                # Don't overwrite — take the higher score
+                if results[sname]["score"] < _term_score:
+                    results[sname]["score"] = _term_score
+                    results[sname]["relevance"] = "term_match"
+                    results[sname]["relationship_chain"] = [
+                        f"term[{term}] → {sname} (strength={row['strength']}, source={row['source']})"
+                    ]
+                continue
             seen.add(sname)
             results[sname] = {
                 "name": sname,
@@ -941,7 +978,7 @@ def _format_terms(skill_name: str) -> str:
         return ""
 
 
-def _handle_slash_command(args: str) -> str | None:
+def _handle_slash_command(args: str) -> str | dict | None:
     parts = args.strip().split(None, 1) if args.strip() else []
     subcmd = parts[0].lower() if parts else "help"
     rest = parts[1] if len(parts) > 1 else ""
@@ -956,22 +993,47 @@ def _handle_slash_command(args: str) -> str | None:
             logger.exception("skill-graph: rebuild failed")
             return f"Rebuild failed: {e}"
 
-    elif subcmd == "load":
-        """Load a skill and return its content (agent-facing)."""
+    elif subcmd == "exec":
+        """Load a skill and execute it immediately in the conversation."""
         if not rest:
-            return "Usage: /skill-graph load <skill-name>"
+            return "Usage: /skill-graph exec <skill-name> [args...]"
+        try:
+            parts = rest.strip().split(None, 1)
+            skill_name = parts[0]
+            skill_args = parts[1] if len(parts) > 1 else ""
+            result = _handle_skill_load({"name": skill_name})
+            data = json.loads(result)
+            if not data.get("success"):
+                return f"Not found: {skill_name}"
+            content = data.get("content", "")
+            inject_content = f"[Executing skill: {skill_name}]\n\n{content}"
+            if skill_args:
+                inject_content += f"\n\n---\n{skill_args}"
+            return {
+                "action": "inject",
+                "content": inject_content,
+            }
+        except Exception as e:
+            return f"Exec failed: {e}"
+
+    elif subcmd == "show":
+        """Show full skill content (preview only, no injection)."""
+        if not rest:
+            return "Usage: /skill-graph show <skill-name>"
         try:
             result = _handle_skill_load({"name": rest})
             data = json.loads(result)
             if not data.get("success"):
                 return f"Not found: {rest}"
-            content_chars = len(data.get("content", ""))
+            content = data.get("content", "")
             return (
-                f"Loaded: {data['name']} ({content_chars} chars)\n"
-                f"{data.get('content', '')[:300]}..."
+                f"Skill: {data['name']} ({len(content)} chars)\n"
+                f"  Description: {data.get('description', '')}\n"
+                f"  Category:    {data.get('category', '')}\n"
+                f"\n{content[:2000]}"
             )
         except Exception as e:
-            return f"Load failed: {e}"
+            return f"Show failed: {e}"
 
     elif subcmd == "info":
         """Show skill metadata only."""
@@ -1138,7 +1200,7 @@ def _handle_slash_command(args: str) -> str | None:
             return f"Score breakdown failed: {e}"
 
     else:
-        # Unknown command — try proxying to a skill in the graph
+        # Unknown command — try loading the skill into the conversation
         if subcmd:
             try:
                 conn = _ensure_graph()
@@ -1150,24 +1212,21 @@ def _handle_slash_command(args: str) -> str | None:
                     _data = json.loads(_result)
                     if _data.get("success"):
                         _content = _data.get("content", "")
-                        return (
-                            f"Loaded skill: {subcmd}\n"
-                            f"  Description: {_data.get('description', '')}\n"
-                            f"  Category:    {_data.get('category', '')}\n"
-                            f"  Content ({len(_content)} chars):\n"
-                            f"{_content[:500]}\n"
-                            f"...\n"
-                            f"(Use /sg info {subcmd} for metadata, "
-                            f"/sg terms {subcmd} for term details)"
+                        _inject_text = (
+                            f"[Skill: {subcmd}]\n\n{_content}"
                         )
+                        if rest:
+                            _inject_text += f"\n\n---\n{rest}"
+                        return {"action": "inject", "content": _inject_text}
             except Exception:
                 pass
         return (
             "/skill-graph — Skill knowledge graph\n\n"
             "Subcommands:\n"
             "  /skill-graph search <query>   Search skills by intent\n"
-            "  /skill-graph load <name>      Load skill content (for agent use)\n"
+            "  /skill-graph exec <name>      Execute skill immediately in conversation\n"
             "  /skill-graph info <name>      Show skill metadata\n"
+            "  /skill-graph show <name>      Show full skill content (preview)\n"
             "  /skill-graph terms <name>     Show term associations with stats\n"
             "  /skill-graph score <query>    Show scoring breakdown with term stats\n"
             "  /skill-graph list             List all skills in graph\n"
@@ -1433,9 +1492,15 @@ def register(ctx):
     ctx.register_hook("on_session_start", _on_session_start)
 
     # ── Register proxy commands from graph-discovered skills ──
+    _main_skills_dir = str((Path.home() / ".hermes" / "skills").resolve())
+
     def _register_graph_commands():
         """Scan all skills' SKILL.md frontmatter for commands: and register proxy handlers.
-        Also registers /<skill_name> for every skill in the graph.
+        Registers /<skill_name> only for skills OUTSIDE the main skills directory
+        (i.e. external source_dirs) — Hermes already handles native /<skill-name>
+        dispatch for skills in ~/.hermes/skills/ natively, and plugin-registered
+        commands take priority over the native handler, which would break loading
+        skills as instructions.
         """
         try:
             skill_dirs = _find_all_skills_dirs()
@@ -1443,14 +1508,20 @@ def register(ctx):
             deduped = _dedup_skills(skills)
             _registered = 0
             for _name, _path in deduped.items():
-                # Register /<skill_name> for every skill
-                ctx.register_command(
-                    name=_name,
-                    handler=_make_proxy(_name),
-                    description=f"Proxy to graph-discovered skill: {_name}",
-                )
-                _registered += 1
-                # Also register any explicit commands: from frontmatter
+                _path_str = str(_path.resolve())
+                _is_in_main_dir = _path_str.startswith(_main_skills_dir)
+                # Register /<skill_name> ONLY for skills outside the main skills dir.
+                # Skills in ~/.hermes/skills/ are already handled natively by Hermes'
+                # scan_skill_commands() — a plugin proxy would block the native handler
+                # that loads SKILL.md as instructions and continues the conversation.
+                if not _is_in_main_dir:
+                    ctx.register_command(
+                        name=_name,
+                        handler=_make_proxy(_name),
+                        description=f"Proxy to graph-discovered skill: {_name}",
+                    )
+                    _registered += 1
+                # Register any explicit commands: from frontmatter for ALL skills
                 try:
                     _text = _path.read_text(encoding="utf-8", errors="replace")
                     _text = _text.lstrip("\ufeff")
@@ -1477,22 +1548,24 @@ def register(ctx):
                 logger.info("skill-graph: registered %d proxy slash commands from graph skills", _registered)
         except Exception:
             logger.exception("skill-graph: failed to register proxy commands")
+            logger.exception("skill-graph: failed to register proxy commands")
 
     def _make_proxy(skill_name: str):
-        """Create a proxy handler that loads the given skill."""
-        def _proxy(_args: str) -> str | None:
+        """Create a proxy handler that injects the skill into the conversation."""
+        def _proxy(_args: str) -> dict | None:
             try:
                 _result = _handle_skill_load({"name": skill_name})
                 _data = json.loads(_result)
                 if _data.get("success"):
                     _content = _data.get("content", "")
-                    return (
-                        f"Loaded skill: {skill_name}\n"
-                        f"  Description: {_data.get('description', '')}\n"
-                        f"  Category:    {_data.get('category', '')}\n"
-                        f"  Content ({len(_content)} chars):\n"
-                        f"{_content[:500]}\n..."
+                    _user_args = _args.strip()
+                    _inject = (
+                        f"[Executing skill: {skill_name}]\n\n"
+                        f"{_content}\n"
                     )
+                    if _user_args:
+                        _inject += f"\n---\n{_user_args}"
+                    return {"action": "inject", "content": _inject}
             except Exception:
                 pass
             return None

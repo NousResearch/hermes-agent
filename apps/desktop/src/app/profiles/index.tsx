@@ -1,6 +1,7 @@
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { useStore } from '@nanostores/react'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import {
@@ -25,9 +26,10 @@ import {
   updateProfileSoul
 } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
+import { AlertTriangle, LogIn, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, normalizeProfileKey, selectProfile } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
@@ -51,6 +53,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
   const [deleting, setDeleting] = useState(false)
+  const gatewayProfile = useStore($activeGatewayProfile)
 
   const refresh = useCallback(async () => {
     try {
@@ -163,8 +166,13 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
             {selected ? (
               <ProfileDetail
                 key={selected.name}
+                isActive={normalizeProfileKey(selected.name) === normalizeProfileKey(gatewayProfile)}
                 onDelete={() => setPendingDelete(selected)}
                 onRename={newName => handleRename(selected.name, newName)}
+                onSwitch={() => {
+                  selectProfile(selected.name)
+                  onClose()
+                }}
                 profile={selected}
               />
             ) : (
@@ -242,12 +250,16 @@ function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: 
 }
 
 function ProfileDetail({
+  isActive,
   onDelete,
   onRename,
+  onSwitch,
   profile
 }: {
+  isActive: boolean
   onDelete: () => void
   onRename: (newName: string) => Promise<void>
+  onSwitch: () => void
   profile: ProfileInfo
 }) {
   const { t } = useI18n()
@@ -294,6 +306,12 @@ function ProfileDetail({
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-1">
+                {!isActive && (
+                  <Button onClick={onSwitch} size="sm">
+                    <LogIn />
+                    {p.switchToProfile(profile.name)}
+                  </Button>
+                )}
                 {!profile.is_default && (
                   <Button onClick={() => setRenameOpen(true)} size="sm" variant="outline">
                     <Pencil />

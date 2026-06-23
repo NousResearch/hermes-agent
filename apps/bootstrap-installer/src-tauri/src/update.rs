@@ -31,6 +31,7 @@ use anyhow::{anyhow, Result};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::time::timeout;
 
 use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
 
@@ -672,13 +673,35 @@ async fn run_streamed(
                 Ok(None) => {}
                 Err(e) => { tracing::warn!("stderr read error: {e}"); }
             },
+            // On Windows, grandchild processes (e.g. npm → electron-builder) inherit
+            // the stdout pipe handle and keep it open after the main child exits,
+            // preventing EOF and stalling the loop forever. Break as soon as the
+            // immediate child exits. (#51127)
+            _ = child.wait() => break,
         }
     }
-    while let Ok(Some(l)) = out.next_line().await {
-        emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l);
+    // Drain any lines buffered since the loop exited. On Windows, grandchildren
+    // may still hold the pipe open so wrap with a short timeout to avoid
+    // re-introducing the hang.
+    #[cfg(target_os = "windows")]
+    {
+        let _ = timeout(Duration::from_millis(300), async {
+            while let Ok(Some(l)) = out.next_line().await {
+                emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l);
+            }
+            while let Ok(Some(l)) = err.next_line().await {
+                emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l);
+            }
+        }).await;
     }
-    while let Ok(Some(l)) = err.next_line().await {
-        emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l);
+    #[cfg(not(target_os = "windows"))]
+    {
+        while let Ok(Some(l)) = out.next_line().await {
+            emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l);
+        }
+        while let Ok(Some(l)) = err.next_line().await {
+            emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l);
+        }
     }
 
     let status = child.wait().await.map_err(|e| anyhow!("waiting for child: {e}"))?;

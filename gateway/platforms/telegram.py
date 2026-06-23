@@ -2745,9 +2745,24 @@ class TelegramAdapter(BasePlatformAdapter):
             if rich_result is not None:
                 return rich_result
 
-        # Pre-flight: if content already exceeds the limit, split-and-deliver
-        # without round-tripping a doomed edit.
+        # Pre-flight: if an in-progress streaming edit grows past Telegram's
+        # 4,096 UTF-16 unit limit, do NOT split it into continuation messages
+        # yet.  Mid-stream overflow continuations are especially prone to Bot
+        # API flood control; if one lands and a later one fails, the stream
+        # consumer has to recover from a partially-visible answer and can
+        # duplicate chunks.  Instead, freeze the current preview and let the
+        # stream consumer send the missing tail once at finalization time.
+        # Final edits still use the overflow splitter below so non-streaming
+        # / completed answers can be delivered in chunks.
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
+            if not finalize:
+                return SendResult(
+                    success=False,
+                    message_id=message_id,
+                    error="stream_overflow_deferred",
+                    retryable=False,
+                    raw_response={"stream_overflow_deferred": True},
+                )
             return await self._edit_overflow_split(
                 chat_id, message_id, content, finalize=finalize, metadata=metadata,
             )

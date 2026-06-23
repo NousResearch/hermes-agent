@@ -24,8 +24,34 @@ def telegram_adapter() -> TelegramAdapter:
 
 
 @pytest.mark.asyncio
+async def test_streaming_overflow_edit_is_deferred_until_final(telegram_adapter):
+    """Mid-stream Telegram overflow must not emit continuation chunks.
+
+    Streaming previews can grow past Telegram's edit limit before the final
+    answer is available. Splitting at that point can leave a partial answer on
+    screen if Telegram flood-controls continuation sends. The adapter should
+    report a failed/deferred edit so the stream consumer freezes the preview and
+    sends the missing tail once on finalization.
+    """
+    content = "word " * 120
+    telegram_adapter._bot.edit_message_text = AsyncMock(return_value=True)
+    telegram_adapter._bot.send_message = AsyncMock(return_value=_message(202))
+
+    result = await telegram_adapter.edit_message(
+        "12345", "201", content, finalize=False, metadata={"thread_id": "77"}
+    )
+
+    assert result.success is False
+    assert result.message_id == "201"
+    assert result.error == "stream_overflow_deferred"
+    assert result.raw_response == {"stream_overflow_deferred": True}
+    telegram_adapter._bot.edit_message_text.assert_not_awaited()
+    telegram_adapter._bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_edit_overflow_split_reports_success_when_all_continuations_land(telegram_adapter):
-    """Complete overflow delivery keeps the existing successful contract."""
+    """Complete final overflow delivery keeps the existing successful contract."""
     content = "word " * 120
     telegram_adapter._bot.edit_message_text = AsyncMock(return_value=True)
     telegram_adapter._bot.send_message = AsyncMock(

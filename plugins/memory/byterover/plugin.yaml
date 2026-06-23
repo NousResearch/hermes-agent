@@ -1,9 +1,7 @@
 name: byterover
-version: 1.0.0
-description: "ByteRover — persistent knowledge tree with tiered retrieval via the brv CLI."
+version: 4.0.0
+description: "ByteRover — persistent knowledge tree backed by ByteRover V4 (.mjs scripts). Recall via prefetch(), curate via the brv_record agent tool."
 external_dependencies:
-  - name: brv
-    install: "curl -fsSL https://byterover.dev/install.sh | sh"
-    check: "brv --version"
-hooks:
-  - on_pre_compress
+  - name: node
+    install: "https://nodejs.org/  (any modern Node.js — needed to run the bundled .mjs scripts)"
+    check: "node --version"

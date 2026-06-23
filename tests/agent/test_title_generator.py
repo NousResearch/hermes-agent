@@ -171,6 +171,23 @@ class TestAutoTitleSession:
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_called_once_with("sess-1", "New Title")
 
+    def test_does_not_overwrite_title_set_while_generation_was_in_flight(self):
+        db = MagicMock()
+        db.get_session_title.side_effect = [None, "Manual Title"]
+        seen = []
+
+        with patch("agent.title_generator.generate_title", return_value="Auto Title"):
+            auto_title_session(
+                db,
+                "sess-1",
+                "hi",
+                "hello",
+                title_callback=seen.append,
+            )
+
+        db.set_session_title.assert_not_called()
+        assert seen == []
+
     def test_invokes_title_callback_after_setting_title(self):
         db = MagicMock()
         db.get_session_title.return_value = None

@@ -1251,6 +1251,12 @@ def check_dangerous_command(command: str, env_type: str,
     if not is_dangerous:
         return {"approved": True, "message": None}
 
+    # Check glob-based allowlist BEFORE pattern-key lookup.
+    # command_allowlist entries like "python3 << *" are glob patterns, not pattern keys.
+    with _lock:
+        if any(fnmatch.fnmatch(command, p) for p in _permanent_approved):
+            return {"approved": True, "message": None}
+
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}

@@ -264,12 +264,32 @@ def _probe_single_server(
         raise ValueError("; ".join(issues))
 
     from tools.mcp_tool import (
+        _MCP_AVAILABLE,
         _ensure_mcp_loop,
         _run_on_mcp_loop,
         _connect_server,
         _stop_mcp_loop_if_idle,
         _parse_boolish,
     )
+
+    # Fail fast with an actionable error message before kicking off the
+    # event loop + connect_server retry path. Without this, the internal
+    # ``_run_stdio`` / ``_run_http`` ImportError gets buried under the
+    # per-attempt retry-backoff loop and the outer 15s tool-call timeout,
+    # surfacing only as ``TimeoutError: MCP call timed out after 15.0s``
+    # to the user — which is what #34220 reported as the headline
+    # ``NameError: name 'StdioServerParameters' is not defined``-shaped
+    # opaque failure. (#34220)
+    if not _MCP_AVAILABLE:
+        raise ImportError(
+            "The 'mcp' Python SDK is required for 'hermes mcp' commands but "
+            "is not installed. Install with:\n"
+            "  pip install 'hermes-agent[mcp]'\n"
+            "or, for pipx installs:\n"
+            "  pipx inject hermes-agent mcp\n"
+            "or, for the full install:\n"
+            "  pip install 'hermes-agent[all]'"
+        )
 
     config = _resolve_mcp_server_config(config)
     if connect_timeout is None:

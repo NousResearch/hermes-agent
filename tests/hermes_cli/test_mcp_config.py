@@ -1011,3 +1011,30 @@ class TestMcpReauth:
         cmd_mcp_reauth(_make_args(name="ghost", all=False))
         out = capsys.readouterr().out
         assert "not found" in out
+
+class TestProbeSingleServerMcpMissing:
+    """#34220: fail fast when mcp SDK missing."""
+
+    def test_probe_raises_importerror_fast_when_mcp_missing(self, monkeypatch):
+        from hermes_cli import mcp_config
+        import tools.mcp_tool as mcp_tool
+        monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", False, raising=False)
+        with pytest.raises(ImportError) as exc_info:
+            mcp_config._probe_single_server(
+                "ghost-server",
+                {"command": "echo", "args": ["hi"]},
+                connect_timeout=5,
+            )
+        msg = str(exc_info.value)
+        assert "mcp" in msg.lower()
+        assert "hermes-agent[mcp]" in msg
+
+    def test_probe_actionable_error_mentions_pipx_inject(self, monkeypatch):
+        from hermes_cli import mcp_config
+        import tools.mcp_tool as mcp_tool
+        monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", False, raising=False)
+        with pytest.raises(ImportError) as exc_info:
+            mcp_config._probe_single_server(
+                "ghost-server", {"command": "echo"}, connect_timeout=5
+            )
+        assert "pipx inject" in str(exc_info.value)

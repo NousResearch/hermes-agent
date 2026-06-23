@@ -140,20 +140,17 @@ def test_slash_skill_argument_completes_at_folder_paths(tmp_path, monkeypatch):
     assert "@folder:../readme.md" not in texts
 
 
-def test_builtin_model_completion_still_takes_precedence(monkeypatch):
-    import hermes_cli.model_switch as ms
-    from hermes_cli.model_switch import DirectAlias
-
-    monkeypatch.setattr(
-        ms,
-        "DIRECT_ALIASES",
-        {"gpt-test": DirectAlias(model="gpt-test-model", provider="openai", base_url="")},
-    )
+def test_static_subcommand_completion_still_takes_precedence(monkeypatch, tmp_path):
+    """Built-in subcommand completions should run before path fallback."""
+    (tmp_path / "onboarding").mkdir()
+    monkeypatch.chdir(tmp_path)
 
     completer = SlashCommandCompleter()
-    text = "/model gpt"
+    text = "/voice o"
 
     completions = list(completer.get_completions(Document(text, cursor_position=len(text)), None))
     texts = [c.text for c in completions]
 
-    assert "gpt-test" in texts
+    assert "on" in texts
+    assert "onboarding/" not in texts
+

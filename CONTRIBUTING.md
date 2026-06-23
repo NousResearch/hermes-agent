@@ -848,7 +848,7 @@ that touches the OS, assume *any* platform can hit your code path.
 Tests that use POSIX-only syscalls need a skip marker. Common ones:
 - Symlinks → `@pytest.mark.skipif(sys.platform == "win32", ...)`
 - `0o600` file modes → `@pytest.mark.skipif(sys.platform.startswith("win"), ...)`
-- `signal.SIGALRM` → Unix-only (see `tests/conftest.py::_enforce_test_timeout`)
+- `signal.SIGALRM` → Unix-only (see `tests/conftest.py::pytest_configure`)
 - `os.setsid` / `os.fork` → Unix-only
 - Live Winsock / Windows-specific regression tests →
   `@pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific regression")`

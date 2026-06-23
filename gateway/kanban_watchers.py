@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 import sqlite3
 import time
 from pathlib import Path
@@ -107,6 +108,30 @@ def _release_singleton_lock(handle) -> None:
         pass
 
 
+def _release_dispatcher_lock_with_meta(handle, lock_path):
+    """Release the dispatcher lock AND clean up the sidecar JSON.
+
+    Companion to the sidecar-write logic in
+    :meth:`GatewayKanbanWatchersMixin._kanban_dispatcher_watcher`. A
+    clean dispatcher shutdown MUST remove ``.dispatcher.lock.meta``
+    so a future `hermes gateway health` invocation doesn't see a
+    stale sidecar pointing at this (now-dead) PID.
+
+    Sidecar removal is best-effort: the OS-level lock is the
+    authoritative liveness signal, and a leftover sidecar is a
+    recoverable false positive (the health check will see
+    ``dispatcher_alive=false`` because the PID is gone).
+    """
+    _release_singleton_lock(handle)
+    if lock_path is None:
+        return
+    try:
+        from hermes_cli import gateway_health as _gh
+        _gh.remove_lock_meta(meta_path=lock_path.with_name(lock_path.name + ".meta"))
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -128,19 +153,46 @@ class GatewayKanbanWatchersMixin:
         tick. Subscriptions live inside each board's own DB and cannot
         cross boards, so delivery semantics are unchanged — this is
         purely a fan-out of the single-DB poll.
+
+        **AP-4028 / BC-9 migration note:** prior to this change the
+        notifier only ran on the dispatcher-owning gateway (the loop
+        piggy-backed on ``kanban.dispatch_in_gateway`` and the matching
+        env override ``HERMES_KANBAN_DISPATCH_IN_GATEWAY``). That
+        conflated dispatching with notifying and produced a silent
+        single-point-of-failure for ship reports: when the failover
+        script picked a bot-less dispatcher host (spec-writer,
+        fleet-coach, etc.), the notifier never started and operator
+        notifications stopped. The gate is now decoupled — the notifier
+        runs on **every** gateway that has at least one matching
+        platform adapter connected. Routing between gateways is handled
+        by the per-subscription ``notifier_profile`` column: a row whose
+        ``notifier_profile`` matches the active profile is delivered by
+        that gateway, and only that gateway. This is a strictly more
+        permissive default; operators who want the legacy dispatcher-only
+        behaviour can opt out via ``kanban.notifier_in_gateway: false``
+        or ``HERMES_KANBAN_NOTIFIER_IN_GATEWAY=0`` in the gateway's
+        environment. The dispatcher-gate (``dispatch_in_gateway`` /
+        ``HERMES_KANBAN_DISPATCH_IN_GATEWAY``) is unchanged.
         """
-        # Gate: only the dispatch-owning gateway opens kanban DBs for notifier polling.
-        # Non-dispatch gateways have no subscriptions to deliver — all kanban state lives
-        # in the dispatch owner's per-board DBs. This prevents N-gateway -shm contention.
-        # TODO: gate per-board when per-board dispatcher_owner tracking lands.
+        # Gate (AP-4028): the notifier is no longer a side-effect of the
+        # dispatcher's singleton lock. It runs on every gateway that has
+        # not been explicitly opted out, so ship reports reach the operator
+        # regardless of which host currently holds the dispatcher lock.
+        # The dispatcher-gate (config flag + matching env var) remains the
+        # source of truth for dispatching work — this gate is for the
+        # notifier only.
         try:
             from hermes_cli.config import load_config as _load_config
         except Exception:
             logger.warning("kanban notifier: config loader unavailable; disabled")
             return
-        env_override = os.environ.get("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "").strip().lower()
+        env_override = os.environ.get(
+            "HERMES_KANBAN_NOTIFIER_IN_GATEWAY", ""
+        ).strip().lower()
         if env_override in {"0", "false", "no", "off"}:
-            logger.info("kanban notifier: disabled via HERMES_KANBAN_DISPATCH_IN_GATEWAY env")
+            logger.info(
+                "kanban notifier: disabled via HERMES_KANBAN_NOTIFIER_IN_GATEWAY env"
+            )
             return
         try:
             cfg = _load_config()
@@ -148,9 +200,9 @@ class GatewayKanbanWatchersMixin:
             logger.warning("kanban notifier: cannot load config (%s); disabled", exc)
             return
         kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-        if not kanban_cfg.get("dispatch_in_gateway", True):
+        if not kanban_cfg.get("notifier_in_gateway", True):
             logger.info(
-                "kanban notifier: disabled via config kanban.dispatch_in_gateway=false"
+                "kanban notifier: disabled via config kanban.notifier_in_gateway=false"
             )
             return
         from gateway.config import Platform as _Platform
@@ -290,6 +342,23 @@ class GatewayKanbanWatchersMixin:
                     return deliveries
 
                 deliveries = await asyncio.to_thread(_collect)
+                # AP-4028: per-tick observability log so operators can see
+                # the notifier is alive on this gateway and which profile +
+                # platforms it would deliver to. Promoted from debug to info
+                # because the bug being fixed was *silence* — operators had
+                # no way to tell whether the notifier was running, only
+                # that ship reports weren't arriving. Format kept compact
+                # so a 5s tick cadence doesn't drown the gateway log.
+                _adapter_names = sorted(
+                    getattr(platform, "value", str(platform)).lower()
+                    for platform in self.adapters.keys()
+                )
+                logger.info(
+                    "kanban notifier: tick profile=%s adapters=[%s] subs=%d",
+                    notifier_profile,
+                    ",".join(_adapter_names) or "<none>",
+                    len(deliveries),
+                )
                 for d in deliveries:
                     sub = d["sub"]
                     task = d["task"]
@@ -698,6 +767,7 @@ class GatewayKanbanWatchersMixin:
         # index pages. The lock lives at the machine-global kanban root
         # (shared across profiles by design), so it serialises ALL gateways.
         self._kanban_dispatcher_lock_handle = None
+        self._kanban_dispatcher_lock_path = None
         _lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
         _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
         if _lock_state == "contended":
@@ -708,7 +778,34 @@ class GatewayKanbanWatchersMixin:
             return
         if _lock_state == "held":
             self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
+            self._kanban_dispatcher_lock_path = _lock_path
             logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
+            # Write the lock sidecar so `hermes gateway health` can
+            # report pid / host / acquired_at. Best-effort: a failed
+            # write logs a warning but never blocks dispatch — the
+            # OS-level fcntl/msvcrt lock is the source of truth, and
+            # the health probe surfaces a missing sidecar as
+            # dispatcher_pid=None rather than failing outright. See
+            # hermes_cli/gateway_health.py for the schema.
+            try:
+                from hermes_cli import gateway_health as _gh
+                _meta_path = _gh.write_lock_meta(
+                    pid=os.getpid(),
+                    host=socket.gethostname(),
+                    acquired_at=int(time.time()),
+                    meta_path=_lock_path.with_name(_lock_path.name + ".meta"),
+                )
+                if _meta_path is None:
+                    logger.warning(
+                        "kanban dispatcher: failed to write lock sidecar at %s; "
+                        "`hermes gateway health` will report dispatcher_pid=None",
+                        _lock_path.with_name(_lock_path.name + ".meta"),
+                    )
+            except Exception as _meta_exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "kanban dispatcher: lock sidecar write raised %r; "
+                    "continuing without it", _meta_exc,
+                )
         else:
             logger.warning(
                 "kanban dispatcher: advisory lock unavailable at %s; proceeding "
@@ -1149,6 +1246,53 @@ class GatewayKanbanWatchersMixin:
                             res.promoted,
                             len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
                         )
+                # Per-tick heartbeat event for `hermes gateway health`
+                # (`tick_age_seconds`). One row per board per tick —
+                # ~120 rows/hour for a 30s dispatcher interval. Cheap
+                # relative to the existing respawn_guarded event volume
+                # (which is per-ready-card-per-tick).
+                #
+                # task_id is set to the sentinel "_dispatcher" because
+                # the task_events.task_id column is NOT NULL and SQLite
+                # ALTER TABLE can't relax NOT NULL in-place — adding a
+                # nullable column is fine but converting an existing
+                # column requires a table rebuild we don't want to
+                # inflict on every legacy install. The sentinel is
+                # stable, namespace-prefixed, and never collides with
+                # real task ids (which are kanban-issued). The health
+                # probe filters on ``kind`` first so the sentinel is
+                # just a placeholder, never joined against ``tasks``.
+                async def _emit_tick_event(slug, spawned):
+                    def _emit():
+                        try:
+                            conn = _kb.connect(board=slug)
+                            try:
+                                _kb._append_event(
+                                    conn,
+                                    "_dispatcher",
+                                    "dispatcher_tick",
+                                    {
+                                        "spawned": spawned,
+                                        "interval_s": float(interval),
+                                        "pid": os.getpid(),
+                                    },
+                                )
+                                conn.commit()
+                            finally:
+                                conn.close()
+                        except Exception as _tick_exc:
+                            logger.debug(
+                                "kanban dispatcher: tick event emit failed for %s: %r",
+                                slug, _tick_exc,
+                            )
+                    await asyncio.to_thread(_emit)
+                for slug, res in (results or []):
+                    spawned_n = (
+                        len(getattr(res, "spawned", None))
+                        if res is not None and getattr(res, "spawned", None)
+                        else 0
+                    )
+                    await _emit_tick_event(slug, spawned_n)
                 # Health telemetry (aggregate across boards)
                 ready_pending = await asyncio.to_thread(_ready_nonempty)
                 if ready_pending and not any_spawned:
@@ -1168,8 +1312,12 @@ class GatewayKanbanWatchersMixin:
                         last_warn_at = now
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")
-                _release_singleton_lock(self._kanban_dispatcher_lock_handle)
+                _release_dispatcher_lock_with_meta(
+                    self._kanban_dispatcher_lock_handle,
+                    self._kanban_dispatcher_lock_path,
+                )
                 self._kanban_dispatcher_lock_handle = None
+                self._kanban_dispatcher_lock_path = None
                 raise
             except Exception:
                 logger.exception("kanban dispatcher: unexpected watcher error")
@@ -1181,5 +1329,9 @@ class GatewayKanbanWatchersMixin:
                 await asyncio.sleep(min(1.0, interval - slept))
                 slept += 1.0
 
-        _release_singleton_lock(self._kanban_dispatcher_lock_handle)
+        _release_dispatcher_lock_with_meta(
+            self._kanban_dispatcher_lock_handle,
+            self._kanban_dispatcher_lock_path,
+        )
         self._kanban_dispatcher_lock_handle = None
+        self._kanban_dispatcher_lock_path = None

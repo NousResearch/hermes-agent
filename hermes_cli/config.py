@@ -1293,6 +1293,11 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+        "codex_gpt55_autoraise_notice": True,  # When True, show a one-time CLI/gateway
+                                      # notice when the Codex gpt-5.5 auto-raise above
+                                      # changes the effective compaction threshold. Set
+                                      # False to keep the safer auto-raise behavior while
+                                      # suppressing the explanatory chat/status message.
         "in_place": False,            # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation

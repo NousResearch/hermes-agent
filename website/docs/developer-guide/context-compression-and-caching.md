@@ -85,6 +85,7 @@ compression:
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
+  codex_gpt55_autoraise_notice: true  # Show one-time notice when the trigger is raised
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -103,6 +104,7 @@ auxiliary:
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
+| `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time CLI/gateway notice when `codex_gpt55_autoraise` changes the effective threshold. Set `false` to hide only the notice while keeping the 85% trigger |
 
 ### Codex gpt-5.5 threshold autoraise
 
@@ -117,6 +119,13 @@ your global `threshold`. To opt back down to the global value:
 
 ```bash
 hermes config set compression.codex_gpt55_autoraise false
+```
+
+If you want to keep the 85% trigger but hide only the one-time informational
+notice in CLI/gateway chats, disable the notice separately:
+
+```bash
+hermes config set compression.codex_gpt55_autoraise_notice false
 ```
 
 ### Computed Values (for a 200K context model at defaults)

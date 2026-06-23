@@ -110,6 +110,19 @@ class TestParseSchedule:
         with pytest.raises(ValueError):
             parse_schedule("99 99 99 99 99")
 
+    def test_cron_extended_nth_weekday(self):
+        """Issue #20858: '#' for nth weekday-of-month must reach croniter."""
+        pytest.importorskip("croniter")
+        result = parse_schedule("0 9 * * 1#2")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "0 9 * * 1#2"
+
+    def test_cron_extended_last_day(self):
+        """Issue #20858: 'L' for last-day-of-month must reach croniter."""
+        pytest.importorskip("croniter")
+        result = parse_schedule("0 0 L * *")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "0 0 L * *"
 
 # =========================================================================
 # compute_next_run

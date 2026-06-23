@@ -1027,6 +1027,43 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
 
+    def test_denylist_blocks_whatsapp_session_creds(self, tmp_path, monkeypatch):
+        """~/.hermes/whatsapp/session/creds.json (Baileys auth state) must
+        not be deliverable — it contains the noise key and signed identity
+        keys that control the paired WhatsApp account.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        session = hermes_dir / "whatsapp" / "session"
+        session.mkdir(parents=True)
+        creds = session / "creds.json"
+        creds.write_text('{"noiseKey": "secret"}')
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(creds)) is None
+
+    def test_denylist_blocks_whatsapp_session_lid_mapping(self, tmp_path, monkeypatch):
+        """Other session files (lid-mapping-*.json) are also credential
+        material and must not be deliverable.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        session = hermes_dir / "whatsapp" / "session"
+        session.mkdir(parents=True)
+        lid = session / "lid-mapping-12345.json"
+        lid.write_text('{"lid": "data"}')
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(lid)) is None
+
     def test_hermes_cache_still_delivers_under_denied_home(self, tmp_path, monkeypatch):
         """The targeted credential denylist must not break legitimate cache
         deliveries: a generated artifact under the allowlisted cache root is

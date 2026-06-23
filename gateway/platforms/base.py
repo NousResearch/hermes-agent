@@ -1102,6 +1102,10 @@ def _media_delivery_denied_paths() -> List[Path]:
     # overlap.)
     _ROOT_CREDENTIAL_DIRS = (
         "pairing",
+        # WhatsApp Baileys auth state (noise key, signed identity/pre-keys,
+        # registration).  creds.json + session keys let an attacker hijack
+        # the paired WhatsApp account.
+        os.path.join("whatsapp", "session"),
     )
     for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
         for rel in _ROOT_CREDENTIAL_FILES:

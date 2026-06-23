@@ -424,6 +424,57 @@ async def auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def _plugin_api_runtime_gate(request: Request, call_next):
+    """Block requests to disabled plugin API routes at request time.
+
+    :func:`_mount_plugin_api_routes` gates at import time, but if a plugin
+    is disabled *after* the dashboard is already running, its FastAPI router
+    remains mounted until restart.  This middleware enforces the enabled/
+    disabled policy on every request to ``/api/plugins/{name}/...`` so that
+    runtime config changes take effect immediately.
+    """
+    path = request.url.path
+    if path.startswith("/api/plugins/"):
+        # Extract plugin name from /api/plugins/<name>/...
+        parts = path.split("/")
+        # parts: ['', 'api', 'plugins', '<name>', ...]
+        if len(parts) >= 4:
+            plugin_name = parts[3]
+            if plugin_name:
+                try:
+                    from hermes_cli.plugins_cmd import (
+                        _get_enabled_set,
+                        _get_disabled_set,
+                    )
+                    enabled_set = _get_enabled_set()
+                    disabled_set = _get_disabled_set()
+                except Exception:
+                    enabled_set = set()
+                    disabled_set = set()
+                # Determine plugin source.  Check the cached plugin list;
+                # if not found, assume user plugin (safe default — blocks).
+                plugins = _get_dashboard_plugins()
+                plugin = next(
+                    (p for p in plugins if p.get("name") == plugin_name),
+                    None,
+                )
+                source = plugin.get("source") if plugin else "user"
+                if source == "user":
+                    if plugin_name in disabled_set or plugin_name not in enabled_set:
+                        return JSONResponse(
+                            status_code=404,
+                            content={"detail": "Plugin not found"},
+                        )
+                elif source == "bundled":
+                    if plugin_name in disabled_set:
+                        return JSONResponse(
+                            status_code=404,
+                            content={"detail": "Plugin not found"},
+                        )
+    return await call_next(request)
+
+
 # ---------------------------------------------------------------------------
 # Config schema — auto-generated from DEFAULT_CONFIG
 # ---------------------------------------------------------------------------
@@ -11790,16 +11841,20 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     if not plugin:
         raise HTTPException(status_code=404, detail="Plugin not found")
 
-    # Gate: user plugins must be enabled to serve assets.
+    # Gate: user plugins must be enabled to serve assets;
+    # bundled plugins must not be explicitly disabled.
+    try:
+        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+        enabled_set = _get_enabled_set()
+        disabled_set = _get_disabled_set()
+    except Exception:
+        enabled_set = set()
+        disabled_set = set()
     if plugin.get("source") == "user":
-        try:
-            from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
-            enabled_set = _get_enabled_set()
-            disabled_set = _get_disabled_set()
-        except Exception:
-            enabled_set = set()
-            disabled_set = set()
         if plugin_name in disabled_set or plugin_name not in enabled_set:
+            raise HTTPException(status_code=404, detail="Plugin not found")
+    elif plugin.get("source") == "bundled":
+        if plugin_name in disabled_set:
             raise HTTPException(status_code=404, detail="Plugin not found")
 
     base = Path(plugin["_dir"])

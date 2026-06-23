@@ -84,6 +84,7 @@ class TestApprovalBridge:
         assert tool_call.raw_input == {
             "command": "rm -rf /",
             "description": "dangerous command",
+            "explanation": {},
         }
         assert option_ids == [
             "allow_once",
@@ -92,6 +93,39 @@ class TestApprovalBridge:
             "deny",
             "deny_always",
         ]
+
+    def test_bridge_includes_permission_context_when_provided(self):
+        explanation = {
+            "action": "Run the shown terminal command.",
+            "permission": "Allow Hermes to execute this command.",
+        }
+        loop = MagicMock(spec=asyncio.AbstractEventLoop)
+        request_permission = AsyncMock(name="request_permission")
+        future = MagicMock(spec=Future)
+        future.result.return_value = _make_response(
+            AllowedOutcome(option_id="allow_once", outcome="selected")
+        )
+        scheduled = {}
+
+        def _schedule(coro, passed_loop):
+            scheduled["coro"] = coro
+            return future
+
+        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=_schedule):
+            cb = make_approval_callback(request_permission, loop, session_id="s1")
+            result = cb(
+                "rm -rf /",
+                "dangerous command",
+                approval_explanation=explanation,
+            )
+
+        scheduled["coro"].close()
+        _, kwargs = request_permission.call_args
+        content_text = kwargs["tool_call"].content[0].content.text
+        assert result == "once"
+        assert "What Hermes is trying to do: Run the shown terminal command." in content_text
+        assert "Permission requested: Allow Hermes to execute this command." in content_text
+        assert kwargs["tool_call"].raw_input["explanation"] == explanation
 
     def test_tool_call_ids_are_unique(self):
         _, first_kwargs, _, _, _ = _invoke_callback(

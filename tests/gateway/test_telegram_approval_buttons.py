@@ -106,6 +106,32 @@ class TestTelegramExecApproval:
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
 
     @pytest.mark.asyncio
+    async def test_includes_permission_context(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 42
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        await adapter.send_exec_approval(
+            chat_id="12345",
+            command="rm -rf /important",
+            session_key="s",
+            description="dangerous deletion",
+            metadata={
+                "approval_explanation": {
+                    "action": "Run the shown terminal command.",
+                    "permission": "Allow Hermes to execute this command.",
+                }
+            },
+        )
+
+        text = adapter._bot.send_message.call_args[1]["text"]
+        assert "What Hermes is trying to do" in text
+        assert "Run the shown terminal command." in text
+        assert "Permission requested" in text
+        assert "Allow Hermes to execute this command." in text
+
+    @pytest.mark.asyncio
     async def test_stores_approval_state(self):
         adapter = _make_adapter()
         mock_msg = MagicMock()

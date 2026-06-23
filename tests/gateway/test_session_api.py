@@ -212,6 +212,26 @@ async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, se
 
 
 @pytest.mark.asyncio
+async def test_session_fork_rejects_oversized_session_id(adapter, session_db):
+    """A multi-kilobyte fork id is rejected with 400 — matching the cap the
+    create-session and X-Hermes-Session-Key paths already enforce — and the
+    guard fires before the source session is branched or any fork is created."""
+    source_id = session_db.create_session("source-session", "api_server", model="test-model")
+    session_db.append_message(source_id, "user", "first path")
+
+    oversized = "x" * 1000
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{source_id}/fork", json={"id": oversized, "title": "Too long"})
+        assert resp.status == 400
+        payload = await resp.json()
+        assert payload["error"]["code"] == "invalid_session_id"
+
+    assert session_db.get_session(oversized) is None
+    assert session_db.get_session(source_id).get("end_reason") != "branched"
+
+
+@pytest.mark.asyncio
 async def test_session_chat_loads_history_and_preserves_session_headers(auth_adapter, session_db):
     session_id = session_db.create_session("chat-session", "api_server")
     session_db.set_session_title(session_id, "Chat")

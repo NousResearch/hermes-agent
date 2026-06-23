@@ -1333,6 +1333,13 @@ def restart() -> None:
     _assert_windows()
     from hermes_cli.gateway import kill_gateway_processes
 
+    # Capture the run mode BEFORE stopping so we relaunch the gateway the SAME
+    # way it was running. A manually-run gateway (no scheduled task / startup
+    # entry) must be relaunched directly: routing it through start() would hit
+    # the "service not installed" branch, prompt to install, and return without
+    # starting -- leaving the gateway DOWN on every manual-gateway restart.
+    service_installed = is_task_registered() or is_startup_entry_installed()
+
     stop()
 
     if not _wait_for_gateway_absent(timeout_s=30.0):
@@ -1346,7 +1353,11 @@ def restart() -> None:
 
     # Give Windows a moment to release the listening port.
     time.sleep(1.0)
-    start()
+    if service_installed:
+        start()
+    else:
+        pid = _spawn_detached()
+        _report_gateway_start(f"direct spawn (PID {pid})")
 
     if not _wait_for_gateway_ready(timeout_s=15.0):
         raise RuntimeError(

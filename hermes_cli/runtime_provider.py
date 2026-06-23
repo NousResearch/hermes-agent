@@ -1748,10 +1748,17 @@ def resolve_runtime_provider(
             if _gr.get("trace"):
                 guardrail_config["trace"] = _gr["trace"]
         # Dual-path routing: Claude models use AnthropicBedrock SDK for full
-        # feature parity (prompt caching, thinking budgets, adaptive thinking).
-        # Non-Claude models use the Converse API for multi-model support.
+        # feature parity (prompt caching, thinking budgets, adaptive thinking)
+        # unless the user explicitly configured model.api_mode=bedrock_converse.
+        # That explicit escape hatch is required for Bedrock API-key / bearer
+        # token auth (AWS_BEARER_TOKEN_BEDROCK), which botocore supports but
+        # AnthropicBedrock currently does not resolve from the boto3 token
+        # provider chain. Non-Claude models use the Converse API for
+        # multi-model support.
         _current_model = str(model_cfg.get("default") or "").strip()
-        if is_anthropic_bedrock_model(_current_model):
+        configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+        force_converse = configured_mode == "bedrock_converse"
+        if is_anthropic_bedrock_model(_current_model) and not force_converse:
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
             runtime = {
                 "provider": "bedrock",

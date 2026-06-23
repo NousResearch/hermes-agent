@@ -1576,6 +1576,20 @@ def export_profile(name: str, output_path: str) -> Path:
         return Path(result)
 
 
+_WIN_INVALID_CHARS = re.compile(r'[<>:"|?*]')
+
+
+def _sanitize_path_part(part: str) -> str:
+    """Replace characters that are invalid in Windows file/directory names.
+
+    Archives created on Linux may contain filenames with characters like ``:``
+    (e.g. NuGet cache paths) that are reserved on Windows.  Replacing them
+    with ``_`` keeps the path structure intact while allowing extraction on
+    any platform.
+    """
+    return _WIN_INVALID_CHARS.sub("_", part)
+
+
 def _normalize_profile_archive_parts(member_name: str) -> List[str]:
     """Return safe path parts for a profile archive member."""
     normalized_name = member_name.replace("\\", "/")
@@ -1590,7 +1604,7 @@ def _normalize_profile_archive_parts(member_name: str) -> List[str]:
     ):
         raise ValueError(f"Unsafe archive member path: {member_name}")
 
-    parts = [part for part in posix_path.parts if part not in {"", "."}]
+    parts = [_sanitize_path_part(part) for part in posix_path.parts if part not in {"", "."}]
     if not parts or any(part == ".." for part in parts):
         raise ValueError(f"Unsafe archive member path: {member_name}")
     return parts

@@ -805,10 +805,11 @@ def try_shrink_image_parts_in_messages(
     Pillow couldn't help (caller should surface the original error).
 
     Strategy: look for ``image_url`` / ``input_image`` parts carrying a
-    ``data:image/...;base64,...`` payload.  For each one whose encoded
-    size exceeds 4 MB (a safe target that slides under Anthropic's 5 MB
-    ceiling with header overhead) or whose longest side exceeds
-    ``max_dimension``, write the base64 to a tempfile, call
+    ``data:image/...;base64,...`` payload, plus Anthropic-native
+    ``{"type": "image", "source": {"type": "base64", ...}}`` blocks.
+    For each one whose encoded size exceeds 4 MB (a safe target that slides
+    under Anthropic's 5 MB ceiling with header overhead) or whose longest side
+    exceeds ``max_dimension``, write the base64 to a tempfile, call
     ``vision_tools._resize_image_for_vision`` to produce a smaller data
     URL, and substitute it in place.
 
@@ -964,6 +965,28 @@ def try_shrink_image_parts_in_messages(
             logger.warning("image-shrink recovery: re-encode failed — %s", exc)
             return None, triggered_by is not None
 
+    def _source_to_data_url(source: Any) -> Optional[str]:
+        if not isinstance(source, dict) or source.get("type") != "base64":
+            return None
+        data = source.get("data")
+        if not isinstance(data, str) or not data:
+            return None
+        media_type = str(source.get("media_type") or "image/jpeg").strip()
+        if not media_type.startswith("image/"):
+            media_type = "image/jpeg"
+        return f"data:{media_type};base64,{data}"
+
+    def _write_data_url_to_source(source: dict, data_url: str) -> None:
+        header, _, data = data_url.partition(",")
+        media_type = "image/jpeg"
+        if header.startswith("data:"):
+            candidate = header[len("data:"):].split(";", 1)[0].strip()
+            if candidate.startswith("image/"):
+                media_type = candidate
+        source["type"] = "base64"
+        source["media_type"] = media_type
+        source["data"] = data
+
     for msg in api_messages:
         if not isinstance(msg, dict):
             continue
@@ -974,6 +997,16 @@ def try_shrink_image_parts_in_messages(
             if not isinstance(part, dict):
                 continue
             ptype = part.get("type")
+            if ptype == "image":
+                source = part.get("source")
+                url = _source_to_data_url(source)
+                resized, unshrinkable = _shrink_data_url(url or "")
+                if resized and isinstance(source, dict):
+                    _write_data_url_to_source(source, resized)
+                    changed_count += 1
+                elif unshrinkable:
+                    unshrinkable_oversized += 1
+                continue
             if ptype not in {"image_url", "input_image"}:
                 continue
             image_value = part.get("image_url")

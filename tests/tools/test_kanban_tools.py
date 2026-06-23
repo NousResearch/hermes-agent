@@ -14,6 +14,23 @@ import os
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _reset_session_id_contextvar():
+    """Reset the HERMES_SESSION_ID contextvar around every test.
+
+    These tests drive kanban session-id stamping via ``monkeypatch.setenv`` /
+    ``delenv`` on ``os.environ`` and expect that to be authoritative. Since
+    ``_current_session_id`` reads the contextvar first (gateway concurrency
+    safety), a contextvar left bound by an earlier test in another file (e.g.
+    ``set_current_session_id`` in the compression suite) would shadow the
+    os.environ value these tests set. Reset it to UNSET so os.environ wins.
+    """
+    from gateway.session_context import _SESSION_ID, _UNSET
+    _SESSION_ID.set(_UNSET)
+    yield
+    _SESSION_ID.set(_UNSET)
+
+
 # ---------------------------------------------------------------------------
 # Gating
 # ---------------------------------------------------------------------------

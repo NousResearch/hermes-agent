@@ -46,13 +46,36 @@ def _current_session_id() -> Optional[str]:
     can be clobbered by a concurrent session (the v3-latch bug class). In a
     dispatcher-spawned WORKER subprocess (single process, no bound contextvar)
     get_session_env falls through to that process's correct os.environ value.
-    Returns None when neither is set.
+
+    🔴 Empty-contextvar fallthrough — GATED on ``not _HERMES_GATEWAY``: some
+    non-gateway callers bind the contextvar to "" (e.g. ACP binds
+    ``set_session_vars(session_key=session_id)`` which leaves the session_id
+    contextvar at its "" default while writing the real id to os.environ). A ""
+    contextvar is NOT _UNSET, so get_session_env returns "" and would NOT fall
+    through. We treat an empty contextvar value as "not bound" and consult
+    os.environ — but ONLY outside the gateway. Inside the gateway,
+    ``clear_session_vars`` deliberately sets "" to *suppress* the os.environ
+    fallback (so a cleared post-turn read returns None, never a stale/clobbered
+    global), and the per-turn contextvar is authoritative — so we never fall
+    through there. This mirrors ``set_current_session_id``'s own
+    ``not _HERMES_GATEWAY`` guard and preserves both contracts. Returns None
+    when neither has a value.
     """
     try:
         from gateway.session_context import get_session_env
-        return get_session_env("HERMES_SESSION_ID") or None
+        val = get_session_env("HERMES_SESSION_ID")
+        if val:
+            return val
+        # Empty/unset contextvar. Outside the gateway (ACP/CLI/worker — single
+        # process, os.environ authoritative) fall through to os.environ. Inside
+        # the gateway, "" means cleared-and-fallback-suppressed → return None
+        # (the per-turn contextvar is the only correct source; a "" here is
+        # never a missing bind because _set_session_env binds session_id).
+        if os.environ.get("_HERMES_GATEWAY") == "1":
+            return None
+        return os.environ.get("HERMES_SESSION_ID") or None
     except Exception:
-        return os.environ.get("HERMES_SESSION_ID")
+        return os.environ.get("HERMES_SESSION_ID") or None
 
 
 # ---------------------------------------------------------------------------

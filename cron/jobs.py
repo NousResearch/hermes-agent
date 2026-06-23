@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_default_hermes_root, get_hermes_home
+from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = get_default_hermes_root().resolve()
+HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 # Heartbeat file the in-process ticker touches on every loop iteration. The
@@ -248,12 +248,6 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
-    # Legacy jobs (created before per-job profile scoping) have no profile
-    # field. Default them to "default" so the scheduler treats them as
-    # root-profile jobs — matching their pre-existing behaviour.
-    prof = normalized.get("profile")
-    normalized["profile"] = (str(prof).strip() if isinstance(prof, str) and prof.strip() else "default")
-
     return normalized
 
 
@@ -272,43 +266,6 @@ def _secure_file(path: Path):
             os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
-
-
-def current_profile_name() -> str:
-    """Return the active profile name for the process creating a job.
-
-    ``~/.hermes``              -> ``"default"``
-    ``~/.hermes/profiles/X``   -> ``"X"``
-
-    Used at create time to tag a job with the profile whose environment
-    (.env / config.yaml / credentials) it should execute under, so the
-    job runs as its owning profile regardless of which profile's ticker
-    picks it up from the shared root store (#32091).
-    """
-    try:
-        from agent.file_safety import _resolve_active_profile_name
-        return _resolve_active_profile_name() or "default"
-    except Exception:
-        return "default"
-
-
-def resolve_profile_home(profile_name: Optional[str]) -> Optional[Path]:
-    """Map a job's ``profile`` name to the HERMES_HOME it should run under.
-
-    ``"default"`` / empty / ``None`` -> the root home (``get_default_hermes_root()``).
-    ``"<name>"``                      -> ``<root>/profiles/<name>``.
-
-    Returns ``None`` when the named profile directory does not exist, so the
-    scheduler can fall back to the ticker's own home and log a warning rather
-    than pointing a job at a missing profile.
-    """
-    name = (profile_name or "").strip()
-    if not name or name == "default":
-        return get_default_hermes_root().resolve()
-    candidate = (get_default_hermes_root() / "profiles" / name).resolve()
-    if candidate.is_dir():
-        return candidate
-    return None
 
 
 def ensure_dirs():
@@ -658,44 +615,10 @@ def get_ticker_success_age() -> Optional[float]:
 # Job CRUD Operations
 # =============================================================================
 
-_WARNED_ORPHAN_STORE = False
-
-
-def _warn_if_orphaned_profile_store() -> None:
-    """Loudly warn (once) if the root store is empty but a profile-local
-    jobs.json exists from before #32091's root-anchoring fix.
-
-    Such a file is now unreachable (the store anchors at the default root, not
-    the active profile). The jobs in it were already orphaned pre-fix (the
-    profile-less gateway never read them), so this is not a regression — but a
-    user who could SEE them in `cron list` under their profile would otherwise
-    find them silently gone. Point them at the path instead of failing silent.
-    """
-    global _WARNED_ORPHAN_STORE
-    if _WARNED_ORPHAN_STORE:
-        return
-    try:
-        active = get_hermes_home().resolve()
-        if active == HERMES_DIR:
-            return  # not in a profile; nothing could be orphaned
-        legacy = active / "cron" / "jobs.json"
-        if legacy.exists():
-            _WARNED_ORPHAN_STORE = True
-            logger.warning(
-                "Cron jobs now live at %s (shared across profiles). A legacy "
-                "profile-local store exists at %s and is no longer read; "
-                "re-create those jobs or move them into the root store. (#32091)",
-                JOBS_FILE, legacy,
-            )
-    except Exception:
-        pass  # best-effort advisory; never block load_jobs
-
-
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
     if not JOBS_FILE.exists():
-        _warn_if_orphaned_profile_store()
         return []
 
     _strict_retry = False  # track whether we used the strict=False fallback
@@ -815,7 +738,6 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
-    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -860,13 +782,6 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
-        profile: Optional Hermes profile name the job should EXECUTE under
-                (its .env / config.yaml / credentials). Defaults to the active
-                profile of the session creating the job. The shared root store
-                holds every profile's jobs (#32091); this field is what scopes
-                a job's runtime environment to its owning profile so it runs
-                with that profile's permissions regardless of which ticker
-                picks it up.
 
     Returns:
         The created job dict
@@ -901,11 +816,6 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
-    # Tag the job with the profile whose environment it should execute under.
-    # When the caller does not pass one explicitly, capture the active profile
-    # of the session creating the job so a job created under `hermes -p donna`
-    # runs as donna even though it now lives in the shared root store (#32091).
-    normalized_profile = (str(profile).strip() if isinstance(profile, str) else "") or current_profile_name()
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -959,7 +869,6 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
-        "profile": normalized_profile,
     }
 
     with _jobs_lock():

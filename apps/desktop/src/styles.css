@@ -264,7 +264,6 @@
     );
     --ui-chat-bubble-opaque-background: var(--ui-bg-editor);
     --ui-inline-code-background: color-mix(in srgb, #141414 5%, transparent);
-    --ui-inline-code-border: color-mix(in srgb, #141414 8%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #141414 88%, transparent);
     --ui-selection-background: color-mix(in srgb, #ffd24a 55%, transparent);
 
@@ -408,7 +407,6 @@
     --backdrop-invert-mul: 0;
 
     --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
-    --ui-inline-code-border: color-mix(in srgb, #ffffff 10%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #ffffff 88%, transparent);
     --ui-selection-background: color-mix(in srgb, #ffd24a 38%, transparent);
   }
@@ -1180,7 +1178,6 @@ canvas {
 }
 
 [data-slot='aui_assistant-message-content'] .aui-md :not(pre) > code {
-  border: 0.0625rem solid var(--ui-inline-code-border);
   background: var(--ui-inline-code-background);
   color: var(--ui-inline-code-foreground);
 }

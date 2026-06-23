@@ -13,7 +13,7 @@ exact blocked check rather than the toolset silently failing.
 
 Return contract
 ---------------
-For text-only results (wait, key, list_apps, focus_app, failures, etc.):
+For text-only results (wait, key, list_apps, launch_app, focus_app, failures, etc.):
   JSON string.
 
 For captures / actions with `capture_after=True`:
@@ -80,9 +80,13 @@ def set_approval_callback(cb) -> None:
 _SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps"})
 
 # Actions that mutate user-visible state. Go through approval.
+# `launch_app` mutates by starting a new process, but the launch is
+# non-disruptive (background; no focus steal) and idempotent for an
+# already-running target — same approval treatment as `focus_app`.
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
     "drag", "scroll", "type", "key", "set_value", "focus_app",
+    "launch_app",
 })
 
 # Hard-blocked key combinations. Mirrored from #4562 — these are destructive
@@ -226,6 +230,17 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
         return ActionResult(ok=True, action="focus_app")
 
+    def launch_app(self, name=None, *, bundle_id=None, start_minimized=False, **kw) -> ActionResult:
+        self.calls.append(("launch_app", {
+            "name": name, "bundle_id": bundle_id,
+            "start_minimized": start_minimized, **kw,
+        }))
+        return ActionResult(
+            ok=True, action="launch_app",
+            message=f"launched {name or bundle_id}",
+            meta={"pid": 12345, "windows": []},
+        )
+
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
         self.calls.append(("set_value", {"value": value, "element": element}))
         return ActionResult(ok=True, action="set_value")
@@ -337,6 +352,10 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
         return f"key {args.get('keys', '')!r}"
     if action == "focus_app":
         return f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")
+    if action == "launch_app":
+        target = args.get("name") or args.get("bundle_id") or "?"
+        suffix = " (minimized)" if args.get("start_minimized") else ""
+        return f"launch {target!r}{suffix}"
     return action
 
 
@@ -364,6 +383,25 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if not app:
             return json.dumps({"error": "focus_app requires `app`"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
+        return _maybe_follow_capture(backend, res, capture_after)
+
+    if action == "launch_app":
+        name = args.get("name")
+        bundle_id = args.get("bundle_id")
+        if not name and not bundle_id:
+            return json.dumps({
+                "error": "launch_app requires `name` or `bundle_id`",
+            })
+        # Forward known kwargs. Other platform-specific args (urls,
+        # additional_arguments, electron_debugging_port, …) can be passed
+        # through the args mapping by adding them to the schema later;
+        # today we surface the cross-platform contract: name, bundle_id,
+        # start_minimized.
+        res = backend.launch_app(
+            name=name,
+            bundle_id=bundle_id,
+            start_minimized=bool(args.get("start_minimized")),
+        )
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action in {"click", "double_click", "right_click", "middle_click"}:

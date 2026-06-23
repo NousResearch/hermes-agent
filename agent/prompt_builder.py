@@ -481,13 +481,26 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
             "same time.\n\n"
         )
         save_combo = "cmd+s"
-    else:
-        os_name = "Windows" if is_windows else "Linux"
+        launcher_shortcut = "Cmd+Space"
+        example_launch_name = "TextEdit"
+    elif is_windows:
+        os_name = "Windows"
         share_line = (
             "focus, or active window. You and the user can share the same "
             "desktop at the same time.\n\n"
         )
         save_combo = "ctrl+s"
+        launcher_shortcut = "Win+R"
+        example_launch_name = "notepad"
+    else:
+        os_name = "Linux"
+        share_line = (
+            "focus, or active window. You and the user can share the same "
+            "desktop at the same time.\n\n"
+        )
+        save_combo = "ctrl+s"
+        launcher_shortcut = "the Activities/launcher shortcut"
+        example_launch_name = "gedit"
 
     # Background-mode rules: the "different Space" wording is macOS-only;
     # Windows needs a note about foreground-only targets (Chromium/GTK).
@@ -495,20 +508,30 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
         offscreen_line = (
             "- If an element you need is on a different Space or behind "
             "another window, cua-driver still drives it — no need to switch "
-            "Spaces.\n\n"
+            "Spaces.\n"
         )
     elif is_windows:
         offscreen_line = (
             "- If an element is behind another window, cua-driver still "
             "drives it — no need to raise it. Some apps may still force "
             "foreground behavior internally; if an action does not land, "
-            "re-capture and adapt instead of retrying blindly.\n\n"
+            "re-capture and adapt instead of retrying blindly.\n"
         )
     else:
         offscreen_line = (
             "- If an element is behind another window, cua-driver still "
-            "drives it — no need to raise it.\n\n"
+            "drives it — no need to raise it.\n"
         )
+
+    # Windows-only: keep the launched window in the taskbar so the user's
+    # frontmost window stays visually on top.
+    minimized_line = (
+        "- On Windows, pass `start_minimized=true` to `launch_app` when you "
+        "want the launched window kept in the taskbar so the user's frontmost "
+        "window stays visually on top.\n"
+        if is_windows
+        else ""
+    )
 
     # Capture-target example: a real app the user is likely to have running,
     # so the model has a concrete reference rather than a generic placeholder.
@@ -521,17 +544,29 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
         "keyboard "
         + share_line +
         "## Preferred workflow\n"
-        "1. Call `computer_use` with `action='capture'` and `mode='som'` "
+        "1. If the target app may not be running, launch it first with "
+        f"`action='launch_app', name='<App>'` (e.g. `name='{example_launch_name}'`). "
+        "The launch is idempotent — calling it for an already-running app "
+        "returns the existing process and its windows. Never instruct the "
+        f"user to press {launcher_shortcut} or any other launcher shortcut: "
+        "launch the app yourself via `launch_app`. Use "
+        "`action='list_apps'` to discover what is already running (returns "
+        "names + pids + bundle IDs).\n"
+        "2. Call `computer_use` with `action='capture'` and `mode='som'` "
         "(default). You get a screenshot with numbered overlays on every "
         "interactable element plus an AX-tree index listing role, label, and "
         "bounds for each numbered element.\n"
-        "2. Click by element index: `action='click', element=14`. This is "
+        "3. Click by element index: `action='click', element=14`. This is "
         "dramatically more reliable than pixel coordinates for any model. "
         "Use raw coordinates only as a last resort.\n"
-        "3. For text input, `action='type', text='...'`. For key combos "
-        f"`action='key', keys='{save_combo}'`. For scrolling `action='scroll', "
-        "direction='down', amount=3`.\n"
-        "4. After any state-changing action, re-capture to verify. You can "
+        "4. For text input, `action='type', text='...'`. For multi-key "
+        "combos, always pass the full chord as a single string to "
+        f"`action='key'` — e.g. `keys='{save_combo}'` or "
+        "`keys='ctrl+shift+t'`. The wrapper auto-routes combos through "
+        "cua-driver's `hotkey` tool. Never send the modifier and the key as "
+        "separate `key` calls; sequencing loses focus on many apps. For "
+        "scrolling `action='scroll', direction='down', amount=3`.\n"
+        "5. After any state-changing action, re-capture to verify. You can "
         "pass `capture_after=true` to get the follow-up screenshot in one "
         "round-trip.\n\n"
         "## Background mode rules\n"
@@ -541,7 +576,9 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
         f"- When capturing, prefer `app='{example_app}'` (or whichever app the "
         "task is about) instead of the whole screen — it's less noisy and "
         "won't leak other windows the user has open.\n"
+        + minimized_line
         + offscreen_line +
+        "\n"
         "## The agent cursor you'll see on screen\n"
         "Each computer-use run declares a session with cua-driver; that "
         "session owns a tinted overlay cursor that glides to where you "

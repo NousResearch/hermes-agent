@@ -69,8 +69,22 @@ class TestSchema:
         actions = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["action"]["enum"])
         assert actions >= {
             "capture", "click", "double_click", "right_click", "middle_click",
-            "drag", "scroll", "type", "key", "wait", "list_apps", "focus_app",
+            "drag", "scroll", "type", "key", "wait",
+            "list_apps", "launch_app", "focus_app",
         }
+
+    def test_schema_exposes_launch_app_args(self):
+        """launch_app's cross-platform contract must be discoverable from the schema."""
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+        # name + bundle_id are the two ways to identify an app target.
+        assert "name" in props
+        assert props["name"]["type"] == "string"
+        assert "bundle_id" in props
+        assert props["bundle_id"]["type"] == "string"
+        # start_minimized is Windows-specific but exposed cross-platform.
+        assert "start_minimized" in props
+        assert props["start_minimized"]["type"] == "boolean"
 
     def test_capture_mode_enum_has_som_vision_ax(self):
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
@@ -265,6 +279,167 @@ class TestDispatch:
         out = handle_computer_use({"action": "set_value"})
         parsed = json.loads(out)
         assert "error" in parsed
+
+    def test_launch_app_routes_to_backend(self, noop_backend):
+        """launch_app dispatches to backend.launch_app with the name kwarg."""
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "launch_app", "name": "notepad"})
+        parsed = json.loads(out)
+        assert parsed.get("ok") is True
+        assert parsed.get("action") == "launch_app"
+        call_names = [c[0] for c in noop_backend.calls]
+        assert "launch_app" in call_names
+        launch_kw = next(c[1] for c in noop_backend.calls if c[0] == "launch_app")
+        assert launch_kw["name"] == "notepad"
+
+    def test_launch_app_forwards_bundle_id_and_start_minimized(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({
+            "action": "launch_app",
+            "name": "Calculator",
+            "bundle_id": "com.apple.calculator",
+            "start_minimized": True,
+        })
+        launch_kw = next(c[1] for c in noop_backend.calls if c[0] == "launch_app")
+        assert launch_kw["bundle_id"] == "com.apple.calculator"
+        assert launch_kw["start_minimized"] is True
+
+    def test_launch_app_requires_name_or_bundle_id(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "launch_app"})
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "name" in parsed["error"] or "bundle_id" in parsed["error"]
+
+
+class TestLaunchAppBackend:
+    """Verify launch_app updates the CuaDriverBackend sticky context.
+
+    The point of plumbing launch_app through cua_backend is so a follow-up
+    `click` / `capture` / `get_window_state` doesn't need to re-resolve the
+    target pid + window_id. The launched pid + first window must land in
+    `_active_pid` / `_active_window_id`, mirroring how `capture(app=...)` /
+    `focus_app(app=...)` update the same context today.
+    """
+
+    def _make_backend_with_launch_response(self, mcp_response):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = mcp_response
+        return backend
+
+    def test_launch_app_happy_path_updates_sticky_context(self):
+        # cua-driver's launch_app returns text + a structured payload with
+        # pid + windows[] (see /Users/francesco/cua/.../launch_app.rs).
+        mcp_response = {
+            "data": "Launched Calculator (pid 4242) in background.",
+            "images": [],
+            "structuredContent": {
+                "pid": 4242,
+                "bundle_id": "com.apple.calculator",
+                "name": "Calculator",
+                "windows": [
+                    {"window_id": 88, "pid": 4242, "app_name": "Calculator",
+                     "title": "Calculator", "is_on_screen": True},
+                ],
+            },
+            "isError": False,
+        }
+        backend = self._make_backend_with_launch_response(mcp_response)
+
+        res = backend.launch_app(name="Calculator")
+
+        assert res.ok is True
+        assert res.action == "launch_app"
+        # Sticky context must update so a follow-up click() doesn't need to
+        # re-resolve the target. Matches the contract capture()/focus_app()
+        # provide today.
+        assert backend._active_pid == 4242
+        assert backend._active_window_id == 88
+        assert backend._last_app == "Calculator"
+        # MCP args must include the name and omit start_minimized when False.
+        sent_args = backend._session.call_tool.call_args[0]
+        assert sent_args[0] == "launch_app"
+        assert sent_args[1].get("name") == "Calculator"
+        assert "start_minimized" not in sent_args[1]
+
+    def test_launch_app_windows_passes_start_minimized(self):
+        mcp_response = {
+            "data": "Launched notepad",
+            "images": [],
+            "structuredContent": {"pid": 9, "name": "notepad", "windows": []},
+            "isError": False,
+        }
+        backend = self._make_backend_with_launch_response(mcp_response)
+
+        backend.launch_app(name="notepad", start_minimized=True)
+
+        sent_args = backend._session.call_tool.call_args[0]
+        assert sent_args[1].get("start_minimized") is True
+        assert sent_args[1].get("name") == "notepad"
+
+    def test_launch_app_error_surfaces_message_without_crash(self):
+        """cua-driver's error path (unknown app, etc.) must surface as a
+        user-facing message and leave the sticky context untouched.
+        """
+        mcp_response = {
+            "data": "Launch failed: no app named 'ZZZZZ' found",
+            "images": [],
+            "structuredContent": None,
+            "isError": True,
+        }
+        backend = self._make_backend_with_launch_response(mcp_response)
+        # Seed the sticky context to verify it does not get overwritten on
+        # failure — a subsequent action should still hit the prior target.
+        backend._active_pid = 100
+        backend._active_window_id = 200
+        backend._last_app = "TextEdit"
+
+        res = backend.launch_app(name="ZZZZZ")
+
+        assert res.ok is False
+        assert res.action == "launch_app"
+        assert "ZZZZZ" in res.message or "no app" in res.message.lower()
+        # Sticky context must be preserved — a failed launch must not
+        # clobber the prior target.
+        assert backend._active_pid == 100
+        assert backend._active_window_id == 200
+        assert backend._last_app == "TextEdit"
+
+    def test_launch_app_requires_name_or_bundle_id(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+
+        res = backend.launch_app()
+
+        assert res.ok is False
+        # Must not even call cua-driver when args are missing.
+        assert backend._session.call_tool.called is False
+
+    def test_list_apps_returns_structured_list_unchanged(self):
+        """list_apps surfaces cua-driver's app array verbatim."""
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        apps = [
+            {"name": "TextEdit", "pid": 1, "bundle_id": "com.apple.TextEdit"},
+            {"name": "gedit", "pid": 2},
+        ]
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = {
+            "data": apps,
+            "images": [],
+            "structuredContent": None,
+            "isError": False,
+        }
+
+        out = backend.list_apps()
+
+        assert out == apps
     def test_capture_after_skipped_when_action_failed(self, noop_backend):
         """capture_after must not fire when res.ok=False (regression guard).
 

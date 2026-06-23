@@ -16,15 +16,18 @@ from typing import Any, Dict
 COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the desktop in the background via cua-driver — screenshots, "
-        "mouse, keyboard, scroll, drag — without stealing the user's cursor "
-        "or keyboard focus. Supported on macOS, Windows, and Linux. "
-        "Preferred workflow: call with "
-        "action='capture' (mode='som' gives numbered element overlays), "
-        "then click by `element` index for reliability. Pixel coordinates "
-        "are supported for models trained on them. Works on any window — "
-        "hidden, minimized, or behind another app. Requires cua-driver to "
-        "be installed."
+        "Drive the desktop in the background — screenshots, mouse, keyboard, "
+        "scroll, drag, app launch — without stealing the user's cursor, "
+        "keyboard focus, or workspace. Preferred workflow: if the target app "
+        "may not be running, call `action='launch_app', name='<App>'` first "
+        "(it returns the launched pid + windows so subsequent calls hit the "
+        "right process). Otherwise call `action='list_apps'` to see what's "
+        "running, then `action='capture'` (mode='som' gives numbered element "
+        "overlays) and click by `element` index for reliability. Pixel "
+        "coordinates are supported for models trained on them. Works on any "
+        "window — hidden, minimized, on another Space, or behind another app. "
+        "Cross-platform via cua-driver (macOS / Windows / Linux); requires "
+        "cua-driver to be installed."
     ),
     "parameters": {
         "type": "object",
@@ -44,6 +47,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "set_value",
                     "wait",
                     "list_apps",
+                    "launch_app",
                     "focus_app",
                 ],
                 "description": (
@@ -51,7 +55,11 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "effects). All other actions require approval unless "
                     "auto-approved. Use `set_value` for select/popup elements "
                     "and sliders — it selects the matching option directly "
-                    "without opening the native menu (no focus steal)."
+                    "without opening the native menu (no focus steal). "
+                    "Use `launch_app` to start an app in the background — "
+                    "the launched window stays behind whatever the user has "
+                    "in front, and the call is idempotent (re-running against "
+                    "an already-running app returns the existing process)."
                 ),
             },
             # ── capture ────────────────────────────────────────────
@@ -200,6 +208,43 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "window to front (DISRUPTS the user). Default false "
                     "— input is routed to the app without raising, "
                     "matching the background co-work model."
+                ),
+            },
+            # ── launch_app ─────────────────────────────────────────
+            "name": {
+                "type": "string",
+                "description": (
+                    "For action='launch_app': the app display name to launch "
+                    "(e.g. 'Calculator', 'TextEdit', 'notepad', 'gedit'). "
+                    "Required unless `bundle_id` is provided. The launched "
+                    "window stays in the background — it does not steal focus "
+                    "from whatever the user has in front. Idempotent: launching "
+                    "an already-running app returns the existing process and "
+                    "its windows. After launch, the active pid/window context "
+                    "is updated so a follow-up `click` / `capture` targets the "
+                    "newly-launched app without an extra resolution round-trip."
+                ),
+            },
+            "bundle_id": {
+                "type": "string",
+                "description": (
+                    "For action='launch_app' on macOS: the app's bundle "
+                    "identifier (e.g. 'com.apple.calculator'). Preferred over "
+                    "`name` when known — unambiguous and locale-independent. "
+                    "Ignored on Linux; on Windows, accepted as an alias for "
+                    "`name` (with packaged-app AUMID support when the value "
+                    "contains '!')."
+                ),
+            },
+            "start_minimized": {
+                "type": "boolean",
+                "description": (
+                    "For action='launch_app' on Windows: when true, launch the "
+                    "app's window minimized to the taskbar instead of "
+                    "restored-but-not-activated. Use when driving the app "
+                    "entirely in the background so the user's previously-"
+                    "frontmost window stays visually on top. No-op on macOS / "
+                    "Linux where the launched window is already non-activating."
                 ),
             },
             # ── return shape ───────────────────────────────────────

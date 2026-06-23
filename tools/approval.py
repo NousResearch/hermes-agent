@@ -10,6 +10,7 @@ This module is the single source of truth for the dangerous command system:
 
 import contextvars
 import fnmatch
+import html
 import logging
 import os
 import re

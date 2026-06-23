@@ -42,7 +42,9 @@ def test_ticker_calls_tick_at_least_once_then_stops():
             daemon=True,
         )
         t.start()
-        time.sleep(0.2)
+        deadline = time.monotonic() + 5.0
+        while not calls and time.monotonic() < deadline and t.is_alive():
+            time.sleep(0.01)
         stop.set()
         t.join(timeout=5)
 

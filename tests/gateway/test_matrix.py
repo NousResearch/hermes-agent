@@ -618,6 +618,157 @@ class TestMatrixDmDetection:
 
 
 # ---------------------------------------------------------------------------
+# Computed room name (unnamed rooms)
+# ---------------------------------------------------------------------------
+
+class TestMatrixComputedRoomName:
+    """An unnamed Matrix room (no m.room.name, no alias) should still resolve to
+    a human-readable name derived from its members, the way Matrix clients do,
+    instead of falling back to the bare room ID."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._user_id = "@bot:example.org"
+        self.adapter._joined_rooms = {"!room:example.org"}
+        self.adapter._dm_rooms = {}
+
+    @staticmethod
+    def _member(displayname):
+        return types.SimpleNamespace(displayname=displayname)
+
+    def _client_without_name(self, *, profiles):
+        """A client whose room has no name/topic/alias state, only members."""
+        client = MagicMock()
+
+        async def get_state_event(room_id, event_type):
+            raise Exception(f"no {event_type}")
+
+        client.get_state_event = AsyncMock(side_effect=get_state_event)
+        client.state_store = MagicMock()
+        client.state_store.get_member_profiles = AsyncMock(return_value=profiles)
+        client.state_store.get_members = AsyncMock(return_value=list(profiles.keys()))
+        return client
+
+    @pytest.mark.asyncio
+    async def test_unnamed_room_named_after_other_member(self):
+        self.adapter._client = self._client_without_name(
+            profiles={
+                "@bot:example.org": self._member("Hermes"),
+                "@iain:example.org": self._member("iain"),
+            }
+        )
+
+        identity = await self.adapter._resolve_room_identity("!room:example.org")
+
+        assert identity.display_name == "iain"
+        assert identity.has_explicit_name is False
+
+    @pytest.mark.asyncio
+    async def test_member_without_displayname_uses_localpart(self):
+        self.adapter._client = self._client_without_name(
+            profiles={
+                "@bot:example.org": self._member("Hermes"),
+                "@carol:example.org": self._member(None),
+            }
+        )
+
+        identity = await self.adapter._resolve_room_identity("!room:example.org")
+
+        assert identity.display_name == "carol"
+
+    @pytest.mark.asyncio
+    async def test_multi_member_room_lists_names(self):
+        self.adapter._client = self._client_without_name(
+            profiles={
+                "@bot:example.org": self._member("Hermes"),
+                "@amy:example.org": self._member("Amy"),
+                "@bea:example.org": self._member("Bea"),
+                "@cid:example.org": self._member("Cid"),
+                "@dan:example.org": self._member("Dan"),
+            }
+        )
+
+        identity = await self.adapter._resolve_room_identity("!room:example.org")
+
+        assert identity.display_name == "Amy, Bea, Cid and 1 other"
+
+    @pytest.mark.asyncio
+    async def test_room_with_only_self_falls_back_to_room_id(self):
+        self.adapter._client = self._client_without_name(
+            profiles={"@bot:example.org": self._member("Hermes")}
+        )
+
+        identity = await self.adapter._resolve_room_identity("!room:example.org")
+
+        assert identity.display_name == "!room:example.org"
+
+    @pytest.mark.asyncio
+    async def test_explicit_name_wins_over_members(self):
+        client = MagicMock()
+
+        async def get_state_event(room_id, event_type):
+            if event_type == "m.room.name":
+                return {"content": {"name": "Project Room"}}
+            raise Exception(f"no {event_type}")
+
+        client.get_state_event = AsyncMock(side_effect=get_state_event)
+        client.state_store = MagicMock()
+        client.state_store.get_member_profiles = AsyncMock(
+            return_value={"@iain:example.org": self._member("iain")}
+        )
+        client.state_store.get_members = AsyncMock(
+            return_value=["@bot:example.org", "@iain:example.org"]
+        )
+        self.adapter._client = client
+
+        identity = await self.adapter._resolve_room_identity("!room:example.org")
+
+        assert identity.display_name == "Project Room"
+        assert identity.has_explicit_name is True
+
+    @pytest.mark.asyncio
+    async def test_empty_state_store_falls_back_to_joined_members_api(self):
+        """A fresh bot has an empty state store; member profiles must fall back
+        to the /joined_members API like the member count does."""
+        client = MagicMock()
+
+        async def get_state_event(room_id, event_type):
+            raise Exception(f"no {event_type}")
+
+        client.get_state_event = AsyncMock(side_effect=get_state_event)
+        client.state_store = MagicMock()
+        client.state_store.get_member_profiles = AsyncMock(return_value={})
+        client.state_store.get_members = AsyncMock(return_value=None)
+        client.get_joined_members = AsyncMock(
+            return_value={
+                "@bot:example.org": self._member("Hermes"),
+                "@iain:example.org": self._member("iain"),
+            }
+        )
+        self.adapter._client = client
+
+        identity = await self.adapter._resolve_room_identity("!room:example.org")
+
+        assert identity.display_name == "iain"
+
+    @pytest.mark.parametrize(
+        "names,expected",
+        [
+            ([], ""),
+            (["Alice"], "Alice"),
+            (["Alice", "Bob"], "Alice and Bob"),
+            (["Alice", "Bob", "Carol"], "Alice, Bob and Carol"),
+            (["Alice", "Bob", "Carol", "Dave"], "Alice, Bob, Carol and 1 other"),
+            (["A", "B", "C", "D", "E"], "A, B, C and 2 others"),
+        ],
+    )
+    def test_format_member_names(self, names, expected):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        assert MatrixAdapter._format_member_names(names) == expected
+
+
+# ---------------------------------------------------------------------------
 # Reply fallback stripping
 # ---------------------------------------------------------------------------
 

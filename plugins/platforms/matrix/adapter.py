@@ -3794,6 +3794,78 @@ class MatrixAdapter(BasePlatformAdapter):
         value = self._state_event_value(event, "name")
         return value.strip() if value and value.strip() else None
 
+    @staticmethod
+    def _matrix_localpart(user_id: str) -> str:
+        """Return the localpart of a Matrix user id (``@alice:server`` -> ``alice``)."""
+        if user_id.startswith("@") and ":" in user_id:
+            return user_id[1:].split(":")[0]
+        return user_id
+
+    @staticmethod
+    def _format_member_names(names: list[str]) -> str:
+        """Render member names the way Matrix clients title an unnamed room."""
+        if not names:
+            return ""
+        if len(names) == 1:
+            return names[0]
+        if len(names) <= 3:
+            return f"{', '.join(names[:-1])} and {names[-1]}"
+        shown = ", ".join(names[:3])
+        remaining = len(names) - 3
+        noun = "other" if remaining == 1 else "others"
+        return f"{shown} and {remaining} {noun}"
+
+    async def _get_member_profiles(self, room_id: str) -> Optional[Dict[Any, Any]]:
+        # Tier 1: state_store (fast, cache-backed).
+        state_store = (
+            getattr(self._client, "state_store", None) if self._client else None
+        )
+        if state_store and hasattr(state_store, "get_member_profiles"):
+            try:
+                profiles = await state_store.get_member_profiles(RoomID(room_id))
+                if profiles:
+                    return dict(profiles)
+            except Exception:
+                pass
+
+        # Tier 2: API fallback (direct server query) when the cache is empty.
+        client = getattr(self, "_client", None)
+        if client is not None and hasattr(client, "get_joined_members"):
+            try:
+                profiles = await client.get_joined_members(RoomID(room_id))
+                if profiles:
+                    return dict(profiles)
+            except Exception:
+                pass
+
+        return None
+
+    async def _compute_room_display_name(self, room_id: str) -> Optional[str]:
+        """Derive a room name from its members, excluding the bot itself.
+
+        Most one-to-one and small rooms carry no ``m.room.name`` state event;
+        clients title them after the other occupants. Without this the agent
+        only ever sees the opaque room id for such rooms.
+        """
+        profiles = await self._get_member_profiles(room_id)
+        if not profiles:
+            return None
+
+        own = (self._user_id or "").strip().lower()
+        names = []
+        for user_id, member in profiles.items():
+            if str(user_id).strip().lower() == own:
+                continue
+            display = getattr(member, "displayname", None)
+            names.append(display.strip() if display and display.strip()
+                         else self._matrix_localpart(str(user_id)))
+
+        if not names:
+            return None
+
+        names.sort()
+        return self._format_member_names(names)
+
     async def _get_room_canonical_alias(self, room_id: str) -> Optional[str]:
         if not self._client or not hasattr(self._client, "get_state_event"):
             return None
@@ -3883,7 +3955,15 @@ class MatrixAdapter(BasePlatformAdapter):
             and (member_count is None or member_count > 2)
         )
         chat_type = "dm" if is_likely_dm else "room"
-        display_name = room_name or canonical_alias or room_id
+
+        # An unnamed room (no m.room.name, no alias) still has a human-readable
+        # name derived from its members — resolve it so the agent isn't left
+        # with the opaque room id.
+        computed_name = None
+        if not room_name and not canonical_alias:
+            computed_name = await self._compute_room_display_name(room_id)
+
+        display_name = room_name or canonical_alias or computed_name or room_id
 
         identity = MatrixRoomIdentity(
             room_id=room_id,

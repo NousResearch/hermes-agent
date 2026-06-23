@@ -164,6 +164,12 @@ MEMORY_GUIDANCE = (
     "workflows belong in skills, not memory."
 )
 
+KNOWLEDGE_ROUTER_GUIDANCE = (
+    "When knowledge_write is available, prefer it for durable knowledge writes. "
+    "Use dry_run for uncertain routing. Do not store task logs, raw transcripts, "
+    "secrets, verification markers, or build/test dumps unless explicitly requested."
+)
+
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "

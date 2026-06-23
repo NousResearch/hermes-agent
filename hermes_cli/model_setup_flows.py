@@ -686,6 +686,7 @@ def _model_flow_custom(config):
         h in _url_lower
         for h in ("localhost", "127.0.0.1", "0.0.0.0", ":11434", ":8080", ":5000")
     )
+    _user_declined_v1 = False
     if _looks_local and not _url_lower.endswith("/v1"):
         print()
         print(f"  Hint: Did you mean to add /v1 at the end?")
@@ -700,19 +701,27 @@ def _model_flow_custom(config):
             if base_url:
                 base_url = effective_url
             print(f"  Updated URL: {effective_url}")
+        else:
+            _user_declined_v1 = True
         print()
 
     from hermes_cli.models import probe_api_models
 
     probe = probe_api_models(effective_key, effective_url)
     if probe.get("used_fallback") and probe.get("resolved_base_url"):
-        print(
-            f"Warning: endpoint verification worked at {probe['resolved_base_url']}/models, "
-            f"not the exact URL you entered. Saving the working base URL instead."
-        )
-        effective_url = probe["resolved_base_url"]
-        if base_url:
-            base_url = effective_url
+        if _user_declined_v1:
+            print(
+                f"Note: endpoint verification found a working URL at {probe['resolved_base_url']}/models, "
+                f"but you explicitly declined /v1. Using your original URL: {effective_url}"
+            )
+        else:
+            print(
+                f"Warning: endpoint verification worked at {probe['resolved_base_url']}/models, "
+                f"not the exact URL you entered. Saving the working base URL instead."
+            )
+            effective_url = probe["resolved_base_url"]
+            if base_url:
+                base_url = effective_url
     elif probe.get("models") is not None:
         print(
             f"Verified endpoint via {probe.get('probed_url')} "

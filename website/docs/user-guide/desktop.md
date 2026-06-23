@@ -105,6 +105,17 @@ The app also surfaces the broader Hermes management surface so you don't have to
 - **Search sessions by id** — find a specific session directly by its id.
 - **Concurrent multi-profile sessions** — run sessions across multiple [profiles](./profiles.md) at the same time, and reference a session in another profile with cross-profile `@session` links.
 
+### System tray
+
+On **Windows and Linux**, closing the desktop window minimizes it to the system tray instead of quitting the app. This lets you keep your Hermes session running in the background while you work in other applications.
+
+- **Tray icon** — a small Hermes icon appears in the system tray (notification area) while the app is running.
+- **Right-click menu** — right-click the tray icon to **Show Hermes** (brings the window back to focus) or **Quit** (fully exits the app).
+- **Double-click** — double-click the tray icon to show the main window.
+- **macOS** — standard macOS behaviour applies: closing the window does not quit the app. The tray integration is Windows/Linux only.
+
+Note: the tray icon works only when the Hermes Desktop app has been built from source or installed as a packaged release. Launching via the dev server (`npm run dev`) may not find the icon file — the tray silently stays inactive in that case, and closing the window behaves normally.
+
 ## Updating
 
 The app checks for updates in the background and offers a one-click update when one is ready.

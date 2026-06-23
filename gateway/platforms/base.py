@@ -1264,8 +1264,11 @@ def _log_safe_path(path: str) -> str:
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
+    ".html": "text/html",
+    ".htm": "text/html",
     ".txt": "text/plain",
     ".csv": "text/csv",
+    ".tsv": "text/tab-separated-values",
     ".log": "text/plain",
     ".json": "application/json",
     ".xml": "application/xml",
@@ -1520,9 +1523,9 @@ def cache_media_bytes(
 
     ``default_kind`` ("image"/"video"/"audio"/"document") biases classification
     when the extension/MIME are ambiguous — e.g. a Telegram native photo whose
-    file has no usable name. Any non-image/video/audio file is cached as a
-    document and surfaced to the agent (arbitrary types get
-    ``application/octet-stream``); only images that fail validation
+    file has no usable name. Non-media attachments are cached as documents even
+    when their extension is not in the common-type map; the map only supplies a
+    canonical MIME for known types. Images that fail validation
     (``cache_image_from_bytes`` raises ValueError) return None.
     """
     from tools.credential_files import to_agent_visible_cache_path
@@ -1563,9 +1566,8 @@ def cache_media_bytes(
     # so it can be inspected with terminal / read_file / etc. Authorization to
     # talk to the agent is the gate that matters — once a user is allowed to
     # message it, the file-extension allowlist must not silently drop their
-    # uploads. Known extensions keep their precise MIME; everything else is
-    # tagged application/octet-stream (or the caller-supplied MIME) so the
-    # agent knows it's an arbitrary file and reaches for terminal tools.
+    # uploads. Known extensions keep their precise MIME; everything else keeps
+    # the caller-supplied MIME or falls back to application/octet-stream.
     fallback_name = filename or (f"document{ext}" if ext else "document.bin")
     path = cache_document_from_bytes(data, fallback_name)
     if ext in SUPPORTED_DOCUMENT_TYPES:

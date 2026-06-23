@@ -5,7 +5,8 @@ A user who attaches a PDF / DOCX in chat used to see the agent treat it as
 they'd like you to do with it" — steering it away from extracting the text it
 is perfectly capable of reading. These tests pin the contract:
 
-- text documents: note confirms the (adapter-)inlined content + records path.
+- text documents: note records path and tells the agent to read the saved file
+  if content was too large to inline.
 - binary documents (PDF/DOCX/…): note tells the agent to extract the text
   itself and never tells it to punt back to the user.
 """
@@ -20,12 +21,13 @@ _build_document_context_note = gateway_run._build_document_context_note
 
 class TestTextDocumentNote:
     @pytest.mark.parametrize("mtype", ["text/plain", "text/markdown", "text/csv"])
-    def test_text_note_mentions_included_content_and_path(self, mtype):
+    def test_text_note_mentions_optional_inline_content_and_path(self, mtype):
         note = _build_document_context_note("notes.txt", "/cache/doc_notes.txt", mtype)
         assert "text document" in note
         assert "notes.txt" in note
         assert "/cache/doc_notes.txt" in note
-        assert "included below" in note
+        assert "may be included below" in note
+        assert "read the saved path" in note
 
 
 class TestBinaryDocumentNote:
@@ -52,6 +54,6 @@ class TestBinaryDocumentNote:
         text_note = _build_document_context_note("a.txt", "/c/a.txt", "text/plain")
         pdf_note = _build_document_context_note("a.pdf", "/c/a.pdf", "application/pdf")
         assert text_note != pdf_note
-        # The text path claims content is inlined; the binary path must not.
-        assert "included below" in text_note
+        # The text path allows optional inline content; the binary path must not.
+        assert "may be included below" in text_note
         assert "included below" not in pdf_note

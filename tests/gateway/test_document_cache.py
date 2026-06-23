@@ -154,8 +154,11 @@ class TestSupportedDocumentTypes:
         [
             ".pdf",
             ".md",
+            ".html",
+            ".htm",
             ".txt",
             ".zip",
+            ".tsv",
             ".doc",
             ".docx",
             ".xls",
@@ -237,6 +240,14 @@ class TestCacheMediaBytes:
         assert result is not None
         assert result.kind == "document"
         assert result.media_type == "application/octet-stream"
+
+    def test_html_routes_to_text_document(self):
+        from gateway.platforms.base import cache_media_bytes
+        result = cache_media_bytes(b"<!doctype html><html></html>", filename="plan.html", mime_type="")
+        assert result is not None
+        assert result.kind == "document"
+        assert result.media_type == "text/html"
+        assert "plan.html" in result.display_name
 
     def test_invalid_image_returns_none(self):
         from gateway.platforms.base import cache_media_bytes

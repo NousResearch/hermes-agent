@@ -6669,15 +6669,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 # ext-in-SUPPORTED_IMAGE_DOCUMENT_TYPES branch would be dead
                 # code — the extension sets are identical.
 
-                # Download and cache. Any file type is accepted — authorization
-                # to message the agent is the gate, not the file extension.
-                # Known types keep their precise MIME; unknown types are tagged
-                # application/octet-stream so the agent reaches for terminal tools.
+                # Download and cache every non-media Telegram document. Any file
+                # type is accepted — authorization to message the agent is the
+                # gate, not the file extension. Known extensions get canonical
+                # MIME types; unknown types keep the caller-supplied MIME or are
+                # tagged application/octet-stream so the agent reaches for tools.
                 file_obj = await doc.get_file()
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
                 cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext or '.bin'}")
-                mime_type = SUPPORTED_DOCUMENT_TYPES.get(ext) or doc.mime_type or "application/octet-stream"
+                mime_type = SUPPORTED_DOCUMENT_TYPES.get(ext) or doc_mime or "application/octet-stream"
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
                 logger.info("[Telegram] Cached user document at %s (%s)", cached_path, mime_type)

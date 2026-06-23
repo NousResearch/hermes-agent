@@ -1887,8 +1887,10 @@ def _build_document_context_note(display_name: str, agent_path: str, mtype: str)
     if mtype.startswith("text/"):
         return (
             f"[The user sent a text document: '{display_name}'. "
-            f"Its content has been included below. "
-            f"The file is also saved at: {agent_path}]"
+            f"Its content may be included below if it was small enough to inline. "
+            f"The original file is saved at: {agent_path}. "
+            f"If the content is not shown below, or if the request depends on the exact source, "
+            f"read the saved path with file tools before answering.]"
         )
     return (
         f"[The user sent a document: '{display_name}'. It is saved at: {agent_path}. "

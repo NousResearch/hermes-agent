@@ -1007,6 +1007,48 @@ def test_triggered_voice_message_uses_shared_session_in_observe_mode():
     asyncio.run(_run())
 
 
+def test_triggered_html_document_is_accepted_and_inlined_when_small(monkeypatch, tmp_path):
+    async def _run():
+        adapter = _make_adapter(require_mention=False)
+        adapter._max_doc_bytes = 10 * 1024 * 1024
+        adapter.handle_message = AsyncMock()
+        cached_path = tmp_path / "doc_abc_plan.html"
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.cache_document_from_bytes",
+            lambda _data, _filename: str(cached_path),
+        )
+        html_bytes = b"<!doctype html><html><body>GDV360 plan</body></html>"
+        file_obj = SimpleNamespace(
+            file_path="documents/plan.html",
+            download_as_bytearray=AsyncMock(return_value=bytearray(html_bytes)),
+        )
+        document = SimpleNamespace(
+            file_name="plan.html",
+            mime_type="text/html",
+            file_size=len(html_bytes),
+            get_file=AsyncMock(return_value=file_obj),
+        )
+        update = SimpleNamespace(
+            update_id=3007,
+            message=_group_document_message(caption="analisa", document=document),
+            effective_message=None,
+        )
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        adapter.handle_message.assert_awaited_once()
+        await_args = adapter.handle_message.await_args
+        assert await_args is not None
+        event = await_args.args[0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == [str(cached_path)]
+        assert event.media_types == ["text/html"]
+        assert "[Content of plan.html]:" in event.text
+        assert "GDV360 plan" in event.text
+
+    asyncio.run(_run())
+
+
 # ---------------------------------------------------------------------------
 # Replied-to media caching
 # ---------------------------------------------------------------------------
@@ -1180,7 +1222,7 @@ def test_unmentioned_large_document_observed_without_download(monkeypatch):
     asyncio.run(_run())
 
 
-def test_unmentioned_unsupported_document_observed_and_cached(monkeypatch):
+def test_unmentioned_unknown_document_observed_and_cached(monkeypatch, tmp_path):
     async def _run():
         adapter = _make_adapter(
             require_mention=True, allowed_chats=["-100"],
@@ -1188,7 +1230,8 @@ def test_unmentioned_unsupported_document_observed_and_cached(monkeypatch):
         )
         store = _FakeSessionStore()
         adapter._session_store = store
-        cache_doc = Mock(return_value="/tmp/program.exe")
+        cached_path = tmp_path / "doc_abc_program.exe"
+        cache_doc = Mock(return_value=str(cached_path))
         monkeypatch.setattr("gateway.platforms.base.cache_document_from_bytes", cache_doc)
         file_obj = SimpleNamespace(
             file_path="documents/program.exe",
@@ -1208,6 +1251,9 @@ def test_unmentioned_unsupported_document_observed_and_cached(monkeypatch):
         # extension. The observed message records a path-pointing note.
         cache_doc.assert_called_once()
         _, message, _ = store.messages[0]
+        assert message["observed"] is True
         assert "program.exe" in message["content"]
+        assert str(cached_path) in message["content"]
+        assert "unsupported" not in message["content"].lower()
 
     asyncio.run(_run())

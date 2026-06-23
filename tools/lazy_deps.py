@@ -361,6 +361,106 @@ def _is_present(spec: str) -> bool:
         return False
 
 
+def _python_olm_macos_install(*, timeout: int = 300) -> _InstallResult | None:
+    """Pre-install python-olm from a patched source on macOS.
+
+    python-olm 3.2.16 bundles libolm source containing a C++ const-pointer
+    bug: ``T * const other_pos`` is declared then immediately incremented
+    (``++other_pos``), which is a hard compile error on Apple clang regardless
+    of ``-Werror``.  The upstream fix is a one-line removal of the spurious
+    ``const`` qualifier; this function applies it before letting pip build
+    the wheel.
+
+    Strategy:
+    1. Download the python-olm sdist from PyPI into a temp dir.
+    2. Patch ``libolm/include/olm/list.hh``.
+    3. ``pip install --no-build-isolation <patched-src-dir>`` so the fixed
+       source is built and installed into the active venv.
+
+    Once python-olm is installed, the subsequent ``mautrix[encryption]``
+    install sees the dep satisfied and skips it — no double-build.
+
+    Returns ``None`` when this path is not needed (non-macOS, or python-olm
+    already installed).  Returns an ``_InstallResult`` otherwise so callers
+    can surface failures.
+    """
+    if sys.platform != "darwin":
+        return None
+    if _is_satisfied("python-olm==3.2.16"):
+        return None
+
+    import tarfile
+    import tempfile
+    import urllib.request
+
+    # Pin matches what mautrix[encryption]==0.21.0 resolves to.
+    OLM_VERSION = "3.2.16"
+    OLM_URL = (
+        "https://files.pythonhosted.org/packages/source/p/python-olm/"
+        f"python-olm-{OLM_VERSION}.tar.gz"
+    )
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tarball = os.path.join(tmpdir, "python-olm.tar.gz")
+            logger.info(
+                "macOS: downloading python-olm %s for patched build", OLM_VERSION
+            )
+            urllib.request.urlretrieve(OLM_URL, tarball)
+
+            # Safe extraction: reject members whose resolved path escapes tmpdir.
+            tmpdir_real = os.path.realpath(tmpdir)
+            with tarfile.open(tarball, "r:gz") as tf:
+                for member in tf.getmembers():
+                    member_path = os.path.realpath(
+                        os.path.join(tmpdir_real, member.name)
+                    )
+                    if not member_path.startswith(tmpdir_real + os.sep):
+                        raise ValueError(
+                            f"tarball member escapes temp dir: {member.name!r}"
+                        )
+                tf.extractall(tmpdir)
+
+            # Fix: libolm/include/olm/list.hh declares `T * const other_pos`
+            # then does `++other_pos` — incrementing a const pointer is a hard
+            # error on Apple clang.  Remove the spurious `const`.
+            list_hh = os.path.join(
+                tmpdir,
+                f"python-olm-{OLM_VERSION}",
+                "libolm",
+                "include",
+                "olm",
+                "list.hh",
+            )
+            with open(list_hh, encoding="utf-8") as fh:
+                src = fh.read()
+            patched = src.replace(
+                "T * const other_pos = other._data",
+                "T * other_pos = other._data",
+            )
+            if patched != src:
+                with open(list_hh, "w", encoding="utf-8") as fh:
+                    fh.write(patched)
+                logger.debug("macOS: patched libolm list.hh const-pointer bug")
+            else:
+                logger.warning(
+                    "macOS: python-olm patch target not found in list.hh — "
+                    "upstream may have fixed the bug; proceeding without patch"
+                )
+
+            src_dir = os.path.join(tmpdir, f"python-olm-{OLM_VERSION}")
+            pip_cmd = [sys.executable, "-m", "pip"]
+            r = subprocess.run(
+                pip_cmd + ["install", "--no-build-isolation", src_dir],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return _InstallResult(r.returncode == 0, r.stdout or "", r.stderr or "")
+    except Exception as exc:
+        return _InstallResult(False, "", f"macOS python-olm patched install failed: {exc}")
+
+
 def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
     """Install ``specs`` into the active venv using uv → pip → ensurepip ladder.
 
@@ -506,6 +606,22 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             )
 
     logger.info("Lazy-installing %s for feature %r", " ".join(missing), feature)
+
+    # platform.matrix: on macOS, python-olm must be built from a patched
+    # source before the main install, because the bundled libolm 3.2.16
+    # has a C++ const-pointer bug that Apple clang rejects as a hard error.
+    # Pre-installing it here means mautrix[encryption] sees the dep satisfied
+    # and pip skips the broken bundled-source build entirely.
+    if feature == "platform.matrix":
+        pre = _python_olm_macos_install()
+        if pre is not None and not pre.success:
+            snippet = (pre.stderr or pre.stdout or "").strip()[-1000:]
+            raise FeatureUnavailable(
+                feature,
+                missing,
+                f"macOS pre-install of python-olm failed: {snippet or 'no output'}",
+            )
+
     result = _venv_pip_install(missing)
     if not result.success:
         # Surface the actual pip error so the user can debug PyPI-side

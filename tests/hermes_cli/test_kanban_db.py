@@ -243,6 +243,137 @@ def test_workspace_kind_validation(kanban_home):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
 
 
+# Build plan 2026-06-23-TOTUM-BUILD-PLAN.md §5.4 audit #29 (SEV-7).
+# Auto-generated stub titles like ``task-1782227740`` (literally
+# int(time.time())) clogged the default board; 39 such rows landed in
+# a single 32-second storm (incident t_33215055). The guard rejects
+# them at create_task time so the HTTP route surfaces HTTP 400 and the
+# CLI/Loops fail fast. The pattern is anchored to ``^task-\d+$`` so a
+# legitimate title like "Task-12: wire the dashboard" still passes.
+
+def test_create_task_rejects_placeholder_title_task_N(kanban_home):
+    """Canonical stub: ``task-<unix-ts>`` must be rejected at create time."""
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="use a real title; placeholder pattern reserved for tests.",
+    ):
+        kb.create_task(
+            conn,
+            title="task-1782227740",
+            body="real spec describing the work",
+            created_by="test",
+        )
+
+
+def test_create_task_rejects_placeholder_title_low_digit(kanban_home):
+    """Even single-digit stubs (e.g. ``task-1``) must be rejected — the
+    full 39-card sweep on t_00032bc2 covered task-1..task-39 inclusive."""
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="use a real title; placeholder pattern reserved for tests.",
+    ):
+        kb.create_task(
+            conn,
+            title="task-1",
+            body="real spec describing the work",
+            created_by="test",
+        )
+
+
+def test_create_task_rejects_placeholder_title_with_whitespace(kanban_home):
+    """Whitespace around the stub must not bypass the guard — strip before
+    matching so sloppy callers (LLM output, copy-paste) still get caught."""
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="use a real title; placeholder pattern reserved for tests.",
+    ):
+        kb.create_task(
+            conn,
+            title="  task-99 \t",
+            body="real spec describing the work",
+            created_by="test",
+        )
+
+
+def test_create_task_accepts_title_starting_with_Task_capital(kanban_home):
+    """Capital-T ``Task-12`` is NOT the auto-stub pattern — the build-plan
+    pattern is lowercase ``^task-\d+$``. A legitimate spec heading like
+    ``Task-12: wire the dashboard`` must round-trip cleanly."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Task-12: wire the dashboard",
+            body="real spec describing the work",
+            created_by="test",
+        )
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.title == "Task-12: wire the dashboard"
+
+
+def test_create_task_accepts_title_with_task_prefix_but_not_digits(kanban_home):
+    """``task-foo`` (no digits) is a perfectly fine human title — only
+    ``task-<digits>`` is rejected."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="task-foo: investigate the regression",
+            body="real spec describing the work",
+            created_by="test",
+        )
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.title == "task-foo: investigate the regression"
+
+
+def test_create_task_accepts_title_with_digits_but_not_task_prefix(kanban_home):
+    """``regression-12345`` is a fine title — only the exact ``task-<digits>``
+    pattern is rejected."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="regression-12345",
+            body="real spec describing the work",
+            created_by="test",
+        )
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.title == "regression-12345"
+
+
+def test_is_placeholder_title_unit():
+    """Unit-test the helper directly so callers / future callers can rely
+    on the pattern without spinning up a full create_task path."""
+    # Canonical matches.
+    assert kb.is_placeholder_title("task-1")
+    assert kb.is_placeholder_title("task-1782227740")
+    assert kb.is_placeholder_title("  task-42  ")  # whitespace tolerated
+    # Non-matches — must NOT be flagged.
+    assert not kb.is_placeholder_title("Task-12: wire the dashboard")
+    assert not kb.is_placeholder_title("task-foo")
+    assert not kb.is_placeholder_title("task-12a")  # trailing non-digit
+    assert not kb.is_placeholder_title("task-")     # no digits
+    assert not kb.is_placeholder_title("task - 12") # whitespace inside
+    assert not kb.is_placeholder_title("prefix task-99")  # leading text
+    assert not kb.is_placeholder_title("regression-12345")
+    # None / empty — handled by the separate ``title is required`` guard.
+    assert not kb.is_placeholder_title(None)
+    assert not kb.is_placeholder_title("")
+
+
+def test_create_task_placeholder_guard_fires_before_other_validation(kanban_home):
+    """When the placeholder pattern matches AND another validation
+    (workspace_kind, parents) would also fire, the placeholder pattern
+    wins because it's the most-fundamental signal. Mirrors the ordering
+    philosophy used by the phantom-body guard upstream."""
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="placeholder pattern reserved for tests",
+    ):
+        kb.create_task(
+            conn,
+            title="task-7",
+            workspace_kind="not-a-kind",
+            parents=["t_ghost"],
+        )
+
+
 def test_create_task_persists_worktree_branch_name(kanban_home, tmp_path):
     target = tmp_path / ".worktrees" / "t6-wire"
     with kb.connect() as conn:
@@ -739,7 +870,12 @@ def test_detect_crashed_workers_systemic_failure_fast_block(
     with kb.connect() as conn:
         task_ids = []
         for i in range(4):
-            tid = kb.create_task(conn, title=f"task-{i}", assignee="a")
+            # NB: avoid the ``task-N`` placeholder pattern — kanban_db
+            # now rejects those at create time per build-plan §5.4
+            # audit #29. The title's exact wording is incidental to
+            # this test (we only care that 4 crashed-worker tasks
+            # exist), so any non-placeholder label works.
+            tid = kb.create_task(conn, title=f"crashed-worker-{i}", assignee="a")
             host = _kb._claimer_id().split(":", 1)[0]
             conn.execute(
                 "UPDATE tasks SET status='running', worker_pid=?, "

@@ -2584,6 +2584,29 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+# Pattern matching the auto-generated stub titles flagged by build-plan
+# 2026-06-23-TOTUM-BUILD-PLAN.md §5.4 audit #29. ``task-<digits>`` is the
+# canonical signature of an LLM or stub generator that emitted
+# ``int(time.time())`` (or any monotonic int) as a placeholder title
+# instead of a real spec heading. We reject the entire pattern (no
+# prefix, no suffix, the digits fill the whole rest of the string) so
+# that legitimate titles like "Task-12: wire the dashboard" still pass.
+_PLACEHOLDER_TITLE_RE = re.compile(r"^task-\d+$")
+
+
+def is_placeholder_title(title: Optional[str]) -> bool:
+    """Return True iff ``title`` matches the auto-stub pattern ``^task-\\d+$``.
+
+    Build plan 2026-06-23-TOTUM-BUILD-PLAN.md §5.4 audit #29 (SEV-7).
+    Strips leading/trailing whitespace before matching so a sloppy
+    ``"task-99 "`` is still caught. Returns False for None / empty —
+    those are handled by the separate ``title is required`` guard.
+    """
+    if not title:
+        return False
+    return bool(_PLACEHOLDER_TITLE_RE.match(str(title).strip()))
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2634,6 +2657,22 @@ def create_task(
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+    # Reject placeholder "task-N" titles at create time. Build plan
+    # 2026-06-23-TOTUM-BUILD-PLAN.md §5.4 audit #29 (SEV-7): 39 stub cards
+    # of the form ``task-<unix-ts>`` clogged the default board and were
+    # filed under t_00032bc2. The pattern is unambiguous and only used
+    # by auto-stub generators (typically an LLM that emits ``task-{int}``
+    # placeholders while scaffolding a spec). Refuse at the API layer so
+    # the HTTP route, CLI ``kanban create``, and any Loops caller all see
+    # the same ValueError (-> HTTP 400). See ticket 08d992c3-0135-4a3a-
+    # a7cf-55cc0229965b and the related sibling-branch storm-protection
+    # work (t_17f8bb1b / cbdb56583) which bundles this guard with two
+    # broader protections; this commit ships just the narrow placeholder-
+    # title rejection from audit #29 with the audit-specified wording.
+    if is_placeholder_title(title):
+        raise ValueError(
+            "use a real title; placeholder pattern reserved for tests."
+        )
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"

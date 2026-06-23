@@ -38,7 +38,7 @@ import asyncio
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -384,6 +384,95 @@ class MCPOAuthManager:
                 entry.provider = self._build_provider(server_name, entry)
 
             return entry.provider
+
+    async def get_bearer_authorization_header(
+        self,
+        server_name: str,
+        server_url: str,
+        oauth_config: Optional[dict],
+    ) -> Optional[str]:
+        """Return an Authorization header value for an OAuth MCP server.
+
+        The MCP SDK's OAuthClientProvider is an httpx.Auth implementation whose
+        async auth flow holds its internal lock until the HTTP response
+        completes. Streamable HTTP starts a long-lived GET/SSE stream after the
+        initialized notification; if that GET goes through the provider, it can
+        hold the auth lock forever and the next JSON-RPC POST (usually
+        tools/list) hangs before it can attach auth.
+
+        Hermes still uses the SDK provider for OAuth setup/storage/refresh, but
+        the long-lived MCP data-plane connection should carry a plain bearer
+        header. This materializes and refreshes the token up front so mcp_tool
+        can pass a normal header instead of passing the provider as auth=.
+        """
+        provider = self.get_or_build_provider(server_name, server_url, oauth_config)
+        if provider is None:
+            return None
+
+        try:
+            await self.invalidate_if_disk_changed(server_name)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.debug(
+                "MCP OAuth '%s': bearer materialization disk-watch failed: %s",
+                server_name, exc,
+            )
+
+        entry = self._entries.get(server_name)
+        if entry is None:
+            return None
+
+        async with entry.lock:
+            ctx = getattr(provider, "context", None)
+            if ctx is None:
+                return None
+
+            if not getattr(provider, "_initialized", False):
+                init = getattr(provider, "_initialize", None)
+                if callable(init):
+                    await cast(Callable[[], Awaitable[None]], init)()
+                if hasattr(provider, "_initialized"):
+                    provider._initialized = True  # noqa: SLF001
+
+            tokens = getattr(ctx, "current_tokens", None)
+            if tokens is not None:
+                update_expiry = getattr(ctx, "update_token_expiry", None)
+                if callable(update_expiry):
+                    update_expiry(tokens)
+
+            is_valid = getattr(ctx, "is_token_valid", None)
+            if not (callable(is_valid) and is_valid()):
+                can_refresh = getattr(ctx, "can_refresh_token", None)
+                if callable(can_refresh) and can_refresh():
+                    refresh = getattr(provider, "_refresh_token", None)
+                    handle_refresh = getattr(provider, "_handle_refresh_response", None)
+                    if not (callable(refresh) and callable(handle_refresh)):
+                        return None
+                    import httpx
+
+                    refresh_request = await cast(Callable[[], Awaitable[Any]], refresh)()
+                    async with httpx.AsyncClient(follow_redirects=True) as client:
+                        refresh_response = await client.send(refresh_request)
+                    handled = await cast(
+                        Callable[[Any], Awaitable[bool]], handle_refresh,
+                    )(refresh_response)
+                    if not handled:
+                        return None
+                else:
+                    return None
+
+            tokens = getattr(ctx, "current_tokens", None)
+            access_token = getattr(tokens, "access_token", None)
+            if not access_token:
+                return None
+
+            try:
+                from tools.mcp_oauth import _get_token_dir, _safe_filename
+
+                tokens_path = _get_token_dir() / f"{_safe_filename(server_name)}.json"
+                entry.last_mtime_ns = tokens_path.stat().st_mtime_ns
+            except Exception:
+                pass
+            return f"Bearer {access_token}"
 
     def _build_provider(
         self,

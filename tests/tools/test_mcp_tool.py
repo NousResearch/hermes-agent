@@ -1026,6 +1026,74 @@ class TestMCPServerTask:
         asyncio.run(_test())
 
 
+
+
+    def test_streamable_http_oauth_uses_bearer_header_not_auth_provider(self):
+        """OAuth Streamable HTTP must not pass OAuthClientProvider as auth=.
+
+        The SDK provider serializes auth flows with a lock. A long-lived GET/SSE
+        stream can hold that lock forever, preventing tools/list POST from
+        attaching auth. Hermes should materialize OAuth to an Authorization
+        header before opening the data-plane stream.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        captured = {}
+
+        class _FakeStreamable:
+            async def __aenter__(self):
+                return (MagicMock(), MagicMock(), lambda: "sid")
+
+            async def __aexit__(self, *args):
+                return False
+
+        def fake_streamable_http_client(url, *, http_client=None, **kwargs):
+            captured["url"] = url
+            captured["http_client"] = http_client
+            captured["kwargs"] = kwargs
+            return _FakeStreamable()
+
+        class _FakeSessionCM:
+            def __init__(self, *args, **kwargs):
+                self.session = MagicMock()
+                self.session.initialize = AsyncMock()
+
+            async def __aenter__(self):
+                return self.session
+
+            async def __aexit__(self, *args):
+                return False
+
+        fake_manager = MagicMock()
+        fake_auth_provider = MagicMock(name="oauth-provider")
+        fake_manager.get_or_build_provider.return_value = fake_auth_provider
+        fake_manager.get_bearer_authorization_header = AsyncMock(
+            return_value="Bearer ACCESS"
+        )
+
+        async def _test():
+            server = MCPServerTask("eden")
+            server._auth_type = "oauth"
+            server._sampling = None
+            with patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
+                 patch("tools.mcp_tool.streamable_http_client", new=fake_streamable_http_client), \
+                 patch("tools.mcp_tool.ClientSession", new=_FakeSessionCM), \
+                 patch("tools.mcp_oauth_manager.get_manager", return_value=fake_manager), \
+                 patch.object(MCPServerTask, "_discover_tools", new=AsyncMock()), \
+                 patch.object(MCPServerTask, "_wait_for_lifecycle_event", new=AsyncMock(return_value="shutdown")):
+                await server._run_http({
+                    "url": "https://mcp.example.com/mcp",
+                    "auth": "oauth",
+                })
+
+        asyncio.run(_test())
+
+        http_client = captured["http_client"]
+        assert http_client.headers["Authorization"] == "Bearer ACCESS"
+        assert "auth" not in captured["kwargs"]
+        assert fake_manager.get_bearer_authorization_header.await_count == 1
+
+
 # ---------------------------------------------------------------------------
 # discover_mcp_tools toolset injection
 # ---------------------------------------------------------------------------

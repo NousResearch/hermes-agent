@@ -862,6 +862,13 @@ def _resolve_named_custom_runtime(
         (explicit_base_url or "").strip()
         or custom_provider.get("base_url", "")
     ).rstrip("/")
+    # Strip a trailing /v1 so users can paste OpenAI-style base URLs (e.g.
+    # https://api.example.com/v1) into named custom providers without the
+    # downstream SDK appending another /v1 and getting a 404. Mirrors the
+    # strip already applied in the anthropic_messages / Azure paths
+    # (see PRs #15200, #22289, #23260, #26329, #18413, #18431).
+    if base_url.endswith("/v1"):
+        base_url = base_url[:-3].rstrip("/")
     if not base_url:
         return None
 

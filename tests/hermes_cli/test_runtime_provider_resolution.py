@@ -723,7 +723,7 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
 
     assert resolved["provider"] == "custom"
     assert resolved["api_mode"] == "chat_completions"
-    assert resolved["base_url"] == "http://1.2.3.4:1234/v1"
+    assert resolved["base_url"] == "http://1.2.3.4:1234"  # /v1 stripped (PR #37403)
     assert resolved["api_key"] == "local-provider-key"
     assert resolved["requested_provider"] == "local"
     assert resolved["source"] == "custom_provider:Local"
@@ -833,7 +833,7 @@ def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch
 
     assert resolved["provider"] == "custom"
     assert resolved["api_mode"] == "codex_responses"
-    assert resolved["base_url"] == "https://api.openai.com/v1"
+    assert resolved["base_url"] == "https://api.openai.com"  # /v1 stripped (PR #37403)
     assert resolved["api_key"] == "dir-key"
     assert resolved["requested_provider"] == "openai-direct-primary"
     assert resolved["source"] == "custom_provider:OpenAI Direct (Primary)"
@@ -873,7 +873,7 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
 
     assert resolved["provider"] == "custom"
     assert resolved["api_mode"] == "chat_completions"
-    assert resolved["base_url"] == "https://proxy.example.com/v1"
+    assert resolved["base_url"] == "https://proxy.example.com"  # /v1 stripped (PR #37403)
     assert resolved["api_key"] == "env-secret"
     assert resolved["requested_provider"] == "mycorp-proxy"
     assert resolved["source"] == "custom_provider:MyCorp Proxy"
@@ -955,7 +955,7 @@ def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="custom:local-llm")
 
-    assert resolved["base_url"] == "http://localhost:1234/v1"
+    assert resolved["base_url"] == "http://localhost:1234"  # /v1 stripped (PR #37403)
     # localhost is not openai.com — OPENAI_API_KEY must not leak to local endpoints (#28660)
     assert resolved["api_key"] == "no-key-required"
     assert resolved["requested_provider"] == "custom:local-llm"
@@ -1236,7 +1236,7 @@ def test_named_custom_provider_api_mode(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="my-server")
 
     assert resolved["api_mode"] == "codex_responses"
-    assert resolved["base_url"] == "http://localhost:8000/v1"
+    assert resolved["base_url"] == "http://localhost:8000"  # /v1 stripped (PR #37403)
 
 
 def test_named_custom_provider_without_api_mode_defaults(monkeypatch):
@@ -2835,3 +2835,108 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: named custom provider strips trailing /v1
+# (https://github.com/NousResearch/hermes-agent/pull/37403)
+#
+# These tests pin the contract for `_resolve_named_custom_runtime`:
+#   - OpenAI-style base URLs (https://host/v1) resolve to https://host
+#   - URLs whose /v1 is mid-path (https://host/openai/v1) are unchanged
+#   - This mirrors the strip already applied in the `direct-alias` branch
+#     above and in the anthropic_messages path (PRs #15200, #18413, #22289,
+#     #23260, #26329, #18431).
+# ---------------------------------------------------------------------------
+
+def _fake_named_custom(name, base_url, api_mode="chat_completions", api_key="sk-test"):
+    """Build a custom-provider dict shaped like what _get_named_custom_provider returns."""
+    return {
+        "name": name,
+        "base_url": base_url,
+        "api_mode": api_mode,
+        "api_key": api_key,
+    }
+
+
+def test_named_custom_runtime_strips_trailing_v1(monkeypatch):
+    """https://api.example.com/v1 → https://api.example.com (OpenAI-style)."""
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda requested: _fake_named_custom(requested, "https://api.example.com/v1"),
+    )
+    resolved = rp._resolve_named_custom_runtime(
+        requested_provider="myprovider",
+        explicit_base_url=None,
+        explicit_api_key=None,
+    )
+    assert resolved is not None
+    assert resolved["base_url"] == "https://api.example.com"
+    # The provider name, api_key, and api_mode pass through unchanged.
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["api_key"] == "sk-test"
+
+
+def test_named_custom_runtime_strips_trailing_v1_with_trailing_slash(monkeypatch):
+    """https://api.example.com/v1/ → https://api.example.com (defensive)."""
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda requested: _fake_named_custom(requested, "https://api.example.com/v1/"),
+    )
+    resolved = rp._resolve_named_custom_runtime(
+        requested_provider="myprovider",
+    )
+    assert resolved["base_url"] == "https://api.example.com"
+
+
+def test_named_custom_runtime_strips_only_trailing_v1_segment(monkeypatch):
+    """https://api.example.com/openai/v1 → https://api.example.com/openai.
+
+    A `/v1` that is the *final* URL segment is always stripped, even when it
+    is preceded by a longer path. The contract: strip the trailing version
+    segment, leave the rest of the path alone.
+
+    This guards the contract: a v1 at the end must be stripped, otherwise
+    the SDK would hit /v1/v1/... and 404. But the path BEFORE the trailing
+    `/v1` must not be mangled (no other slash-stripping, no URL parse).
+    """
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda requested: _fake_named_custom(requested, "https://api.example.com/openai/v1"),
+    )
+    resolved = rp._resolve_named_custom_runtime(
+        requested_provider="myprovider",
+    )
+    assert resolved["base_url"] == "https://api.example.com/openai"
+
+
+def test_named_custom_runtime_leaves_no_v1_url_alone(monkeypatch):
+    """A URL with no /v1 suffix is returned as-is (no accidental mutation)."""
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda requested: _fake_named_custom(requested, "https://api.example.com"),
+    )
+    resolved = rp._resolve_named_custom_runtime(
+        requested_provider="myprovider",
+    )
+    assert resolved["base_url"] == "https://api.example.com"
+
+
+def test_named_custom_runtime_explicit_base_url_overrides_and_strips(monkeypatch):
+    """explicit_base_url is also subject to the /v1 strip (same code path)."""
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda requested: _fake_named_custom(requested, "https://fallback.example.com/v1"),
+    )
+    resolved = rp._resolve_named_custom_runtime(
+        requested_provider="myprovider",
+        explicit_base_url="https://override.example.com/v1",
+    )
+    # The explicit URL wins, and the /v1 is stripped from it (not the fallback).
+    assert resolved["base_url"] == "https://override.example.com"

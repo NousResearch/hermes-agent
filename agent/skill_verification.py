@@ -1,13 +1,15 @@
-"""Runtime verification gates for loaded skills.
+"""Runtime verification gates for activated skills.
 
 Skills can declare a deterministic before-final verifier in SKILL.md
-frontmatter.  When the agent loads such a skill via skill_view, this module
-records the verifier for the current session.  turn_finalizer drains and runs
-those verifiers before returning the final response.
+frontmatter.  Loading a skill records its verifier as an inert candidate for the
+current session.  A separate activation step arms that verifier, and
+turn_finalizer drains and runs only activated verifiers before returning the
+final response.
 """
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -19,6 +21,8 @@ from agent.skill_utils import parse_frontmatter
 _MAX_OUTPUT_PREVIEW_CHARS = 1200
 _DEFAULT_TIMEOUT_SECONDS = 120
 _MAX_TIMEOUT_SECONDS = 3600
+_ALLOW_COMMANDS_CONFIG_KEY = "skills.verification.allow_commands"
+_LOADED_BY_SESSION: dict[str, dict[str, "SkillVerificationSpec"]] = {}
 _PENDING_BY_SESSION: dict[str, dict[str, "SkillVerificationSpec"]] = {}
 _LOCK = threading.Lock()
 
@@ -69,7 +73,7 @@ class SkillVerificationResult:
 
 
 def record_skill_view_payload(session_id: str | None, payload: dict[str, Any]) -> bool:
-    """Record a loaded skill's before-final verifier for this session."""
+    """Record a loaded skill's before-final verifier candidate for this session."""
     key = _session_key(session_id)
     if not key or not isinstance(payload, dict) or not payload.get("success"):
         return False
@@ -79,12 +83,38 @@ def record_skill_view_payload(session_id: str | None, payload: dict[str, Any]) -
         return False
 
     with _LOCK:
-        _PENDING_BY_SESSION.setdefault(key, {})[spec.name] = spec
+        loaded = _LOADED_BY_SESSION.setdefault(key, {})
+        for alias in _spec_aliases(payload, spec):
+            loaded[alias] = spec
     return True
 
 
+def activate_skill_verification(session_id: str | None, skill_name: str | None) -> bool:
+    """Arm a previously loaded skill verifier for this session."""
+    key = _session_key(session_id)
+    name_key = _skill_key(skill_name)
+    if not key or not name_key:
+        return False
+
+    with _LOCK:
+        spec = _LOADED_BY_SESSION.get(key, {}).get(name_key)
+        if spec is None:
+            return False
+        _PENDING_BY_SESSION.setdefault(key, {})[name_key] = spec
+    return True
+
+
+def loaded_verification_specs(session_id: str | None) -> list[SkillVerificationSpec]:
+    """Return loaded but inert specs for tests and observability."""
+    key = _session_key(session_id)
+    if not key:
+        return []
+    with _LOCK:
+        return list(_LOADED_BY_SESSION.get(key, {}).values())
+
+
 def pending_verification_specs(session_id: str | None) -> list[SkillVerificationSpec]:
-    """Return pending specs for tests and observability."""
+    """Return activated pending specs for tests and observability."""
     key = _session_key(session_id)
     if not key:
         return []
@@ -97,6 +127,7 @@ def clear_session_verifications(session_id: str | None) -> None:
     if not key:
         return
     with _LOCK:
+        _LOADED_BY_SESSION.pop(key, None)
         _PENDING_BY_SESSION.pop(key, None)
 
 
@@ -173,11 +204,34 @@ def _drain_session_specs(session_id: str | None) -> list[SkillVerificationSpec]:
 
 def _run_check(spec: SkillVerificationSpec) -> SkillVerificationCheck:
     cwd = _existing_skill_dir(spec.skill_dir)
+    if not _command_verifiers_enabled():
+        return SkillVerificationCheck(
+            spec=spec,
+            passed=False,
+            error=(
+                "command verifiers are disabled; set "
+                f"{_ALLOW_COMMANDS_CONFIG_KEY}=true in config.yaml to allow "
+                "activated skill commands"
+            ),
+        )
+    try:
+        argv = shlex.split(spec.command)
+    except ValueError as exc:
+        return SkillVerificationCheck(
+            spec=spec,
+            passed=False,
+            error=f"invalid command syntax: {exc}",
+        )
+    if not argv:
+        return SkillVerificationCheck(
+            spec=spec,
+            passed=False,
+            error="empty verifier command",
+        )
     try:
         completed = subprocess.run(
-            spec.command,
+            argv,
             cwd=str(cwd) if cwd else None,
-            shell=True,
             capture_output=True,
             text=True,
             timeout=spec.timeout_seconds,
@@ -292,6 +346,33 @@ def _existing_skill_dir(raw: str | None) -> Path | None:
 
 def _session_key(session_id: str | None) -> str:
     return str(session_id or "").strip()
+
+
+def _skill_key(name: str | None) -> str:
+    return str(name or "").strip().lower()
+
+
+def _spec_aliases(
+    payload: dict[str, Any],
+    spec: SkillVerificationSpec,
+) -> set[str]:
+    raw_aliases = {
+        spec.name,
+        payload.get("name"),
+        payload.get("requested_name"),
+        payload.get("_requested_name"),
+    }
+    aliases = {_skill_key(alias) for alias in raw_aliases}
+    return {alias for alias in aliases if alias}
+
+
+def _command_verifiers_enabled() -> bool:
+    try:
+        from hermes_cli.config import cfg_get
+
+        return bool(cfg_get(_ALLOW_COMMANDS_CONFIG_KEY, False))
+    except Exception:
+        return False
 
 
 def _coerce_output(value: Any) -> str:

@@ -1144,11 +1144,18 @@ class TestBuildSystemPrompt:
         assert "NOUS SUBSCRIPTION BLOCK" in prompt
 
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
-        tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
+        tools = _make_tool_defs(
+            "web_search",
+            "skills_list",
+            "skill_view",
+            "skill_activate",
+            "skill_manage",
+        )
         toolset_map = {
             "web_search": "web",
             "skills_list": "skills",
             "skill_view": "skills",
+            "skill_activate": "skills",
             "skill_manage": "skills",
         }
 

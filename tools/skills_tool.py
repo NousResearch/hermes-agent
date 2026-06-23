@@ -1576,7 +1576,7 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter. Loading is not activation; call skill_activate after you decide to follow the skill.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1588,6 +1588,21 @@ SKILL_VIEW_SCHEMA = {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
             },
+        },
+        "required": ["name"],
+    },
+}
+
+SKILL_ACTIVATE_SCHEMA = {
+    "name": "skill_activate",
+    "description": "Mark a previously loaded skill as actually used for this turn. If the skill declares a runtime before-final verifier, this arms it so the final response is checked. Call only after deciding to follow the skill, not while merely inspecting candidates.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "The skill name to activate.",
+            }
         },
         "required": ["name"],
     },
@@ -1617,6 +1632,7 @@ def _skill_view_with_bump(args, **kw):
                 try:
                     from agent.skill_verification import record_skill_view_payload
 
+                    parsed["_requested_name"] = name
                     record_skill_view_payload(kw.get("session_id"), parsed)
                 except Exception:
                     pass
@@ -1635,11 +1651,52 @@ def _skill_view_with_bump(args, **kw):
     return result
 
 
+def _skill_activate(args, **kw):
+    """Activate a loaded skill for this turn and arm any before-final verifier."""
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return tool_error("Skill name is required.")
+
+    verification_armed = False
+    try:
+        from agent.skill_verification import activate_skill_verification
+
+        verification_armed = activate_skill_verification(kw.get("session_id"), name)
+    except Exception:
+        verification_armed = False
+
+    try:
+        from tools.skill_usage import bump_use
+
+        bump_use(name)
+    except Exception:
+        pass
+
+    return json.dumps(
+        {
+            "success": True,
+            "name": name,
+            "activated": True,
+            "verification_armed": verification_armed,
+        },
+        ensure_ascii=False,
+    )
+
+
 registry.register(
     name="skill_view",
     toolset="skills",
     schema=SKILL_VIEW_SCHEMA,
     handler=_skill_view_with_bump,
+    check_fn=check_skills_requirements,
+    emoji="📚",
+)
+
+registry.register(
+    name="skill_activate",
+    toolset="skills",
+    schema=SKILL_ACTIVATE_SCHEMA,
+    handler=_skill_activate,
     check_fn=check_skills_requirements,
     emoji="📚",
 )

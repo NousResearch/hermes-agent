@@ -1584,6 +1584,8 @@ def build_skills_system_prompt(
             "## Skills (mandatory)\n"
             "Before replying, scan the skills below. If a skill matches or is even partially relevant "
             "to your task, you MUST load it with skill_view(name) and follow its instructions. "
+            "Loading is only inspection; once you decide to actually use a loaded skill, call "
+            "skill_activate(name) before continuing with the skill's workflow. "
             "Err on the side of loading — it is always better to have context you don't need "
             "than to miss critical steps, pitfalls, or established workflows. "
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "

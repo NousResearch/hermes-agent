@@ -570,7 +570,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
             code_preview += "..."
         return f"[execute_code] `{code_preview}` ({line_count} lines output)"
 
-    if tool_name in {"skill_view", "skills_list", "skill_manage"}:
+    if tool_name in {"skill_activate", "skill_view", "skills_list", "skill_manage"}:
         name = args.get("name", "?")
         return f"[{tool_name}] name={name} ({content_len:,} chars)"
 

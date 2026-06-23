@@ -46,6 +46,7 @@ MUTATING_TOOL_NAMES = frozenset(
         "patch",
         "todo",
         "memory",
+        "skill_activate",
         "skill_manage",
         "browser_click",
         "browser_type",

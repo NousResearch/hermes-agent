@@ -333,6 +333,7 @@ def finalize_turn(
             logger.warning("transform_llm_output hook failed: %s", exc)
 
     _skill_verification_result = None
+    _skill_verification_error = None
     if final_response and not interrupted:
         try:
             from agent.skill_verification import run_before_final_verifications
@@ -346,6 +347,14 @@ def finalize_turn(
                 completed = False
         except Exception as exc:
             logger.warning("skill before-final verification failed: %s", exc)
+            _skill_verification_error = f"{type(exc).__name__}: {exc}"
+            final_response = (
+                "Skill verification could not run before the final response.\n\n"
+                "The assistant's unverified final answer was blocked because "
+                f"the verification infrastructure raised {_skill_verification_error}"
+            )
+            failed = True
+            completed = False
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
@@ -424,6 +433,8 @@ def finalize_turn(
         result["cleanup_errors"] = _cleanup_errors
     if _skill_verification_result is not None:
         result["skill_verification"] = _skill_verification_result.to_dict()
+    if _skill_verification_error is not None:
+        result["skill_verification_error"] = _skill_verification_error
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.

@@ -8483,6 +8483,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 except Exception as exc:
                     logging.debug("goal continuation enqueue failed: %s", exc)
 
+        resume_after = decision.get("resume_after_seconds")
+        if resume_after and resume_after > 0:
+            def _goal_deadline_fire():
+                import time as _t
+                _t.sleep(resume_after)
+                try:
+                    self._pending_input.put(
+                        "The wait period has elapsed. Continue working on the goal."
+                    )
+                except Exception:
+                    pass
+            threading.Thread(
+                target=_goal_deadline_fire, daemon=True, name="goal-deadline",
+            ).start()
+
 
 
     def _toggle_verbose(self):

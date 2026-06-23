@@ -10670,6 +10670,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if msg and source is not None:
             await self._defer_goal_status_notice_after_delivery(source, msg)
 
+        resume_after = decision.get("resume_after_seconds")
+        if resume_after and resume_after > 0 and source is not None:
+            async def _goal_deadline_fire():
+                await asyncio.sleep(resume_after)
+                try:
+                    _adapter = self.adapters.get(source.platform)
+                    _key = self._session_key_for_source(source)
+                    if _adapter and _key:
+                        _evt = MessageEvent(
+                            text="The wait period has elapsed. Continue working on the goal.",
+                            message_type=MessageType.TEXT,
+                            source=source,
+                            message_id=None,
+                            channel_prompt=None,
+                        )
+                        self._enqueue_fifo(_key, _evt, _adapter)
+                except Exception as exc:
+                    logger.debug("goal deadline fire: %s", exc)
+            asyncio.ensure_future(_goal_deadline_fire())
+
         if not decision.get("should_continue"):
             return
 

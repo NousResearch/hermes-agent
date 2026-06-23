@@ -6849,6 +6849,38 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                                 cont_prompt = decision.get("continuation_prompt") or ""
                                 if cont_prompt:
                                     goal_followup = cont_prompt
+
+                            resume_secs = decision.get("resume_after_seconds")
+                            if resume_secs and resume_secs > 0:
+                                _dl_sid = sid
+                                _dl_session = session
+                                _dl_rid = rid
+                                def _goal_deadline_fire():
+                                    import time as _t
+                                    _t.sleep(resume_secs)
+                                    with _dl_session["history_lock"]:
+                                        if _dl_session.get("running"):
+                                            return
+                                        _dl_session["running"] = True
+                                    try:
+                                        _emit("message.start", _dl_sid)
+                                        _run_prompt_submit(
+                                            _dl_rid, _dl_sid, _dl_session,
+                                            "The wait period has elapsed. Continue working on the goal.",
+                                        )
+                                    except Exception as _dl_exc:
+                                        print(
+                                            f"[tui_gateway] goal deadline fire failed: "
+                                            f"{type(_dl_exc).__name__}: {_dl_exc}",
+                                            file=sys.stderr,
+                                        )
+                                        with _dl_session["history_lock"]:
+                                            _dl_session["running"] = False
+                                threading.Thread(
+                                    target=_goal_deadline_fire,
+                                    daemon=True,
+                                    name="goal-deadline",
+                                ).start()
                 except Exception as _goal_exc:
                     print(
                         f"[tui_gateway] goal continuation hook failed: "

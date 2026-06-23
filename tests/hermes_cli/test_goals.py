@@ -1079,6 +1079,75 @@ class TestJudgeDrivenWait:
         assert mgr.is_waiting() is False
         assert mgr.state.waiting_until == 0.0
 
+    def test_time_wait_verdict_includes_resume_after_seconds(self, hermes_home):
+        """wait_for_seconds verdict must include resume_after_seconds so
+        drivers can schedule a timer to re-enter the loop."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="jw-resume-secs", default_max_turns=10)
+        mgr.set("do work")
+        with patch.object(
+            goals, "judge_goal",
+            return_value=("wait", "rate limited", False, {"seconds": 60}),
+        ):
+            decision = mgr.evaluate_after_turn("Hit a 429.")
+        assert decision["verdict"] == "wait"
+        assert decision["should_continue"] is False
+        assert decision["resume_after_seconds"] == 60
+
+    def test_time_barrier_is_waiting_includes_resume_after_seconds(self, hermes_home):
+        """When a turn fires while a time barrier is active, the decision
+        must carry resume_after_seconds so the driver can (re)schedule."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="jw-resume-wait")
+        mgr.set("g")
+        mgr.wait_for_seconds(120, reason="backoff")
+        decision = mgr.evaluate_after_turn("response")
+        assert decision["verdict"] == "waiting"
+        assert decision["should_continue"] is False
+        assert "resume_after_seconds" in decision
+        assert 0 < decision["resume_after_seconds"] <= 120
+
+    def test_pid_wait_verdict_has_no_resume_after_seconds(self, hermes_home):
+        """PID-based waits should NOT include resume_after_seconds — they
+        wake via process-exit events, not timers."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="jw-pid-no-resume", default_max_turns=10)
+        mgr.set("watch a process")
+        with patch.object(
+            goals, "judge_goal",
+            return_value=("wait", "compiling", False, {"pid": 99999}),
+        ), patch.object(goals, "_pid_alive", return_value=True):
+            decision = mgr.evaluate_after_turn("started build")
+        assert decision["verdict"] == "wait"
+        assert "resume_after_seconds" not in decision
+
+    def test_time_barrier_deadline_falls_through_to_judge(self, hermes_home):
+        """After the time deadline passes, evaluate_after_turn must fall
+        through to the judge instead of short-circuiting — verifying the
+        full driver path, not just is_waiting() in isolation."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="jw-fall-through", default_max_turns=10)
+        mgr.set("do work")
+        mgr.wait_for_seconds(5, reason="backoff")
+        # Force deadline into the past.
+        mgr.state.waiting_until = time.time() - 1
+        with patch.object(
+            goals, "judge_goal",
+            return_value=("continue", "keep going", False, None),
+        ) as mock_judge:
+            decision = mgr.evaluate_after_turn("some response")
+        mock_judge.assert_called_once()
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is True
+        assert mgr.state.waiting_until == 0.0
+
     def test_continue_verdict_still_continues_with_background(self, hermes_home):
         """A running process present but judge says continue → normal loop."""
         from hermes_cli import goals

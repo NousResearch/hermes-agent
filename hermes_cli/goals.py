@@ -1428,7 +1428,7 @@ class GoalManager:
                 remaining = max(0, int(state.waiting_until - time.time()))
                 tgt = f"{remaining}s remaining"
             reason = state.waiting_reason or tgt
-            return {
+            result = {
                 "status": "active",
                 "should_continue": False,
                 "continuation_prompt": None,
@@ -1436,6 +1436,9 @@ class GoalManager:
                 "reason": reason,
                 "message": f"⏳ Goal parked — waiting on {tgt}: {reason}",
             }
+            if state.waiting_until and state.waiting_on_pid is None and state.waiting_on_session is None:
+                result["resume_after_seconds"] = max(1, int(state.waiting_until - time.time()))
+            return result
 
         # Count the turn that just finished.
         state.turns_used += 1
@@ -1466,6 +1469,7 @@ class GoalManager:
         # exits or the deadline passes (next evaluate_after_turn falls through
         # the is_waiting() short-circuit once the barrier clears).
         if verdict == "wait" and wait_directive:
+            resume_secs = None
             if wait_directive.get("session_id"):
                 self.wait_on_session(str(wait_directive["session_id"]), reason=reason)
                 tgt = f"session {wait_directive['session_id']}"
@@ -1473,9 +1477,11 @@ class GoalManager:
                 self.wait_on(int(wait_directive["pid"]), reason=reason)
                 tgt = f"pid {wait_directive['pid']}"
             else:
-                self.wait_for_seconds(int(wait_directive["seconds"]), reason=reason)
-                tgt = f"{wait_directive['seconds']}s"
-            return {
+                secs = int(wait_directive["seconds"])
+                self.wait_for_seconds(secs, reason=reason)
+                tgt = f"{secs}s"
+                resume_secs = secs
+            result = {
                 "status": "active",
                 "should_continue": False,
                 "continuation_prompt": None,
@@ -1483,6 +1489,9 @@ class GoalManager:
                 "reason": reason,
                 "message": f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}",
             }
+            if resume_secs is not None:
+                result["resume_after_seconds"] = resume_secs
+            return result
 
         if verdict == "done":
             state.status = "done"

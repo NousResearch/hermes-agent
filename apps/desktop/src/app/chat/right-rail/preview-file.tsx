@@ -6,7 +6,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   ReactNode
 } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
@@ -456,6 +456,9 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
+  const pendingScrollRestore = useRef<number | null>(null)
+  const prevReloadKey = useRef(reloadKey)
 
   // HTML files are rendered as source code, not in a webview - so they take
   // the same path as plain text files. `previewKind === 'binary'` arrives
@@ -479,6 +482,12 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
         return
       }
+
+      // Snapshot scroll position before replacing content with loading state
+      if (scrollContainerRef.current && reloadKey !== prevReloadKey.current) {
+        pendingScrollRestore.current = scrollContainerRef.current.scrollTop
+      }
+      prevReloadKey.current = reloadKey
 
       setState({ loading: true })
 
@@ -525,6 +534,14 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       active = false
     }
   }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, target.dataUrl, target.language])
+
+  // Restore scroll position after a content reload
+  useLayoutEffect(() => {
+    if (pendingScrollRestore.current !== null && scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = pendingScrollRestore.current
+      pendingScrollRestore.current = null
+    }
+  }, [state.text, state.dataUrl])
 
   if (state.loading) {
     return <PageLoader label={t.preview.loading} />
@@ -574,7 +591,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     const showRendered = isMarkdown && !renderMarkdownAsSource
 
     return (
-      <div className="h-full overflow-auto bg-transparent">
+      <div ref={scrollContainerRef} className="h-full overflow-auto bg-transparent">
         {state.truncated && (
           <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
             {t.preview.truncated}

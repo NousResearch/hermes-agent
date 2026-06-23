@@ -15,8 +15,16 @@ if TYPE_CHECKING:
 
 try:
     from . import holographic as hrr
-except ImportError:
+    from .store import _sanitize_fts_query
+except ImportError:  # pragma: no cover — fallback when run as a flat script
     import holographic as hrr  # type: ignore[no-redef]
+
+    def _sanitize_fts_query(query: str | None) -> str:
+        """Stub fallback used only when ``store`` cannot be imported
+        (e.g. running ``retrieval.py`` directly outside the package). Always
+        returns ``""`` so callers short-circuit; production code paths go
+        through ``store``."""
+        return ""
 
 
 class FactRetriever:
@@ -494,9 +502,12 @@ class FactRetriever:
 
         # Build query - FTS5 rank is negative (lower = better match)
         # We need to join facts_fts with facts to get all columns
-        params: list = []
+        # Sanitize user query for FTS5 MATCH — see store._sanitize_fts_query.
+        safe_query = _sanitize_fts_query(query)
+        if not safe_query:
+            return []
+        params: list = [safe_query]
         where_clauses = ["facts_fts MATCH ?"]
-        params.append(query)
 
         if category:
             where_clauses.append("f.category = ?")

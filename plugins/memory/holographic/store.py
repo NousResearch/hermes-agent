@@ -95,6 +95,77 @@ def _clamp_trust(value: float) -> float:
     return max(_TRUST_MIN, min(_TRUST_MAX, value))
 
 
+# FTS5 MATCH query sanitizer. The default unicode61 tokenizer treats
+# punctuation (including '-') as token separators, and FTS5 itself treats
+# ':' as a column-filter operator, '(' / ')' / '*' as syntax characters, and
+# '"' as a phrase delimiter. Passing the raw user query into a ``MATCH ?``
+# clause can therefore raise ``sqlite3.OperationalError`` (e.g. ``hermes-agent``
+# is parsed as two tokens; ``namespace:token`` as ``column:term``) which the
+# caller ``FactRetriever.search_facts`` then swallows in ``except Exception``,
+# silently returning ``[]`` for what should be a legitimate query.
+#
+# Strategy (mirrors ``SessionDB._sanitize_fts5_query`` in hermes_state.py,
+# the project's reference FTS5 sanitizer, which already handles this class of
+# bug — see commit d1771114e):
+#
+#   1. Preserve properly paired quoted phrases ("exact phrase") verbatim.
+#   2. Outside those phrases, replace any remaining FTS5 special characters
+#      with a space (NOT delete them) so token boundaries are kept.
+#   3. Collapse runs of whitespace introduced by step 2.
+#   4. Strip a leading ``*`` (FTS5 requires at least one char before ``*``).
+#
+# The output is therefore always a syntactically safe ``OR``-joined set of
+# unicode61 tokens, regardless of what the user typed.
+#
+# Note on the special-char set: we replace any ASCII character that is not
+# alphanumeric / underscore / whitespace. Empirically (verified against the
+# system ``sqlite3`` module shipped with the project venv) every other ASCII
+# punctuation char either (a) triggers ``fts5: syntax error near "<char>"``,
+# or (b) gets parsed as a FTS5 column-filter / operator (``:``, ``-``) and
+# raises ``no such column``. The unicode61 tokenizer would drop them anyway
+# during indexing, so replacing them with spaces is loss-free for recall.
+# Non-ASCII letters/digits are preserved verbatim — unicode61 indexes them
+# as first-class tokens and a Chinese / Japanese / Korean search query must
+# still match a Chinese / Japanese / Korean document.
+_FTS5_SPECIAL_CHARS_RE = re.compile(r"[^A-Za-z0-9_\s\x80-\U0010FFFF]")
+_FTS5_PRESERVE_QUOTED_RE = re.compile(r'"[^"]*"')
+_FTS5_WS_RE = re.compile(r"[ \t\n\r\f\v]+")  # ASCII whitespace only
+_FTS5_LEADING_STAR_RE = re.compile(r"^\s*\*+")
+
+
+def _sanitize_fts_query(query: str | None) -> str:
+    """Return an FTS5-safe MATCH expression for a user-supplied search string.
+
+    Empty / whitespace-only input returns ``""`` so callers can short-circuit
+    to an empty result set without ever touching SQLite. Otherwise the input
+    is rewritten into a safe token stream as described in the module-level
+    comment above.
+    """
+    if not query:
+        return ""
+    # Step 1 — preserve any quoted phrase by stashing it, sanitizing the
+    # remainder, then stitching the phrase back in unchanged. The marker
+    # uses letters + digits only so the special-char pass cannot touch it
+    # (it lives entirely in [A-Za-z0-9_]).
+    preserved: list[str] = []
+
+    def _stash(match: "re.Match[str]") -> str:
+        preserved.append(match.group(0))
+        return f"__HERMPRESERVED_{len(preserved) - 1}__"
+
+    intermediate = _FTS5_PRESERVE_QUOTED_RE.sub(_stash, query)
+    # Step 2 — replace remaining FTS5-special chars with spaces.
+    intermediate = _FTS5_SPECIAL_CHARS_RE.sub(" ", intermediate)
+    # Step 3 — collapse runs of whitespace.
+    intermediate = _FTS5_WS_RE.sub(" ", intermediate).strip()
+    # Step 4 — strip leading ``*``.
+    intermediate = _FTS5_LEADING_STAR_RE.sub("", intermediate).strip()
+    # Restore preserved phrases.
+    for idx, phrase in enumerate(preserved):
+        intermediate = intermediate.replace(f"__HERMPRESERVED_{idx}__", phrase)
+    return intermediate
+
+
 class MemoryStore:
     """SQLite-backed fact store with entity resolution and trust scoring."""
 
@@ -205,7 +276,12 @@ class MemoryStore:
             if not query:
                 return []
 
-            params: list = [query, min_trust]
+            # Sanitize user query for FTS5 MATCH — see _sanitize_fts_query.
+            safe_query = _sanitize_fts_query(query)
+            if not safe_query:
+                return []
+
+            params: list = [safe_query, min_trust]
             category_clause = ""
             if category is not None:
                 category_clause = "AND f.category = ?"

@@ -373,7 +373,7 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
 
     lock_path = SKILLS_DIR / ".hub" / "lock.json"
     try:
-        data = json.loads(lock_path.read_text()) if lock_path.exists() else {"version": 1, "installed": {}}
+        data = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.exists() else {"version": 1, "installed": {}}
     except (json.JSONDecodeError, OSError):
         data = {"version": 1, "installed": {}}
     installed = data.setdefault("installed", {})

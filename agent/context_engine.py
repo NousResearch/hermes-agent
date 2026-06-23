@@ -263,6 +263,36 @@ class ContextEngine(ABC):
         """
         return None
 
+    def on_turn_complete(
+        self,
+        messages: List[Dict[str, Any]],
+        usage: Dict[str, Any] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Observe a finished user turn (post-turn ingestion / observation).
+
+        Called once after the assistant/tool loop completes for a turn, with
+        the finalized in-memory transcript snapshot. This is the complement to
+        ``select_context()``: selection happens *before* the request, while
+        observation happens *after* the turn. It lets an engine ingest, index,
+        summarize, or update routing / topic / session state from what actually
+        happened — so the next ``select_context()`` can act on it.
+
+        Together the two hooks remove the need to abuse ``should_compress()`` /
+        ``compress()`` as a generic per-turn callback just to observe history,
+        and they cover the case where a turn finishes and there may be no next
+        request from which to infer the previous turn.
+
+        ``messages`` is a shallow copy and should be treated as read-only:
+        return values are ignored and this hook must not rely on transcript
+        mutation for persistence. ``kwargs`` may include ``turn_id``,
+        ``task_id``, ``api_call_count``, ``interrupted``, ``failed``, and
+        ``turn_exit_reason``.
+
+        Default is a no-op.
+        """
+        return None
+
     # -- Optional: pre-flight check ----------------------------------------
 
     def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:

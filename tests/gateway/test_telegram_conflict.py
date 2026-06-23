@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import MessageType
 
 
 def _ensure_telegram_mock():
@@ -398,6 +399,122 @@ async def test_send_network_error_drains_general_pool_before_retry(monkeypatch):
 
     assert result.success is True
     assert adapter._bot.send_message.await_count == 2
+    general_req.shutdown.assert_awaited_once()
+    general_req.initialize.assert_awaited_once()
+    polling_req.shutdown.assert_not_awaited()
+    polling_req.initialize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_media_pool_timeout_drains_general_pool():
+    from telegram.error import TimedOut
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    polling_req = SimpleNamespace(shutdown=AsyncMock(), initialize=AsyncMock())
+    general_req = SimpleNamespace(shutdown=AsyncMock(), initialize=AsyncMock())
+    adapter._app = SimpleNamespace(
+        bot=SimpleNamespace(_request=(polling_req, general_req))
+    )
+    adapter.handle_message = AsyncMock()
+
+    pool_error = TimedOut(
+        "Pool timeout: All connections in the connection pool are occupied. "
+        "Request was *not* sent to Telegram."
+    )
+    voice = SimpleNamespace(file_size=1024, get_file=AsyncMock(side_effect=pool_error))
+    message = SimpleNamespace(
+        message_id=101,
+        text="",
+        caption=None,
+        date=None,
+        photo=None,
+        video=None,
+        audio=None,
+        voice=voice,
+        sticker=None,
+        document=None,
+        media_group_id=None,
+        reply_to_message=None,
+        quote=None,
+        message_thread_id=None,
+        is_topic_message=False,
+        chat=SimpleNamespace(
+            id=123,
+            type="private",
+            title=None,
+            full_name="Test User",
+            is_forum=False,
+        ),
+        from_user=SimpleNamespace(id=456, full_name="Test User"),
+    )
+
+    await adapter._handle_media_message(
+        SimpleNamespace(update_id=789, message=message),
+        None,
+    )
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.message_type == MessageType.VOICE
+    general_req.shutdown.assert_awaited_once()
+    general_req.initialize.assert_awaited_once()
+    polling_req.shutdown.assert_not_awaited()
+    polling_req.initialize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rich_send_pool_timeout_is_retryable_and_drains_general_pool():
+    from telegram.error import TimedOut
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    polling_req = SimpleNamespace(shutdown=AsyncMock(), initialize=AsyncMock())
+    general_req = SimpleNamespace(shutdown=AsyncMock(), initialize=AsyncMock())
+    adapter._app = SimpleNamespace(
+        bot=SimpleNamespace(_request=(polling_req, general_req))
+    )
+    adapter._bot = SimpleNamespace(
+        do_api_request=AsyncMock(
+            side_effect=TimedOut(
+                "Pool timeout: All connections in the connection pool are occupied. "
+                "Request was *not* sent to Telegram."
+            )
+        )
+    )
+
+    result = await adapter._try_send_rich("123", "hello", None, None)
+
+    assert result is not None
+    assert result.success is False
+    assert result.retryable is True
+    general_req.shutdown.assert_awaited_once()
+    general_req.initialize.assert_awaited_once()
+    polling_req.shutdown.assert_not_awaited()
+    polling_req.initialize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_edit_message_pool_timeout_is_retryable_and_drains_general_pool():
+    from telegram.error import TimedOut
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    polling_req = SimpleNamespace(shutdown=AsyncMock(), initialize=AsyncMock())
+    general_req = SimpleNamespace(shutdown=AsyncMock(), initialize=AsyncMock())
+    adapter._app = SimpleNamespace(
+        bot=SimpleNamespace(_request=(polling_req, general_req))
+    )
+    adapter._bot = SimpleNamespace(
+        edit_message_text=AsyncMock(
+            side_effect=TimedOut(
+                "Pool timeout: All connections in the connection pool are occupied. "
+                "Request was *not* sent to Telegram."
+            )
+        )
+    )
+
+    result = await adapter.edit_message("123", "456", "hello")
+
+    assert result.success is False
+    assert result.retryable is True
     general_req.shutdown.assert_awaited_once()
     general_req.initialize.assert_awaited_once()
     polling_req.shutdown.assert_not_awaited()

@@ -678,6 +678,13 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     )
     _is_tokenhub = base_url_host_matches(agent._base_url_lower, "tokenhub.tencentmaas.com")
     _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"
+    # Custom providers that declare top-level reasoning_effort (e.g. CLIProxy,
+    # LiteLLM bridges) set ``reasoning_effort_top_level: true`` in their
+    # provider config.  Unlike LM Studio / TokenHub which are detected by
+    # provider name or URL, this is a config flag any custom provider can set.
+    _reasoning_effort_top_level = bool(
+        getattr(agent, "_provider_reasoning_effort_top_level", False)
+    )
 
     # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
     # sentinel (temperature omitted entirely), a numeric override, or None.
@@ -795,6 +802,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         is_tokenhub=_is_tokenhub,
         is_lmstudio=_is_lmstudio,
         is_custom_provider=agent.provider == "custom",
+        reasoning_effort_top_level=_reasoning_effort_top_level,
         ollama_num_ctx=agent._ollama_num_ctx,
         provider_preferences=_prefs or None,
         openrouter_min_coding_score=agent.openrouter_min_coding_score,

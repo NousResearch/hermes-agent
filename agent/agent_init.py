@@ -151,6 +151,29 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _apply_custom_provider_flags(agent, custom_providers: List[Dict[str, Any]]) -> None:
+    """Apply boolean flags from the matched custom provider config to the agent.
+
+    Currently handles ``reasoning_effort_top_level`` — when True, the transport
+    sends ``reasoning_effort`` as a top-level string instead of a nested
+    ``reasoning`` object.  This is set by proxies (CLIProxy, LiteLLM) that
+    reject the OpenAI reasoning object but accept the flat field.
+    """
+    if (agent.provider or "").strip().lower() != "custom":
+        return
+    target_url = _normalized_custom_base_url(agent.base_url)
+    if not target_url:
+        return
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
+            continue
+        if entry.get("reasoning_effort_top_level"):
+            agent._provider_reasoning_effort_top_level = True
+        break
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1442,6 +1465,7 @@ def init_agent(
     # compression model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
+    _apply_custom_provider_flags(agent, _custom_providers)
 
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:

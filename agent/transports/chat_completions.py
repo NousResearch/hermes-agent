@@ -377,6 +377,23 @@ class ChatCompletionsTransport(ProviderTransport):
             if _lm_effort is not None:
                 api_kwargs["reasoning_effort"] = _lm_effort
 
+        # Custom providers with ``reasoning_effort_top_level: true`` in their
+        # provider config (e.g. CLIProxy, LiteLLM bridges) expect
+        # reasoning_effort as a top-level string, not a nested ``reasoning``
+        # object.  This is a config-driven generalization — any custom provider
+        # can opt in without code changes.
+        if (
+            params.get("reasoning_effort_top_level", False)
+            and params.get("supports_reasoning", False)
+            and "reasoning_effort" not in api_kwargs  # don't clobber LM Studio
+        ):
+            _top_effort = "medium"
+            if reasoning_config and isinstance(reasoning_config, dict):
+                _e = (reasoning_config.get("effort") or "").strip().lower()
+                if _e in {"minimal", "low", "medium", "high", "xhigh"}:
+                    _top_effort = _e
+            api_kwargs["reasoning_effort"] = _top_effort
+
         # extra_body assembly
         extra_body: dict[str, Any] = {}
 

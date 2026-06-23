@@ -69,6 +69,7 @@ class TestSignalConfigLoading:
 
     def test_signal_not_loaded_without_both_vars(self, monkeypatch):
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
+        monkeypatch.delenv("SIGNAL_ACCOUNT", raising=False)
         # No SIGNAL_ACCOUNT
 
         from gateway.config import GatewayConfig, _apply_env_overrides
@@ -1353,6 +1354,116 @@ class TestSignalTypingBackoff:
 
 
 # ---------------------------------------------------------------------------
+# _stop_typing_indicator sends explicit sendTyping(stop=True) RPC
+# ---------------------------------------------------------------------------
+
+class TestSignalStopTypingExplicitRPC:
+    """Cancelling the typing indicator must issue an explicit
+    sendTyping(stop=True) RPC so the recipient's device drops the indicator
+    immediately, instead of waiting for Signal's built-in ~5s timeout.
+
+    The stop RPC is best-effort: any failure must not prevent the per-chat
+    backoff state from being cleared.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_sends_stop_rpc_for_dm(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(return_value="uuid-recipient")
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
+            return {}
+
+        adapter._rpc = mock_rpc
+
+        await adapter._stop_typing_indicator("+15555550000")
+
+        assert len(captured) == 1
+        assert captured[0]["method"] == "sendTyping"
+        assert captured[0]["params"]["stop"] is True
+        assert captured[0]["params"]["recipient"] == ["uuid-recipient"]
+        assert captured[0]["rpc_id"] == "typing-stop"
+        adapter._resolve_recipient.assert_awaited_once_with("+15555550000")
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_sends_stop_rpc_for_group(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
+            return {}
+
+        adapter._rpc = mock_rpc
+
+        await adapter._stop_typing_indicator("group:group123")
+
+        assert len(captured) == 1
+        assert captured[0]["method"] == "sendTyping"
+        assert captured[0]["params"]["stop"] is True
+        assert captured[0]["params"]["groupId"] == "group123"
+        assert "recipient" not in captured[0]["params"]
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_best_effort_on_rpc_failure(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(return_value="uuid-recipient")
+
+        # Drive the chat into backoff so we can confirm cleanup still happens
+        # even when the stop RPC itself fails.
+        async def _noop(method, params, rpc_id=None, **kwargs):
+            return None
+
+        adapter._rpc = _noop
+        for _ in range(3):
+            await adapter.send_typing("+155****0000")
+
+        assert adapter._typing_failures.get("+155****0000") == 3
+        assert "+155****0000" in adapter._typing_skip_until
+
+        # Now make the stop RPC raise — backoff state must still be cleared.
+        async def failing_rpc(method, params, rpc_id=None, **kwargs):
+            raise RuntimeError("signal-cli unreachable")
+
+        adapter._rpc = failing_rpc
+
+        await adapter._stop_typing_indicator("+155****0000")
+
+        assert "+155****0000" not in adapter._typing_failures
+        assert "+155****0000" not in adapter._typing_skip_until
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_best_effort_on_recipient_failure(self, monkeypatch):
+        # When _resolve_recipient() raises, the per-chat backoff state must
+        # still be cleared — otherwise a transient resolution failure would
+        # silently keep the chat in cooldown forever.
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(
+            side_effect=RuntimeError("recipient resolution failed")
+        )
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params), "rpc_id": rpc_id})
+            return {}
+
+        adapter._rpc = mock_rpc
+
+        adapter._typing_failures["+155****0000"] = 2
+        adapter._typing_skip_until["+155****0000"] = 9999999999.0
+
+        await adapter._stop_typing_indicator("+155****0000")
+
+        # No RPC must be issued when recipient resolution itself fails.
+        assert captured == []
+        assert "+155****0000" not in adapter._typing_failures
+        assert "+155****0000" not in adapter._typing_skip_until
+
+
+# ---------------------------------------------------------------------------
 # Reply quote extraction
 # ---------------------------------------------------------------------------
 
@@ -1380,7 +1491,7 @@ class TestSignalQuoteExtraction:
                     "quote": {
                         "id": 99,
                         "text": "want to grab lunch?",
-                        "author": "+15550002222",
+                        "author": "other-author",
                     },
                 },
             }
@@ -1390,6 +1501,102 @@ class TestSignalQuoteExtraction:
         assert event.text == "yes I agree"
         assert event.reply_to_message_id == "99"
         assert event.reply_to_text == "want to grab lunch?"
+        assert event.reply_to_author_id == "other-author"
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_marks_quote_to_own_sent_timestamp(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._remember_sent_message_timestamp(424242)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "this specific one",
+                    "quote": {
+                        "id": 424242,
+                        "text": "assistant answer",
+                        "author": "other-author",
+                    },
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.reply_to_message_id == "424242"
+        assert event.reply_to_text == "assistant answer"
+        assert event.reply_to_author_id == "other-author"
+        assert event.reply_to_is_own_message is True
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_marks_quote_to_own_account_author(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, account="bot-author")
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "reply by author",
+                    "quote": {
+                        "id": 777,
+                        "text": "assistant answer",
+                        "author": "bot-author",
+                    },
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.reply_to_message_id == "777"
+        assert event.reply_to_is_own_message is True
+
+    @pytest.mark.asyncio
+    async def test_track_sent_timestamp_keeps_reply_detection_cache_after_echo_discard(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._track_sent_timestamp({"timestamp": 111222333})
+        # Echo suppression consumes the entry from the recent-sent ring; the
+        # separate reply-detection cache must still retain it.
+        adapter._consume_sent_timestamp(111222333)
+
+        assert "111222333" in adapter._sent_message_timestamps
+        assert adapter._quote_references_own_message("111222333", None) is True
+
+    def test_sent_message_timestamps_evicts_oldest_first(self, monkeypatch):
+        """Over the cap, the OLDEST quote-cache timestamp is dropped (FIFO),
+        not an arbitrary one — so a recent reply-to-own-message is still
+        detected after a burst of sends."""
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._max_sent_message_timestamps = 3
+        for ts in (1, 2, 3):
+            adapter._remember_sent_message_timestamp(ts)
+        # Adding a 4th evicts the oldest (1), keeps the rest in order.
+        adapter._remember_sent_message_timestamp(4)
+        assert list(adapter._sent_message_timestamps.keys()) == ["2", "3", "4"]
+        assert "1" not in adapter._sent_message_timestamps
+        # Re-seeing an existing ts promotes it so it survives the next eviction.
+        adapter._remember_sent_message_timestamp(2)  # 2 -> most recent
+        adapter._remember_sent_message_timestamp(5)  # evicts oldest (now 3)
+        assert list(adapter._sent_message_timestamps.keys()) == ["4", "2", "5"]
+        assert "3" not in adapter._sent_message_timestamps
 
     @pytest.mark.asyncio
     async def test_handle_envelope_without_quote_leaves_reply_fields_none(self, monkeypatch):
@@ -2128,3 +2335,233 @@ class TestSignalContentlessEnvelope:
 
         assert "event" in captured, "Normal message should NOT be skipped"
         assert captured["event"].text == "hello world"
+
+
+class TestSignalSyncMessageHandling:
+    """signal-cli running as a linked secondary device receives the user's
+    own messages as ``syncMessage.sentMessage`` envelopes. Two cases must
+    be handled:
+
+      1. Note to Self (destination == self): promote to dataMessage so the
+         user can talk to the agent in their own self-chat.
+      2. Group sync-sent (destination is None, groupInfo set): promote so
+         single-user / personal groups work.
+
+    In both cases, the bot's own outbound replies bounce back as
+    sync-sents and must be suppressed via the recently-sent timestamp ring.
+    """
+
+    @pytest.mark.asyncio
+    async def test_note_to_self_promoted_to_inbound(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****4567",  # self
+                "sourceUuid": "uuid-self",
+                "timestamp": 2000000000,
+                "syncMessage": {
+                    "sentMessage": {
+                        "destinationNumber": "+155****4567",
+                        "destination": "+155****4567",
+                        "timestamp": 2000000000,
+                        "message": "note to self: buy milk",
+                    }
+                },
+            }
+        })
+
+        assert "event" in captured, "Note to Self must reach handle_message"
+        assert captured["event"].text == "note to self: buy milk"
+
+    @pytest.mark.asyncio
+    async def test_note_to_self_echo_of_own_reply_is_suppressed(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
+        # Simulate that the bot just sent a reply with timestamp 3000000000
+        adapter._track_sent_timestamp({"timestamp": 3000000000})
+        called = []
+
+        async def fake_handle(event):
+            called.append(event)
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****4567",
+                "sourceUuid": "uuid-self",
+                "timestamp": 3000000000,
+                "syncMessage": {
+                    "sentMessage": {
+                        "destinationNumber": "+155****4567",
+                        "destination": "+155****4567",
+                        "timestamp": 3000000000,
+                        "message": "this is the bot's own reply echo",
+                    }
+                },
+            }
+        })
+
+        assert called == [], "Echo of bot's own reply must be suppressed"
+        # Consumed: timestamp must be removed from the ring
+        assert 3000000000 not in adapter._recent_sent_timestamps
+
+    @pytest.mark.asyncio
+    async def test_group_sync_sent_promoted_to_inbound(self, monkeypatch):
+        """User sends a message in a group from their primary phone; the
+        linked device receives it as a sync-sent with destination=None and
+        a groupInfo block. It must be treated as inbound so the agent can
+        respond in groups when the user is the only human participant."""
+        adapter = _make_signal_adapter(
+            monkeypatch, account="+155****4567", group_allowed="abc123=="
+        )
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****4567",
+                "sourceUuid": "uuid-self",
+                "timestamp": 4000000000,
+                "syncMessage": {
+                    "sentMessage": {
+                        "destinationNumber": None,
+                        "destination": None,
+                        "timestamp": 4000000000,
+                        "message": "ping the group",
+                        "groupInfo": {
+                            "groupId": "abc123==",
+                            "type": "DELIVER",
+                        },
+                    }
+                },
+            }
+        })
+
+        assert "event" in captured, "Group sync-sent must reach handle_message"
+        assert captured["event"].text == "ping the group"
+        assert captured["event"].source.chat_id == "group:abc123=="
+
+    @pytest.mark.asyncio
+    async def test_group_sync_sent_echo_of_own_reply_is_suppressed(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
+        adapter._track_sent_timestamp({"timestamp": 5000000000})
+        called = []
+
+        async def fake_handle(event):
+            called.append(event)
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****4567",
+                "sourceUuid": "uuid-self",
+                "timestamp": 5000000000,
+                "syncMessage": {
+                    "sentMessage": {
+                        "destinationNumber": None,
+                        "destination": None,
+                        "timestamp": 5000000000,
+                        "message": "bot's own group reply",
+                        "groupInfo": {"groupId": "abc123==", "type": "DELIVER"},
+                    }
+                },
+            }
+        })
+
+        assert called == [], "Group echo of bot's own reply must be suppressed"
+        assert 5000000000 not in adapter._recent_sent_timestamps
+
+    @pytest.mark.asyncio
+    async def test_unrelated_sync_message_still_dropped(self, monkeypatch):
+        """Read receipts / typing sync events have no sentMessage at all,
+        or a sentMessage with non-self destination — must keep being filtered."""
+        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
+        called = []
+
+        async def fake_handle(event):
+            called.append(event)
+
+        adapter.handle_message = fake_handle
+
+        # No sentMessage at all
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****4567",
+                "timestamp": 6000000000,
+                "syncMessage": {"readMessages": [{"sender": "+155****9999"}]},
+            }
+        })
+        # sentMessage to a different contact (not self, not a group)
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****4567",
+                "timestamp": 6000000001,
+                "syncMessage": {
+                    "sentMessage": {
+                        "destinationNumber": "+155****9999",
+                        "destination": "+155****9999",
+                        "timestamp": 6000000001,
+                        "message": "outbound DM to someone else",
+                    }
+                },
+            }
+        })
+
+        assert called == [], "Non-promotable sync messages must be filtered"
+
+
+class TestRecentSentTimestampRing:
+    """Verify the LRU+TTL behaviour of the echo-suppression ring."""
+
+    def test_track_inserts_and_marks_most_recent(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._track_sent_timestamp({"timestamp": 1})
+        adapter._track_sent_timestamp({"timestamp": 2})
+        adapter._track_sent_timestamp({"timestamp": 1})  # touch
+        # After touching 1, insertion order should be [2, 1]
+        assert list(adapter._recent_sent_timestamps.keys()) == [2, 1]
+
+    def test_consume_returns_true_and_removes(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._track_sent_timestamp({"timestamp": 42})
+        assert adapter._consume_sent_timestamp(42) is True
+        assert 42 not in adapter._recent_sent_timestamps
+        assert adapter._consume_sent_timestamp(42) is False
+        assert adapter._consume_sent_timestamp(None) is False
+
+    def test_hard_cap_evicts_oldest(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._max_recent_timestamps = 3
+        for ts in (1, 2, 3, 4):
+            adapter._track_sent_timestamp({"timestamp": ts})
+        # 1 should have been evicted (oldest); 2/3/4 retained in order
+        assert list(adapter._recent_sent_timestamps.keys()) == [2, 3, 4]
+
+    def test_ttl_evicts_stale_entries(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._recent_sent_ttl_seconds = 100.0
+
+        # Drive time.monotonic deterministically.
+        import gateway.platforms.signal as sig_mod
+        fake_now = [1000.0]
+        monkeypatch.setattr(sig_mod.time, "monotonic", lambda: fake_now[0])
+
+        adapter._track_sent_timestamp({"timestamp": 1})
+        fake_now[0] = 1050.0
+        adapter._track_sent_timestamp({"timestamp": 2})
+        fake_now[0] = 1200.0  # 200s elapsed since ts=1 (>TTL), 150s since ts=2 (>TTL)
+        adapter._track_sent_timestamp({"timestamp": 3})
+        # Both 1 and 2 should be evicted on TTL, only 3 remains
+        assert list(adapter._recent_sent_timestamps.keys()) == [3]

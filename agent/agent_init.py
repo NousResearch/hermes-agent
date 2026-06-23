@@ -50,7 +50,7 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from utils import base_url_host_matches
+from utils import base_url_host_matches, is_truthy_value
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
 # capture our warnings.  (run_agent.py also does
@@ -265,7 +265,8 @@ def init_agent(
             output_config.format instead of a trailing-assistant prefill.
         platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp").
             Used to inject platform-specific formatting hints into the system prompt.
-        skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
+        skip_context_files (bool): If True, skip auto-injection of project context files
+            (SOUL.md, .hermes.md, AGENTS.md, CLAUDE.md, .cursorrules) from the cwd / HERMES_HOME
             into the system prompt. Use this for batch processing and data generation to avoid
             polluting trajectories with user-specific persona or project instructions.
         load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
@@ -808,6 +809,8 @@ def init_agent(
                 # _default_headers instead.
                 _routed_headers = getattr(_routed_client, "_custom_headers", None)
                 if not _routed_headers:
+                    _routed_headers = getattr(_routed_client, "default_headers", None)
+                if not _routed_headers:
                     _routed_headers = getattr(_routed_client, "_default_headers", None)
                 if _routed_headers:
                     client_kwargs["default_headers"] = dict(_routed_headers)
@@ -860,6 +863,8 @@ def init_agent(
                             if _provider_timeout is not None:
                                 client_kwargs["timeout"] = _provider_timeout
                             _fb_headers = getattr(_fb_client, "_custom_headers", None)
+                            if not _fb_headers:
+                                _fb_headers = getattr(_fb_client, "default_headers", None)
                             if not _fb_headers:
                                 _fb_headers = getattr(_fb_client, "_default_headers", None)
                             if _fb_headers:
@@ -1095,6 +1100,12 @@ def init_agent(
     agent._parent_session_id = parent_session_id
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
     agent._session_db_created = False  # DB row deferred to run_conversation()
+    # Most agents own their session row and should finalize it on close().
+    # Some temporary helper agents (manual compression / session-hygiene /
+    # background-review forks) rotate or share the session forward to a
+    # continuation row that must remain open after the helper is torn down;
+    # those callers explicitly set this flag to False.
+    agent._end_session_on_close = True
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
@@ -1339,6 +1350,14 @@ def init_agent(
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
+    # In-place compaction: when True, compress_context() rewrites the message
+    # list + rebuilds the system prompt WITHOUT rotating the session id (no
+    # parent_session_id chain, no `name #N` renumber). See #38763 and
+    # agent/conversation_compression.py. Consumed by compress_context(), not the
+    # compressor, so it rides on the agent.
+    compression_in_place = is_truthy_value(
+        _compression_cfg.get("in_place"), default=False
+    )
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1556,8 +1575,10 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
+            max_tokens=agent.max_tokens,
         )
     agent.compression_enabled = compression_enabled
+    agent.compression_in_place = compression_in_place
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).

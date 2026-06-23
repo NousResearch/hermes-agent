@@ -11120,7 +11120,7 @@ def cmd_logs(args):
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "auth", "autopilot", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
@@ -11909,6 +11909,19 @@ def main():
     )
     from hermes_cli.checkpoints import register_cli as _register_checkpoints_cli
     _register_checkpoints_cli(checkpoints_parser)
+
+    # =========================================================================
+    # autopilot command — inspect/grow the deception dictionary
+    # =========================================================================
+    autopilot_parser = subparsers.add_parser(
+        "autopilot",
+        help="Autopilot maintenance: harvest the deception dictionary from ADR logs",
+        description="Inspect and grow the autopilot anti-deception dictionary. "
+        "`harvest-deceptions` mines the ADR decision logs for caught "
+        "deceptions and surfaces novel phrasings to promote.",
+    )
+    from hermes_cli.autopilot_cmd import register_cli as _register_autopilot_cli
+    _register_autopilot_cli(autopilot_parser)
 
     # =========================================================================
     # import command  (parser built in hermes_cli/subcommands/import_cmd.py)

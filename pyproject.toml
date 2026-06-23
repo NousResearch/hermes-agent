@@ -327,6 +327,11 @@ locales = ["locales/*.yaml"]
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]
+# The autopilot deception-pattern dictionary ships beside its module so the
+# detector can load it at runtime (agent/autopilot/deception.py). Without this
+# the wheel carries the .py but not the .yaml and the detector falls back to an
+# empty dictionary.
+agent = ["autopilot/deception_patterns.yaml"]
 plugins = [
   "*/dashboard/manifest.json",
   "*/dashboard/dist/*",

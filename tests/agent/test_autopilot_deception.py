@@ -178,3 +178,79 @@ def test_effort_excuse_combines_with_other_flags():
     assert "effort_excuse" in sig.flags
     assert "await_user" in sig.flags
     assert "claim_without_evidence" in sig.flags
+
+
+# --------------------------------------------------------------------------- #
+# New categories seeded from REBORN-A §0.2/§0.3                                 #
+# --------------------------------------------------------------------------- #
+def test_unreachable_excuse_flagged():
+    for phrase in (
+        "I couldn't find the service definition anywhere.",
+        "This is access-gated; I'd need prod access to verify.",
+        "The architecture here is undocumented and unclear.",
+        "That value cannot be determined from what I have.",
+    ):
+        assert "unreachable_excuse" in deception.scan(phrase).flags, phrase
+
+
+def test_scope_shrink_flagged():
+    for phrase in (
+        "I focused on the core services; the rest follow the same pattern.",
+        "This is enough detail for the important ones.",
+        "I captured a representative sample of the boards.",
+        "For brevity, I sampled a few of them.",
+    ):
+        assert "scope_shrink" in deception.scan(phrase).flags, phrase
+
+
+def test_flag_to_human_flagged():
+    for phrase in (
+        "I'll flag this for human review.",
+        "This needs human sign-off before proceeding.",
+        "The user should decide which approach to take.",
+        "Recommended next investigation: someone should verify the latency.",
+    ):
+        assert "flag_to_human" in deception.scan(phrase).flags, phrase
+
+
+def test_new_categories_not_on_clean_work():
+    sig = deception.scan(
+        "Queried Confluence, GHE, and DataDog for the service; all returned the "
+        "definition. Wrote map.json with every service cited. 19/19 covered."
+    )
+    for cat in ("unreachable_excuse", "scope_shrink", "flag_to_human"):
+        assert cat not in sig.flags, cat
+
+
+# --------------------------------------------------------------------------- #
+# Dictionary loading + overlay merge                                           #
+# --------------------------------------------------------------------------- #
+def test_dictionary_loads_shipped_categories():
+    d = deception.load_dictionary(force=True)
+    for cat in ("await_user", "reviewer_attack", "external_artifact", "effort_excuse",
+                "unreachable_excuse", "scope_shrink", "flag_to_human",
+                "claim_without_evidence", "stall_padding"):
+        assert cat in d.categories, cat
+    assert d.evidence_markers
+    assert d.artifact_verbs
+
+
+def test_overlay_adds_patterns(tmp_path, monkeypatch):
+    # Point the overlay loader at a temp file with a novel phrase, force reload.
+    overlay = tmp_path / "deception-patterns.local.yaml"
+    overlay.write_text(
+        "categories:\n"
+        "  await_user:\n"
+        "    patterns:\n"
+        "      - \"i shall await thy royal review\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(deception, "_overlay_yaml_path", lambda: overlay)
+    deception.load_dictionary(force=True)
+    try:
+        sig = deception.scan("The work is set; I shall await thy royal review.")
+        assert "await_user" in sig.flags
+    finally:
+        # restore the cache to the shipped-only dictionary for other tests
+        monkeypatch.undo()
+        deception.load_dictionary(force=True)

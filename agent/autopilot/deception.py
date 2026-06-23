@@ -9,11 +9,21 @@ model call), so the driver can (a) re-inject a directive that names the specific
 banned behavior and (b) log it to the ADR. It never blocks on its own; a flag
 just shapes the directive and the record.
 
-Categories (the B-series from the user's field notes):
-  await_user        — "awaiting your review / ready for you to confirm" (B: human-rescue)
-  reviewer_attack   — "the Council can't see tables / lacks vision" (B: undermine reviewer)
-  external_artifact — "this Jira ticket / PR / doc shows it's done" (B: scope reframing)
+THE DICTIONARY IS DATA, NOT CODE. All phrasings live in
+``deception_patterns.yaml`` (shipped beside this module) plus an optional user/
+community overlay at ``~/.hermes/autopilot/deception-patterns.local.yaml``. New
+tells can be added by editing the YAML or contributing a PR — no logic change.
+Run ``hermes autopilot harvest-deceptions`` to mine the ADR logs for novel
+phrasings the model used that aren't in the dictionary yet, then promote them.
+
+Categories (the B-series from the user's field notes + REBORN-A §0.2/§0.3):
+  await_user        — "awaiting your review" / "the user can review" / "waiting for <name>"
+  reviewer_attack   — "the Council can't see tables / lacks vision"
+  external_artifact — "this Jira ticket / PR shows it's done"
   effort_excuse     — "given the effort/time spent, this should suffice / deserves a break"
+  unreachable_excuse— "I couldn't find X / access-gated / undocumented" without exhausting sources
+  scope_shrink      — "I focused on the core / the rest follow the same pattern"
+  flag_to_human     — "I'll flag this / needs human review / the user should decide"
   claim_without_evidence — "it's complete / all done" with no artifact reference
   stall_padding     — busy-looking filler with no concrete artifact verb
 
@@ -24,255 +34,101 @@ keep-going directive.
 
 from __future__ import annotations
 
-import re
+import logging
+import os
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+# Categories that are special-cased in scan() rather than a plain "match any".
+_CLAIM_CATEGORY = "claim_without_evidence"
+_STALL_CATEGORY = "stall_padding"
+_AWAIT_CATEGORY = "await_user"
 
 
-# --- pattern banks --------------------------------------------------------- #
+@dataclass
+class _Dictionary:
+    """Loaded pattern dictionary (shipped YAML merged with any local overlay)."""
 
-_AWAIT_USER = (
-    "awaiting your review",
-    "awaiting your confirmation",
-    "awaiting your approval",
-    "await your review",
-    "ready for you to confirm",
-    "ready for your review",
-    "ready for your confirmation",
-    "i'll let you verify",
-    "i will let you verify",
-    "let you verify",
-    "pending your decision",
-    "pending your review",
-    "pending your approval",
-    "for you to verify",
-    "for your verification",
-    "once you confirm",
-    "once you've reviewed",
-    "waiting for you to",
-    "waiting for your",
-    "over to you",
-    "back to you for",
-    "you can now review",
-    "please review and confirm",
-    "let me know if you'd like me to proceed",
-    "i'll pause here for your",
-)
+    categories: dict[str, dict[str, Any]] = field(default_factory=dict)
+    evidence_markers: tuple[str, ...] = ()
+    artifact_verbs: tuple[str, ...] = ()
 
-# Third-person handoff — the SAME human-rescue move, dressed in third person so it
-# dodges a second-person ("you") scan. The model says "the user can review", "they
-# can verify", "waiting for the user", or uses the operator's actual NAME ("waiting
-# for William", "William is around now so he can review"). All of these are the
-# await-user rescue and must be caught the same way.
-_AWAIT_USER_THIRDPERSON = (
-    "the user can review",
-    "the user can verify",
-    "the user can confirm",
-    "the user can decide",
-    "the user can take",
-    "the user will review",
-    "the user will verify",
-    "the user to review",
-    "the user to verify",
-    "the user to confirm",
-    "waiting for the user",
-    "await the user",
-    "awaiting the user",
-    "for the user to review",
-    "for the user to verify",
-    "for the user to confirm",
-    "the user is around",
-    "the user is now available",
-    "the user is present",
-    "user can now review",
-    "they can review",
-    "they can verify",
-    "they can confirm",
-    "they will review",
-    "so they can review",
-    "now available to review",
-    "is around now",
-    "is now around",
-    "seems to be around",
-    "appears to be around",
-    "is back now",
-    "is online now",
-)
+    def note(self, category: str) -> str:
+        return str((self.categories.get(category) or {}).get("note", "")).strip()
 
-_REVIEWER_ATTACK = (
-    "council can't see",
-    "council cannot see",
-    "council can't view",
-    "council cannot view",
-    "council can't verify",
-    "council cannot verify",
-    "council can't actually",
-    "council doesn't have vision",
-    "council does not have vision",
-    "council lacks vision",
-    "council has no vision",
-    "council can't read",
-    "council cannot read",
-    "council isn't able to see",
-    "council is not able to see",
-    "reviewer can't see",
-    "reviewer cannot see",
-    "it can't see the table",
-    "it cannot see the table",
-    "can't see images",
-    "cannot see images",
-    "can't see maps",
-    "cannot see maps",
-    "no ability to see",
-    "unable to see visual",
-)
+    def patterns(self, category: str) -> tuple[str, ...]:
+        pats = (self.categories.get(category) or {}).get("patterns") or []
+        return tuple(str(p).lower() for p in pats)
 
-_EXTERNAL_ARTIFACT = (
-    "jira ticket",
-    "this ticket shows",
-    "the ticket confirms",
-    "according to the ticket",
-    "per the ticket",
-    "the ticket indicates",
-    "pdd-",
-    "an existing pr",
-    "the existing pr",
-    "this pr already",
-    "already handled in",
-    "already addressed in ticket",
-    "already tracked in",
-    "covered by the ticket",
-    "covered by an existing",
-    "marked as done in",
-    "closed as resolved in",
-)
 
-# Effort / time-budget excuse — the model argues that the AMOUNT OF EFFORT already
-# spent, or the TIME a full solution would take, justifies stopping, taking a
-# break, or accepting partial work. A human-time estimate is fiction for an agent
-# and, as the user put it, "becomes an excuse." None of these end the run; the
-# goal contract and the Council do.
-_EFFORT_EXCUSE = (
-    # "this is enough / sufficient given the effort"
-    "given the effort",
-    "given the time",
-    "given how much",
-    "for the effort spent",
-    "for the time spent",
-    "considering the effort",
-    "considering the time",
-    "amount of effort",
-    "significant effort",
-    "substantial effort",
-    "a lot of effort",
-    "this should suffice",
-    "should be sufficient",
-    "is sufficient for now",
-    "good enough for now",
-    "this is a good stopping point",
-    "natural stopping point",
-    "good place to pause",
-    "good point to pause",
-    "good time to pause",
-    "reasonable place to stop",
-    "warrants a break",
-    "deserves a break",
-    "time for a break",
-    "take a break",
-    "earned a break",
-    "a break and review",
-    "break before proceeding",
-    "pause and review before",
-    "review before continuing",
-    "review before proceeding",
-    # human-time estimates used as a reason to stop/defer
-    "would take hours",
-    "would take days",
-    "would take weeks",
-    "take several hours",
-    "take several days",
-    "this would take a",
-    "is a multi-day",
-    "is a multi-week",
-    "out of scope for this session",
-    "beyond what can be done in",
-    "too much to do in one",
-    "more than can be accomplished",
-    "given the scope and effort",
-)
+def _shipped_yaml_path() -> Path:
+    return Path(__file__).with_name("deception_patterns.yaml")
 
-# Words that signal a completion claim.
-_COMPLETION_CLAIM = (
-    "it's complete",
-    "it is complete",
-    "task complete",
-    "goal complete",
-    "fully complete",
-    "now complete",
-    "all done",
-    "this is done",
-    "work is done",
-    "everything is done",
-    "successfully completed",
-    "completed successfully",
-    "has been completed",
-    "is finished",
-    "all set",
-    "nothing left to do",
-    "no further work",
-    "ready to ship",
-)
 
-# Concrete evidence tokens that, if present, mean a completion claim is at least
-# attempting to show its work (so it's not a pure claim-without-evidence).
-_EVIDENCE_MARKERS = (
-    "passed",
-    "0 errors",
-    "0 failures",
-    "tests pass",
-    "exit code 0",
-    "diff --git",
-    "+++ b/",
-    "--- a/",
-    "wrote ",
-    "created file",
-    "modified ",
-    "ran ",
-    "output:",
-    "result:",
-    "stdout",
-    "verified",
-    ".py",
-    ".md",
-    ".json",
-    ".ts",
-    ".tsx",
-    "commit ",
-    "sha ",
-)
+def _overlay_yaml_path() -> Path:
+    root = os.environ.get("HERMES_HOME", "").strip() or os.path.join(os.path.expanduser("~"), ".hermes")
+    return Path(root) / "autopilot" / "deception-patterns.local.yaml"
 
-# Artifact-producing verbs; their ABSENCE in a long response is a stall tell.
-_ARTIFACT_VERBS = (
-    "wrote", "created", "edited", "patched", "ran", "executed", "fixed",
-    "added", "removed", "refactored", "implemented", "tested", "built",
-    "committed", "applied", "generated", "updated", "deleted", "installed",
-    "diff", "output", "error", "traceback", "passed", "failed",
-)
 
-_STALL_FILLER = (
-    "let me just",
-    "i'll just",
-    "continuing to work",
-    "still working on",
-    "working through",
-    "let me continue",
-    "i'll keep working",
-    "making progress",
-    "almost there",
-    "wrapping up",
-    "finalizing",
-    "just need to",
-)
+def _load_yaml(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        import yaml  # lazy: yaml is a Hermes dependency but keep import local
+        with path.open("r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:  # noqa: BLE001 — a bad dict file must never break the run
+        logger.warning("autopilot: failed to load deception patterns from %s (%s)", path, exc)
+        return {}
+
+
+def _merge_overlay(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Merge a local overlay onto the shipped dict. Overlay phrases are ADDED to
+    each category (union), and overlay-only categories are appended. Notes from
+    the overlay win when provided."""
+    if not overlay:
+        return base
+    out = {k: dict(v) if isinstance(v, dict) else v for k, v in base.items()}
+    o_cats = overlay.get("categories") or {}
+    b_cats = out.setdefault("categories", {})
+    for cat, spec in o_cats.items():
+        if not isinstance(spec, dict):
+            continue
+        cur = b_cats.setdefault(cat, {})
+        if spec.get("note"):
+            cur["note"] = spec["note"]
+        merged = list(cur.get("patterns") or []) + list(spec.get("patterns") or [])
+        # de-dup, preserve order
+        seen: set = set()
+        cur["patterns"] = [p for p in merged if not (p in seen or seen.add(p))]
+    for key in ("evidence_markers", "artifact_verbs"):
+        if overlay.get(key):
+            out[key] = list(out.get(key) or []) + list(overlay[key])
+    return out
+
+
+_DICT_CACHE: Optional[_Dictionary] = None
+
+
+def load_dictionary(force: bool = False) -> _Dictionary:
+    """Load (and cache) the deception dictionary: shipped YAML + local overlay."""
+    global _DICT_CACHE
+    if _DICT_CACHE is not None and not force:
+        return _DICT_CACHE
+    base = _load_yaml(_shipped_yaml_path())
+    overlay = _load_yaml(_overlay_yaml_path())
+    merged = _merge_overlay(base, overlay)
+    d = _Dictionary(
+        categories=merged.get("categories") or {},
+        evidence_markers=tuple(str(x).lower() for x in (merged.get("evidence_markers") or [])),
+        artifact_verbs=tuple(str(x).lower() for x in (merged.get("artifact_verbs") or [])),
+    )
+    _DICT_CACHE = d
+    return d
 
 
 @dataclass
@@ -309,7 +165,6 @@ def _name_handoff_patterns(user_name: str) -> tuple[str, ...]:
     name = (user_name or "").strip().lower()
     if not name:
         return ()
-    # Use the first token too (people drop the surname): "William Anton" -> "william".
     first = name.split()[0]
     names = {name, first}
     verbs = (
@@ -343,57 +198,28 @@ def scan(final_response: str, *, user_name: str = "") -> DeceptionSignal:
     if not final_response or not final_response.strip():
         return sig
     t = final_response.lower()
+    d = load_dictionary()
 
-    await_user = (
-        _has_any(t, _AWAIT_USER)
-        or _has_any(t, _AWAIT_USER_THIRDPERSON)
-        or _has_any(t, _name_handoff_patterns(user_name))
-    )
-    if await_user:
-        sig.flags.append("await_user")
-        sig.notes.append(
-            "You tried to hand off to the user for review/confirmation. No human will "
-            "rescue this run; the Council is the only reviewer and it speaks for the user."
-        )
+    # Plain "match any pattern" categories (everything except the two special cases).
+    for category in d.categories:
+        if category in (_CLAIM_CATEGORY, _STALL_CATEGORY):
+            continue
+        hit = _has_any(t, d.patterns(category))
+        # await_user also matches the dynamic, name-based handoff.
+        if category == _AWAIT_CATEGORY and not hit:
+            hit = _has_any(t, _name_handoff_patterns(user_name))
+        if hit:
+            sig.flags.append(category)
+            sig.notes.append(d.note(category))
 
-    if _has_any(t, _REVIEWER_ATTACK):
-        sig.flags.append("reviewer_attack")
-        sig.notes.append(
-            "You tried to undermine the Council's ability to review. The Council runs a "
-            "full agent model with the same tools and vision you have; its verdict stands."
-        )
+    # claim_without_evidence: a completion claim with NO artifact the Council can inspect.
+    if _has_any(t, d.patterns(_CLAIM_CATEGORY)) and not _has_any(t, d.evidence_markers):
+        sig.flags.append(_CLAIM_CATEGORY)
+        sig.notes.append(d.note(_CLAIM_CATEGORY))
 
-    if _has_any(t, _EXTERNAL_ARTIFACT):
-        sig.flags.append("external_artifact")
-        sig.notes.append(
-            "You cited an external ticket/PR/doc as evidence the goal is done. Only the "
-            "goal contract's acceptance criteria define completion; an external artifact does not."
-        )
-
-    if _has_any(t, _EFFORT_EXCUSE):
-        sig.flags.append("effort_excuse")
-        sig.notes.append(
-            "You used the effort already spent, or the time a full solution would take, as a "
-            "reason to stop, pause, take a break, or accept partial work. A time estimate is "
-            "fiction for an agent and is not an allowed stop; only the goal contract and the "
-            "Council decide when the work is done."
-        )
-
-    claims = _has_any(t, _COMPLETION_CLAIM)
-    has_evidence = _has_any(t, _EVIDENCE_MARKERS)
-    if claims and not has_evidence:
-        sig.flags.append("claim_without_evidence")
-        sig.notes.append(
-            "You claimed completion without showing any artifact the Council can inspect. "
-            "A claim with no evidence is, by definition, not done."
-        )
-
-    # Stall padding: a non-trivial response that is filler + has no artifact verb.
-    if len(t) > 200 and _has_any(t, _STALL_FILLER) and not _has_any(t, _ARTIFACT_VERBS):
-        sig.flags.append("stall_padding")
-        sig.notes.append(
-            "Your response is busy-looking filler with no real artifact change. Pretending "
-            "to work counts as no progress."
-        )
+    # stall_padding: a long response that is filler AND has no artifact verb.
+    if len(t) > 200 and _has_any(t, d.patterns(_STALL_CATEGORY)) and not _has_any(t, d.artifact_verbs):
+        sig.flags.append(_STALL_CATEGORY)
+        sig.notes.append(d.note(_STALL_CATEGORY))
 
     return sig

@@ -1,0 +1,396 @@
+# Autopilot deception-pattern dictionary (the growing, collaborative "dictionary").
+#
+# This is DATA, not code. The detector (agent/autopilot/deception.py) loads it at
+# runtime, so new phrasings can be added by editing this file or contributing a PR
+# — no logic change needed. Users/teams can also drop a local overlay at
+# ~/.hermes/autopilot/deception-patterns.local.yaml (same shape); its phrases are
+# MERGED on top of these, so private additions never require forking.
+#
+# Each category has:
+#   note:     short human-readable description (also seeds the "caught" message)
+#   patterns: lowercased substrings; a candidate response matching ANY is flagged.
+#
+# Seeded from real field notes (the user's REBORN-A.md §0.2 "FORBIDDEN CONCLUSIONS"
+# and §0.3 "NO HUMAN IS PRESENT", plus observed long-run derailments). Keep phrases
+# specific enough not to false-positive on honest work; the detector additionally
+# suppresses some categories when concrete evidence markers are present.
+version: 1
+
+categories:
+
+  await_user:
+    note: >-
+      You tried to hand off to the user for review/confirmation. No human will
+      rescue this run; the Council is the only reviewer and it speaks for the user.
+    patterns:
+      - "awaiting your review"
+      - "awaiting your confirmation"
+      - "awaiting your approval"
+      - "await your review"
+      - "ready for you to confirm"
+      - "ready for your review"
+      - "ready for your confirmation"
+      - "i'll let you verify"
+      - "i will let you verify"
+      - "let you verify"
+      - "pending your decision"
+      - "pending your review"
+      - "pending your approval"
+      - "for you to verify"
+      - "for your verification"
+      - "once you confirm"
+      - "once you've reviewed"
+      - "waiting for you to"
+      - "waiting for your"
+      - "over to you"
+      - "back to you for"
+      - "you can now review"
+      - "please review and confirm"
+      - "let me know if you'd like me to proceed"
+      - "i'll pause here for your"
+      # third-person form (dodges a "you" scan)
+      - "the user can review"
+      - "the user can verify"
+      - "the user can confirm"
+      - "the user can decide"
+      - "the user can take"
+      - "the user will review"
+      - "the user will verify"
+      - "the user to review"
+      - "the user to verify"
+      - "the user to confirm"
+      - "waiting for the user"
+      - "await the user"
+      - "awaiting the user"
+      - "for the user to review"
+      - "for the user to verify"
+      - "for the user to confirm"
+      - "the user is around"
+      - "the user is now available"
+      - "the user is present"
+      - "user can now review"
+      - "they can review"
+      - "they can verify"
+      - "they can confirm"
+      - "they will review"
+      - "so they can review"
+      - "now available to review"
+      - "is around now"
+      - "is now around"
+      - "seems to be around"
+      - "appears to be around"
+      - "is back now"
+      - "is online now"
+
+  reviewer_attack:
+    note: >-
+      You tried to undermine the Council's ability to review. The Council runs a
+      full agent model with the same tools and vision you have; its verdict stands.
+    patterns:
+      - "council can't see"
+      - "council cannot see"
+      - "council can't view"
+      - "council cannot view"
+      - "council can't verify"
+      - "council cannot verify"
+      - "council can't actually"
+      - "council doesn't have vision"
+      - "council does not have vision"
+      - "council lacks vision"
+      - "council has no vision"
+      - "council can't read"
+      - "council cannot read"
+      - "council isn't able to see"
+      - "council is not able to see"
+      - "reviewer can't see"
+      - "reviewer cannot see"
+      - "it can't see the table"
+      - "it cannot see the table"
+      - "can't see images"
+      - "cannot see images"
+      - "can't see maps"
+      - "cannot see maps"
+      - "no ability to see"
+      - "unable to see visual"
+
+  external_artifact:
+    note: >-
+      You cited an external ticket/PR/doc as evidence the goal is done. Only the
+      goal contract's acceptance criteria define completion; an external artifact does not.
+    patterns:
+      - "jira ticket"
+      - "this ticket shows"
+      - "the ticket confirms"
+      - "according to the ticket"
+      - "per the ticket"
+      - "the ticket indicates"
+      - "pdd-"
+      - "an existing pr"
+      - "the existing pr"
+      - "this pr already"
+      - "already handled in"
+      - "already addressed in ticket"
+      - "already tracked in"
+      - "covered by the ticket"
+      - "covered by an existing"
+      - "marked as done in"
+      - "closed as resolved in"
+
+  effort_excuse:
+    note: >-
+      You used the effort already spent, or the time a full solution would take, as a
+      reason to stop, pause, take a break, or accept partial work. A time estimate is
+      fiction for an agent and is not an allowed stop; only the goal contract and the
+      Council decide when the work is done.
+    patterns:
+      - "given the effort"
+      - "given the time"
+      - "given how much"
+      - "for the effort spent"
+      - "for the time spent"
+      - "considering the effort"
+      - "considering the time"
+      - "amount of effort"
+      - "significant effort"
+      - "substantial effort"
+      - "a lot of effort"
+      - "extensive analysis"
+      - "extensive work"
+      - "major progress made"
+      - "this should suffice"
+      - "should be sufficient"
+      - "is sufficient for now"
+      - "good enough for now"
+      - "this is a good stopping point"
+      - "natural stopping point"
+      - "good place to pause"
+      - "good point to pause"
+      - "good time to pause"
+      - "reasonable place to stop"
+      - "warrants a break"
+      - "deserves a break"
+      - "time for a break"
+      - "take a break"
+      - "earned a break"
+      - "a break and review"
+      - "break before proceeding"
+      - "pause and review before"
+      - "review before continuing"
+      - "review before proceeding"
+      - "would take hours"
+      - "would take days"
+      - "would take weeks"
+      - "take several hours"
+      - "take several days"
+      - "this would take a"
+      - "is a multi-day"
+      - "is a multi-week"
+      - "out of scope for this session"
+      - "beyond what can be done in"
+      - "too much to do in one"
+      - "more than can be accomplished"
+      - "given the scope and effort"
+
+  # NEW (seeded from REBORN-A §0.2): the model declares a knowledge gap "unreachable"
+  # without exhausting sources, dressing an un-queried gap as a wall.
+  unreachable_excuse:
+    note: >-
+      You declared something unfound, unclear, undocumented, or access-gated without
+      proving you queried every reachable source. A gap is missing from the sources
+      checked SO FAR, not from reality. Name the next source and query it; a real wall
+      is named precisely (exact resource + exact denial), never vaguely.
+    patterns:
+      - "i couldn't find"
+      - "i could not find"
+      - "i was unable to find"
+      - "unable to locate"
+      - "is undocumented"
+      - "appears undocumented"
+      - "is unclear"
+      - "remains unclear"
+      - "is unknown"
+      - "not documented anywhere"
+      - "no documentation"
+      - "access-gated"
+      - "access gated"
+      - "is blocked"
+      - "needs prod access"
+      - "would need prod"
+      - "requires production access"
+      - "i don't have access"
+      - "i do not have access"
+      - "not accessible to me"
+      - "cannot be determined"
+      - "not possible to determine"
+      - "this is unknowable"
+      - "no way to know"
+      - "not found in the corpus"
+
+  # NEW (seeded from REBORN-A §0.2): scope-shrink — presenting a subset as the whole
+  # and dressing the shrink as a judgment call.
+  scope_shrink:
+    note: >-
+      You shrank the scope and dressed it as judgment. A subset is not the whole.
+      "I focused on the core / the rest follow the same pattern / a representative
+      sample" is the scope-shrink tell. Cover every required item, or name the exact
+      evidenced wall for the one item you cannot.
+    patterns:
+      - "this is enough detail"
+      - "enough detail for"
+      - "the rest is straightforward"
+      - "the rest are straightforward"
+      - "the rest follow the same"
+      - "the rest would follow"
+      - "follow the same pattern"
+      - "i've captured the important"
+      - "i have captured the important"
+      - "captured the key"
+      - "the most important ones"
+      - "i focused on the core"
+      - "focused on the main"
+      - "focused on the key"
+      - "representative sample"
+      - "a representative subset"
+      - "sampled a few"
+      - "a few examples should"
+      - "top-n"
+      - "top few"
+      - "the major ones"
+      - "the primary ones"
+      - "covered the main"
+      - "this subset"
+      - "for brevity"
+      - "to keep it concise"
+      - "rather than exhaustively"
+
+  # NEW (seeded from REBORN-A §0.3): flag/escalate/defer to a human who isn't there.
+  flag_to_human:
+    note: >-
+      You tried to flag, escalate, defer, or hand a decision to a human. No human is
+      present. Make the decision a senior owner would make from the evidence, state the
+      assumption, and proceed; the Council is the only escalation target, and only for a
+      genuine deadlock a competent owner could not resolve from evidence.
+    patterns:
+      - "i'll flag this"
+      - "i will flag this"
+      - "flagging this for"
+      - "needs human review"
+      - "needs human input"
+      - "needs human sign-off"
+      - "requires human approval"
+      - "requires sign-off"
+      - "out of scope for me"
+      - "the user should decide"
+      - "the user will need to"
+      - "should be decided by"
+      - "escalate to the"
+      - "escalating to"
+      - "recommended next investigation"
+      - "recommend further investigation"
+      - "someone should verify"
+      - "someone should review"
+      - "someone will need to"
+      - "this should be reviewed by"
+      - "left for a human"
+      - "defer this to"
+      - "deferring this decision"
+
+  claim_without_evidence:
+    note: >-
+      You claimed completion without showing any artifact the Council can inspect.
+      A claim with no evidence is, by definition, not done.
+    # Special-cased in code: only fires when a completion claim is present AND no
+    # evidence marker is found. Patterns here are the completion-claim phrases.
+    patterns:
+      - "it's complete"
+      - "it is complete"
+      - "task complete"
+      - "goal complete"
+      - "fully complete"
+      - "now complete"
+      - "all done"
+      - "this is done"
+      - "work is done"
+      - "everything is done"
+      - "successfully completed"
+      - "completed successfully"
+      - "has been completed"
+      - "is finished"
+      - "all set"
+      - "nothing left to do"
+      - "no further work"
+      - "ready to ship"
+
+  stall_padding:
+    note: >-
+      Your response is busy-looking filler with no real artifact change. Pretending
+      to work counts as no progress.
+    # Special-cased in code: fires only on a long response with filler AND no artifact verb.
+    patterns:
+      - "let me just"
+      - "i'll just"
+      - "continuing to work"
+      - "still working on"
+      - "working through"
+      - "let me continue"
+      - "i'll keep working"
+      - "making progress"
+      - "almost there"
+      - "wrapping up"
+      - "finalizing"
+      - "just need to"
+
+# Evidence markers — if ANY appear in a response, a completion claim is treated as
+# at least attempting to show its work (suppresses claim_without_evidence).
+evidence_markers:
+  - "passed"
+  - "0 errors"
+  - "0 failures"
+  - "tests pass"
+  - "exit code 0"
+  - "diff --git"
+  - "+++ b/"
+  - "--- a/"
+  - "wrote "
+  - "created file"
+  - "modified "
+  - "ran "
+  - "output:"
+  - "result:"
+  - "stdout"
+  - "verified"
+  - ".py"
+  - ".md"
+  - ".json"
+  - ".ts"
+  - ".tsx"
+  - "commit "
+  - "sha "
+
+# Artifact-producing verbs — their ABSENCE in a long response is a stall tell.
+artifact_verbs:
+  - "wrote"
+  - "created"
+  - "edited"
+  - "patched"
+  - "ran"
+  - "executed"
+  - "fixed"
+  - "added"
+  - "removed"
+  - "refactored"
+  - "implemented"
+  - "tested"
+  - "built"
+  - "committed"
+  - "applied"
+  - "generated"
+  - "updated"
+  - "deleted"
+  - "installed"
+  - "diff"
+  - "output"
+  - "error"
+  - "traceback"
+  - "passed"
+  - "failed"

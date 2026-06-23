@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock
 
 import gateway.mirror as mirror_mod
 from gateway.mirror import (
+    drain_pending_mirrors,
     mirror_to_session,
     _find_session_id,
 )
@@ -232,18 +233,41 @@ class TestMirrorToSession:
 
     def test_no_matching_session(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {})
+        pending_file = sessions_dir / "pending_mirrors.json"
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch.object(mirror_mod, "_PENDING_MIRRORS_PATH", pending_file):
             result = mirror_to_session("telegram", "99999", "Hello!")
 
         assert result is False
+        pending = json.loads(pending_file.read_text())
+        assert pending["telegram::99999::"][0]["content"] == "Hello!"
 
     def test_error_returns_false(self, tmp_path):
         with patch("gateway.mirror._find_session_id", side_effect=Exception("boom")):
             result = mirror_to_session("telegram", "123", "msg")
 
         assert result is False
+
+    def test_drain_pending_mirrors_replays_queued_message(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {})
+        pending_file = sessions_dir / "pending_mirrors.json"
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch.object(mirror_mod, "_PENDING_MIRRORS_PATH", pending_file), \
+             patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
+            queued = mirror_to_session("telegram", "99999", "Hello later!", source_label="cli")
+            drained = drain_pending_mirrors("sess_new", "telegram", "99999")
+
+        assert queued is False
+        assert drained == 1
+        mock_sqlite.assert_called_once()
+        assert mock_sqlite.call_args[0][0] == "sess_new"
+        msg = mock_sqlite.call_args[0][1]
+        assert msg["content"] == "Hello later!"
+        assert json.loads(pending_file.read_text()) == {}
 
 
 class TestAppendToSqlite:

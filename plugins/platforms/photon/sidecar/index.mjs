@@ -168,20 +168,39 @@ function markStreamRecovering(reason) {
   }
 }
 
+function classifyStreamLog(text) {
+  if (!text.includes("[spectrum.stream]")) return;
+  const reason = text.split("\n", 1)[0];
+  if (text.includes("persistently failing")) {
+    markStreamDegraded(reason);
+  } else if (text.includes("stream interrupted")) {
+    markStreamRecovering(reason);
+  }
+}
+
+// spectrum-ts routes its stream telemetry through @photon-ai/otel's
+// createLogger, which sends severity >= ERROR to console.error and
+// everything else (WARN/INFO) to console.log. The two lines we key off
+// land on *different* channels: `log.error("stream persistently failing")`
+// -> console.error, but `log.warn("stream interrupted; reconnecting")`
+// -> console.log. Patch both so the recovering/degraded counters see the
+// interrupt bursts, not just the terminal "persistently failing" line.
 const originalConsoleError = console.error.bind(console);
 console.error = (...args) => {
   const text = args
     .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
     .join(" ");
-  if (text.includes("[spectrum.stream]")) {
-    const reason = text.split("\n", 1)[0];
-    if (text.includes("persistently failing")) {
-      markStreamDegraded(reason);
-    } else if (text.includes("stream interrupted")) {
-      markStreamRecovering(reason);
-    }
-  }
+  classifyStreamLog(text);
   originalConsoleError(...args);
+};
+
+const originalConsoleLog = console.log.bind(console);
+console.log = (...args) => {
+  const text = args
+    .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
+    .join(" ");
+  classifyStreamLog(text);
+  originalConsoleLog(...args);
 };
 
 if (!projectId || !projectSecret || !sharedToken) {

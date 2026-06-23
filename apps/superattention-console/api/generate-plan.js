@@ -93,13 +93,89 @@ Use this exact structure:
   ]
 }
 
+Constraints (critical for valid JSON output):
+- Exactly 4 weeks in weeklyPlan.
+- Max 2 experiments per week.
+- Max 2 items per contentAssets channel (reels, whatsapp, website, linkedin).
+- Max 3 nextActions.
+- Keep every string under 120 characters. No newlines inside JSON strings.
+- Escape quotes inside strings with backslash.
+- Do not truncate — if running long, shorten copy instead of cutting JSON mid-string.
+
 Be specific, practical, revenue-focused, and suitable for a founder with limited time and budget.
 `.trim();
 }
 
-async function callAnthropic(input) {
+function extractJsonText(text) {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const raw = (fenced ? fenced[1] : text).trim();
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) {
+    return raw;
+  }
+  return raw.slice(start, end + 1);
+}
+
+function repairTruncatedJson(text) {
+  let repaired = text.trim();
+  if (repaired.endsWith(",")) {
+    repaired = repaired.slice(0, -1);
+  }
+
+  const stack = [];
+  let inString = false;
+  let escaped = false;
+
+  for (const char of repaired) {
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{") stack.push("}");
+    if (char === "[") stack.push("]");
+    if (char === "}" || char === "]") stack.pop();
+  }
+
+  if (inString) {
+    repaired += '"';
+  }
+
+  while (stack.length) {
+    repaired += stack.pop();
+  }
+
+  return repaired;
+}
+
+function parsePlanJson(text) {
+  const cleaned = extractJsonText(text);
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const repaired = repairTruncatedJson(cleaned);
+    return JSON.parse(repaired);
+  }
+}
+
+async function requestAnthropic({ model, maxTokens, prompt }) {
   const apiKey = requireEnv("ANTHROPIC_API_KEY");
-  const model = process.env.ANTHROPIC_MODEL || "claude-3-5-sonnet-latest";
 
   const response = await fetch(ANTHROPIC_API_URL, {
     method: "POST",
@@ -110,13 +186,8 @@ async function callAnthropic(input) {
     },
     body: JSON.stringify({
       model,
-      max_tokens: 4000,
-      messages: [
-        {
-          role: "user",
-          content: buildPrompt(input),
-        },
-      ],
+      max_tokens: maxTokens,
+      messages: [{ role: "user", content: prompt }],
     }),
   });
 
@@ -136,17 +207,49 @@ async function callAnthropic(input) {
     throw new Error("Anthropic returned an empty response");
   }
 
-  const cleaned = text
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/```$/i, "")
-    .trim();
+  return { text, stopReason: data.stop_reason };
+}
 
-  try {
-    return JSON.parse(cleaned);
-  } catch (error) {
-    throw new Error(`AI returned invalid JSON: ${error.message}`);
+async function callAnthropic(input) {
+  const model = process.env.ANTHROPIC_MODEL || "claude-3-haiku-20240307";
+  const requested = Number(process.env.ANTHROPIC_MAX_TOKENS || 8192);
+  const maxTokens = model.includes("haiku")
+    ? Math.min(requested, 4096)
+    : Math.min(requested, 8192);
+  const prompt = buildPrompt(input);
+
+  let lastError = null;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const retryPrompt =
+      attempt === 0
+        ? prompt
+        : `${prompt}
+
+Your previous response was truncated or invalid JSON. Return the same plan again as COMPLETE valid JSON only. Use shorter strings.`;
+
+    try {
+      const { text, stopReason } = await requestAnthropic({
+        model,
+        maxTokens,
+        prompt: retryPrompt,
+      });
+
+      if (stopReason === "max_tokens") {
+        throw new Error("Response hit token limit before JSON completed");
+      }
+
+      return parsePlanJson(text);
+    } catch (error) {
+      lastError = error;
+    }
   }
+
+  throw new Error(
+    lastError?.message?.includes("JSON")
+      ? `AI returned invalid JSON after retry: ${lastError.message}`
+      : lastError?.message || "Failed to parse AI plan",
+  );
 }
 
 async function saveCampaign(input, plan) {

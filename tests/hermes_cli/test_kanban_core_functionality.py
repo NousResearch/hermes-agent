@@ -852,6 +852,35 @@ def test_cli_stats_json(kanban_home):
     assert "oldest_ready_age_seconds" in data
 
 
+def test_cli_stats_text_includes_review_status(kanban_home):
+    """The plain-text (non --json) stats output must list the `review` status.
+
+    `review` is a first-class non-archived status in VALID_STATUSES and is
+    counted by board_stats, but the text renderer's hardcoded status tuple
+    had drifted and omitted it — so tasks awaiting the review agent were
+    invisible in the default board summary.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="awaiting review")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'review' WHERE id = ?",
+                (tid,),
+            )
+    finally:
+        conn.close()
+    out = run_slash("stats")
+    assert "review" in out
+    # The review task is counted on its row, not silently dropped.
+    review_line = next(
+        (ln for ln in out.splitlines() if ln.strip().startswith("review")),
+        None,
+    )
+    assert review_line is not None
+    assert review_line.split()[-1] == "1"
+
+
 def test_cli_notify_subscribe_and_list(kanban_home):
     tid = run_slash("create 'x' --json")
     tid = json.loads(tid)["id"]

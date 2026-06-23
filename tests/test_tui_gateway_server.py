@@ -703,6 +703,28 @@ def test_load_enabled_toolsets_accepts_plugin_env_after_discovery(monkeypatch):
     assert server._load_enabled_toolsets() == ["plugin_demo"]
 
 
+def test_load_enabled_toolsets_accepts_configured_mcp_prefixed_env_before_discovery(
+    monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web,mcp-brain")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"brain": {"enabled": True}}},
+    )
+
+    assert server._load_enabled_toolsets() == ["web", "mcp-brain"]
+    assert capsys.readouterr().err == ""
+
+
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
     monkeypatch.setitem(

@@ -83,29 +83,23 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
             )
         return None, None
 
-    mcp_names: set[str] = set()
+    mcp_aliases: set[str] = set()
     mcp_disabled: set[str] = set()
     if unresolved:
         try:
             from hermes_cli.config import read_raw_config
-            from hermes_cli.tools_config import _parse_enabled_flag
+            from hermes_cli.mcp_toolsets import split_configured_mcp_toolset_aliases
 
             cfg = read_raw_config()
             mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
-            for name, server_cfg in mcp_servers.items():
-                if not isinstance(server_cfg, dict):
-                    continue
-                if _parse_enabled_flag(server_cfg.get("enabled", True), default=True):
-                    mcp_names.add(str(name))
-                else:
-                    mcp_disabled.add(str(name))
+            mcp_aliases, mcp_disabled = split_configured_mcp_toolset_aliases(mcp_servers)
         except Exception:
-            mcp_names = set()
+            mcp_aliases = set()
             mcp_disabled = set()
 
-    mcp_valid = [name for name in unresolved if name in mcp_names]
+    mcp_valid = [name for name in unresolved if name in mcp_aliases]
     disabled = [name for name in unresolved if name in mcp_disabled]
-    unknown = [name for name in unresolved if name not in mcp_names and name not in mcp_disabled]
+    unknown = [name for name in unresolved if name not in mcp_aliases and name not in mcp_disabled]
     valid = built_in + mcp_valid
 
     if unknown:

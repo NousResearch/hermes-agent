@@ -749,6 +749,27 @@ def test_oneshot_accepts_plugin_toolset_after_discovery(monkeypatch):
     assert error is None
 
 
+def test_oneshot_accepts_configured_mcp_prefixed_toolset_before_discovery(
+    monkeypatch, capsys
+):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.config as config_mod
+
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"brain": {"enabled": True}}},
+    )
+
+    valid, error = _validate_explicit_toolsets("web,mcp-brain")
+
+    assert valid == ["web", "mcp-brain"]
+    assert error is None
+    assert capsys.readouterr().err == ""
+
+
 def test_oneshot_rejects_disabled_mcp_toolset(monkeypatch, capsys):
     _stub_plugin_discovery(monkeypatch)
     import hermes_cli.config as config_mod
@@ -758,7 +779,7 @@ def test_oneshot_rejects_disabled_mcp_toolset(monkeypatch, capsys):
     monkeypatch.setattr(
         config_mod,
         "read_raw_config",
-        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+        lambda: {"mcp_servers": {"off": {"enabled": False}}},
     )
 
     valid, error = _validate_explicit_toolsets("mcp-off")

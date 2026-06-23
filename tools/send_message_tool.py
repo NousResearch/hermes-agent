@@ -997,6 +997,21 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         except Exception:
             _tg_proxy = None
+        # Honour a custom Bot API base_url (self-hosted telegram-bot-api server),
+        # mirroring the gateway adapter's platforms.telegram.extra.base_url. Without
+        # this, the standalone send path always hits api.telegram.org and times out
+        # in regions where it is blocked, even when interactive gateway replies work.
+        # Resolve from config first, then fall back to the env var.
+        _tg_base_url = ""
+        try:
+            from gateway.config import load_gateway_config
+            _cfg = load_gateway_config() or {}
+            _tg_extra = (_cfg.get("platforms", {}) or {}).get("telegram", {}).get("extra", {}) or {}
+            _tg_base_url = str(_tg_extra.get("base_url", "") or "").strip()
+        except Exception:
+            _tg_base_url = ""
+        if not _tg_base_url:
+            _tg_base_url = os.getenv("TELEGRAM_BOT_API_BASE_URL", "").strip()
         if _tg_proxy:
             try:
                 from telegram.request import HTTPXRequest
@@ -1009,6 +1024,9 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             except Exception as _proxy_err:
                 logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _proxy_err)
                 bot = Bot(token=token)
+        elif _tg_base_url:
+            logger.info("send_message: standalone Telegram send via custom Bot API base_url %s", _tg_base_url)
+            bot = Bot(token=token, base_url=_tg_base_url)
         else:
             bot = Bot(token=token)
         int_chat_id = int(chat_id)

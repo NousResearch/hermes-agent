@@ -5547,7 +5547,7 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.nous_billing import BillingError, patch_auto_top_up
 
     try:
-        enabled = bool(params.get("enabled"))
+        enabled = is_truthy_value(params.get("enabled"))
         threshold = params.get("threshold")
         top_up_amount = params.get("top_up_amount")
         if threshold is None or top_up_amount is None:

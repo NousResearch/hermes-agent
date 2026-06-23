@@ -5,6 +5,8 @@ import re
 import unittest
 from unittest.mock import MagicMock
 
+from plugins.platforms.discord.adapter import _looks_like_nonconversational_history_message
+
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
     """Create a mock Discord author."""
@@ -21,6 +23,7 @@ def _make_message(*, author=None, content="hello", mentions=None, is_dm=False):
     msg = MagicMock()
     msg.author = author or _make_author()
     msg.content = content
+    msg.clean_content = content
     msg.attachments = []
     msg.mentions = mentions or []
     if is_dm:
@@ -76,6 +79,10 @@ class TestDiscordBotFilter(unittest.TestCase):
         # Replicate the exact filter logic from discord.py on_message
         if message.author == client_user:
             return False  # own messages always ignored
+
+        content = getattr(message, "clean_content", message.content) or ""
+        if getattr(message.author, "bot", False) and _looks_like_nonconversational_history_message(content):
+            return False
 
         if getattr(message.author, "bot", False):
             allow = allow_bots.lower().strip()
@@ -138,6 +145,26 @@ class TestDiscordBotFilter(unittest.TestCase):
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, content=f"<@!{our_user.id}> relay", mentions=[])
+        self.assertTrue(self._run_filter(msg, "mentions", our_user))
+
+    def test_heartbeat_ok_bot_message_is_nonconversational(self):
+        """Exact bot HEARTBEAT_OK pings must not trigger another bot."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content="HEARTBEAT_OK", mentions=[our_user])
+        self.assertTrue(_looks_like_nonconversational_history_message("HEARTBEAT_OK"))
+        self.assertFalse(self._run_filter(msg, "mentions", our_user))
+
+    def test_operational_bot_handoff_still_passes_with_mention(self):
+        """Non-heartbeat Molly/Petra handoffs still pass the bot mention path."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(
+            author=bot,
+            content="Owner: Molly\nAsk: Petra validate project access\nEvidence: project visible",
+            mentions=[our_user],
+        )
+        self.assertFalse(_looks_like_nonconversational_history_message(msg.content))
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
 
     def test_inline_mention_requirement_off_preserves_reply_ping_behavior(self):

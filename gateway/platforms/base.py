@@ -1111,6 +1111,27 @@ def _media_delivery_denied_paths() -> List[Path]:
     return denied
 
 
+def _fs_case_insensitive() -> bool:
+    """True when the host filesystem compares paths case-insensitively.
+
+    macOS (APFS/HFS+) and Windows default to case-insensitive filesystems, so a
+    credential path addressed via a case variant (``~/.SSH/id_rsa`` vs
+    ``~/.ssh/id_rsa``) resolves to the SAME on-disk file while ``Path.resolve``
+    preserves the typed case. The denylist comparisons below must therefore
+    casefold on these platforms (mirroring the canonical guard in
+    agent/file_safety.py), or the media-delivery deny is silently bypassed. On
+    case-sensitive POSIX filesystems (default Linux) the variants are genuinely
+    different files and are left untouched.
+    """
+    return sys.platform == "darwin" or os.name == "nt"
+
+
+def _denycmp(path) -> str:
+    """Normalize a path string for case-aware denylist comparison."""
+    text = os.fspath(path)
+    return text.casefold() if _fs_case_insensitive() else text
+
+
 def _path_under_denied_prefix(resolved: Path) -> bool:
     """Return True if ``resolved`` lives under a deny-listed system path.
 
@@ -1138,7 +1159,7 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
             continue
         # Allow the running user's own home tree; its credential sub-dirs are
         # caught by their own (more-specific) denylist entries above.
-        if home is not None and resolved_denied == home:
+        if home is not None and _denycmp(resolved_denied) == _denycmp(home):
             continue
         return True
     return False
@@ -1162,11 +1183,12 @@ def _file_is_recently_produced(resolved: Path, window_seconds: float) -> bool:
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
+    # Casefold on case-insensitive filesystems (macOS/Windows) so a credential
+    # path addressed via a case variant can't slip past containment checks; an
+    # exact comparison on case-sensitive POSIX systems (default Linux).
+    p = _denycmp(path)
+    r = _denycmp(root)
+    return p == r or p.startswith(r + os.sep)
 
 
 def validate_media_delivery_path(path: str) -> Optional[str]:

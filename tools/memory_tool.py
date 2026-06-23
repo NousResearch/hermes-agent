@@ -1133,6 +1133,7 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
+        query=args.get("query"),
         operations=args.get("operations"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,

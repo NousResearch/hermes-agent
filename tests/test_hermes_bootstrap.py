@@ -311,3 +311,94 @@ class TestEntryPointsImportBootstrap:
             f"configured before anything else initializes.  Move the "
             f"'import hermes_bootstrap' line to be the first import."
         )
+
+
+class TestYamlCSafeShim:
+    """Bootstrap rebinds yaml.safe_load to use the libyaml CSafeLoader
+    on import.  PyYAML's pure-Python parser non-deterministically
+    corrupts CPython object/refcount state under sustained load on
+    some WSL2 / glibc combinations; the C-backed parser is immune.
+    See module docstring for full rationale."""
+
+    def test_safe_load_uses_csafe_loader_after_bootstrap(self):
+        """After hermes_bootstrap import, yaml.safe_load must route
+        through the libyaml C parser.  We check the rebound function's
+        identifying attributes — it lives in hermes_bootstrap.py and
+        invokes yaml.load with Loader=CSafeLoader."""
+        _fresh_import()
+        import yaml
+
+        if not hasattr(yaml, "CSafeLoader"):
+            pytest.skip("libyaml C extension not installed; shim is a no-op")
+
+        # The rebound function is defined inside hermes_bootstrap.py.
+        assert yaml.safe_load.__module__ == "hermes_bootstrap", (
+            f"yaml.safe_load.__module__ is {yaml.safe_load.__module__!r}; "
+            f"expected 'hermes_bootstrap' (shim should have rebound it)"
+        )
+        assert yaml.safe_load_all.__module__ == "hermes_bootstrap"
+
+    def test_safe_load_round_trips_basic_yaml(self):
+        """Sanity: the rebound safe_load actually parses YAML correctly
+        (it's not just a dummy stub)."""
+        _fresh_import()
+        import yaml
+
+        text = "a: 1\nb:\n  - x\n  - y\nc: hello\n"
+        result = yaml.safe_load(text)
+        assert result == {"a": 1, "b": ["x", "y"], "c": "hello"}
+
+    def test_yaml_shim_is_idempotent(self):
+        """Calling apply_yaml_csafe_shim twice must be a no-op the
+        second time (returns False)."""
+        hb = _fresh_import()
+        # First call already happened at import time.
+        assert hb.apply_yaml_csafe_shim() is False
+
+    def test_shim_no_op_when_pyyaml_missing(self):
+        """If PyYAML isn't importable, the shim must silently no-op
+        rather than raising — Hermes installs without YAML extras
+        should still launch.
+
+        We simulate "yaml not installed" by replacing the cached
+        ``sys.modules['yaml']`` with a bare object that lacks both
+        ``safe_load`` and ``CSafeLoader``.  The shim's checks fall
+        through and it returns False without raising.
+        """
+        hb = _fresh_import()
+        hb._yaml_shim_applied = False
+
+        import yaml as real_yaml
+
+        sys.modules["yaml"] = object()
+        try:
+            result = hb.apply_yaml_csafe_shim()
+        finally:
+            sys.modules["yaml"] = real_yaml
+
+        assert result is False
+        assert hb._yaml_shim_applied is False
+
+    def test_shim_no_op_when_libyaml_missing(self, monkeypatch):
+        """If PyYAML is installed but the C extension isn't (no
+        ``yaml.CSafeLoader``), the shim must silently no-op rather
+        than rebinding to something that doesn't exist."""
+        hb = _fresh_import()
+        hb._yaml_shim_applied = False
+
+        import yaml
+
+        # Stand up a fake yaml module that pretends libyaml isn't there.
+        class _FakeYaml:
+            __name__ = "yaml"
+            safe_load = yaml.safe_load
+            # No CSafeLoader attribute.
+
+        monkeypatch.setitem(sys.modules, "yaml", _FakeYaml())
+        try:
+            result = hb.apply_yaml_csafe_shim()
+        finally:
+            sys.modules["yaml"] = yaml
+
+        assert result is False
+        assert hb._yaml_shim_applied is False

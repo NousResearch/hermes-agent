@@ -68,6 +68,24 @@ def test_kimi_for_coding_overlay_uses_hermes_slug():
     assert kimi_mdev is None, "kimi-for-coding slug should not appear (resolved to kimi-coding)"
 
 
+@patch.dict(os.environ, {"KIMI_CN_API_KEY": "fake-cn-key"}, clear=False)
+def test_kimi_cn_not_shadowed_by_unauthenticated_global_alias(monkeypatch):
+    """Regional Kimi should appear when only KIMI_CN_API_KEY is configured.
+
+    Regression: kimi-coding and kimi-coding-cn both map to the same
+    models.dev provider (kimi-for-coding).  The duplicate filter must run
+    after credential detection so an unauthenticated global alias does not
+    hide an authenticated regional alias.
+    """
+    monkeypatch.delenv("KIMI_API_KEY", raising=False)
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+
+    providers = list_authenticated_providers(current_provider="custom:freemodel")
+
+    assert next((p for p in providers if p["slug"] == "kimi-coding-cn"), None) is not None
+    assert next((p for p in providers if p["slug"] == "kimi-coding"), None) is None
+
+
 @patch.dict(os.environ, {"KILOCODE_API_KEY": "fake-key"}, clear=False)
 def test_kilo_overlay_uses_hermes_slug():
     """kilo overlay should resolve to slug='kilocode'."""

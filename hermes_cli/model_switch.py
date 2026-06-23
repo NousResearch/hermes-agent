@@ -921,7 +921,37 @@ def switch_model(
                                 resolved_in_current_catalog = True
                                 break
 
-        # --- Step e: detect_provider_for_model() as last resort ---
+        # --- Step e: prefer authenticated provider matches for exact model IDs ---
+        # Some regional providers share the same model IDs (e.g. kimi-coding and
+        # kimi-coding-cn both expose `kimi-k2.6`).  A blind static catalog scan
+        # can pick the first provider in _PROVIDER_MODELS even when the user only
+        # has credentials for the regional alias.  Before falling back to global
+        # catalog detection, prefer exact matches from authenticated providers.
+        if (
+            target_provider == current_provider
+            and not resolved_alias
+            and not resolved_in_current_catalog
+        ):
+            try:
+                from hermes_cli.models import _PROVIDER_MODELS
+
+                authed = get_authenticated_provider_slugs(
+                    current_provider=current_provider,
+                    user_providers=user_providers,
+                    custom_providers=custom_providers,
+                )
+                model_lower = new_model.lower()
+                for provider in authed:
+                    if provider == current_provider:
+                        continue
+                    models = _PROVIDER_MODELS.get(provider, [])
+                    if any(model_lower == str(model).lower() for model in models):
+                        target_provider = provider
+                        break
+            except Exception:
+                pass
+
+        # --- Step f: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
         is_custom = current_provider in {"custom", "local"} or (
             "localhost" in _base or "127.0.0.1" in _base
@@ -1441,9 +1471,11 @@ def list_authenticated_providers(
             continue
         # Skip aliases that map to the same models.dev provider (e.g.
         # kimi-coding and kimi-coding-cn both → kimi-for-coding).
-        # The first one with valid credentials wins (#10526).
-        if mdev_id in seen_mdev_ids:
-            continue
+        # The first one with valid credentials wins (#10526).  Do the
+        # duplicate check *after* credential detection below: otherwise an
+        # unauthenticated alias that appears earlier in PROVIDER_TO_MODELS_DEV
+        # (kimi-coding) can hide the authenticated regional provider that
+        # appears later (kimi-coding-cn).
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
             continue
@@ -1474,6 +1506,9 @@ def list_authenticated_providers(
             except Exception:
                 pass
         if not has_creds:
+            continue
+
+        if mdev_id in seen_mdev_ids:
             continue
 
         # Unified pathway: route through cached_provider_model_ids() so the

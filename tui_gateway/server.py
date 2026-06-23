@@ -9051,6 +9051,32 @@ def _(rid, params: dict) -> dict:
                 },
             )
 
+        # /goal wait <pid> [reason] — park the loop on a background process.
+        if lower == "wait" or lower.startswith("wait "):
+            wait_arg = arg[len("wait"):].strip()
+            if not wait_arg:
+                return _ok(rid, {"type": "exec", "output": "Usage: /goal wait <pid> [reason]"})
+            wtokens = wait_arg.split(None, 1)
+            try:
+                pid = int(wtokens[0])
+            except ValueError:
+                return _ok(rid, {"type": "exec", "output": "/goal wait: <pid> must be an integer process id."})
+            reason = wtokens[1].strip() if len(wtokens) > 1 else ""
+            try:
+                mgr.wait_on(pid, reason=reason)
+            except (RuntimeError, ValueError) as exc:
+                return _ok(rid, {"type": "exec", "output": f"/goal wait: {exc}"})
+            rtxt = f" ({reason})" if reason else ""
+            return _ok(
+                rid, {"type": "exec", "output": f"⏳ Goal parked on pid {pid}{rtxt}. Loop pauses until it exits."},
+            )
+
+        # /goal unwait — clear the wait barrier.
+        if lower == "unwait":
+            if mgr.stop_waiting():
+                return _ok(rid, {"type": "exec", "output": "▶ Wait barrier cleared — goal loop resumes."})
+            return _ok(rid, {"type": "exec", "output": "No wait barrier set."})
+
         # Otherwise — treat the remaining text as the new goal.
         try:
             state = mgr.set(arg)

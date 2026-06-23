@@ -105,6 +105,21 @@ describe('SkillsView toolset management', () => {
     expect(await screen.findByText(/No background sampler, storage, or automation/)).toBeTruthy()
   })
 
+  it('sorts the Learn surface alphabetically with toolset rows', async () => {
+    getToolsets.mockResolvedValue([
+      toolset({ name: 'browser', label: 'Browser Automation' }),
+      toolset({ name: 'zebra', label: 'Zebra Tools' })
+    ])
+
+    await renderSkills()
+
+    await screen.findByText('Browser Automation')
+    const text = document.body.textContent || ''
+
+    expect(text.indexOf('Browser Automation')).toBeLessThan(text.indexOf('Learn'))
+    expect(text.indexOf('Learn')).toBeLessThan(text.indexOf('Zebra Tools'))
+  })
+
   it('expands the provider config panel when the configured pill is clicked', async () => {
     await renderSkills()
 

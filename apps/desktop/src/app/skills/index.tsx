@@ -26,6 +26,10 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 const SKILLS_MODES = ['skills', 'toolsets'] as const
 type SkillsMode = (typeof SKILLS_MODES)[number]
 const LEARN_SURFACE_ID = '__learn_surface__'
+type ToolsetRow =
+  | { kind: 'learn'; key: typeof LEARN_SURFACE_ID; label: 'Learn' }
+  | { kind: 'toolset'; key: string; label: string; toolset: ToolsetInfo }
+
 const LEARN_SURFACE_SEARCH_TEXT = [
   'learn',
   'workflow',
@@ -89,6 +93,21 @@ function learnSurfaceMatches(query: string): boolean {
   const q = query.trim().toLowerCase()
 
   return !q || LEARN_SURFACE_SEARCH_TEXT.includes(q)
+}
+
+function filteredToolsetRows(toolsets: ToolsetInfo[], query: string): ToolsetRow[] {
+  const rows: ToolsetRow[] = filteredToolsets(toolsets, query).map(toolset => ({
+    kind: 'toolset',
+    key: toolset.name,
+    label: toolsetDisplayLabel(toolset),
+    toolset
+  }))
+
+  if (learnSurfaceMatches(query)) {
+    rows.push({ kind: 'learn', key: LEARN_SURFACE_ID, label: 'Learn' })
+  }
+
+  return rows.sort((a, b) => a.label.localeCompare(b.label))
 }
 
 interface SkillsViewProps extends React.ComponentProps<'section'> {
@@ -156,8 +175,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     [activeCategory, mode, query, skills]
   )
 
-  const visibleToolsets = useMemo(() => (toolsets ? filteredToolsets(toolsets, query) : []), [query, toolsets])
-  const showLearnSurface = learnSurfaceMatches(query)
+  const visibleToolsetRows = useMemo(() => (toolsets ? filteredToolsetRows(toolsets, query) : []), [query, toolsets])
 
   const skillGroups = useMemo(() => {
     const groups = new Map<string, SkillInfo[]>()
@@ -304,7 +322,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         </div>
       ) : (
         <div className={cn('h-full overflow-y-auto py-3', PAGE_INSET_X)}>
-          {visibleToolsets.length === 0 && !showLearnSurface ? (
+          {visibleToolsetRows.length === 0 ? (
             <EmptyState description={t.skills.noToolsetsDesc} title={t.skills.noToolsetsTitle} />
           ) : (
             <div className="space-y-2">
@@ -314,21 +332,25 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                 </div>
               )}
               <div>
-                {showLearnSurface && (
-                  <LearnSurfaceRow
-                    expanded={expandedToolset === LEARN_SURFACE_ID}
-                    onToggle={() =>
-                      setExpandedToolset(current => (current === LEARN_SURFACE_ID ? null : LEARN_SURFACE_ID))
-                    }
-                  />
-                )}
-                {visibleToolsets.map(toolset => {
+                {visibleToolsetRows.map(row => {
+                  if (row.kind === 'learn') {
+                    return (
+                      <LearnSurfaceRow
+                        expanded={expandedToolset === LEARN_SURFACE_ID}
+                        key={row.key}
+                        onToggle={() =>
+                          setExpandedToolset(current => (current === LEARN_SURFACE_ID ? null : LEARN_SURFACE_ID))
+                        }
+                      />
+                    )
+                  }
+
+                  const { label, toolset } = row
                   const tools = toolNames(toolset)
-                  const label = toolsetDisplayLabel(toolset)
                   const expanded = expandedToolset === toolset.name
 
                   return (
-                    <div className="px-0 py-2.5" key={toolset.name}>
+                    <div className="px-0 py-2.5" key={row.key}>
                       <div className="flex items-center justify-between gap-2">
                         <div className="truncate text-sm font-medium">{label}</div>
                         <div className="flex shrink-0 items-center gap-1.5">

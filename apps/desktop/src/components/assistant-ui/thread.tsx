@@ -970,7 +970,7 @@ const UserMessage: FC<{
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
     'cursor-pointer pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
-    'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
+    'border-[color-mix(in_srgb,var(--dt-human-prompt-border)_72%,var(--dt-user-bubble-border))] hover:border-[color-mix(in_srgb,var(--dt-human-prompt-border)_92%,transparent)]'
   )
 
   const bubbleContent = hasBody && (
@@ -1718,7 +1718,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
           <div
             className={cn(
               USER_BUBBLE_BASE_CLASS,
-              'ui-prompt-input__container relative border-(--ui-stroke-secondary) data-[expanded=true]:min-h-20',
+              'ui-prompt-input__container relative border-[color-mix(in_srgb,var(--dt-human-prompt-border)_72%,var(--dt-user-bubble-border))] data-[expanded=true]:min-h-20',
               COMPOSER_DROP_FADE_CLASS,
               dragActive && COMPOSER_DROP_ACTIVE_CLASS
             )}

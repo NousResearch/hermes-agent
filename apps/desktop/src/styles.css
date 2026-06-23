@@ -287,6 +287,8 @@
     --dt-ring: var(--ui-stroke-primary);
     --dt-midground: var(--theme-midground);
     --dt-composer-ring: var(--ui-base);
+    /* Kevin's human prompt accent: makes Kevin's own sent prompts/input box easy to find after long replies. */
+    --dt-human-prompt-border: #ff2d73;
     --dt-destructive: #cf2d56;
     --dt-destructive-foreground: #ffffff;
     --dt-sidebar-bg: var(--ui-bg-sidebar);
@@ -1063,13 +1065,13 @@ canvas {
 }
 
 [data-slot='composer-surface'] {
-  border-color: var(--ui-stroke-secondary) !important;
+  border-color: color-mix(in srgb, var(--dt-human-prompt-border) 35%, var(--dt-input)) !important;
 }
 
 /* On focus we don't change the fill — just shift the border ~15% toward the
    foreground, which darkens it in light mode and lightens it in dark mode. */
 [data-slot='composer-surface']:focus-within {
-  border-color: color-mix(in srgb, var(--ui-stroke-secondary) 85%, var(--dt-foreground)) !important;
+  border-color: color-mix(in srgb, var(--dt-human-prompt-border) 75%, transparent) !important;
 }
 
 [data-slot='composer-fade'] {

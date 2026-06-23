@@ -33,6 +33,7 @@ def _make_runner():
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
+    adapter.delete_message = AsyncMock(return_value=True)
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
@@ -139,3 +140,25 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
+
+
+@pytest.mark.asyncio
+async def test_new_command_flushes_pending_meta_cleanup_for_idle_session():
+    """Cold /new must honor cleanup_progress_on_reset for delayed meta bubbles."""
+    runner = _make_runner()
+    source = _make_source()
+    session_key = build_session_key(source)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    runner._meta_cleanup_pending = {
+        session_key: {
+            "adapter": adapter,
+            "chat_id": source.chat_id,
+            "ids": ["progress-1"],
+            "future": None,
+        }
+    }
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    getattr(adapter.delete_message, "assert_awaited_once_with")(source.chat_id, "progress-1")
+    assert runner._meta_cleanup_pending == {}

@@ -2606,6 +2606,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # cannot grow unbounded over a long-running gateway lifetime.
         self._session_sources: "OrderedDict[str, SessionSource]" = OrderedDict()
         self._session_sources_max = 512
+        # Per-session delayed cleanup for Telegram/gateway meta bubbles.
+        # ``cleanup_progress_idle_seconds`` lets us collect tool/status noise
+        # across a burst of turns and delete it only after the conversation
+        # goes quiet, rather than making the transcript jump while the user is
+        # actively interacting.
+        self._meta_cleanup_pending: Dict[str, Dict[str, Any]] = {}
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -4475,6 +4481,240 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Failed to send busy-ack: %s", e)
 
         return True
+
+    def _pause_meta_cleanup_for_session(self, session_key: Optional[str]) -> None:
+        """Pause any idle cleanup timer while a fresh turn is running."""
+        if not session_key:
+            return
+        pending = getattr(self, "_meta_cleanup_pending", None)
+        if not isinstance(pending, dict):
+            return
+        entry = pending.get(session_key)
+        if not entry:
+            return
+        fut = entry.get("future")
+        if fut is not None:
+            try:
+                fut.cancel()
+            except Exception:
+                pass
+            entry["future"] = None
+        entry["paused"] = True
+
+    def _resume_paused_meta_cleanup_for_session(
+        self,
+        session_key: Optional[str],
+        *,
+        loop: asyncio.AbstractEventLoop,
+        idle_seconds: float = 0.0,
+        max_exchanges: int = 0,
+    ) -> None:
+        """Re-arm a paused idle cleanup even when the next turn has no bubbles."""
+        if not session_key:
+            return
+        pending = getattr(self, "_meta_cleanup_pending", None)
+        if not isinstance(pending, dict):
+            return
+        entry = pending.get(session_key)
+        if not entry or not entry.get("ids") or entry.get("future") is not None:
+            return
+        try:
+            idle_delay = max(0.0, float(idle_seconds or 0.0))
+        except Exception:
+            idle_delay = 0.0
+        try:
+            exchange_limit = max(0, int(max_exchanges or 0))
+        except Exception:
+            exchange_limit = 0
+        if exchange_limit and int(entry.get("exchanges") or 0) < exchange_limit and idle_delay <= 0:
+            entry["paused"] = False
+            return
+        delay = 0.0 if exchange_limit and int(entry.get("exchanges") or 0) >= exchange_limit else idle_delay
+        entry["token"] = int(entry.get("token") or 0) + 1
+        token = entry["token"]
+        entry["paused"] = False
+
+        async def _delete_when_current() -> None:
+            try:
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                current = pending.get(session_key)
+                if not current or current.get("token") != token:
+                    return
+                pending.pop(session_key, None)
+                delete_adapter = current.get("adapter")
+                delete_chat_id = current.get("chat_id")
+                delete_ids = list(current.get("ids") or [])
+                for mid in delete_ids:
+                    try:
+                        await delete_adapter.delete_message(delete_chat_id, mid)
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Meta message cleanup failed for %s: %s", session_key, exc)
+
+        entry["future"] = safe_schedule_threadsafe(
+            _delete_when_current(),
+            loop,
+            logger=logger,
+            log_message="Meta message cleanup scheduling error",
+        )
+
+    async def _flush_meta_cleanup_for_session(
+        self,
+        session_key: Optional[str],
+        *,
+        platform_key: str = "",
+        force: bool = False,
+    ) -> None:
+        """Immediately delete any pending meta bubbles for a reset session."""
+        if not session_key:
+            return
+        if not force:
+            try:
+                user_config = _load_gateway_config()
+            except Exception:
+                user_config = {}
+            try:
+                from gateway.display_config import resolve_display_setting
+                if not bool(
+                    resolve_display_setting(
+                        user_config,
+                        platform_key,
+                        "cleanup_progress_on_reset",
+                        True,
+                    )
+                ):
+                    return
+            except Exception:
+                pass
+        pending = getattr(self, "_meta_cleanup_pending", None)
+        if not isinstance(pending, dict):
+            return
+        entry = pending.pop(session_key, None)
+        if not entry:
+            return
+        fut = entry.get("future")
+        if fut is not None:
+            try:
+                fut.cancel()
+            except Exception:
+                pass
+        adapter = entry.get("adapter")
+        chat_id = entry.get("chat_id")
+        if adapter is None or not chat_id:
+            return
+        for mid in list(entry.get("ids") or []):
+            try:
+                await adapter.delete_message(chat_id, str(mid))
+            except Exception:
+                pass
+
+    def _schedule_meta_message_cleanup(
+        self,
+        *,
+        session_key: Optional[str],
+        chat_id: str,
+        adapter: Any,
+        message_ids: List[str],
+        loop: asyncio.AbstractEventLoop,
+        idle_seconds: float = 0.0,
+        max_exchanges: int = 0,
+    ) -> None:
+        """Delete accumulated gateway meta messages after idle/turn thresholds.
+
+        This powers Telegram history condensation: progress/status bubbles are
+        useful live, but become transcript barnacles after the final answer.
+        We only delete bot-owned messages that were explicitly tracked by the
+        cleanup_progress path; user messages and final assistant answers are
+        never touched.
+        """
+        if not session_key or not message_ids or adapter is None:
+            return
+        if type(adapter).delete_message is BasePlatformAdapter.delete_message:
+            return
+
+        pending = getattr(self, "_meta_cleanup_pending", None)
+        if not isinstance(pending, dict):
+            pending = {}
+            self._meta_cleanup_pending = pending
+
+        entry = pending.setdefault(
+            session_key,
+            {
+                "chat_id": chat_id,
+                "adapter": adapter,
+                "ids": [],
+                "exchanges": 0,
+                "future": None,
+                "token": 0,
+            },
+        )
+        entry["chat_id"] = chat_id
+        entry["adapter"] = adapter
+        ids = entry.setdefault("ids", [])
+        seen = set(str(mid) for mid in ids)
+        for mid in message_ids:
+            smid = str(mid)
+            if smid and smid not in seen:
+                ids.append(smid)
+                seen.add(smid)
+        entry["exchanges"] = int(entry.get("exchanges") or 0) + 1
+        entry["token"] = int(entry.get("token") or 0) + 1
+
+        old_future = entry.get("future")
+        if old_future is not None:
+            try:
+                old_future.cancel()
+            except Exception:
+                pass
+
+        try:
+            idle_delay = max(0.0, float(idle_seconds or 0.0))
+        except Exception:
+            idle_delay = 0.0
+        try:
+            exchange_limit = max(0, int(max_exchanges or 0))
+        except Exception:
+            exchange_limit = 0
+        if exchange_limit and entry["exchanges"] < exchange_limit and idle_delay <= 0:
+            # Exchange-count-only mode: retain the accumulated ids until the
+            # Nth successful cleanup-tracked turn. With no idle delay there
+            # is intentionally no timer to schedule yet.
+            entry["future"] = None
+            return
+        delay = 0.0 if exchange_limit and entry["exchanges"] >= exchange_limit else idle_delay
+        token = entry["token"]
+
+        async def _delete_when_current() -> None:
+            try:
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                current = pending.get(session_key)
+                if not current or current.get("token") != token:
+                    return
+                pending.pop(session_key, None)
+                delete_adapter = current.get("adapter")
+                delete_chat_id = current.get("chat_id")
+                delete_ids = list(current.get("ids") or [])
+                for mid in delete_ids:
+                    try:
+                        await delete_adapter.delete_message(delete_chat_id, mid)
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Meta message cleanup failed for %s: %s", session_key, exc)
+
+        entry["future"] = safe_schedule_threadsafe(
+            _delete_when_current(),
+            loop,
+            logger=logger,
+            log_message="Meta message cleanup scheduling error",
+        )
 
     async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()
@@ -14608,6 +14848,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _cleanup_progress = bool(
             resolve_display_setting(user_config, platform_key, "cleanup_progress")
         )
+        try:
+            _cleanup_idle_seconds = float(
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "cleanup_progress_idle_seconds",
+                    0,
+                ) or 0
+            )
+        except Exception:
+            _cleanup_idle_seconds = 0.0
+        try:
+            _cleanup_max_exchanges = int(
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "cleanup_progress_max_exchanges",
+                    0,
+                ) or 0
+            )
+        except Exception:
+            _cleanup_max_exchanges = 0
+        if _cleanup_progress and session_key and (_cleanup_idle_seconds > 0 or _cleanup_max_exchanges > 0):
+            self._pause_meta_cleanup_for_session(session_key)
         _cleanup_adapter = self.adapters.get(source.platform) if _cleanup_progress else None
         if _cleanup_adapter is not None and (
             type(_cleanup_adapter).delete_message is BasePlatformAdapter.delete_message
@@ -17069,10 +17333,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if (
             _cleanup_progress
             and _cleanup_adapter is not None
-            and _cleanup_msg_ids
             and session_key
             and isinstance(response, dict)
-            and not response.get("failed")
             and hasattr(_cleanup_adapter, "register_post_delivery_callback")
         ):
             _ids_snapshot = list(_cleanup_msg_ids)
@@ -17081,29 +17343,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _loop_snapshot = asyncio.get_running_loop()
 
             def _cleanup_temp_bubbles() -> None:
-                async def _delete_all() -> None:
-                    for _mid in _ids_snapshot:
-                        try:
-                            await _adapter_snapshot.delete_message(
-                                _chat_id_snapshot, _mid
-                            )
-                        except Exception:
-                            pass
                 try:
-                    safe_schedule_threadsafe(
-                        _delete_all(), _loop_snapshot,
-                        logger=logger,
-                        log_message="Temp bubble cleanup scheduling error",
-                    )
+                    if _ids_snapshot and not response.get("failed"):
+                        self._schedule_meta_message_cleanup(
+                            session_key=session_key,
+                            chat_id=_chat_id_snapshot,
+                            adapter=_adapter_snapshot,
+                            message_ids=_ids_snapshot,
+                            loop=_loop_snapshot,
+                            idle_seconds=_cleanup_idle_seconds,
+                            max_exchanges=_cleanup_max_exchanges,
+                        )
+                    else:
+                        self._resume_paused_meta_cleanup_for_session(
+                            session_key,
+                            loop=_loop_snapshot,
+                            idle_seconds=_cleanup_idle_seconds,
+                            max_exchanges=_cleanup_max_exchanges,
+                        )
                 except Exception:
                     pass
 
             try:
-                _cleanup_adapter.register_post_delivery_callback(
-                    session_key,
-                    _cleanup_temp_bubbles,
-                    generation=run_generation,
-                )
+                _should_register_cleanup = bool(_ids_snapshot and not response.get("failed"))
+                if not _should_register_cleanup:
+                    _pending = getattr(self, "_meta_cleanup_pending", {})
+                    _pending_entry = _pending.get(session_key) if isinstance(_pending, dict) else None
+                    _should_register_cleanup = bool(
+                        _pending_entry
+                        and _pending_entry.get("ids")
+                        and _pending_entry.get("future") is None
+                    )
+                if _should_register_cleanup:
+                    _cleanup_adapter.register_post_delivery_callback(
+                        session_key,
+                        _cleanup_temp_bubbles,
+                        generation=run_generation,
+                    )
             except Exception as _rpe:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
 

@@ -1156,13 +1156,12 @@ class GatewayKanbanWatchersMixin:
         return self.task_loop_engine
 
     # ---------------------------------------------------------------------
-    # Persistent + in-memory board → user-source lookup (3-tier)
+    # Board → user-source lookup (3-tier)
     # ---------------------------------------------------------------------
-    # In-memory cache of ``{board_slug: (platform, chat_id)}`` — the
-    # legacy back-stop that the persistent table sits on top of.  Kept
-    # as a class attribute so it survives across method calls within a
-    # single GatewayRunner instance but resets per process.
-    _kanban_last_user_source: dict = {}
+    # Source resolution is unified through tools.kanban_tools.resolve_board_source,
+    # which reads the thread-safe _board_source_registry populated by kanban
+    # write-tools. The legacy _kanban_last_user_source class-dict was a dead
+    # field (no production writers) and has been removed.
 
     # ---------------------------------------------------------------------
     # Phase 2: orchestrator callback decomposition
@@ -1196,16 +1195,16 @@ class GatewayKanbanWatchersMixin:
 
         1. **Persistent table** (``kanban_db.get_board_owner``) — survives
            process restarts and is shared across gateway instances.
-        2. **In-memory cache** (``self._kanban_last_user_source``) — fast,
-           but per-process and lost on restart.
+        2. **Unified source registry** via
+           :func:`tools.kanban_tools.resolve_board_source` — thread-safe
+           registry populated by every kanban write-tool call.
         3. **Subscription fallback** — the notifier subscription's own
-           coordinates, used when neither the DB nor the cache has a
+           coordinates, used when neither the DB nor the registry has a
            row yet (freshly subscribed user).
 
         DB errors are logged and fall through to the next tier rather
         than crashing the notifier tick.
         """
-        cache: dict = getattr(self, "_kanban_last_user_source", {}) or {}
         if db_mod is None:
             from hermes_cli import kanban_db as _default_db_mod
             db_mod = _default_db_mod
@@ -1215,10 +1214,6 @@ class GatewayKanbanWatchersMixin:
             conn = db_mod.connect(board=board_slug)
             try:
                 owner = None
-                # ``get_board_owner`` is the future-proof persistent-table
-                # lookup.  It may not exist on older kanban_db builds; the
-                # AttributeError fall-through is intentional — we degrade to
-                # the in-memory cache rather than break the notifier tick.
                 get_owner = getattr(db_mod, "get_board_owner", None)
                 if callable(get_owner):
                     owner = get_owner(conn, board_slug)
@@ -1235,10 +1230,17 @@ class GatewayKanbanWatchersMixin:
                 board_slug, exc,
             )
 
-        # Tier 2: in-memory cache
-        cached = cache.get(board_slug)
-        if cached and cached[0]:
-            return cached
+        # Tier 2: unified source registry (populated by kanban write-tools).
+        try:
+            from tools.kanban_tools import resolve_board_source
+            cached = resolve_board_source(board_slug)
+            if cached and cached[0]:
+                return cached
+        except Exception as exc:
+            logger.debug(
+                "kanban board-owner lookup: registry miss for %s: %s",
+                board_slug, exc,
+            )
 
         # Tier 3: subscription fallback
         if fallback_sub:
@@ -1992,9 +1994,14 @@ class GatewayKanbanWatchersMixin:
         from gateway.config import Platform as _Platform
         from gateway.platforms.base import MessageEvent, SessionSource
 
+        try:
+            from tools.kanban_tools import resolve_board_source as _rbs
+            _src = _rbs(slug) or ("", "")
+        except Exception:
+            _src = ("", "")
         sub_fallback = {
-            "platform": (self._kanban_last_user_source.get(slug, ("", ""))[0]),
-            "chat_id": (self._kanban_last_user_source.get(slug, ("", ""))[1]),
+            "platform": _src[0],
+            "chat_id": _src[1],
         }
         targets = self._kanban_delivery_targets(slug, fallback_sub=sub_fallback)
         if not targets:
@@ -2158,6 +2165,15 @@ class GatewayKanbanWatchersMixin:
                     int(self.task_loop_engine._last_event_id.get(slug, 0)),
                     int(stats.get("max_eid") or 0),
                 )
+                # Persist loop counter — without this, _detect_task_loop
+                # reads the still-0 dict and recomputes current_loop=1
+                # every tick, so MAX_LOOPS never bites and the orchestrator
+                # can't distinguish repeated injections.
+                _conv_loop = int(stats.get("current_loop") or 1)
+                self.task_loop_engine._task_loop_counts[slug] = max(
+                    int(self.task_loop_engine._task_loop_counts.get(slug, 0)),
+                    _conv_loop,
+                )
                 self.task_loop_engine._cooldowns[slug] = time.monotonic()
                 self.task_loop_engine._stale_counts[slug] = 0
                 continue
@@ -2183,6 +2199,14 @@ class GatewayKanbanWatchersMixin:
             # injecting "Workers idle. no events" every cooldown spams the
             # home channel with no actionable content.
             if not stats["has_terminal_events"] and not force_urgent:
+                # Advance cursor even on skip — otherwise the same already-seen
+                # events re-trigger detection every cooldown.
+                _skip_max_eid = int(stats.get("max_eid") or 0)
+                if _skip_max_eid:
+                    self.task_loop_engine._last_event_id[slug] = max(
+                        int(self.task_loop_engine._last_event_id.get(slug, 0)),
+                        _skip_max_eid,
+                    )
                 continue
 
             # Auto-complete parents whose children are all done.
@@ -2207,6 +2231,12 @@ class GatewayKanbanWatchersMixin:
             self.task_loop_engine._last_event_id[slug] = max(
                 int(self.task_loop_engine._last_event_id.get(slug, 0)),
                 int(stats.get("max_eid") or 0),
+            )
+            # Persist loop counter — see convergence branch above.
+            _fired_loop = int(stats.get("current_loop") or 1)
+            self.task_loop_engine._task_loop_counts[slug] = max(
+                int(self.task_loop_engine._task_loop_counts.get(slug, 0)),
+                _fired_loop,
             )
             self.task_loop_engine._cooldowns[slug] = time.monotonic()
             # Reset stale counter — something real happened.

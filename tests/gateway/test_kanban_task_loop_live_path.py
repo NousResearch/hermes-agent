@@ -37,7 +37,6 @@ def _make_runner():
         def __init__(self):
             self.adapters = {}
             self._running = True
-            self._kanban_last_user_source = {}
             self.injected = []
             self.send_calls = []
 

@@ -48,9 +48,6 @@ def _make_runner_with_mocks():
         def __init__(self):
             self.adapters = {}
             self._running = True
-            self._kanban_last_user_source = {
-                "test-board": ("feishu", "chat-abc"),
-            }
             self.injected_events = []
             self.send_calls = []
             # Captured call to _inject_task_loop (called by callback when
@@ -82,6 +79,7 @@ def _stats(
     current_loop: int = 1,
     MAX_LOOPS: int = 10,
     blocked_count: int = 0,
+    max_eid: int = 0,
 ):
     """Build the stats dict shape that ``_detect_task_loop`` returns."""
     return {
@@ -93,7 +91,7 @@ def _stats(
         "has_terminal_events": has_terminal_events,
         "current_loop": current_loop,
         "MAX_LOOPS": MAX_LOOPS,
-        "max_eid": 0,
+        "max_eid": max_eid,
     }
 
 
@@ -684,3 +682,131 @@ def test_build_task_loop_message_convergence_branch_includes_metrics():
     # formatting from the normal branch.
     assert "[Kanban Task Loop" not in msg
     assert "Stuck tasks" not in msg
+
+
+# --- Regressions for cross-talk fixes (root causes A and C) ----------------
+
+
+@pytest.mark.asyncio
+async def test_loop_counter_persists_after_injection():
+    """Loop counter must be written back after each injection.
+
+    Contract: after a normal rule-2 injection, ``task_loop_engine
+    ._task_loop_counts[slug]`` equals the stats' ``current_loop``.
+    Without this, MAX_LOOPS never bites and every injection looks like
+    the first one.
+    """
+    runner = _make_runner_with_mocks()
+    stats = _stats(
+        ready_count=0,
+        has_terminal_events=True,
+        current_loop=1,
+        max_eid=42,
+        event_details=[{
+            "task_id": "t_done",
+            "kind": "completed",
+            "title": "shipped",
+            "assignee": "coder",
+            "summary": "ok",
+        }],
+    )
+
+    with patch.object(
+        runner, "_scan_candidate_boards", return_value=["test-board"],
+    ), patch.object(
+        runner, "_detect_task_loop", return_value=stats,
+    ), patch.object(
+        runner, "_has_force_failure", return_value=False,
+    ), patch.object(
+        runner, "_auto_complete_parents", return_value=[],
+    ):
+        await runner._kanban_orchestrator_callback([], {"orchestrator_notify": True})
+
+    assert len(runner.inject_task_loop_calls) == 1, "rule 2 must fire"
+    assert runner.task_loop_engine._task_loop_counts.get("test-board") == 1, (
+        "task_loop_counts[slug] must persist current_loop after injection"
+    )
+
+    # Second tick with current_loop=2 must overwrite (max), not stay at 1.
+    stats2 = {**stats, "current_loop": 2, "max_eid": 50}
+    with patch.object(
+        runner, "_scan_candidate_boards", return_value=["test-board"],
+    ), patch.object(
+        runner, "_detect_task_loop", return_value=stats2,
+    ), patch.object(
+        runner, "_has_force_failure", return_value=False,
+    ), patch.object(
+        runner, "_auto_complete_parents", return_value=[],
+    ):
+        await runner._kanban_orchestrator_callback(
+            [], {"orchestrator_notify": True, "orchestrator_cooldown_seconds": 0},
+        )
+
+    assert runner.task_loop_engine._task_loop_counts.get("test-board") == 2, (
+        "task_loop_counts[slug] must advance with current_loop across ticks"
+    )
+
+
+@pytest.mark.asyncio
+async def test_rule1_skip_advances_cursor_to_prevent_retrigger():
+    """Rule-1 skip path must advance the event-id cursor.
+
+    Contract: when rule-1 skips injection (no terminal events, no force
+    failure) and stats carries a non-zero ``max_eid``, the cursor must
+    still advance to that id. Otherwise ``_detect_task_loop`` keeps
+    returning the same stale ``event_details`` every cooldown.
+    """
+    runner = _make_runner_with_mocks()
+    stats = _stats(
+        ready_count=2,
+        has_terminal_events=False,
+        current_loop=1,
+        max_eid=99,
+    )
+
+    assert runner.task_loop_engine._last_event_id.get("test-board", 0) == 0
+
+    with patch.object(
+        runner, "_scan_candidate_boards", return_value=["test-board"],
+    ), patch.object(
+        runner, "_detect_task_loop", return_value=stats,
+    ), patch.object(
+        runner, "_has_force_failure", return_value=False,
+    ):
+        await runner._kanban_orchestrator_callback([], {"orchestrator_notify": True})
+
+    assert runner.inject_task_loop_calls == [], "rule 1 must skip injection"
+    assert runner.task_loop_engine._last_event_id.get("test-board") == 99, (
+        "cursor must advance even on rule-1 skip so the same events "
+        "do not re-trigger detection every cooldown"
+    )
+
+
+@pytest.mark.asyncio
+async def test_rule1_skip_leaves_cursor_when_no_max_eid():
+    """Rule-1 skip must not advance the cursor when stats has no max_eid.
+
+    Defensive contract: when ``max_eid`` is 0 (e.g. stats from a fresh
+    board with no events yet), the skip path must not corrupt the cursor.
+    """
+    runner = _make_runner_with_mocks()
+    stats = _stats(
+        ready_count=1,
+        has_terminal_events=False,
+        max_eid=0,
+    )
+    runner.task_loop_engine._last_event_id["test-board"] = 7
+
+    with patch.object(
+        runner, "_scan_candidate_boards", return_value=["test-board"],
+    ), patch.object(
+        runner, "_detect_task_loop", return_value=stats,
+    ), patch.object(
+        runner, "_has_force_failure", return_value=False,
+    ):
+        await runner._kanban_orchestrator_callback([], {"orchestrator_notify": True})
+
+    assert runner.inject_task_loop_calls == []
+    assert runner.task_loop_engine._last_event_id.get("test-board") == 7, (
+        "cursor must remain unchanged when stats reports no new events"
+    )

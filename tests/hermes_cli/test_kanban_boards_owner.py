@@ -154,7 +154,6 @@ class TestOwnerCLI:
         class FakeRunner(GatewayKanbanWatchersMixin):
             def __init__(self):
                 self.adapters = {}
-                self._kanban_last_user_source = {}
 
         runner = FakeRunner()
         targets = runner._kanban_delivery_targets("multi")

@@ -14,7 +14,7 @@ progress when DLP is on (handled adapter-side; this module is the scrubber).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # ── built-in detectors ───────────────────────────────────────────────────────
 
@@ -56,11 +56,6 @@ class DlpConfig:
             custom_patterns=tuple(str(p) for p in custom),
             placeholder=str(raw.get("placeholder") or "[REDACTED:{label}]"),
         )
-
-
-@dataclass
-class _Compiled:
-    custom: list[re.Pattern] = field(default_factory=list)
 
 
 def _ph(config: DlpConfig, label: str) -> str:

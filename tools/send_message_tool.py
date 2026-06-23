@@ -816,7 +816,9 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
         # Inspired by github.com/ashaney — PR #1568.
-        _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
+        _has_html = bool(re.search(
+            r'</?(?:b|strong|i|em|u|ins|s|strike|del|span|tg-spoiler|tg-emoji|a|code|pre|blockquote)(?:\s[^>]*)?>',
+            message, re.IGNORECASE))
 
         if _has_html:
             formatted = message

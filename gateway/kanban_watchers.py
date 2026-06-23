@@ -17,6 +17,7 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
+from utils import is_truthy_value
 
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
@@ -45,7 +46,7 @@ def _resolve_auto_decompose_settings(
     except Exception:
         return False, 3
     kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    enabled = bool(kcfg.get("auto_decompose", True))
+    enabled = is_truthy_value(kcfg.get("auto_decompose"), default=True)
     try:
         per_tick = int(kcfg.get("auto_decompose_per_tick", 3) or 3)
     except (TypeError, ValueError):

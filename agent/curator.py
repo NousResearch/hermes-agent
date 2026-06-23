@@ -32,7 +32,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
 from tools import skill_usage
-from utils import atomic_json_write
+from utils import atomic_json_write, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ def set_paused(paused: bool) -> None:
 
 
 def is_paused() -> bool:
-    return bool(load_state().get("paused"))
+    return is_truthy_value(load_state().get("paused"))
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +140,7 @@ def _load_config() -> Dict[str, Any]:
 def is_enabled() -> bool:
     """Default ON when no config says otherwise."""
     cfg = _load_config()
-    return bool(cfg.get("enabled", True))
+    return is_truthy_value(cfg.get("enabled"), default=True)
 
 
 def get_interval_hours() -> int:
@@ -184,7 +184,7 @@ def get_prune_builtins() -> bool:
     Hub-installed skills are never pruned regardless of this flag.
     """
     cfg = _load_config()
-    return bool(cfg.get("prune_builtins", True))
+    return is_truthy_value(cfg.get("prune_builtins"), default=True)
 
 
 def get_consolidate() -> bool:
@@ -200,7 +200,7 @@ def get_consolidate() -> bool:
     a single invocation regardless of the config value.
     """
     cfg = _load_config()
-    return bool(cfg.get("consolidate", DEFAULT_CONSOLIDATE))
+    return is_truthy_value(cfg.get("consolidate"), default=DEFAULT_CONSOLIDATE)
 
 
 # ---------------------------------------------------------------------------

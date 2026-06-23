@@ -403,7 +403,6 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 }
 
 export function StatusRule({
-  autopilot,
   cwdLabel,
   cols,
   busy,
@@ -582,12 +581,6 @@ export function StatusRule({
               {'⚠ YOLO'}
             </Text>
           ) : null}
-          {autopilot ? (
-            <Text color={t.color.warn} wrap="truncate-end">
-              {' │ '}
-              {'🤖 AUTO'}
-            </Text>
-          ) : null}
         </Box>
         {showBar ? (
           <Text color={t.color.muted} wrap="truncate-end">
@@ -764,7 +757,6 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
-  autopilot?: boolean
   bgCount: number
   lastTurnEndedAt?: null | number
   liveSessionCount: number

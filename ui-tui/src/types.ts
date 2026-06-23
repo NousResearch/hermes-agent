@@ -148,7 +148,6 @@ export interface McpServerStatus {
 }
 
 export interface SessionInfo {
-  autopilot?: boolean
   cwd?: string
   fast?: boolean
   lazy?: boolean

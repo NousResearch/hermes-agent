@@ -162,9 +162,8 @@ describe('StatusRule session count click target', () => {
     expect(rendered).not.toContain('$0.5000')
   })
 
-  it('renders YOLO and AUTO indicators when enabled', () => {
+  it('renders the YOLO indicator when enabled', () => {
     const element = StatusRule({
-      autopilot: true,
       bgCount: 0,
       busy: false,
       cols: 160,
@@ -186,12 +185,10 @@ describe('StatusRule session count click target', () => {
     const rendered = textContent(element)
 
     expect(rendered).toContain('YOLO')
-    expect(rendered).toContain('AUTO')
   })
 
-  it('omits YOLO and AUTO indicators when disabled', () => {
+  it('omits the YOLO indicator when disabled', () => {
     const element = StatusRule({
-      autopilot: false,
       bgCount: 0,
       busy: false,
       cols: 160,
@@ -213,7 +210,6 @@ describe('StatusRule session count click target', () => {
     const rendered = textContent(element)
 
     expect(rendered).not.toContain('YOLO')
-    expect(rendered).not.toContain('AUTO')
   })
 })
 

@@ -206,32 +206,69 @@ def hygiene_eligible_msgs(history: List[dict]) -> List[dict]:
     ]
 
 
-def _content_to_text(content) -> str:
-    """Coerce a message ``content`` to a searchable string.
+_TEXT_PART_TYPES = ("text", "input_text", "output_text")
 
-    In-turn compaction feeds API-shaped messages whose ``content`` is a LIST of
-    content blocks (``{"type": "text", "text": …}``, ``tool_use``, ``tool_result``)
-    rather than a flat string (the shape the hygiene path uses). The LCM summary
-    marker only ever lives in text, so extract text-bearing fields and join them;
-    anything non-string/empty yields ``""``. Robust to None/dict/list/str so the
-    caller can never raise on an exotic content shape.
+
+def _extract_part_text(value):
+    """Mirror of the LCM plugin's ``_extract_text_part_value`` (returns ``str | None``).
+
+    str → itself; dict → a nested ``value`` then ``content`` string; else ``None``.
+    Bounded to one level of nesting (matches canonical; a marker never lives deeper).
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        nested = value.get("value")
+        if isinstance(nested, str):
+            return nested
+        nested = value.get("content")
+        if isinstance(nested, str):
+            return nested
+    return None
+
+
+def _part_text(part) -> str:
+    """Text contributed by a single content part — type-gated, never raises."""
+    if isinstance(part, str):
+        return part  # bare-string passthrough (canonical)
+    if isinstance(part, dict) and part.get("type") in _TEXT_PART_TYPES:
+        # `is None` fall-through (NOT falsy) — faithful to canonical: a present-but-
+        # non-extractable `text` still falls through to `content`.
+        text = _extract_part_text(part.get("text"))
+        if text is None:
+            text = _extract_part_text(part.get("content"))
+        if text:
+            return text
+    return ""
+
+
+def _content_to_text(content) -> str:
+    """Coerce a message ``content`` to a searchable string for marker detection.
+
+    Byte-faithful mirror of the canonical LCM extractor
+    (``plugins/context_engine/lcm/message_content.py::text_content_for_pattern_matching``
+    + ``_extract_text_part_value``), kept in core because core must not import a
+    plugin. In-turn compaction feeds API-shaped messages whose ``content`` is a
+    LIST of content blocks (``{"type": "text", "text": …}``, ``tool_use``,
+    ``tool_result``) rather than a flat string (the hygiene path's shape). Only
+    text-typed parts contribute, so a marker-shaped string under a structural key
+    (``tool_use``/``tool_result``/``id``/``name``) is never searched, and parts are
+    joined with ``"\\n"`` so the single-line summary-marker regex cannot be
+    synthesized across a part boundary. Robust to None/dict/list/str so the caller
+    can never raise on an exotic content shape.
+
+    ONE deliberate, documented narrowing deviation from canonical: where canonical
+    falls through to ``normalize_content_value`` (``json.dumps``) for non-text-typed
+    content, this returns ``""``. The sole consumer is a text-only marker regex
+    that never wants dumped structure; ``""`` is strictly narrower (can only ever
+    match fewer, never a match canonical wouldn't), which is the safe direction.
     """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict):
-                # Text-bearing block fields across adapters: "text" (Anthropic/text),
-                # "content" (tool_result inner text), "input_text"/"output_text" (Responses).
-                for key in ("text", "input_text", "output_text", "content"):
-                    val = block.get(key)
-                    if isinstance(val, str):
-                        parts.append(val)
-                        break
-        return " ".join(parts)
+        return "\n".join(t for t in (_part_text(p) for p in content) if t)
+    if isinstance(content, dict):  # bare dict — defensive (no live producer)
+        return _part_text(content)
     return ""
 
 

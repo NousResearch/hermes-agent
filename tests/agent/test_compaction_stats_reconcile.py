@@ -735,3 +735,165 @@ def test_build_hygiene_stats_cleared_parent_unchanged_by_subsplit():
     stats = build_hygiene_stats(raw_history=raw, eligible_msgs=eligible, compressed=compressed, estimator=_est)
     cleared_rows = _disjoint_remainder(raw, eligible)
     assert stats.cleared_tokens == _est(cleared_rows)  # parent untouched
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# v0.3 — _content_to_text byte-faithful mirror of canonical LCM extractor
+# Spec: plans/2026-06-22_content-to-text-robust-block-extraction-SPEC.md
+# Hardens summary-marker detection on structured (list/dict) content WITHOUT a
+# name-agnostic field scan: type-gated parts only, "\n" join (forecloses
+# cross-part synthesis), is-None fall-through, one documented json.dumps deviation.
+# ───────────────────────────────────────────────────────────────────────────
+
+import re as _re_v03
+
+_MARKER_RE = _re_v03.compile(
+    r"\[(?:Recent|Session Arc|Durable|Depth-\d+) Summary \(d\d+, node \d+\)\]"
+)
+
+
+def _detect(content) -> bool:
+    """Drive detection through the real consumer (_is_summary_message)."""
+    from agent.compaction_stats import _is_summary_message
+    return _is_summary_message(content)
+
+
+# ── AC-1: detection under text-typed parts incl nested value, accumulation ──
+
+def test_marker_detected_under_text_typed_value_nested():
+    # nested {value: "<marker>"} under a text-typed part — current code never read `value`.
+    assert _detect([{"type": "text", "text": {"value": "[Recent Summary (d0, node 1)] body"}}]) is True
+
+
+def test_marker_accumulates_across_parts():
+    # marker is whole inside the 2nd text part — must be found (not first-hit-return-dropped).
+    assert _detect([
+        {"type": "text", "text": "intro"},
+        {"type": "text", "text": "[Session Arc Summary (d1, node 7)] x"},
+    ]) is True
+
+
+# ── AC-2: no false positives (structural / cross-field / cross-part); bare-string accepted ──
+
+def test_marker_under_structural_key_is_not_detected():
+    # tool_use block is NOT text-typed → contributes nothing → marker under `name` never searched.
+    assert _detect([
+        {"type": "tool_use", "name": "[Durable Summary (d2, node 3)] not a summary", "id": "t1"}
+    ]) is False
+
+
+def test_text_typed_part_marker_under_noncanonical_key_not_synthesized():
+    # text-typed (type-gate ACCEPTED) but marker split across non-canonical a/b → only text/content read.
+    assert _detect([
+        {"type": "text", "a": "[Recent Summary (d0,", "b": "node 1)] x"}
+    ]) is False
+
+
+def test_marker_split_across_two_text_parts_not_synthesized():
+    # "\n" join injects a newline the single-line regex cannot span → no cross-part synthesis.
+    assert _detect([
+        {"type": "text", "text": "x [Recent Summary (d0,"},
+        {"type": "text", "text": "node 1)] y"},
+    ]) is False
+
+
+def test_marker_as_bare_string_element_IS_detected():
+    # bare-string passthrough mirrors canonical — accepted/intended behavior, pinned.
+    assert _detect(["[Durable Summary (d2, node 3)] body"]) is True
+
+
+def test_tool_result_realistic_text_not_false_positive():
+    assert _detect([
+        {"type": "tool_result", "tool_use_id": "t1", "content": "exit_code 0, all good, 12 files"}
+    ]) is False
+
+
+# ── AC-4c: parity gate — core mirrors canonical for marker detection ──
+
+def test_content_to_text_mirrors_canonical_for_marker_detection():
+    from agent.compaction_stats import _content_to_text
+    from plugins.context_engine.lcm.message_content import text_content_for_pattern_matching as _canon
+
+    M = "[Recent Summary (d0, node 1)] body"
+    corpus = [
+        None,
+        "",
+        M,
+        f"prefix {M} suffix",
+        [{"type": "text", "text": M}],
+        [{"type": "text", "text": {"value": M}}],
+        [{"type": "text", "text": {"content": M}}],
+        [{"type": "input_text", "text": M}],
+        [{"type": "output_text", "text": M}],
+        [M],                                                 # bare string element
+        [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}],
+        [{"type": "tool_use", "name": "terminal", "id": "t1"}],   # structural, no text
+        [{"type": "text", "text": "x"}, {"type": "tool_result", "content": "y"}],
+        [{"type": "text", "text": ""}],
+    ]
+    for shape in corpus:
+        core = bool(_MARKER_RE.search(_content_to_text(shape)))
+        canon_txt = _canon(shape)
+        canon = bool(_MARKER_RE.search(canon_txt)) if canon_txt else False
+        # core's match-set ⊆ canonical's (the one allowed deviation: canonical's json.dumps
+        # fallback could match where core returns ""; core must NEVER match where canonical doesn't).
+        if core:
+            assert canon, f"core matched but canonical did not for shape={shape!r}"
+
+
+# ── AC-6 + carryover: depth/shape bounds, fall-through, defensive bare dict ──
+
+def test_text_dict_falls_through_to_content():
+    # `text` is a non-extractable dict → is-None fall-through reads `content`.
+    assert _detect({"type": "text", "text": {"foo": "bar"},
+                    "content": "[Recent Summary (d0, node 1)]"}) is True
+
+
+def test_text_typed_part_with_non_value_content_dict():
+    from agent.compaction_stats import _content_to_text
+    assert _content_to_text({"type": "text", "text": {"foo": "bar"}}) == ""
+
+
+def test_list_valued_text_is_out_of_bounds():
+    # list-valued `text` is neither str nor dict in _extract_part_text → "" (documented out-of-bounds).
+    assert _detect([{"type": "text", "text": ["[Recent Summary (d0, node 1)]"]}]) is False
+
+
+def test_depth_cap_stops_at_one_level():
+    from agent.compaction_stats import _content_to_text
+    assert _content_to_text({"type": "text", "text": {"value": {"value": "x"}}}) == ""
+
+
+def test_bare_dict_defensive():
+    # D-6 defensive bare-dict branch is exercised, not dead code.
+    assert _detect({"type": "text", "text": "[Recent Summary (d0, node 1)]"}) is True
+
+
+# ── AC-3: never raises on any shape, incl. list-element exotics ──
+
+import pytest as _pytest_v03
+
+
+@_pytest_v03.mark.parametrize("shape", [
+    None,
+    42,
+    object(),
+    {"type": "text", "text": 5},
+    {"deeply": {"nested": {"dict": "x"}}},
+    [None, 42, object(), {"type": "text", "text": "ok"}],
+    [{"type": "text"}],
+    [{}],
+])
+def test_content_to_text_never_raises(shape):
+    from agent.compaction_stats import _content_to_text
+    out = _content_to_text(shape)
+    assert isinstance(out, str)
+
+
+# ── INV-6: working flat-string path returns verbatim ──
+
+def test_flat_string_returned_verbatim():
+    from agent.compaction_stats import _content_to_text
+    s = "[Recent Summary (d0, node 1)] body"
+    assert _content_to_text(s) == s
+

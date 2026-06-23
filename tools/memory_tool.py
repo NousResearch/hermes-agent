@@ -57,7 +57,8 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
-_CORE_PREFIX_LEN = 6  # len("[core]")
+_CORE_PREFIX = "[core]"
+_CORE_PREFIX_LEN = len(_CORE_PREFIX)
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +205,8 @@ class MemoryStore:
                 # as a core entry — prevents extended entries from leaking
                 # via the backward-compat "all go in" fallback.
                 core_prefix = ""
-                if entry.lower().startswith("[core]"):
-                    core_prefix = entry[:entry.lower().find("[core]") + _CORE_PREFIX_LEN] + " "
+                if entry.lower().startswith(_CORE_PREFIX):
+                    core_prefix = entry[:entry.lower().find(_CORE_PREFIX) + _CORE_PREFIX_LEN] + " "
                 sanitized.append(
                     f"{core_prefix}[BLOCKED: {filename} entry contained threat pattern(s): "
                     f"{', '.join(findings)}. Removed from system prompt; "
@@ -655,14 +656,17 @@ class MemoryStore:
         # Core filtering for memory target only.
         extended_count = 0
         if target == "memory":
-            core_entries = [e for e in entries if e.lower().startswith("[core]")]
+            core_entries = [e for e in entries if e.lower().startswith(_CORE_PREFIX)]
             if core_entries:
                 extended_count = len(entries) - len(core_entries)
-                # Strip prefix for display, preserving original casing of content
+                # Strip prefix for display, preserving original casing of content.
+                # Filter out entries that become empty after stripping (bare [core]).
                 stripped = []
                 for e in core_entries:
-                    idx = e.lower().find("[core]")
-                    stripped.append(e[idx + _CORE_PREFIX_LEN:].strip())
+                    idx = e.lower().find(_CORE_PREFIX)
+                    stripped_entry = e[idx + _CORE_PREFIX_LEN:].strip()
+                    if stripped_entry:
+                        stripped.append(stripped_entry)
                 entries = stripped
 
         limit = self._char_limit(target)

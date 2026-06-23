@@ -155,11 +155,13 @@ _MARKDOWN_HINT_RE = re.compile(
     re.MULTILINE,
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+# Feishu post-type 'md' elements do not render tables; convert pipe tables to
+# fenced plain-text blocks before building the outbound payload.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
+_MARKDOWN_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
@@ -527,6 +529,88 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     plain = re.sub(r"<u>([\s\S]*?)</u>", r"\1", plain)
     plain = strip_markdown(plain)
     return plain
+
+
+def _is_markdown_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    if not _is_markdown_table_row(line):
+        return False
+    cells = [cell.strip().replace(" ", "") for cell in line.strip().strip("|").split("|")]
+    return bool(cells) and all(_MARKDOWN_TABLE_SEPARATOR_CELL_RE.match(cell or "") for cell in cells)
+
+
+def _split_markdown_table_row(line: str) -> List[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _render_markdown_table_as_codeblock(table_lines: List[str]) -> str:
+    rows = [_split_markdown_table_row(line) for index, line in enumerate(table_lines) if index != 1]
+    column_count = max((len(row) for row in rows), default=0)
+    if column_count == 0:
+        return "\n".join(table_lines)
+
+    normalized_rows = [row + [""] * (column_count - len(row)) for row in rows]
+    widths = [
+        max(len(row[column]) for row in normalized_rows)
+        for column in range(column_count)
+    ]
+    rendered_lines = [
+        "  ".join(row[column].ljust(widths[column]) for column in range(column_count)).rstrip()
+        for row in normalized_rows
+    ]
+    return "```text\n" + "\n".join(rendered_lines) + "\n```"
+
+
+def _convert_markdown_tables_to_codeblocks(content: str) -> str:
+    """Convert markdown pipe tables to fenced text blocks for Feishu rendering.
+
+    The transform is intentionally local and deterministic: no model rewrite, no
+    prose changes, and no conversion inside existing fenced code blocks.
+    """
+    if not content or not _MARKDOWN_TABLE_RE.search(content):
+        return content
+
+    lines = content.replace("\r\n", "\n").split("\n")
+    output: List[str] = []
+    index = 0
+    in_code_block = False
+
+    while index < len(lines):
+        line = lines[index]
+        if in_code_block:
+            output.append(line)
+            if _MARKDOWN_FENCE_CLOSE_RE.match(line):
+                in_code_block = False
+            index += 1
+            continue
+
+        if _MARKDOWN_FENCE_OPEN_RE.match(line):
+            in_code_block = True
+            output.append(line)
+            index += 1
+            continue
+
+        if (
+            index + 1 < len(lines)
+            and _is_markdown_table_row(line)
+            and _is_markdown_table_separator(lines[index + 1])
+        ):
+            table_lines = [line, lines[index + 1]]
+            index += 2
+            while index < len(lines) and _is_markdown_table_row(lines[index]):
+                table_lines.append(lines[index])
+                index += 1
+            output.append(_render_markdown_table_as_codeblock(table_lines))
+            continue
+
+        output.append(line)
+        index += 1
+
+    return "\n".join(output)
 
 
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:
@@ -4375,12 +4459,10 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        # Feishu post-type 'md' elements do not render markdown tables. Convert
+        # pipe tables to fenced plain-text blocks so the message can still be
+        # sent as a rich post without asking the model to rewrite anything.
+        content = _convert_markdown_tables_to_codeblocks(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

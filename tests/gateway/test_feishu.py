@@ -2580,6 +2580,82 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_converts_markdown_table_to_code_block_post(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_table"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "**Q1财务真相**\n"
+            "| 指标 | 新洁能 | 士兰微 |\n"
+            "|------|--------|--------|\n"
+            "| 营收 | 5.17亿 | 35.19亿 |\n"
+            "| 净利率 | 18.4% | 4.2% |\n"
+            "结论：轻资产弹性更高。"
+        )
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content=content,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        payload = json.loads(captured["request"].request_body.content)
+        rendered = "\n".join(row[0]["text"] for row in payload["zh_cn"]["content"])
+        self.assertIn("```text", rendered)
+        self.assertIn("指标", rendered)
+        self.assertIn("营收", rendered)
+        self.assertIn("结论：轻资产弹性更高。", rendered)
+        self.assertNotIn("|------|", rendered)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_markdown_table_conversion_skips_existing_code_blocks(self):
+        from plugins.platforms.feishu.adapter import _convert_markdown_tables_to_codeblocks
+
+        content = "```text\n| 指标 | A |\n|------|---|\n| 营收 | 1 |\n```"
+
+        self.assertEqual(_convert_markdown_tables_to_codeblocks(content), content)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_plain_markdown_table_payload_becomes_post_not_raw_text(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, payload = adapter._build_outbound_payload(
+            "| 指标 | A |\n|------|---|\n| 营收 | 1 |"
+        )
+
+        self.assertEqual(msg_type, "post")
+        self.assertIn("```text", payload)
+        self.assertNotIn("|------|", payload)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

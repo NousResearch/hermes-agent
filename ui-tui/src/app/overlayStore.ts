@@ -11,6 +11,7 @@ const buildOverlayState = (): OverlayState => ({
   confirm: null,
   journey: false,
   modelPicker: false,
+  modelPickerSessionOnly: false,
   pager: null,
   petPicker: false,
   pluginsHub: false,
@@ -66,6 +67,9 @@ export const getOverlayState = () => $overlayState.get()
 export const patchOverlayState = (next: Partial<OverlayState> | ((state: OverlayState) => OverlayState)) =>
   $overlayState.set(typeof next === 'function' ? next($overlayState.get()) : { ...$overlayState.get(), ...next })
 
+/** Close the picker and discard scope that only applies to its active selection. */
+export const closeModelPicker = () => patchOverlayState({ modelPicker: false, modelPickerSessionOnly: false })
+
 /** Full reset — used by session/turn teardown and tests. */
 export const resetOverlayState = () => $overlayState.set(buildOverlayState())
 
@@ -84,6 +88,7 @@ export const resetFlowOverlays = () =>
     agentsInitialHistoryIndex: $overlayState.get().agentsInitialHistoryIndex,
     journey: $overlayState.get().journey,
     modelPicker: $overlayState.get().modelPicker,
+    modelPickerSessionOnly: $overlayState.get().modelPickerSessionOnly,
     petPicker: $overlayState.get().petPicker,
     pluginsHub: $overlayState.get().pluginsHub,
     sessions: $overlayState.get().sessions,

@@ -271,6 +271,7 @@ export interface OverlayState {
   confirm: ConfirmReq | null
   journey: boolean
   modelPicker: boolean | { refresh?: boolean }
+  modelPickerSessionOnly: boolean
   pager: null | PagerState
   petPicker: boolean
   pluginsHub: boolean

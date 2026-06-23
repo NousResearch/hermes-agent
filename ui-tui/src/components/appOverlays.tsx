@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
-import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
+import { $overlayState, closeModelPicker, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
@@ -197,9 +197,10 @@ export function FloatingOverlays({
       {overlay.modelPicker && (
         <FloatBox color={theme.color.border}>
           <ModelPicker
+            allowPersistGlobal={!overlay.modelPickerSessionOnly}
             gw={gw}
             initialRefresh={typeof overlay.modelPicker === 'object' && overlay.modelPicker.refresh === true}
-            onCancel={() => patchOverlayState({ modelPicker: false })}
+            onCancel={closeModelPicker}
             onSelect={onModelSelect}
             sessionId={sid}
             t={theme}

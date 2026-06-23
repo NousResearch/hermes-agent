@@ -495,6 +495,21 @@ def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
     return None
 
 
+def _resume_reason_phrase(reason: Optional[str]) -> str:
+    """Map a session ``resume_reason`` to the recovery-note phrase.
+
+    Used both to build the system note injected into the resumed turn and by
+    tests, so the wording has a single source of truth (no drift-prone mirror).
+    An unrecognized/None reason falls back to the generic phrasing.
+    """
+    _phrases: Dict[Optional[str], str] = {
+        "restart_timeout": "a gateway restart",
+        "shutdown_timeout": "a gateway shutdown",
+        "reboot_interrupted": "a machine reboot",
+    }
+    return _phrases.get(reason, "a gateway interruption")
+
+
 def _auto_continue_freshness_window() -> float:
     """Return the configured auto-continue freshness window in seconds.
 
@@ -5257,10 +5272,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
     # force-interrupted; "restart_interrupted" is set by
     # SessionStore.suspend_recently_active() on crash recovery (no
-    # .clean_shutdown marker).  All three mean "the agent was mid-turn and
-    # we killed it" — eligible for startup auto-resume.
+    # .clean_shutdown marker).  "reboot_interrupted" is set externally (e.g.
+    # the safe-reboot tooling) when a full machine reboot — not just a
+    # gateway-process restart — interrupts a live turn.  All mean "the agent
+    # was mid-turn and we killed it" — eligible for startup auto-resume.
     _AUTO_RESUME_REASONS = frozenset(
-        {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
+        {
+            "restart_timeout",
+            "shutdown_timeout",
+            "restart_interrupted",
+            "reboot_interrupted",
+        }
     )
 
     async def _run_startup_resume_event(
@@ -5378,17 +5400,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
                 self.session_store._ensure_loaded_locked()  # noqa: SLF001
-                candidates = [
-                    entry for entry in self.session_store._entries.values()  # noqa: SLF001
-                    if entry.resume_pending
-                    and not entry.suspended
-                    and entry.origin is not None
-                    and entry.resume_reason in self._AUTO_RESUME_REASONS
-                    and (platform is None or entry.origin.platform == platform)
-                ]
+                candidates = []
+                # A session that is otherwise resumable (resume_pending, not
+                # suspended, has an origin to resume into) but whose reason is
+                # NOT recognized is the founding-bug signature: it is silently
+                # dropped from startup auto-resume and never wakes on its own.
+                # (Structural deferral — suspended, or origin is None — is
+                # filtered silently below; only an UNKNOWN reason on a session
+                # that would otherwise resume is anomalous and worth a warning.
+                # In normal operation this set is empty, so this never spams.)
+                _unknown_reason_drops = []
+                for entry in self.session_store._entries.values():  # noqa: SLF001
+                    if not entry.resume_pending or entry.suspended or entry.origin is None:
+                        continue
+                    if platform is not None and entry.origin.platform != platform:
+                        continue
+                    if entry.resume_reason in self._AUTO_RESUME_REASONS:
+                        candidates.append(entry)
+                    else:
+                        _unknown_reason_drops.append(
+                            (entry.session_key, entry.resume_reason)
+                        )
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
             return 0
+
+        for _drop_key, _drop_reason in _unknown_reason_drops:
+            logger.warning(
+                "Auto-resume skipped session %s: resume_reason %r is not in "
+                "_AUTO_RESUME_REASONS %s — the session stays resume_pending and "
+                "will only resume on the next inbound message (not at startup).",
+                _drop_key,
+                _drop_reason,
+                sorted(self._AUTO_RESUME_REASONS),
+            )
 
         now = datetime.now()
         scheduled = 0
@@ -15913,13 +15958,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
-                _reason_phrase = (
-                    "a gateway restart"
-                    if _reason == "restart_timeout"
-                    else "a gateway shutdown"
-                    if _reason == "shutdown_timeout"
-                    else "a gateway interruption"
-                )
+                _reason_phrase = _resume_reason_phrase(_reason)
                 _persist_user_message_override = message
                 message = (
                     f"[System note: A new message has arrived. The previous turn "

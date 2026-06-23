@@ -1091,6 +1091,31 @@ def do_uninstall(name: str, console: Optional[Console] = None,
     success, msg = uninstall_skill(name)
     if success:
         c.print(f"[bold green]{msg}[/]\n")
+        # Prune any lingering disable entry so a future re-install of the same
+        # skill isn't silently disabled. The config.yaml disable state
+        # (skills.disabled / skills.platform_disabled) is separate from the hub
+        # lock file, which uninstall_skill already reconciles on its own.
+        try:
+            from hermes_cli.config import load_config, save_config
+            cfg = load_config()
+            skills_cfg = cfg.get("skills")
+            if isinstance(skills_cfg, dict):
+                changed = False
+                global_disabled = skills_cfg.get("disabled")
+                if isinstance(global_disabled, list) and name in global_disabled:
+                    skills_cfg["disabled"] = [s for s in global_disabled if s != name]
+                    changed = True
+                platform_disabled = skills_cfg.get("platform_disabled")
+                if isinstance(platform_disabled, dict):
+                    for platform, names in list(platform_disabled.items()):
+                        if isinstance(names, list) and name in names:
+                            platform_disabled[platform] = [s for s in names if s != name]
+                            changed = True
+                if changed:
+                    save_config(cfg)
+        except Exception:
+            # Best-effort: a config prune must never abort a successful uninstall.
+            pass
         if invalidate_cache:
             try:
                 from agent.prompt_builder import clear_skills_system_prompt_cache

@@ -12,6 +12,7 @@ Updated for PR #3586 (cache-aware install/uninstall).
 
 from unittest.mock import patch
 
+import yaml
 
 
 class TestHandleSkillsSlashInstallFlags:
@@ -171,3 +172,65 @@ class TestDoUninstallSkipConfirm:
              patch("builtins.input", return_value="n"):
             do_uninstall("test-skill", skip_confirm=False)
             mock_uninstall.assert_not_called()
+
+
+class TestDoUninstallPrunesDisableConfig:
+    """A successful uninstall must also clear the skill's lingering disable
+    state in config.yaml (skills.disabled / skills.platform_disabled), which is
+    stored separately from the hub lock file. Otherwise a later re-install of
+    the same name comes back silently disabled and the enabled/disabled count
+    is wrong.
+    """
+
+    def test_uninstall_prunes_global_and_platform_disabled(self, tmp_path, monkeypatch):
+        from hermes_cli.skills_hub import do_uninstall
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "skills:\n"
+            "  disabled:\n"
+            "    - my-skill\n"
+            "    - keep-skill\n"
+            "  platform_disabled:\n"
+            "    telegram:\n"
+            "      - my-skill\n"
+            "      - keep-skill\n"
+            "    cli:\n"
+            "      - keep-skill\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_MANAGED", raising=False)
+
+        with patch("hermes_cli.skills_hub._console"), \
+             patch("tools.skills_hub.uninstall_skill", return_value=(True, "Removed")):
+            do_uninstall("my-skill", skip_confirm=True, invalidate_cache=False)
+
+        saved = yaml.safe_load(config_path.read_text())
+        skills_cfg = saved["skills"]
+        # The uninstalled skill is gone from both global and per-platform lists...
+        assert "my-skill" not in skills_cfg.get("disabled", [])
+        assert "my-skill" not in skills_cfg.get("platform_disabled", {}).get("telegram", [])
+        # ...while unrelated disable entries are left untouched.
+        assert "keep-skill" in skills_cfg.get("disabled", [])
+        assert "keep-skill" in skills_cfg.get("platform_disabled", {}).get("telegram", [])
+        assert "keep-skill" in skills_cfg.get("platform_disabled", {}).get("cli", [])
+
+    def test_uninstall_without_disable_entry_is_noop(self, tmp_path, monkeypatch):
+        """A skill that was never disabled must not perturb config on uninstall."""
+        from hermes_cli.skills_hub import do_uninstall
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "skills:\n"
+            "  disabled:\n"
+            "    - other-skill\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_MANAGED", raising=False)
+
+        with patch("hermes_cli.skills_hub._console"), \
+             patch("tools.skills_hub.uninstall_skill", return_value=(True, "Removed")):
+            do_uninstall("my-skill", skip_confirm=True, invalidate_cache=False)
+
+        saved = yaml.safe_load(config_path.read_text())
+        assert saved["skills"]["disabled"] == ["other-skill"]

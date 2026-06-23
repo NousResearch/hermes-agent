@@ -2,13 +2,7 @@
 name: Typecheck
 
 on:
-  push:
-    branches: [main]
-  # No paths filter — the job must always run so the required check
-  # reports a status (path-gated workflows leave checks "pending" forever
-  # when no matching files change, which blocks merge).
-  pull_request:
-    branches: [main]
+  workflow_call:
 
 jobs:
   typecheck:
@@ -20,15 +14,7 @@ jobs:
       fail-fast: false # report all failures, not just the first one
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0 # full history so detect-changes can diff base...head
-      # Skip the install + typecheck on PRs that touch no TypeScript. The job
-      # still runs and reports green (only the steps below are skipped), so the
-      # required check never hangs the way an `on.paths` filter would.
-      - id: changes
-        uses: ./.github/actions/detect-changes
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: steps.changes.outputs.frontend == 'true'
         with:
           node-version: 22
           cache: npm
@@ -36,12 +22,11 @@ jobs:
       # native builds. Skipping install scripts drops node-pty's node-gyp
       # header fetch — the transient flake that killed this job pre-`tsc` — and
       # is faster. retry covers the remaining registry blips.
-      - if: steps.changes.outputs.frontend == 'true'
+      - 
         uses: ./.github/actions/retry
         with:
           command: npm ci --ignore-scripts
-      - if: steps.changes.outputs.frontend == 'true'
-        run: npm run --prefix ${{ matrix.package }} typecheck
+      - run: npm run --prefix ${{ matrix.package }} typecheck
 
   # Production build of the desktop renderer. `typecheck` runs `tsc` only,
   # which does NOT exercise Vite/Rolldown module resolution — so an
@@ -53,20 +38,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0 # full history so detect-changes can diff base...head
-      - id: changes
-        uses: ./.github/actions/detect-changes
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: steps.changes.outputs.frontend == 'true'
         with:
           node-version: 22
           cache: npm
       # Keep install scripts here: the production build may need node-pty's
       # native binary. retry handles the transient install-time fetch flakes.
-      - if: steps.changes.outputs.frontend == 'true'
+      - 
         uses: ./.github/actions/retry
         with:
           command: npm ci
-      - if: steps.changes.outputs.frontend == 'true'
-        run: npm run --prefix apps/desktop build
+      - run: npm run --prefix apps/desktop build

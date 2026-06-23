@@ -1,21 +1,12 @@
 name: Tests
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-  # No paths filter — the job must always run so the required check
-  # reports a status (path-gated workflows leave checks "pending" forever
-  # when no matching files change, which blocks merge).
-  pull_request:
-    branches: [main]
+  workflow_call:
 
 permissions:
   contents: read
 
-# Cancel in-progress runs for the same PR/branch
+# Cancel in-progress runs for the same ref
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
@@ -31,18 +22,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0 # full history so detect-changes can diff base...head
-
-      # On PRs that touch no Python, every step below is skipped and the job
-      # reports green. The check still runs (no `on.paths` filter), so the
-      # required status never hangs.
-      - name: Detect affected areas
-        id: changes
-        uses: ./.github/actions/detect-changes
 
       - name: Restore duration cache
-        if: steps.changes.outputs.python == 'true'
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: test_durations.json
@@ -54,7 +35,6 @@ jobs:
           key: test-durations
 
       - name: Install ripgrep (prebuilt binary)
-        if: steps.changes.outputs.python == 'true'
         run: |
           set -euo pipefail
           RG_VERSION=15.1.0
@@ -69,7 +49,6 @@ jobs:
           rg --version
 
       - name: Install uv
-        if: steps.changes.outputs.python == 'true'
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
@@ -83,11 +62,9 @@ jobs:
             uv.lock
 
       - name: Set up Python 3.11
-        if: steps.changes.outputs.python == 'true'
         run: uv python install 3.11
 
       - name: Install dependencies
-        if: steps.changes.outputs.python == 'true'
         # `uv sync --locked` installs the exact pinned set from uv.lock (and
         # fails if the lock is out of sync with pyproject.toml), giving a
         # reproducible env. It also creates .venv itself, so no separate
@@ -97,13 +74,11 @@ jobs:
           command: uv sync --locked --python 3.11 --extra all --extra dev
 
       - name: Minimize uv cache
-        if: steps.changes.outputs.python == 'true'
         # Optimized for CI: prunes pre-built wheels that are cheap to
         # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
 
       - name: Run tests (slice ${{ matrix.slice }}/6)
-        if: steps.changes.outputs.python == 'true'
         # Per-file isolation via scripts/run_tests_parallel.py: discovers
         # every test_*.py file under tests/ (excluding integration/ + e2e/),
         # then runs `python -m pytest <file>` in a freshly-spawned subprocess
@@ -137,7 +112,6 @@ jobs:
           NOUS_API_KEY: ""
 
       - name: Upload per-slice durations
-        if: steps.changes.outputs.python == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-durations-slice-${{ matrix.slice }}
@@ -183,15 +157,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0 # full history so detect-changes can diff base...head
-
-      - name: Detect affected areas
-        id: changes
-        uses: ./.github/actions/detect-changes
 
       - name: Install ripgrep (prebuilt binary)
-        if: steps.changes.outputs.python == 'true'
         run: |
           set -euo pipefail
           RG_VERSION=15.1.0
@@ -206,7 +173,6 @@ jobs:
           rg --version
 
       - name: Install uv
-        if: steps.changes.outputs.python == 'true'
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
@@ -220,11 +186,9 @@ jobs:
             uv.lock
 
       - name: Set up Python 3.11
-        if: steps.changes.outputs.python == 'true'
         run: uv python install 3.11
 
       - name: Install dependencies
-        if: steps.changes.outputs.python == 'true'
         # `uv sync --locked` installs the exact pinned set from uv.lock (and
         # fails if the lock is out of sync with pyproject.toml), giving a
         # reproducible env. It also creates .venv itself, so no separate
@@ -234,19 +198,16 @@ jobs:
           command: uv sync --locked --python 3.11 --extra all --extra dev
 
       - name: Minimize uv cache
-        if: steps.changes.outputs.python == 'true'
         # Optimized for CI: prunes pre-built wheels that are cheap to
         # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
 
       - name: Packaged-wheel i18n smoke test
-        if: steps.changes.outputs.python == 'true'
         run: |
           source .venv/bin/activate
           python -m pytest -m integration tests/test_wheel_locales_e2e.py -v
 
       - name: Run e2e tests
-        if: steps.changes.outputs.python == 'true'
         run: |
           source .venv/bin/activate
           python -m pytest tests/e2e/ -v --tb=short

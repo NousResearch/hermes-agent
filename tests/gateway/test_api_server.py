@@ -3121,6 +3121,31 @@ class TestCORS:
             assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
 
     @pytest.mark.asyncio
+    async def test_cors_allows_session_headers(self):
+        """Browser preflight may request the advertised session headers.
+
+        /v1/capabilities advertises X-Hermes-Session-Id and
+        X-Hermes-Session-Key, so an allowed origin's preflight requesting
+        them must see both echoed in Access-Control-Allow-Headers — otherwise
+        the browser blocks the real request before it reaches the handler.
+        """
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.options(
+                "/v1/chat/completions",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "X-Hermes-Session-Id, X-Hermes-Session-Key",
+                },
+            )
+            assert resp.status == 200
+            allow_headers = resp.headers.get("Access-Control-Allow-Headers", "")
+            assert "X-Hermes-Session-Id" in allow_headers
+            assert "X-Hermes-Session-Key" in allow_headers
+
+    @pytest.mark.asyncio
     async def test_cors_sets_vary_origin_header(self):
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])
         app = _create_app(adapter)

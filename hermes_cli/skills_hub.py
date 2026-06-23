@@ -896,7 +896,7 @@ def do_list(source_filter: str = "all",
     start.  No explicit profile flag needed here.
     """
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
-    from tools.skills_sync import _read_manifest
+    from tools.skills_sync import _read_manifest, _discover_bundled_skills, _get_bundled_dir
     from tools.skills_tool import _find_all_skills
     from agent.skill_utils import get_disabled_skill_names
 
@@ -905,6 +905,28 @@ def do_list(source_filter: str = "all",
     lock = HubLockFile()
     hub_installed = {e["name"]: e for e in lock.list_installed()}
     builtin_names = set(_read_manifest())
+
+    # Defense-in-depth: also consult the bundled source tree directly so a
+    # skill that ships with Hermes is never mislabeled `local` just because
+    # its per-profile manifest entry is missing or stale.  The manifest is
+    # the primary source of truth (it tracks the synced state and detects
+    # user modifications), but the source tree is the canonical "what does
+    # Hermes actually ship" set — a skill present in the source tree is, by
+    # definition, a builtin even if its manifest entry hasn't been baselined
+    # yet (e.g. a freshly-added skill on first sync, or a manifest that
+    # ``sync_skills`` cleaned because the entry was user-modified upstream).
+    try:
+        bundled_dir = _get_bundled_dir()
+        if bundled_dir and bundled_dir.exists():
+            for src_name, _src_path in _discover_bundled_skills(bundled_dir):
+                builtin_names.add(src_name)
+    except Exception:
+        # Source tree lookup is best-effort defense-in-depth.  If the
+        # bundled source tree is unreachable (sandbox, packaged install
+        # without a writable skills/ source dir, etc.), fall back to the
+        # manifest alone.  do_list still works correctly; this branch
+        # only loses the early-bootstrap safety net.
+        pass
 
     # Pull ALL skills (including disabled ones) so we can annotate status.
     all_skills = _find_all_skills(skip_disabled=True)

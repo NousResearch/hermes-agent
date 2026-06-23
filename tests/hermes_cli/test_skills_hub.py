@@ -222,6 +222,99 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
     assert seen["platform"] is None
 
 
+def test_do_list_labels_builtin_skills_builtin(monkeypatch, hub_env, tmp_path):
+    """Regression for t_6b3cc29b: a skill in the bundled source tree must
+    be labeled ``builtin`` in ``hermes skills list`` even when its
+    per-profile ``.bundled_manifest`` is missing or stale.
+
+    The audit found ``macos-computer-use`` labeled ``local`` for every
+    profile that hosted the file at ``skills/apple/macos-computer-use/``
+    but had no manifest entry.  The fix is defense-in-depth: ``do_list``
+    consults the bundled source tree (the canonical "what does Hermes
+    actually ship" set) in addition to the per-profile manifest, so a
+    freshly-added source-tree skill is correctly classified as ``builtin``
+    from the very first invocation — before any sync has run, and even
+    if the manifest was cleaned by an upstream ``sync_skills`` that
+    detected a user-modified copy.
+    """
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+
+    # An on-disk skill exists at the per-profile skills dir.
+    on_disk = [
+        {"name": "macos-computer-use", "category": "apple", "description": "Mac desktop"},
+    ]
+    # The per-profile manifest is missing the entry (the original audit case).
+    empty_manifest: dict = {}
+    # But the source tree contains it — the canonical shipped set.
+    source_tree_skills = [("macos-computer-use", tmp_path / "skills/apple/macos-computer-use")]
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: list(on_disk))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: dict(empty_manifest))
+    monkeypatch.setattr(skills_sync, "_get_bundled_dir", lambda: tmp_path / "skills")
+    monkeypatch.setattr(skills_sync, "_discover_bundled_skills", lambda _d: list(source_tree_skills))
+
+    # Also ensure the source tree dir actually exists so the guard fires.
+    (tmp_path / "skills" / "apple" / "macos-computer-use").mkdir(parents=True, exist_ok=True)
+
+    output = _capture()
+
+    # The skill must be classified as builtin, not local.  This is the
+    # exact regression the audit flagged: an empty manifest would otherwise
+    # force it into the local bucket.
+    assert "macos-computer-use" in output
+    # Anchor on the table body — the row separator is the unique sentinel.
+    table_row_found = False
+    for line in output.splitlines():
+        if "│" in line and "macos-computer-use" in line:
+            table_row_found = True
+            assert "local" not in line, (
+                f"macos-computer-use was mislabeled local in the table row: {line!r}"
+            )
+            assert "builtin" in line, (
+                f"macos-computer-use should be labeled builtin in the table row: {line!r}"
+            )
+    assert table_row_found, (
+        f"macos-computer-use did not appear in the table. Output:\n{output}"
+    )
+    # And the summary should count it as builtin.
+    assert "1 builtin" in output
+    assert "0 local" in output
+
+
+def test_do_list_source_tree_lookup_is_best_effort(monkeypatch, hub_env, tmp_path):
+    """If the bundled source tree is unreachable (sandbox, packaged install
+    without a writable skills/ source dir), ``do_list`` must still work —
+    it should fall back to the per-profile manifest alone.  This is the
+    complement of the builtin-defense test: defense-in-depth must not
+    become a hard dependency."""
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+
+    on_disk = [
+        {"name": "manifest-only-builtin", "category": "x", "description": "manifest only"},
+    ]
+    manifest = {"manifest-only-builtin": "abc123"}
+
+    def _explode(_bundled_dir):
+        raise RuntimeError("source tree unreachable")
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: list(on_disk))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: dict(manifest))
+    monkeypatch.setattr(skills_sync, "_get_bundled_dir", lambda: tmp_path / "skills")
+    monkeypatch.setattr(skills_sync, "_discover_bundled_skills", _explode)
+
+    # Should not raise — the rule falls back to the manifest alone.
+    output = _capture()
+
+    assert "manifest-only-builtin" in output
+    assert "1 builtin" in output
+
+
 def test_do_check_reports_available_updates(monkeypatch):
     output = _capture_check(monkeypatch, [
         {"name": "hub-skill", "source": "skills.sh", "status": "update_available"},

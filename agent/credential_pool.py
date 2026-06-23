@@ -10,7 +10,7 @@ import time
 import uuid
 import re
 from dataclasses import dataclass, fields, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
@@ -286,6 +286,16 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
     return None
 
 
+# Provider timezone lookup for absolute reset timestamps.
+# Some providers (e.g. z.ai) send naive datetime strings in their own
+# timezone rather than UTC. Map provider names to their UTC offsets here;
+# unrecognized providers fall back to the local machine timezone.
+_PROVIDER_RESET_TZ: Dict[str, timedelta] = {
+    # z.ai returns "Your limit will reset at YYYY-MM-DD HH:MM:SS" in SGT (UTC+8)
+    "z.ai": timedelta(hours=8),
+}
+
+
 def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     if not message:
         return None
@@ -306,6 +316,32 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     min_only_match = re.search(r"resets?\s+in\s+(\d+)\s*min\b", message, re.IGNORECASE)
     if min_only_match:
         return int(min_only_match.group(1)) * 60
+    # Absolute reset timestamp in message body, e.g. "Your limit will reset at 2026-06-01 20:46:51"
+    # Naive datetime — resolve timezone via provider table or local tz fallback.
+    reset_match = re.search(r"reset\s+at\s+(\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2})", message, re.IGNORECASE)
+    if reset_match:
+        try:
+            raw_ts = reset_match.group(1)
+            # Determine provider from message context (check known provider names)
+            provider_tz = None
+            for provider_name, offset in _PROVIDER_RESET_TZ.items():
+                if provider_name.lower() in message.lower():
+                    provider_tz = offset
+                    break
+            if provider_tz is not None:
+                # Parse as naive datetime in provider's timezone
+                dt_naive = datetime.strptime(raw_ts, "%Y-%m-%d %H:%M:%S" if " " in raw_ts else "%Y-%m-%dT%H:%M:%S")
+                dt_aware = dt_naive.replace(tzinfo=timezone(provider_tz))
+            else:
+                # Fall back to local timezone for unknown providers
+                dt_naive = datetime.strptime(raw_ts, "%Y-%m-%d %H:%M:%S" if " " in raw_ts else "%Y-%m-%dT%H:%M:%S")
+                dt_aware = dt_naive.astimezone()  # uses system local tz
+            now_utc = datetime.now(timezone.utc)
+            delay = (dt_aware.astimezone(timezone.utc) - now_utc).total_seconds()
+            if delay > 0:
+                return delay
+        except (ValueError, OSError):
+            pass
     return None
 
 

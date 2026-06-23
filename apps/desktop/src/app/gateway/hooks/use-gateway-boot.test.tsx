@@ -68,7 +68,9 @@ class FakeWebSocket {
   }
 
   private emit(type: string, ev: unknown) {
-    for (const fn of this.listeners[type] ?? []) fn(ev)
+    for (const fn of this.listeners[type] ?? []) {
+      fn(ev)
+    }
   }
 }
 
@@ -102,11 +104,12 @@ function fakeDesktop() {
   }
 }
 
-function Harness() {
+function Harness({ onReconnectReady }: { onReconnectReady?: () => Promise<void> | void }) {
   useGatewayBoot({
     handleGatewayEvent: () => undefined,
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
+    onReconnectReady,
     refreshHermesConfig: async () => undefined,
     refreshSessions: async () => undefined
   })
@@ -250,9 +253,11 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     FakeWebSocket.mode = 'fail'
     act(() => FakeWebSocket.instances[0].drop())
     await flushAsync()
+
     for (let i = 0; i < 8; i += 1) {
       await advanceBackoff()
     }
+
     expect($desktopBoot.get().error).toBeTruthy()
 
     // The remote comes back: next reconnect attempt opens.
@@ -261,5 +266,24 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('FIX: a successful post-boot reconnect notifies the app to reattach live sessions', async () => {
+    const onReconnectReady = vi.fn(async () => undefined)
+
+    render(<Harness onReconnectReady={onReconnectReady} />)
+    await flushAsync()
+
+    expect(onReconnectReady).not.toHaveBeenCalled()
+
+    FakeWebSocket.mode = 'fail'
+    act(() => FakeWebSocket.instances[0].drop())
+    await flushAsync()
+
+    FakeWebSocket.mode = 'open'
+    await advanceBackoff()
+
+    expect($gatewayState.get()).toBe('open')
+    expect(onReconnectReady).toHaveBeenCalledTimes(1)
   })
 })

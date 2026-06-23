@@ -581,9 +581,21 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
         # guard with _sessions_lock). _sessions_lock is an RLock and the global
         # ordering is always resume_lock -> sessions_lock, so nesting is safe.
         with _session_resume_lock:
-            if not _ws_session_is_orphaned(_sessions.get(sid)):
+            session = _sessions.get(sid)
+            if _ws_session_is_orphaned(session):
+                _close_session_by_id(sid, end_reason="ws_orphan_reap")
                 return
-            _close_session_by_id(sid, end_reason="ws_orphan_reap")
+            # A detached session can still be mid-turn when the first grace
+            # timer fires. In that case it is correctly not orphaned yet, but
+            # without another timer it becomes immortal the moment the turn
+            # settles. Keep checking until it either reattaches or becomes safe
+            # to reap.
+            if (
+                session
+                and not session.get("_finalized")
+                and session.get("transport") is _detached_ws_transport
+            ):
+                _schedule_ws_orphan_reap(sid)
 
     timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _reap)
     timer.daemon = True

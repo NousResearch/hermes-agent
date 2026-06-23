@@ -1769,6 +1769,49 @@ def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
     assert server._ws_session_is_orphaned(done) is False
 
 
+def test_ws_orphan_reap_reschedules_detached_mid_turn_until_it_settles(monkeypatch):
+    timers = []
+    closed = []
+
+    class _Timer:
+        def __init__(self, delay, callback):
+            self.daemon = False
+            self.delay = delay
+            self.callback = callback
+            timers.append(self)
+
+        def start(self):
+            pass
+
+    def _close(sid, *, end_reason):
+        closed.append((sid, end_reason))
+        server._sessions.pop(sid, None)
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_close_session_by_id", _close)
+
+    server._sessions["mid-turn"] = _session(
+        transport=server._detached_ws_transport,
+        running=True,
+    )
+    try:
+        server._schedule_ws_orphan_reap("mid-turn")
+        assert len(timers) == 1
+
+        timers[0].callback()
+        assert closed == []
+        assert "mid-turn" in server._sessions
+        assert len(timers) == 2
+
+        server._sessions["mid-turn"]["running"] = False
+        timers[1].callback()
+        assert closed == [("mid-turn", "ws_orphan_reap")]
+        assert "mid-turn" not in server._sessions
+    finally:
+        server._sessions.pop("mid-turn", None)
+
+
 def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
     """Grace=0 disables the reaper entirely (pre-fix park-forever behaviour)."""
     fired = {"timer": False}

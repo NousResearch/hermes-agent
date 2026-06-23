@@ -24,6 +24,7 @@ import {
 } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
 import { setCronFocusJobId, setCronJobs } from '../store/cron'
+import { ensureGatewayForProfileOpen } from '../store/gateway'
 import {
   $panesFlipped,
   $pinnedSessionIds,
@@ -52,6 +53,7 @@ import {
 } from '../store/profile'
 import {
   $activeSessionId,
+  $attentionSessionIds,
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
@@ -67,6 +69,7 @@ import {
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   sessionPinId,
+  setActiveSessionId,
   setAwaitingResponse,
   setBusy,
   setCronSessions,
@@ -87,6 +90,7 @@ import { onSessionsChanged } from '../store/session-sync'
 import { clearSessionTodos, setSessionTodos, todoListActive } from '../store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
+import type { SessionResumeResponse } from '../types/hermes'
 
 import { ChatView } from './chat'
 import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
@@ -119,7 +123,7 @@ import { useModelControls } from './session/hooks/use-model-controls'
 import { usePreviewRouting } from './session/hooks/use-preview-routing'
 import { usePromptActions } from './session/hooks/use-prompt-actions'
 import { useRouteResume } from './session/hooks/use-route-resume'
-import { useSessionActions } from './session/hooks/use-session-actions'
+import { applyRuntimeInfo, patchSessionWorkspace, useSessionActions } from './session/hooks/use-session-actions'
 import { useSessionStateCache } from './session/hooks/use-session-state-cache'
 import { AppShell } from './shell/app-shell'
 import { useOverlayRouting } from './shell/hooks/use-overlay-routing'
@@ -199,6 +203,7 @@ export function DesktopController() {
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
+  const recoveringDetachedSessionsRef = useRef(false)
   const refreshSessionsRequestRef = useRef(0)
 
   const gatewayState = useStore($gatewayState)
@@ -841,6 +846,108 @@ export function DesktopController() {
     updateSessionState
   })
 
+  const recoverDetachedSessions = useCallback(async () => {
+    if (recoveringDetachedSessionsRef.current) {
+      return
+    }
+
+    const candidates = new Set<string>()
+    const selectedStored = selectedStoredSessionIdRef.current
+
+    if (selectedStored) {
+      candidates.add(selectedStored)
+    }
+
+    for (const id of $workingSessionIds.get()) {
+      candidates.add(id)
+    }
+
+    for (const id of $attentionSessionIds.get()) {
+      candidates.add(id)
+    }
+
+    if (!candidates.size) {
+      return
+    }
+
+    recoveringDetachedSessionsRef.current = true
+
+    try {
+      const visibleSessions = $sessions.get()
+
+      for (const storedSessionId of candidates) {
+        const stored = visibleSessions.find(
+          session => session.id === storedSessionId || session._lineage_root_id === storedSessionId
+        )
+
+        const storedProfile = stored?.profile ? normalizeProfileKey(stored.profile) : undefined
+        const recoveryProfile = storedProfile ?? normalizeProfileKey($activeGatewayProfile.get())
+
+        try {
+          const recoveryGateway = await ensureGatewayForProfileOpen(recoveryProfile)
+
+          if (!recoveryGateway) {
+            throw new Error(`Hermes gateway unavailable for profile ${recoveryProfile}`)
+          }
+
+          const resumed = await recoveryGateway.request<SessionResumeResponse>('session.resume', {
+            session_id: storedSessionId,
+            cols: 96,
+            ...(storedProfile && storedProfile !== 'default' ? { profile: storedProfile } : {})
+          })
+
+          const previousRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+
+          const isActive =
+            storedSessionId === selectedStoredSessionIdRef.current || previousRuntimeId === activeSessionIdRef.current
+
+          const previousState = sessionStateByRuntimeIdRef.current.get(previousRuntimeId || resumed.session_id)
+          const messages = preserveLocalAssistantErrors(toChatMessages(resumed.messages), previousState?.messages ?? [])
+          const status = resumed.status
+
+          const resumedRunning = Boolean(
+            resumed.running || status === 'working' || status === 'streaming'
+          )
+
+          const runtimeInfo = isActive ? applyRuntimeInfo(resumed.info) : null
+
+          if (isActive && runtimeInfo?.cwd) {
+            patchSessionWorkspace(storedSessionId, runtimeInfo.cwd)
+          }
+
+          updateSessionState(
+            resumed.session_id,
+            state => ({
+              ...state,
+              ...(runtimeInfo ?? {}),
+              awaitingResponse: resumedRunning,
+              busy: resumedRunning,
+              messages
+            }),
+            storedSessionId
+          )
+
+          if (previousRuntimeId && previousRuntimeId !== resumed.session_id) {
+            sessionStateByRuntimeIdRef.current.delete(previousRuntimeId)
+          }
+
+          if (isActive) {
+            setActiveSessionId(resumed.session_id)
+            activeSessionIdRef.current = resumed.session_id
+            setBusy(resumedRunning)
+            busyRef.current = resumedRunning
+            setAwaitingResponse(resumedRunning)
+          }
+        } catch {
+          // Best-effort: one stale/orphaned row must not prevent other live
+          // sessions from reattaching to the fresh WebSocket.
+        }
+      }
+    } finally {
+      recoveringDetachedSessionsRef.current = false
+    }
+  }, [activeSessionIdRef, busyRef, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef, updateSessionState])
+
   useGatewayBoot({
     handleGatewayEvent: handleDesktopGatewayEvent,
     onConnectionReady: c => {
@@ -849,6 +956,7 @@ export function DesktopController() {
     onGatewayReady: g => {
       gatewayRef.current = g
     },
+    onReconnectReady: recoverDetachedSessions,
     refreshHermesConfig,
     refreshSessions
   })

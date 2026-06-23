@@ -719,6 +719,7 @@ def _wrap_copy_friendly_lines_for_weixin(content: str) -> str:
             or not stripped
             or stripped.startswith("|")
             or _TABLE_RULE_RE.match(stripped)
+            or _MARKDOWN_LINK_RE.search(stripped)
         ):
             wrapped.append(line)
             continue

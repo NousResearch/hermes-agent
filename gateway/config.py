@@ -2011,7 +2011,19 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if api_server_enabled or api_server_key:
         if Platform.API_SERVER not in config.platforms:
             config.platforms[Platform.API_SERVER] = PlatformConfig()
-        config.platforms[Platform.API_SERVER].enabled = True
+        # Respect an explicit ``enabled: false`` in config.yaml (flagged by
+        # ``_enabled_explicit``). In multiplex mode a secondary profile's
+        # config.yaml pins ``platforms.api_server.enabled: false`` so it shares
+        # the default profile's listener instead of binding its own port. That
+        # profile still inherits the process-level env (including
+        # ``API_SERVER_KEY``); without this guard the env-var presence would
+        # force-enable the listener and trip the MultiplexConfigError check.
+        # Pop (don't read) the marker — the api_server branch is terminal (no
+        # later registry pass re-enables it), so this both consumes the flag and
+        # avoids reading it twice, matching the pop convention used elsewhere.
+        api_server_explicit = config.platforms[Platform.API_SERVER].extra.pop("_enabled_explicit", False)
+        if not api_server_explicit or config.platforms[Platform.API_SERVER].enabled:
+            config.platforms[Platform.API_SERVER].enabled = True
         if api_server_key:
             config.platforms[Platform.API_SERVER].extra["key"] = api_server_key
         if api_server_cors_origins:

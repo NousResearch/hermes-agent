@@ -92,6 +92,18 @@ def test_turso_provider_save_config_keeps_secrets_out_of_json(tmp_path):
     assert "auth_token" not in saved
 
 
+def test_turso_setup_schema_uses_human_choices_and_gates_cloud_fields():
+    schema = TursoMemoryProvider().get_config_schema()
+    by_key = {field["key"]: field for field in schema}
+
+    assert by_key["sync_enabled"]["choices"] == ["no", "yes"]
+    assert by_key["auto_capture"]["choices"] == ["no", "yes"]
+    assert "Hermes auto-stores" in by_key["auto_capture"]["description"]
+    assert "recommended" in by_key["auto_capture"]["description"]
+    assert by_key["database_url"]["when"] == {"sync_enabled": "yes"}
+    assert by_key["auth_token"]["when"] == {"sync_enabled": "yes"}
+
+
 def test_turso_provider_integrates_with_memory_manager_tools(tmp_path):
     provider = TursoMemoryProvider({"db_path": str(tmp_path / "memory.db")})
     mgr = MemoryManager()

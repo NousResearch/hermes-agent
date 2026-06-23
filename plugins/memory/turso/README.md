@@ -25,7 +25,7 @@ Behavioral settings are stored in `$HERMES_HOME/turso.json`.
 | `sync_enabled` | `false` | Enable best-effort Turso Cloud sync hooks |
 | `top_k` | `6` | Number of memories returned by automatic prefetch |
 | `min_similarity` | `0.15` | Minimum retrieval score for automatic prefetch |
-| `auto_capture` | `false` | Store completed turns as searchable conversation memories |
+| `auto_capture` | `false` | When enabled, Hermes auto-stores each completed user/assistant turn as searchable Turso memory. Leave off for higher-signal explicit/mirrored memory only. |
 
 Secrets belong in `$HERMES_HOME/.env`:
 
@@ -45,4 +45,3 @@ Secrets belong in `$HERMES_HOME/.env`:
 | `turso_memory_sync` | Report or trigger best-effort sync status |
 
 Use the built-in `memory` tool for compact, always-on curated facts. Use Turso memory for deeper searchable recall.
-

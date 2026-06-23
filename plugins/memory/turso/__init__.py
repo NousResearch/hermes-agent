@@ -245,12 +245,34 @@ class TursoMemoryProvider(MemoryProvider):
 
         return [
             {"key": "db_path", "description": "Local Turso/SQLite database path", "default": f"{display_hermes_home()}/turso-memory.db"},
-            {"key": "sync_enabled", "description": "Enable Turso Cloud sync", "default": "false", "choices": ["false", "true"]},
-            {"key": "database_url", "description": "Turso database URL", "secret": True, "required": False, "env_var": "TURSO_DATABASE_URL"},
-            {"key": "auth_token", "description": "Turso auth token", "secret": True, "required": False, "env_var": "TURSO_AUTH_TOKEN"},
+            {"key": "sync_enabled", "description": "Enable Turso Cloud sync", "default": "no", "choices": ["no", "yes"]},
+            {
+                "key": "database_url",
+                "description": "Turso database URL",
+                "secret": True,
+                "required": False,
+                "env_var": "TURSO_DATABASE_URL",
+                "when": {"sync_enabled": "yes"},
+            },
+            {
+                "key": "auth_token",
+                "description": "Turso auth token",
+                "secret": True,
+                "required": False,
+                "env_var": "TURSO_AUTH_TOKEN",
+                "when": {"sync_enabled": "yes"},
+            },
             {"key": "top_k", "description": "Automatic prefetch result count", "default": str(_DEFAULT_TOP_K)},
             {"key": "min_similarity", "description": "Minimum automatic prefetch score", "default": str(_DEFAULT_MIN_SIMILARITY)},
-            {"key": "auto_capture", "description": "Capture completed turns", "default": "false", "choices": ["false", "true"]},
+            {
+                "key": "auto_capture",
+                "description": (
+                    "Hermes auto-stores each completed user/assistant turn in Turso memory "
+                    "(no = only explicit/mirrored memory writes; recommended)"
+                ),
+                "default": "no",
+                "choices": ["no", "yes"],
+            },
         ]
 
     def save_config(self, values, hermes_home):

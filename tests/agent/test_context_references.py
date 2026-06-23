@@ -406,3 +406,61 @@ async def test_blocks_sensitive_home_and_hermes_paths(tmp_path: Path, monkeypatc
     assert "API_KEY=super-secret" not in result.message
     assert "PRIVATE-KEY" not in result.message
     assert any("sensitive credential" in warning for warning in result.warnings)
+
+
+def test_expand_document_folder_listing(tmp_path: Path):
+    from agent.context_references import expand_document
+
+    folder = tmp_path / "xhs_covers"
+    folder.mkdir()
+    (folder / "a.txt").write_text("hello\n", encoding="utf-8")
+
+    document = [
+        {"type": "text", "value": "check "},
+        {
+            "type": "attachment",
+            "id": "f1",
+            "kind": "folder",
+            "path": str(folder),
+            "displayName": "xhs_covers",
+        },
+        {"type": "text", "value": " please"},
+    ]
+
+    result = expand_document(
+        document,
+        cwd=tmp_path,
+        allowed_root=tmp_path,
+        context_length=100_000,
+    )
+
+    assert not result.blocked
+    assert "xhs_covers" in result.message or "a.txt" in result.message
+    assert result.image_paths == []
+
+
+def test_expand_document_collects_image_paths(tmp_path: Path):
+    from agent.context_references import expand_document
+
+    image = tmp_path / "pic.jpg"
+    image.write_bytes(b"\xff\xd8\xff")
+
+    document = [
+        {"type": "text", "value": "see "},
+        {
+            "type": "attachment",
+            "id": "i1",
+            "kind": "image",
+            "path": str(image),
+            "displayName": "pic.jpg",
+        },
+    ]
+
+    result = expand_document(
+        document,
+        cwd=tmp_path,
+        allowed_root=tmp_path,
+        context_length=100_000,
+    )
+
+    assert str(image) in result.image_paths

@@ -248,12 +248,6 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
-    # Legacy jobs (created before per-job profile scoping) have no profile
-    # field. Default them to "default" so the scheduler treats them as
-    # root-profile jobs — matching their pre-existing behaviour.
-    prof = normalized.get("profile")
-    normalized["profile"] = (str(prof).strip() if isinstance(prof, str) and prof.strip() else "default")
-
     return normalized
 
 
@@ -272,43 +266,6 @@ def _secure_file(path: Path):
             os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
-
-
-def current_profile_name() -> str:
-    """Return the active profile name for the process creating a job.
-
-    ``~/.hermes``              -> ``"default"``
-    ``~/.hermes/profiles/X``   -> ``"X"``
-
-    Used at create time to tag a job with the profile whose environment
-    (.env / config.yaml / credentials) it should execute under, so the
-    job runs as its owning profile regardless of which profile's ticker
-    picks it up from the shared root store (#32091).
-    """
-    try:
-        from agent.file_safety import _resolve_active_profile_name
-        return _resolve_active_profile_name() or "default"
-    except Exception:
-        return "default"
-
-
-def resolve_profile_home(profile_name: Optional[str]) -> Optional[Path]:
-    """Map a job's ``profile`` name to the HERMES_HOME it should run under.
-
-    ``"default"`` / empty / ``None`` -> the root home (``get_default_hermes_root()``).
-    ``"<name>"``                      -> ``<root>/profiles/<name>``.
-
-    Returns ``None`` when the named profile directory does not exist, so the
-    scheduler can fall back to the ticker's own home and log a warning rather
-    than pointing a job at a missing profile.
-    """
-    name = (profile_name or "").strip()
-    if not name or name == "default":
-        return get_default_hermes_root().resolve()
-    candidate = (get_default_hermes_root() / "profiles" / name).resolve()
-    if candidate.is_dir():
-        return candidate
-    return None
 
 
 def ensure_dirs():
@@ -815,7 +772,6 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
-    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -860,13 +816,6 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
-        profile: Optional Hermes profile name the job should EXECUTE under
-                (its .env / config.yaml / credentials). Defaults to the active
-                profile of the session creating the job. The shared root store
-                holds every profile's jobs (#32091); this field is what scopes
-                a job's runtime environment to its owning profile so it runs
-                with that profile's permissions regardless of which ticker
-                picks it up.
 
     Returns:
         The created job dict
@@ -901,11 +850,6 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
-    # Tag the job with the profile whose environment it should execute under.
-    # When the caller does not pass one explicitly, capture the active profile
-    # of the session creating the job so a job created under `hermes -p donna`
-    # runs as donna even though it now lives in the shared root store (#32091).
-    normalized_profile = (str(profile).strip() if isinstance(profile, str) else "") or current_profile_name()
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -959,7 +903,6 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
-        "profile": normalized_profile,
     }
 
     with _jobs_lock():

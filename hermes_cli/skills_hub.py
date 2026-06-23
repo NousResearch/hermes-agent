@@ -1048,9 +1048,11 @@ def do_list(source_filter: str = "all",
         table.add_row(*row)
 
     # Persist any back-filled provenance so the next invocation is silent.
-    # Local-only skills stay unrecorded — they don't add useful provenance
-    # information, and avoiding the write keeps the registry small for
-    # profiles that host many user-authored skills.
+    # We DO write through `local` records here (with an empty origin) — even
+    # though they carry no useful install-origin information, persisting them
+    # suppresses the per-list "back-filled provenance" warning on subsequent
+    # invocations. Without this, every `hermes skills list` call would re-fire
+    # the warning for the same user-authored skills forever.
     if registry_dirty:
         try:
             current = _read_provenance_file()
@@ -1065,8 +1067,7 @@ def do_list(source_filter: str = "all",
                     prov = PROVENANCE_BUILTIN
                 if prov == PROVENANCE_HUB:
                     origin = (hub_entry or {}).get("install_path", "") or origin
-                if prov != PROVENANCE_LOCAL:
-                    record(name, prov, origin)
+                record(name, prov, origin)
         except Exception as exc:  # pragma: no cover — registry is best-effort
             logger.debug("Failed to persist back-filled provenance: %s", exc, exc_info=True)
 
@@ -1088,6 +1089,9 @@ def do_list(source_filter: str = "all",
 
     if backfilled_names:
         # Single warning at the end so the table itself stays scannable.
+        # Fires once per invocation where any skill lacked a registry
+        # entry; the next invocation reads back the records we wrote
+        # here and stays quiet.
         sample = ", ".join(backfilled_names[:5])
         more = f" (and {len(backfilled_names) - 5} more)" if len(backfilled_names) > 5 else ""
         c.print(

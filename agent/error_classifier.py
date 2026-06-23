@@ -511,7 +511,9 @@ def classify_api_error(
                     except (json.JSONDecodeError, TypeError):
                         pass
         if not _body_msg:
-            _body_msg = str(body.get("message") or "").lower()
+            _body_msg = str(
+                body.get("message") or body.get("detail") or ""
+            ).lower()
     # Combine all message sources for pattern matching
     parts = [_raw_msg]
     if _body_msg and _body_msg not in _raw_msg:
@@ -976,6 +978,10 @@ def _classify_400(
         or (
             "encrypted content for item" in error_msg
             and "could not be verified" in error_msg
+        )
+        or (
+            "unsupported content type" in error_msg
+            and provider == "openai-codex"
         )
     ):
         return result_fn(

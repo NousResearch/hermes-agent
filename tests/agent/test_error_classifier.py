@@ -718,6 +718,28 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
 
+    def test_openai_codex_unsupported_content_type_classified_as_replay_failure(self):
+        e = MockAPIError(
+            "Error code: 400 - Bad request",
+            status_code=400,
+            body={"detail": "Unsupported content type"},
+        )
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.5")
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True
+        assert result.should_fallback is False
+
+    def test_unsupported_content_type_not_replayed_for_non_codex_provider(self):
+        e = MockAPIError(
+            "Error code: 400 - Bad request",
+            status_code=400,
+            body={"detail": "Unsupported content type"},
+        )
+        result = classify_api_error(e, provider="custom", model="gpt-5.5")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
     def test_invalid_encrypted_content_broad_message_match_does_not_catch_generic_parse_error(self):
         message = "Encrypted content could not be decrypted or parsed."
         e = MockAPIError(

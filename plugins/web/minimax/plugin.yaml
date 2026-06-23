@@ -1,0 +1,7 @@
+name: web-minimax
+version: 1.0.0
+description: "MiniMax Token Plan web search — POST /v1/coding_plan/search. Requires a search-enabled Token Plan key (MINIMAX_CODE_PLAN_KEY, MINIMAX_CODING_API_KEY, MINIMAX_OAUTH_TOKEN, or MINIMAX_API_KEY) and region-correct MINIMAX_API_HOST (https://api.minimax.io for global, https://api.minimaxi.com for China)."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - minimax

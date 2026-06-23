@@ -2139,6 +2139,123 @@ class TestStructuredElementsConsumption:
         # Markdown surface doesn't carry bounds — lossy by design.
         assert cap.elements[0].bounds == (0, 0, 0, 0)
 
+    def test_vision_capture_falls_back_to_get_window_state_when_screenshot_dropped(self):
+        """cua-driver >=0.5.x dropped the standalone `screenshot` MCP tool and
+        folded full-window PNG capture into `get_window_state`. When the driver
+        no longer advertises `screenshot`, vision capture must route through
+        `get_window_state` (discarding the AX tree) and still return a PNG."""
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        # Modern driver: capabilities discovered, `screenshot` not advertised.
+        backend._session._has_tool.return_value = False
+        backend._session.capabilities_discovered = True
+
+        windows_payload = {
+            "windows": [{
+                "app_name": "Demo", "pid": 9, "window_id": 1,
+                "is_on_screen": True, "title": "Demo", "z_index": 0,
+            }],
+        }
+        png_b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42m"
+            "NkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        )
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [],
+                        "structuredContent": windows_payload, "isError": False}
+            if name == "get_window_state":
+                return {"data": "", "images": [png_b64],
+                        "image_mime_types": ["image/png"],
+                        "structuredContent": None, "isError": False}
+            if name == "screenshot":
+                raise AssertionError("driver dropped screenshot; must not be called")
+            return {"data": "", "images": [], "image_mime_types": [],
+                    "structuredContent": None, "isError": False}
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        cap = backend.capture(mode="vision")
+
+        tool_names = [call.args[0] for call in backend._session.call_tool.call_args_list]
+        assert tool_names == ["list_windows", "get_window_state"]
+        assert cap.png_b64 == png_b64
+        assert cap.image_mime_type == "image/png"
+        assert cap.width == 1
+        assert cap.height == 1
+        # Vision mode stays free of AX element noise.
+        assert cap.elements == []
+
+    def test_capture_app_screen_targets_desktop_window(self):
+        """capture(app='screen') resolves to the OS shell/desktop window
+        (Windows Progman) rather than an application window, so 'show me my
+        screen' works on cua-driver's window-oriented capture surface."""
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+
+        windows_payload = {
+            "windows": [
+                {"app_name": "Code", "pid": 11, "window_id": 1,
+                 "is_on_screen": True, "title": "editor", "z_index": 0},
+                {"app_name": "Progman", "pid": 4, "window_id": 99,
+                 "is_on_screen": True, "title": "Program Manager", "z_index": 5},
+                {"app_name": "Shell_TrayWnd", "pid": 4, "window_id": 50,
+                 "is_on_screen": True, "title": "Taskbar", "z_index": 4},
+            ],
+        }
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [],
+                        "structuredContent": windows_payload, "isError": False}
+            if name == "get_window_state":
+                # Should be invoked against the desktop backdrop, not Code.
+                assert args["window_id"] == 99
+                return {"data": "✅ Desktop — 0 elements", "images": [],
+                        "image_mime_types": [], "structuredContent": None,
+                        "isError": False}
+            return {"data": "", "images": [], "image_mime_types": [],
+                    "structuredContent": None, "isError": False}
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        cap = backend.capture(mode="ax", app="screen")
+
+        assert backend._active_window_id == 99
+        assert cap.app == "Progman"
+
+    def test_capture_app_screen_no_desktop_window_surfaces_limitation(self):
+        """When no desktop/shell window is present, capture(app='screen')
+        returns a clear message about cua-driver's per-window capture limit
+        instead of silently grabbing the frontmost app."""
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+
+        windows_payload = {
+            "windows": [
+                {"app_name": "Code", "pid": 11, "window_id": 1,
+                 "is_on_screen": True, "title": "editor", "z_index": 0},
+            ],
+        }
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [],
+                        "structuredContent": windows_payload, "isError": False}
+            raise AssertionError(f"unexpected tool {name} — should short-circuit")
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        cap = backend.capture(mode="vision", app="desktop")
+
+        assert cap.width == 0 and cap.height == 0
+        assert cap.png_b64 is None
+        assert "captures one window at a time" in cap.window_title
+
 
 class TestCapabilityDiscovery:
     """Surface 4 (NousResearch/hermes-agent#47072): the wrapper learns

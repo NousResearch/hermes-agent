@@ -78,6 +78,29 @@ _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
                             # driver doesn't expose `manifest` — see
                             # `_resolve_mcp_invocation` below)
 
+# Whole-screen / desktop capture. cua-driver is a window-oriented driver —
+# its `get_window_state` / `screenshot` tools capture a single window (by
+# pid + window_id), and there is no MCP tool that captures the entire virtual
+# desktop or an arbitrary monitor as one image. But the OS shell surfaces
+# themselves (the desktop backdrop and the taskbar/menu-bar) are real windows
+# that show up in `list_windows`, so "show me my screen" / "click the taskbar"
+# is reachable by targeting those windows. When `app` is one of these
+# sentinels, capture() resolves to the desktop/shell window instead of an
+# application window.
+_SCREEN_CAPTURE_SENTINELS = {"screen", "desktop", "fullscreen", "full screen", "all"}
+
+# Known shell/desktop window identifiers across platforms. Matched
+# case-insensitively as a substring against both the window's app_name and
+# its title (cua-driver surfaces the Win32 class name / app name here).
+#   Windows: Progman / WorkerW back the desktop; Shell_TrayWnd is the taskbar.
+#   macOS:   Finder owns the desktop; the menu bar / Dock are the shell.
+_DESKTOP_WINDOW_NAMES = (
+    "progman", "workerw", "program manager",  # Windows desktop
+    "shell_traywnd", "taskbar",               # Windows taskbar
+    "finder", "desktop", "dock",              # macOS desktop / shell
+)
+
+
 # Env var cua-driver reads to gate its anonymous usage telemetry (PostHog).
 # Setting it to "0" disables telemetry; absence => the binary's own default
 # (telemetry ON upstream).
@@ -1029,7 +1052,43 @@ class CuaDriverBackend(ComputerUseBackend):
         # returned by list_windows is the localized name (e.g. "計算機"), so
         # `app="Calculator"` legitimately matches no windows on a non-English
         # system and the caller needs to retry with the localized name.
-        if app:
+        if app and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS:
+            # Whole-screen / desktop request. cua-driver has no virtual-desktop
+            # capture tool, so resolve to the OS shell/desktop window (the
+            # desktop backdrop or the taskbar/menu-bar), which list_windows
+            # does surface. This makes "show me my screen" and "click the
+            # taskbar" work; a single image still can't span multiple monitors
+            # — that's a driver limitation, not a wrapper one.
+            def _is_desktop_window(w: Dict[str, Any]) -> bool:
+                haystack = f"{w.get('app_name', '')} {w.get('title', '')}".lower()
+                return any(name in haystack for name in _DESKTOP_WINDOW_NAMES)
+
+            desktop = [w for w in windows if _is_desktop_window(w)]
+            if not desktop:
+                return CaptureResult(
+                    mode=mode, width=0, height=0, png_b64=None,
+                    elements=[], app="",
+                    window_title=(
+                        f"<no desktop/shell window found for app={app!r}; "
+                        f"cua-driver captures one window at a time and exposes "
+                        f"no whole-virtual-desktop or per-monitor capture. "
+                        f"Call list_apps / capture(app='<AppName>') to target a "
+                        f"specific window instead. On Windows the taskbar is "
+                        f"'Shell_TrayWnd' and the desktop is 'Progman'.>"
+                    ),
+                    png_bytes_len=0,
+                )
+            # Prefer the desktop backdrop (Progman/WorkerW/Finder) over the
+            # taskbar when both are present, so a bare "screen" capture shows
+            # the full desktop rather than just the task strip.
+            windows = sorted(
+                desktop,
+                key=lambda w: 0 if any(
+                    n in f"{w.get('app_name', '')} {w.get('title', '')}".lower()
+                    for n in ("progman", "workerw", "program manager", "finder", "desktop")
+                ) else 1,
+            )
+        elif app:
             app_lower = app.lower()
             filtered = [w for w in windows if app_lower in w["app_name"].lower()]
             if not filtered:

@@ -84,6 +84,18 @@ The shape every kanban worker takes today: the assignee is a profile name, the d
 
 When you create profiles for your fleet, choose names that match the *role* you want the orchestrator to route to. The orchestrator (when there is one) discovers your profile names via `hermes profile list` — there's no fixed roster the system assumes (the orchestrator side of the contract is part of the injected `KANBAN_GUIDANCE`).
 
+#### Forge commit co-author policy
+
+The built-in `forge` profile lane has one additional attribution rule when it is running as a kanban worker (`HERMES_PROFILE=forge` and `HERMES_KANBAN_TASK` is set): terminal-tool `git commit` commands keep Forge as the primary author/committer, then amend the new commit message with Raz's GitHub co-author trailer exactly once:
+
+```text
+Co-authored-by: Ryan McInteer <ryan.mcinteer@gmail.com>
+```
+
+The same terminal seam guards `git push`: outgoing commits that do not contain that exact trailer are blocked before push where the local repo can determine the outgoing range. This is a future-behaviour policy only; it does not rewrite merged history or existing remote branches.
+
+To make an explicit special-case attribution override, run the command with `HERMES_FORGE_COAUTHOR_DISABLED=1`. Do not change the primary author to Raz unless a separate lane/config explicitly says Raz authored the work.
+
 ### Orchestrator profile lane
 
 A specialisation of the profile lane: an orchestrator is a Hermes profile whose toolset includes `kanban` but excludes `terminal` / `file` / `code` / `web` for implementation. Its job is decomposing a high-level goal into child tasks via `kanban_create` + `kanban_link` and stepping back. The orchestrator skill encodes the anti-temptation rules.

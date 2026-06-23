@@ -2144,6 +2144,18 @@ def terminal_tool(
                 "EOF."
             )
 
+        # Forge kanban workers have a narrow git attribution policy: commits
+        # created through terminal commands keep Forge as primary committer but
+        # receive Raz's GitHub co-author trailer, with a pre-push guard.  Apply
+        # after approval/workdir/PTY checks so the injected wrapper does not
+        # change how the user's original command is classified or displayed.
+        try:
+            from tools.forge_git_coauthor import apply_forge_git_coauthor_policy
+
+            command = apply_forge_git_coauthor_policy(command)
+        except Exception:
+            logger.debug("Forge git co-author policy injection skipped", exc_info=True)
+
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.

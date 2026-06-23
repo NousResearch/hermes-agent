@@ -333,7 +333,7 @@ def check_for_updates() -> Optional[int]:
     now = time.time()
     try:
         if cache_file.exists():
-            cached = json.loads(cache_file.read_text())
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
@@ -359,7 +359,7 @@ def check_for_updates() -> Optional[int]:
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}, encoding="utf-8")
         )
     except Exception:
         pass

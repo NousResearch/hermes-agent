@@ -99,7 +99,21 @@ class TestVerboseAndToolProgress:
     def test_tool_progress_mode_is_string(self):
         cli = _make_cli()
         assert isinstance(cli.tool_progress_mode, str)
-        assert cli.tool_progress_mode in ("off", "new", "all", "verbose")
+        assert cli.tool_progress_mode in {"off", "new", "all", "verbose"}
+
+
+class TestFallbackChainInit:
+    def test_merges_new_and_legacy_fallback_config(self):
+        cli = _make_cli(config_overrides={
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+            ],
+            "fallback_model": {"provider": "nous", "model": "Hermes-4"},
+        })
+        assert cli._fallback_model == [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+            {"provider": "nous", "model": "Hermes-4"},
+        ]
 
 
 class TestBusyInputMode:
@@ -166,9 +180,9 @@ class TestPromptToolkitTerminalCompatibility:
     def test_lf_enter_binds_to_submit_handler_posix(self):
         """Some thin PTYs deliver Enter as LF/c-j instead of CR/enter.
 
-        On a bare local POSIX TTY (no SSH/WSL/WT) we keep c-j → submit so
+        On a bare local POSIX TTY (no SSH/WSL/WT/Ghostty) we keep c-j → submit so
         Enter works on thin PTYs (docker exec, certain ssh configurations).
-        On Windows, WSL, SSH sessions, and Windows Terminal we leave c-j
+        On Windows, WSL, SSH sessions, Windows Terminal, and Ghostty we leave c-j
         unbound here so it can be used as the Ctrl+Enter newline keystroke
         without conflicting with submit. See issue #22379.
         """
@@ -196,6 +210,17 @@ class TestPromptToolkitTerminalCompatibility:
         # Windows Terminal / Kitty / mintty over SSH) inserts a newline.
         with _patch.object(_sys, "platform", "linux"), \
              _patch.dict(_os.environ, {"SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22"}, clear=True), \
+             _patch("builtins.open", side_effect=OSError("no /proc")):
+            kb = KeyBindings()
+            _bind_prompt_submit_keys(kb, submit_handler)
+            bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
+            assert bindings[("c-m",)] is submit_handler
+            assert ("c-j",) not in bindings
+
+        # Ghostty through tmux: TERM_PROGRAM is tmux, but Ghostty exports a
+        # stable env marker. Keep c-j free so Ctrl+J inserts a newline.
+        with _patch.object(_sys, "platform", "linux"), \
+             _patch.dict(_os.environ, {"TERM": "tmux-256color", "TERM_PROGRAM": "tmux", "GHOSTTY_RESOURCES_DIR": "/usr/share/ghostty"}, clear=True), \
              _patch("builtins.open", side_effect=OSError("no /proc")):
             kb = KeyBindings()
             _bind_prompt_submit_keys(kb, submit_handler)
@@ -317,7 +342,146 @@ class TestHistoryDisplay:
 
         assert "Recent sessions" in output
         assert "Checking Running Hermes Agent" in output
-        assert "Use /resume <session id or title> to continue" in output
+        assert "Use /resume" in output
+        assert "session title" in output
+
+    def test_resume_updates_hermes_session_id_env_and_context(self, tmp_path):
+        from gateway.session_context import _UNSET, _VAR_MAP, get_session_env
+        from hermes_state import SessionDB
+
+        cli = _make_cli()
+        cli.session_id = "current_session"
+        cli.conversation_history = []
+        cli.agent = None
+        cli._session_db = SessionDB(db_path=tmp_path / "state.db")
+        cli._session_db.create_session("current_session", "cli")
+        cli._session_db.create_session("target_session", "cli")
+        cli._session_db.append_message("target_session", "user", "hello from resumed session")
+
+        os.environ["HERMES_SESSION_ID"] = "current_session"
+        _VAR_MAP["HERMES_SESSION_ID"].set("current_session")
+
+        try:
+            cli._handle_resume_command("/resume target_session")
+
+            assert cli.session_id == "target_session"
+            assert os.environ["HERMES_SESSION_ID"] == "target_session"
+            assert get_session_env("HERMES_SESSION_ID") == "target_session"
+        finally:
+            cli._session_db.close()
+            os.environ.pop("HERMES_SESSION_ID", None)
+            _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
+
+    def test_resume_list_shows_full_long_titles(self, capsys):
+        """Long session titles render in full in the /resume table — not
+        truncated to 30 chars (fixes #14082)."""
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        long_title = "Salvage BytePlus Volcengine PR With Fixes"
+        cli._session_db.list_sessions_rich.return_value = [
+            {
+                "id": "current",
+                "title": "Current",
+                "preview": "Current preview",
+                "last_active": 0,
+            },
+            {
+                "id": "20260401_201329_d85961",
+                "title": long_title,
+                "preview": "fix byteplus pr and resume",
+                "last_active": 0,
+            },
+        ]
+
+        cli._handle_resume_command("/resume")
+        output = capsys.readouterr().out
+
+        assert long_title in output
+        assert "20260401_201329_d85961" in output
+
+    def test_sessions_command_no_args_lists_recent_sessions(self, capsys):
+        """/sessions with no args prints the recent-sessions table (TUI parity).
+
+        Regression test: `sessions` was registered in the central command
+        registry and surfaced by /help and tab-completion, but the classic
+        CLI dispatcher had no elif branch for it, so the canonical name fell
+        through and printed `Unknown command: sessions`.
+        """
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [
+            {
+                "id": "20260401_201329_d85961",
+                "title": "Checking Running Hermes Agent",
+                "preview": "check running gateways for hermes agent",
+                "last_active": 0,
+            },
+        ]
+
+        # Drive it through the public dispatcher to also lock in the
+        # process_command wiring, not just the handler in isolation.
+        cli.process_command("/sessions")
+        output = capsys.readouterr().out
+
+        assert "Unknown command" not in output
+        assert "Recent sessions" in output
+        assert "Checking Running Hermes Agent" in output
+        assert "20260401_201329_d85961" in output
+
+    def test_sessions_list_subcommand_lists_recent_sessions(self, capsys):
+        """/sessions list is an explicit alias for the no-arg list view."""
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [
+            {
+                "id": "20260401_201329_d85961",
+                "title": "Checking Running Hermes Agent",
+                "preview": "check running gateways for hermes agent",
+                "last_active": 0,
+            },
+        ]
+
+        cli.process_command("/sessions list")
+        output = capsys.readouterr().out
+
+        assert "Unknown command" not in output
+        assert "Recent sessions" in output
+        assert "Checking Running Hermes Agent" in output
+
+    def test_sessions_with_target_delegates_to_resume(self):
+        """/sessions <id_or_title> behaves identically to /resume <id_or_title>.
+
+        We intercept `_handle_resume_command` rather than the full resume
+        machinery (which would otherwise require simulating an entire session
+        switch). The contract under test is the dispatch wiring.
+        """
+        cli = _make_cli()
+        with patch.object(cli, "_handle_resume_command") as mock_resume:
+            cli.process_command("/sessions Checking Running Hermes Agent")
+
+        mock_resume.assert_called_once_with(
+            "/resume Checking Running Hermes Agent"
+        )
+
+    def test_sessions_command_is_dispatched(self):
+        """/sessions must hit _handle_sessions_command, not fall through.
+
+        Direct test that the process_command elif chain routes the canonical
+        name to the handler. Without this wiring, /sessions printed
+        `Unknown command: sessions` even though it was a registered command.
+        """
+        cli = _make_cli()
+        cli._session_db = None  # exercise the no-db path too
+
+        with patch.object(cli, "_handle_sessions_command") as mock_handler:
+            cli.process_command("/sessions")
+
+        mock_handler.assert_called_once()
+        called_with = mock_handler.call_args.args[0]
+        assert called_with.lower().startswith("/sessions")
 
 
 class TestRootLevelProviderOverride:
@@ -346,8 +510,8 @@ class TestRootLevelProviderOverride:
 
         assert cfg["model"]["provider"] == "openrouter"
 
-    def test_root_provider_ignored_when_default_model_provider_exists(self, tmp_path, monkeypatch):
-        """Even when model.provider is the default 'auto', root-level provider is ignored."""
+    def test_root_provider_used_as_fallback_when_model_provider_missing(self, tmp_path, monkeypatch):
+        """Legacy root-level provider still populates model.provider in the CLI loader."""
         import yaml
 
         hermes_home = tmp_path / ".hermes"
@@ -367,23 +531,21 @@ class TestRootLevelProviderOverride:
         monkeypatch.setattr(cli, "_hermes_home", hermes_home)
         cfg = cli.load_cli_config()
 
-        # Root-level "opencode-go" must NOT leak through
-        assert cfg["model"]["provider"] != "opencode-go"
+        assert cfg["model"]["provider"] == "opencode-go"
 
-    def test_terminal_vercel_runtime_bridged_to_env(self, tmp_path, monkeypatch):
-        """Classic CLI must expose terminal.vercel_runtime to terminal_tool.py."""
+    def test_root_base_url_used_as_fallback_when_model_base_url_missing(self, tmp_path, monkeypatch):
+        """Legacy root-level base_url still populates model.base_url in the CLI loader."""
         import yaml
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.delenv("TERMINAL_VERCEL_RUNTIME", raising=False)
 
         config_path = hermes_home / "config.yaml"
         config_path.write_text(yaml.safe_dump({
-            "terminal": {
-                "backend": "vercel_sandbox",
-                "vercel_runtime": "python3.13",
+            "base_url": "https://example.com/v1",
+            "model": {
+                "default": "google/gemini-3-flash-preview",
             },
         }))
 
@@ -391,8 +553,7 @@ class TestRootLevelProviderOverride:
         monkeypatch.setattr(cli, "_hermes_home", hermes_home)
         cfg = cli.load_cli_config()
 
-        assert cfg["terminal"]["vercel_runtime"] == "python3.13"
-        assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
+        assert cfg["model"]["base_url"] == "https://example.com/v1"
 
     def test_normalize_root_model_keys_moves_to_model(self):
         """_normalize_root_model_keys migrates root keys into model section."""
@@ -427,6 +588,38 @@ class TestRootLevelProviderOverride:
         result = _normalize_root_model_keys(config)
         assert result["model"]["provider"] == "correct-provider"
         assert "provider" not in result  # root key still cleaned up
+
+    def test_normalize_model_api_base_aliases_to_base_url(self):
+        """model.api_base is migrated to model.base_url (issue #8919)."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "model": {
+                "provider": "custom",
+                "api_base": "http://localhost:4000",
+                "api_key": "my-key",
+                "default": "default",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["base_url"] == "http://localhost:4000"
+        assert "api_base" not in result["model"]  # alias cleaned up
+
+    def test_normalize_api_base_does_not_override_base_url(self):
+        """An explicit model.base_url is never overridden by api_base."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "model": {
+                "provider": "custom",
+                "api_base": "http://wrong:9999",
+                "base_url": "http://localhost:4000",
+                "default": "default",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["base_url"] == "http://localhost:4000"
+        assert "api_base" not in result["model"]
 
     def test_normalize_root_context_length_migrates_to_model(self):
         """Root-level context_length is migrated into the model section."""

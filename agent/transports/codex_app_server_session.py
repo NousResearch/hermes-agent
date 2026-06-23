@@ -31,6 +31,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from agent.codex_responses_adapter import _format_responses_error
+from agent.redact import redact_sensitive_text
 from agent.transports.codex_app_server import (
     CodexAppServerClient,
     CodexAppServerError,
@@ -38,6 +40,13 @@ from agent.transports.codex_app_server import (
 from agent.transports.codex_event_projector import CodexEventProjector
 
 logger = logging.getLogger(__name__)
+
+
+# How many tailing stderr lines from the codex subprocess to attach to a
+# user-facing error when we don't have a more specific classification (OAuth,
+# wedge watchdog, etc.). Small enough to keep error messages legible, large
+# enough to surface a config/provider/auth diagnostic.
+_STDERR_TAIL_LINES = 12
 
 
 # Permission profile mapping mirrors the docstring in PR proposal:
@@ -63,6 +72,109 @@ class TurnResult:
     error: Optional[str] = None  # Set if turn ended in a non-recoverable error
     turn_id: Optional[str] = None
     thread_id: Optional[str] = None
+    token_usage_last: Optional[dict[str, Any]] = None
+    token_usage_total: Optional[dict[str, Any]] = None
+    model_context_window: Optional[int] = None
+    # Hint to the caller that the underlying codex subprocess is likely
+    # wedged (turn-level timeout fired, post-tool watchdog tripped, or
+    # token-refresh failure killed the child). The caller should retire
+    # the session so the next turn respawns codex from scratch instead
+    # of riding a CPU-spinning or auth-broken process. Mirrors openclaw
+    # beta.8's "retire timed-out app-server clients" fix.
+    should_retire: bool = False
+
+
+# Markers we accept as terminal even when codex never emits turn/completed.
+# Some codex versions stream `<turn_aborted>` as raw text in agentMessage
+# items when an interrupt or upstream error tears the turn down before the
+# normal completion path fires. Mirrors openclaw beta.8 fix.
+_TURN_ABORTED_MARKERS = ("<turn_aborted>", "<turn_aborted/>")
+
+
+def _coerce_turn_input_text(user_input: Any) -> str:
+    """Collapse Hermes/OpenAI rich content into app-server text input.
+
+    The current `turn/start` path sends text items only. TUI image attachment
+    can hand us OpenAI-style content parts, so keep the text/path hints and
+    replace opaque image payloads with a small marker instead of putting a
+    Python list into the `text` field.
+    """
+    if isinstance(user_input, str):
+        return user_input
+    if isinstance(user_input, list):
+        parts: list[str] = []
+        for item in user_input:
+            if isinstance(item, str):
+                if item.strip():
+                    parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                if item is not None:
+                    parts.append(str(item))
+                continue
+            item_type = item.get("type")
+            if item_type in {"text", "input_text"}:
+                text = item.get("text") or item.get("content") or ""
+                if text:
+                    parts.append(str(text))
+            elif item_type in {"image", "image_url", "input_image"}:
+                parts.append("[image attached]")
+        text = "\n\n".join(p for p in parts if p).strip()
+        return text or "What do you see in this image?"
+    return "" if user_input is None else str(user_input)
+
+
+# Substrings in codex stderr / JSON-RPC error messages that signal the
+# subprocess died because its OAuth credentials are no longer valid.
+# Kept conservative: we only redirect users to `codex login` when we're
+# reasonably sure that's the actual failure, otherwise we surface the
+# original error verbatim. Mirrors openclaw beta.8's auth-refresh
+# classification.
+_OAUTH_REFRESH_FAILURE_HINTS = (
+    "invalid_grant",
+    "invalid grant",
+    "refresh token",
+    "refresh_token",
+    "token refresh",
+    "token_refresh",
+    "token has expired",
+    "expired_token",
+    "expired token",
+    "not authenticated",
+    "unauthenticated",
+    "unauthorized",
+    "401 unauthorized",
+    "re-authenticate",
+    "reauthenticate",
+    "please log in",
+    "please login",
+    "auth profile",
+    "no auth profile",
+    "oauth",
+)
+
+
+def _classify_oauth_failure(*parts: str) -> Optional[str]:
+    """Return a user-friendly re-auth hint if any of the provided strings
+    look like a codex OAuth/token-refresh failure; otherwise None.
+
+    Used for both `turn/start` JSON-RPC errors and post-mortem stderr
+    inspection when the subprocess exits unexpectedly. Conservative on
+    purpose — we only redirect users to `codex login` when the signal
+    is strong, so unrelated runtime failures still surface verbatim.
+    """
+    haystack = " ".join(p for p in parts if p).lower()
+    if not haystack:
+        return None
+    for needle in _OAUTH_REFRESH_FAILURE_HINTS:
+        if needle in haystack:
+            return (
+                "Codex authentication failed — your ChatGPT/Codex login "
+                "looks expired or invalid. Run `codex login` to refresh, "
+                "then retry. (Fall back to default runtime with "
+                "`/codex-runtime auto` if the issue persists.)"
+            )
+    return None
 
 
 @dataclass
@@ -156,7 +268,26 @@ class CodexAppServerSession:
         # ~/.codex/config.toml the same way they would for any codex usage.
         params: dict[str, Any] = {"cwd": self._cwd}
         result = self._client.request("thread/start", params, timeout=15)
-        self._thread_id = result["thread"]["id"]
+        # Cross-fill thread.id/sessionId — different codex versions have
+        # serialized this under either key. Mirrors openclaw beta.8's
+        # tolerance fix so future codex drops/renames don't KeyError us
+        # at handshake time.
+        thread_obj = result.get("thread") or {}
+        thread_id = (
+            thread_obj.get("id")
+            or thread_obj.get("sessionId")
+            or result.get("sessionId")
+            or result.get("threadId")
+        )
+        if not thread_id:
+            raise CodexAppServerError(
+                code=-32603,
+                message=(
+                    "codex thread/start returned no thread id "
+                    f"(payload keys: {sorted(result.keys())})"
+                ),
+            )
+        self._thread_id = thread_id
         logger.info(
             "codex app-server thread started: id=%s profile=%s cwd=%s",
             self._thread_id[:8],
@@ -190,24 +321,88 @@ class CodexAppServerSession:
         and unwind. Called by AIAgent's _interrupt_requested path."""
         self._interrupt_event.set()
 
+    # ---------- diagnostics ----------
+
+    def _format_error_with_stderr(
+        self,
+        prefix: str,
+        exc: Any = "",
+        *,
+        tail_lines: int = _STDERR_TAIL_LINES,
+    ) -> str:
+        """Build a user-facing error string for codex failures.
+
+        Appends the last few lines of codex's stderr buffer when available,
+        passed through agent.redact with force=True so secrets in provider
+        error responses (auth headers, query-string tokens, sk-* keys) never
+        leak into chat output or trajectories. The codex CLI's own error
+        text ('Internal error', 'turn/start failed: ...') is otherwise
+        opaque and forces users to re-run with verbose flags to diagnose
+        config / provider / auth-bridge problems.
+
+        Use this for the generic / catch-all branches. Specific
+        classifications (OAuth via _classify_oauth_failure, post-tool wedge
+        watchdog) already produce a clean hint and should be used instead.
+        """
+        exc_str = str(exc) if exc != "" and exc is not None else ""
+        base = f"{prefix}: {exc_str}" if exc_str else prefix
+        if self._client is None:
+            return base
+        try:
+            tail = self._client.stderr_tail(tail_lines)
+        except Exception:  # pragma: no cover - diagnostic best-effort
+            return base
+        if not tail:
+            return base
+        joined = "\n".join(line.rstrip() for line in tail if line)
+        if not joined.strip():
+            return base
+        redacted = redact_sensitive_text(joined, force=True)
+        return f"{base}\ncodex stderr (last {len(tail)} lines):\n{redacted}"
+
     # ---------- per-turn ----------
 
     def run_turn(
         self,
-        user_input: str,
+        user_input: Any,
         *,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
+        post_tool_quiet_timeout: float = 90.0,
     ) -> TurnResult:
         """Send a user message and block until turn/completed, while
         forwarding server-initiated approval requests and projecting items
-        into Hermes' messages shape."""
-        self.ensure_started()
+        into Hermes' messages shape.
+
+        post_tool_quiet_timeout: if codex emits a tool completion and then
+        goes quiet for this many seconds without emitting another item or
+        `turn/completed`, fast-fail and mark the session for retirement.
+        Mirrors openclaw beta.8's post-tool completion watchdog (#81697)
+        so a wedged codex doesn't burn the full turn deadline.
+        """
+        # Pre-create the result so startup failures (codex subprocess can't
+        # spawn, initialize handshake rejects, thread/start blows up) surface
+        # the same way per-turn failures do — with a TurnResult.error string
+        # the caller can render — instead of bubbling raw codex exceptions
+        # up to AIAgent.run_conversation.
+        result = TurnResult()
+        try:
+            self.ensure_started()
+        except (CodexAppServerError, TimeoutError) as exc:
+            result.error = self._format_error_with_stderr(
+                "codex app-server startup failed", exc
+            )
+            # Subprocess almost certainly unhealthy — retire so the next
+            # turn re-spawns cleanly.
+            result.should_retire = True
+            return result
         assert self._client is not None and self._thread_id is not None
+        result.thread_id = self._thread_id
 
         self._interrupt_event.clear()
         projector = CodexEventProjector()
-        result = TurnResult(thread_id=self._thread_id)
+
+        user_input_text = _coerce_turn_input_text(user_input)
 
         # Send turn/start with the user input. Text-only for now (codex
         # supports rich content but Hermes' text path is the common case).
@@ -216,22 +411,85 @@ class CodexAppServerSession:
                 "turn/start",
                 {
                     "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input}],
+                    "input": [{"type": "text", "text": user_input_text}],
                 },
                 timeout=10,
             )
         except CodexAppServerError as exc:
-            result.error = f"turn/start failed: {exc}"
+            # Classify auth/refresh failures so the user gets a clear
+            # `codex login` pointer instead of a raw RPC error string.
+            stderr_blob = "\n".join(self._client.stderr_tail(40))
+            hint = _classify_oauth_failure(exc.message, stderr_blob)
+            if hint is not None:
+                result.error = hint
+                # Subprocess is fine on a JSON-RPC level here, but the
+                # token store is broken — retire so the next turn does a
+                # clean handshake (and the user has a chance to re-auth
+                # via `codex login` between turns).
+                result.should_retire = True
+            else:
+                result.error = self._format_error_with_stderr(
+                    "turn/start failed", exc
+                )
+            return result
+        except TimeoutError as exc:
+            # turn/start hanging is a strong signal the subprocess is wedged.
+            stderr_blob = "\n".join(self._client.stderr_tail(40))
+            hint = _classify_oauth_failure(stderr_blob)
+            result.error = hint or self._format_error_with_stderr(
+                "turn/start timed out", exc
+            )
+            result.should_retire = True
             return result
 
         result.turn_id = (ts.get("turn") or {}).get("id")
-        deadline = time.time() + turn_timeout
+        deadline = time.monotonic() + turn_timeout
         turn_complete = False
+        # Post-tool watchdog state. last_tool_completion_at is set whenever
+        # a tool-shaped item completes; if no further notification arrives
+        # within post_tool_quiet_timeout and the turn hasn't completed, we
+        # fast-fail and retire the session.
+        last_tool_completion_at: Optional[float] = None
 
-        while time.time() < deadline and not turn_complete:
+        while time.monotonic() < deadline and not turn_complete:
             if self._interrupt_event.is_set():
                 self._issue_interrupt(result.turn_id)
                 result.interrupted = True
+                break
+
+            # Detect a dead subprocess between iterations. If codex exited
+            # (e.g. crashed, segfaulted, or its auth refresh thread killed
+            # the process), we won't get any more notifications — bail out
+            # rather than waiting for the full turn deadline.
+            if not self._client.is_alive():
+                stderr_blob = "\n".join(self._client.stderr_tail(60))
+                hint = _classify_oauth_failure(stderr_blob)
+                if hint is not None:
+                    result.error = hint
+                else:
+                    result.error = self._format_error_with_stderr(
+                        "codex app-server subprocess exited unexpectedly",
+                        tail_lines=20,
+                    )
+                result.should_retire = True
+                break
+
+            # Post-tool watchdog: if a tool completion was the most recent
+            # signal and codex has been silent past the quiet timeout, give
+            # up on this turn instead of waiting for the outer deadline.
+            if (
+                last_tool_completion_at is not None
+                and (time.monotonic() - last_tool_completion_at)
+                    > post_tool_quiet_timeout
+            ):
+                self._issue_interrupt(result.turn_id)
+                result.interrupted = True
+                result.error = (
+                    f"codex went silent for "
+                    f"{post_tool_quiet_timeout:.0f}s after a tool result; "
+                    f"retiring app-server session."
+                )
+                result.should_retire = True
                 break
 
             # Drain any server-initiated requests (approvals) before
@@ -246,15 +504,27 @@ class CodexAppServerSession:
                     pending = self._client.take_notification(timeout=0)
                     if pending is None:
                         break
+                    _apply_token_usage_notification(result, pending)
                     self._track_pending_file_change(pending)
                     proj = projector.project(pending)
                     if proj.messages:
                         result.projected_messages.extend(proj.messages)
                     if proj.is_tool_iteration:
                         result.tool_iterations += 1
+                        last_tool_completion_at = time.monotonic()
                     if proj.final_text is not None:
                         result.final_text = proj.final_text
+                        if _has_turn_aborted_marker(proj.final_text):
+                            turn_complete = True
+                            result.interrupted = True
+                            result.error = (
+                                result.error
+                                or "codex reported turn_aborted"
+                            )
                 self._handle_server_request(sreq)
+                # Activity counts as live signal — reset the post-tool
+                # quiet timer so an approval round-trip doesn't trip it.
+                last_tool_completion_at = None
                 continue
 
             note = self._client.take_notification(
@@ -270,6 +540,8 @@ class CodexAppServerSession:
                 except Exception:  # pragma: no cover - display callback
                     logger.debug("on_event callback raised", exc_info=True)
 
+            _apply_token_usage_notification(result, note)
+
             # Track in-progress fileChange items so the approval bridge
             # can surface a real change summary when codex requests
             # approval (the approval params themselves don't carry the
@@ -282,31 +554,68 @@ class CodexAppServerSession:
                 result.projected_messages.extend(projection.messages)
             if projection.is_tool_iteration:
                 result.tool_iterations += 1
+                # Arm/refresh the post-tool quiet watchdog whenever a
+                # tool-shaped item completes.
+                last_tool_completion_at = time.monotonic()
+            else:
+                # Any non-tool projected activity (assistant message,
+                # status update, etc.) means codex is still producing
+                # output — clear the quiet timer so we don't fast-fail.
+                if projection.messages or projection.final_text is not None:
+                    last_tool_completion_at = None
             if projection.final_text is not None:
                 # Codex can emit multiple agentMessage items in one turn
                 # (e.g. partial then final). Take the last one as canonical.
                 result.final_text = projection.final_text
+                # Some codex builds tear a turn down by emitting a
+                # `<turn_aborted>` marker in the agent message text and
+                # never sending turn/completed. Treat the marker itself
+                # as terminal so we don't burn the full deadline.
+                if _has_turn_aborted_marker(projection.final_text):
+                    turn_complete = True
+                    result.interrupted = True
+                    result.error = (
+                        result.error or "codex reported turn_aborted"
+                    )
 
             if method == "turn/completed":
                 turn_complete = True
                 turn_status = (
                     (note.get("params") or {}).get("turn") or {}
                 ).get("status")
-                if turn_status and turn_status not in ("completed", "interrupted"):
+                if turn_status and turn_status not in {"completed", "interrupted"}:
                     err_obj = (
                         (note.get("params") or {}).get("turn") or {}
                     ).get("error")
                     if err_obj:
-                        result.error = (
-                            f"turn ended status={turn_status}: "
-                            f"{err_obj.get('message') or err_obj}"
+                        err_msg = _format_responses_error(err_obj, str(turn_status))
+                        # If the turn failed for an auth/refresh reason,
+                        # rewrite the error into a re-auth hint AND mark
+                        # the session for retirement.
+                        stderr_blob = "\n".join(
+                            self._client.stderr_tail(40)
                         )
+                        hint = _classify_oauth_failure(err_msg, stderr_blob)
+                        if hint is not None:
+                            result.error = hint
+                            result.should_retire = True
+                        else:
+                            result.error = self._format_error_with_stderr(
+                                f"turn ended status={turn_status}", err_msg
+                            )
 
         if not turn_complete and not result.interrupted:
-            # Hit the deadline. Issue interrupt to stop wasted compute.
+            # Hit the deadline. Issue interrupt to stop wasted compute, and
+            # tell the caller to retire the session — a turn that never
+            # finished is a strong sign codex is wedged in a way the next
+            # turn shouldn't inherit.
             self._issue_interrupt(result.turn_id)
             result.interrupted = True
-            result.error = result.error or f"turn timed out after {turn_timeout}s"
+            if not result.error:
+                result.error = self._format_error_with_stderr(
+                    f"turn timed out after {turn_timeout}s"
+                )
+            result.should_retire = True
 
         return result
 
@@ -499,6 +808,30 @@ class CodexAppServerSession:
         return cached
 
 
+def _apply_token_usage_notification(result: TurnResult, note: dict) -> None:
+    """Capture Codex app-server token usage updates for caller accounting.
+
+    Codex does not put token usage on turn/completed. It emits a separate
+    thread/tokenUsage/updated notification containing cumulative totals and
+    the latest turn breakdown.
+    """
+    if not isinstance(note, dict) or note.get("method") != "thread/tokenUsage/updated":
+        return
+    params = note.get("params") or {}
+    token_usage = params.get("tokenUsage") or {}
+    if not isinstance(token_usage, dict):
+        return
+    last = token_usage.get("last")
+    total = token_usage.get("total")
+    if isinstance(last, dict):
+        result.token_usage_last = dict(last)
+    if isinstance(total, dict):
+        result.token_usage_total = dict(total)
+    window = token_usage.get("modelContextWindow")
+    if isinstance(window, int) and window > 0:
+        result.model_context_window = window
+
+
 def _approval_choice_to_codex_decision(choice: str) -> str:
     """Map Hermes approval choices onto codex's CommandExecutionApprovalDecision
     / FileChangeApprovalDecision wire values.
@@ -508,11 +841,29 @@ def _approval_choice_to_codex_decision(choice: str) -> str:
     (verified against codex-rs/app-server-protocol/src/protocol/v2/item.rs
     on codex 0.130.0).
     """
-    if choice in ("once",):
+    if choice in {"once",}:
         return "accept"
-    if choice in ("session", "always"):
+    if choice in {"session", "always"}:
         return "acceptForSession"
     return "decline"
+
+
+def _has_turn_aborted_marker(text: str) -> bool:
+    """Return True if `text` contains any of the raw markers codex uses
+    to signal a turn was aborted without emitting `turn/completed`.
+
+    Codex emits `<turn_aborted>` (and sometimes `<turn_aborted/>`) as raw
+    text inside agentMessage items when an interrupt or upstream error
+    tears the turn down before the normal completion path fires. Mirrors
+    openclaw beta.8's terminal-marker fix so we don't burn the full turn
+    deadline waiting for a turn/completed that never comes.
+    """
+    if not text:
+        return False
+    for marker in _TURN_ABORTED_MARKERS:
+        if marker in text:
+            return True
+    return False
 
 
 def _get_hermes_version() -> str:

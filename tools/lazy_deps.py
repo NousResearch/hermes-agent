@@ -78,9 +78,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Inference providers ───────────────────────────────────────────────
     # Native Anthropic SDK — needed when provider=anthropic (not via
     # OpenRouter / aggregators which use the openai SDK).
-    "provider.anthropic": ("anthropic==0.86.0",),
+    "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
     # AWS Bedrock provider
     "provider.bedrock": ("boto3==1.42.89",),
+    # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
+    # service principal, az login, VS Code, azd, PowerShell). Only loaded
+    # when model.auth_mode=entra_id is selected; key-based azure-foundry
+    # users never pay this import.
+    "provider.azure_identity": ("azure-identity==1.25.3",),
 
     # ─── Web search backends ───────────────────────────────────────────────
     "search.exa": ("exa-py==2.10.2",),
@@ -92,15 +97,16 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (see comment at top of [project.dependencies]). When bumping, update
     # both this map AND the corresponding extra in pyproject.toml.
     #
-    # NOTE: tts.mistral / stt.mistral entries are intentionally absent —
-    # the `mistralai` PyPI project is quarantined as of 2026-05-12 (Mini
-    # Shai-Hulud worm). Re-add when PyPI restores a clean release; see
-    # comment in pyproject.toml above the (removed) `mistral` extra for
-    # the full restoration checklist.
+    # mistralai pin tracks the `mistral` extra in pyproject.toml. PyPI
+    # quarantined the project 2026-05-12 (malicious 2.4.6, Mini Shai-Hulud);
+    # 2.4.6 was removed and clean releases resumed (2.4.7, 2.4.8). Voxtral
+    # STT + TTS share the same SDK.
+    "tts.mistral": ("mistralai==2.4.8",),
     "tts.edge": ("edge-tts==7.2.7",),
     "tts.elevenlabs": ("elevenlabs==1.59.0",),
 
     # ─── Speech-to-text providers ──────────────────────────────────────────
+    "stt.mistral": ("mistralai==2.4.8",),
     "stt.faster_whisper": (
         "faster-whisper==1.2.1",
         "sounddevice==0.5.5",
@@ -116,15 +122,19 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),
-    "platform.discord": ("discord.py[voice]==2.7.1",),
+    # brotlicffi gives aiohttp a working 2-arg Decompressor.process() for
+    # Discord CDN's Brotli-encoded attachments. Without it, aiohttp falls
+    # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
+    # uploaded to the Discord gateway fails to decode at att.read() with
+    # "Can not decode content-encoding: br" — see #12511 / #15744.
+    "platform.discord": ("discord.py[voice]==2.7.1", "brotlicffi==1.2.0.1"),
     "platform.slack": (
         "slack-bolt==1.27.0",
         "slack-sdk==3.40.1",
-        "aiohttp==3.13.3",
+        "aiohttp==3.13.4",  # CVE-2026-34513/34518/34519/34520/34525
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",
-        "Markdown==3.10.2",
         "aiosqlite==0.22.1",
         "asyncpg==0.31.0",
         "aiohttp-socks==0.11.0",
@@ -138,11 +148,19 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "lark-oapi==1.5.3",
         "qrcode==7.4.2",
     ),
+    # WeCom callback-mode adapter — parses untrusted XML POST bodies. Pulls
+    # defusedxml only; aiohttp/httpx are core dependencies of every messaging
+    # adapter and ship via `platform.discord` / `platform.slack` / etc.
+    "platform.wecom_callback": ("defusedxml==0.7.1",),
+    # Microsoft Teams adapter — microsoft-teams-apps pulls a heavy tree
+    # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
+    # installed on demand like every other messaging platform; also exposed
+    # as the `teams` extra in pyproject for packagers / explicit installs.
+    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.4"),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
     "terminal.daytona": ("daytona==0.155.0",),
-    "terminal.vercel": ("vercel==0.5.7",),
 
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": (
@@ -159,7 +177,15 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
+        "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
+        "python-multipart==0.0.27",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
     ),
+    # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency
+    # (pyproject `dependencies`), so this entry is a belt-and-suspenders fallback
+    # for stripped/source-build installs that somehow dropped it. The vision
+    # call site uses prompt=False so it can never raise a blocking input()
+    # prompt mid-session (#40490).
+    "tool.vision": ("Pillow==12.2.0",),
 }
 
 
@@ -248,12 +274,69 @@ def _pkg_name_from_spec(spec: str) -> str:
     return m.group(1) if m else spec
 
 
-def _is_satisfied(spec: str) -> bool:
-    """Best-effort check: is ``spec`` already satisfied in the current env?
+def _specifier_from_spec(spec: str) -> str:
+    """Extract just the version-specifier portion of a pip spec.
 
-    We don't enforce the version range — if the package is importable
-    we assume the user knows what they're doing. This matches how the
-    lazy-import sites already behave.
+    ``"honcho-ai==2.0.1"`` → ``"==2.0.1"``
+    ``"mautrix[encryption]>=0.20,<1"`` → ``">=0.20,<1"``
+    ``"package"`` → ``""`` (no version constraint)
+    """
+    # Strip the package name + optional [extras] block.
+    m = re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:\[[A-Za-z0-9_,\-]+\])?", spec)
+    if not m:
+        return ""
+    return spec[m.end():]
+
+
+def _is_satisfied(spec: str) -> bool:
+    """Is ``spec`` already satisfied in the current env?
+
+    Checks both presence AND version. If the package is installed at a
+    version outside the spec's range, returns False so the caller will
+    upgrade/downgrade to the pinned version. This is what makes
+    ``hermes update`` propagate pin bumps in :data:`LAZY_DEPS` to already-
+    installed backends instead of silently leaving stale versions in place.
+
+    If ``packaging`` is unavailable for any reason (it's a transitive of
+    pip so this should never happen), we fall back to a presence-only check
+    so we err on the side of "don't churn".
+    """
+    pkg = _pkg_name_from_spec(spec)
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+    except ImportError:
+        return False
+    try:
+        installed = version(pkg)
+    except PackageNotFoundError:
+        return False
+    except Exception:
+        return False
+
+    spec_tail = _specifier_from_spec(spec)
+    if not spec_tail:
+        # Bare ``"package"`` — no version constraint, presence is enough.
+        return True
+
+    try:
+        from packaging.specifiers import InvalidSpecifier, SpecifierSet
+        from packaging.version import InvalidVersion, Version
+    except ImportError:
+        # packaging unavailable — fall back to "installed counts as satisfied".
+        return True
+
+    try:
+        return Version(installed) in SpecifierSet(spec_tail)
+    except (InvalidSpecifier, InvalidVersion, Exception):
+        # Malformed spec or installed version we can't parse — don't churn.
+        return True
+
+
+def _is_present(spec: str) -> bool:
+    """Cheap presence-only check (package name installed at any version).
+
+    Used by :func:`active_features` to detect backends the user has
+    previously activated, regardless of whether the version pin moved.
     """
     pkg = _pkg_name_from_spec(spec)
     try:
@@ -288,6 +371,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             r = subprocess.run(
                 [uv_bin, "pip", "install", *specs],
                 capture_output=True, text=True, timeout=timeout, env=uv_env,
+                stdin=subprocess.DEVNULL,
             )
             if r.returncode == 0:
                 return _InstallResult(True, r.stdout or "", r.stderr or "")
@@ -301,6 +385,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         probe = subprocess.run(
             pip_cmd + ["--version"],
             capture_output=True, text=True, timeout=15,
+            stdin=subprocess.DEVNULL,
         )
         if probe.returncode != 0:
             raise FileNotFoundError("pip not in venv")
@@ -309,6 +394,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             subprocess.run(
                 [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                 capture_output=True, text=True, timeout=120, check=True,
+                stdin=subprocess.DEVNULL,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             return _InstallResult(False, "",
@@ -318,6 +404,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         r = subprocess.run(
             pip_cmd + ["install", *specs],
             capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL,
         )
         return _InstallResult(r.returncode == 0, r.stdout or "", r.stderr or "")
     except subprocess.TimeoutExpired as e:
@@ -379,7 +466,23 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             "lazy installs disabled (security.allow_lazy_installs=false)"
         )
 
-    if prompt and sys.stdin.isatty() and sys.stdout.isatty():
+    # Only show the interactive confirmation when we own a TTY and
+    # prompt_toolkit isn't running.  A bare input() deadlocks when a
+    # prompt_toolkit app owns the terminal because keystrokes route to
+    # its event loop rather than stdin, so the prompt blocks forever.
+    # Under the TUI we skip the prompt and proceed — lazy installs are
+    # gated by security.allow_lazy_installs, so reaching here is
+    # already user opt-in.
+    _pt_active = False
+    if "prompt_toolkit.application.current" in sys.modules:
+        try:
+            from prompt_toolkit.application.current import get_app_or_none
+            _app = get_app_or_none()
+            _pt_active = _app is not None and getattr(_app, "is_running", False)
+        except Exception:
+            _pt_active = False
+
+    if prompt and not _pt_active and sys.stdin.isatty() and sys.stdout.isatty():
         spec_list = ", ".join(missing)
         try:
             answer = input(
@@ -388,7 +491,7 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             ).strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
-        if answer and answer not in ("y", "yes"):
+        if answer and answer not in {"y", "yes"}:
             raise FeatureUnavailable(
                 feature, missing, "user declined install at prompt"
             )
@@ -440,6 +543,57 @@ def feature_install_command(feature: str) -> Optional[str]:
         return None
     specs = LAZY_DEPS[feature]
     return "uv pip install " + " ".join(repr(s) for s in specs)
+
+
+def active_features() -> list[str]:
+    """Return the list of features the user has ever lazy-installed.
+
+    A feature counts as "active" if at least one of its declared packages
+    is currently installed in the venv (presence check, ignoring version).
+    Features the user has never enabled stay quiet.
+
+    Used by ``hermes update`` to figure out which lazy backends need a
+    refresh pass when pins move in :data:`LAZY_DEPS`.
+    """
+    active = []
+    for feature, specs in LAZY_DEPS.items():
+        if any(_is_present(s) for s in specs):
+            active.append(feature)
+    return active
+
+
+def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
+    """Re-run ``ensure`` for every feature the user has previously activated.
+
+    Returns a ``{feature: status}`` map where status is one of:
+        ``"current"``  — pins already satisfied, no install run
+        ``"refreshed"`` — pins were stale, reinstall succeeded
+        ``"failed: <reason>"`` — install attempt failed; caller decides
+                                  whether to surface it (we don't raise)
+        ``"skipped: <reason>"`` — gated off (config flag, user decline)
+
+    Intended for ``hermes update``. Never raises; lazy-install failures
+    here must not block the rest of the update flow.
+    """
+    results: dict[str, str] = {}
+    for feature in active_features():
+        missing = feature_missing(feature)
+        if not missing:
+            results[feature] = "current"
+            continue
+        try:
+            ensure(feature, prompt=prompt)
+            results[feature] = "refreshed"
+        except FeatureUnavailable as e:
+            # Distinguish "user opted out" from "install failed" so the
+            # update command can render the right message.
+            if "lazy installs disabled" in str(e) or "declined" in str(e):
+                results[feature] = f"skipped: {e.reason}"
+            else:
+                results[feature] = f"failed: {e.reason}"
+        except Exception as e:
+            results[feature] = f"failed: {e}"
+    return results
 
 
 def ensure_and_bind(

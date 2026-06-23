@@ -94,6 +94,7 @@ gateway:
     nothing_to_do:         "Níl aon rud le dlúthú fós (tá an traschríbhinn fós uile mar chomhthéacs cosanta)."
     focus_line:            "Fócas: \"{topic}\""
     summary_failed:        "⚠️ Theip ar ghiniúint achoimre ({error}). Baineadh {count} teachtaireacht stairiúil agus cuireadh ionadaí ina n-áit; níl an comhthéacs roimhe seo in-aisghabhála a thuilleadh. Smaoinigh ar an gcumraíocht auxiliary.compression a sheiceáil."
+    aborted:               "⚠️ Cuireadh deireadh leis an dlúthú ({error}). Níor baineadh aon teachtaireacht — tá an comhrá gan athrú. Rith /compress chun é a thriail arís, /reset le haghaidh seisiún glan, nó seiceáil do chumraíocht samhla auxiliary.compression."
     aux_failed:            "ℹ️ Theip ar an tsamhail dlúthúcháin chumraithe `{model}` ({error}). Aisghafa ag baint úsáide as do phríomhshamhail — tá an comhthéacs slán — ach b'fhéidir gur mhaith leat `auxiliary.compression.model` i config.yaml a sheiceáil."
     failed:                "Theip ar dhlúthú: {error}"
 
@@ -222,12 +223,23 @@ gateway:
 
   resume:
     db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     no_named_sessions:     "Níor aimsíodh aon seisiún ainmnithe.\nÚsáid `/title M'Ainm Seisiúin` chun do sheisiún reatha a ainmniú, ansin `/resume M'Ainm Seisiúin` chun filleadh air níos déanaí."
     list_header:           "📋 **Seisiúin Ainmnithe**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nÚsáid: `/resume <session name>`"
+    list_footer_numbered:  "\nÚsáid: `/resume <ainm seisiúin>` nó `/resume <uimhir>` (m.sh. `/resume 1` don cheann is déanaí)"
     list_failed:           "Níorbh fhéidir seisiúin a liostáil: {error}"
+    out_of_range:          "Tá an t-innéacs atosaithe {index} as raon.\nÚsáid `/resume` gan argóintí chun na seisiúin atá ar fáil a fheiceáil."
     not_found:             "Níor aimsíodh aon seisiún ag teacht le '**{name}**'.\nÚsáid `/resume` gan argóintí chun seisiúin atá ar fáil a fheiceáil."
     already_on:            "📌 Cheana ar an seisiún **{name}**."
     switch_failed:         "Theip ar athrú seisiúin."
@@ -251,10 +263,20 @@ gateway:
 
   status:
     header:                "📊 **Stádas Hermes Gateway**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**ID Seisiúin:** `{session_id}`"
     title:                 "**Teideal:** {title}"
     created:               "**Cruthaithe:** {timestamp}"
     last_activity:         "**Gníomhaíocht is déanaí:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Comharthaí:** {tokens}"
     agent_running:         "**Gníomhaire ag rith:** {state}"
     state_yes:             "Tá ⚡"
@@ -290,7 +312,8 @@ gateway:
 
   undo:
     nothing:               "Níl aon rud le cealú."
-    removed:               "↩️ Cealaíodh {count} teachtaireacht.\nBaineadh: \"{preview}\""
+    removed:               "↩️ Cealaíodh {turns} seal ({count} teachtaireacht).\nCúltacaíodh chuig: \"{preview}\"\nCóipeáil/cuir an téacs thuas in eagar agus seol é chun athleideadh ón áit seo."
+    invalid_count:         "Líon neamhbhailí \"{arg}\" — úsáid /undo nó /undo N."
 
   update:
     platform_not_messaging:  "✗ Tá /update ar fáil amháin ó ardáin teachtaireachtaí. Rith `hermes update` ón teirminéal."
@@ -319,6 +342,9 @@ gateway:
     detailed_after_first:     "_(Úsáid mhionsonraithe ar fáil tar éis chéad fhreagra an ghníomhaire)_"
     no_data:                  "Níl aon sonraí úsáide ar fáil don seisiún seo."
 
+  credits:
+    not_logged_in:            "Níl tú logáilte isteach i Nous Portal. Logáil isteach chun d'iarmhéid creidmheasa a fheiceáil agus breis a chur leis."
+
   verbose:
     not_enabled:           "Níl an t-ordú `/verbose` cumasaithe d'ardáin teachtaireachtaí.\n\nCumasaigh in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Dul chun cinn uirlise: **AS** — gan aon ghníomhaíocht uirlise á thaispeáint."
@@ -342,6 +368,8 @@ gateway:
     label_off:             "As (téacs amháin)"
     label_voice_only:      "Ar (freagra gutha do theachtaireachtaí gutha)"
     label_all:             "TTS (freagra gutha do gach teachtaireacht)"
+    help:                  "{toggle}\n\n**Conas a oibríonn /voice**\n• `/voice on` — freagra gutha nuair a sheolann tú teachtaireacht gutha\n• `/voice tts` — freagra gutha do *gach* teachtaireacht\n• `/voice off` — ar ais go freagraí téacs amháin\n• `/voice status` — taispeáin an mód reatha\n• `/voice` (gan argóint) — scoránaigh go tapa idir air agus as{channels}"
+    help_channels:         "\n\n**Cainéil gutha bheo (Discord)**\n• Téigh isteach i gcainéal gutha ar dtús, ansin `/voice channel` — téim isteach, éistim agus labhraím mo fhreagraí\n• `/voice leave` — dícheangail ón gcainéal gutha"
 
   yolo:
     disabled:                   "⚠️ Mód YOLO **AS** don seisiún seo — beidh cead de dhíth d'orduithe contúirteacha."

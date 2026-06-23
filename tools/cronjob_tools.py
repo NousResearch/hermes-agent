@@ -7,7 +7,6 @@ Compatibility wrappers remain for direct Python callers and legacy tests.
 
 import json
 import logging
-import os
 import re
 import sys
 from pathlib import Path
@@ -21,23 +20,62 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
+    AmbiguousJobReference,
+    claim_job_for_fire,
     create_job,
     get_job,
     list_jobs,
+    mark_job_run,
     parse_schedule,
     pause_job,
     remove_job,
+    resolve_job_ref,
     resume_job,
-    trigger_job,
     update_job,
 )
 
 
-# ---------------------------------------------------------------------------
-# Cron prompt scanning — critical-severity patterns only, since cron prompts
-# run in fresh sessions with full tool access.
-# ---------------------------------------------------------------------------
+def _notify_provider_jobs_changed_safe() -> None:
+    """Tell the active cron scheduler provider the job set changed (no-op for
+    the built-in). Best-effort — never lets a provider error break the tool."""
+    try:
+        from cron.scheduler import _notify_provider_jobs_changed
+        _notify_provider_jobs_changed()
+    except Exception:
+        pass
 
+
+# ---------------------------------------------------------------------------
+# Cron prompt scanning
+# ---------------------------------------------------------------------------
+#
+# Two threat surfaces, two scanners:
+#
+#   1. User-supplied cron prompt (small, written as a directive).
+#      Strict scanning is appropriate — a legit cron prompt has no business
+#      saying "cat ~/.hermes/.env" or "rm -rf /". `_scan_cron_prompt()` runs
+#      against this at create/update time and as a runtime defense-in-depth.
+#
+#   2. Assembled prompt that includes loaded skill content (large markdown
+#      bodies, often security docs, postmortems, runbooks discussing attack
+#      patterns in PROSE). Reusing the strict patterns here false-positives
+#      every time a skill *describes* a command — see #3968 follow-up: the
+#      `hermes-agent-dev` skill contains a security postmortem mentioning
+#      `cat ~/.hermes/.env`, which tripped `read_secrets` and silently
+#      killed all PR-scout jobs.
+#
+#      Skill bodies are user-curated and scanned at install time by
+#      `skills_guard.py`. The runtime cron scan only needs to catch the
+#      patterns whose phrasing does NOT survive normal English prose:
+#      classic prompt-injection directives ("ignore previous instructions",
+#      "disregard your rules"), deception directives, and invisible
+#      unicode. `_scan_cron_skill_assembled()` runs against the assembled
+#      prompt with this tighter pattern set.
+#
+# Both scanners share the invisible-unicode check and the GitHub Authorization
+# header exemption.
+
+# Strict patterns — applied to the user prompt only.
 _CRON_THREAT_PATTERNS = [
     (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
@@ -47,6 +85,20 @@ _CRON_THREAT_PATTERNS = [
     (r'authorized_keys', "ssh_backdoor"),
     (r'/etc/sudoers|visudo', "sudoers_mod"),
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
+]
+
+# Looser pattern set — applied to the assembled prompt when skills are
+# attached. Only patterns whose phrasing is unambiguous in any context;
+# command-shape patterns are dropped because they false-positive on prose
+# in security docs / postmortems. Skill bodies are scanned at install time
+# by `skills_guard.py`, so the runtime cron scan is purely a tripwire for
+# obvious injection directives surviving a malicious skill that slipped
+# through install.
+_CRON_SKILL_ASSEMBLED_PATTERNS = [
+    (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
+    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+    (r'system\s+prompt\s+override', "sys_prompt_override"),
+    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
 ]
 
 _CRON_SECRET_VAR_RE = r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)\w*\}?'
@@ -68,23 +120,121 @@ _CRON_INVISIBLE_CHARS = {
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
 }
 
+# U+200D Zero-Width Joiner is also a legitimate, required part of many
+# Unicode emoji sequences (for example 👨‍👩‍👧, 🏳️‍🌈, ❤️‍🩹, 🧑‍💻).
+# We should still block ZWJ when it is hiding between plain text characters,
+# but not when it is clearly part of an emoji grapheme cluster.
+_EMOJI_NEIGHBOUR_CP_RANGES = (
+    (0x1F000, 0x1FFFF),
+    (0x2600, 0x27BF),
+    (0x2300, 0x23FF),
+    (0x1F1E6, 0x1F1FF),
+    (0x20E3, 0x20E3),
+)
+_VARIATION_SELECTOR_CP = 0xFE0F
 
-def _scan_cron_prompt(prompt: str) -> str:
-    """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
+
+def _is_emoji_cp(cp: int) -> bool:
+    return any(lo <= cp <= hi for lo, hi in _EMOJI_NEIGHBOUR_CP_RANGES)
+
+
+def _zwj_has_emoji_neighbour(text: str, idx: int) -> bool:
+    """Return True when the ZWJ at text[idx] appears inside an emoji sequence."""
+    left = idx - 1
+    while left >= 0 and ord(text[left]) == _VARIATION_SELECTOR_CP:
+        left -= 1
+    right = idx + 1
+    while right < len(text) and ord(text[right]) == _VARIATION_SELECTOR_CP:
+        right += 1
+    return (
+        left >= 0 and right < len(text)
+        and _is_emoji_cp(ord(text[left]))
+        and _is_emoji_cp(ord(text[right]))
+    )
+
+
+def _strip_legitimate_emoji_zwj(prompt: str) -> str:
+    if '\u200d' not in prompt:
+        return prompt
+    cleaned: list[str] = []
+    for idx, ch in enumerate(prompt):
+        if ch == '\u200d' and _zwj_has_emoji_neighbour(prompt, idx):
+            continue
+        cleaned.append(ch)
+    return ''.join(cleaned)
+
+
+def _strip_cron_safe_constructs(prompt: str) -> str:
+    """Strip the GitHub `Authorization: token $GITHUB_TOKEN` auth-header
+    pattern so it doesn't trip the broader curl-auth-header exfil rule.
+
+    Allows the bundled GitHub skill fallback without opening a blanket
+    exemption for arbitrary Authorization-header exfiltration.
+    """
     github_auth_header = re.search(
         rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
         r'\s+["\']?https://api\.github\.com(?:/|\b)',
         prompt,
         re.IGNORECASE,
     )
-    prompt_to_scan = prompt
     if github_auth_header:
-        # Allow the bundled GitHub skill fallback shape without opening a
-        # blanket exemption for arbitrary Authorization-header exfiltration.
-        prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
+        return prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
+    return prompt
+
+
+def _check_invisible_unicode(prompt: str) -> str:
+    """Return an error string if the prompt contains invisible-unicode
+    injection markers (ZWJ inside legitimate emoji sequences is allowed).
+    """
+    prompt_for_invisible_scan = _strip_legitimate_emoji_zwj(prompt)
     for char in _CRON_INVISIBLE_CHARS:
-        if char in prompt_to_scan:
+        if char in prompt_for_invisible_scan:
             return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
+    return ""
+
+
+def _strip_invisible_unicode(prompt: str) -> tuple[str, list[str]]:
+    """Strip invisible-unicode characters from *prompt*, preserving the ZWJ
+    that lives inside legitimate emoji sequences.
+
+    Returns ``(cleaned_prompt, removed_codepoints)`` where ``removed_codepoints``
+    is the sorted list of ``U+XXXX`` labels that were stripped (empty when the
+    prompt was already clean). Used by the skills-attached cron path, where the
+    skill body is already vetted at install time by ``skills_guard.py`` — a
+    stray zero-width space in a code example should be sanitized, not turned
+    into a hard block that permanently kills the job.
+    """
+    if not prompt:
+        return prompt, []
+    # Keep emoji-ZWJ: temporarily remove the legitimate joiners, scan/strip the
+    # rest, then the legitimate joiners survive because we operate on the
+    # original string and only drop chars that are NOT part of an emoji cluster.
+    removed: set[str] = set()
+    cleaned: list[str] = []
+    for idx, ch in enumerate(prompt):
+        if ch in _CRON_INVISIBLE_CHARS:
+            if ch == '\u200d' and _zwj_has_emoji_neighbour(prompt, idx):
+                cleaned.append(ch)  # legitimate emoji joiner — keep
+                continue
+            removed.add(f"U+{ord(ch):04X}")
+            continue
+        cleaned.append(ch)
+    return ''.join(cleaned), sorted(removed)
+
+
+def _scan_cron_prompt(prompt: str) -> str:
+    """Scan the USER-SUPPLIED cron prompt for critical threats.
+
+    Strict pattern set — used at job create/update time and as a runtime
+    defense-in-depth for prompts authored before the scanner existed.
+    The user prompt is small and directive; bare `cat .env` or `rm -rf /`
+    there is a smoking gun, not prose. Returns an error string when
+    blocked, else empty string.
+    """
+    prompt_to_scan = _strip_cron_safe_constructs(prompt)
+    invisible_err = _check_invisible_unicode(prompt_to_scan)
+    if invisible_err:
+        return invisible_err
     for pattern, pid in _CRON_THREAT_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
@@ -92,6 +242,40 @@ def _scan_cron_prompt(prompt: str) -> str:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
     return ""
+
+
+def _scan_cron_skill_assembled(assembled: str) -> tuple[str, str]:
+    """Scan an ASSEMBLED cron prompt that includes loaded skill content.
+
+    Looser pattern set — only catches unambiguous prompt-injection
+    directives. Drops command-shape patterns (cat .env, rm -rf /,
+    authorized_keys, /etc/sudoers) because they false-positive on
+    legitimate skill markdown that *describes* attack commands in
+    security postmortems and runbooks.
+
+    Invisible unicode is SANITIZED, not blocked. Skill bodies are
+    user-curated and already scanned at install time by
+    ``skills_guard.py``; a stray zero-width space in a code example
+    (common in copy-pasted unicode docs) should not permanently kill the
+    job. The offending codepoints are stripped and logged, the cleaned
+    prompt is returned. The hard block remains for raw user prompts via
+    ``_scan_cron_prompt`` — that path is the actual injection surface.
+
+    Returns ``(cleaned_prompt, error)``; ``error`` is empty when the
+    prompt passed (after sanitization).
+    """
+    cleaned, removed = _strip_invisible_unicode(assembled)
+    if removed:
+        logger.warning(
+            "Cron skill-assembled prompt: stripped %d invisible-unicode "
+            "char(s) (%s) from vetted skill content",
+            len(removed), ", ".join(removed),
+        )
+    prompt_to_scan = _strip_cron_safe_constructs(cleaned)
+    for pattern, pid in _CRON_SKILL_ASSEMBLED_PATTERNS:
+        if re.search(pattern, prompt_to_scan, re.IGNORECASE):
+            return cleaned, f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
+    return cleaned, ""
 
 
 def _origin_from_env() -> Optional[Dict[str, str]]:
@@ -154,15 +338,23 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
         return (None, None)
     model_name = (model_obj.get("model") or "").strip() or None
     provider_name = (model_obj.get("provider") or "").strip() or None
-    # Bare "custom" is an incomplete spec — the canonical form is
-    # "custom:<name>" matching a custom_providers entry. LLMs frequently
+    # Bare "custom" is usually an incomplete spec — the canonical form is
+    # "custom:<name>" matching a custom_providers entry, and LLMs frequently
     # supply the bare type because the schema does not advertise the
-    # ":<name>" suffix, which used to bypass the pinning path below and
-    # leave the job stored with an unresolvable "custom" provider. Treat
-    # the bare value as "no provider supplied" so the current main
-    # provider gets pinned instead.
+    # ":<name>" suffix. It is only a problem when it can't resolve at runtime:
+    # a user may literally name a ``providers.custom`` (or custom_providers
+    # "custom") entry, in which case the job should keep ``provider="custom"``
+    # and run against that endpoint. Only when no such entry exists do we treat
+    # the bare value as "no provider supplied" and pin the current main
+    # provider below — otherwise pinning to ``model.provider`` (e.g. codex)
+    # silently hijacks a job that meant to use the configured custom endpoint.
     if provider_name == "custom":
-        provider_name = None
+        try:
+            from hermes_cli.runtime_provider import has_named_custom_provider
+            if not has_named_custom_provider("custom"):
+                provider_name = None
+        except Exception:
+            provider_name = None
     if model_name and not provider_name:
         # Pin to the current main provider so the job is stable
         try:
@@ -282,6 +474,51 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a cron job immediately, outside the scheduler tick.
+
+    Atomically claims the job first via ``claim_job_for_fire`` — the same
+    at-most-once CAS the scheduler/external-provider fire path uses — so a
+    concurrently-running gateway ticker cannot also fire it (the claim both
+    blocks a duplicate fire and advances ``next_run_at`` for recurring jobs).
+    If the claim is lost (another fire is in flight), this is a no-op.
+
+    The actual firing is delegated to ``run_one_job`` — the single shared
+    execute→save→deliver→mark body the ticker and external providers use — so
+    failure delivery, ``[SILENT]`` handling, and live-adapter delivery stay
+    identical across paths and can't drift.
+
+    Returns {"claimed": bool, "success": bool, "error": str|None}.
+    """
+    job_id = job["id"]
+    try:
+        from cron.scheduler import run_one_job
+
+        # At-most-once claim: bail without running if a tick/other fire owns it.
+        if not claim_job_for_fire(job_id):
+            return {"claimed": False, "success": False,
+                    "error": "Job is already being fired by the scheduler; not run again."}
+
+        # run_one_job records last_run_at/last_status via mark_job_run (which
+        # also clears the fire claim) and returns True iff it processed the job.
+        processed = run_one_job(job)
+        refreshed = get_job(job_id) or {}
+        ok = refreshed.get("last_status") == "ok"
+        return {
+            "claimed": True,
+            "success": bool(processed and ok),
+            "error": refreshed.get("last_error"),
+        }
+
+    except Exception as e:
+        logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
+        try:
+            mark_job_run(job_id, False, str(e))
+        except Exception:
+            pass
+        return {"claimed": True, "success": False, "error": str(e)}
+
+
 def cronjob(
     action: str,
     job_id: Optional[str] = None,
@@ -369,6 +606,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
             )
+            _notify_provider_jobs_changed_safe()
             return json.dumps(
                 {
                     "success": True,
@@ -393,17 +631,38 @@ def cronjob(
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
-        job = get_job(job_id)
-        if not job:
+        try:
+            job = resolve_job_ref(job_id)
+        except AmbiguousJobReference as exc:
             return json.dumps(
-                {"success": False, "error": f"Job with ID '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
+                {
+                    "success": False,
+                    "error": str(exc),
+                    "matches": [
+                        {
+                            "id": m["id"],
+                            "name": m.get("name"),
+                            "schedule": m.get("schedule_display"),
+                            "next_run_at": m.get("next_run_at"),
+                        }
+                        for m in exc.matches
+                    ],
+                },
                 indent=2,
             )
+        if not job:
+            return json.dumps(
+                {"success": False, "error": f"Job with ID or name '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
+                indent=2,
+            )
+        # Resolve to canonical ID (supports name-based lookup)
+        job_id = job["id"]
 
         if normalized == "remove":
             removed = remove_job(job_id)
             if not removed:
                 return tool_error(f"Failed to remove job '{job_id}'", success=False)
+            _notify_provider_jobs_changed_safe()
             return json.dumps(
                 {
                     "success": True,
@@ -419,15 +678,32 @@ def cronjob(
 
         if normalized == "pause":
             updated = pause_job(job_id, reason=reason)
+            _notify_provider_jobs_changed_safe()
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized == "resume":
             updated = resume_job(job_id)
+            _notify_provider_jobs_changed_safe()
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized in {"run", "run_now", "trigger"}:
-            updated = trigger_job(job_id)
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            # Execute the job immediately rather than only scheduling it for the
+            # next scheduler tick — a manual `run` should actually run, even when
+            # no gateway/ticker is active (the #41037 case). The claim inside
+            # _execute_job_now advances next_run_at and blocks a concurrent tick
+            # from double-firing.
+            exec_result = _execute_job_now(job)
+            # Re-read so the response reflects the post-run last_run_at/last_status.
+            result = _format_job(get_job(job_id) or {"id": job_id})
+            result["executed"] = exec_result.get("claimed", False)
+            result["execution_success"] = exec_result.get("success", False)
+            if not exec_result.get("claimed", False):
+                result["execution_skipped"] = (
+                    "Already being fired by the scheduler; not run again."
+                )
+            elif exec_result.get("error"):
+                result["execution_error"] = exec_result["error"]
+            return json.dumps({"success": True, "job": result}, indent=2)
 
         if normalized == "update":
             updates: Dict[str, Any] = {}
@@ -511,6 +787,7 @@ def cronjob(
             if not updates:
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)
+            _notify_provider_jobs_changed_safe()
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
@@ -544,7 +821,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run"
+                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
             },
             "job_id": {
                 "type": "string",
@@ -556,7 +833,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "schedule": {
                 "type": "string",
-                "description": "For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp"
+                "description": "REQUIRED for action=create. For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp. Examples: '30m' (every 30 minutes), 'every 2h' (every 2 hours), '0 9 * * *' (daily at 9am), '2026-06-01T09:00:00' (one-shot). You MUST include this field when action=create."
             },
             "name": {
                 "type": "string",
@@ -647,11 +924,18 @@ def check_cronjob_requirements() -> bool:
     Available in interactive CLI mode and gateway/messaging platforms.
     The cron system is internal (JSON file-based scheduler ticked by the gateway),
     so no external crontab executable is required.
+
+    Session env vars must hold an explicit truthy string (``1``, ``true``,
+    ``yes``, ``on``) — false-like values (``0``, ``false``, ``no``, ``off``)
+    leave the tool disabled. Uses the shared ``env_var_enabled`` helper so
+    every consumer of these flags agrees on the truthy set.
     """
-    return bool(
-        os.getenv("HERMES_INTERACTIVE")
-        or os.getenv("HERMES_GATEWAY_SESSION")
-        or os.getenv("HERMES_EXEC_ASK")
+    from utils import env_var_enabled
+
+    return (
+        env_var_enabled("HERMES_INTERACTIVE")
+        or env_var_enabled("HERMES_GATEWAY_SESSION")
+        or env_var_enabled("HERMES_EXEC_ASK")
     )
 
 

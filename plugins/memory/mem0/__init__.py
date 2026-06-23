@@ -1,12 +1,13 @@
 """Mem0 memory plugin — MemoryProvider interface.
 
 Server-side LLM fact extraction, semantic search with reranking, and
-automatic deduplication via the Mem0 Platform API.
+automatic deduplication via the Mem0 Platform API or self-hosted instance.
 
 Original PR #2933 by kartik-mem0, adapted to MemoryProvider ABC.
 
 Config via environment variables:
-  MEM0_API_KEY       — Mem0 Platform API key (required)
+  MEM0_API_KEY       — Mem0 API key (required for cloud, optional for self-hosted)
+  MEM0_HOST          — Self-hosted Mem0 URL (default: https://api.mem0.ai)
   MEM0_USER_ID       — User identifier (default: hermes-user)
   MEM0_AGENT_ID      — Agent identifier (default: hermes)
 
@@ -37,6 +38,7 @@ _BREAKER_COOLDOWN_SECS = 120
 # Config
 # ---------------------------------------------------------------------------
 
+
 def _load_config() -> dict:
     """Load config from env vars, with $HERMES_HOME/mem0.json overrides.
 
@@ -48,6 +50,7 @@ def _load_config() -> dict:
 
     config = {
         "api_key": os.environ.get("MEM0_API_KEY", ""),
+        "host": os.environ.get("MEM0_HOST", ""),
         "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "rerank": True,
@@ -117,13 +120,18 @@ CONCLUDE_SCHEMA = {
 # ---------------------------------------------------------------------------
 
 class Mem0MemoryProvider(MemoryProvider):
-    """Mem0 Platform memory with server-side extraction and semantic search."""
+    """Mem0 memory with server-side extraction and semantic search.
+
+    Supports both Mem0 Cloud (api.mem0.ai) and self-hosted instances
+    via the ``host`` config key or ``MEM0_HOST`` env var.
+    """
 
     def __init__(self):
         self._config = None
         self._client = None
         self._client_lock = threading.Lock()
         self._api_key = ""
+        self._host = ""
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
         self._rerank = True
@@ -141,7 +149,9 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         cfg = _load_config()
-        return bool(cfg.get("api_key"))
+        host = cfg.get("host", "")
+        api_key = cfg.get("api_key", "")
+        return bool(host) or bool(api_key)
 
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/mem0.json."""
@@ -155,11 +165,13 @@ class Mem0MemoryProvider(MemoryProvider):
             except Exception:
                 pass
         existing.update(values)
-        config_path.write_text(json.dumps(existing, indent=2))
+        from utils import atomic_json_write
+        atomic_json_write(config_path, existing, mode=0o600)
 
     def get_config_schema(self):
         return [
-            {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "api_key", "description": "Mem0 API key (cloud or self-hosted)", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "host", "description": "Self-hosted Mem0 URL (e.g. http://localhost:24220)", "default": "", "env_var": "MEM0_HOST"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
@@ -172,7 +184,14 @@ class Mem0MemoryProvider(MemoryProvider):
                 return self._client
             try:
                 from mem0 import MemoryClient
-                self._client = MemoryClient(api_key=self._api_key)
+                kwargs = {}
+                if self._host:
+                    kwargs["host"] = self._host
+                if self._api_key:
+                    kwargs["api_key"] = self._api_key
+                elif not self._host:
+                    raise ValueError("Mem0: either api_key or host is required")
+                self._client = MemoryClient(**kwargs)
                 return self._client
             except ImportError:
                 raise RuntimeError("mem0 package not installed. Run: pip install mem0ai")
@@ -203,6 +222,7 @@ class Mem0MemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._api_key = self._config.get("api_key", "")
+        self._host = self._config.get("host", "")
         # Prefer gateway-provided user_id for per-user memory scoping;
         # fall back to config/env default for CLI (single-user) sessions.
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
@@ -227,8 +247,9 @@ class Mem0MemoryProvider(MemoryProvider):
         return []
 
     def system_prompt_block(self) -> str:
+        target = self._host or "cloud"
         return (
-            "# Mem0 Memory\n"
+            f"# Mem0 Memory ({target})\n"
             f"Active. User: {self._user_id}.\n"
             "Use mem0_search to find memories, mem0_conclude to store facts, "
             "mem0_profile for a full overview."

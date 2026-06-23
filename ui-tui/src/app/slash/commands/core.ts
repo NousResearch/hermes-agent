@@ -1,9 +1,9 @@
-import { forceRedraw } from '@hermes/ink'
+import { forceRedraw, type MouseTrackingMode } from '@hermes/ink'
 
-import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
+import { DASHBOARD_TUI_MODE, NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
-import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
+import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
@@ -44,6 +44,30 @@ const flagFromArg = (arg: string, current: boolean): boolean | null => {
   return null
 }
 
+// `/mouse` toggles between full tracking and off when called bare so the
+// old binary muscle-memory still works. Explicit presets (wheel / buttons /
+// all) target the tmux-friendly hover-free subsets.
+const MOUSE_MODE_ALIASES: Record<string, MouseTrackingMode> = {
+  all: 'all',
+  any: 'all',
+  button: 'buttons',
+  buttons: 'buttons',
+  click: 'buttons',
+  full: 'all',
+  off: 'off',
+  on: 'all',
+  scroll: 'wheel',
+  wheel: 'wheel'
+}
+
+const mouseModeFromArg = (arg: string, current: MouseTrackingMode): MouseTrackingMode | null => {
+  if (!arg || arg.trim().toLowerCase() === 'toggle') {
+    return current === 'off' ? 'all' : 'off'
+  }
+
+  return MOUSE_MODE_ALIASES[arg.trim().toLowerCase()] ?? null
+}
+
 const RESET_WORDS = new Set(['reset', 'clear', 'default'])
 const CYCLE_WORDS = new Set(['cycle', 'toggle'])
 
@@ -51,6 +75,14 @@ const DETAILS_USAGE =
   'usage: /details [hidden|collapsed|expanded|cycle]  or  /details <section> [hidden|collapsed|expanded|reset]'
 
 const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|expanded|reset]'
+
+// Shown when /exit or /quit is refused in the hosted dashboard chat. Kept as a
+// constant so the test asserts against the same source of truth as production.
+export const DASHBOARD_EXIT_DISABLED_MESSAGE =
+  'exit is disabled in hosted dashboard chat — use /new to start a fresh session'
+
+export const DASHBOARD_UPDATE_DISABLED_MESSAGE =
+  'update is disabled in hosted dashboard chat — the hosted environment is managed separately'
 
 export const coreCommands: SlashCommand[] = [
   {
@@ -86,28 +118,60 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    aliases: ['exit', 'q'],
+    aliases: ['exit'],
     help: 'exit hermes',
     name: 'quit',
-    run: (_arg, ctx) => ctx.session.die()
+    run: (_arg, ctx) => {
+      // In the hosted dashboard chat there is no in-page restart path after
+      // the PTY child exits, so quitting bricks the tab until a refresh. The
+      // keyboard idle-exit (Ctrl+C / Ctrl+D) and SIGINT handling already refuse
+      // to die in this mode (see useInputHandlers + entry.tsx); gate /exit and
+      // /quit on the same DASHBOARD_TUI_MODE flag. Unlike the keyboard path
+      // (which auto-starts a fresh chat), the explicit quit command refuses and
+      // instructs the user to run /new themselves.
+      if (DASHBOARD_TUI_MODE) {
+        ctx.transcript.sys(DASHBOARD_EXIT_DISABLED_MESSAGE)
+
+        return
+      }
+
+      ctx.session.die()
+    }
+  },
+
+  {
+    help: 'update Hermes Agent to the latest version (exits TUI)',
+    name: 'update',
+    run: (_arg, ctx) => {
+      if (DASHBOARD_TUI_MODE) {
+        ctx.transcript.sys(DASHBOARD_UPDATE_DISABLED_MESSAGE)
+
+        return
+      }
+
+      ctx.transcript.sys('exiting TUI to run update...')
+      // Exit code 42 signals the Python wrapper to exec `hermes update`.
+      // Use dieWithCode for proper cleanup (gateway kill + Ink unmount).
+      setTimeout(() => ctx.session.dieWithCode(42), 100)
+    }
   },
 
   {
     aliases: ['scroll'],
-    help: 'toggle mouse/wheel tracking [on|off|toggle]',
+    help: 'set mouse tracking preset [on|off|toggle|wheel|buttons|all]',
     name: 'mouse',
     run: (arg, ctx) => {
       const current = ctx.ui.mouseTracking
-      const next = flagFromArg(arg, current)
+      const next = mouseModeFromArg(arg, current)
 
       if (next === null) {
-        return ctx.transcript.sys('usage: /mouse [on|off|toggle]')
+        return ctx.transcript.sys('usage: /mouse [on|off|toggle|wheel|buttons|all]')
       }
 
       patchUiState({ mouseTracking: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next }).catch(() => {})
 
-      queueMicrotask(() => ctx.transcript.sys(`mouse tracking ${next ? 'on' : 'off'}`))
+      queueMicrotask(() => ctx.transcript.sys(`mouse tracking ${next}`))
     }
   },
 
@@ -166,18 +230,6 @@ export const coreCommands: SlashCommand[] = [
         .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
         .then(ctx.guarded<SessionStatusResponse>(r => ctx.transcript.page(r.output || '(no status)', 'Status')))
         .catch(ctx.guardedErr)
-    }
-  },
-
-  {
-    help: 'resume a prior session',
-    name: 'resume',
-    run: (arg, ctx) => {
-      if (ctx.session.guardBusySessionSwitch('switch sessions')) {
-        return
-      }
-
-      arg ? ctx.session.resumeById(arg) : patchOverlayState({ picker: true })
     }
   },
 
@@ -334,7 +386,7 @@ export const coreCommands: SlashCommand[] = [
           return sys(`copied ${text.length} characters`)
         } else {
           return sys(
-            'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence; HERMES_TUI_DEBUG_CLIPBOARD=1 for details'
+            'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence'
           )
         }
       }
@@ -375,6 +427,24 @@ export const coreCommands: SlashCommand[] = [
     help: 'attach clipboard image',
     name: 'paste',
     run: (arg, ctx) => (arg ? ctx.transcript.sys('usage: /paste') : ctx.composer.paste())
+  },
+
+  {
+    aliases: ['compose'],
+    help: 'compose your next prompt in $EDITOR (same as Ctrl+G)',
+    name: 'prompt',
+    run: (arg, ctx) => {
+      if (arg) {
+        // The TUI editor opens with the current composer draft; there is no
+        // separate seed arg. Drop any inline text into the composer first so
+        // it carries into the editor, matching the CLI's /prompt <text>.
+        ctx.composer.setInput(arg)
+      }
+
+      void ctx.composer.openEditor().catch((err: unknown) => {
+        ctx.transcript.sys(`editor failed: ${String(err)}`)
+      })
+    }
   },
 
   {
@@ -512,6 +582,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['q'],
     help: 'inspect or enqueue a message',
     name: 'queue',
     run: (arg, ctx) => {

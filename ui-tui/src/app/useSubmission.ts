@@ -2,7 +2,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import { attachedImageNotice } from '../domain/messages.js'
-import { looksLikeSlashCommand } from '../domain/slash.js'
+import { completionToApplyOnSubmit, looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type {
   InputDetectDropResponse,
@@ -220,25 +220,28 @@ export function useSubmission(opts: UseSubmissionOptions) {
   //   - 'steer'     : inject into the current turn via session.steer; falls
   //                   back to queue when steer is rejected (no agent / no
   //                   tool window).
-  //   - 'interrupt' (default): cancel the in-flight turn, then send the
-  //                   new text as a fresh prompt so it actually moves.
+  //   - 'interrupt' (default): queue the text + interrupt with `keepBusy`; the
+  //                   busy→false settle edge drains it once (desktop parity).
+  //                   No optimistic send → no duplicate bubble / race note.
   //
-  // `opts.fallbackToFront` controls whether a steer fallback re-inserts
-  // at the front of the queue (used by the queue-edit path to preserve
-  // a picked item's position); the mainline submit path always appends.
+  // `opts.fallbackToFront` re-inserts at the queue head (queue-edit picks keep
+  // their position); the mainline submit path appends.
   const handleBusyInput = useCallback(
     (full: string, opts: { fallbackToFront?: boolean } = {}) => {
       const live = getUiState()
       const mode = live.busyInputMode
 
-      const fallback = (note: string) => {
+      const enqueueText = () => {
         if (opts.fallbackToFront) {
           composerRefs.queueRef.current.unshift(full)
           composerActions.syncQueue()
         } else {
           composerActions.enqueue(full)
         }
+      }
 
+      const fallback = (note: string) => {
+        enqueueText()
         sys(note)
       }
 
@@ -260,25 +263,14 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return
       }
 
-      // 'interrupt' (default): tear down the current turn, then send.
-      // `interruptTurn` fires `session.interrupt` without awaiting; if
-      // the gateway is still mid-response when `prompt.submit` lands,
-      // `send()`'s catch path re-queues with a "queued: ..." sys note
-      // (`isSessionBusyError`) — so a lost race degrades to queue
-      // semantics, not a dropped message.
+      // 'interrupt': queue + interrupt(keepBusy); the settle edge drains it once.
+      enqueueText()
+
       if (live.sid) {
-        turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys })
+        turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys }, { keepBusy: true })
       }
-
-      if (hasInterpolation(full)) {
-        patchUiState({ busy: true })
-
-        return interpolate(full, send)
-      }
-
-      send(full)
     },
-    [appendMessage, composerActions, composerRefs, gw, interpolate, send, sys]
+    [appendMessage, composerActions, composerRefs, gw, sys]
   )
 
   const dispatchSubmission = useCallback(
@@ -362,14 +354,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (value: string) => {
       if (composerState.completions.length) {
         const row = composerState.completions[composerState.compIdx]
+        const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace)
 
-        if (row?.text) {
-          const text = value.startsWith('/') && row.text.startsWith('/') ? row.text.slice(1) : row.text
-          const next = value.slice(0, composerState.compReplace) + text
-
-          if (next !== value) {
-            return composerActions.setInput(next)
-          }
+        if (next !== null) {
+          return composerActions.setInput(next)
         }
       }
 
@@ -380,7 +368,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
         lastEmptyAt.current = now
 
         if (doubleTap && live.busy && live.sid) {
-          return turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys })
+          // Force-send: keep busy when a message is queued so the settle edge
+          // drains it once (no race). Empty queue = plain Stop → 'ready'.
+          const hasQueued = composerRefs.queueRef.current.length > 0
+
+          return turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys }, { keepBusy: hasQueued })
         }
 
         if (doubleTap && live.sid && composerRefs.queueRef.current.length) {

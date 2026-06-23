@@ -185,6 +185,12 @@ None of this requires additional config — it ships on by default in recent sig
 
 The bot sends typing indicators while processing messages, refreshing every 8 seconds.
 
+### Tool Progress Display
+
+Signal does not support editing already-sent messages. Hermes therefore suppresses gateway tool-progress bubbles on Signal, even when `/verbose` is enabled and saves a non-`off` mode for the platform.
+
+You can still see tool activity in the CLI, and final Signal replies can include normal assistant output. If you need live per-tool progress in chat, use a messaging platform with message editing support.
+
 ### Phone Number Redaction
 
 All phone numbers are automatically redacted in logs:

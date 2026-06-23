@@ -6,15 +6,13 @@ the main group chat.
 
 Covers: #6969, #9916, #7355
 """
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from types import SimpleNamespace
 
 import pytest
 
 from gateway.stream_consumer import (
     GatewayStreamConsumer,
-    StreamConsumerConfig,
 )
 
 
@@ -105,7 +103,44 @@ class TestInitialReplyToId:
         await consumer._send_or_edit("Test")
 
         call_kwargs = adapter.send.call_args[1]
-        assert call_kwargs["metadata"] == metadata
+        assert call_kwargs["metadata"] == {**metadata, "expect_edits": True}
+        assert metadata == {"thread_id": "omt_topic789"}
+
+    @pytest.mark.asyncio
+    async def test_final_first_send_marks_metadata_notify_true(self):
+        """Final streaming sends should use the existing notify=True marker."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            metadata={"thread_id": "root_post_123"},
+            initial_reply_to_id="reply_post_456",
+        )
+
+        await consumer._send_or_edit("Final answer", finalize=True)
+
+        call_kwargs = adapter.send.call_args[1]
+        metadata = call_kwargs["metadata"]
+        assert metadata["thread_id"] == "root_post_123"
+        assert metadata["notify"] is True
+        assert "delivery_kind" not in metadata
+        assert "allow_flat_fallback" not in metadata
+
+    @pytest.mark.asyncio
+    async def test_nonfinal_first_send_does_not_mark_notify(self):
+        """Preview/interim streaming sends must not be notify-worthy."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            metadata={"thread_id": "root_post_123"},
+            initial_reply_to_id="reply_post_456",
+        )
+
+        await consumer._send_or_edit("Preview", finalize=False)
+
+        metadata = adapter.send.call_args[1]["metadata"]
+        assert metadata == {"thread_id": "root_post_123", "expect_edits": True}
 
 
 class TestOverflowFirstMessage:
@@ -145,7 +180,7 @@ class TestFeishuFallbackThreadRouting:
     async def test_create_uses_thread_id_when_available(self):
         """When reply_to=None and metadata has thread_id, message.create
         should use receive_id_type='thread_id'."""
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         # We test the _send_raw_message method directly by mocking the client
         adapter = MagicMock(spec=FeishuAdapter)
@@ -202,7 +237,7 @@ class TestFeishuFallbackThreadRouting:
     async def test_create_uses_chat_id_when_no_thread(self):
         """When reply_to=None and metadata has no thread_id, message.create
         should use receive_id_type='chat_id' (original behavior)."""
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         mock_client = MagicMock()
         mock_create_response = SimpleNamespace(

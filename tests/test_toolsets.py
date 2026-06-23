@@ -7,7 +7,6 @@ from toolsets import (
     resolve_toolset,
     resolve_multiple_toolsets,
     get_all_toolsets,
-    get_toolset_names,
     validate_toolset,
     create_custom_toolset,
     get_toolset_info,
@@ -246,3 +245,11 @@ class TestPluginToolsets:
         all_toolsets = get_all_toolsets()
         assert "plugin_bundle" in all_toolsets
         assert all_toolsets["plugin_bundle"]["tools"] == ["plugin_tool"]
+
+
+class TestDefaultPlatformWebSearchCoverage:
+    def test_hermes_whatsapp_toolset_includes_web_search(self):
+        assert "web_search" in resolve_toolset("hermes-whatsapp")
+
+    def test_hermes_api_server_toolset_includes_web_search(self):
+        assert "web_search" in resolve_toolset("hermes-api-server")

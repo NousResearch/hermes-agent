@@ -27,6 +27,23 @@ import os
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 
+def _strip_ephemeral_guardrail_messages(messages):
+    """Return a copy of messages with _guardrail_ephemeral entries removed.
+
+    Guardrail ephemeral messages are appended to the live messages list
+    during the turn so the model sees the block observation, but they must
+    NOT leak into any persistence path — session DB, JSON log, trajectory,
+    context compressor, external memory, or plugin hooks.
+
+    This is a pure filter (no mutation) so the caller decides whether to
+    replace its reference or keep the original for in-turn bookkeeping.
+    """
+    return [
+        m for m in messages
+        if not (isinstance(m, dict) and m.get("_guardrail_ephemeral"))
+    ]
+
+
 def finalize_turn(
     agent,
     *,
@@ -128,9 +145,17 @@ def finalize_turn(
         and not failed
     )
 
+    # ── Strip ephemeral guardrail messages before any persistence ────
+    # Guardrail ephemeral messages must not leak into trajectory, session DB,
+    # JSON log, context compressor, external memory, or plugin hooks.
+    # We build a clean copy here and use it for ALL downstream paths.
+    # The original `messages` list is kept for in-turn diagnostic logging
+    # (turn-exit reason, tool count, etc.) which happens below.
+    messages_for_persist = _strip_ephemeral_guardrail_messages(messages)
+
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
-    agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
+    agent._save_trajectory(messages_for_persist, _summarize_user_message_for_log(user_message), completed)
 
     # Clean up VM and browser for this task after conversation completes
     agent._cleanup_task_resources(effective_task_id)
@@ -139,8 +164,8 @@ def finalize_turn(
     # scaffolding has been removed. Otherwise a later user "continue" turn
     # can replay assistant("(empty)") / recovery nudges and fall into the
     # same empty-response loop again.
-    agent._drop_trailing_empty_response_scaffolding(messages)
-    agent._persist_session(messages, conversation_history)
+    agent._drop_trailing_empty_response_scaffolding(messages_for_persist)
+    agent._persist_session(messages_for_persist, conversation_history)
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
     # Always logged at INFO so agent.log captures WHY every turn ended.
@@ -298,7 +323,7 @@ def finalize_turn(
                 turn_id=turn_id,
                 user_message=original_user_message,
                 assistant_response=final_response,
-                conversation_history=list(messages),
+                conversation_history=list(messages_for_persist),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )
@@ -326,7 +351,7 @@ def finalize_turn(
     result = {
         "final_response": final_response,
         "last_reasoning": last_reasoning,
-        "messages": messages,
+        "messages": messages_for_persist,
         "api_calls": api_call_count,
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
@@ -385,7 +410,7 @@ def finalize_turn(
         original_user_message=original_user_message,
         final_response=final_response,
         interrupted=interrupted,
-        messages=messages,
+        messages=messages_for_persist,
     )
 
     # Background memory/skill review — runs AFTER the response is delivered
@@ -393,7 +418,7 @@ def finalize_turn(
     if final_response and not interrupted and (_should_review_memory or _should_review_skills):
         try:
             agent._spawn_background_review(
-                messages_snapshot=list(messages),
+                messages_snapshot=list(messages_for_persist),
                 review_memory=_should_review_memory,
                 review_skills=_should_review_skills,
             )

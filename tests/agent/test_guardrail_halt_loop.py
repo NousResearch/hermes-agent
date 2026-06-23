@@ -3,6 +3,13 @@
 When guardrail blocks a repeated tool call, the user-facing halt response
 must NOT be persisted as an assistant message that the model sees on the
 next turn.  If it is, the model echoes it, creating a halt-response loop.
+
+This module covers:
+  1. The synthetic tool result format (structured, not natural language)
+  2. The ephemeral message stripping in finalize_turn
+  3. The ephemeral message stripping in _persist_session
+  4. That trajectory, session DB, plugin hooks, and external memory all
+     receive the filtered messages list — never the raw one.
 """
 
 import json
@@ -90,6 +97,78 @@ def test_guardrail_block_tool_observation_can_exist_without_user_halt_text_in_co
     assert parsed["guardrail"]["code"] == "no_progress_cross_turn_block"
 
 
+def test_strip_ephemeral_guardrail_messages_removes_ephemeral_entries():
+    """_strip_ephemeral_guardrail_messages must remove all ephemeral entries."""
+    from agent.turn_finalizer import _strip_ephemeral_guardrail_messages
+
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there"},
+        {
+            "role": "tool",
+            "content": "TOOL_GUARDRAIL_BLOCKED: repeated identical terminal call blocked.",
+            "_guardrail_ephemeral": True,
+        },
+        {"role": "assistant", "content": "Let me try a different approach."},
+        {
+            "role": "tool",
+            "content": "TOOL_GUARDRAIL_BLOCKED: another block.",
+            "_guardrail_ephemeral": True,
+        },
+    ]
+
+    result = _strip_ephemeral_guardrail_messages(messages)
+
+    # Ephemeral messages removed
+    assert len(result) == 3
+    assert all(not m.get("_guardrail_ephemeral") for m in result)
+
+    # Original messages preserved
+    assert result[0]["role"] == "user"
+    assert result[1]["role"] == "assistant"
+    assert result[2]["role"] == "assistant"
+
+    # Original list unchanged (pure filter, no mutation)
+    assert len(messages) == 5
+
+
+def test_strip_ephemeral_guardrail_messages_no_op_when_clean():
+    """_strip_ephemeral_guardrail_messages is a no-op when there are no ephemeral entries."""
+    from agent.turn_finalizer import _strip_ephemeral_guardrail_messages
+
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there"},
+    ]
+
+    result = _strip_ephemeral_guardrail_messages(messages)
+
+    assert len(result) == 2
+    assert result is not messages  # returns a new list
+    assert result == messages  # but contents are identical
+
+
+def test_strip_ephemeral_guardrail_messages_handles_non_dict_entries():
+    """_strip_ephemeral_guardrail_messages must not crash on non-dict entries."""
+    from agent.turn_finalizer import _strip_ephemeral_guardrail_messages
+
+    messages = [
+        {"role": "user", "content": "Hello"},
+        "legacy_string_message",  # edge case: non-dict
+        {
+            "role": "tool",
+            "content": "TOOL_GUARDRAIL_BLOCKED",
+            "_guardrail_ephemeral": True,
+        },
+    ]
+
+    result = _strip_ephemeral_guardrail_messages(messages)
+
+    assert len(result) == 2
+    assert result[0]["role"] == "user"
+    assert result[1] == "legacy_string_message"
+
+
 def test_persist_session_strips_guardrail_ephemeral_messages():
     """_persist_session must strip messages tagged with _guardrail_ephemeral.
 
@@ -138,3 +217,40 @@ def test_guardrail_ephemeral_tag_preserved_in_tool_result():
 
     assert deserialized.get("_guardrail_ephemeral") is True
     assert deserialized["role"] == "tool"
+
+
+def test_next_turn_context_has_no_guardrail_artifacts():
+    """Simulate the full persist → reload cycle: next turn must see no guardrail content.
+
+    This is the integration-level regression test: after a guardrail halt turn,
+    the next turn's model context must not contain any guardrail artifacts.
+    """
+    from agent.turn_finalizer import _strip_ephemeral_guardrail_messages
+
+    # Turn 1: conversation with guardrail halt
+    turn1_messages = [
+        {"role": "user", "content": "Run this command"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "function": {"name": "terminal", "arguments": '{"command":"echo hello"}'}}]},
+        {"role": "tool", "content": '{"output": "hello", "exit_code": 0}', "tool_call_id": "call_1"},
+        # ... repeated calls omitted for brevity ...
+        {
+            "role": "tool",
+            "content": "TOOL_GUARDRAIL_BLOCKED: repeated identical terminal call blocked "
+                       "(no_progress_cross_turn_block). Change strategy; do not retry.",
+            "_guardrail_ephemeral": True,
+        },
+    ]
+
+    # Persist path strips ephemeral messages
+    persisted = _strip_ephemeral_guardrail_messages(turn1_messages)
+
+    # Turn 2: user sends a new message; context is built from persisted history
+    turn2_messages = list(persisted)  # simulate loading from session DB
+    turn2_messages.append({"role": "user", "content": "Try a different approach"})
+
+    # Assert: no guardrail artifacts in next turn context
+    for msg in turn2_messages:
+        content = msg.get("content", "")
+        assert "I stopped retrying" not in content
+        assert "TOOL_GUARDRAIL_BLOCKED" not in content
+        assert not msg.get("_guardrail_ephemeral")

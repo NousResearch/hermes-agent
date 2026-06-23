@@ -111,6 +111,11 @@ dependencies = [
   # by fastapi itself, so the dashboard's multipart upload endpoint would 500
   # without an explicit dependency here (and in the `web` extra below).
   "python-multipart>=0.0.9,<1",
+  # Transitive CVE fixes: cryptography 46.0.7 has GHSA-537c-gmf6-5ccf
+  # (OpenSSL vuln); tornado 6.5.5 has CVE-2026-49853 (gzip bomb). Pin
+  # minimums so container images and locked envs pick up patched versions.
+  "cryptography>=48.0.1",
+  "tornado>=6.5.6",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
   # Image resize recovery for the vision tools. Pillow shrinks oversized images
@@ -154,7 +159,7 @@ edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
+dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710/48818/54283; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.4", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]  # aiohttp: CVE-2026-34513/34518/34519/34520/34525
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.4"]
@@ -194,7 +199,9 @@ vision = []
 # `request.url` can be bypassed. We pin a patched Starlette directly in every
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
-mcp = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
+# CVE-2026-48818 (SSRF via UNC paths) and CVE-2026-54283 (quadratic-time
+# querystring parsing) require starlette>=1.1.0; 1.3.1 is the latest 1.x.
+mcp = ["mcp==1.26.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710/48818/54283
 nemo-relay = ["nemo-relay==0.3"]
 homeassistant = ["aiohttp==3.13.4"]
 sms = ["aiohttp==3.13.4"]
@@ -203,7 +210,7 @@ teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.4"]
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
 # to it, which is already provided by the `mcp` extra.
-computer-use = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
+computer-use = ["mcp==1.26.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710/48818/54283
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
@@ -256,9 +263,9 @@ youtube = [
   "youtube-transcript-api==1.2.4",
 ]
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
-# starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
+# starlette==1.3.1 pinned for CVE-2026-48710/48818/54283 — fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1", "python-multipart==0.0.27"]
+web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.3.1", "python-multipart==0.0.30"]  # python-multipart: CVE-2026-53539
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every

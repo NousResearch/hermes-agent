@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
+  openPreviewInBrowser: url => ipcRenderer.invoke('hermes:openPreviewInBrowser', url),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
   sanitizeWorkspaceCwd: cwd => ipcRenderer.invoke('hermes:workspace:sanitize', cwd),
   settings: {
@@ -140,6 +141,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
   },
   getVersion: () => ipcRenderer.invoke('hermes:version'),
+  getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),
   uninstall: {
     summary: () => ipcRenderer.invoke('hermes:uninstall:summary'),
     run: mode => ipcRenderer.invoke('hermes:uninstall:run', { mode })

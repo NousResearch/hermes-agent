@@ -159,6 +159,11 @@ export interface Translations {
     }
   }
 
+  remoteDisplayBanner: {
+    message: (reason: string) => string
+    dismiss: string
+  }
+
   titlebar: {
     hideSidebar: string
     showSidebar: string
@@ -276,6 +281,7 @@ export interface Translations {
       checkNow: string
       checking: string
       seeWhatsNew: string
+      updateNow: string
       releaseNotes: string
       onLatest: string
       installing: string
@@ -462,6 +468,8 @@ export interface Translations {
       removedMessage: (provider: string) => string
       failedRemove: (provider: string) => string
       noProviderKeys: string
+      searchKeys: string
+      noKeysMatch: string
       loading: string
     }
     sessions: {
@@ -625,7 +633,8 @@ export interface Translations {
     gatewayRunning: string
     gatewayStopped: string
     hermesActiveSessions: (version: string, count: number) => string
-    restartMessaging: string
+    restartGateway: string
+    gatewayRestartFailed: string
     updateHermes: string
     actionRunning: string
     actionDone: string
@@ -1040,6 +1049,10 @@ export interface Translations {
     manualTitle: string
     manualBody: string
     manualPickedUp: string
+    /** GUI/backend skew (#45205): backend updated but the running desktop app
+     *  package (AppImage/.deb/.rpm) was not changed and must be reinstalled. */
+    guiSkewTitle: string
+    guiSkewBody: string
     copy: string
     copied: string
     done: string
@@ -1174,6 +1187,7 @@ export interface Translations {
       search: string
       noModels: string
       editModels: string
+      refreshModels: string
       fast: string
       medium: string
     }
@@ -1228,6 +1242,7 @@ export interface Translations {
       gatewayChecking: string
       gatewayConnecting: string
       gatewayOffline: string
+      gatewayRestarting: string
       gatewayTitle: string
       agents: string
       closeAgents: string
@@ -1293,6 +1308,7 @@ export interface Translations {
     opening: string
     hide: string
     openPreview: string
+    openInBrowser: string
     sourceLineTitle: string
     source: string
     renderedPreview: string
@@ -1373,6 +1389,7 @@ export interface Translations {
       refresh: string
       moreActions: string
       branchNewChat: string
+      dismissError: string
       readAloudFailed: string
       preparingAudio: string
       stopReading: string
@@ -1480,6 +1497,9 @@ export interface Translations {
     regenerateFailed: string
     editFailed: string
     resumeFailed: string
+    resumeStrandedTitle: string
+    resumeStrandedBody: string
+    resumeRetry: string
     nothingToBranch: string
     branchNeedsChat: string
     sessionBusy: string

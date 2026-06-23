@@ -10,6 +10,7 @@ import pytest
 from tools.skill_manager_tool import (
     _validate_name,
     _validate_category,
+    _validate_content_size,
     _validate_frontmatter,
     _validate_file_path,
     _create_skill,
@@ -20,6 +21,7 @@ from tools.skill_manager_tool import (
     _remove_file,
     skill_manage,
     MAX_NAME_LENGTH,
+    MAX_SKILL_CONTENT_CHARS,
 )
 
 
@@ -105,6 +107,27 @@ class TestValidateCategory:
     def test_absolute_path_rejected(self):
         err = _validate_category("/tmp/escape")
         assert "Invalid category '/tmp/escape'" in err
+
+
+# ---------------------------------------------------------------------------
+# _validate_content_size
+# ---------------------------------------------------------------------------
+
+
+class TestValidateContentSize:
+    def test_within_limit(self):
+        assert _validate_content_size("x" * MAX_SKILL_CONTENT_CHARS) is None
+
+    def test_oversize_error_refuses_marginal_retries(self):
+        err = _validate_content_size("x" * (MAX_SKILL_CONTENT_CHARS + 1))
+
+        assert err is not None
+        assert "REFUSED" in err
+        assert "DO NOT retry this call with marginally smaller content" in err
+        assert "Required fix: split the content into multiple files" in err
+        assert "skill_manage(action='write_file'" in err
+        assert "references/<topic>.md" in err
+        assert "Consider splitting" not in err
 
 
 # ---------------------------------------------------------------------------

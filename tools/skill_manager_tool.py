@@ -334,10 +334,15 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
     """
     if len(content) > MAX_SKILL_CONTENT_CHARS:
         return (
-            f"{label} content is {len(content):,} characters "
-            f"(limit: {MAX_SKILL_CONTENT_CHARS:,}). "
-            f"Consider splitting into a smaller SKILL.md with supporting files "
-            f"in references/ or templates/."
+            f"REFUSED: {label} content is too large at {len(content):,} "
+            f"characters (limit: {MAX_SKILL_CONTENT_CHARS:,}). "
+            "DO NOT retry this call with marginally smaller content; it will "
+            "likely fail again. Required fix: split the content into multiple "
+            "files. Keep SKILL.md short and move bulky sections to "
+            "references/<topic>.md, templates/, scripts/, or assets/ using "
+            "skill_manage(action='write_file', name='<skill-name>', "
+            "file_path='references/<topic>.md', file_content='...'), then "
+            "link those support files from SKILL.md."
         )
     return None
 

@@ -184,7 +184,9 @@ class TestSessionLifecycle:
         db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4")
 
         session = db.get_session("s1")
-        assert session["model"] == "anthropic/claude-opus-4.6"
+        # COALESCE(?, model): the passed model takes priority.
+        # After session-split PR, update_token_counts reflects the live model.
+        assert session["model"] == "openai/gpt-5.4"
 
     def test_update_session_model_overwrites_existing(self, db):
         """A mid-session /model switch must overwrite the stored model.
@@ -204,11 +206,11 @@ class TestSessionLifecycle:
         db.update_session_model("s1", "xiaomi/mimo-v2.5")
         assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
 
-        # And a subsequent token update does NOT revert it (COALESCE no-ops
-        # because the column is now non-NULL).
+        # And a subsequent token update with a NEW model now reflects that
+        # model (COALESCE(?, model) gives priority to the passed value).
         db.update_token_counts("s1", input_tokens=10, output_tokens=5,
                                model="xiaomi/mimo-v2.5-pro")
-        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
+        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5-pro"
 
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
@@ -216,6 +218,108 @@ class TestSessionLifecycle:
 
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
+
+
+class TestSessionSplit:
+    """split_session() unit tests — introduced with session-split PR."""
+
+    def test_split_ends_old_creates_child_with_chain(self, db):
+        """split_session ends parent and creates child with correct chain."""
+        db.create_session("A", source="telegram", model="deepseek-v4-flash")
+
+        db.split_session("A", "B", model="deepseek-v4-pro")
+
+        parent = db.get_session("A")
+        assert parent["ended_at"] is not None
+        assert parent["end_reason"] == "model_switch"
+        assert parent["model"] == "deepseek-v4-flash"
+
+        child = db.get_session("B")
+        assert child["parent_session_id"] == "A"
+        assert child["model"] == "deepseek-v4-pro"
+        assert child["ended_at"] is None
+        assert child["source"] == "telegram"
+
+    def test_split_inherits_source_and_metadata(self, db):
+        """Child inherits source, user_id, cwd from parent."""
+        db.create_session("P", source="telegram", user_id="U123",
+                          model="deepseek-v4-flash", cwd="/home/user/project")
+
+        db.split_session("P", "C", model="deepseek-v4-pro")
+
+        child = db.get_session("C")
+        assert child["source"] == "telegram"      # inherited, not 'split'
+        assert child["user_id"] == "U123"
+        assert child["cwd"] == "/home/user/project"
+
+    def test_split_preserves_billing_info(self, db):
+        """Billing info should be inherited from parent by default."""
+        db.create_session("P", source="cli", model="flash")
+        # Simulate a session that had billing info set
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET billing_provider=?, billing_base_url=? "
+            "WHERE id=?",
+            ("deepseek", "https://api.deepseek.com/v1", "P"),
+        ))
+
+        db.split_session("P", "C", model="pro")
+
+        child = db.get_session("C")
+        assert child["billing_provider"] == "deepseek"
+        assert child["billing_base_url"] == "https://api.deepseek.com/v1"
+
+    def test_split_explicit_billing_overrides_inheritance(self, db):
+        """Explicit billing args override parent inheritance."""
+        db.create_session("P", source="cli", model="flash")
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET billing_provider=?, billing_base_url=? "
+            "WHERE id=?",
+            ("deepseek", "https://api.deepseek.com/v1", "P"),
+        ))
+
+        db.split_session("P", "C", model="pro",
+                         billing_provider="fireworks",
+                         billing_base_url="https://api.fireworks.ai/inference/v1")
+
+        child = db.get_session("C")
+        assert child["billing_provider"] == "fireworks"
+        assert child["billing_base_url"] == "https://api.fireworks.ai/inference/v1"
+
+    def test_rapid_consecutive_splits_form_chain(self, db):
+        """Three rapid splits form correct A→B→C→D chain."""
+        db.create_session("A", source="telegram", model="flash")
+
+        db.split_session("A", "B", model="pro")
+        db.split_session("B", "C", model="flash")
+        db.split_session("C", "D", model="pro")
+
+        # All parents are ended
+        for sid in ("A", "B", "C"):
+            parent = db.get_session(sid)
+            assert parent["ended_at"] is not None
+            assert parent["end_reason"] == "model_switch"
+
+        # Chain is linear
+        assert db.get_session("B")["parent_session_id"] == "A"
+        assert db.get_session("C")["parent_session_id"] == "B"
+        assert db.get_session("D")["parent_session_id"] == "C"
+
+        # Last child is not ended
+        assert db.get_session("D")["ended_at"] is None
+
+    def test_split_with_already_ended_parent(self, db):
+        """split_session still works even if parent was already ended
+        (e.g. by compression). The child still gets created correctly."""
+        db.create_session("A", source="telegram", model="flash")
+        db.end_session("A", "compression")  # already ended
+
+        db.split_session("A", "B", model="pro")
+
+        child = db.get_session("B")
+        assert child["parent_session_id"] == "A"
+        assert child["model"] == "pro"
+        assert child["source"] == "telegram"
+
 
     def test_db_initializes_without_fts5_module(self, tmp_path, monkeypatch):
         real_connect = sqlite3.connect

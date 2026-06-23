@@ -925,6 +925,15 @@ class SessionDB:
                 self._warn_fts5_unavailable(exc)
             return False
 
+    def _execute_read(self, fn: Callable[[sqlite3.Connection], T]) -> T:
+        """Execute a read operation on the shared connection.
+
+        No transaction — pure read, no retry. Used for lightweight
+        lookups like _get_session().
+        """
+        with self._lock:
+            return fn(self._conn)
+
     def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
 
@@ -1398,6 +1407,113 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def _get_session(self, session_id: str):
+        """Read a single session row by id. Returns dict or None."""
+        def _do(conn):
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            return dict(row) if row else None
+        return self._execute_read(_do)
+
+    def split_session(
+        self,
+        old_session_id: str,
+        new_session_id: str,
+        *,
+        model: str = None,
+        billing_provider: str = None,
+        billing_base_url: str = None,
+        billing_mode: str = None,
+        source: str = None,
+        user_id: str = None,
+        cwd: str = None,
+    ) -> str:
+        """End current session and create a child with parent_session_id.
+
+        Used when the model/provider changes mid-session:
+          - /model command switches model
+          - try_activate_fallback swaps to a different backend
+
+        The old session is ended with ``end_reason='model_switch'``.
+        The new session inherits source, user_id, and cwd from the parent
+        unless the caller explicitly provides them. Billing info is inherited
+        from parent when not passed; explicitly passed values override.
+
+        Atomic via BEGIN IMMEDIATE — safe for concurrent subagent splits.
+        Returns the new_session_id.
+
+        SAFETY: if the parent was already ended (e.g. by a compression
+        rotation), this still creates the child with the correct chain.
+        """
+        # Resolve parent metadata
+        parent = self._get_session(old_session_id)
+        source = source or (parent.get("source") if parent else "cli")
+        user_id = user_id or (parent.get("user_id") if parent else None)
+        cwd_value = cwd or (parent.get("cwd") if parent else None)
+
+        def _do(conn):
+            # 1. End old session (first-writer-wins, safe if already ended)
+            conn.execute(
+                "UPDATE sessions SET ended_at = ?, end_reason = ? "
+                "WHERE id = ? AND ended_at IS NULL",
+                (time.time(), "model_switch", old_session_id),
+            )
+
+            # 2. Create child with parent_session_id
+            import json
+            conn.execute(
+                """INSERT INTO sessions
+                   (id, source, user_id, model, parent_session_id,
+                    cwd, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    new_session_id,
+                    source,
+                    user_id,
+                    model,
+                    old_session_id,
+                    cwd_value,
+                    time.time(),
+                ),
+            )
+
+            # 3. Copy billing info — explicit overrides, else inherit
+            if billing_provider or billing_base_url or billing_mode:
+                conn.execute(
+                    """UPDATE sessions SET
+                       billing_provider = COALESCE(?, billing_provider),
+                       billing_base_url  = COALESCE(?, billing_base_url),
+                       billing_mode      = COALESCE(?, billing_mode)
+                       WHERE id = ?""",
+                    (billing_provider, billing_base_url,
+                     billing_mode, new_session_id),
+                )
+            else:
+                conn.execute(
+                    """UPDATE sessions SET
+                       billing_provider = (SELECT billing_provider
+                                           FROM sessions WHERE id = ?),
+                       billing_base_url  = (SELECT billing_base_url
+                                            FROM sessions WHERE id = ?),
+                       billing_mode      = (SELECT billing_mode
+                                            FROM sessions WHERE id = ?)
+                       WHERE id = ?""",
+                    (old_session_id, old_session_id,
+                     old_session_id, new_session_id),
+                )
+
+        try:
+            self._execute_write(_do)
+        except Exception as exc:
+            logger.warning(
+                "split_session(%s → %s) failed (non-fatal): %s",
+                old_session_id, new_session_id, exc,
+            )
+            raise
+
+        return new_session_id
+
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed."""
         def _do(conn):
@@ -1633,10 +1749,10 @@ class SessionDB:
                    cost_status = COALESCE(?, cost_status),
                    cost_source = COALESCE(?, cost_source),
                    pricing_version = COALESCE(?, pricing_version),
-                   billing_provider = COALESCE(billing_provider, ?),
-                   billing_base_url = COALESCE(billing_base_url, ?),
-                   billing_mode = COALESCE(billing_mode, ?),
-                   model = COALESCE(model, ?),
+                   billing_provider = COALESCE(?, billing_provider),
+                   billing_base_url = COALESCE(?, billing_base_url),
+                   billing_mode = COALESCE(?, billing_mode),
+                   model = COALESCE(?, model),
                    api_call_count = ?
                    WHERE id = ?"""
         else:
@@ -1654,10 +1770,10 @@ class SessionDB:
                    cost_status = COALESCE(?, cost_status),
                    cost_source = COALESCE(?, cost_source),
                    pricing_version = COALESCE(?, pricing_version),
-                   billing_provider = COALESCE(billing_provider, ?),
-                   billing_base_url = COALESCE(billing_base_url, ?),
-                   billing_mode = COALESCE(billing_mode, ?),
-                   model = COALESCE(model, ?),
+                   billing_provider = COALESCE(?, billing_provider),
+                   billing_base_url = COALESCE(?, billing_base_url),
+                   billing_mode = COALESCE(?, billing_mode),
+                   model = COALESCE(?, model),
                    api_call_count = COALESCE(api_call_count, 0) + ?
                    WHERE id = ?"""
         params = (

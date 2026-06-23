@@ -1576,6 +1576,39 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 reason="switch_model",
                 shared=True,
             )
+
+        # ── Split session when model changes ──
+        _session_db = getattr(agent, '_session_db', None)
+        _old_sess_id = getattr(agent, 'session_id', None)
+        if _session_db is not None and _old_sess_id:
+            import uuid
+            _new_sess_id = f"{_old_sess_id.split('_')[0]}_{uuid.uuid4().hex[:8]}"
+            try:
+                _session_db.split_session(
+                    _old_sess_id,
+                    _new_sess_id,
+                    model=new_model,
+                    billing_provider=new_provider,
+                    billing_base_url=agent.base_url,
+                    billing_mode=getattr(agent, 'api_mode', None),
+                    source=getattr(agent, 'platform', None),
+                    user_id=getattr(agent, 'user_id', None),
+                    cwd=getattr(agent, 'cwd', None),
+                )
+                agent.session_id = _new_sess_id
+                agent._transition_context_engine_session(
+                    old_session_id=_old_sess_id,
+                    new_session_id=_new_sess_id,
+                    carry_over_context=True,
+                )
+            except Exception as _split_exc:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "Session split on model switch failed (non-fatal): %s",
+                    _split_exc,
+                )
+        # ──────────────────────────────────────────────
+
     except Exception:
         # Rollback every mutated field to the pre-swap snapshot so the agent
         # is left consistent (old model + old provider + old client) and the

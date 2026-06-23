@@ -1215,15 +1215,28 @@ class GatewaySlashCommandsMixin:
 
                         # Persist the new model to the session DB so the
                         # dashboard shows the updated model (#34850).
+                        # Note: switch_model() now internally splits the session
+                        # when the model changes, so agent.session_id has been
+                        # rotated to a new child session. Update the gateway
+                        # session entry to point to the new session_id.
                         _sess_db = getattr(_self, "_session_db", None)
                         if _sess_db is not None:
                             try:
                                 _sess_entry = _self.session_store.get_or_create_session(
                                     event.source
                                 )
-                                _sess_db.update_session_model(
-                                    _sess_entry.session_id, result.new_model
-                                )
+                                # Re-anchor to the agent's new session_id
+                                # (may differ from _sess_entry.session_id after split)
+                                if cached_entry and cached_entry[0] is not None:
+                                    _new_sid = getattr(cached_entry[0], 'session_id', None)
+                                    if _new_sid:
+                                        _sess_entry.session_id = _new_sid
+                                        _sess_db.update_session_model(_new_sid, result.new_model)
+                                else:
+                                    # No cached agent — no split happened, old id is correct
+                                    _sess_db.update_session_model(
+                                        _sess_entry.session_id, result.new_model
+                                    )
                             except Exception as exc:
                                 logger.debug(
                                     "Failed to persist model switch to DB: %s", exc

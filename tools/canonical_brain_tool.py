@@ -46,6 +46,19 @@ SECRET_MARKERS = (
     "api_key=", "apikey=", "token=", "password=", "secret=",
     "authorization: bearer", "private_key", "BEGIN PRIVATE KEY",
 )
+SECRET_KEY_NAMES = {
+    "token",
+    "access_token",
+    "password",
+    "secret",
+    "api_key",
+    "apikey",
+    "private_key",
+    "authorization",
+    "bearer",
+    "credentials",
+    "payment_credential",
+}
 
 
 def _utc_now() -> str:
@@ -81,8 +94,28 @@ def _load_helper() -> Any:
     return module
 
 
+def _normalize_secret_key(key: Any) -> str:
+    return str(key or "").strip().casefold().replace("-", "_")
+
+
 def _contains_secret_like(value: Any) -> bool:
-    text = _stable_json(value).casefold()
+    """Return True for secret-looking values or structured secret keys.
+
+    This is deliberately mechanical, not semantic. It recursively inspects
+    dict/list payloads before any Cloud SQL helper load/connect so structured
+    credentials such as {"token": "..."} are blocked even when the value does
+    not contain marker strings like ``token=``.
+    """
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if _normalize_secret_key(key) in SECRET_KEY_NAMES:
+                return True
+            if _contains_secret_like(nested):
+                return True
+        return False
+    if isinstance(value, (list, tuple, set)):
+        return any(_contains_secret_like(item) for item in value)
+    text = str(value or "").casefold()
     return any(marker.casefold() in text for marker in SECRET_MARKERS)
 
 

@@ -10,6 +10,10 @@ from gateway.known_ops_tasks import (
 def test_known_ops_task_metadata_exposes_promotion_contract():
     metadata = known_ops_task_metadata("feishu")
 
+    cron_task = next(item for item in metadata if item["name"] == "cron_schedule_status")
+    assert "verification" in cron_task
+    assert "cron/jobs.json" in cron_task["promotion_hint"]
+
     token_task = next(item for item in metadata if item["name"] == "token_usage_report")
     assert "verification" in token_task
     assert "promotion_hint" in token_task
@@ -24,6 +28,61 @@ def test_known_ops_task_is_platform_scoped():
 
     assert match_known_ops_task("feishu", text) is not None
     assert match_known_ops_task("telegram", text) is None
+
+
+def test_cron_schedule_question_uses_fast_path(monkeypatch):
+    monkeypatch.setattr(
+        "cron.jobs.load_jobs",
+        lambda: [
+            {
+                "id": "61fc0eed3cbe",
+                "name": "模型限频监控",
+                "schedule": {"kind": "interval", "minutes": 10, "display": "every 10m"},
+                "schedule_display": "every 10m",
+                "enabled": True,
+                "state": "scheduled",
+                "next_run_at": "2026-06-23T23:03:57+08:00",
+                "last_run_at": "2026-06-23T22:53:57+08:00",
+                "last_status": "ok",
+            }
+        ],
+    )
+
+    result = render_known_ops_task(
+        "feishu",
+        "请问 定时自动运行的 模型限频监控 目前的间隔是多长时间?",
+    )
+
+    assert result is not None
+    assert result.task.name == "cron_schedule_status"
+    assert "模型限频监控: every 10m" in result.text
+    assert "下次运行: 2026-06-23T23:03:57+08:00" in result.text
+    assert "最近运行: 2026-06-23T22:53:57+08:00 ok" in result.text
+
+
+def test_cron_schedule_question_is_platform_scoped(monkeypatch):
+    monkeypatch.setattr(
+        "cron.jobs.load_jobs",
+        lambda: [{"name": "模型限频监控", "schedule_display": "every 10m"}],
+    )
+
+    assert (
+        render_known_ops_task(
+            "telegram",
+            "请问 定时自动运行的 模型限频监控 目前的间隔是多长时间?",
+        )
+        is None
+    )
+
+
+def test_unrelated_cron_text_does_not_use_fast_path(monkeypatch):
+    monkeypatch.setattr(
+        "cron.jobs.load_jobs",
+        lambda: [{"name": "模型限频监控", "schedule_display": "every 10m"}],
+    )
+
+    assert render_known_ops_task("feishu", "请解释一下什么是 cron") is None
+    assert render_known_ops_task("feishu", "今天帮我检查 OpenClaw 状态") is None
 
 
 def test_known_ops_task_render_uses_registered_handler(monkeypatch):

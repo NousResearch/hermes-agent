@@ -109,6 +109,98 @@ def _looks_like_agent_loop_diagnostic_request(text: str) -> bool:
     return bool(has_agent and has_loop and has_diagnosis)
 
 
+def _cron_jobs_named_in_text(text: str) -> list[dict[str, object]]:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return []
+    try:
+        from cron.jobs import load_jobs
+    except Exception:
+        return []
+    matches: list[dict[str, object]] = []
+    try:
+        jobs = load_jobs()
+    except Exception as exc:
+        logger.warning("Failed to load cron jobs for known ops fast path: %s", exc)
+        return []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        name = str(job.get("name") or "").strip()
+        if name and _normalize_text(name) in normalized:
+            matches.append(job)
+    return matches
+
+
+def _looks_like_cron_schedule_status_request(text: str) -> bool:
+    """Detect simple cron schedule questions that should not start an agent turn."""
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    has_cron_context = any(
+        marker in normalized
+        for marker in (
+            "定时",
+            "自动运行",
+            "计划任务",
+            "cron",
+            "scheduledjob",
+            "schedule",
+        )
+    )
+    has_schedule_question = any(
+        marker in normalized
+        for marker in (
+            "间隔",
+            "多久",
+            "多长时间",
+            "频率",
+            "几分钟",
+            "几小时",
+            "下次",
+            "什么时候",
+            "schedule",
+        )
+    )
+    return bool(has_cron_context and has_schedule_question and _cron_jobs_named_in_text(text))
+
+
+def _render_cron_schedule_status(text: str) -> str:
+    jobs = _cron_jobs_named_in_text(text)
+    if not jobs:
+        return "没有在当前 cron 配置里找到这个定时任务。"
+
+    lines = ["当前定时任务配置："]
+    for job in jobs[:3]:
+        name = str(job.get("name") or job.get("id") or "cron job")
+        schedule = str(job.get("schedule_display") or "")
+        if not schedule:
+            raw_schedule = job.get("schedule")
+            if isinstance(raw_schedule, dict):
+                schedule = str(
+                    raw_schedule.get("display")
+                    or raw_schedule.get("value")
+                    or raw_schedule.get("expr")
+                    or raw_schedule.get("run_at")
+                    or "?"
+                )
+            else:
+                schedule = str(raw_schedule or "?")
+        state = "active" if job.get("enabled", True) and job.get("state", "scheduled") != "paused" else "paused"
+        lines.append(f"- {name}: {schedule} ({state})")
+        next_run = str(job.get("next_run_at") or "").strip()
+        if next_run:
+            lines.append(f"  下次运行: {next_run}")
+        last_run = str(job.get("last_run_at") or "").strip()
+        last_status = str(job.get("last_status") or "").strip()
+        if last_run or last_status:
+            suffix = f" {last_status}" if last_status else ""
+            lines.append(f"  最近运行: {last_run}{suffix}".rstrip())
+    if len(jobs) > 3:
+        lines.append(f"另外还有 {len(jobs) - 3} 个同名/匹配任务未展开。")
+    return "\n".join(lines)
+
+
 def _render_agent_loop_diagnostic_report(text: str) -> str:
     return "\n".join(
         [
@@ -242,6 +334,21 @@ def _render_token_usage_report(text: str) -> str:
 
 
 KNOWN_OPS_TASKS: tuple[KnownOpsTask, ...] = (
+    KnownOpsTask(
+        name="cron_schedule_status",
+        platforms=frozenset({"feishu"}),
+        detector=_looks_like_cron_schedule_status_request,
+        handler=_render_cron_schedule_status,
+        verification=(
+            "unit: tests/gateway/test_known_ops_tasks.py",
+            "runtime: ask Feishu for a named cron job interval and verify no agent turn starts",
+        ),
+        promotion_hint=(
+            "Named cron schedule/status questions should read cron/jobs.json "
+            "deterministically instead of spending a low-budget Feishu agent turn."
+        ),
+        description="Answer simple schedule questions for named cron jobs without starting an agent turn.",
+    ),
     KnownOpsTask(
         name="agent_loop_diagnostic_report",
         platforms=frozenset({"feishu"}),

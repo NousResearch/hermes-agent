@@ -500,6 +500,32 @@ class TestCLIStatusBar:
 
 
 class TestCLIUsageReport:
+    def test_show_usage_handles_missing_context_compressor(self, capsys):
+        cli_obj = _make_cli()
+        cli_obj.agent = SimpleNamespace(
+            model=cli_obj.model,
+            provider="anthropic",
+            base_url="",
+            session_input_tokens=10,
+            session_output_tokens=2,
+            session_cache_read_tokens=0,
+            session_cache_write_tokens=0,
+            session_prompt_tokens=12,
+            session_completion_tokens=2,
+            session_total_tokens=14,
+            session_api_calls=1,
+            get_rate_limit_state=lambda: None,
+            context_compressor=None,
+        )
+        cli_obj.verbose = False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Session Token Usage" in output
+        assert "Current context:  0 / 0 (0%)" in output
+        assert "Compressions:     0" in output
+
     def test_show_usage_includes_estimated_cost(self, capsys):
         cli_obj = _attach_agent(
             _make_cli(),

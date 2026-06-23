@@ -8839,11 +8839,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         completion = agent.session_completion_tokens
         total = agent.session_total_tokens
 
-        compressor = agent.context_compressor
-        last_prompt = compressor.last_prompt_tokens
-        ctx_len = compressor.context_length
+        compressor = getattr(agent, "context_compressor", None)
+        last_prompt = getattr(compressor, "last_prompt_tokens", 0) or 0
+        ctx_len = getattr(compressor, "context_length", 0) or 0
         pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
-        compressions = compressor.compression_count
+        compressions = getattr(compressor, "compression_count", 0) or 0
 
         msg_count = len(self.conversation_history)
         cost_result = estimate_usage_cost(

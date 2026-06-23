@@ -36,6 +36,7 @@ const {
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { createLinkTitleWindow } = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
+const { parseGitStatusPorcelainV2 } = require('./git-status.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPort } = require('./backend-ready.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
@@ -5922,6 +5923,187 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   }
 })
 
+ipcMain.handle('hermes:gitFileDiff', async (_event, filePath, originalPath) => {
+  const fs = require('fs')
+
+  if (!filePath || typeof filePath !== 'string') return { diff: '', status: '', fileContent: '', headContent: '' }
+
+  let resolvedPath = filePath
+  if (resolvedPath.startsWith('file://')) {
+    try { resolvedPath = new URL(resolvedPath).pathname } catch {
+      // Fall through and let path.resolve handle the original value.
+    }
+  }
+  resolvedPath = path.resolve(resolvedPath)
+
+  let fileContent = ''
+  if (fs.existsSync(resolvedPath)) {
+    try { fileContent = fs.readFileSync(resolvedPath, 'utf8') } catch { return { diff: '', status: '', fileContent: '', headContent: '' } }
+  }
+
+  // Read HEAD version via git show
+  const { execFileSync } = require('child_process')
+  const dir = fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).isDirectory() ? resolvedPath : path.dirname(resolvedPath)
+
+  let gitRoot = ''
+  try {
+    gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: dir, timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf8'
+    }).trim()
+  } catch {
+    return { diff: '', status: '', fileContent, headContent: '' }
+  }
+
+  const resolvedOriginalPath =
+    typeof originalPath === 'string' && originalPath
+      ? path.resolve(originalPath.startsWith('file://') ? new URL(originalPath).pathname : originalPath)
+      : resolvedPath
+  const relPath = path.relative(gitRoot, resolvedOriginalPath).split(path.sep).join('/')
+
+  let headContent = ''
+  try {
+    headContent = execFileSync('git', ['show', `HEAD:${relPath}`], {
+      cwd: gitRoot, timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf8'
+    })
+  } catch {
+    // New and untracked files do not have a HEAD version.
+  }
+
+  let porcelain = ''
+  try {
+    porcelain = execFileSync('git', ['status', '--porcelain', '--', path.relative(gitRoot, resolvedPath)], {
+      cwd: gitRoot, timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf8'
+    })
+  } catch {
+    // A missing status only means there is no renderer-visible diff state.
+  }
+
+  const status = porcelain.startsWith('??')
+    ? 'untracked'
+    : porcelain[0] && porcelain[0] !== ' '
+      ? 'staged'
+      : headContent !== fileContent
+        ? 'modified'
+        : ''
+
+  return { diff: '', status, fileContent, headContent }
+})
+
+ipcMain.handle('hermes:gitStatus', async (_event, cwd) => {
+  const resolved = path.resolve(String(cwd || ''))
+  const root = findGitRoot(resolved)
+
+  if (!root) {
+    return { branch: { ahead: 0, behind: 0, detached: false, name: '', oid: '', upstream: '' }, entries: [], root: null }
+  }
+
+  try {
+    const result = await runGit(['status', '--porcelain=v2', '-z', '--branch', '--untracked-files=all'], { cwd: root })
+
+    if (result.code !== 0) {
+      return {
+        branch: { ahead: 0, behind: 0, detached: false, name: '', oid: '', upstream: '' },
+        entries: [],
+        error: result.stderr.trim() || 'git-status-failed',
+        root
+      }
+    }
+
+    return parseGitStatusPorcelainV2(result.stdout, root)
+  } catch (error) {
+    return {
+      branch: { ahead: 0, behind: 0, detached: false, name: '', oid: '', upstream: '' },
+      entries: [],
+      error: error instanceof Error ? error.message : String(error),
+      root
+    }
+  }
+})
+
+ipcMain.handle('hermes:gitStage', async (_event, cwd, filePath) => {
+  const root = findGitRoot(path.resolve(String(cwd || '')))
+  if (!root) return { success: false, error: 'Not a git repository' }
+  try {
+    const result = await runGit(['add', '--', filePath], { cwd: root })
+    return { success: result.code === 0, error: result.code !== 0 ? (result.stderr.trim() || 'git-add-failed') : undefined }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('hermes:gitUnstage', async (_event, cwd, filePath) => {
+  const root = findGitRoot(path.resolve(String(cwd || '')))
+  if (!root) return { success: false, error: 'Not a git repository' }
+  try {
+    const result = await runGit(['restore', '--staged', '--', filePath], { cwd: root })
+    return { success: result.code === 0, error: result.code !== 0 ? (result.stderr.trim() || 'git-restore-failed') : undefined }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('hermes:gitCommit', async (_event, cwd, message) => {
+  const root = findGitRoot(path.resolve(String(cwd || '')))
+  if (!root) return { success: false, error: 'Not a git repository' }
+  if (!message || typeof message !== 'string' || !message.trim()) {
+    return { success: false, error: 'Commit message is required' }
+  }
+  try {
+    const result = await runGit(['commit', '-m', message.trim()], { cwd: root })
+    return { success: result.code === 0, error: result.code !== 0 ? (result.stderr.trim() || 'git-commit-failed') : undefined, output: result.stdout.trim() }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('hermes:gitLog', async (_event, cwd, count = 10) => {
+  const root = findGitRoot(path.resolve(String(cwd || '')))
+  if (!root) return []
+  try {
+    const result = await runGit(['log', `-${Math.max(1, Math.min(100, count || 10))}`, '--format=%H|%h|%s|%an|%ct', '--no-color'], { cwd: root })
+    if (result.code !== 0 || !result.stdout.trim()) return []
+    return result.stdout.trim().split('\n').filter(Boolean).map(line => {
+      const [oid, shortOid, message, author, timestamp] = line.split('|')
+      return { oid, shortOid, message: message || '', author: author || '', timestamp: Number(timestamp) || 0 }
+    })
+  } catch {
+    return []
+  }
+})
+
+ipcMain.handle('hermes:gitDiscard', async (_event, cwd, filePath) => {
+  const root = findGitRoot(path.resolve(String(cwd || '')))
+  if (!root) return { success: false, error: 'Not a git repository' }
+  try {
+    const result = await runGit(['restore', '--', filePath], { cwd: root })
+    return { success: result.code === 0, error: result.code !== 0 ? (result.stderr.trim() || 'git-restore-failed') : undefined }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('hermes:writeFileText', async (_event, filePath, content) => {
+  if (!filePath || typeof filePath !== 'string') return { success: false, error: 'No file path provided' }
+  if (typeof content !== 'string') return { success: false, error: 'No content provided' }
+
+  let resolvedPath = filePath
+  if (resolvedPath.startsWith('file://')) {
+    try { resolvedPath = new URL(resolvedPath).pathname } catch {
+      // Fall through and let path.resolve handle the original value.
+    }
+  }
+  resolvedPath = path.resolve(resolvedPath)
+
+  try {
+    const dir = path.dirname(resolvedPath)
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(resolvedPath, content, 'utf8')
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
 ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
   const properties = options?.directories ? ['openDirectory'] : ['openFile']
   if (options?.multiple !== false) properties.push('multiSelections')
@@ -6277,6 +6459,24 @@ ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dir
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
 
 ipcMain.handle('hermes:fs:worktrees', async (_event, cwds) => worktreesForIpc(cwds))
+
+ipcMain.handle('hermes:fs:openPath', async (_event, targetPath) => {
+  const resolved = path.resolve(String(targetPath || ''))
+
+  try {
+    const stat = await fs.promises.stat(resolved)
+
+    if (!stat.isDirectory()) {
+      return { error: 'not-a-directory', ok: false }
+    }
+
+    const error = await shell.openPath(resolved)
+
+    return error ? { error, ok: false } : { ok: true }
+  } catch (error) {
+    return { error: error?.message || 'open-path-failed', ok: false }
+  }
+})
 
 ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   if (!nodePty) {

@@ -123,6 +123,14 @@ describe('preview store', () => {
     expect($previewTarget.get()).toEqual(withRenderMode(preview, 'preview'))
   })
 
+  it('preserves an explicit changes view for file-browser opens', () => {
+    const target = withRenderMode(previewTarget('/work/demo.html'), 'diff')
+
+    setCurrentSessionPreviewTarget(target, 'file-browser')
+
+    expect($filePreviewTarget.get()).toEqual(target)
+  })
+
   it('keeps file tabs when a live preview opens', () => {
     const file = previewTarget('/work/file.html')
     const live = previewTarget('/work/live.html')

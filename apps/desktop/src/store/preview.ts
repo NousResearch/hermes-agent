@@ -20,12 +20,13 @@ export interface PreviewTarget {
   dataUrl?: string
   kind: 'file' | 'url'
   label: string
+  gitOriginalPath?: string
   large?: boolean
   language?: string
   mimeType?: string
   path?: string
   previewKind?: 'binary' | 'html' | 'image' | 'text'
-  renderMode?: 'preview' | 'source'
+  renderMode?: 'diff' | 'preview' | 'source'
   source: string
   url: string
 }
@@ -138,6 +139,10 @@ function isFilePreviewSource(source: PreviewRecordSource): boolean {
 }
 
 function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSource): PreviewTarget {
+  if (target.renderMode === 'diff') {
+    return target
+  }
+
   if (target.kind !== 'file' || target.previewKind !== 'html') {
     return target
   }

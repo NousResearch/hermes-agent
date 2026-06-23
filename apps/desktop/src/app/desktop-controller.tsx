@@ -22,6 +22,7 @@ import {
   MESSAGING_SESSION_SOURCE_IDS,
   normalizeSessionSource
 } from '../lib/session-source'
+import { workspaceKey } from '../lib/workspace-key'
 import { latestSessionTodos } from '../lib/todos'
 import { setCronFocusJobId, setCronJobs } from '../store/cron'
 import {
@@ -953,7 +954,11 @@ export function DesktopController() {
   // where it shows. Lives in main's stacking context (not the root overlay layer)
   // so pane resize handles still paint above it. Toggling never rebuilds the shell.
   const mainOverlays = (
-    <PersistentTerminal cwd={currentCwd} onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
+    <PersistentTerminal
+      cwd={currentCwd}
+      onAddSelectionToChat={composer.addTerminalSelectionAttachment}
+      workspaceId={workspaceKey(currentCwd)}
+    />
   )
 
   const overlays = (

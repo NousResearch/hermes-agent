@@ -1272,6 +1272,7 @@ export interface Translations {
     aria: string
     panelsAria: string
     files: string
+    sourceControl: string
     terminal: string
     noFolderSelected: string
     changeCwdTitle: string
@@ -1280,6 +1281,8 @@ export interface Translations {
     remotePickerSelect: string
     folderTip: (cwd: string) => string
     openFolder: string
+    openInFileManager: string
+    couldNotOpenFolder: string
     refreshTree: string
     collapseAll: string
     previewUnavailable: string
@@ -1296,7 +1299,27 @@ export interface Translations {
     loadingTree: string
     loadingFiles: string
     terminalHide: string
+    terminalFocus: string
+    terminalSplit: string
+    dropPanelHere: string
+    resizePanelSplit: string
+    refreshChanges: string
+    sourceControlUnavailable: string
+    notGitRepository: string
+    notGitRepositoryBody: string
+    noChanges: string
+    noChangesBody: string
+    mergeChanges: string
+    stagedChanges: string
+    changes: string
+    untrackedFiles: string
     addToChat: string
+    stageChanges: string
+    unstageChanges: string
+    discardChanges: string
+    commitMessagePlaceholder: string
+    commitButton: string
+    commitHistory: string
   }
 
   preview: {
@@ -1312,6 +1335,8 @@ export interface Translations {
     sourceLineTitle: string
     source: string
     renderedPreview: string
+    changes: string
+    edit: string
     unknownSize: string
     binaryTitle: string
     binaryBody: (label: string) => string

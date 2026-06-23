@@ -35,6 +35,42 @@ function previewSelectionLabel(): string {
 }
 
 const HERMES_PATHS_MIME = 'application/x-hermes-paths'
+const XTERM_SCROLLBAR_WIDTH = 14
+
+interface XtermRenderDimensions {
+  css?: {
+    cell?: {
+      height?: number
+      width?: number
+    }
+  }
+}
+
+function terminalGridSize(term: Terminal, host: HTMLDivElement) {
+  const dimensions = (
+    term as unknown as {
+      _core?: {
+        _renderService?: {
+          dimensions?: XtermRenderDimensions
+        }
+      }
+    }
+  )._core?._renderService?.dimensions
+
+  const cellWidth = dimensions?.css?.cell?.width ?? 0
+  const cellHeight = dimensions?.css?.cell?.height ?? 0
+
+  if (cellWidth <= 0 || cellHeight <= 0) {
+    return null
+  }
+
+  const scrollbarWidth = term.options.scrollback === 0 ? 0 : term.options.overviewRuler?.width || XTERM_SCROLLBAR_WIDTH
+
+  return {
+    cols: Math.max(2, Math.floor((host.clientWidth - scrollbarWidth) / cellWidth)),
+    rows: Math.max(1, Math.floor(host.clientHeight / cellHeight))
+  }
+}
 
 function readEscapeSequence(data: string, index: number) {
   if (data.charCodeAt(index) !== 0x1b || index + 1 >= data.length) {
@@ -253,6 +289,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
   const selectionLabelRef = useRef('')
   const selectionRef = useRef('')
   const onAddSelectionToChatRef = useRef(onAddSelectionToChat)
+  const cwdRef = useRef(cwd)
   const [status, setStatus] = useState<TerminalStatus>('starting')
   const [selection, setSelection] = useState('')
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
@@ -327,6 +364,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     let disposed = false
     const cleanup: Array<() => void> = []
     let lastSentSize: { cols: number; rows: number } | null = null
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
 
     const term = new Terminal({
       allowProposedApi: true,
@@ -481,14 +519,36 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     })
 
     const fitAndResize = () => {
-      if (disposed || !host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
+      if (disposed || !host.isConnected) {
         return
       }
 
+      if (host.clientWidth < 8 || host.clientHeight < 8) {
+        return
+      }
+
+      const grid = terminalGridSize(term, host)
+
       try {
-        fit.fit()
+        if (grid) {
+          if (term.cols !== grid.cols || term.rows !== grid.rows) {
+            term.resize(grid.cols, grid.rows)
+          }
+        } else {
+          fit.fit()
+        }
       } catch {
         return
+      }
+
+      if ((!grid || term.cols <= 2 || term.rows <= 1) && !retryTimer) {
+        retryTimer = setTimeout(() => {
+          retryTimer = null
+
+          if (!disposed) {
+            fitAndResize()
+          }
+        }, 100)
       }
 
       const id = sessionIdRef.current
@@ -519,13 +579,47 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       })
     }
 
+    // Observe the host (covers size changes inside the fixed wrapper) AND the
+    // fixed wrapper's ancestors — the persistent overlay positions via
+    // position:fixed inline style, so the host's flex-1 box only re-sizes
+    // when the wrapper's explicit width/height changes. Watching window resize
+    // covers cases where the right sidebar is being resized.
     const resizeObserver = new ResizeObserver(scheduleResize)
     resizeObserver.observe(host)
+
+    let hostWindowRaf = 0
+
+    const onWindowResize = () => {
+      if (hostWindowRaf) {
+        return
+      }
+
+      hostWindowRaf = window.requestAnimationFrame(() => {
+        hostWindowRaf = 0
+
+        if (!disposed) {
+          fitAndResize()
+        }
+      })
+    }
+
+    window.addEventListener('resize', onWindowResize)
     cleanup.push(() => {
+      window.removeEventListener('resize', onWindowResize)
+
+      if (hostWindowRaf) {
+        window.cancelAnimationFrame(hostWindowRaf)
+      }
+
       resizeObserver.disconnect()
 
       if (pendingFrame) {
         window.cancelAnimationFrame(pendingFrame)
+      }
+
+      if (retryTimer) {
+        clearTimeout(retryTimer)
+        retryTimer = null
       }
     })
 
@@ -557,7 +651,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
     const startSession = () =>
       void terminalApi
-        .start({ cols: term.cols, cwd, rows: term.rows })
+        .start({ cols: term.cols, cwd: cwdRef.current, rows: term.rows })
         .then(session => {
           if (disposed) {
             void terminalApi.dispose(session.id)
@@ -654,7 +748,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       selectionRef.current = ''
       selectionLabelRef.current = ''
     }
-  }, [addSelectionToChat, cwd])
+  }, [addSelectionToChat])
 
   useEffect(() => {
     const term = termRef.current
@@ -701,6 +795,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
   return {
     addSelectionToChat,
+    focus: () => termRef.current?.focus(),
     hostRef,
     selection,
     selectionStyle,

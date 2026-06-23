@@ -2,6 +2,11 @@ name: Tests
 
 on:
   workflow_call:
+    inputs:
+      slice_count:
+        description: Number of parallel test slices
+        type: number
+        default: 8
 
 permissions:
   contents: read
@@ -12,13 +17,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  generate:
+    runs-on: ubuntu-latest
+    outputs:
+      slices: ${{ steps.matrix.outputs.slices }}
+      slice_count: ${{ steps.matrix.outputs.slice_count }}
+    steps:
+      - name: Generate slice matrix
+        id: matrix
+        run: |
+          COUNT="${{ inputs.slice_count }}"
+          SLICES=$(python3 -c "import json; print(json.dumps({'slice': list(range(1, $COUNT + 1))}))")
+          echo "slices=$SLICES" >> "$GITHUB_OUTPUT"
+          echo "slice_count=$COUNT" >> "$GITHUB_OUTPUT"
+
   test:
+    needs: generate
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix:
-        slice: [1, 2, 3, 4, 5, 6]
+      matrix: ${{ fromJSON(needs.generate.outputs.slices) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -78,7 +97,7 @@ jobs:
         # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
 
-      - name: Run tests (slice ${{ matrix.slice }}/6)
+      - name: Run tests (slice ${{ matrix.slice }}/${{ needs.generate.outputs.slice_count }})
         # Per-file isolation via scripts/run_tests.sh: discovers
         # every test_*.py file under tests/ (excluding integration/ + e2e/),
         # then runs `python -m pytest <file>` in a freshly-spawned subprocess
@@ -97,14 +116,14 @@ jobs:
         # fix. ThreadPoolExecutor + subprocess.run is ~60 lines and does
         # the job with cleaner semantics.
         #
-        # Matrix slicing (--slice I/N): files are distributed across 6
+        # Matrix slicing (--slice I/N): files are distributed across N
         # jobs by cached duration (LPT algorithm) so each job gets
         # roughly equal wall time. Without a cache, files default to 2s
         # estimate and get split roughly evenly by count — still correct,
         # just not perfectly balanced.
         run: |
           source .venv/bin/activate
-          scripts/run_tests.sh --slice ${{ matrix.slice }}/6
+          scripts/run_tests.sh --slice ${{ matrix.slice }}/${{ needs.generate.outputs.slice_count }}
         env:
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""

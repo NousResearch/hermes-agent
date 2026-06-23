@@ -3,6 +3,7 @@ const {
   BrowserWindow,
   Menu,
   Notification,
+  Tray,
   clipboard,
   dialog,
   ipcMain,
@@ -387,6 +388,8 @@ const APP_ICON_PATHS = [
 ]
 
 let rendererTitleBarTheme = null
+let tray = null
+let isQuitting = false
 const terminalSessions = new Map()
 
 // Force the NATIVE window appearance (vibrancy material, titlebar, the
@@ -5444,6 +5447,14 @@ function createWindow() {
 
   wireCommonWindowHandlers(mainWindow)
 
+  // Close → hide to tray (Windows/Linux). Only actually quit when isQuitting is set.
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault()
+      mainWindow.hide()
+    }
+  })
+
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
 
@@ -5500,6 +5511,58 @@ function createWindow() {
     broadcastBootProgress()
     sendWindowStateChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))
+  })
+}
+
+/**
+ * Create a system tray icon (Windows/Linux) so closing the window
+ * hides to tray instead of quitting. The tray icon has a context menu
+ * with "Quit" for a full exit.
+ */
+function createTray() {
+  if (tray) return
+  const iconPath = getAppIconPath()
+  if (!iconPath) return
+
+  const icon = nativeImage.createFromPath(iconPath)
+  // Resize to a reasonable tray size (Windows uses 16x16..32x32)
+  tray = new Tray(icon.resize({ width: 32, height: 32 }))
+  tray.setToolTip(APP_NAME)
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: `Open ${APP_NAME}`,
+      click: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show()
+          mainWindow.focus()
+        } else {
+          createWindow()
+        }
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        isQuitting = true
+        app.quit()
+      }
+    }
+  ])
+
+  tray.setContextMenu(contextMenu)
+
+  // Single click: show / focus the main window
+  tray.on('click', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isVisible()) {
+        mainWindow.focus()
+      } else {
+        mainWindow.show()
+        mainWindow.focus()
+      }
+    }
   })
 }
 
@@ -6731,6 +6794,7 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   createWindow()
+  createTray()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
@@ -6772,6 +6836,8 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  isQuitting = true
+
   // Quitting mid-install should stop the installer, not orphan it.
   if (bootstrapAbortController) {
     try {
@@ -6801,5 +6867,6 @@ app.on('before-quit', () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  // Don't quit on Windows/Linux — window was hidden to tray instead.
+  // macOS keeps running by default, which is unchanged.
 })

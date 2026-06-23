@@ -3129,6 +3129,19 @@ def _try_main_agent_model_fallback(
         _log_skip_unhealthy(main_provider, task)
         return None, None, ""
 
+    # For vision tasks: skip if the main model is not confirmed to support
+    # vision.  Sending an image_url payload to text-only models like DeepSeek
+    # produces a cryptic 400 error ("unknown variant `image_url`, expected
+    # `text`").  Let the original quota/payment error propagate instead so
+    # callers can surface a clear message to the user.  (#51220)
+    if task == "vision" and not _main_model_supports_vision(main_provider, main_model):
+        logger.info(
+            "Auxiliary vision: main model %s (%s) does not support vision "
+            "— skipping main-agent fallback so the original error propagates",
+            main_provider, main_model,
+        )
+        return None, None, ""
+
     try:
         client, resolved_model = resolve_provider_client(
             provider=main_provider, model=main_model,

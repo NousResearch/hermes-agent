@@ -1936,6 +1936,41 @@ class TestTryMainAgentModelFallback:
             client, model, label = _try_main_agent_model_fallback("glm", task="vision")
         assert client is None
 
+    def test_skips_vision_fallback_when_main_model_lacks_vision(self):
+        """Vision tasks must NOT fall back to a text-only main model. (#51220)"""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        with patch("agent.auxiliary_client._read_main_provider", return_value="deepseek"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="deepseek-chat"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client._main_model_supports_vision", return_value=False):
+            client, model, label = _try_main_agent_model_fallback("gemini", task="vision")
+        assert client is None and model is None and label == ""
+
+    def test_allows_vision_fallback_when_main_model_supports_vision(self):
+        """Vision tasks CAN fall back to a main model that supports vision."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        fake_client = MagicMock()
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openai"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="gpt-4o"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client._main_model_supports_vision", return_value=True), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "gpt-4o")):
+            client, model, label = _try_main_agent_model_fallback("gemini", task="vision")
+        assert client is fake_client
+
+    def test_skips_vision_fallback_does_not_affect_non_vision_tasks(self):
+        """Non-vision tasks should still fall back regardless of vision capability."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        fake_client = MagicMock()
+        with patch("agent.auxiliary_client._read_main_provider", return_value="deepseek"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="deepseek-chat"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "deepseek-chat")):
+            client, model, label = _try_main_agent_model_fallback("openrouter", task=None)
+        assert client is fake_client
+
 
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured

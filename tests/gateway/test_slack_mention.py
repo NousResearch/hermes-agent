@@ -267,6 +267,8 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
             return True
         elif not adapter._slack_require_mention():
             return True
+        elif adapter._slack_strict_mention() and not is_mentioned:
+            return False
         elif not is_mentioned:
             if thread_reply and active_session:
                 return True
@@ -317,6 +319,14 @@ def test_thread_reply_with_active_session_processed():
         adapter, text="followup",
         thread_reply=True, active_session=True,
     ) is True
+
+
+def test_strict_mention_thread_reply_with_active_session_ignored():
+    adapter = _make_adapter(require_mention=True, strict_mention=True)
+    assert _would_process(
+        adapter, text="followup",
+        thread_reply=True, active_session=True,
+    ) is False
 
 
 def test_thread_reply_without_active_session_ignored():

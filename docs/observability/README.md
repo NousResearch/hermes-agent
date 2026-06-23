@@ -222,6 +222,43 @@ and `child_goal`.
 Observers can use these hooks to model nested trajectories while keeping child
 agent execution linked to the parent turn that spawned it.
 
+### Kanban Task Lifecycle
+
+Kanban observer hooks are a stable core contract for telemetry plugins that
+need to correlate dispatcher activity with worker execution:
+
+| Hook | When it fires |
+| --- | --- |
+| `kanban_task_claimed` | After a dispatcher or operator durably transitions a task to `running` and creates its run record, before the worker subprocess is spawned. |
+| `kanban_task_completed` | After `kanban_complete` / `complete_task` durably transitions the task to `done` and records the run outcome. |
+| `kanban_task_blocked` | After `kanban_block` / `block_task` durably transitions the task to `blocked` and records the reason. |
+
+Common fields include `task_id`, `board`, `assignee`, `run_id`, and
+`profile_name`. Completion adds `summary`; block adds `reason`. These hooks are
+observer-only and fail-open: callback exceptions are logged/swallowed and must
+not roll back or prevent the board transition.
+
+Dispatcher-spawned worker subprocesses also receive a stable Kanban environment
+contract so plugins can derive task context in every profile without parsing the
+prompt: `HERMES_KANBAN_TASK`, `HERMES_KANBAN_RUN_ID`,
+`HERMES_KANBAN_BOARD`, `HERMES_KANBAN_DB`,
+`HERMES_KANBAN_WORKSPACES_ROOT`, `HERMES_KANBAN_WORKSPACE`,
+`HERMES_PROFILE`, and, when applicable, `HERMES_TENANT` and `TERMINAL_CWD`.
+`TERMINAL_CWD` is set only when the workspace is an existing absolute
+directory.
+
+Post-upgrade Kanban/OTel verification checklist:
+
+1. Run the core contract tests:
+   `scripts/run_tests.sh tests/hermes_cli/test_kanban_lifecycle_hooks.py tests/hermes_cli/test_kanban_worker_terminal_cwd.py tests/hermes_cli/test_kanban_boards.py::TestWorkerSpawnEnv::test_default_spawn_sets_env_vars tests/hermes_cli/test_kanban_db.py::TestSharedBoardPaths::test_dispatcher_spawn_injects_kanban_db_and_workspaces_root`.
+2. Run the OTel plugin's Kanban context tests from the plugin project
+environment so the test imports the candidate plugin, not an installed profile
+copy.
+3. Smoke a real Kanban worker and inspect the exported trace for canonical
+`hermes.kanban.*` attributes on session/root, LLM/API, tool, error, and
+lifecycle spans.
+4. Confirm non-Kanban chats do not emit `hermes.kanban.*` attributes.
+
 ## Payload Safety
 
 Observer payloads are designed for telemetry consumers, not raw object access.

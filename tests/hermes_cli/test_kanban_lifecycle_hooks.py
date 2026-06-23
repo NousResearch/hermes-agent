@@ -37,9 +37,16 @@ def captured_hooks(monkeypatch):
     events: list[tuple[str, dict]] = []
     saved = {k: list(v) for k, v in mgr._hooks.items()}
     for hook in ("kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked"):
-        mgr._hooks.setdefault(hook, []).append(
-            lambda _h=hook, **kw: events.append((_h, kw))
-        )
+        def _capture(_h=hook, **kw):
+            # Read through a separate connection so the test proves the hook
+            # fires after the transition is durably committed, not while the
+            # SQLite write transaction is still open.
+            with kb.connect() as check_conn:
+                task = kb.get_task(check_conn, kw["task_id"])
+            kw["_observed_status"] = task.status if task else None
+            events.append((_h, kw))
+
+        mgr._hooks.setdefault(hook, []).append(_capture)
     try:
         yield events
     finally:
@@ -65,9 +72,11 @@ def test_claim_fires_hook(kanban_home, captured_hooks):
     assert len(fired) == 1
     kw = fired[0][1]
     assert kw["task_id"] == tid
+    assert kw["board"] == "default"
     assert kw["assignee"] == "worker"
     assert "profile_name" in kw
     assert kw["run_id"] is not None
+    assert kw["_observed_status"] == "running"
 
 
 def test_complete_fires_hook_with_summary(kanban_home, captured_hooks):
@@ -82,8 +91,11 @@ def test_complete_fires_hook_with_summary(kanban_home, captured_hooks):
     assert len(fired) == 1
     kw = fired[0][1]
     assert kw["task_id"] == tid
+    assert kw["board"] == "default"
     assert kw["summary"] == "all done"
     assert kw["assignee"] == "worker"
+    assert kw["run_id"] is not None
+    assert kw["_observed_status"] == "done"
 
 
 def test_block_fires_hook_with_reason(kanban_home, captured_hooks):
@@ -98,7 +110,11 @@ def test_block_fires_hook_with_reason(kanban_home, captured_hooks):
     assert len(fired) == 1
     kw = fired[0][1]
     assert kw["task_id"] == tid
+    assert kw["board"] == "default"
     assert kw["reason"] == "needs human"
+    assert kw["assignee"] == "worker"
+    assert kw["run_id"] is not None
+    assert kw["_observed_status"] == "blocked"
 
 
 def test_no_hook_on_failed_transition(kanban_home, captured_hooks):
@@ -129,6 +145,54 @@ def test_misbehaving_hook_does_not_break_transition(kanban_home, monkeypatch):
             # Despite the raising hook, completion succeeds and persists.
             assert kb.complete_task(conn, tid, summary="ok") is True
             assert kb.get_task(conn, tid).status == "done"
+        finally:
+            conn.close()
+    finally:
+        mgr._hooks = saved
+
+
+@pytest.mark.parametrize(
+    ("hook_name", "transition"),
+    [
+        ("kanban_task_claimed", "claim"),
+        ("kanban_task_completed", "complete"),
+        ("kanban_task_blocked", "block"),
+    ],
+)
+def test_misbehaving_lifecycle_hooks_fail_open_for_every_transition(
+    kanban_home,
+    hook_name,
+    transition,
+):
+    """A broken observer must never prevent claim, complete, or block."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+
+    def _boom(**kw):
+        raise RuntimeError("plugin exploded")
+
+    mgr._hooks.setdefault(hook_name, []).append(_boom)
+    try:
+        conn = kb.connect()
+        try:
+            tid = kb.create_task(conn, title="t", assignee="worker")
+            if transition == "claim":
+                assert kb.claim_task(conn, tid) is not None
+                task = kb.get_task(conn, tid)
+                assert task is not None
+                assert task.status == "running"
+            else:
+                assert kb.claim_task(conn, tid) is not None
+                if transition == "complete":
+                    assert kb.complete_task(conn, tid, summary="ok") is True
+                    task = kb.get_task(conn, tid)
+                    assert task is not None
+                    assert task.status == "done"
+                else:
+                    assert kb.block_task(conn, tid, reason="needs human") is True
+                    task = kb.get_task(conn, tid)
+                    assert task is not None
+                    assert task.status == "blocked"
         finally:
             conn.close()
     finally:

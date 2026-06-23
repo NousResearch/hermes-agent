@@ -16,7 +16,7 @@ from __future__ import annotations
 import subprocess
 
 
-def _make_task(kb, *, assignee: str = "w"):
+def _make_task(kb, *, assignee: str = "w", tenant: str | None = None):
     return kb.Task(
         id="t_cwd",
         title="cwd pin",
@@ -32,7 +32,7 @@ def _make_task(kb, *, assignee: str = "w"):
         workspace_path=None,
         claim_lock="lock",
         claim_expires=None,
-        tenant=None,
+        tenant=tenant,
         current_run_id=1,
     )
 
@@ -75,6 +75,61 @@ def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
     # The subprocess cwd and TERMINAL_CWD must agree — both anchor the workspace.
     assert captured["cwd"] == str(workspace)
     assert captured["env"]["HERMES_KANBAN_WORKSPACE"] == str(workspace)
+
+
+def test_default_spawn_pins_stable_kanban_worker_env(monkeypatch, tmp_path):
+    """Dispatcher-spawned workers carry the full Kanban observer contract env."""
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "w").mkdir(parents=True)
+    (root / "profiles" / "w" / "config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    captured = _capture_spawn_env(kb, monkeypatch, str(workspace))
+    env = captured["env"]
+
+    assert env["HERMES_KANBAN_TASK"] == "t_cwd"
+    assert env["HERMES_KANBAN_RUN_ID"] == "1"
+    assert env["HERMES_KANBAN_BOARD"] == "default"
+    assert env["HERMES_KANBAN_DB"] == str(root / "kanban.db")
+    assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(root / "kanban" / "workspaces")
+    assert env["HERMES_KANBAN_WORKSPACE"] == str(workspace)
+    assert env["HERMES_PROFILE"] == "w"
+    assert env["TERMINAL_CWD"] == str(workspace)
+
+
+def test_default_spawn_injects_tenant_when_present(monkeypatch, tmp_path):
+    """Tenant is optional, but when present workers inherit it exactly."""
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "w").mkdir(parents=True)
+    (root / "profiles" / "w" / "config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+
+    captured: dict = {}
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["env"] = dict(kwargs.get("env") or {})
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    kb._default_spawn(_make_task(kb, tenant="tenant-a"), str(workspace))
+
+    assert captured["env"]["HERMES_TENANT"] == "tenant-a"
 
 
 def test_terminal_cwd_not_pinned_for_nonexistent_workspace(monkeypatch, tmp_path):

@@ -5285,6 +5285,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
+                    # Pre-seed dedup: when _auto_create_thread creates a thread
+                    # via message.create_thread(), Discord fires a second
+                    # MESSAGE_CREATE event for the "thread starter message".
+                    # That starter message carries id == thread.id and may
+                    # arrive with type=default (not type=21/thread_starter_message),
+                    # so the type filter above does not catch it.  Marking the
+                    # thread id in the dedup cache now ensures that duplicate
+                    # event is dropped before it can trigger a second agent run.
+                    # Fixes #51057.
+                    self._dedup.is_duplicate(str(thread.id))
 
         referenced_attachments = []
         reference = getattr(message, "reference", None)

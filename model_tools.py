@@ -34,6 +34,10 @@ from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
+# Tracks platform-bundle names already flagged in disabled_toolsets so the
+# advisory (#33924) is logged once per name, not on every tool recompute.
+_WARNED_DISABLED_BUNDLES: set = set()
+
 
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
@@ -414,8 +418,29 @@ def _compute_tool_definitions(
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
-                resolved = resolve_toolset(toolset_name)
-                tools_to_include.difference_update(resolved)
+                if toolset_name.startswith("hermes-"):
+                    # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, so
+                    # subtracting the whole bundle would strip core tools shared
+                    # by other enabled toolsets and empty the tool list (#33924).
+                    # Subtract only the bundle's non-core delta; keep core.
+                    from toolsets import bundle_non_core_tools
+                    to_remove = bundle_non_core_tools(toolset_name)
+                    tools_to_include.difference_update(to_remove)
+                    resolved = sorted(to_remove)
+                    if not quiet_mode and toolset_name not in _WARNED_DISABLED_BUNDLES:
+                        _WARNED_DISABLED_BUNDLES.add(toolset_name)
+                        logger.info(
+                            "agent.disabled_toolsets contains platform-bundle "
+                            "name '%s'; core tools are preserved and only its "
+                            "platform-specific tools (%s) are removed. Bundle "
+                            "names usually belong in `toolsets:`, not "
+                            "`disabled_toolsets` (#33924).",
+                            toolset_name,
+                            ", ".join(resolved) if resolved else "none",
+                        )
+                else:
+                    resolved = resolve_toolset(toolset_name)
+                    tools_to_include.difference_update(resolved)
                 if not quiet_mode:
                     print(
                         f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}"

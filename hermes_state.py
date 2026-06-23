@@ -75,8 +75,16 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     orchestrator subagent's own delegate children go too (FK safety).
     """
     df = _delegate_from_json()
-    found: set[str] = set()
-    frontier = [sid for sid in parent_ids if sid]
+    seeds = {sid for sid in parent_ids if sid}
+    # Seed the visited set with the parents themselves. A delegation marker
+    # chain can loop back onto a parent — a cycle, or a parent that is also
+    # another parent's delegate child when several ids are deleted at once —
+    # and without this guard that parent would be collected as one of its own
+    # descendants and cascade-deleted along with all of its messages. Callers
+    # delete the parents separately, so parents must never appear in the
+    # returned child set. (#49148)
+    found: set[str] = set(seeds)
+    frontier = list(seeds)
     while frontier:
         ph = ",".join("?" * len(frontier))
         cursor = conn.execute(
@@ -86,7 +94,8 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
         )
         frontier = [row["id"] for row in cursor.fetchall() if row["id"] not in found]
         found.update(frontier)
-    return list(found)
+    # Return only the discovered children — never the parents themselves.
+    return [sid for sid in found if sid not in seeds]
 
 
 def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
@@ -4613,6 +4622,83 @@ class SessionDB:
             except sqlite3.OperationalError:
                 return None
         return dict(row) if row else None
+
+    def delete_telegram_topic_binding(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+    ) -> int:
+        """Remove the binding row for a single (chat, thread) pair.
+
+        Called when the Telegram Bot API confirms a topic was deleted
+        externally (``Thread not found`` after the same-thread retry
+        already failed).  Without this prune, the stale row keeps
+        living in ``telegram_dm_topic_bindings`` and the
+        recovery logic in ``gateway.run._recover_telegram_topic_thread_id``
+        cheerfully redirects future inbound messages to the deleted
+        topic, causing tool progress, approvals, and replies to land
+        in the wrong place.  Issue #31501.
+
+        When this prune removes the chat's *last* remaining binding,
+        the chat's row in ``telegram_dm_topic_mode`` is also flipped to
+        ``enabled = 0`` in the same transaction.  Otherwise the chat
+        would be left in topic mode with zero lanes — and
+        ``gateway.run._recover_telegram_topic_thread_id`` keeps treating
+        the chat as topic-enabled, lobby messages keep hunting for a
+        binding that no longer exists, and a user who disabled topics in
+        the Telegram client (rather than via ``/topic off``) stays stuck
+        until the next send happens to fail. Clearing the flag makes
+        recovery fully stand down once the dead topics are gone.
+
+        Returns the number of binding rows deleted (0 when the binding
+        was already absent or the topic-mode tables haven't been
+        migrated yet — both are silent no-ops; we never raise from
+        a cleanup hot path).
+        """
+        chat_id = str(chat_id)
+        thread_id = str(thread_id)
+        deleted = {"count": 0}
+
+        def _do(conn):
+            try:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM telegram_dm_topic_bindings
+                    WHERE chat_id = ? AND thread_id = ?
+                    """,
+                    (chat_id, thread_id),
+                )
+                deleted["count"] = cursor.rowcount or 0
+            except sqlite3.OperationalError:
+                # Tables don't exist yet — nothing to prune.
+                deleted["count"] = 0
+                return
+            if not deleted["count"]:
+                return
+            # If that was the chat's last binding, disable topic mode for
+            # the chat so recovery stops steering lobby messages at a now
+            # empty lane set. Same transaction → no read-after-prune race.
+            try:
+                remaining = conn.execute(
+                    """
+                    SELECT 1 FROM telegram_dm_topic_bindings
+                    WHERE chat_id = ? LIMIT 1
+                    """,
+                    (chat_id,),
+                ).fetchone()
+                if remaining is None:
+                    conn.execute(
+                        "UPDATE telegram_dm_topic_mode "
+                        "SET enabled = 0, updated_at = ? WHERE chat_id = ?",
+                        (time.time(), chat_id),
+                    )
+            except sqlite3.OperationalError:
+                # telegram_dm_topic_mode absent — binding prune still stands.
+                pass
+
+        self._execute_write(_do)
+        return deleted["count"]
 
     def bind_telegram_topic(
         self,

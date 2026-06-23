@@ -375,6 +375,53 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"] == {}
 
 
+class TestGetProcessStartTime:
+    """Start-time fingerprint backing the PID-reuse guard (#43846 / #50468).
+
+    Must be stable across repeated reads of the same live process and degrade to
+    a cross-platform psutil fallback when /proc is unavailable (macOS/Windows),
+    so the guard isn't a Linux-only no-op.
+    """
+
+    def test_live_process_is_stable_int(self):
+        import subprocess
+        import time
+        p = subprocess.Popen(["sleep", "20"])
+        try:
+            a = status._get_process_start_time(p.pid)
+            time.sleep(0.2)
+            b = status._get_process_start_time(p.pid)
+            assert a is not None and isinstance(a, int)
+            assert a == b  # same process → identical fingerprint
+        finally:
+            p.kill()
+            p.wait()
+
+    def test_dead_pid_returns_none(self):
+        assert status._get_process_start_time(999999999) is None
+
+    def test_psutil_fallback_when_no_proc(self, monkeypatch):
+        """When /proc is missing (macOS/Windows), psutil supplies a stable int."""
+        import subprocess
+        orig_read_text = Path.read_text
+
+        def no_proc(self, *args, **kwargs):
+            if str(self).startswith("/proc/"):
+                raise FileNotFoundError
+            return orig_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", no_proc)
+        p = subprocess.Popen(["sleep", "20"])
+        try:
+            a = status._get_process_start_time(p.pid)
+            b = status._get_process_start_time(p.pid)
+            assert a is not None and isinstance(a, int)
+            assert a == b  # fallback is stable across reads
+        finally:
+            p.kill()
+            p.wait()
+
+
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
         calls = []
@@ -1107,3 +1154,119 @@ class TestCorruptStatusFiles:
         p = tmp_path / "gateway.pid"
         p.write_text("4242", encoding="utf-8")
         assert status._read_pid_record(p) == {"pid": 4242}
+
+
+class TestParseActiveAgents:
+    """The shared read-side coercion used by BOTH HTTP surfaces (/api/status
+    and /health/detailed) so the exposed active_agents field is consistent and
+    never negative regardless of what the status file holds."""
+
+    def test_valid_int_passthrough(self):
+        assert status.parse_active_agents(3) == 3
+
+    def test_zero(self):
+        assert status.parse_active_agents(0) == 0
+
+    def test_numeric_string_coerced(self):
+        assert status.parse_active_agents("5") == 5
+
+    def test_negative_clamped_to_zero(self):
+        assert status.parse_active_agents(-3) == 0
+
+    def test_none_degrades_to_zero(self):
+        assert status.parse_active_agents(None) == 0
+
+    def test_garbage_string_degrades_to_zero(self):
+        assert status.parse_active_agents("garbage") == 0
+
+    def test_float_truncates(self):
+        # int() truncation, then clamp — never raises.
+        assert status.parse_active_agents(2.9) == 2
+
+
+class TestActiveAgentsTurnBoundaryWrite:
+    """The load-bearing Phase 1a contract: writing the in-flight count at a
+    turn boundary must PRESERVE the lifecycle gateway_state. The whole readout
+    depends on active_agents being refreshed per-turn while gateway_state is
+    only touched by lifecycle transitions — so an active_agents-only write must
+    not clobber it."""
+
+    def test_active_agents_only_write_preserves_gateway_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # Lifecycle transition sets running.
+        status.write_runtime_status(gateway_state="running", active_agents=0)
+        assert status.read_runtime_status()["gateway_state"] == "running"
+
+        # Turn-boundary write: ONLY active_agents (gateway_state left _UNSET).
+        status.write_runtime_status(active_agents=2)
+
+        rec = status.read_runtime_status()
+        assert rec["active_agents"] == 2
+        # The state must survive the per-turn write — this is what makes the
+        # _persist_active_agents helper safe to call on every turn.
+        assert rec["gateway_state"] == "running"
+
+    def test_active_agents_only_write_preserves_draining_state(self, tmp_path, monkeypatch):
+        """Same invariant while draining — a turn finishing mid-drain (count
+        falling) must not flip the state back to running."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(gateway_state="draining", active_agents=3)
+        status.write_runtime_status(active_agents=2)
+
+        rec = status.read_runtime_status()
+        assert rec["active_agents"] == 2
+        assert rec["gateway_state"] == "draining"
+
+    def test_active_agents_clamped_non_negative(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status.write_runtime_status(gateway_state="running", active_agents=-5)
+        assert status.read_runtime_status()["active_agents"] == 0
+class TestGatewayBusyDerivation:
+    """Pure contract for derive_gateway_busy / derive_gateway_drainable — the
+    single shared definition both /api/status and /health/detailed consume."""
+
+    def test_busy_requires_running_state_and_positive_count(self):
+        assert status.derive_gateway_busy(
+            gateway_running=True, gateway_state="running", active_agents=1
+        ) is True
+        assert status.derive_gateway_busy(
+            gateway_running=True, gateway_state="running", active_agents=0
+        ) is False
+
+    def test_busy_false_when_not_live_even_if_file_says_active(self):
+        # Liveness wins: gateway_running False ⇒ never busy, regardless of count.
+        assert status.derive_gateway_busy(
+            gateway_running=False, gateway_state="running", active_agents=9
+        ) is False
+
+    def test_busy_false_for_non_running_states(self):
+        for state in ("draining", "stopping", "stopped", "startup_failed", None):
+            assert status.derive_gateway_busy(
+                gateway_running=True, gateway_state=state, active_agents=5
+            ) is False, state
+
+    def test_busy_degrades_on_unparseable_count(self):
+        for bad in (None, "garbage", object()):
+            assert status.derive_gateway_busy(
+                gateway_running=True, gateway_state="running", active_agents=bad
+            ) is False
+
+    def test_drainable_is_running_and_live_independent_of_count(self):
+        # Idle running gateway is drainable but NOT busy.
+        assert status.derive_gateway_drainable(
+            gateway_running=True, gateway_state="running"
+        ) is True
+        assert status.derive_gateway_busy(
+            gateway_running=True, gateway_state="running", active_agents=0
+        ) is False
+
+    def test_drainable_false_when_down_or_not_running(self):
+        assert status.derive_gateway_drainable(
+            gateway_running=False, gateway_state="running"
+        ) is False
+        for state in ("draining", "stopped", None):
+            assert status.derive_gateway_drainable(
+                gateway_running=True, gateway_state=state
+            ) is False, state

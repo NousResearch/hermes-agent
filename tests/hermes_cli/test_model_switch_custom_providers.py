@@ -153,6 +153,23 @@ def test_is_aggregator_leaves_unknown_provider_non_aggregator():
     assert providers_mod.is_aggregator("not-a-provider") is False
 
 
+def test_is_routing_aggregator_excludes_flat_namespace_resellers():
+    """opencode-go / opencode-zen stay ``is_aggregator=True`` (model-switch
+    relies on it to search their flat bare-name catalog), but they are NOT
+    routing aggregators — their models are first-party, so the picker dedup
+    must not strip them. (#47077)"""
+    # Still aggregators for model-switch flat-catalog resolution.
+    assert providers_mod.is_aggregator("opencode-go") is True
+    assert providers_mod.is_aggregator("opencode-zen") is True
+    # But NOT routing aggregators for picker-dedup purposes.
+    assert providers_mod.is_routing_aggregator("opencode-go") is False
+    assert providers_mod.is_routing_aggregator("opencode-zen") is False
+    # True routers and custom proxies remain routing aggregators.
+    assert providers_mod.is_routing_aggregator("openrouter") is True
+    assert providers_mod.is_routing_aggregator("custom:litellm") is True
+    assert providers_mod.is_routing_aggregator("not-a-provider") is False
+
+
 def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     """Shared /model switch pipeline should accept --provider for custom_providers."""
     monkeypatch.setattr(

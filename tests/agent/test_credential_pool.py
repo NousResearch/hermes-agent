@@ -1179,7 +1179,10 @@ def test_load_pool_falls_back_to_os_environ_when_dotenv_empty(tmp_path, monkeypa
     assert entry.access_token == "sk-or-from-runtime-env"
 
 
-def test_load_pool_removes_stale_seeded_env_entry(tmp_path, monkeypatch):
+def test_load_pool_preserves_env_seeded_entry_when_env_is_missing(tmp_path, monkeypatch):
+    # Regression for #9331: load_pool() is a non-destructive read. A process
+    # that lacks the seeding env var must NOT delete the persisted pool entry
+    # that another process correctly seeded.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     _write_auth_store(
@@ -1206,10 +1209,54 @@ def test_load_pool_removes_stale_seeded_env_entry(tmp_path, monkeypatch):
 
     pool = load_pool("openrouter")
 
-    assert pool.entries() == []
+    entries = pool.entries()
+    assert len(entries) == 1
+    assert entries[0].source == "env:OPENROUTER_API_KEY"
 
     auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
-    assert auth_payload["credential_pool"]["openrouter"] == []
+    persisted = auth_payload["credential_pool"]["openrouter"]
+    assert len(persisted) == 1
+    assert persisted[0]["source"] == "env:OPENROUTER_API_KEY"
+
+
+def test_load_pool_missing_env_does_not_overwrite_other_process_seed(tmp_path, monkeypatch):
+    # The exact cross-process oscillation described in #9331: a process without
+    # MINIMAX_API_KEY must leave the on-disk entry intact for processes that
+    # do have it.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "minimax": [
+                    {
+                        "id": "minimax-env",
+                        "label": "MINIMAX_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:MINIMAX_API_KEY",
+                        "access_token": "seeded-by-other-process",
+                        "base_url": "https://api.minimaxi.chat/v1",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("minimax")
+
+    assert pool.has_credentials()
+    assert len(pool.entries()) == 1
+    assert pool.entries()[0].source == "env:MINIMAX_API_KEY"
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["minimax"]
+    assert len(persisted) == 1
+    assert persisted[0]["source"] == "env:MINIMAX_API_KEY"
 
 
 def test_load_pool_migrates_nous_provider_state(tmp_path, monkeypatch):

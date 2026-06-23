@@ -1890,3 +1890,71 @@ class TestPluginDebugLogging:
             plugins_mod._PLUGINS_DEBUG = original_debug
             plugins_mod.logger.setLevel(original_level)
             plugins_mod.logger.handlers = original_handlers
+
+
+class TestPluginContextProfileName:
+    """ctx.profile_name resolves from HERMES_HOME in every context."""
+
+    def _ctx(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        return PluginContext(manifest, mgr)
+
+    def test_default_profile(self, tmp_path, monkeypatch):
+        """HERMES_HOME at the root resolves to 'default'."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        assert self._ctx().profile_name == "default"
+
+    def test_named_profile(self, tmp_path, monkeypatch):
+        """HERMES_HOME under profiles/<name> resolves to that name."""
+        prof = tmp_path / ".hermes" / "profiles" / "coder"
+        prof.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(prof))
+        assert self._ctx().profile_name == "coder"
+
+    def test_works_without_cli_ref(self, tmp_path, monkeypatch):
+        """profile_name does not depend on _cli_ref (None in worker sessions)."""
+        prof = tmp_path / ".hermes" / "profiles" / "worker1"
+        prof.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(prof))
+        ctx = self._ctx()
+        assert ctx._manager._cli_ref is None
+        assert ctx.profile_name == "worker1"
+
+
+class TestDispatchToolWithoutCliRef:
+    """ctx.dispatch_tool works in worker/hook contexts (no _cli_ref).
+
+    This pins the contract the plugin docs rely on: a plugin can drive
+    tools from a hook callback even when running in the gateway or a
+    kanban-spawned worker session, where _cli_ref is None.
+    """
+
+    def test_dispatch_tool_invokes_handler_without_cli_ref(self):
+        from tools.registry import registry
+
+        mgr = PluginManager()
+        assert mgr._cli_ref is None  # worker/hook context
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+
+        calls = []
+        registry.register(
+            name="_test_dispatch_probe",
+            toolset="debugging",
+            schema={"name": "_test_dispatch_probe", "description": "probe",
+                    "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: calls.append((args, kw)) or '{"ok": true}',
+        )
+        try:
+            result = ctx.dispatch_tool("_test_dispatch_probe", {"x": 1})
+            assert result == '{"ok": true}'
+            assert calls and calls[0][0] == {"x": 1}
+            # parent_agent is not forced when there's no CLI agent to resolve.
+            assert calls[0][1].get("parent_agent") is None
+        finally:
+            registry.deregister("_test_dispatch_probe")

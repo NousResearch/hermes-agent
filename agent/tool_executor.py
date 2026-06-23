@@ -44,8 +44,25 @@ from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
 )
+from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
+
+
+def _budget_for_agent(agent) -> BudgetConfig:
+    """Resolve a tool-result BudgetConfig scaled to the agent's context window.
+
+    Large-context models keep the historical 100K/200K char defaults; small
+    models (e.g. a 65K-token local model switched into mid-session) get a budget
+    proportional to their window so a single large tool result can't push the
+    request past the model's limit (#23767). Falls back to the default budget
+    when the context length isn't resolvable.
+    """
+    try:
+        ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
+        return budget_for_context_window(int(ctx)) if ctx else DEFAULT_BUDGET
+    except Exception:
+        return DEFAULT_BUDGET
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
@@ -259,6 +276,10 @@ def execute_tool_calls_concurrent(
     """
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
+
+    # Resolve the context-scaled tool-output budget once per turn (cheap, but
+    # avoids rebuilding it per result inside the loop below).
+    _tool_budget = _budget_for_agent(agent)
 
     # ── Pre-flight: interrupt check ──────────────────────────────────
     if agent._interrupt_requested:
@@ -884,16 +905,13 @@ def execute_tool_calls_concurrent(
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
-        function_result = (
-            maybe_persist_tool_result(
-                content=function_result,
-                tool_name=name,
-                tool_use_id=tc.id,
-                env=get_active_env(effective_task_id),
-            )
-            if not _is_multimodal_tool_result(function_result)
-            else function_result
-        )
+        function_result = maybe_persist_tool_result(
+            content=function_result,
+            tool_name=name,
+            tool_use_id=tc.id,
+            env=get_active_env(effective_task_id),
+            config=_tool_budget,
+        ) if not _is_multimodal_tool_result(function_result) else function_result
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
         if subdir_hints:
@@ -926,7 +944,7 @@ def execute_tool_calls_concurrent(
     num_tools = len(parsed_calls)
     if num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
-        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
+        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
 
     # ── /steer injection ──────────────────────────────────────────────
     # Append any pending user steer text to the last tool result so the
@@ -944,6 +962,8 @@ def execute_tool_calls_sequential(
     api_call_count: int = 0,
 ) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
+    # Resolve the context-scaled tool-output budget once per turn.
+    _tool_budget = _budget_for_agent(agent)
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
@@ -1249,32 +1269,18 @@ def execute_tool_calls_sequential(
                     operations=operations,
                     store=agent._memory_store,
                 )
-                # Bridge: notify external memory provider of built-in memory writes.
-                # Covers both the single-op shape and each add/replace inside a batch.
+                # Mirror successful built-in memory writes to external
+                # providers. All gating/op-expansion lives behind the manager
+                # interface (MemoryManager.notify_memory_tool_write).
                 if agent._memory_manager:
-                    if operations:
-                        _mem_ops = [
-                            op for op in operations
-                            if isinstance(op, dict) and op.get("action") in {"add", "replace"}
-                        ]
-                    else:
-                        _mem_ops = (
-                            [{"action": next_args.get("action"), "content": next_args.get("content")}]
-                            if next_args.get("action") in {"add", "replace"} else []
-                        )
-                    for _op in _mem_ops:
-                        try:
-                            agent._memory_manager.on_memory_write(
-                                _op.get("action", ""),
-                                target,
-                                _op.get("content", "") or "",
-                                metadata=agent._build_memory_write_metadata(
-                                    task_id=effective_task_id,
-                                    tool_call_id=getattr(tool_call, "id", None),
-                                ),
-                            )
-                        except Exception:
-                            pass
+                    agent._memory_manager.notify_memory_tool_write(
+                        result,
+                        next_args,
+                        build_metadata=lambda: agent._build_memory_write_metadata(
+                            task_id=effective_task_id,
+                            tool_call_id=getattr(tool_call, "id", None),
+                        ),
+                    )
                 return result
 
             function_result, function_args = _run_agent_tool_execution_middleware(
@@ -1737,16 +1743,13 @@ def execute_tool_calls_sequential(
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
-        function_result = (
-            maybe_persist_tool_result(
-                content=function_result,
-                tool_name=function_name,
-                tool_use_id=tool_call.id,
-                env=get_active_env(effective_task_id),
-            )
-            if not _is_multimodal_tool_result(function_result)
-            else function_result
-        )
+        function_result = maybe_persist_tool_result(
+            content=function_result,
+            tool_name=function_name,
+            tool_use_id=tool_call.id,
+            env=get_active_env(effective_task_id),
+            config=_tool_budget,
+        ) if not _is_multimodal_tool_result(function_result) else function_result
 
         # Discover subdirectory context files from tool arguments
         subdir_hints = agent._subdirectory_hints.check_tool_call(
@@ -1815,9 +1818,7 @@ def execute_tool_calls_sequential(
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools_seq = len(assistant_message.tool_calls)
     if num_tools_seq > 0:
-        enforce_turn_budget(
-            messages[-num_tools_seq:], env=get_active_env(effective_task_id)
-        )
+        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
 
     # ── /steer injection ──────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,

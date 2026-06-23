@@ -1554,6 +1554,102 @@ class TestCompressWithClient:
             "call_123"
         ]
 
+    def test_sanitizer_strips_orphaned_tool_calls(self, compressor):
+        """Orphaned tool_calls (no matching tool result) are stripped from
+        assistant messages instead of having stubs inserted.  #51218"""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_orphan", "function": {"name": "search", "arguments": "{}"}},
+                ],
+            },
+            {"role": "user", "content": "never mind"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        # Orphaned tool_call should be stripped, not stub-inserted
+        asst = next(m for m in sanitized if m.get("role") == "assistant")
+        assert not asst.get("tool_calls"), "orphaned tool_calls should be stripped"
+        # No stub tool messages should be added
+        assert not any(m.get("role") == "tool" for m in sanitized)
+        # Empty assistant should get placeholder content
+        assert asst.get("content") == "(tool call removed)"
+
+    def test_sanitizer_strips_orphaned_keeps_valid(self, compressor):
+        """When an assistant has both valid and orphaned tool_calls, only
+        the orphans are stripped.  #51218"""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_valid", "function": {"name": "read_file", "arguments": "{}"}},
+                    {"id": "tc_orphan", "function": {"name": "search", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_valid", "content": "file content"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        asst = next(m for m in sanitized if m.get("role") == "assistant")
+        assert len(asst["tool_calls"]) == 1
+        assert asst["tool_calls"][0]["id"] == "tc_valid"
+        # Valid tool result preserved
+        tool_msgs = [m for m in sanitized if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "tc_valid"
+
+    def test_sanitizer_strips_orphaned_preserves_text_content(self, compressor):
+        """When an assistant has text content AND orphaned tool_calls,
+        the text is preserved and only tool_calls are stripped.  #51218"""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "Let me search for that.",
+                "tool_calls": [
+                    {"id": "tc_orphan", "function": {"name": "search", "arguments": "{}"}},
+                ],
+            },
+            {"role": "user", "content": "thanks"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        asst = next(m for m in sanitized if m.get("role") == "assistant")
+        assert asst["content"] == "Let me search for that."
+        assert not asst.get("tool_calls")
+
+    def test_sanitizer_strips_orphaned_with_call_id_mismatch(self, compressor):
+        """Stubs with call_id != id used to be dropped by downstream
+        repair_message_sequence, re-exposing orphans.  Stripping avoids
+        this entirely.  #51218"""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_abc",
+                        "call_id": "call_abc",
+                        "function": {"name": "search", "arguments": "{}"},
+                    },
+                ],
+            },
+            # No tool result for call_abc — orphaned
+            {"role": "user", "content": "next"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        asst = next(m for m in sanitized if m.get("role") == "assistant")
+        assert not asst.get("tool_calls")
+        # No stub tool messages (which would have call_id != id mismatch)
+        assert not any(m.get("role") == "tool" for m in sanitized)
+
     def test_user_role_summary_carries_end_marker(self):
         """When the summary lands as standalone role='user' (e.g. head ends
         with assistant/tool), the message body must include the explicit

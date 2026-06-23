@@ -1944,8 +1944,16 @@ This compaction should PRIORITISE preserving all information related to the focu
            The API rejects this because every tool_call must be followed by
            a tool result with the matching call_id.
 
-        This method removes orphaned results and inserts stub results for
-        orphaned calls so the message list is always well-formed.
+        This method removes orphaned results and strips orphaned tool_calls
+        from assistant messages so the message list is always well-formed.
+
+        Previous approach inserted stub ``role="tool"`` results for orphaned
+        tool_calls.  That caused a secondary failure: the pre-API
+        ``repair_message_sequence()`` uses ``tc.get("id")`` to track known
+        call IDs while this sanitizer uses ``call_id || id``.  When the two
+        disagree (Codex Responses API format: ``id != call_id``), stubs get
+        silently dropped by the repair pass, re-exposing the original orphans.
+        Stripping at the source avoids this entire class of mismatch.
         """
         surviving_call_ids: set = set()
         for msg in messages:
@@ -1972,24 +1980,34 @@ This compaction should PRIORITISE preserving all information related to the focu
             if not self.quiet_mode:
                 logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
 
-        # 2. Add stub results for assistant tool_calls whose results were dropped
+        # 2. Strip orphaned tool_calls from assistant messages whose results
+        #    were dropped.  Stripping is preferred over inserting stub results
+        #    because stubs can be dropped by downstream repair_message_sequence
+        #    when call_id != id (Codex Responses API format), re-exposing orphans.
         missing_results = surviving_call_ids - result_call_ids
         if missing_results:
-            patched: List[Dict[str, Any]] = []
             for msg in messages:
-                patched.append(msg)
-                if msg.get("role") == "assistant":
-                    for tc in msg.get("tool_calls") or []:
-                        cid = self._get_tool_call_id(tc)
-                        if cid in missing_results:
-                            patched.append({
-                                "role": "tool",
-                                "content": "[Result from earlier conversation — see context summary above]",
-                                "tool_call_id": cid,
-                            })
-            messages = patched
+                if msg.get("role") != "assistant":
+                    continue
+                tcs = msg.get("tool_calls")
+                if not tcs:
+                    continue
+                kept = [tc for tc in tcs if self._get_tool_call_id(tc) not in missing_results]
+                if len(kept) != len(tcs):
+                    if kept:
+                        msg["tool_calls"] = kept
+                    else:
+                        msg.pop("tool_calls", None)
+                        # Ensure the assistant message still has visible
+                        # content so the API does not reject an empty turn.
+                        content = msg.get("content")
+                        if not content or (isinstance(content, str) and not content.strip()):
+                            msg["content"] = "(tool call removed)"
             if not self.quiet_mode:
-                logger.info("Compression sanitizer: added %d stub tool result(s)", len(missing_results))
+                logger.info(
+                    "Compression sanitizer: stripped %d orphaned tool_call(s) from assistant messages",
+                    len(missing_results),
+                )
 
         return messages
 

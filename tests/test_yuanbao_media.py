@@ -17,8 +17,6 @@ if _REPO_ROOT not in sys.path:
 
 import struct
 
-import pytest
-
 from gateway.platforms.yuanbao_media import parse_image_size
 
 

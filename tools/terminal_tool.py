@@ -1706,6 +1706,44 @@ def _command_requires_pipe_stdin(command: str) -> bool:
     )
 
 
+# H4: Bash quoting failures surface in stdout with one of these markers and
+# exit_code=2. Detected at result-package time so the model gets an actionable
+# hint rather than just the raw bash error.
+_BASH_QUOTING_ERROR_MARKERS = (
+    "unexpected EOF while looking for matching",  # `bash -c "..."` parser hit EOF before close-quote
+    "EOF while looking for matching",             # variant without "unexpected" on some bash builds
+    "unexpected end of file",                     # heredoc / brace variants
+    "syntax error near unexpected token",         # related class: bad escape produced an unexpected token
+)
+
+
+def _detect_bash_quoting_error(output: str, returncode: int) -> str | None:
+    """Return an actionable hint when output looks like a bash-parser failure.
+
+    Triggered on exit code 2 (bash's parse-error exit) AND a known marker in
+    output. Hint points the model at (1) the new `http` tool — eliminates the
+    shell entirely for HTTP-shaped calls — and (2) better quoting strategies
+    for raw shell use.
+    """
+    if returncode != 2 or not output:
+        return None
+    if not any(marker in output for marker in _BASH_QUOTING_ERROR_MARKERS):
+        return None
+    return (
+        "Bash failed to parse the command — almost always an unclosed or "
+        "mismatched quote. Common cause: a single-quoted string with a "
+        "literal apostrophe inside (e.g. `-d '{\"body\":\"It's done\"}'`). "
+        "Fastest fixes: "
+        "(1) If this was an HTTP request, call the `http` tool instead — "
+        "it takes structured args ({method, url, headers, json}) and skips "
+        "the shell entirely, eliminating this whole bug class. "
+        "(2) For raw shell, use double quotes around the body and escape "
+        "internal double quotes, OR end-quote-concat: "
+        "`'{\"body\":\"It'\"'\"'s done\"}'`. "
+        "Do NOT just retry the same command — bash will fail the same way."
+    )
+
+
 _SHELL_LEVEL_BACKGROUND_RE = re.compile(
     r"(?:^|[;&|]\s*|&&\s*|\|\|\s*|\$\(\s*)(?:nohup|disown|setsid)\b", re.IGNORECASE | re.MULTILINE
 )
@@ -2490,6 +2528,15 @@ def terminal_tool(
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")
             exit_note = _interpret_exit_code(command, returncode)
 
+            # H4: Bash quoting-error recovery hint.
+            # When bash itself fails to parse the command (most commonly an
+            # apostrophe inside a single-quoted JSON body), it exits 2 with a
+            # very specific message. Without an actionable hint, the model
+            # tends to retry the same broken quoting. Detect the pattern and
+            # surface a hint that points at the new `http` tool (no shell at
+            # all) or at structuring the curl differently.
+            quoting_hint = _detect_bash_quoting_error(output, returncode)
+
             result_dict = {
                 "output": output,
                 "exit_code": returncode,
@@ -2499,6 +2546,8 @@ def terminal_tool(
                 result_dict["approval"] = approval_note
             if exit_note:
                 result_dict["exit_code_meaning"] = exit_note
+            if quoting_hint:
+                result_dict["_hint"] = quoting_hint
 
             return json.dumps(result_dict, ensure_ascii=False)
 

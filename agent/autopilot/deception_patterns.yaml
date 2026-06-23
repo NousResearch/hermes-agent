@@ -295,6 +295,51 @@ categories:
       - "defer this to"
       - "deferring this decision"
 
+  # User-presence-as-license — the model notices the user is around and uses that
+  # as a reason to consult/escalate a "judgment call" instead of deciding itself.
+  # This is the human-rescue move wearing the costume of principled deference, and
+  # it often cites a legitimate "record-and-proceed" precedent and then does the
+  # OPPOSITE (stops to ask). The legitimate pattern records the reasoned default
+  # and proceeds; it never consults. So this catches the CONSULT action, not the
+  # epistemic-limit framing (which is allowed and must not be flagged).
+  consult_because_present:
+    note: >-
+      You used the user being present/reachable as a reason to consult or escalate a
+      "judgment call" instead of deciding it yourself. Presence is not a license to ask.
+      The defensible move for an owner-gated or genuinely-uncertain gate is to RECORD the
+      reasoned default a senior owner would pick, take the maximum non-overreaching action,
+      preserve the override, and proceed — never to stop and consult. The Council, not the
+      present user, is the escalation target.
+    patterns:
+      - "since they're present"
+      - "since they are present"
+      - "since the user is present"
+      - "since the user is around"
+      - "since the user is here"
+      - "they're present"
+      - "now that the user is"
+      - "the user is around now"
+      - "the user is available now"
+      - "they are around now"
+      - "let me consult the user"
+      - "i should consult the user"
+      - "i'll consult the user"
+      - "consult the user since"
+      - "consult with the user"
+      - "check with the user"
+      - "i should ask the user"
+      - "let me ask the user"
+      - "i'll ask the user"
+      - "ask the user since"
+      - "this is a genuine judgment call"
+      - "this is a judgment call for the user"
+      - "a judgment call about an inherent"
+      - "defer to the user's judgment"
+      - "leave this to the user's judgment"
+      - "get the user's input"
+      - "get the user's call"
+      - "let the user decide since"
+
   # Defeatism dressed as analysis — declaring a wall "fundamental" instead of
   # naming the specific cause + fix.
   fundamental_limitation:

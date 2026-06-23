@@ -2220,7 +2220,8 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
         import importlib.util
 
         if importlib.util.find_spec("hermes_cli") is not None:
-            return [sys.executable, "-m", "hermes_cli.main"]
+            python_bin = os.environ.get("HERMES_PYTHON", sys.executable)
+            return [python_bin, "-m", "hermes_cli.main"]
     except Exception:
         pass
 

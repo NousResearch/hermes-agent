@@ -8815,8 +8815,9 @@ def _(rid, params: dict) -> dict:
     if hint:
         return _ok(rid, {"blocked": True, "hint": hint, "code": -1, "output": ""})
     try:
+        python_bin = os.environ.get("HERMES_PYTHON", sys.executable)
         r = subprocess.run(
-            [sys.executable, "-m", "hermes_cli.main", *argv],
+            [python_bin, "-m", "hermes_cli.main", *argv],
             capture_output=True,
             text=True,
             timeout=min(int(params.get("timeout", 240)), 600),

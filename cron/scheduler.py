@@ -1253,7 +1253,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             )
         argv = [_bash, str(path)]
     else:
-        argv = [sys.executable, str(path)]
+        python_bin = os.environ.get("HERMES_PYTHON", sys.executable)
+        argv = [python_bin, str(path)]
 
     try:
         from tools.environments.local import _sanitize_subprocess_env

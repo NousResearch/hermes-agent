@@ -1034,8 +1034,9 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
         }
     project_root = Path(__file__).parent.parent.resolve()
     try:
+        python_bin = os.environ.get("HERMES_PYTHON", sys.executable)
         result = subprocess.run(
-            [sys.executable, "-c",
+            [python_bin, "-c",
              "import json; from tools.skills_sync import sync_skills; "
              "r = sync_skills(quiet=True); print(json.dumps(r))"],
             env={**os.environ, "HERMES_HOME": str(profile_dir)},

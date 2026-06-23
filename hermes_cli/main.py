@@ -9293,7 +9293,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         if (desktop_dir / "package.json").exists() and find_node_executable("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
-            _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
+            _desktop_python = os.environ.get("HERMES_PYTHON", sys.executable)
+            _desktop_build_cmd = [_desktop_python, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Stream the build output live (long Electron builds otherwise
             # look hung). On the rare nonzero exit, retry once after waiting
             # again for the venv — this covers a still-settling rebuild window
@@ -11293,8 +11294,9 @@ def cmd_dashboard(args):
             f"Routing to the machine dashboard (profile '{_launch_profile}' "
             f"preselected). Use --isolated for a dedicated per-profile server."
         )
+        _reexec_python = os.environ.get("HERMES_PYTHON", sys.executable)
         reexec_argv = [
-            sys.executable, "-m", "hermes_cli.main",
+            _reexec_python, "-m", "hermes_cli.main",
             "-p", "default",
             "dashboard",
             "--port", str(args.port),
@@ -11335,7 +11337,7 @@ def cmd_dashboard(args):
             proc = subprocess.Popen(reexec_argv, env=env)
             sys.exit(proc.wait())
         else:
-            os.execvpe(sys.executable, reexec_argv, env)
+            os.execvpe(_reexec_python, reexec_argv, env)
 
     # Attach gui.log early so dashboard startup/build failures are captured in
     # the same logs directory as every other Hermes surface.

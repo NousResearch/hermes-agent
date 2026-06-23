@@ -418,7 +418,7 @@ def render_notice_line(notice) -> str:
     return str(getattr(notice, "text", "") or "").strip()
 
 
-async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
+async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata, reply_to=None):
     """Route a status message through adapter.send_or_update_status when supported.
 
     Issue #30045: adapters that implement send_or_update_status (currently
@@ -428,7 +428,7 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)
-    return await adapter.send(chat_id, content, metadata=metadata)
+    return await adapter.send(chat_id, content, reply_to=reply_to, metadata=metadata)
 
 
 def _resolve_progress_thread_id(platform: Any, source_thread_id: Any, event_message_id: Any) -> Optional[str]:
@@ -440,6 +440,27 @@ def _resolve_progress_thread_id(platform: Any, source_thread_id: Any, event_mess
     if platform_key in {"slack", "mattermost"} and event_message_id:
         return str(event_message_id)
     return None
+
+
+def _config_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "all", "always"}
+    return bool(value)
+
+
+def _adapter_reply_in_thread_enabled(adapter: Any) -> bool:
+    """Return whether a platform adapter is configured to force threaded replies."""
+    if adapter is None:
+        return False
+    if _config_truthy(getattr(adapter, "_reply_in_thread", False)):
+        return True
+    config = getattr(adapter, "config", None)
+    extra = getattr(config, "extra", {}) or {}
+    if isinstance(extra, dict):
+        return _config_truthy(extra.get("reply_in_thread", False))
+    return False
 
 
 def _has_platform_display_override(user_config: dict, platform_key: str, setting: str) -> bool:
@@ -14845,6 +14866,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _progress_thread_id = _resolve_progress_thread_id(
             source.platform, source.thread_id, event_message_id,
         )
+        _progress_adapter = self.adapters.get(source.platform)
+        _feishu_force_thread_reply = (
+            source.platform == Platform.FEISHU
+            and bool(event_message_id)
+            and _adapter_reply_in_thread_enabled(_progress_adapter)
+        )
         _progress_metadata = (
             self._thread_metadata_for_source(source, event_message_id)
             if _progress_thread_id == source.thread_id
@@ -14853,7 +14880,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
         _progress_reply_to = (
             event_message_id
-            if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
+            if (
+                source.platform == Platform.FEISHU
+                and event_message_id
+                and (source.thread_id or _feishu_force_thread_reply)
+            )
+            or (
+                source.platform == Platform.MATTERMOST
+                and source.thread_id
+                and event_message_id
+            )
             else None
         )
 
@@ -15238,17 +15274,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
+        _feishu_status_force_thread_reply = (
+            source.platform == Platform.FEISHU
+            and bool(event_message_id)
+            and _adapter_reply_in_thread_enabled(_status_adapter)
+        )
+        if source.platform == Platform.FEISHU and event_message_id and (source.thread_id or _feishu_status_force_thread_reply):
             # Feishu topics only keep messages inside the topic when they are
             # sent via the reply API with reply_in_thread=true. Status/interim,
             # approval, and stream-consumer paths usually only receive metadata,
             # so carry the triggering message id as a Feishu-specific fallback.
-            _status_thread_metadata: Optional[Dict[str, Any]] = {
-                "thread_id": _progress_thread_id,
-                "reply_to_message_id": event_message_id,
-            }
+            if source.thread_id:
+                _status_thread_metadata: Optional[Dict[str, Any]] = {
+                    "thread_id": _progress_thread_id,
+                    "reply_to_message_id": event_message_id,
+                }
+            else:
+                _status_thread_metadata = None
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+        _status_reply_to = event_message_id if _feishu_status_force_thread_reply else None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -15267,7 +15312,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return
             _fut = safe_schedule_threadsafe(
-                _send_or_update_status_coro(_status_adapter, _status_chat_id, event_type, prepared_message, _status_thread_metadata),
+                _send_or_update_status_coro(
+                    _status_adapter,
+                    _status_chat_id,
+                    event_type,
+                    prepared_message,
+                    _status_thread_metadata,
+                    reply_to=_status_reply_to,
+                ),
                 _loop_for_step,
                 logger=logger,
                 log_message=f"status_callback ({event_type}) scheduling error",

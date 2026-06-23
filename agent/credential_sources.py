@@ -164,7 +164,7 @@ def _remove_env_source(provider: str, removed) -> RemovalResult:
         if env_path.exists():
             env_in_dotenv = any(
                 line.strip().startswith(f"{env_var}=")
-                for line in env_path.read_text(errors="replace").splitlines()
+                for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines()
             )
     except OSError:
         pass

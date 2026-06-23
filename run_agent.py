@@ -4986,9 +4986,10 @@ class AIAgent:
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
 
-        DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
+        DeepSeek v4 thinking, Kimi / Moonshot thinking, Xiaomi MiMo thinking,
+        and native Z.AI / GLM reasoning models reject or destabilize replays
         of assistant tool-call messages that omit ``reasoning_content`` (refs
-        #15250, #17400). Xiaomi MiMo thinking mode has the same requirement.
+        #15250, #17400).
 
         Result cached on the AIAgent instance keyed by (provider, model,
         base_url); invalidated whenever ``switch_model()`` /
@@ -5006,9 +5007,26 @@ class AIAgent:
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
             or self._needs_mimo_tool_reasoning()
+            or self._needs_glm_tool_reasoning()
         )
         self._thinking_pad_cache = (key, result)
         return result
+
+    def _needs_glm_tool_reasoning(self) -> bool:
+        """Return True when the current provider is native Z.AI / GLM.
+
+        GLM reasoning/tool-call turns need ``reasoning_content`` echoed on
+        replay, like DeepSeek/Kimi/MiMo. Z.AI may surface missing echo-back as
+        overloaded/rate-limit style errors instead of a clean schema error, so
+        keep this detection provider/host-driven and do not apply it to
+        aggregators that merely expose ``z-ai/glm-*`` model names.
+        """
+        provider = (self.provider or "").lower()
+        return (
+            provider in {"zai", "glm", "z-ai", "z.ai", "zhipu"}
+            or base_url_host_matches(self.base_url, "api.z.ai")
+            or base_url_host_matches(self.base_url, "open.bigmodel.cn")
+        )
 
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.

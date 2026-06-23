@@ -108,6 +108,38 @@ class TestNeedsDeepSeekToolReasoning:
         assert agent._needs_deepseek_tool_reasoning() is False
 
 
+class TestNeedsGlmToolReasoning:
+    """Native Z.AI / GLM reasoning endpoints require reasoning_content echo."""
+
+    @pytest.mark.parametrize("provider", ["zai", "glm", "z-ai", "z.ai", "zhipu"])
+    def test_native_provider_aliases(self, provider: str) -> None:
+        agent = _make_agent(provider=provider, model="glm-5.2")
+        assert agent._needs_glm_tool_reasoning() is True
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.z.ai/api/coding/paas/v4",
+            "https://open.bigmodel.cn/api/paas/v4",
+        ],
+    )
+    def test_native_hosts(self, base_url: str) -> None:
+        agent = _make_agent(provider="custom", model="glm-5.2", base_url=base_url)
+        assert agent._needs_glm_tool_reasoning() is True
+
+    def test_openrouter_glm_model_does_not_enable_native_echo(self) -> None:
+        agent = _make_agent(
+            provider="openrouter",
+            model="z-ai/glm-5.2",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        assert agent._needs_glm_tool_reasoning() is False
+
+    def test_thinking_pad_includes_glm_native_provider(self) -> None:
+        agent = _make_agent(provider="zai", model="glm-5.2")
+        assert agent._needs_thinking_reasoning_pad() is True
+
+
 class TestCopyReasoningContentForApi:
     """_copy_reasoning_content_for_api pads reasoning_content for DeepSeek tool-calls."""
 

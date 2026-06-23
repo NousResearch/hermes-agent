@@ -435,6 +435,12 @@ class TestNousProfile:
         assert "reasoning" not in eb
 
 
+class TestZaiProfile:
+    def test_max_tokens(self):
+        p = get_provider_profile("zai")
+        assert p.default_max_tokens == 8192
+
+
 class TestQwenProfile:
     def test_max_tokens(self):
         p = get_provider_profile("qwen-oauth")

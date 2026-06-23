@@ -2835,3 +2835,153 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+# ── #38466: portal provider should not override Anthropic key for Anthropic models ──
+
+
+def test_portal_provider_switches_to_anthropic_for_anthropic_model(monkeypatch):
+    """When active provider is portal/nous but target_model is an Anthropic
+    model, resolve_runtime_provider should detect the mismatch and switch to
+    the anthropic provider with the configured API key."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {"provider": "nous", "base_url": "https://inference-api.nousresearch.com/v1"},
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+
+    resolved = rp.resolve_runtime_provider(
+        requested="auto",
+        target_model="claude-sonnet-4-20250514",
+    )
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["api_key"] == "anthropic-key"
+    assert resolved["api_mode"] == "anthropic_messages"
+
+
+def test_portal_provider_switches_to_anthropic_for_configured_anthropic_key(monkeypatch):
+    """Model-aware switching should honor Anthropic's normal token resolver,
+    including configured Claude/Anthropic credentials beyond the portal
+    provider."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {"provider": "nous", "base_url": "https://inference-api.nousresearch.com/v1"},
+    )
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.resolve_anthropic_token",
+        lambda: "configured-anthropic-key",
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="auto",
+        target_model="claude-sonnet-4-20250514",
+    )
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["api_key"] == "configured-anthropic-key"
+    assert resolved["api_mode"] == "anthropic_messages"
+
+
+def test_portal_provider_falls_through_when_no_anthropic_credentials(monkeypatch):
+    """When active provider is portal/nous and target_model is an Anthropic
+    model but no ANTHROPIC_API_KEY is set, the system should fall through
+    to normal nous credential resolution."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {"provider": "nous", "base_url": "https://inference-api.nousresearch.com/v1"},
+    )
+    # No ANTHROPIC_API_KEY set
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr("agent.anthropic_adapter.resolve_anthropic_token", lambda: None)
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {"provider": provider, "api_key": "", "base_url": "", "source": "default"},
+    )
+
+    # Prevent pool from intercepting before the fallthrough path
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+    # Mock nous runtime credentials so fallthrough works
+    monkeypatch.setattr(
+        rp, "resolve_nous_runtime_credentials",
+        lambda timeout_seconds=None: {
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "portal-jwt",
+            "source": "portal",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="auto",
+        target_model="claude-sonnet-4-20250514",
+    )
+
+    assert resolved["provider"] == "nous"
+    assert resolved["api_key"] == "portal-jwt"
+
+
+def test_explicit_provider_prevents_anthropic_auto_switch(monkeypatch):
+    """When the user explicitly requests 'nous' provider (not auto),
+    the explicit choice takes priority even for Anthropic models."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {"provider": "nous", "base_url": "https://inference-api.nousresearch.com/v1"},
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    # Prevent pool from intercepting before credential resolution
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+    monkeypatch.setattr(
+        rp, "resolve_nous_runtime_credentials",
+        lambda timeout_seconds=None: {
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "portal-jwt",
+            "source": "portal",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="nous",  # explicit, not auto
+        target_model="claude-sonnet-4-20250514",
+    )
+
+    # Explicit 'nous' request should stay on nous
+    assert resolved["provider"] == "nous"
+    assert resolved["api_key"] == "portal-jwt"
+
+
+def test_portal_with_non_anthropic_model_stays_on_nous(monkeypatch):
+    """When target_model is NOT an Anthropic model (e.g., a nous model),
+    the system should stay on the nous provider."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {"provider": "nous", "base_url": "https://inference-api.nousresearch.com/v1"},
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    # Prevent pool from intercepting before credential resolution
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+    monkeypatch.setattr(
+        rp, "resolve_nous_runtime_credentials",
+        lambda timeout_seconds=None: {
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "portal-jwt",
+            "source": "portal",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="auto",
+        target_model="hermes-3-70b",  # a nous model, not anthropic
+    )
+
+    assert resolved["provider"] == "nous"
+    assert resolved["api_key"] == "portal-jwt"

@@ -87,6 +87,19 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     return _loopback_hostname(base_url_hostname(bu))
 
 
+def _api_key_provider_has_usable_credentials(provider: str) -> bool:
+    """Return True when an API-key provider has configured usable credentials."""
+    try:
+        if provider == "anthropic":
+            from agent.anthropic_adapter import resolve_anthropic_token
+
+            return has_usable_secret(resolve_anthropic_token())
+        runtime = resolve_api_key_provider_credentials(provider)
+    except Exception:
+        return False
+    return has_usable_secret(runtime.get("api_key"))
+
+
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     """Auto-detect api_mode from the resolved base URL.
 
@@ -1449,6 +1462,29 @@ def resolve_runtime_provider(
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
     )
+
+    # ── #38466: model-aware provider auto-switch ──────────────────────────
+    # When the active provider is auto-resolved (not explicitly requested)
+    # and target_model belongs to a different provider that has usable
+    # credentials, switch to that provider so direct API keys aren't
+    # overridden by the portal/OAuth provider.
+    if target_model and requested_provider == "auto":
+        try:
+            from hermes_cli.models import detect_provider_for_model
+            detected = detect_provider_for_model(target_model, provider)
+            if detected:
+                detected_provider, _ = detected
+                if detected_provider != provider and detected_provider in PROVIDER_REGISTRY:
+                    if _api_key_provider_has_usable_credentials(detected_provider):
+                        logger.info(
+                            "Auto-switching provider from %s to %s for model %s "
+                            "(configured credentials found)",
+                            provider, detected_provider, target_model,
+                        )
+                        provider = detected_provider
+        except Exception:
+            pass  # Detection is best-effort; fall through on any error
+
     model_cfg = _get_model_config()
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,

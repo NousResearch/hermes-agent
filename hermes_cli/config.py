@@ -2561,6 +2561,27 @@ DEFAULT_CONFIG = {
             # request flood. Set to 0 to disable the cap entirely.
             "max_concurrent_runs": 10,
         },
+
+        # File upload size limits for the Gateway API Server and Dashboard.
+        # Each layer enforces its own limit; the effective cap for a given
+        # upload is the minimum of all limits along its path.  All three
+        # can be overridden per-process via the corresponding environment
+        # variable (see per-field docs) for ops hotfixes without restarting
+        # or modifying config.yaml.
+        "file_upload": {
+            # Gateway API Server max request body (bytes).
+            # Maps to api_server.py MAX_REQUEST_BYTES.
+            # Env override: API_SERVER_MAX_REQUEST_BYTES.
+            "max_request_bytes": 10_000_000,
+            # Dashboard web server file data URL max bytes.
+            # Maps to web_server.py _FS_DATA_URL_MAX_BYTES.
+            # Env override: HERMES_FS_DATA_URL_MAX_BYTES.
+            "fs_data_url_max_bytes": 16_777_216,
+            # Dashboard WebSocket max message size (bytes).
+            # Maps to uvicorn.Config ws_max_size.
+            # Env override: HERMES_DASHBOARD_WS_MAX_SIZE_BYTES.
+            "dashboard_ws_max_size_bytes": 16_777_216,
+        },
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,

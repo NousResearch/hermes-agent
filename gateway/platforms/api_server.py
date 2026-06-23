@@ -88,7 +88,26 @@ def _hermes_version() -> str:
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+
+def _resolve_max_request_bytes() -> int:
+    """Read gateway.file_upload.max_request_bytes from config.yaml, with env-var override.
+
+    Priority: config.yaml → API_SERVER_MAX_REQUEST_BYTES → 10 MB default.
+    """
+    default = 10_000_000
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+        val = raw.get("gateway", {}).get("file_upload", {}).get("max_request_bytes")
+        if val is not None:
+            return int(val)
+    except Exception:
+        pass
+    return int(os.environ.get("API_SERVER_MAX_REQUEST_BYTES", str(default)))
+
+
+MAX_REQUEST_BYTES = _resolve_max_request_bytes()
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array

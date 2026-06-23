@@ -1039,6 +1039,42 @@ class ManagedFilesPolicy:
     can_change_path: bool
 
 
+def _resolve_fs_data_url_max_bytes() -> int:
+    """Read gateway.file_upload.fs_data_url_max_bytes from config.yaml, with env-var override.
+
+    Priority: config.yaml → HERMES_FS_DATA_URL_MAX_BYTES → 16 MB default.
+    """
+    default = 16 * 1024 * 1024
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+        val = raw.get("gateway", {}).get("file_upload", {}).get("fs_data_url_max_bytes")
+        if val is not None:
+            return int(val)
+    except Exception:
+        pass
+    return int(os.environ.get("HERMES_FS_DATA_URL_MAX_BYTES", str(default)))
+
+
+def _resolve_dashboard_ws_max_size_bytes() -> int:
+    """Read gateway.file_upload.dashboard_ws_max_size_bytes from config.yaml, with env-var override.
+
+    Priority: config.yaml → HERMES_DASHBOARD_WS_MAX_SIZE_BYTES → 16 MB default.
+    """
+    default = 16 * 1024 * 1024
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+        val = raw.get("gateway", {}).get("file_upload", {}).get("dashboard_ws_max_size_bytes")
+        if val is not None:
+            return int(val)
+    except Exception:
+        pass
+    return int(os.environ.get("HERMES_DASHBOARD_WS_MAX_SIZE_BYTES", str(default)))
+
+
 _FS_READDIR_HIDDEN = {
     ".git",
     ".hg",
@@ -1054,7 +1090,7 @@ _FS_READDIR_HIDDEN = {
     "target",
     "venv",
 }
-_FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
+_FS_DATA_URL_MAX_BYTES = _resolve_fs_data_url_max_bytes()
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 _FS_TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 _FS_PREVIEW_LANGUAGE_BY_EXT = {
@@ -13049,6 +13085,12 @@ def start_server(
         # timeout, keeping it warm.
         ws_ping_interval=20.0,
         ws_ping_timeout=20.0,
+        # Uvicorn's default ws_max_size is 16 MB (16777216). Files uploaded
+        # via remote-gateway are base64-encoded, so a 23 MB raw file becomes
+        # ~31 MB over the wire, which exceeds the default.  Override via
+        # config.yaml gateway.file_upload.dashboard_ws_max_size_bytes or
+        # env HERMES_DASHBOARD_WS_MAX_SIZE_BYTES.
+        ws_max_size=_resolve_dashboard_ws_max_size_bytes(),
     )
     server = uvicorn.Server(config)
 

@@ -1096,8 +1096,12 @@ def do_uninstall(name: str, console: Optional[Console] = None,
         # (skills.disabled / skills.platform_disabled) is separate from the hub
         # lock file, which uninstall_skill already reconciles on its own.
         try:
-            from hermes_cli.config import load_config, save_config
-            cfg = load_config()
+            # Use read_raw_config() (not load_config()) so we touch ONLY the
+            # user's on-disk keys. load_config() deep-merges DEFAULT_CONFIG and
+            # expands env refs, so save_config() of that result would rewrite
+            # config.yaml with large unrelated churn from this narrow cleanup.
+            from hermes_cli.config import read_raw_config, save_config
+            cfg = read_raw_config()
             skills_cfg = cfg.get("skills")
             if isinstance(skills_cfg, dict):
                 changed = False
@@ -1113,9 +1117,14 @@ def do_uninstall(name: str, console: Optional[Console] = None,
                             changed = True
                 if changed:
                     save_config(cfg)
-        except Exception:
-            # Best-effort: a config prune must never abort a successful uninstall.
-            pass
+        except Exception as e:
+            # Best-effort: a config prune must never abort a successful uninstall,
+            # but surface a hint so the "silently disabled on reinstall" symptom
+            # isn't reintroduced without any trace when the prune fails.
+            c.print(
+                f"[yellow]Warning:[/] could not prune '{name}' from disabled "
+                f"skills config: {e}"
+            )
         if invalidate_cache:
             try:
                 from agent.prompt_builder import clear_skills_system_prompt_cache

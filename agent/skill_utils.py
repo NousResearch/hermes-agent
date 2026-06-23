@@ -384,7 +384,36 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
             resolved_platform
         )
         if platform_disabled is not None:
-            return global_disabled | _normalize_string_set(platform_disabled)
+            global_disabled |= _normalize_string_set(platform_disabled)
+
+    # ── skills.only — if set, ALL skills NOT in this list are disabled ──
+    only_list = skills_cfg.get("only")
+    if only_list is not None:
+        import json
+        # Parse JSON list strings (from hermes config set)
+        if isinstance(only_list, str):
+            try:
+                only_list = json.loads(only_list)
+            except (json.JSONDecodeError, TypeError):
+                only_list = [only_list]
+        allowed = _normalize_string_set(only_list)
+        if allowed:
+            all_skills = set()
+            for skills_dir in get_all_skills_dirs():
+                if not skills_dir.is_dir():
+                    continue
+                for sf in iter_skill_index_files(skills_dir, "SKILL.md"):
+                    try:
+                        raw = sf.read_text(encoding="utf-8")
+                        fm, _ = parse_frontmatter(raw)
+                        name = fm.get("name") or sf.parent.name
+                        all_skills.add(str(name).strip())
+                    except Exception:
+                        all_skills.add(sf.parent.name)
+            for skill_name in all_skills:
+                if skill_name not in allowed:
+                    global_disabled.add(skill_name)
+
     return global_disabled
 
 

@@ -336,14 +336,25 @@ class TestDocumentDownloadBlock:
         assert event.media_types == ["application/pdf"]
 
     @pytest.mark.asyncio
-    async def test_missing_filename_and_mime_rejected(self, adapter):
-        doc = _make_document(file_name=None, mime_type=None, file_size=100)
+    async def test_missing_filename_and_mime_cached_as_octet_stream(self, adapter):
+        """No filename and no mime: cached anyway as application/octet-stream.
+
+        Authorization to message the agent is the gate, not the file type — an
+        untyped upload is still surfaced to the agent as a cached path.
+        """
+        content = b"\x00\x01\x02 untyped payload"
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name=None, mime_type=None, file_size=len(content), file_obj=file_obj,
+        )
         msg = _make_message(document=doc)
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
         event = adapter.handle_message.call_args[0][0]
-        assert "Unsupported" in event.text
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["application/octet-stream"]
+        assert "Unsupported" not in (event.text or "")
 
     @pytest.mark.asyncio
     async def test_unicode_decode_error_handled(self, adapter):

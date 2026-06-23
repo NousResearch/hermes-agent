@@ -1,0 +1,5 @@
+# CODEOWNERS — managed by Terraform IaC
+# Changes to this file require PR review per branch protection rules.
+
+# Default owners
+* @dizhaky

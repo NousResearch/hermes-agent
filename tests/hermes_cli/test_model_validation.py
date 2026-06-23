@@ -517,6 +517,39 @@ class TestValidateFormatChecks:
         result = _validate("anthropic/ claude-opus")
         assert result["accepted"] is False
 
+    def test_custom_provider_allows_spaces_in_model_name(self):
+        """Self-hosted providers (VLLM, Ollama, etc.) may have model names with spaces."""
+        result = _validate(
+            "My Custom Model",
+            provider="custom",
+            api_models=["My Custom Model", "Other Model"],
+        )
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+
+    def test_custom_local_provider_allows_spaces_in_model_name(self):
+        """custom:* sub-providers should also allow spaces."""
+        result = _validate(
+            "My VLLM Model",
+            provider="custom:my-vllm",
+            api_models=["My VLLM Model"],
+        )
+        assert result["accepted"] is True
+
+    def test_lmstudio_provider_allows_spaces_in_model_name(self):
+        """LM Studio is a local provider that may expose models with spaces."""
+        with patch("hermes_cli.models.probe_lmstudio_models", return_value=["My Local Model"]):
+            result = _validate("My Local Model", provider="lmstudio")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+
+    def test_cloud_provider_still_rejects_spaces(self):
+        """Cloud providers should still reject model names with spaces."""
+        result = _validate("anthropic/claude opus", provider="anthropic")
+        assert result["accepted"] is False
+        assert "spaces" in result["message"]
+
     def test_no_slash_model_still_probes_api(self):
         result = _validate("gpt-5.4", api_models=["gpt-5.4", "gpt-5.4-pro"])
         assert result["accepted"] is True

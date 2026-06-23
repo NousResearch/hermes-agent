@@ -3653,7 +3653,11 @@ def validate_requested_model(
             "message": "Model name cannot be empty.",
         }
 
-    if any(ch.isspace() for ch in requested):
+    # Self-hosted providers (custom, lmstudio) may expose models with spaces
+    # in their names (e.g. VLLM "My Custom Model").  Skip the space check
+    # for those providers; cloud providers never use spaces.
+    _self_hosted = normalized == "custom" or normalized.startswith("custom:") or normalized == "lmstudio"
+    if any(ch.isspace() for ch in requested) and not _self_hosted:
         return {
             "accepted": False,
             "persist": False,

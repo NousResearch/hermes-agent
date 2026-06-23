@@ -12,7 +12,9 @@ import contextvars
 import fnmatch
 import logging
 import os
+import ipaddress
 import re
+import shlex
 import sys
 import threading
 import time
@@ -654,6 +656,50 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     return command
 
 
+def _is_safe_lan_url(command: str) -> bool:
+    """Return True if `command` is a read-only curl/wget hitting an RFC1918/loopback host.
+
+    Cron jobs need to be able to poll local-network HTTP endpoints (Glances,
+    Sonarr, Radarr, Uptime Kuma, …) without tripping the dangerous-command
+    gate. We allow this only for curl/wget against private/loopback IPs and
+    only when the command does not contain shell metacharacters that could
+    extend the action beyond an HTTP read.
+    """
+    if not command:
+        return False
+    if any(ch in command for ch in (";", "&&", "||", "|", "`", "$(")):
+        return False
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    binary = tokens[0].rsplit("/", 1)[-1]
+    if binary not in ("curl", "wget"):
+        return False
+    url = None
+    for tok in tokens[1:]:
+        if tok.startswith(("http://", "https://")):
+            url = tok
+            break
+    if not url:
+        return False
+    rest = url.split("://", 1)[1]
+    host = rest.split("/", 1)[0].split("?", 1)[0]
+    if "@" in host:
+        host = host.rsplit("@", 1)[1]
+    if host.startswith("["):
+        host = host[1:].split("]", 1)[0]
+    else:
+        host = host.split(":", 1)[0]
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -1262,6 +1308,8 @@ def check_dangerous_command(command: str, env_type: str,
         # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
+                if _is_safe_lan_url(command):
+                    return {"approved": True, "message": None}
                 return {
                     "approved": False,
                     "message": (
@@ -1519,6 +1567,8 @@ def check_all_command_guards(command: str, env_type: str,
         # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
+                if _is_safe_lan_url(command):
+                    return {"approved": True, "message": None}
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
                 if is_dangerous:

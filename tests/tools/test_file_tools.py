@@ -426,6 +426,20 @@ class TestSearchHandler:
         result = json.loads(search_tool(pattern="x"))
         assert "error" in result
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_file_search_regexish_zero_result_suggests_glob(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"total_count": 0, "files": []}
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import search_tool
+        result = json.loads(search_tool(pattern="rate.*limit.*monitor", target="files", path="/src"))
+
+        assert "glob patterns, not regex" in result["hint"]
+        assert "*rate*limit*monitor*" in result["hint"]
+
 
 # ---------------------------------------------------------------------------
 # Windows MSYS path resolution (salvage of #50488 / #46995)

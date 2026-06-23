@@ -910,6 +910,78 @@ def _is_feishu_low_token_platform(platform: str | None) -> bool:
     return (platform or "").strip().lower() == "feishu"
 
 
+def _is_feishu_messaging_platform(platform: str | None) -> bool:
+    return (platform or "").strip().lower() in {"feishu", "feishu_deep"}
+
+
+def _feishu_broad_search_block(path: str, task_id: str) -> str | None:
+    """Block ordinary Feishu searches whose root is too broad for low budget."""
+    raw = str(path or ".").strip() or "."
+    try:
+        resolved = _resolve_path_for_task(raw, task_id)
+    except Exception:
+        return None
+
+    broad_roots = {Path("/").resolve()}
+    try:
+        broad_roots.add(Path.home().resolve())
+    except Exception:
+        pass
+    try:
+        broad_roots.add(Path(_expand_tilde("~")).resolve())
+    except Exception:
+        pass
+
+    if resolved not in broad_roots:
+        return None
+
+    return json.dumps({
+        "error": (
+            "BLOCKED: Feishu low-token search_files refused to search a broad "
+            f"root ({resolved}). Provide a narrow absolute path such as "
+            "`/Users/minim4/.hermes/cron`, `/Users/minim4/.hermes/logs`, or a "
+            "specific project directory; for structured state like cron jobs, "
+            "use execute_code to load the JSON and filter the named item."
+        ),
+        "recommendation": "Retry search_files with a narrow path, or use execute_code for a targeted local query.",
+    }, ensure_ascii=False)
+
+
+def _feishu_structured_state_read_block(resolved_path: Path) -> str | None:
+    """Block noisy raw reads of state files that have compact tool APIs."""
+    try:
+        path = resolved_path.resolve()
+    except Exception:
+        path = resolved_path
+    if path.name == "jobs.json" and path.parent.name == "cron":
+        return json.dumps({
+            "error": (
+                "BLOCKED: Feishu should not read raw cron/jobs.json. It can "
+                "contain large embedded prompts and wastes context. Use "
+                "cronjob(action='list') for a compact schedule/status summary, "
+                "or execute_code to load JSON and filter a specific named job."
+            ),
+            "recommendation": "Use cronjob(action='list') or execute_code with a targeted jobs filter.",
+        }, ensure_ascii=False)
+    return None
+
+
+def _file_glob_hint_for_regexish_pattern(pattern: str) -> str | None:
+    pattern = str(pattern or "")
+    if ".*" not in pattern:
+        return None
+    suggestion = pattern.replace(".*", "*")
+    if not suggestion.startswith("*") and "/" not in suggestion:
+        suggestion = f"*{suggestion}"
+    if not suggestion.endswith("*") and "/" not in suggestion:
+        suggestion = f"{suggestion}*"
+    return (
+        "File-name search uses glob patterns, not regex. "
+        f"Try target='files' with pattern='{suggestion}', or use "
+        "target='content' when you intend a regex content search."
+    )
+
+
 def _record_feishu_file_tool_call(task_data: dict, *, tool: str) -> str | None:
     count = int(task_data.get("feishu_file_tool_count", 0) or 0) + 1
     task_data["feishu_file_tool_count"] = count
@@ -1248,6 +1320,10 @@ def read_file_tool(
             })
 
         _resolved = _resolve_path_for_task(path, task_id)
+        if _is_feishu_messaging_platform(platform):
+            _structured_block = _feishu_structured_state_read_block(_resolved)
+            if _structured_block:
+                return _structured_block
 
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
@@ -1981,6 +2057,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 task_id: str = "default", platform: str | None = None) -> str:
     """Search for content or files."""
     try:
+        if _is_feishu_messaging_platform(platform):
+            _broad_search_block = _feishu_broad_search_block(path, task_id)
+            if _broad_search_block:
+                return _broad_search_block
         if _is_feishu_low_token_platform(platform):
             if limit == 50:
                 limit = 20
@@ -2047,6 +2127,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 if hasattr(m, 'content') and m.content:
                     m.content = redact_sensitive_text(m.content, file_read=True)
         result_dict = result.to_dict(densify=True)
+        if target == "files" and int(result_dict.get("total_count") or 0) == 0:
+            glob_hint = _file_glob_hint_for_regexish_pattern(pattern)
+            if glob_hint:
+                result_dict["hint"] = glob_hint
 
         if omitted:
             result_dict["_omitted"] = (

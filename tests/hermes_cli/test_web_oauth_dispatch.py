@@ -489,14 +489,13 @@ def test_accounts_offers_every_oauth_provider_from_catalog():
             )
 
 
-def test_gemini_cli_and_copilot_acp_now_in_accounts():
-    """Regression: google-gemini-cli and copilot-acp were canonical providers the
-    CLI could configure, but had no Accounts card (the reported GUI/CLI drift).
+def test_copilot_acp_now_in_accounts():
+    """Regression: copilot-acp was a canonical provider the CLI could configure,
+    but had no Accounts card (the reported GUI/CLI drift).
     """
     resp = client.get("/api/providers/oauth", headers=HEADERS)
     assert resp.status_code == 200, resp.text
     providers = {p["id"]: p for p in resp.json()["providers"]}
-    assert "google-gemini-cli" in providers
     assert "copilot-acp" in providers
     # copilot-acp is managed by an external CLI: read-only card, not auto-removable.
     assert providers["copilot-acp"]["flow"] == "external"

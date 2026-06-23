@@ -251,6 +251,11 @@ class MemoryStore:
         the placeholder enters the snapshot, the original entry stays in
         live state for the user to inspect and delete.
 
+        If the original entry had a ``[core]`` prefix (case-insensitive),
+        the placeholder preserves it so the tiering logic still recognizes
+        it as a core entry and extended entries don't leak via the
+        backward-compat fallback.
+
         Empty or already-block-marker entries pass through unchanged.
         """
         from tools.threat_patterns import scan_for_threats
@@ -266,8 +271,14 @@ class MemoryStore:
                     "Memory entry from %s blocked at load time: %s",
                     filename, ", ".join(findings),
                 )
+                # Preserve [core] prefix so tiering still recognizes this
+                # as a core entry — prevents extended entries from leaking
+                # via the backward-compat "all go in" fallback.
+                core_prefix = ""
+                if entry.lower().startswith("[core]"):
+                    core_prefix = entry[:entry.lower().find("[core]") + 6] + " "
                 sanitized.append(
-                    f"[BLOCKED: {filename} entry contained threat pattern(s): "
+                    f"{core_prefix}[BLOCKED: {filename} entry contained threat pattern(s): "
                     f"{', '.join(findings)}. Removed from system prompt; "
                     f"use memory(action=remove) "
                     f"to delete the original.]"
@@ -749,11 +760,11 @@ class MemoryStore:
     def _render_block(self, target: str, entries: List[str]) -> str:
         """Render a system prompt block with header and usage indicator.
 
-        For the ``memory`` target: if any entry is prefixed with ``[core]``,
-        only core entries are included in the system prompt snapshot and the
-        prefix is stripped.  Extended entries (no prefix) are available via
-        the ``search`` action.  When no entries have ``[core]``, all entries
-        go in (backward compatible).
+        For the ``memory`` target: if any entry is prefixed with ``[core]``
+        (case-insensitive), only core entries are included in the system
+        prompt snapshot and the prefix is stripped.  Extended entries (no
+        prefix) are available via the ``search`` action.  When no entries
+        have ``[core]``, all entries go in (backward compatible).
 
         For the ``user`` target: all entries always go in — user profile is
         small and always relevant.
@@ -762,11 +773,17 @@ class MemoryStore:
             return ""
 
         # Core filtering for memory target only.
+        extended_count = 0
         if target == "memory":
-            core_entries = [e for e in entries if e.startswith(CORE_PREFIX)]
+            core_entries = [e for e in entries if e.lower().startswith("[core]")]
             if core_entries:
-                # Strip prefix for display
-                entries = [e[len(CORE_PREFIX):].strip() for e in core_entries]
+                extended_count = len(entries) - len(core_entries)
+                # Strip prefix for display, preserving original casing of content
+                stripped = []
+                for e in core_entries:
+                    idx = e.lower().find("[core]")
+                    stripped.append(e[idx + 6:].strip())
+                entries = stripped
 
         limit = self._char_limit(target)
         content = ENTRY_DELIMITER.join(entries)
@@ -777,6 +794,8 @@ class MemoryStore:
             header = f"{MEMORY_BLOCK_HEADERS['user']} [{pct}% — {current:,}/{limit:,} chars]"
         else:
             header = f"{MEMORY_BLOCK_HEADERS['memory']} [{pct}% — {current:,}/{limit:,} chars]"
+            if extended_count > 0:
+                header += f"  (core tier — {extended_count} extended entries available via search)"
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"

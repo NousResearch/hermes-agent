@@ -76,6 +76,7 @@ import ConfigPage from "@/pages/ConfigPage";
 import DocsPage from "@/pages/DocsPage";
 import EnvPage from "@/pages/EnvPage";
 import FilesPage from "@/pages/FilesPage";
+import CommandCenterPage from "@/pages/CommandCenterPage";
 import SessionsPage from "@/pages/SessionsPage";
 import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
@@ -102,10 +103,6 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 import type { StatusResponse } from "@/lib/api";
 
-function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
-}
-
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   if (pluginsLoading) {
     // Render nothing during the plugin-load window — a spinner here would just flash.
@@ -131,7 +128,7 @@ const CHAT_NAV_ITEM: NavItem = {
  * and nav highlight keep working.
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
-  "/": RootRedirect,
+  "/": CommandCenterPage,
   "/sessions": SessionsPage,
   "/files": FilesPage,
   "/analytics": AnalyticsPage,
@@ -161,6 +158,11 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  {
+    path: "/",
+    label: "Command",
+    icon: Activity,
+  },
   {
     path: "/sessions",
     labelKey: "sessions",
@@ -344,6 +346,106 @@ function buildRoutes(
   return routes;
 }
 
+function navItemLabel(item: NavItem, t: Translations): string {
+  return item.labelKey
+    ? ((t.app.nav as Record<string, string>)[item.labelKey] ?? item.label)
+    : item.label;
+}
+
+const COMMAND_TOP_NAV_PATHS = new Set([
+  "/",
+  "/chat",
+  "/sessions",
+  "/cron",
+  "/channels",
+  "/models",
+  "/logs",
+  "/system",
+  "/kanban",
+]);
+
+function CommandTopNav({
+  items,
+  pluginItems,
+  status,
+  t,
+}: {
+  items: NavItem[];
+  pluginItems: NavItem[];
+  status: StatusResponse | null;
+  t: Translations;
+}) {
+  const allItems = [...items, ...pluginItems].filter((item) =>
+    COMMAND_TOP_NAV_PATHS.has(item.path),
+  );
+  const gateway = status
+    ? gatewayLine(status, { app: t.app } as ReturnType<typeof useI18n>["t"])
+    : { label: "Checking", tone: "text-warning" };
+
+  return (
+    <header className="relative z-30 border-b border-current/20 bg-background-base/80 px-3 py-3 backdrop-blur-md sm:px-6">
+      <div className="mx-auto flex w-full max-w-[1520px] items-center gap-3">
+        <NavLink
+          to="/"
+          end
+          className="flex shrink-0 items-center gap-3 text-midground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground"
+        >
+          <span className="flex h-10 w-10 items-center justify-center rounded-full border border-primary/30 bg-primary/[0.08]">
+            <Sparkles className="h-5 w-5" />
+          </span>
+          <span className="hidden leading-none sm:block">
+            <span className="block font-expanded text-sm font-bold tracking-[0.08em]">
+              Hermes
+            </span>
+            <span className="block font-mono-ui text-[0.65rem] uppercase tracking-[0.18em] text-text-tertiary">
+              Command Center
+            </span>
+          </span>
+        </NavLink>
+
+        <nav
+          aria-label={t.app.navigation}
+          className="scrollbar-none flex min-w-0 flex-1 items-center gap-1 overflow-x-auto rounded-full border border-border bg-background-base/45 p-1"
+        >
+          {allItems.map((item) => {
+            const Icon = item.icon;
+            const label = navItemLabel(item, t);
+            return (
+              <NavLink
+                key={item.path}
+                to={item.path}
+                end={item.path === "/"}
+                className={({ isActive }) =>
+                  cn(
+                    "flex shrink-0 items-center gap-1.5 rounded-full px-3 py-2",
+                    "font-mondwest text-xs uppercase tracking-[0.12em] transition-colors",
+                    "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+                    isActive
+                      ? "bg-primary text-primary-foreground"
+                      : "text-text-secondary hover:bg-primary/[0.06] hover:text-midground",
+                  )
+                }
+              >
+                <Icon className="h-3.5 w-3.5" />
+                <span>{label}</span>
+              </NavLink>
+            );
+          })}
+        </nav>
+
+        <div className="hidden shrink-0 items-center gap-2 2xl:flex">
+          <ProfileSwitcher collapsed={false} />
+          <span className={cn("rounded-full border border-border px-3 py-1 font-mono-ui text-xs", gateway.tone)}>
+            Gateway {gateway.label}
+          </span>
+          <ThemeSwitcher />
+          <LanguageSwitcher />
+        </div>
+      </div>
+    </header>
+  );
+}
+
 const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 
 export default function App() {
@@ -376,6 +478,7 @@ export default function App() {
   const sidebarStatus = useSidebarStatus();
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
+  const isCommandRoute = normalizedPath === "/";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
@@ -489,6 +592,7 @@ export default function App() {
       <Backdrop />
       <PluginSlot name="backdrop" />
 
+      {!isCommandRoute && (
       <header
         className={cn(
           "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
@@ -521,8 +625,9 @@ export default function App() {
           {t.app.brand}
         </Typography>
       </header>
+      )}
 
-      {mobileOpen && (
+      {mobileOpen && !isCommandRoute && (
         <Button
           ghost
           aria-label={t.app.closeNavigation}
@@ -537,8 +642,27 @@ export default function App() {
       <PluginSlot name="header-banner" />
       <ProfileScopeBanner />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
-        <div className="flex min-h-0 min-w-0 flex-1">
+      <div
+        className={cn(
+          "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
+          isCommandRoute ? "pt-0" : "pt-14 lg:pt-0",
+        )}
+      >
+        <div
+          className={cn(
+            "flex min-h-0 min-w-0 flex-1",
+            isCommandRoute && "flex-col",
+          )}
+        >
+          {isCommandRoute && (
+            <CommandTopNav
+              items={builtinNav}
+              pluginItems={sidebarNav.pluginItems}
+              status={sidebarStatus}
+              t={t}
+            />
+          )}
+          {!isCommandRoute && (
           <aside
             id="app-sidebar"
             aria-label={t.app.navigation}
@@ -715,15 +839,21 @@ export default function App() {
               <SidebarFooter status={sidebarStatus} />
             </div>
           </aside>
+          )}
 
-          <PageHeaderProvider pluginTabs={pluginTabMeta}>
+          <PageHeaderProvider
+            chrome={isCommandRoute ? "immersive" : "standard"}
+            pluginTabs={pluginTabMeta}
+          >
             <div
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                "px-3 sm:px-6",
-                isChatRoute
-                  ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
-                  : "pt-2 sm:pt-4 lg:pt-6",
+                isCommandRoute ? "px-0 pt-0" : "px-3 sm:px-6",
+                isCommandRoute
+                  ? "pb-0"
+                  : isChatRoute
+                    ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
+                    : "pt-2 sm:pt-4 lg:pt-6",
                 isDocsRoute && "min-h-0 flex-1",
               )}
             >
@@ -732,6 +862,7 @@ export default function App() {
                 className={cn(
                   "w-full min-w-0",
                   !isChatRoute &&
+                    !isCommandRoute &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
                   (isDocsRoute || isChatRoute) &&
                     "min-h-0 flex flex-1 flex-col",

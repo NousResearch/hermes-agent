@@ -31,7 +31,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -1139,6 +1139,16 @@ _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 
+_COMMAND_CENTER_ACTIVE_STATUSES = {"registered", "running", "waiting", "blocked"}
+_COMMAND_CENTER_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+_COMMAND_CENTER_RISK_LEVELS = {
+    "read_only",
+    "workspace_write",
+    "approval_required",
+    "external_send",
+    "production_update",
+}
+
 
 def _get_script_timeout() -> int:
     """Resolve cron pre-run script timeout from module/env/config with a safe default."""
@@ -1171,6 +1181,136 @@ def _get_script_timeout() -> int:
         logger.debug("Failed to load cron script timeout from config: %s", exc)
 
     return _DEFAULT_SCRIPT_TIMEOUT
+
+
+def _command_center_tracking_config(job: dict) -> Optional[dict[str, Any]]:
+    """Return opt-in Command Center tracking config for a cron job.
+
+    This is intentionally job-local and opt-in. Existing cron jobs keep their
+    exact script/delivery semantics unless the stored job explicitly asks to be
+    surfaced on the human Command Center board.
+    """
+
+    cfg = job.get("command_center")
+    if cfg is True:
+        return {}
+    if isinstance(cfg, dict) and cfg.get("track") is True:
+        return cfg
+    if job.get("command_center_track") is True:
+        return {}
+    return None
+
+
+def _command_center_job_agent_id(job: dict, cfg: dict[str, Any]) -> str:
+    explicit = str(cfg.get("agent_id") or "").strip()
+    if explicit:
+        return explicit[:120]
+    raw = str(job.get("id") or job.get("name") or "cron-job")
+    safe = "".join(ch.lower() if ch.isalnum() else "-" for ch in raw).strip("-")
+    while "--" in safe:
+        safe = safe.replace("--", "-")
+    return f"cron-{(safe or 'job')[:80]}"
+
+
+def _command_center_job_risk(job: dict, cfg: dict[str, Any]) -> str:
+    raw = str(cfg.get("risk_level") or job.get("risk_level") or "").strip()
+    if raw in _COMMAND_CENTER_RISK_LEVELS:
+        return raw
+    deliver = str(job.get("deliver") or "local").strip().lower()
+    if deliver and deliver not in {"local", "none"}:
+        return "external_send"
+    return "workspace_write"
+
+
+def _command_center_registry_path() -> Path:
+    return _get_hermes_home() / "state" / "agent_registry.json"
+
+
+def _load_command_center_registry(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"schema_version": 1, "updated_at": None, "agents": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("Command Center registry unreadable; recreating: %s", path)
+        return {"schema_version": 1, "updated_at": None, "agents": []}
+    if not isinstance(data, dict):
+        return {"schema_version": 1, "updated_at": None, "agents": []}
+    if not isinstance(data.get("agents"), list):
+        data["agents"] = []
+    data.setdefault("schema_version", 1)
+    return data
+
+
+def _write_command_center_registry(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data["updated_at"] = _hermes_now().astimezone().isoformat(timespec="seconds")
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _record_command_center_cron_run(
+    job: dict,
+    *,
+    status: Optional[str] = None,
+    current_step: Optional[str] = None,
+    artifact: Optional[str] = None,
+    blocker: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> None:
+    """Best-effort registry update for opt-in cron jobs.
+
+    The registry is a local dashboard artifact. A registry failure must never
+    make the cron job fail or alter stdout/delivery semantics.
+    """
+
+    cfg = _command_center_tracking_config(job)
+    if cfg is None:
+        return
+    try:
+        path = _command_center_registry_path()
+        data = _load_command_center_registry(path)
+        agent_id = _command_center_job_agent_id(job, cfg)
+        agents = data.setdefault("agents", [])
+        existing = next(
+            (a for a in agents if isinstance(a, dict) and a.get("agent_id") == agent_id),
+            None,
+        )
+        ts = _hermes_now().astimezone().isoformat(timespec="seconds")
+        resolved_status = status or (existing or {}).get("status") or "running"
+        if resolved_status not in _COMMAND_CENTER_ACTIVE_STATUSES | _COMMAND_CENTER_TERMINAL_STATUSES:
+            resolved_status = "running"
+        if artifact is None and existing:
+            artifact = existing.get("artifact")
+        if blocker is None and existing and resolved_status != "failed":
+            blocker = existing.get("blocker")
+        record = {
+            "agent_id": agent_id,
+            "team": str(cfg.get("team") or "cron"),
+            "runner": "cron",
+            "model": "no_agent-script" if job.get("no_agent") else "cron-agent",
+            "status": resolved_status,
+            "mission": str(cfg.get("mission") or job.get("name") or job.get("prompt") or job.get("id") or "cron job")[:500],
+            "current_step": (current_step or (existing or {}).get("current_step") or "running")[:500],
+            "last_heartbeat": ts,
+            "created_at": (existing or {}).get("created_at") or ts,
+            "updated_at": ts,
+            "artifact": artifact,
+            "risk_level": _command_center_job_risk(job, cfg),
+            "blocker": blocker[:500] if isinstance(blocker, str) else blocker,
+            "pid": str(os.getpid()),
+            "workdir": job.get("workdir"),
+            "run_id": f"cron-{job.get('id')}",
+            "notes": notes,
+        }
+        if existing:
+            existing.update(record)
+        else:
+            agents.append(record)
+        _write_command_center_registry(path, data)
+    except Exception as exc:
+        logger.debug("Command Center cron registry update failed for %s: %s", job.get("id"), exc)
 
 
 def _run_job_script(script_path: str) -> tuple[bool, str]:
@@ -1642,6 +1782,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
+            _record_command_center_cron_run(
+                job,
+                status="running",
+                current_step=f"running no_agent script: {script_path}",
+                notes="cron no_agent script started",
+            )
             ok, output = _run_job_script(script_path)
         finally:
             if _prior_cwd is not None:
@@ -1669,6 +1815,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Status:** script failed\n\n"
                 f"{output}\n"
             )
+            _record_command_center_cron_run(
+                job,
+                status="failed",
+                current_step="script failed",
+                blocker=output,
+                notes="cron no_agent script failed",
+            )
             return False, doc, alert, output
 
         # Honour the wakeAgent gate as a silent signal — `wakeAgent: false`
@@ -1684,6 +1837,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (wakeAgent=false)\n"
             )
+            _record_command_center_cron_run(
+                job,
+                status="completed",
+                current_step="completed silently (wakeAgent=false)",
+                notes="cron no_agent script completed with wakeAgent=false",
+            )
             return True, silent_doc, SILENT_MARKER, None
 
         if not output.strip():
@@ -1695,6 +1854,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (empty output)\n"
             )
+            _record_command_center_cron_run(
+                job,
+                status="completed",
+                current_step="completed silently (empty output)",
+                notes="cron no_agent script completed with empty output",
+            )
             return True, silent_doc, SILENT_MARKER, None
 
         doc = (
@@ -1704,6 +1869,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             f"**Mode:** no_agent (script)\n\n"
             f"---\n\n"
             f"{output}\n"
+        )
+        _record_command_center_cron_run(
+            job,
+            status="completed",
+            current_step="completed with output",
+            notes="cron no_agent script completed with output",
         )
         return True, doc, output, None
 
@@ -2047,6 +2218,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_id, _mcp_exc,
             )
 
+        _record_command_center_cron_run(
+            job,
+            status="running",
+            current_step="starting cron agent",
+            notes="cron agent run started",
+        )
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -2128,6 +2306,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                         try:
                             _act = agent.get_activity_summary()
                             _idle_secs = _act.get("seconds_since_activity", 0.0)
+                            _last_desc = str(_act.get("last_activity_desc") or "agent running")
+                            _cur_tool = _act.get("current_tool")
+                            _step = _last_desc
+                            if _cur_tool:
+                                _step = f"{_step} | tool={_cur_tool}"
+                            _record_command_center_cron_run(
+                                job,
+                                status="running",
+                                current_step=_step,
+                                notes="cron agent heartbeat",
+                            )
                         except Exception:
                             pass
                     if _idle_secs >= _cron_inactivity_limit:
@@ -2227,11 +2416,24 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
+        _record_command_center_cron_run(
+            job,
+            status="completed",
+            current_step="agent completed",
+            notes="cron agent completed successfully",
+        )
         return True, output, final_response, None
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
+        _record_command_center_cron_run(
+            job,
+            status="failed",
+            current_step="agent failed",
+            blocker=error_msg,
+            notes="cron agent failed",
+        )
         
         output = f"""# Cron Job: {job_name} (FAILED)
 
@@ -2324,6 +2526,11 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         success, output, final_response, error = run_job(job)
 
         output_file = save_job_output(job["id"], output)
+        _record_command_center_cron_run(
+            job,
+            artifact=str(output_file),
+            notes=f"cron output saved to {output_file}",
+        )
         if verbose:
             logger.info("Output saved to: %s", output_file)
 

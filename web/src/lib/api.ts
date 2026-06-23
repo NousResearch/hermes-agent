@@ -403,6 +403,10 @@ export const api = {
     ),
   getSessionStats: (profile = getManagementProfile()) =>
     fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
+  getCommandCenterProcesses: () =>
+    fetchJSON<{ processes: CommandCenterProcess[] }>("/api/command-center/processes"),
+  getCommandCenterSnapshot: () =>
+    fetchJSON<CommandCenterSnapshot>("/api/command-center/snapshot"),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
     appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/export`, profile),
   pruneSessions: (
@@ -1209,6 +1213,83 @@ export interface SessionStoreStats {
   archived: number;
   messages: number;
   by_source: Record<string, number>;
+}
+
+export interface CommandCenterProcess {
+  pid: number;
+  kind: string;
+  label: string;
+  state: string;
+  uptime: string;
+  command: string;
+  mission: string;
+  risk: string;
+}
+
+export interface CommandCenterSnapshotAgent {
+  agent_id?: string | null;
+  team?: string | null;
+  runner?: string | null;
+  model?: string | null;
+  status?: string | null;
+  mission?: string | null;
+  current_step?: string | null;
+  last_heartbeat?: string | null;
+  artifact?: string | null;
+  workdir?: string | null;
+  run_id?: string | null;
+  risk_level?: string | null;
+  blocker?: string | null;
+}
+
+export interface CommandCenterSnapshotSession {
+  id: string;
+  title?: string | null;
+  source?: string | null;
+  status?: string | null;
+  age_minutes?: number | null;
+  message_count?: number | null;
+  tool_call_count?: number | null;
+  resume_url?: string | null;
+  preview?: string | null;
+}
+
+export interface CommandCenterSnapshotWaitingItem {
+  type?: string | null;
+  title?: string | null;
+  detail?: string | null;
+  source?: string | null;
+  risk?: string | null;
+}
+
+export interface CommandCenterSnapshotHumanState {
+  source?: string | null;
+  target?: string | null;
+  need?: string | null;
+  current?: string | null;
+  next_automation?: string | null;
+}
+
+export interface CommandCenterSnapshot {
+  exists?: boolean;
+  path?: string;
+  message?: string;
+  error?: string;
+  generated_at?: string;
+  one_line_state?: string;
+  counts?: Record<string, number>;
+  human_state?: CommandCenterSnapshotHumanState;
+  rino_waiting?: CommandCenterSnapshotWaitingItem[];
+  agent_registry?: {
+    active?: CommandCenterSnapshotAgent[];
+    recent_runs?: CommandCenterSnapshotAgent[];
+    updated_at?: string | null;
+    count?: number;
+  };
+  sessions?: {
+    active?: CommandCenterSnapshotSession[];
+    recent?: CommandCenterSnapshotSession[];
+  };
 }
 
 export interface SkillHubResult {

@@ -7,9 +7,11 @@ import { useI18n } from "@/i18n";
 
 export function PageHeaderProvider({
   children,
+  chrome = "standard",
   pluginTabs,
 }: {
   children: ReactNode;
+  chrome?: "standard" | "immersive";
   pluginTabs: { path: string; label: string }[];
 }) {
   const { pathname } = useLocation();
@@ -51,6 +53,7 @@ export function PageHeaderProvider({
   return (
     <PageHeaderContext.Provider value={value}>
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
+        {chrome === "standard" && (
         <header
           className={cn(
             "z-1 w-full shrink-0",
@@ -120,6 +123,7 @@ export function PageHeaderProvider({
             ) : null}
           </div>
         </header>
+        )}
 
         <main
           className={cn(

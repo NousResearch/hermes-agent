@@ -267,3 +267,67 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
+/* Command Center live-agent visualisation. Motion is limited to transform and
+   opacity so the dashboard stays cheap to repaint while still feeling alive. */
+@keyframes agent-orbit-spin {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+@keyframes agent-node-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success) 36%, transparent); }
+  50% { box-shadow: 0 0 0 10px color-mix(in srgb, var(--color-success) 0%, transparent); }
+}
+@keyframes agent-scan-sweep {
+  0% { transform: translateX(-120%); opacity: 0; }
+  18% { opacity: 0.42; }
+  100% { transform: translateX(120%); opacity: 0; }
+}
+.agent-orbit {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  pointer-events: none;
+  border: 1px solid color-mix(in srgb, var(--midground-base) 22%, transparent);
+  border-radius: 9999px;
+}
+.agent-orbit::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: var(--midground-base);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--midground-base) 72%, transparent);
+}
+.agent-orbit-slow {
+  width: 17rem;
+  height: 17rem;
+  animation: agent-orbit-spin 18s linear infinite;
+}
+.agent-orbit-fast {
+  width: 12rem;
+  height: 12rem;
+  animation: agent-orbit-spin 11s linear infinite reverse;
+  opacity: 0.6;
+}
+.agent-node-active {
+  animation: agent-node-breathe 2.4s ease-in-out infinite;
+}
+.agent-scan {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--midground-base) 9%, transparent), transparent);
+  animation: agent-scan-sweep 4.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-orbit-slow,
+  .agent-orbit-fast,
+  .agent-node-active,
+  .agent-scan {
+    animation: none;
+  }
+}
+

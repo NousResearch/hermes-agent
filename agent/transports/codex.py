@@ -5,10 +5,60 @@ This transport owns format conversion and normalization — NOT client lifecycle
 streaming, or the _run_codex_stream() call path.
 """
 
+import hashlib
+import json
+import logging
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+
+logger = logging.getLogger(__name__)
+
+
+def _compute_prompt_cache_key(
+    instructions: str,
+    tools: Optional[List[Dict[str, Any]]],
+) -> Optional[str]:
+    """Derive a deterministic cache key from the static request prefix.
+
+    The key is a SHA-256 digest of (instructions, sorted tool schemas).
+    Any call with the same system prompt and tool set — cron fire,
+    interactive session, or one-shot job — resolves to the same key
+    and hits the provider's prefix cache without any caller intervention.
+
+    Sorting tools by name guarantees stability regardless of insertion
+    order.  json.dumps(sort_keys=True) with fixed separators produces
+    identical bytes on all Python ≥ 3.7 / all OS.
+
+    Returns None when there is no static content to key on (empty
+    instructions, no tools), so the caller falls back to session_id.
+    """
+    if not instructions and not tools:
+        return None
+    try:
+        tools_part = ""
+        if tools:
+            sorted_tools = sorted(
+                (t for t in tools if isinstance(t, dict)),
+                key=lambda t: str(t.get("name") or t.get("type") or ""),
+            )
+            tools_part = json.dumps(
+                sorted_tools,
+                sort_keys=True,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        # \x00 separator prevents ambiguity: an instructions string that
+        # ends with the tools JSON must not hash identically to a request
+        # whose instructions contain that JSON and whose tools are empty.
+        content = f"{instructions or ''}\x00{tools_part}"
+        digest = hashlib.sha256(
+            content.encode("utf-8", errors="replace")
+        ).hexdigest()[:24]
+        return f"pck_{digest}"
+    except Exception:
+        return None
 
 
 class ResponsesApiTransport(ProviderTransport):
@@ -71,7 +121,12 @@ class ResponsesApiTransport(ProviderTransport):
         params:
             instructions: str — system prompt (extracted from messages[0] if not given)
             reasoning_config: dict | None — {effort, enabled}
-            session_id: str | None — used for prompt_cache_key + xAI conv header
+            session_id: str | None — used for session-isolation headers
+                (x-client-request-id, x-grok-conv-id) and as the final
+                fallback for prompt_cache_key when auto-computation yields nothing
+            cache_key: str | None — explicit override for prompt_cache_key;
+                skips auto-computation when provided (useful in tests or
+                when the caller needs a forced cache scope)
             max_tokens: int | None — max_output_tokens
             timeout: float | None — per-request timeout forwarded to the SDK
             request_overrides: dict | None — extra kwargs merged in
@@ -212,10 +267,34 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["parallel_tool_calls"] = True
 
         session_id = params.get("session_id")
+        # Determine the prompt_cache_key using a three-level priority chain:
+        #
+        #   1. Explicit cache_key param — caller forces a specific scope
+        #      (e.g. tests, or a future use-case with hard-coded scopes).
+        #   2. Auto-computed hash of (instructions + sorted tools) — covers
+        #      every request type (cron, interactive, one-shot) without any
+        #      caller intervention.  Two agents with the same system prompt
+        #      and tool set share one cache prefix regardless of origin.
+        #      Tools are sorted by name before hashing so insertion-order
+        #      differences never produce spurious misses.  Pure stdlib
+        #      (hashlib + json) → deterministic on all Python ≥ 3.7 and
+        #      all OS (Linux / macOS / Windows).
+        #   3. session_id — last-resort fallback when there is literally no
+        #      static content to hash (empty instructions, zero tools).
+        #
+        # session_id itself is NEVER used as prompt_cache_key; it keeps its
+        # per-fire timestamp so session-isolation headers stay unique.
+        cache_key = (
+            params.get("cache_key")
+            or _compute_prompt_cache_key(instructions, response_tools)
+            or session_id
+        )
         # xAI Responses takes prompt_cache_key in extra_body (set further
         # down); GitHub Models opts out of cache-key routing entirely.
-        if not is_github_responses and not is_xai_responses and session_id:
-            kwargs["prompt_cache_key"] = session_id
+        if not is_github_responses and not is_xai_responses and cache_key:
+            kwargs["prompt_cache_key"] = cache_key
+        if cache_key:
+            logger.debug("prompt_cache_key=%s session_id=%s", cache_key, session_id)
 
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort
@@ -326,7 +405,7 @@ class ResponsesApiTransport(ProviderTransport):
             merged_extra_body: Dict[str, Any] = {}
             if isinstance(existing_extra_body, dict):
                 merged_extra_body.update(existing_extra_body)
-            merged_extra_body.setdefault("prompt_cache_key", session_id)
+            merged_extra_body.setdefault("prompt_cache_key", cache_key)
             kwargs["extra_body"] = merged_extra_body
 
         return kwargs

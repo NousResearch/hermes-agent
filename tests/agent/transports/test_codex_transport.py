@@ -5,6 +5,7 @@ import pytest
 from types import SimpleNamespace
 
 from agent.transports import get_transport
+from agent.transports.codex import _compute_prompt_cache_key
 from agent.transports.types import NormalizedResponse
 
 
@@ -12,6 +13,76 @@ from agent.transports.types import NormalizedResponse
 def transport():
     import agent.transports.codex  # noqa: F401
     return get_transport("codex_responses")
+
+
+class TestComputePromptCacheKey:
+    """Unit tests for the content-addressed cache-key helper.
+
+    The helper must be:
+      - Deterministic: same inputs → same output on any run / OS / Python ≥ 3.7
+      - Sensitive: different inputs → different outputs
+      - Tool-order-independent: sort by name before hashing
+      - Safe: exceptions → None (never raises)
+      - Prefixed: results start with 'pck_'
+    """
+
+    def test_returns_pck_prefix(self):
+        key = _compute_prompt_cache_key("System prompt", [])
+        assert key is not None
+        assert key.startswith("pck_")
+
+    def test_deterministic_same_inputs(self):
+        k1 = _compute_prompt_cache_key("SP", [{"type": "function", "name": "foo"}])
+        k2 = _compute_prompt_cache_key("SP", [{"type": "function", "name": "foo"}])
+        assert k1 == k2
+
+    def test_different_instructions_different_key(self):
+        k1 = _compute_prompt_cache_key("Identity A", [])
+        k2 = _compute_prompt_cache_key("Identity B", [])
+        assert k1 != k2
+
+    def test_different_tools_different_key(self):
+        k1 = _compute_prompt_cache_key("SP", [{"type": "function", "name": "foo"}])
+        k2 = _compute_prompt_cache_key("SP", [{"type": "function", "name": "bar"}])
+        assert k1 != k2
+
+    def test_tool_order_independent(self):
+        """Insertion order must not affect the hash — tools sorted by name."""
+        tools_ab = [
+            {"type": "function", "name": "alpha"},
+            {"type": "function", "name": "beta"},
+        ]
+        tools_ba = [
+            {"type": "function", "name": "beta"},
+            {"type": "function", "name": "alpha"},
+        ]
+        assert _compute_prompt_cache_key("SP", tools_ab) == _compute_prompt_cache_key("SP", tools_ba)
+
+    def test_empty_instructions_and_tools_returns_none(self):
+        """With no static content there is nothing to key on; caller
+        falls back to session_id."""
+        assert _compute_prompt_cache_key("", None) is None
+        assert _compute_prompt_cache_key("", []) is None
+
+    def test_instructions_only_is_valid(self):
+        key = _compute_prompt_cache_key("Agent identity", None)
+        assert key is not None and key.startswith("pck_")
+
+    def test_tools_only_is_valid(self):
+        key = _compute_prompt_cache_key("", [{"type": "function", "name": "x"}])
+        assert key is not None and key.startswith("pck_")
+
+    def test_no_separator_ambiguity(self):
+        """'AB' + '' and 'A' + 'B' must NOT share a key.
+        The \\x00 separator prevents this class of collision."""
+        k1 = _compute_prompt_cache_key("AB", [])
+        k2 = _compute_prompt_cache_key("A", [{"type": "function", "name": "B"}])
+        assert k1 != k2
+
+    def test_key_length_reasonable(self):
+        key = _compute_prompt_cache_key("Some prompt", [])
+        # "pck_" + 24 hex chars = 28 chars
+        assert len(key) == 28
 
 
 class TestCodexTransportBasic:
@@ -83,13 +154,140 @@ class TestCodexBuildKwargs:
         )
         assert "reasoning" not in kw or kw.get("include") == []
 
-    def test_session_id_sets_cache_key(self, transport):
+    def test_auto_cache_key_computed_not_session_id(self, transport):
+        """prompt_cache_key must be auto-computed from (instructions + tools),
+        never the raw session_id.  The hash is deterministic across calls and
+        starts with 'pck_'."""
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hi"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            session_id="session-abc-20260623",
+        )
+        pck = kw.get("prompt_cache_key", "")
+        assert pck.startswith("pck_"), (
+            f"Auto-computed cache key must start with 'pck_', got {pck!r}"
+        )
+        assert pck != "session-abc-20260623", (
+            "prompt_cache_key must NOT be the session_id — use content hash"
+        )
+
+    def test_auto_cache_key_deterministic_same_content(self, transport):
+        """Two builds with identical system prompt + tools must produce the
+        same prompt_cache_key — that's the whole point of content addressing."""
+        messages = [
+            {"role": "system", "content": "Agent identity v1"},
+            {"role": "user", "content": "Hi"},
+        ]
+        tools = [{"type": "function", "function": {
+            "name": "terminal", "description": "Run",
+            "parameters": {"type": "object", "properties": {}},
+        }}]
+        kw1 = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=tools,
+            session_id="fire-1",
+        )
+        kw2 = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=tools,
+            session_id="fire-2",
+        )
+        assert kw1["prompt_cache_key"] == kw2["prompt_cache_key"], (
+            "Same content must always produce the same cache key, "
+            "regardless of session_id"
+        )
+
+    def test_auto_cache_key_changes_on_instructions_change(self, transport):
+        """A different system prompt must produce a different cache key so
+        the provider never serves stale prefix from a different identity."""
+        base = [{"role": "user", "content": "Hi"}]
+        kw_v1 = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "system", "content": "Identity v1"}, *base],
+            tools=[],
+        )
+        kw_v2 = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "system", "content": "Identity v2"}, *base],
+            tools=[],
+        )
+        assert kw_v1["prompt_cache_key"] != kw_v2["prompt_cache_key"]
+
+    def test_auto_cache_key_changes_on_tools_change(self, transport):
+        """Adding or removing a tool must produce a different cache key."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw_no_tools = transport.build_kwargs(
+            model="gpt-5.4", messages=msgs, tools=[],
+        )
+        kw_with_tool = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=msgs,
+            tools=[{"type": "function", "function": {
+                "name": "read_file", "description": "Read",
+                "parameters": {"type": "object", "properties": {}},
+            }}],
+        )
+        assert kw_no_tools["prompt_cache_key"] != kw_with_tool["prompt_cache_key"]
+
+    def test_auto_cache_key_tool_order_independent(self, transport):
+        """Tool insertion order must NOT affect the cache key — tools are
+        sorted by name before hashing to prevent spurious misses when the
+        toolset registry iterates in different order across processes."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        tool_a = {"type": "function", "function": {
+            "name": "alpha", "description": "A",
+            "parameters": {"type": "object", "properties": {}},
+        }}
+        tool_b = {"type": "function", "function": {
+            "name": "beta", "description": "B",
+            "parameters": {"type": "object", "properties": {}},
+        }}
+        kw_ab = transport.build_kwargs(
+            model="gpt-5.4", messages=msgs, tools=[tool_a, tool_b],
+        )
+        kw_ba = transport.build_kwargs(
+            model="gpt-5.4", messages=msgs, tools=[tool_b, tool_a],
+        )
+        assert kw_ab["prompt_cache_key"] == kw_ba["prompt_cache_key"], (
+            "Cache key must be tool-order-independent"
+        )
+
+    def test_explicit_cache_key_overrides_auto_hash(self, transport):
+        """An explicit cache_key param must take precedence over the
+        auto-computed hash — useful for tests and forced cache scopes."""
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="gpt-5.4", messages=messages, tools=[],
-            session_id="test-session-123",
+            session_id="session-ts-20260623",
+            cache_key="forced-scope-xyz",
         )
-        assert kw.get("prompt_cache_key") == "test-session-123"
+        assert kw.get("prompt_cache_key") == "forced-scope-xyz"
+
+    def test_auto_cache_key_xai_in_extra_body_not_session_id(self, transport):
+        """xAI path: extra_body.prompt_cache_key must be the content hash,
+        not the session_id.  x-grok-conv-id header keeps session_id for
+        per-fire conversation isolation."""
+        messages = [
+            {"role": "system", "content": "Cron agent v1"},
+            {"role": "user", "content": "Hi"},
+        ]
+        kw = transport.build_kwargs(
+            model="grok-4.3", messages=messages, tools=[],
+            session_id="cron_abc_20260623_130000",
+            is_xai_responses=True,
+        )
+        pck_in_body = kw.get("extra_body", {}).get("prompt_cache_key", "")
+        assert pck_in_body.startswith("pck_"), (
+            f"xAI extra_body.prompt_cache_key must be the auto-hash, got {pck_in_body!r}"
+        )
+        assert pck_in_body != "cron_abc_20260623_130000", (
+            "xAI cache key must NOT be session_id"
+        )
+        # Per-fire isolation header must keep the timestamped session_id.
+        assert kw.get("extra_headers", {}).get("x-grok-conv-id") == (
+            "cron_abc_20260623_130000"
+        ), "x-grok-conv-id must preserve the unique per-fire session_id"
 
     def test_github_responses_no_cache_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
@@ -118,7 +316,12 @@ class TestCodexBuildKwargs:
             is_xai_responses=True,
         )
         assert "prompt_cache_key" not in kw
-        assert kw.get("extra_body", {}).get("prompt_cache_key") == "conv-xai-1"
+        # Phase 2: prompt_cache_key in extra_body is the content hash, not session_id.
+        body_pck = kw.get("extra_body", {}).get("prompt_cache_key", "")
+        assert body_pck, "xAI extra_body must contain a prompt_cache_key"
+        assert body_pck != "conv-xai-1", (
+            "extra_body.prompt_cache_key must be the content hash, not session_id"
+        )
         assert kw.get("extra_headers", {}).get("x-grok-conv-id") == "conv-xai-1"
 
     def test_xai_responses_extra_body_preserves_caller_fields(self, transport):

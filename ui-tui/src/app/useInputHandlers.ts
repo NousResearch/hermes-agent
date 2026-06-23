@@ -16,7 +16,7 @@ import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionW
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
-import type { ComposerMode, InputHandlerActions, InputHandlerContext, InputHandlerResult } from './interfaces.js'
+import type { InputHandlerActions, InputHandlerContext, InputHandlerResult, ComposerMode } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'

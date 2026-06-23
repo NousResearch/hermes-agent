@@ -2809,28 +2809,49 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load the current delegation config.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Prefer the persistent config loader for user-configured delegation keys
+    because it invalidates its cache on ``config.yaml`` mtime changes.
+    ``cli.CLI_CONFIG`` is a process-start snapshot, so using it first makes
+    long-lived CLI/TUI sessions ignore mid-session edits such as raising
+    ``max_concurrent_children``.
     """
-    try:
-        from cli import CLI_CONFIG
+    def _cli_snapshot() -> dict:
+        try:
+            from cli import CLI_CONFIG
 
-        cfg = CLI_CONFIG.get("delegation") or {}
+            return CLI_CONFIG.get("delegation") or {}
+        except Exception:
+            return {}
+
+    if os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
+        return _cli_snapshot()
+
+    cfg = dict(_cli_snapshot())
+
+    try:
+        from hermes_cli.config import load_config, read_raw_config
+
+        from hermes_cli import managed_scope
+
+        full = load_config()
+        live_cfg = dict(full.get("delegation") or {})
+        raw = read_raw_config().get("delegation") or {}
+        managed = managed_scope.load_managed_config().get("delegation") or {}
+        raw_keys = set(raw) if isinstance(raw, dict) else set()
+        managed_keys = set(managed) if isinstance(managed, dict) else set()
+        configured_keys = raw_keys | managed_keys
+        for key in configured_keys:
+            if key in live_cfg:
+                cfg[key] = live_cfg[key]
+            else:
+                cfg.pop(key, None)
         if cfg:
             return cfg
     except Exception:
         pass
-    try:
-        from hermes_cli.config import load_config
-
-        full = load_config()
-        return full.get("delegation") or {}
-    except Exception:
-        return {}
+    return cfg
 
 
 # ---------------------------------------------------------------------------

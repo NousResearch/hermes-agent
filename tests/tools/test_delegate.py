@@ -11,8 +11,10 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import sys
 import threading
 import time
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -22,6 +24,7 @@ from tools.delegate_tool import (
     DelegateEvent,
     _get_max_concurrent_children,
     _LEGACY_EVENT_MAP,
+    _load_config,
     MAX_DEPTH,
     check_delegate_requirements,
     delegate_task,
@@ -2194,6 +2197,119 @@ class TestConcurrencyDefaults(unittest.TestCase):
            return_value={"max_concurrent_children": 6})
     def test_configured_value_returned(self, mock_cfg):
         self.assertEqual(_get_max_concurrent_children(), 6)
+
+    def test_persistent_config_wins_over_stale_cli_snapshot(self):
+        """Long-lived CLI sessions must see config.yaml edits made after startup."""
+        fake_cli = types.ModuleType("cli")
+        fake_cli.CLI_CONFIG = {"delegation": {"max_concurrent_children": 3}}
+
+        with patch.dict(sys.modules, {"cli": fake_cli}), patch(
+            "hermes_cli.config.load_config",
+            return_value={"delegation": {"max_concurrent_children": 5}},
+        ), patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={"delegation": {"max_concurrent_children": 5}},
+        ):
+            self.assertEqual(_load_config()["max_concurrent_children"], 5)
+            self.assertEqual(_get_max_concurrent_children(), 5)
+
+    def test_merged_defaults_do_not_shadow_env_fallback(self):
+        """Merged persistent defaults must not block DELEGATION_* fallbacks."""
+        fake_cli = types.ModuleType("cli")
+        fake_cli.CLI_CONFIG = {"delegation": {}}
+
+        with patch.dict(sys.modules, {"cli": fake_cli}), patch.dict(
+            os.environ,
+            {"DELEGATION_MAX_CONCURRENT_CHILDREN": "12"},
+        ), patch(
+            "hermes_cli.config.load_config",
+            return_value={"delegation": {"max_concurrent_children": 3}},
+        ), patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={},
+        ):
+            self.assertNotIn("max_concurrent_children", _load_config())
+            self.assertEqual(_get_max_concurrent_children(), 12)
+
+    def test_managed_delegation_limit_wins_over_env_fallback(self):
+        """Admin-managed delegation limits must remain config-authoritative."""
+        fake_cli = types.ModuleType("cli")
+        fake_cli.CLI_CONFIG = {"delegation": {}}
+
+        with patch.dict(sys.modules, {"cli": fake_cli}), patch.dict(
+            os.environ,
+            {"DELEGATION_MAX_CONCURRENT_CHILDREN": "12"},
+        ), patch(
+            "hermes_cli.config.load_config",
+            return_value={"delegation": {"max_concurrent_children": 6}},
+        ), patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={},
+        ), patch(
+            "hermes_cli.managed_scope.load_managed_config",
+            return_value={"delegation": {"max_concurrent_children": 6}},
+        ):
+            self.assertEqual(_load_config()["max_concurrent_children"], 6)
+            self.assertEqual(_get_max_concurrent_children(), 6)
+
+    def test_project_cli_snapshot_fallback_is_preserved(self):
+        """Repo-local cli-config.yaml fallback values live only in CLI_CONFIG."""
+        fake_cli = types.ModuleType("cli")
+        fake_cli.CLI_CONFIG = {
+            "delegation": {
+                "model": "google/gemini-3-flash-preview",
+                "provider": "openrouter",
+                "max_iterations": 90,
+            }
+        }
+
+        with patch.dict(sys.modules, {"cli": fake_cli}), patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "delegation": {
+                    "model": "",
+                    "provider": "",
+                    "max_iterations": 50,
+                }
+            },
+        ), patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={},
+        ), patch(
+            "hermes_cli.managed_scope.load_managed_config",
+            return_value={},
+        ):
+            cfg = _load_config()
+            self.assertEqual(cfg["model"], "google/gemini-3-flash-preview")
+            self.assertEqual(cfg["provider"], "openrouter")
+            self.assertEqual(cfg["max_iterations"], 90)
+
+    def test_ignore_user_config_keeps_cli_snapshot(self):
+        """--ignore-user-config must not reload user delegation settings."""
+        fake_cli = types.ModuleType("cli")
+        fake_cli.CLI_CONFIG = {"delegation": {"max_concurrent_children": 3}}
+
+        with patch.dict(sys.modules, {"cli": fake_cli}), patch.dict(
+            os.environ,
+            {"HERMES_IGNORE_USER_CONFIG": "1"},
+        ), patch(
+            "hermes_cli.config.load_config",
+            return_value={"delegation": {"max_concurrent_children": 5}},
+        ) as load_config:
+            self.assertEqual(_load_config()["max_concurrent_children"], 3)
+            self.assertEqual(_get_max_concurrent_children(), 3)
+            load_config.assert_not_called()
+
+    def test_cli_snapshot_fallback_when_persistent_config_fails(self):
+        fake_cli = types.ModuleType("cli")
+        fake_cli.CLI_CONFIG = {"delegation": {"max_concurrent_children": 7}}
+
+        with patch.dict(sys.modules, {"cli": fake_cli}), patch(
+            "hermes_cli.config.load_config",
+            side_effect=RuntimeError("config unavailable"),
+        ):
+            self.assertEqual(_load_config()["max_concurrent_children"], 7)
+            self.assertEqual(_get_max_concurrent_children(), 7)
 
 
 # =========================================================================

@@ -41,7 +41,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -75,7 +75,11 @@ _SYNC_TRACE_ENV = "HERMES_OPENVIKING_SYNC_TRACE"
 _DEFAULT_RECALL_LIMIT = 6
 _DEFAULT_RECALL_SCORE_THRESHOLD = 0.15
 _DEFAULT_RECALL_MAX_INJECTED_CHARS = 4000
+_DEFAULT_RECALL_TIMEOUT_SECONDS = 8.0
+_DEFAULT_RECALL_REQUEST_TIMEOUT_SECONDS = 4.0
+_DEFAULT_RECALL_FULL_READ_LIMIT = 3
 _RECALL_QUERY_MIN_CHARS = 5
+_RECALL_MIN_TIMEOUT_SECONDS = 0.05
 _READ_BATCH_LIMIT = 3
 _READ_BATCH_FULL_LIMIT = 2500
 
@@ -318,24 +322,27 @@ class _VikingClient:
         return data
 
     def get(self, path: str, **kwargs) -> dict:
+        timeout = kwargs.pop("timeout", _TIMEOUT)
         return self._send_with_trusted_identity_retry(
             lambda headers: self._httpx.get(
-                self._url(path), headers=headers, timeout=_TIMEOUT, **kwargs
+                self._url(path), headers=headers, timeout=timeout, **kwargs
             )
         )
 
     def post(self, path: str, payload: dict = None, **kwargs) -> dict:
+        timeout = kwargs.pop("timeout", _TIMEOUT)
         return self._send_with_trusted_identity_retry(
             lambda headers: self._httpx.post(
                 self._url(path), json=payload or {}, headers=headers,
-                timeout=_TIMEOUT, **kwargs
+                timeout=timeout, **kwargs
             )
         )
 
     def delete(self, path: str, **kwargs) -> dict:
+        timeout = kwargs.pop("timeout", _TIMEOUT)
         return self._send_with_trusted_identity_retry(
             lambda headers: self._httpx.delete(
-                self._url(path), headers=headers, timeout=_TIMEOUT, **kwargs
+                self._url(path), headers=headers, timeout=timeout, **kwargs
             )
         )
 
@@ -1803,23 +1810,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._deferred_commit_lock = threading.Lock()
         self._committed_session_ids: Set[str] = set()
         self._committed_session_lock = threading.Lock()
-        self._prefetch_result = ""
-        self._prefetch_results: Dict[Tuple[str, str], str] = {}
-        self._prefetch_lock = threading.Lock()
-        self._prefetch_thread: Optional[threading.Thread] = None
         self._runtime_start_lock = threading.Lock()
         self._runtime_start_thread: Optional[threading.Thread] = None
         self._memory_write_lock = threading.Lock()
         self._memory_write_threads: Set[threading.Thread] = set()
-        # All prefetch threads ever spawned (daemon, short-lived). Tracked so
-        # shutdown() can drain them and rapid re-queues don't orphan a still-
-        # running thread by overwriting the single _prefetch_thread slot.
-        self._prefetch_threads: Set[threading.Thread] = set()
         # Set on shutdown so deferred-commit / writer finalizers stop issuing
         # network writes against a torn-down provider.
         self._shutting_down = False
-        # Drop prefetch results from older switch generations.
-        self._prefetch_generation = 0
 
     @property
     def name(self) -> str:
@@ -2177,19 +2174,20 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return ""
 
         effective_session_id = str(session_id or self._session_id or "").strip()
-        key = self._prefetch_key(query_text, effective_session_id)
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
-        with self._prefetch_lock:
-            result = self._prefetch_results.pop(key, "")
-        if not result:
-            result = self._search_prefetch_context(
-                query_text,
-                session_id=effective_session_id,
-            )
+        result = self._search_prefetch_context(
+            query_text,
+            session_id=effective_session_id,
+        )
         if not result:
             return ""
         return f"## OpenViking Context\n{result}"
+
+    @staticmethod
+    def _remaining_recall_timeout(deadline: float, per_request_timeout: float) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= _RECALL_MIN_TIMEOUT_SECONDS:
+            raise TimeoutError("OpenViking recall budget exhausted")
+        return min(per_request_timeout, remaining)
 
     @staticmethod
     def _post_prefetch_search(
@@ -2199,6 +2197,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         *,
         limit: int,
         context_type: str | List[str],
+        deadline: float,
+        request_timeout: float,
     ) -> dict:
         base_payload = {
             "query": query,
@@ -2208,9 +2208,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
         }
         if session_id:
             try:
+                timeout = OpenVikingMemoryProvider._remaining_recall_timeout(
+                    deadline,
+                    request_timeout,
+                )
                 return client.post(
                     "/api/v1/search/search",
                     {**base_payload, "session_id": session_id},
+                    timeout=timeout,
                 )
             except Exception as e:
                 logger.debug(
@@ -2218,54 +2223,15 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     "falling back to search/find: %s",
                     e,
                 )
-        return client.post("/api/v1/search/find", base_payload)
+        timeout = OpenVikingMemoryProvider._remaining_recall_timeout(
+            deadline,
+            request_timeout,
+        )
+        return client.post("/api/v1/search/find", base_payload, timeout=timeout)
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        """Fire a background search to pre-load relevant context."""
-        query_text = _derive_openviking_user_text(query).strip()
-        if not self._client or len(query_text) < _RECALL_QUERY_MIN_CHARS:
-            return
-
-        # Drop prefetch results from older switch generations.
-        with self._prefetch_lock:
-            gen = self._prefetch_generation
-        with self._session_state_lock:
-            prefetch_session_id = str(session_id or self._session_id or "").strip()
-
-        holder: List[threading.Thread] = []
-
-        def _run():
-            try:
-                client = _VikingClient(
-                    self._endpoint, self._api_key,
-                    account=self._account, user=self._user, agent=self._agent,
-                )
-                key = self._prefetch_key(query_text, prefetch_session_id)
-                result = self._search_prefetch_context(
-                    query_text,
-                    session_id=prefetch_session_id,
-                    client=client,
-                )
-                if result:
-                    with self._prefetch_lock:
-                        if gen != self._prefetch_generation:
-                            return
-                        self._prefetch_results[key] = result
-            except Exception as e:
-                logger.debug("OpenViking prefetch failed: %s", e)
-            finally:
-                with self._prefetch_lock:
-                    if holder:
-                        self._prefetch_threads.discard(holder[0])
-
-        thread = threading.Thread(
-            target=_run, daemon=True, name="openviking-prefetch"
-        )
-        holder.append(thread)
-        with self._prefetch_lock:
-            self._prefetch_thread = thread
-            self._prefetch_threads.add(thread)
-        thread.start()
+        """OpenViking recall is current-query only; post-turn warming is unused."""
+        return
 
     def _spawn_writer(self, sid: str, target: Callable[[], None], name: str) -> None:
         """Spawn a daemon writer tracked in _inflight_writers[sid].
@@ -2472,26 +2438,6 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._deferred_commit_threads.add(thread)
         thread.start()
 
-    def _invalidate_prefetch_state(self) -> None:
-        # Bump the generation under the same lock used by prefetch workers so
-        # late results from an older session are discarded deterministically.
-        with self._prefetch_lock:
-            self._prefetch_generation += 1
-            self._prefetch_result = ""
-            self._prefetch_results.clear()
-            # Join EVERY tracked prefetch thread, not just the latest slot — a
-            # rapid re-queue can leave an older thread for the abandoned session
-            # still running (consistent with shutdown()).
-            workers = [t for t in self._prefetch_threads if t.is_alive()]
-        for t in workers:
-            t.join(timeout=3.0)
-        with self._prefetch_lock:
-            self._prefetch_result = ""
-            self._prefetch_results.clear()
-
-    def _prefetch_key(self, query: str, session_id: str = "") -> Tuple[str, str]:
-        return ((session_id or self._session_id).strip(), query.strip())
-
     def _search_prefetch_context(
         self,
         query: str,
@@ -2513,6 +2459,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             )
             cfg = self._recall_config()
             candidate_limit = max(cfg["limit"] * 4, 20)
+            deadline = time.monotonic() + cfg["timeout_seconds"]
             candidates: List[Dict[str, Any]] = []
             context_type: str | List[str] = (
                 ["memory", "resource"] if cfg["resources"] else "memory"
@@ -2524,6 +2471,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 session_id,
                 limit=candidate_limit,
                 context_type=context_type,
+                deadline=deadline,
+                request_timeout=cfg["request_timeout_seconds"],
             )
             result = self._unwrap_result(resp)
             if not isinstance(result, dict):
@@ -2544,6 +2493,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 selected,
                 prefer_abstract=cfg["prefer_abstract"],
                 max_injected_chars=cfg["max_injected_chars"],
+                deadline=deadline,
+                request_timeout=cfg["request_timeout_seconds"],
+                full_read_limit=cfg["full_read_limit"],
             )
             return "\n".join(parts)
         except Exception as e:
@@ -2594,6 +2546,24 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 _DEFAULT_RECALL_MAX_INJECTED_CHARS,
                 minimum=100,
                 maximum=50000,
+            ),
+            "timeout_seconds": self._env_float(
+                "OPENVIKING_RECALL_TIMEOUT_SECONDS",
+                _DEFAULT_RECALL_TIMEOUT_SECONDS,
+                minimum=0.25,
+                maximum=60.0,
+            ),
+            "request_timeout_seconds": self._env_float(
+                "OPENVIKING_RECALL_REQUEST_TIMEOUT_SECONDS",
+                _DEFAULT_RECALL_REQUEST_TIMEOUT_SECONDS,
+                minimum=0.25,
+                maximum=60.0,
+            ),
+            "full_read_limit": self._env_int(
+                "OPENVIKING_RECALL_FULL_READ_LIMIT",
+                _DEFAULT_RECALL_FULL_READ_LIMIT,
+                minimum=0,
+                maximum=100,
             ),
             "prefer_abstract": self._env_bool("OPENVIKING_RECALL_PREFER_ABSTRACT", False),
             "resources": self._env_bool("OPENVIKING_RECALL_RESOURCES", False),
@@ -2696,6 +2666,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
         item: Dict[str, Any],
         *,
         prefer_abstract: bool,
+        deadline: float,
+        request_timeout: float,
+        read_state: Dict[str, int],
+        full_read_limit: int,
     ) -> str:
         abstract = self._recall_abstract(item)
         has_explicit_summary = any(
@@ -2706,9 +2680,17 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return abstract
         uri = str(item.get("uri") or "")
         if uri and (item.get("level") == 2 or not has_explicit_summary):
+            if read_state["full_reads"] >= full_read_limit:
+                return abstract
             try:
+                timeout = self._remaining_recall_timeout(deadline, request_timeout)
+                read_state["full_reads"] += 1
                 content = self._extract_read_content(
-                    client.get("/api/v1/content/read", params={"uri": uri})
+                    client.get(
+                        "/api/v1/content/read",
+                        params={"uri": uri},
+                        timeout=timeout,
+                    )
                 )
                 if content:
                     return content
@@ -2723,14 +2705,22 @@ class OpenVikingMemoryProvider(MemoryProvider):
         *,
         prefer_abstract: bool,
         max_injected_chars: int,
+        deadline: float,
+        request_timeout: float,
+        full_read_limit: int,
     ) -> List[str]:
         entries: List[str] = []
         total_chars = 0
+        read_state = {"full_reads": 0}
         for item in items:
             content = self._resolve_recall_content(
                 client,
                 item,
                 prefer_abstract=prefer_abstract,
+                deadline=deadline,
+                request_timeout=request_timeout,
+                read_state=read_state,
+                full_read_limit=full_read_limit,
             )
             if not content:
                 continue
@@ -3150,8 +3140,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         Flushes any in-flight sync under the old session_id, commits the old
         session if it has pending turns (same extraction semantics as
-        ``on_session_end``), drains and clears any stale prefetch result,
-        then rotates ``_session_id`` and resets ``_turn_count``.
+        ``on_session_end``), then rotates ``_session_id`` and resets
+        ``_turn_count``.
         """
         new_id = str(new_session_id or "").strip()
         if not new_id or not self._client:
@@ -3174,18 +3164,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 self._session_id = new_id
                 self._turn_count = 0
 
-        # Invalidate stale prefetch OUTSIDE the session lock — it takes its own
-        # _prefetch_lock and may join a prefetch thread for up to 3s, which we
-        # must not do while holding the session lock (would block sync_turn and
-        # risk lock-ordering coupling).
-        self._invalidate_prefetch_state()
-
         if not rotate:
-            # Same-session rewind (/undo) or no-op rotation: no commit, no
-            # counter reset — just the prefetch invalidation above.
+            # Same-session rewind (/undo) or no-op rotation: no commit and no
+            # counter reset.
             logger.debug(
-                "OpenViking on_session_switch invalidated state without rotation: "
-                "session=%s rewound=%s",
+                "OpenViking on_session_switch skipped rotation: session=%s rewound=%s",
                 old_session_id, rewound,
             )
             return
@@ -3288,17 +3271,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
             ]
         with self._deferred_commit_lock:
             deferred_workers = list(self._deferred_commit_threads)
-        with self._prefetch_lock:
-            prefetch_workers = list(self._prefetch_threads)
         with self._memory_write_lock:
             memory_write_workers = list(self._memory_write_threads)
         for t in all_workers:
             if t.is_alive():
                 t.join(timeout=5.0)
         for t in deferred_workers:
-            if t.is_alive():
-                t.join(timeout=5.0)
-        for t in prefetch_workers:
             if t.is_alive():
                 t.join(timeout=5.0)
         for t in memory_write_workers:

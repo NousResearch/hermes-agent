@@ -1593,6 +1593,36 @@ def test_viking_client_delete_uses_identity_headers(monkeypatch):
     assert captured["kwargs"]["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
 
 
+def test_viking_client_post_allows_per_request_timeout(monkeypatch):
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="acct",
+        user="alice",
+        agent="hermes",
+    )
+    captured = {}
+
+    def capture_post(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"status": "ok", "result": {}},
+            raise_for_status=lambda: None,
+        )
+
+    monkeypatch.setattr(client._httpx, "post", capture_post)
+
+    assert client.post("/api/v1/search/find", {"query": "anything"}, timeout=1.25) == {
+        "status": "ok",
+        "result": {},
+    }
+    assert captured["url"] == "https://example.com/api/v1/search/find"
+    assert captured["kwargs"]["timeout"] == 1.25
+
+
 def test_viking_client_upload_temp_file_uses_multipart_identity_headers(tmp_path, monkeypatch):
     sample = tmp_path / "sample.md"
     sample.write_text("# Local resource\n", encoding="utf-8")
@@ -2143,10 +2173,8 @@ def test_on_session_switch_commits_pending_tokens_without_turn_count():
     assert provider._turn_count == 0
 
 
-def test_on_session_switch_rewound_same_session_only_invalidates_prefetch():
+def test_on_session_switch_rewound_same_session_skips_commit_and_rotation():
     provider = _make_provider_with_session("same-sid", turn_count=3)
-    provider._prefetch_generation = 9
-    provider._prefetch_result = "stale recall"
 
     provider.on_session_switch("same-sid", rewound=True)
 
@@ -2154,17 +2182,6 @@ def test_on_session_switch_rewound_same_session_only_invalidates_prefetch():
     provider._client.post.assert_not_called()
     assert provider._session_id == "same-sid"
     assert provider._turn_count == 3
-    assert provider._prefetch_generation == 10
-    assert provider._prefetch_result == ""
-
-
-def test_on_session_switch_clears_stale_prefetch_result():
-    provider = _make_provider_with_session("old-sid", turn_count=1)
-    provider._prefetch_result = "stale recall from old session"
-
-    provider.on_session_switch("new-sid")
-
-    assert provider._prefetch_result == ""
 
 
 def test_on_session_switch_waits_for_inflight_sync_thread():
@@ -2859,15 +2876,6 @@ def test_on_memory_write_ignores_non_add_actions(action, content, monkeypatch):
     assert spawned == []
 
 
-# ---------------------------------------------------------------------------
-# Prefetch staleness: a prefetch worker that finishes AFTER a session switch
-# must drop its result instead of repopulating the new session with stale
-# recall from the old generation. Bump the generation directly (rather than
-# calling on_session_switch, whose own join blocks on the test worker) so
-# the test isolates the generation-gating behavior.
-# ---------------------------------------------------------------------------
-
-
 def _make_prefetch_provider() -> OpenVikingMemoryProvider:
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
@@ -2879,53 +2887,22 @@ def _make_prefetch_provider() -> OpenVikingMemoryProvider:
     return provider
 
 
-def test_queue_prefetch_drops_result_when_generation_changed_mid_flight():
-    import threading
-
+def test_queue_prefetch_is_noop_for_openviking_recall(monkeypatch):
     provider = _make_prefetch_provider()
-    provider._session_id = "old-sid"
-
-    started = threading.Event()
-    release = threading.Event()
+    constructed_clients = []
 
     class StubClient:
         def __init__(self, *a, **kw):
-            pass
+            constructed_clients.append((a, kw))
 
-        def post(self, path, payload=None, **kwargs):
-            started.set()
-            release.wait(timeout=2.0)
-            return {
-                "result": {
-                    "memories": [
-                        {"uri": "viking://memories/old", "score": 0.9,
-                         "abstract": "stale from old session"},
-                    ],
-                    "resources": [],
-                }
-            }
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
 
-    import plugins.memory.openviking as _mod
-    real_client_cls = _mod._VikingClient
-    _mod._VikingClient = StubClient
-    try:
-        provider.queue_prefetch("anything")
-        assert started.wait(timeout=2.0), "prefetch worker never entered post()"
-        # Simulate a session switch by bumping the generation directly.
-        # The worker captured the pre-bump generation when it was spawned.
-        provider._prefetch_generation += 1
-        release.set()
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=2.0)
-    finally:
-        _mod._VikingClient = real_client_cls
+    provider.queue_prefetch("anything", session_id="sid-123")
 
-    # The stale result from the pre-bump generation must NOT have been written
-    # into the new generation's prefetch slot.
-    assert provider._prefetch_result == ""
+    assert constructed_clients == []
 
 
-def test_queue_prefetch_sends_contract_safe_memory_context_payload():
+def test_prefetch_sends_contract_safe_memory_context_payload(monkeypatch):
     provider = _make_prefetch_provider()
 
     captured_calls = []
@@ -2938,15 +2915,9 @@ def test_queue_prefetch_sends_contract_safe_memory_context_payload():
             captured_calls.append((path, payload))
             return {"result": {"memories": [], "resources": []}}
 
-    import plugins.memory.openviking as _mod
-    real_client_cls = _mod._VikingClient
-    _mod._VikingClient = StubClient
-    try:
-        provider.queue_prefetch("anything")
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=2.0)
-    finally:
-        _mod._VikingClient = real_client_cls
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    provider.prefetch("anything")
 
     assert captured_calls == [
         (
@@ -2965,7 +2936,7 @@ def test_queue_prefetch_sends_contract_safe_memory_context_payload():
     assert "target_uri" not in payload
 
 
-def test_queue_prefetch_uses_session_search_when_session_id_available():
+def test_prefetch_uses_session_search_when_session_id_available(monkeypatch):
     provider = _make_prefetch_provider()
 
     captured_calls = []
@@ -2990,15 +2961,9 @@ def test_queue_prefetch_uses_session_search_when_session_id_available():
                 }
             }
 
-    import plugins.memory.openviking as _mod
-    real_client_cls = _mod._VikingClient
-    _mod._VikingClient = StubClient
-    try:
-        provider.queue_prefetch("anything", session_id="sid-123")
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=2.0)
-    finally:
-        _mod._VikingClient = real_client_cls
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    result = provider.prefetch("anything", session_id="sid-123")
 
     assert captured_calls == [
         (
@@ -3016,10 +2981,10 @@ def test_queue_prefetch_uses_session_search_when_session_id_available():
     assert "top_k" not in payload
     assert "mode" not in payload
     assert "target_uri" not in payload
-    assert "session-aware memory" in provider.prefetch("anything", session_id="sid-123")
+    assert "session-aware memory" in result
 
 
-def test_queue_prefetch_falls_back_to_find_when_session_search_fails():
+def test_prefetch_falls_back_to_find_when_session_search_fails(monkeypatch):
     provider = _make_prefetch_provider()
 
     captured_calls = []
@@ -3046,15 +3011,9 @@ def test_queue_prefetch_falls_back_to_find_when_session_search_fails():
                 }
             }
 
-    import plugins.memory.openviking as _mod
-    real_client_cls = _mod._VikingClient
-    _mod._VikingClient = StubClient
-    try:
-        provider.queue_prefetch("anything", session_id="sid-123")
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=2.0)
-    finally:
-        _mod._VikingClient = real_client_cls
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    result = provider.prefetch("anything", session_id="sid-123")
 
     assert captured_calls == [
         (
@@ -3081,10 +3040,10 @@ def test_queue_prefetch_falls_back_to_find_when_session_search_fails():
         assert "top_k" not in payload
         assert "mode" not in payload
         assert "target_uri" not in payload
-    assert "non-session fallback" in provider.prefetch("anything", session_id="sid-123")
+    assert "non-session fallback" in result
 
 
-def test_queue_prefetch_reads_l2_content_and_ignores_skills_by_default():
+def test_prefetch_reads_l2_content_and_ignores_skills_by_default(monkeypatch):
     provider = _make_prefetch_provider()
 
     captured_reads = []
@@ -3120,15 +3079,9 @@ def test_queue_prefetch_reads_l2_content_and_ignores_skills_by_default():
             captured_reads.append((path, params or {}))
             return {"result": {"content": "full memory content\nwith useful context"}}
 
-    import plugins.memory.openviking as _mod
-    real_client_cls = _mod._VikingClient
-    _mod._VikingClient = StubClient
-    try:
-        provider.queue_prefetch("anything")
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=2.0)
-    finally:
-        _mod._VikingClient = real_client_cls
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    context = provider.prefetch("anything")
 
     assert captured_reads == [
         (
@@ -3136,13 +3089,12 @@ def test_queue_prefetch_reads_l2_content_and_ignores_skills_by_default():
             {"uri": "viking://user/peers/hermes/memories/events/mem_3.md"},
         )
     ]
-    context = provider.prefetch("anything")
     assert "full memory content" in context
     assert "short abstract" not in context
     assert "skill context" not in context
 
 
-def test_queue_prefetch_reads_empty_abstract_content_within_budget():
+def test_prefetch_reads_empty_abstract_content_within_budget(monkeypatch):
     provider = _make_prefetch_provider()
 
     captured_reads = []
@@ -3171,20 +3123,96 @@ def test_queue_prefetch_reads_empty_abstract_content_within_budget():
             uri = (params or {}).get("uri", "")
             return {"result": f"content for {uri}"}
 
-    import plugins.memory.openviking as _mod
-    real_client_cls = _mod._VikingClient
-    _mod._VikingClient = StubClient
-    try:
-        provider.queue_prefetch("anything")
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=2.0)
-    finally:
-        _mod._VikingClient = real_client_cls
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    context = provider.prefetch("anything")
 
     assert [params["uri"] for _path, params in captured_reads] == [
         "viking://user/peers/hermes/memories/one.md",
     ]
     assert (
         "content for viking://user/peers/hermes/memories/one.md"
-        in provider.prefetch("anything")
+        in context
     )
+
+
+def test_prefetch_caps_full_content_reads(monkeypatch):
+    provider = _make_prefetch_provider()
+
+    captured_reads = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": f"viking://user/peers/hermes/memories/events/mem_{idx}.md",
+                            "score": 0.9 - (idx * 0.01),
+                            "level": 2,
+                            "category": "events",
+                            "abstract": f"short abstract {idx}",
+                        }
+                        for idx in range(6)
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, params=None, **kwargs):
+            captured_reads.append((path, params or {}))
+            uri = (params or {}).get("uri", "")
+            return {"result": {"content": f"full content for {uri}"}}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    context = provider.prefetch("anything")
+
+    assert len(captured_reads) == 3
+    assert "full content for viking://user/peers/hermes/memories/events/mem_0.md" in context
+    assert "full content for viking://user/peers/hermes/memories/events/mem_2.md" in context
+    assert "short abstract 3" in context
+
+
+def test_prefetch_uses_bounded_http_timeouts(monkeypatch):
+    provider = _make_prefetch_provider()
+
+    captured_post_kwargs = []
+    captured_get_kwargs = []
+
+    class StubClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            captured_post_kwargs.append(kwargs)
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://user/peers/hermes/memories/events/mem_timeout.md",
+                            "score": 0.9,
+                            "level": 2,
+                            "category": "events",
+                            "abstract": "short abstract",
+                        },
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, params=None, **kwargs):
+            captured_get_kwargs.append(kwargs)
+            return {"result": {"content": "full memory content"}}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", StubClient)
+
+    provider.prefetch("anything", session_id="sid-123")
+
+    assert 0 < captured_post_kwargs[0]["timeout"] < openviking_module._TIMEOUT
+    assert 0 < captured_get_kwargs[0]["timeout"] < openviking_module._TIMEOUT

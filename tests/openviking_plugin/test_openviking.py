@@ -101,6 +101,9 @@ def make_prefetch_provider(monkeypatch, responses, **env):
         "OPENVIKING_RECALL_LIMIT",
         "OPENVIKING_RECALL_SCORE_THRESHOLD",
         "OPENVIKING_RECALL_MAX_INJECTED_CHARS",
+        "OPENVIKING_RECALL_TIMEOUT_SECONDS",
+        "OPENVIKING_RECALL_REQUEST_TIMEOUT_SECONDS",
+        "OPENVIKING_RECALL_FULL_READ_LIMIT",
         "OPENVIKING_RECALL_PREFER_ABSTRACT",
         "OPENVIKING_RECALL_RESOURCES",
     ):
@@ -119,9 +122,6 @@ def make_prefetch_provider(monkeypatch, responses, **env):
 
 
 def wait_prefetch(provider, query="What should we recall?", session_id="session-test"):
-    provider.queue_prefetch(query, session_id=session_id)
-    if provider._prefetch_thread:
-        provider._prefetch_thread.join(timeout=3.0)
     return provider.prefetch(query, session_id=session_id)
 
 
@@ -194,7 +194,7 @@ class TestOpenVikingSkillQuerySafety:
         assert skill_commands._BUNDLE_USER_INSTRUCTION in bundle
         assert skill_commands._BUNDLE_FIRST_SKILL_BLOCK in bundle
 
-    def test_queue_prefetch_searches_only_slash_skill_user_instruction(self, monkeypatch):
+    def test_prefetch_searches_only_slash_skill_user_instruction(self, monkeypatch):
         RecordingVikingClient.calls = []
         monkeypatch.setattr(openviking_plugin, "_VikingClient", RecordingVikingClient)
         provider = OpenVikingMemoryProvider()
@@ -213,9 +213,7 @@ class TestOpenVikingSkillQuerySafety:
             "make a skill for release triage"
         )
 
-        provider.queue_prefetch(skill_message)
-        assert provider._prefetch_thread is not None
-        provider._prefetch_thread.join(timeout=5.0)
+        provider.prefetch(skill_message)
 
         assert RecordingVikingClient.calls == [
             (
@@ -229,7 +227,7 @@ class TestOpenVikingSkillQuerySafety:
             ),
         ]
 
-    def test_queue_prefetch_searches_only_skill_bundle_user_instruction(self, monkeypatch):
+    def test_prefetch_searches_only_skill_bundle_user_instruction(self, monkeypatch):
         RecordingVikingClient.calls = []
         monkeypatch.setattr(openviking_plugin, "_VikingClient", RecordingVikingClient)
         provider = OpenVikingMemoryProvider()
@@ -249,9 +247,7 @@ class TestOpenVikingSkillQuerySafety:
             "Large bundled skill body that must not be searched or embedded."
         )
 
-        provider.queue_prefetch(skill_message)
-        assert provider._prefetch_thread is not None
-        provider._prefetch_thread.join(timeout=5.0)
+        provider.prefetch(skill_message)
 
         assert RecordingVikingClient.calls == [
             (
@@ -265,7 +261,7 @@ class TestOpenVikingSkillQuerySafety:
             ),
         ]
 
-    def test_queue_prefetch_skips_slash_skill_without_user_instruction(self, monkeypatch):
+    def test_prefetch_skips_slash_skill_without_user_instruction(self, monkeypatch):
         RecordingVikingClient.calls = []
         monkeypatch.setattr(openviking_plugin, "_VikingClient", RecordingVikingClient)
         provider = OpenVikingMemoryProvider()
@@ -277,9 +273,8 @@ class TestOpenVikingSkillQuerySafety:
             "Large skill body that must not be searched or embedded."
         )
 
-        provider.queue_prefetch(skill_message)
+        assert provider.prefetch(skill_message) == ""
 
-        assert provider._prefetch_thread is None
         assert RecordingVikingClient.calls == []
 
     def test_sync_turn_stores_only_slash_skill_user_instruction(self, monkeypatch):
@@ -355,12 +350,18 @@ class TestOpenVikingConfigSchema:
         assert "OPENVIKING_RECALL_LIMIT" not in env_vars
         assert "OPENVIKING_RECALL_SCORE_THRESHOLD" not in env_vars
         assert "OPENVIKING_RECALL_MAX_INJECTED_CHARS" not in env_vars
+        assert "OPENVIKING_RECALL_TIMEOUT_SECONDS" not in env_vars
+        assert "OPENVIKING_RECALL_REQUEST_TIMEOUT_SECONDS" not in env_vars
+        assert "OPENVIKING_RECALL_FULL_READ_LIMIT" not in env_vars
         assert "OPENVIKING_RECALL_PREFER_ABSTRACT" not in env_vars
         assert "OPENVIKING_RECALL_RESOURCES" not in env_vars
         assert provider._recall_config() == {
             "limit": 6,
             "score_threshold": 0.15,
             "max_injected_chars": 4000,
+            "timeout_seconds": 8.0,
+            "request_timeout_seconds": 4.0,
+            "full_read_limit": 3,
             "prefer_abstract": False,
             "resources": False,
         }
@@ -1134,14 +1135,13 @@ class TestOpenVikingAutoRecallPrefetch:
         }
         provider = make_prefetch_provider(monkeypatch, responses)
 
-        provider.queue_prefetch("Who is Caroline?", session_id="session-a")
-        if provider._prefetch_thread:
-            provider._prefetch_thread.join(timeout=3.0)
+        first_block = provider.prefetch("Who is Caroline?", session_id="session-a")
         block = provider.prefetch(
             "When did Melanie run a charity race?",
             session_id="session-b",
         )
 
+        assert "Caroline context should stay scoped." in first_block
         assert "Melanie ran the charity race on May 20." in block
         assert "Caroline context should stay scoped." not in block
 
@@ -1313,12 +1313,11 @@ class TestOpenVikingAutoRecallPrefetch:
         assert all("top_k" not in payload for payload in search_payloads)
         assert all("mode" not in payload for payload in search_payloads)
 
-    def test_queue_prefetch_skips_trivial_queries(self, monkeypatch):
+    def test_queue_prefetch_is_noop_for_openviking_recall(self, monkeypatch):
         provider = make_prefetch_provider(monkeypatch, {})
 
-        provider.queue_prefetch("  hey  ", session_id="session-test")
+        provider.queue_prefetch("What should we recall?", session_id="session-test")
 
-        assert provider._prefetch_thread is None
         assert FakeRecallClient.calls == []
 
 

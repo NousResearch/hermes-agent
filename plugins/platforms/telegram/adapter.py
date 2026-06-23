@@ -5604,7 +5604,21 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot or not getattr(message, "reply_to_message", None):
             return False
         reply_user = getattr(message.reply_to_message, "from_user", None)
-        return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
+        if not (reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None)):
+            return False
+        # In forum supergroups, some Telegram clients auto-reply to the
+        # topic-creation message when sending in a topic.  The topic creation
+        # message_id equals the message_thread_id.  Treat this as NOT a real
+        # reply to the bot — it's just the user typing in the topic.
+        thread_id = getattr(message, "message_thread_id", None)
+        reply_msg_id = getattr(message.reply_to_message, "message_id", None)
+        if thread_id is not None and reply_msg_id is not None:
+            try:
+                if int(reply_msg_id) == int(thread_id):
+                    return False
+            except (TypeError, ValueError):
+                pass
+        return True
 
     @staticmethod
     def _extract_bot_mention_usernames(message: Message) -> set[str]:

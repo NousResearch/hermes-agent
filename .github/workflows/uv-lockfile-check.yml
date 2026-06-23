@@ -4,7 +4,7 @@ name: uv.lock check
 # that modify pyproject.toml without regenerating uv.lock (or vice versa)
 # must not merge, because the Docker build's `uv sync --frozen` step will
 # fail on a stale lockfile and we'd rather catch it here than in the
-# docker-publish workflow on main.
+# docker workflow on main.
 #
 # ─────────────────────────────────────────────────────────────────────────
 # IMPORTANT: this check runs against the MERGED state, not just your branch
@@ -100,7 +100,7 @@ jobs:
 
           This check is blocking because the Docker image build uses
           `uv sync --frozen --extra all`, which rejects stale lockfiles
-          — catching it here avoids a ~15 min failed docker-publish run
+          — catching it here avoids a ~15 min failed docker run
           on `main` post-merge.
           EOF
             echo "::error title=uv.lock out of sync::Run \`uv lock\` locally and commit the result. If on a PR, sync with main first."

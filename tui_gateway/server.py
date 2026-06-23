@@ -6487,6 +6487,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
+            # User-model-pin signal for pre_llm_call routing plugins: a live
+            # ``/model <name>`` on TUI/dashboard records ``session["model_override"]``
+            # (cleared on /new or a return to auto), so an active override IS the
+            # operator's explicit pin. Set it per-turn so a routing plugin can
+            # defer reliably even when the pinned model equals a tier model.
+            agent._user_model_pin = bool(session.get("model_override"))
             result = agent.run_conversation(run_message, **run_kwargs)
 
             last_reasoning = None

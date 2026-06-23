@@ -1663,17 +1663,41 @@ class PluginManager:
 
         Returns a list of non-``None`` return values from callbacks.
 
-        For ``pre_llm_call``, callbacks may return a dict describing
-        context to inject into the current turn's user message::
+        For ``pre_llm_call``, callbacks receive (besides the usual
+        ``session_id``/``task_id``/``turn_id``/``user_message``/``model``/
+        ``platform`` kwargs) one extra kwarg: ``agent`` (the live
+        ``AIAgent`` for this turn). The surface sets ``agent._user_model_pin``
+        to ``True`` when the operator pinned a model via ``/model`` and clears
+        it when they return to auto; a routing callback should defer (return
+        None) while that flag is set. A callback may return one of three
+        kinds of value; the engine applies the first match across
+        callbacks with precedence final_response > model > context::
 
-            {"context": "recalled text..."}
-            "recalled text..."          # plain string, equivalent
+            {"context": "recalled text..."}   # inject into user message
+            "recalled text..."                # plain string, equivalent
+
+            # Swap the model/provider for this turn (and onward) BEFORE
+            # the first LLM call. Applied via switch_model(); fail-open
+            # (a swap error keeps the profile's model). NOTE: switch_model
+            # rebuilds the system prompt, so the new model's prompt-cache
+            # prefix only warms on the FOLLOWING turn — the swapping turn
+            # itself pays a cache-cold prompt (one-turn lag).
+            {"model": str, "provider": str, "api_key": str,
+             "base_url": str, "api_mode": str | None}
+
+            # Short-circuit the turn: the loop returns this reply
+            # immediately with api_calls == 0 (no LLM call at all). The
+            # engine appends it to ``messages`` as a well-formed assistant
+            # turn so persisted history keeps alternating roles.
+            {"final_response": str}
 
         Context is ALWAYS injected into the user message, never the
         system prompt.  This preserves the prompt cache prefix — the
         system prompt stays identical across turns so cached tokens
         are reused.  All injected context is ephemeral — never
-        persisted to session DB.
+        persisted to session DB.  If both a ``model`` bundle and a
+        ``final_response`` are returned, ``final_response`` wins and the
+        swap is skipped.
         """
         kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])

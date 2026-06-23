@@ -259,3 +259,123 @@ def test_between_turns_refresh_no_churn_when_unchanged():
 
     assert agent.tools is same  # not replaced → no churn
 
+
+# ── pre_llm_call model-swap + short-circuit return keys (generic engine seam) ─
+#
+# The ``pre_llm_call`` hook may now return two new optional bundles. These are
+# generic — any plugin can drive a model swap or a short-circuit reply. The
+# tests stub the hook dispatch and assert the engine acts on the returned dict.
+
+
+def _patch_hook(results):
+    """Patch the lazily-imported plugins.invoke_hook to yield *results*."""
+    return patch("hermes_cli.plugins.invoke_hook", lambda *a, **k: list(results))
+
+
+def test_pre_llm_call_passes_agent_and_not_redundant_session_key():
+    """The hook must receive the live ``agent`` kwarg.
+
+    The redundant ``session_key`` kwarg (it only duplicated ``session_id``) was
+    dropped — routing now keys off the durable ``agent._user_model_pin`` flag,
+    not a session key. ``session_id`` is still passed.
+    """
+    agent = _FakeAgent()
+    seen = {}
+
+    def _spy(hook_name, **kw):
+        seen.update(kw)
+        return []
+
+    with patch("hermes_cli.plugins.invoke_hook", _spy):
+        _build(agent)
+
+    assert seen.get("agent") is agent
+    assert "session_id" in seen
+    assert "session_key" not in seen  # redundant kwarg removed
+
+
+def test_pre_llm_call_model_bundle_triggers_switch_model():
+    """A ``{model, provider, api_key, base_url, api_mode}`` bundle swaps the model."""
+    agent = _FakeAgent()
+    bundle = {
+        "model": "example/model-pro",
+        "provider": "exampleprovider",
+        "api_key": "sk-z",
+        "base_url": "https://api.example.com/v1",
+        "api_mode": None,
+    }
+    calls = []
+
+    def _fake_switch(a, new_model, new_provider, api_key="", base_url="", api_mode=""):
+        calls.append((new_model, new_provider, api_key, base_url, api_mode))
+        a.model = new_model
+        a.provider = new_provider
+
+    with _patch_hook([bundle]), \
+         patch("agent.agent_runtime_helpers.switch_model", _fake_switch):
+        ctx = _build(agent)
+
+    # api_mode None is normalized to "" for switch_model's contract (it then
+    # derives the real api_mode from provider/base_url).
+    assert calls == [("example/model-pro", "exampleprovider", "sk-z",
+                      "https://api.example.com/v1", "")]
+    assert agent.model == "example/model-pro"
+    # A model swap does NOT short-circuit the turn.
+    assert ctx.short_circuit_response is None
+
+
+def test_pre_llm_call_switch_model_failure_is_fail_open():
+    """If switch_model raises, the prologue logs and keeps the profile model."""
+    agent = _FakeAgent()
+    bundle = {"model": "example/model-pro", "provider": "exampleprovider", "api_key": "sk-z",
+              "base_url": "https://x", "api_mode": None}
+
+    def _boom(*a, **k):
+        raise RuntimeError("bad key")
+
+    with _patch_hook([bundle]), \
+         patch("agent.agent_runtime_helpers.switch_model", _boom):
+        ctx = _build(agent)
+
+    assert agent.model == "test/model"  # unchanged — fail-open
+    assert ctx.short_circuit_response is None
+
+
+def test_pre_llm_call_final_response_sets_short_circuit():
+    """A ``{final_response}`` bundle sets TurnContext.short_circuit_response."""
+    agent = _FakeAgent()
+    with _patch_hook([{"final_response": "It is 3:00 PM in Chicago."}]):
+        ctx = _build(agent)
+
+    assert ctx.short_circuit_response == "It is 3:00 PM in Chicago."
+
+
+def test_pre_llm_call_final_response_wins_over_model_bundle():
+    """When both keys are present, final_response wins and no swap happens."""
+    agent = _FakeAgent()
+    results = [
+        {"model": "example/model-pro", "provider": "exampleprovider", "api_key": "sk-z",
+         "base_url": "https://x", "api_mode": None},
+        {"final_response": "answered"},
+    ]
+    calls = []
+    with _patch_hook(results), \
+         patch("agent.agent_runtime_helpers.switch_model",
+               lambda *a, **k: calls.append(1)):
+        ctx = _build(agent)
+
+    assert ctx.short_circuit_response == "answered"
+    assert calls == []  # final_response present → swap skipped
+    assert agent.model == "test/model"
+
+
+def test_pre_llm_call_context_key_still_works():
+    """Existing {context} / str behavior is unchanged (back-compat)."""
+    agent = _FakeAgent()
+    with _patch_hook([{"context": "recalled fact"}, "plain string"]):
+        ctx = _build(agent)
+
+    assert "recalled fact" in ctx.plugin_user_context
+    assert "plain string" in ctx.plugin_user_context
+    assert ctx.short_circuit_response is None
+

@@ -622,6 +622,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }, 60);
     };
 
+    // Debounced re-fit triggered by each WebSocket chunk. Resuming a long
+    // session can stream 200+ messages in a burst; if the host's measured
+    // size shifts during the load (e.g. the sidebar reveals a wider column
+    // after a sibling tab closes), the visible viewport can desync from
+    // the terminal's internal cols/rows. The 60ms resize debounce above
+    // already covers a *single* settle, but a sustained data load benefits
+    // from a slightly wider window so we only refit once per burst (#47313).
+    let dataFitDebounce: ReturnType<typeof setTimeout> | null = null;
+    const scheduleDataFit = () => {
+      if (dataFitDebounce) clearTimeout(dataFitDebounce);
+      dataFitDebounce = setTimeout(() => {
+        dataFitDebounce = null;
+        syncTerminalMetrics();
+      }, 250);
+    };
+
     const ro = new ResizeObserver(() => scheduleHostSync());
     ro.observe(host);
 
@@ -645,6 +661,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         syncTerminalMetrics();
       });
     });
+
+    // Long-tail settle. The dashboard chrome has CSS transitions on the
+    // terminal host (backdrop fade-in, rounded-corner easing, font
+    // swap-in) that complete ~500ms after mount. The double-rAF above
+    // fires well inside that window, and ResizeObserver skips sub-pixel
+    // settles — so for 200+-message resumes the terminal's grid can be
+    // computed against a pre-transition host size, clipping the bottom
+    // (composer) row once the layout settles. A second fit() past the
+    // transition window guarantees the grid matches the final layout
+    // (#47313).
+    const postMountFitTimeout = window.setTimeout(() => {
+      syncTerminalMetrics();
+    }, 600);
 
     // WebSocket. In gated mode (``window.__HERMES_AUTH_REQUIRED__``) this
     // awaits a single-use ticket via /api/auth/ws-ticket before opening;
@@ -698,6 +727,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       } else {
         term.write(new Uint8Array(ev.data as ArrayBuffer));
       }
+      scheduleDataFit();
     };
 
     ws.onclose = (ev) => {
@@ -806,6 +836,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
+      window.clearTimeout(postMountFitTimeout);
+      if (dataFitDebounce) clearTimeout(dataFitDebounce);
       // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
       // ticket fetch makes the open async). The cleanup runs at the outer
       // effect's top level so it can't reach into that scope — close via

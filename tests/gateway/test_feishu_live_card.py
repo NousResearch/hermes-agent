@@ -401,7 +401,7 @@ class TestFeishuLiveCardIntegration:
         )
 
     @pytest.mark.asyncio
-    async def test_send_progress_patches_card(self):
+    async def test_send_non_final_suppressed(self):
         from gateway.platforms.feishu import (
             FeishuAdapter, LiveCardState,
         )
@@ -415,7 +415,28 @@ class TestFeishuLiveCardIntegration:
         )
 
         assert result.success
-        # ACK card still in pending (not consumed — this was a progress message)
+        assert result.message_id == "ack_001"
+        # ACK card preserved, _patch_card not called (suppressed)
+        assert "chat_001" in adapter._pending_ack_cards
+        adapter._patch_card.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_gateway_heartbeat_passes_through(self):
+        from gateway.platforms.feishu import (
+            FeishuAdapter, LiveCardState,
+        )
+        adapter = _make_adapter()
+        live = _make_live_card(state=LiveCardState.ACK_SENT, msg_id="ack_001")
+        adapter._live_cards["chat_001"] = live
+        adapter._pending_ack_cards["chat_001"] = "ack_001"
+
+        result = await FeishuAdapter.send(
+            adapter, "chat_001",
+            "⏳ Working — 1 min — iteration 5/60, receiving stream response",
+        )
+
+        assert result.success
+        # ACK card preserved (not consumed by heartbeat)
         assert "chat_001" in adapter._pending_ack_cards
 
 
@@ -453,22 +474,6 @@ class TestRecordPatchResult:
         mgr.record_patch_result(False)
         mgr.record_patch_result(False)
         assert not mgr.degraded
-
-    @pytest.mark.asyncio
-    async def test_send_progress_degrades_after_consecutive_failures(self):
-        from gateway.platforms.feishu import FeishuAdapter, LiveCardState
-        adapter = _make_adapter()
-        adapter._patch_card = AsyncMock(
-            return_value=SendResult(success=False, error="network error")
-        )
-        live = _make_live_card(state=LiveCardState.ACK_SENT, msg_id="ack_001")
-        adapter._live_cards["chat_001"] = live
-        adapter._pending_ack_cards["chat_001"] = "ack_001"
-
-        for _ in range(3):
-            await FeishuAdapter.send(adapter, "chat_001", "progress...")
-
-        assert adapter._live_cards["chat_001"].degraded
 
     @pytest.mark.asyncio
     async def test_edit_message_degrades_after_consecutive_failures(self):
@@ -536,7 +541,27 @@ class TestFullLifecycle:
         assert adapter._live_cards["chat_001"].state == LiveCardState.LIVE
         assert adapter._live_cards["chat_001"].accumulated_text == "Analyzing code..."
 
-        # 3. Final answer → card patched with answer + footer, live card removed
+        # 3. Gateway heartbeat — does NOT overwrite streaming text
+        await FeishuAdapter.send(
+            adapter, "chat_001",
+            "⏳ Working — 1 min — iteration 5/60, receiving stream response",
+        )
+        assert adapter._live_cards["chat_001"].accumulated_text == "Analyzing code..."
+
+        # 4. More streaming text — still updates correctly
+        await FeishuAdapter.edit_message(
+            adapter, "chat_001", "progress_001", "Analyzing code...\n\nHere is step 1.",
+        )
+        assert "step 1" in adapter._live_cards["chat_001"].accumulated_text
+
+        # 5. Gateway heartbeat via edit_message — also skipped
+        await FeishuAdapter.edit_message(
+            adapter, "chat_001", "hb_001",
+            "⏳ Working — 2 min — iteration 10/60, receiving stream response",
+        )
+        assert "step 1" in adapter._live_cards["chat_001"].accumulated_text
+
+        # 6. Final answer → card patched with answer + footer, live card removed
         await FeishuAdapter.send(
             adapter, "chat_001", "Here is the answer.",
             metadata={"footer_line": "📊 stats"},

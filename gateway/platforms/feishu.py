@@ -2001,21 +2001,13 @@ class FeishuAdapter(BasePlatformAdapter):
         live = self._live_cards.get(chat_id)
         if live and not live.degraded:
             is_final = bool(_meta.get("footer_line") or _meta.get("status_text"))
-            if not is_final and chat_id in self._pending_ack_cards:
-                live.update_text(formatted)
-                logger.debug("[Feishu] LiveCard intercepted progress send: %s", chat_id)
-                if not live.should_throttle(now=time.monotonic()):
-                    card = live.build_card(now=time.monotonic())
-                    result = await self._patch_card(
-                        message_id=live.card_message_id, card=card,
-                    )
-                    live.record_patch_result(result.success)
-                    if result.success:
-                        live.last_patch_ts = time.monotonic()
-                    return result
+            _is_gw_heartbeat = formatted.lstrip().startswith("⏳ Working")
+
+            if not is_final and not _is_gw_heartbeat:
+                logger.debug("[Feishu] LiveCard suppressed non-final send: %s", chat_id)
                 return SendResult(success=True, message_id=live.card_message_id)
 
-            if is_final or chat_id in self._pending_ack_cards:
+            if is_final:
                 try:
                     from gateway.platforms.feishu_card import build_card_json
                     ack_msg_id = self._pending_ack_cards.pop(chat_id, None)
@@ -2049,7 +2041,11 @@ class FeishuAdapter(BasePlatformAdapter):
             try:
                 from gateway.platforms.feishu_card import build_card_json
                 card = build_card_json(content=formatted)
-                ack_msg_id = self._pending_ack_cards.pop(chat_id, None)
+                _live_active = self._live_cards.get(chat_id)
+                if _live_active and not _live_active.degraded:
+                    ack_msg_id = None
+                else:
+                    ack_msg_id = self._pending_ack_cards.pop(chat_id, None)
                 if ack_msg_id:
                     logger.info("[Feishu] Consuming ACK card %s for %s", ack_msg_id, chat_id)
                     result = await self._patch_card(message_id=ack_msg_id, card=card)
@@ -2131,9 +2127,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
         content = self.format_message(content)
 
-        # Live card interception — streaming text updates
+        # Live card interception — streaming text updates (skip gateway heartbeat)
         live = self._live_cards.get(chat_id)
-        if live and live.state in (LiveCardState.ACK_SENT, LiveCardState.LIVE) and not live.degraded:
+        _is_gw_heartbeat = content.lstrip().startswith("⏳ Working")
+        if (
+            live
+            and live.state in (LiveCardState.ACK_SENT, LiveCardState.LIVE)
+            and not live.degraded
+            and not _is_gw_heartbeat
+        ):
             live.update_text(content)
             logger.debug("[Feishu] LiveCard intercepted edit: %s", chat_id)
             if not live.should_throttle(now=time.monotonic()):

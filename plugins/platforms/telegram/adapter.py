@@ -7004,6 +7004,11 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=thread_id_str,
             chat_topic=chat_topic,
             message_id=str(message.message_id),
+            # python-telegram-bot exposes user.is_bot accurately. Populate
+            # source.is_bot so the authorization bot-filter can block messages
+            # from other bots (e.g. a second gateway on the same machine echoing
+            # replies). getattr guard tolerates legacy/mocked from_user. (#32188)
+            is_bot=bool(getattr(user, "is_bot", False)) if user else False,
         )
         
         # Extract reply context if this message is a reply.

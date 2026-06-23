@@ -37,6 +37,7 @@ import {
   updateComposerAttachment
 } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
+import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -915,31 +916,7 @@ export function usePromptActions({
           return
         }
 
-        try {
-          const result = await requestGateway<SlashExecResponse>('slash.exec', {
-            session_id: sessionId,
-            command: command.replace(/^\/+/, '')
-          })
-
-          const body = result?.output || `/${name}: no output`
-          renderSlashOutput(result?.warning ? `warning: ${result.warning}\n${body}` : body)
-
-          return
-        } catch {
-          // Fall back to command.dispatch for skill/send/alias directives.
-        }
-
-        try {
-          const dispatch = parseCommandDispatch(
-            await requestGateway<unknown>('command.dispatch', { session_id: sessionId, name, arg })
-          )
-
-          if (!dispatch) {
-            renderSlashOutput('error: invalid response: command.dispatch')
-
-            return
-          }
-
+        const handleDispatch = async (dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>): Promise<void> => {
           if (dispatch.type === 'exec' || dispatch.type === 'plugin') {
             renderSlashOutput(dispatch.output ?? '(no output)')
 
@@ -991,6 +968,43 @@ export function usePromptActions({
           }
 
           await submitPromptText(message)
+        }
+
+        try {
+          const result = await requestGateway<unknown>('slash.exec', {
+            session_id: sessionId,
+            command: command.replace(/^\/+/, '')
+          })
+
+          const dispatch = parseCommandDispatch(result)
+
+          if (dispatch) {
+            await handleDispatch(dispatch)
+
+            return
+          }
+
+          const output = result && typeof result === 'object' ? (result as SlashExecResponse) : null
+          const body = output?.output || `/${name}: no output`
+          renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
+
+          return
+        } catch {
+          // Fall back to command.dispatch for skill/send/alias directives.
+        }
+
+        try {
+          const dispatch = parseCommandDispatch(
+            await requestGateway<unknown>('command.dispatch', { session_id: sessionId, name, arg })
+          )
+
+          if (!dispatch) {
+            renderSlashOutput('error: invalid response: command.dispatch')
+
+            return
+          }
+
+          await handleDispatch(dispatch)
         } catch (err) {
           renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
         }
@@ -1630,6 +1644,7 @@ export function usePromptActions({
       // rows (and kill the live processes) before the fresh run repopulates.
       clearSessionTodos(sessionId)
       resetSessionBackground(sessionId)
+      clearPreviewArtifacts(sessionId)
 
       clearNotifications()
       setMutableRef(busyRef, true)
@@ -1692,6 +1707,7 @@ export function usePromptActions({
       // processes) before the re-run repopulates them.
       clearSessionTodos(sessionId)
       resetSessionBackground(sessionId)
+      clearPreviewArtifacts(sessionId)
 
       clearNotifications()
       setMutableRef(busyRef, true)

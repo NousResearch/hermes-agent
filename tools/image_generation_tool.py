@@ -607,7 +607,13 @@ def _build_fal_payload(
                 payload[k] = v
 
     supports = meta["supports"]
-    return {k: v for k, v in payload.items() if k in supports}
+    # ``prompt`` is required by every FAL text-to-image endpoint; keep it even
+    # if a model's ``supports`` whitelist omits it, so a missing whitelist entry
+    # can't silently strip the prompt and send an empty request.
+    return {
+        k: v for k, v in payload.items()
+        if k in supports or k == "prompt"
+    }
 
 
 def _build_fal_edit_payload(
@@ -656,7 +662,15 @@ def _build_fal_edit_payload(
             if v is not None:
                 payload[k] = v
 
-    return {k: v for k, v in payload.items() if k in edit_supports}
+    # ``prompt`` and ``image_urls`` are required by every FAL edit endpoint;
+    # keep them even if a model's ``edit_supports`` whitelist omits them, so a
+    # missing whitelist entry can't silently drop the prompt or the source
+    # images and send a broken edit request.
+    _required = {"prompt", "image_urls"}
+    return {
+        k: v for k, v in payload.items()
+        if k in edit_supports or k in _required
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1170,11 +1184,13 @@ IMAGE_GENERATE_SCHEMA = {
         "`reference_image_urls` for style/composition references; omit both "
         "for text-to-image. The underlying backend (FAL, OpenAI, xAI, etc.) "
         "and model are user-configured and not selectable by the agent. "
-        "Returns either a URL or an absolute file path in the `image` field; "
-        "display it with markdown ![description](url-or-path) and the gateway "
-        "will deliver it. When the active terminal backend has a different "
-        "filesystem, successful local-file results may also include "
-        "`agent_visible_image` for follow-up terminal/file operations."
+        "Returns the result in the `image` field — either a URL or an absolute "
+        "file path. To show it to the user, reference that path/URL in your "
+        "response using the file-delivery convention for the current platform "
+        "(your platform guidance describes how files are delivered here). When "
+        "the active terminal backend has a different filesystem, successful "
+        "local-file results may also include `agent_visible_image` for "
+        "follow-up terminal/file operations."
     ),
     "parameters": {
         "type": "object",

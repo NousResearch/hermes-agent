@@ -173,11 +173,11 @@ def build_models_payload(
     # aggregator rows honest: they only show models the user can't get
     # from a more-specific provider.  (#45954)
     try:
-        from hermes_cli.providers import is_aggregator as _is_aggregator
+        from hermes_cli.providers import is_routing_aggregator as _is_routing_aggregator
     except Exception:
-        _is_aggregator = None  # type: ignore[assignment]
+        _is_routing_aggregator = None  # type: ignore[assignment]
 
-    if _is_aggregator is not None:
+    if _is_routing_aggregator is not None:
         user_models: set[str] = set()
         for row in rows:
             if row.get("is_user_defined"):
@@ -186,14 +186,21 @@ def build_models_payload(
             for row in rows:
                 # A user's own configured provider is never an "aggregator
                 # duplicate" of itself: user_models is built from these very
-                # rows, and is_aggregator() reports True for every custom:*
-                # slug.  Without this guard the dedup strips a user-defined
-                # custom provider's entire model list (all of it lives in
-                # user_models), emptying its picker row.
+                # rows, and is_routing_aggregator() reports True for every
+                # custom:* slug.  Without this guard the dedup strips a
+                # user-defined custom provider's entire model list (all of it
+                # lives in user_models), emptying its picker row.
                 if row.get("is_user_defined"):
                     continue
                 slug = row.get("slug", "")
-                if not _is_aggregator(slug):
+                # Only strip overlaps from TRUE routing aggregators (OpenRouter,
+                # custom:* proxies). Flat-namespace resellers (opencode-go /
+                # opencode-zen) serve every listed model as a first-party model,
+                # so their rows must keep models that a user's proxy happens to
+                # share a name with — otherwise a subscription provider's own
+                # catalog (minimax-m3, glm-5, deepseek-v4-flash, ...) is silently
+                # gutted in the picker. (#47077)
+                if not _is_routing_aggregator(slug):
                     continue
                 original = row.get("models") or []
                 filtered = [m for m in original if m.lower() not in user_models]

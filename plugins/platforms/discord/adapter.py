@@ -26,6 +26,19 @@ from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
+
+class _Snowflake:
+    """Minimal object exposing ``.id`` — satisfies discord.py's Snowflake
+    protocol for ``channel.history(before=...)`` without constructing a
+    ``discord.Object`` (which test doubles that stub the discord module
+    cannot build).  Used to anchor reply-context scans inclusively.
+    """
+
+    __slots__ = ("id",)
+
+    def __init__(self, id: int) -> None:  # noqa: A002 - matches discord API
+        self.id = id
+
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
@@ -85,12 +98,12 @@ except ImportError:
 
 import sys
 from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
-from utils import atomic_json_write
+from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -103,6 +116,8 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+    _TEXT_INJECT_EXTENSIONS,
+    validate_inbound_media_size,
 )
 from tools.url_safety import is_safe_url
 
@@ -718,6 +733,7 @@ class DiscordAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
@@ -733,8 +749,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
         # Text batching: merge rapid successive messages (Telegram-style)
-        self._text_batch_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "0.6"))
-        self._text_batch_split_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
+        self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
+        self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
@@ -1574,6 +1590,19 @@ class DiscordAdapter(BasePlatformAdapter):
             mutation_count += 1
             return result
 
+        # Delete obsolete commands FIRST to stay under Discord's 100-command
+        # limit. Discord rejects an upsert that would push the live total over
+        # 100 (error 30032), which silently breaks ALL slash commands. If a new
+        # command is created before the obsolete ones are removed, an app that
+        # is already at the cap momentarily exceeds it and the whole sync fails.
+        # Removing the no-longer-desired commands up front guarantees the live
+        # total never rises above the cap mid-sync.
+        obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
+        for key in obsolete_keys:
+            current = existing_by_key.pop(key)
+            await mutate(http.delete_global_command, app_id, current.id)
+            deleted += 1
+
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:
@@ -1596,10 +1625,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
             await mutate(http.edit_global_command, app_id, current.id, desired)
             updated += 1
-
-        for current in existing_by_key.values():
-            await mutate(http.delete_global_command, app_id, current.id)
-            deleted += 1
 
         return {
             "total": len(desired_payloads),
@@ -4255,12 +4280,20 @@ class DiscordAdapter(BasePlatformAdapter):
         self,
         channel: Any,
         before: "DiscordMessage",
+        reply_target: Optional[Any] = None,
     ) -> str:
         """Fetch recent channel messages for conversational context.
 
         Scans backwards from *before* and collects messages until it hits
         a message sent by this bot (the natural partition point between
         bot turns) or reaches ``history_backfill_limit``.
+
+        When ``reply_target`` is provided (the user replied to a specific
+        message), a second backward scan is run ending at that target so the
+        agent sees the conversation surrounding what the user pointed at —
+        even when the reply target sits *before* the most recent bot turn and
+        would otherwise be cut off by the self-message partition.  The two
+        windows are merged chronologically and de-duplicated by message ID.
 
         Returns a formatted block like::
 
@@ -4295,7 +4328,47 @@ class DiscordAdapter(BasePlatformAdapter):
             pass  # Malformed cache entry — fall back to cold-start scan
 
         try:
-            collected = []
+            def _keep(msg) -> Optional[str]:
+                """Return a formatted ``[name] content`` line, or None to skip.
+
+                Encapsulates the system-message / non-conversational / other-bot
+                filtering so both the primary and reply-anchored scans apply
+                identical rules.  Does NOT enforce the self-message partition —
+                callers decide where to stop.
+                """
+                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
+                    return None
+                content = getattr(msg, "clean_content", msg.content) or ""
+                if (
+                    str(getattr(msg, "id", "")) in self._nonconversational_messages
+                    or _looks_like_nonconversational_history_message(content)
+                ):
+                    return None
+                # Respect DISCORD_ALLOW_BOTS for other bots.  For history
+                # context, "mentions" is treated as "all" — we are deciding
+                # what context to show, not whether to respond.
+                if (
+                    getattr(msg.author, "bot", False)
+                    and msg.author != self._client.user
+                    and not include_other_bots
+                ):
+                    return None
+                if not content and msg.attachments:
+                    content = "(attachment)"
+                if not content:
+                    return None
+                name = (
+                    getattr(msg.author, "display_name", None)
+                    or getattr(msg.author, "name", None)
+                    or "unknown"
+                )
+                if getattr(msg.author, "bot", False):
+                    name = f"{name} [bot]"
+                return f"[{name}] {content}"
+
+            # ── Primary window: recent channel activity since the last bot turn ──
+            collected: List[Tuple[str, str]] = []  # (message_id, line)
+            seen_ids: set = set()
             # IMPORTANT: pass oldest_first=False explicitly.  discord.py 2.x
             # silently flips the default to True when `after=` is supplied,
             # which would select the *earliest* N messages after our last
@@ -4309,45 +4382,89 @@ class DiscordAdapter(BasePlatformAdapter):
                 after=_after_obj,
                 oldest_first=False,
             ):
-                # Skip system messages (pins, joins, thread renames, etc.)
-                if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
-                    continue
-
-                content = getattr(msg, "clean_content", msg.content) or ""
+                # Non-conversational lifecycle/status bumps (self-improvement
+                # reviews, background-process notices, restart banners) must be
+                # skipped BEFORE the partition check — otherwise a delayed
+                # status bump authored by us would be mistaken for the real
+                # last bot turn and hide messages that came after it.
+                _content = getattr(msg, "clean_content", msg.content) or ""
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
-                    or _looks_like_nonconversational_history_message(content)
+                    or _looks_like_nonconversational_history_message(_content)
                 ):
                     continue
-
-                # Stop at our own message — this is the partition point.
-                # Everything before this is already in the session transcript.
-                # (Redundant when _after_obj is set, but needed for cold start.)
+                # Stop at our own (conversational) message — this is the
+                # partition point.  Everything before this is already in the
+                # session transcript.  (Redundant when _after_obj is set, but
+                # needed for cold start.)
                 if msg.author == self._client.user:
                     break
-
-                # Respect DISCORD_ALLOW_BOTS for other bots.
-                # For history context, "mentions" is treated as "all" — we are
-                # deciding what context to show, not whether to respond.
-                if getattr(msg.author, "bot", False) and not include_other_bots:
+                line = _keep(msg)
+                if line is None:
                     continue
+                mid = str(getattr(msg, "id", ""))
+                collected.append((mid, line))
+                if mid:
+                    seen_ids.add(mid)
 
-                if not content and msg.attachments:
-                    content = "(attachment)"
-                if not content:
-                    continue
+            # ── Reply window: context around the message the user pointed at ──
+            # When the user replied to a specific message that sits BEFORE the
+            # primary window's partition point, the surrounding exchange isn't
+            # captured above.  Fetch a small window ending just after the reply
+            # target so the agent sees what it was referencing.  This window is
+            # NOT partitioned on the self-message boundary — the whole point is
+            # to surface older context the transcript lacks.
+            reply_collected: List[Tuple[str, str]] = []
+            reply_target_id = str(getattr(reply_target, "id", "")) if reply_target else ""
+            if reply_target is not None and reply_target_id and reply_target_id not in seen_ids:
+                # Reuse the same cap as the primary scan but keep the reply
+                # window modest — it's anchored context, not a full backfill.
+                reply_limit = max(1, min(limit, 10))
+                # `before` is exclusive in discord.py, so to *include* the
+                # target we anchor at target_id + 1.  Use a minimal snowflake
+                # shim (any object exposing ``.id`` satisfies discord.py's
+                # Snowflake protocol) rather than discord.Object, so this path
+                # works under test doubles that stub the discord module too.
+                try:
+                    _before_obj = _Snowflake(int(reply_target_id) + 1)
+                except (ValueError, TypeError):
+                    _before_obj = before
+                async for msg in channel.history(
+                    limit=reply_limit,
+                    before=_before_obj,
+                    oldest_first=False,
+                ):
+                    line = _keep(msg)
+                    if line is None:
+                        continue
+                    mid = str(getattr(msg, "id", ""))
+                    if mid and mid in seen_ids:
+                        continue
+                    reply_collected.append((mid, line))
+                    if mid:
+                        seen_ids.add(mid)
 
-                name = msg.author.display_name
-                if getattr(msg.author, "bot", False):
-                    name = f"{name} [bot]"
-                collected.append(f"[{name}] {content}")
-
-            if not collected:
+            if not collected and not reply_collected:
                 return ""
 
-            # channel.history returns newest-first (oldest_first=False); reverse for chronological order
+            # channel.history returns newest-first; reverse each window for
+            # chronological order, then present reply context first (it is
+            # older) followed by the recent activity.
             collected.reverse()
-            return "[Recent channel messages]\n" + "\n".join(collected)
+            reply_collected.reverse()
+
+            blocks: List[str] = []
+            if reply_collected:
+                blocks.append(
+                    "[Context around the replied-to message]\n"
+                    + "\n".join(line for _id, line in reply_collected)
+                )
+            if collected:
+                blocks.append(
+                    "[Recent channel messages]\n"
+                    + "\n".join(line for _id, line in collected)
+                )
+            return "\n\n".join(blocks)
 
         except discord.Forbidden:
             logger.debug("[%s] Missing permissions to fetch channel history", self.name)
@@ -4947,19 +5064,32 @@ class DiscordAdapter(BasePlatformAdapter):
     # non-CDN URL into the ``att.url`` field. (issue #11345)
     # ------------------------------------------------------------------
 
-    async def _read_attachment_bytes(self, att) -> Optional[bytes]:
+    async def _read_attachment_bytes(
+        self,
+        att,
+        *,
+        media_type: str = "media",
+    ) -> Optional[bytes]:
         """Read an attachment via discord.py's authenticated bot session.
 
         Returns the raw bytes on success, or ``None`` if ``att`` doesn't
         expose a callable ``read()`` or the read itself fails. Callers
         should treat ``None`` as a signal to fall back to the URL-based
         downloaders.
+
+        Oversized attachments (per ``gateway.max_inbound_media_bytes``) raise
+        ``ValueError`` BEFORE the bytes are pulled into memory when Discord
+        reports the size up front, so a hostile upload can't OOM the gateway.
         """
+        attachment_size = getattr(att, "size", None)
+        if attachment_size:
+            validate_inbound_media_size(int(attachment_size), media_type=media_type)
+
         reader = getattr(att, "read", None)
         if reader is None or not callable(reader):
             return None
         try:
-            return await reader()
+            raw_bytes = await reader()
         except Exception as e:
             logger.warning(
                 "[Discord] Authenticated attachment read failed for %s: %s",
@@ -4967,6 +5097,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 e,
             )
             return None
+        validate_inbound_media_size(len(raw_bytes), media_type=media_type)
+        return raw_bytes
 
     async def _cache_discord_image(self, att, ext: str) -> str:
         """Cache a Discord image attachment to local disk.
@@ -4976,7 +5108,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Fallback: ``cache_image_from_url`` (plain httpx, SSRF-gated).
         """
-        raw_bytes = await self._read_attachment_bytes(att)
+        raw_bytes = await self._read_attachment_bytes(att, media_type="image")
         if raw_bytes is not None:
             try:
                 return cache_image_from_bytes(raw_bytes, ext=ext)
@@ -4995,7 +5127,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Fallback: ``cache_audio_from_url`` (plain httpx, SSRF-gated).
         """
-        raw_bytes = await self._read_attachment_bytes(att)
+        raw_bytes = await self._read_attachment_bytes(att, media_type="audio")
         if raw_bytes is not None:
             try:
                 return cache_audio_from_bytes(raw_bytes, ext=ext)
@@ -5017,7 +5149,7 @@ class DiscordAdapter(BasePlatformAdapter):
         for passing the returned bytes to ``cache_document_from_bytes``
         (and, where applicable, for injecting text content).
         """
-        raw_bytes = await self._read_attachment_bytes(att)
+        raw_bytes = await self._read_attachment_bytes(att, media_type="document")
         if raw_bytes is not None:
             return raw_bytes
 
@@ -5167,8 +5299,9 @@ class DiscordAdapter(BasePlatformAdapter):
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif all_attachments:
-            _allow_any = self._discord_allow_any_attachment()
-            # Check attachment types
+            # Check attachment types. Any non-media attachment is treated as a
+            # DOCUMENT regardless of extension — authorization to message the
+            # agent is the gate, not the file type.
             for att in all_attachments:
                 if att.content_type:
                     if att.content_type.startswith("image/"):
@@ -5181,14 +5314,9 @@ class DiscordAdapter(BasePlatformAdapter):
                         else:
                             msg_type = MessageType.AUDIO
                     else:
-                        doc_ext = ""
-                        if att.filename:
-                            _, doc_ext = os.path.splitext(att.filename)
-                            doc_ext = doc_ext.lower()
-                        if doc_ext in SUPPORTED_DOCUMENT_TYPES or _allow_any:
-                            msg_type = MessageType.DOCUMENT
+                        msg_type = MessageType.DOCUMENT
                     break
-                elif _allow_any:
+                else:
                     # No content_type at all (rare — discord usually fills it
                     # in). Treat as a document so downstream pipelines surface
                     # the path to the agent.
@@ -5277,71 +5405,79 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not ext and content_type:
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(content_type, "")
-                allow_any_attachment = self._discord_allow_any_attachment()
                 in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
-                if not in_allowlist and not allow_any_attachment:
+                # Any file type is accepted — authorization to message the agent
+                # is the gate, not the file extension. Known types keep their
+                # precise MIME; unknown types fall back to the source content_type
+                # or octet-stream so the agent reaches for terminal tools.
+                max_doc_bytes = self._discord_max_attachment_bytes()
+                if max_doc_bytes and att.size and att.size > max_doc_bytes:
                     logger.warning(
-                        "[Discord] Unsupported document type '%s' (%s), skipping",
-                        ext or "unknown", content_type,
+                        "[Discord] Document too large (%s bytes > cap %s), skipping: %s",
+                        att.size, max_doc_bytes, att.filename,
                     )
                 else:
-                    max_doc_bytes = self._discord_max_attachment_bytes()
-                    if max_doc_bytes and att.size and att.size > max_doc_bytes:
-                        logger.warning(
-                            "[Discord] Document too large (%s bytes > cap %s), skipping: %s",
-                            att.size, max_doc_bytes, att.filename,
+                    try:
+                        raw_bytes = await self._cache_discord_document(att, ext)
+                        cached_path = cache_document_from_bytes(
+                            raw_bytes, att.filename or f"document{ext or '.bin'}"
                         )
-                    else:
-                        try:
-                            raw_bytes = await self._cache_discord_document(att, ext)
-                            cached_path = cache_document_from_bytes(
-                                raw_bytes, att.filename or f"document{ext or '.bin'}"
+                        if in_allowlist:
+                            doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                        else:
+                            # Untyped file. Use the source content_type if
+                            # discord gave us one, otherwise fall back to
+                            # octet-stream so the agent knows it's binary and
+                            # reaches for terminal tools.
+                            doc_mime = (
+                                content_type
+                                if content_type and content_type != "unknown"
+                                else "application/octet-stream"
                             )
-                            if in_allowlist:
-                                doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
-                            else:
-                                # allow_any_attachment path: untyped file. Use the
-                                # source content_type if discord gave us one,
-                                # otherwise fall back to octet-stream so the agent
-                                # knows it's binary and reaches for terminal tools.
-                                doc_mime = (
-                                    content_type
-                                    if content_type and content_type != "unknown"
-                                    else "application/octet-stream"
-                                )
-                            media_urls.append(cached_path)
-                            media_types.append(doc_mime)
-                            logger.info(
-                                "[Discord] Cached user %s: %s",
-                                "document" if in_allowlist else "attachment",
-                                cached_path,
-                            )
-                            # Inject text content for plain-text documents (capped at 100 KB)
-                            MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            if in_allowlist and ext in {".md", ".txt", ".log"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
-                                try:
-                                    text_content = raw_bytes.decode("utf-8")
-                                    display_name = att.filename or f"document{ext}"
-                                    display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-                                    injection = f"[Content of {display_name}]:\n{text_content}"
-                                    if pending_text_injection:
-                                        pending_text_injection = f"{pending_text_injection}\n\n{injection}"
-                                    else:
-                                        pending_text_injection = injection
-                                except UnicodeDecodeError:
-                                    pass
-                            # NOTE: for the allow_any_attachment path we deliberately
-                            # do NOT inject a path string here. ``gateway/run.py``
-                            # already detects DOCUMENT-typed events with
-                            # ``application/octet-stream`` MIME and emits a context
-                            # note with the sandbox-translated cache path via
-                            # ``to_agent_visible_cache_path()`` (important for
-                            # Docker/Modal terminal backends).
-                        except Exception as e:
-                            logger.warning(
-                                "[Discord] Failed to cache document %s: %s",
-                                att.filename, e, exc_info=True,
-                            )
+                        media_urls.append(cached_path)
+                        media_types.append(doc_mime)
+                        logger.info(
+                            "[Discord] Cached user %s: %s",
+                            "document" if in_allowlist else "attachment",
+                            cached_path,
+                        )
+                        # Inject text content for any text-readable document
+                        # Inject text content for text-readable documents
+                        # (capped at 100 KB). Gate on a text-like extension/MIME
+                        # — NOT a blind UTF-8 decode, since binary formats like
+                        # PDF/zip/docx can have decodable ASCII headers. Unknown
+                        # but clearly-textual types (text/* MIME or a known text
+                        # extension) are inlined too; everything else relies on
+                        # ``gateway/run.py`` to emit a path-pointing context note.
+                        MAX_TEXT_INJECT_BYTES = 100 * 1024
+                        _is_text = (
+                            ext in _TEXT_INJECT_EXTENSIONS
+                            or (content_type or "").startswith("text/")
+                        )
+                        if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            try:
+                                text_content = raw_bytes.decode("utf-8")
+                                display_name = att.filename or f"document{ext or '.txt'}"
+                                display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                                injection = f"[Content of {display_name}]:\n{text_content}"
+                                if pending_text_injection:
+                                    pending_text_injection = f"{pending_text_injection}\n\n{injection}"
+                                else:
+                                    pending_text_injection = injection
+                            except UnicodeDecodeError:
+                                pass
+                        # NOTE: for the untyped-attachment path we deliberately
+                        # do NOT inject a path string here. ``gateway/run.py``
+                        # already detects DOCUMENT-typed events with
+                        # ``application/octet-stream`` MIME and emits a context
+                        # note with the sandbox-translated cache path via
+                        # ``to_agent_visible_cache_path()`` (important for
+                        # Docker/Modal terminal backends).
+                    except Exception as e:
+                        logger.warning(
+                            "[Discord] Failed to cache document %s: %s",
+                            att.filename, e, exc_info=True,
+                        )
 
         # Use normalized_content (saved before auto-threading) instead of message.content,
         # to detect /slash commands in channel messages.
@@ -5381,14 +5517,40 @@ class DiscordAdapter(BasePlatformAdapter):
             #   - any thread (in_bot_thread bypasses the mention check, but
             #     processing-window gaps and post-restart context still need
             #     recovery)
+            #   - any reply (the user pointed at a specific message; hydrate
+            #     the context around it even in a free-response channel where
+            #     no mention gap exists — otherwise replies get only the short
+            #     "[Replying to: ...]" snippet with no surrounding context)
             # DMs skip entirely because every DM message triggers the bot,
             # so the session transcript already has everything.
             # Auto-threaded messages also skip — we just created the thread,
             # there's nothing prior to backfill.
             _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
-            if (_has_mention_gap or is_thread) and auto_threaded_channel is None:
+            _is_reply = message.reference is not None
+
+            # Resolve the replied-to message into an object exposing ``.id``.
+            # discord.py may give us a full Message (resolved), a
+            # DeletedReferencedMessage, or nothing.  Duck-type on ``.id``
+            # rather than isinstance(discord.Message) — under test doubles the
+            # discord module (and thus discord.Message) can be a mock, which is
+            # not a valid isinstance() second argument.  Any object with an int
+            # id works as a scan anchor; otherwise fall back to a bare snowflake
+            # built from the reference's message_id.
+            _reply_target = None
+            if _is_reply:
+                _resolved = getattr(message.reference, "resolved", None)
+                _resolved_id = getattr(_resolved, "id", None) if _resolved is not None else None
+                if _resolved_id is not None:
+                    _reply_target = _resolved
+                else:
+                    _ref_mid = getattr(message.reference, "message_id", None)
+                    if _ref_mid is not None:
+                        with suppress(ValueError, TypeError):
+                            _reply_target = _Snowflake(int(_ref_mid))
+
+            if (_has_mention_gap or is_thread or _is_reply) and auto_threaded_channel is None:
                 _backfill_text = await self._fetch_channel_context(
-                    message.channel, before=message,
+                    message.channel, before=message, reply_target=_reply_target,
                 )
                 if _backfill_text:
                     _channel_context = _backfill_text

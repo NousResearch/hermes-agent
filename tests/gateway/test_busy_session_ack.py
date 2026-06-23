@@ -344,13 +344,14 @@ class TestBusySessionAck:
         agent.steer = MagicMock(return_value=False)  # rejected
         runner._running_agents[sk] = agent
 
-        with patch("gateway.run.merge_pending_message_event") as mock_merge:
-            await runner._handle_active_session_busy_message(event, sk)
+        await runner._handle_active_session_busy_message(event, sk)
 
         agent.steer.assert_called_once()
         agent.interrupt.assert_not_called()
-        # Fell back to queue semantics: event was merged into pending messages
-        mock_merge.assert_called_once()
+        # Fell back to queue semantics: event was stored for the next turn
+        # via the FIFO path (each follow-up its own turn — no newline-merge
+        # that would mash separate messages together, #43066).
+        assert adapter._pending_messages.get(sk) is event
 
         # Ack uses queue-mode wording (not steer, not interrupt)
         call_kwargs = adapter._send_with_retry.call_args
@@ -372,15 +373,60 @@ class TestBusySessionAck:
         # Agent is still being set up — sentinel in place
         runner._running_agents[sk] = sentinel
 
-        with patch("gateway.run.merge_pending_message_event") as mock_merge:
-            await runner._handle_active_session_busy_message(event, sk)
+        await runner._handle_active_session_busy_message(event, sk)
 
-        # Event was queued instead of steered
-        mock_merge.assert_called_once()
+        # Event was queued instead of steered (FIFO path, #43066)
+        assert adapter._pending_messages.get(sk) is event
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Queued for the next turn" in content
+
+    @pytest.mark.asyncio
+    async def test_interrupt_mode_text_followups_fifo_not_merged(self):
+        """Two TEXT follow-ups during a busy turn (interrupt mode) must each
+        get their OWN next-turn slot via FIFO — NOT newline-merged into one
+        mashed-together turn (#43066 sub-bug 2). Before the fix the
+        interrupt/steer-fallback path called merge_pending_message_event
+        with merge_text=True, collapsing 'first' and 'second' into
+        'first\\nsecond' and destroying message boundaries."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+
+        # Both events must share the SAME platform object so they resolve to
+        # the same adapter (a fresh MagicMock per event would not).
+        shared_platform = Platform.TELEGRAM
+
+        def _evt(text):
+            src = SessionSource(
+                platform=shared_platform, chat_id="123",
+                chat_type="dm", user_id="user1",
+            )
+            return MessageEvent(text=text, message_type=MessageType.TEXT,
+                                source=src, message_id=f"m-{text[:5]}")
+
+        first = _evt("first message")
+        second = _evt("second message")
+        sk = build_session_key(first.source)
+        runner.adapters[shared_platform] = adapter
+
+        agent = MagicMock()
+        agent._active_children = []  # real list → not demoted to queue
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(first, sk)
+        runner._busy_ack_ts = {}  # avoid the 30s ack-debounce early return
+        await runner._handle_active_session_busy_message(second, sk)
+
+        # First lands in the head slot; second goes to the FIFO overflow —
+        # they are NOT merged into a single pending event.
+        head = adapter._pending_messages.get(sk)
+        assert head is first
+        assert head.text == "first message"  # not "first message\nsecond message"
+        overflow = runner._queued_events.get(sk, [])
+        assert [e.text for e in overflow] == ["second message"]
 
     @pytest.mark.asyncio
     async def test_debounce_suppresses_rapid_acks(self):
@@ -701,3 +747,62 @@ class TestBusySessionOnboardingHint:
         assert "/busy interrupt" in content
         # Must NOT tell the user to /busy queue when they're already on queue.
         assert "/busy queue" not in content
+
+
+class TestLongRunningNotificationOwnership:
+    """The long-running heartbeat must stop once its run no longer owns the
+    session slot or the executor finished — otherwise a stale
+    'running: delegate_task' bubble outlives the run that spawned it (#12029).
+    """
+
+    def test_notification_stops_after_session_ownership_moves(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+
+        original_agent = MagicMock()
+        replacement_agent = MagicMock()
+        runner._running_agents["sess"] = replacement_agent
+
+        assert runner._should_emit_long_running_notification(
+            "sess", original_agent, executor_task=None
+        ) is False
+
+    def test_notification_stops_after_executor_finishes(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        agent = MagicMock()
+        runner._running_agents = {"sess": agent}
+
+        done_task = MagicMock()
+        done_task.done.return_value = True
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=done_task
+        ) is False
+
+    def test_notification_stops_when_agent_is_gone(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+
+        assert runner._should_emit_long_running_notification(
+            "sess", None, executor_task=None
+        ) is False
+
+    def test_notification_continues_for_live_active_run(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        agent = MagicMock()
+        runner._running_agents = {"sess": agent}
+
+        live_task = MagicMock()
+        live_task.done.return_value = False
+
+        assert runner._should_emit_long_running_notification(
+            "sess", agent, executor_task=live_task
+        ) is True

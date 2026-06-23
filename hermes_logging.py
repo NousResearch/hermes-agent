@@ -210,7 +210,11 @@ class _ComponentFilter(logging.Filter):
 # Logger name prefixes that belong to each component.
 # Used by _ComponentFilter and exposed for ``hermes logs --component``.
 COMPONENT_PREFIXES = {
-    "gateway": ("gateway", "hermes_plugins"),
+    # ``plugins.platforms`` covers messaging-platform adapters that migrated
+    # out of ``gateway/platforms/`` into bundled plugins (#41112) — they are
+    # still gateway components and their logs belong in gateway.log / match
+    # ``hermes logs --component gateway``.
+    "gateway": ("gateway", "hermes_plugins", "plugins.platforms"),
     "agent": ("agent", "run_agent", "model_tools", "batch_runner"),
     "tools": ("tools",),
     "cli": ("hermes_cli", "cli"),

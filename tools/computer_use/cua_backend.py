@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Version pinning
 # ---------------------------------------------------------------------------
 
-PINNED_CUA_DRIVER_VERSION = os.environ.get("HERMES_CUA_DRIVER_VERSION", "0.5.0")
+PINNED_CUA_DRIVER_VERSION = os.environ.get("HERMES_CUA_DRIVER_VERSION", "0.6.5")
 
 _CUA_DRIVER_CMD = os.environ.get("HERMES_CUA_DRIVER_CMD", "cua-driver")
 _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport
@@ -122,6 +122,37 @@ def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
             role=m.group(2),
             label=label,
             bounds=(0, 0, 0, 0),
+        ))
+    return elements
+
+
+def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[UIElement]:
+    """Parse UIElement list from cua-driver 0.6.x structuredContent.elements.
+
+    Each entry carries ``element_index``, ``role``, ``label`` and a
+    ``frame: {x, y, w, h}`` rect (logical px). Unlike the markdown tree, this
+    gives us real bounds for coordinate-based clicks and spatial reasoning.
+    """
+    elements: List[UIElement] = []
+    for e in raw_elements:
+        frame = e.get("frame") or {}
+        try:
+            bounds = (
+                int(round(frame.get("x", 0))),
+                int(round(frame.get("y", 0))),
+                int(round(frame.get("w", 0))),
+                int(round(frame.get("h", 0))),
+            )
+        except (TypeError, ValueError):
+            bounds = (0, 0, 0, 0)
+        idx = e.get("element_index")
+        if idx is None:
+            continue
+        elements.append(UIElement(
+            index=int(idx),
+            role=e.get("role", "") or "",
+            label=e.get("label", "") or "",
+            bounds=bounds,
         ))
     return elements
 
@@ -492,51 +523,85 @@ class CuaDriverBackend(ComputerUseBackend):
             self._last_app = app_name
 
         # Step 2: capture.
+        #
+        # cua-driver 0.6.x unified capture into a single `get_window_state`
+        # tool that takes a `capture_mode` (som | vision | ax) and returns:
+        #   * the screenshot as an MCP image content-part (som/vision)
+        #   * an `elements` array in structuredContent with real `frame` bounds
+        #   * `tree_markdown` in structuredContent / text for back-compat
+        # The standalone `screenshot` tool was removed in 0.6.x, so vision mode
+        # must also route through get_window_state. We prefer structuredContent
+        # (real bounds) and fall back to markdown parsing (zeroed bounds) for
+        # older 0.5.x daemons.
         png_b64: Optional[str] = None
         elements: List[UIElement] = []
         width = height = 0
         window_title = ""
 
-        if mode == "vision":
-            # screenshot tool: just the PNG, no AX walk.
-            sc_out = self._session.call_tool(
-                "screenshot",
-                {"window_id": self._active_window_id, "format": "jpeg", "quality": 85},
-            )
-            if sc_out["images"]:
-                png_b64 = sc_out["images"][0]
-        else:
-            # get_window_state: AX tree + optional screenshot.
-            gws_out = self._session.call_tool(
-                "get_window_state",
-                {"pid": self._active_pid, "window_id": self._active_window_id},
-            )
-            text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
-            summary, tree = _split_tree_text(text)
+        # cua-driver capture_mode values line up 1:1 with hermes modes.
+        cua_capture_mode = mode if mode in {"som", "vision", "ax"} else "som"
+        gws_out = self._session.call_tool(
+            "get_window_state",
+            {
+                "pid": self._active_pid,
+                "window_id": self._active_window_id,
+                "capture_mode": cua_capture_mode,
+            },
+        )
 
-            # Parse element count from summary e.g. "✅ AppName — 42 elements, turn 3..."
-            m = re.search(r'(\d+)\s+elements?', summary)
-            if tree and not gws_out["images"]:
-                # ax mode — no screenshot
-                elements = _parse_elements_from_tree(tree)
-            elif gws_out["images"]:
-                png_b64 = gws_out["images"][0]
-                elements = _parse_elements_from_tree(tree)
+        structured = gws_out.get("structuredContent") or {}
 
-            # Extract window title from the AX tree first AXWindow line.
-            wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
+        # Screenshot: 0.6.x delivers it as an MCP image-part; some builds also
+        # echo it as structuredContent.screenshot_png_b64. Prefer the image-part.
+        if gws_out.get("images"):
+            png_b64 = gws_out["images"][0]
+        elif structured.get("screenshot_png_b64"):
+            png_b64 = structured["screenshot_png_b64"]
+
+        # Elements: prefer structuredContent.elements (real bounds). Fall back
+        # to markdown tree parsing (zeroed bounds) for older daemons.
+        text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
+        tree_markdown = structured.get("tree_markdown")
+        if tree_markdown is None:
+            _summary, tree_markdown = _split_tree_text(text)
+
+        if mode != "vision":
+            raw_elements = structured.get("elements")
+            if raw_elements:
+                elements = _parse_elements_from_structured(raw_elements)
+            elif tree_markdown:
+                elements = _parse_elements_from_tree(tree_markdown)
+
+        # Window title: structured first AXWindow label, else markdown scan.
+        if structured.get("elements"):
+            for e in structured["elements"]:
+                if e.get("role") == "AXWindow" and e.get("label"):
+                    window_title = e["label"]
+                    break
+        if not window_title and tree_markdown:
+            wt = re.search(r'AXWindow\s+"([^"]+)"', tree_markdown)
             if wt:
                 window_title = wt.group(1)
+
+        # Screenshot dimensions: structured reports them directly; otherwise
+        # sniff from the PNG/JPEG bytes below.
+        if structured.get("screenshot_width") and structured.get("screenshot_height"):
+            try:
+                width = int(structured["screenshot_width"])
+                height = int(structured["screenshot_height"])
+            except (TypeError, ValueError):
+                pass
 
         png_bytes_len = 0
         if png_b64:
             try:
                 raw = base64.b64decode(png_b64, validate=False)
                 png_bytes_len = len(raw)
-                detected_width, detected_height = _image_dimensions_from_bytes(raw)
-                if detected_width and detected_height:
-                    width = detected_width
-                    height = detected_height
+                if not (width and height):
+                    detected_width, detected_height = _image_dimensions_from_bytes(raw)
+                    if detected_width and detected_height:
+                        width = detected_width
+                        height = detected_height
             except Exception:
                 png_bytes_len = len(png_b64) * 3 // 4
 

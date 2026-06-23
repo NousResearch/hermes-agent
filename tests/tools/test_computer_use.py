@@ -1109,6 +1109,49 @@ class TestElementLabelParsing:
         assert labels[15] == "Search"
 
 
+class TestStructuredElementParsing:
+    """cua-driver 0.6.x emits a structuredContent.elements array with real
+    ``frame`` bounds. _parse_elements_from_structured must surface those bounds
+    (the markdown tree only ever yields zeroed bounds) so coordinate clicks and
+    spatial reasoning work.
+    """
+
+    def test_structured_elements_carry_real_bounds(self):
+        from tools.computer_use.cua_backend import _parse_elements_from_structured
+        raw = [
+            {"element_index": 0, "role": "AXWindow", "label": "Calendar",
+             "frame": {"x": 218.0, "y": 56.0, "w": 1510.0, "h": 995.0}},
+            {"element_index": 5, "role": "AXCheckBox", "label": "calendar-checkbox",
+             "frame": {"x": 244.4, "y": 148.6, "w": 16.0, "h": 16.0}},
+        ]
+        els = _parse_elements_from_structured(raw)
+        assert len(els) == 2
+        assert els[0].index == 0
+        assert els[0].role == "AXWindow"
+        assert els[0].label == "Calendar"
+        assert els[0].bounds == (218, 56, 1510, 995)
+        # rounds floats to int logical px
+        assert els[1].bounds == (244, 149, 16, 16)
+
+    def test_missing_frame_defaults_to_zero_bounds(self):
+        from tools.computer_use.cua_backend import _parse_elements_from_structured
+        els = _parse_elements_from_structured([
+            {"element_index": 3, "role": "AXRow", "label": ""},
+        ])
+        assert len(els) == 1
+        assert els[0].bounds == (0, 0, 0, 0)
+
+    def test_entries_without_index_are_skipped(self):
+        from tools.computer_use.cua_backend import _parse_elements_from_structured
+        els = _parse_elements_from_structured([
+            {"role": "AXGroup", "label": "no index"},
+            {"element_index": 7, "role": "AXButton", "label": "ok",
+             "frame": {"x": 1, "y": 2, "w": 3, "h": 4}},
+        ])
+        assert len(els) == 1
+        assert els[0].index == 7
+
+
 class TestCaptureAfterAppContext:
     """Bug 2: capture_after=True loses app context after actions.
 

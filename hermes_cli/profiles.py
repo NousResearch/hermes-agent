@@ -223,6 +223,33 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "logs",                 # gateway logs
 })
 
+# Regeneratable cache/dependency trees that make profile archives large and, on
+# cross-OS imports, can contain filenames invalid on the destination platform
+# (for example NuGet's ``http-cache`` entries include ``:`` on WSL/Linux, which
+# Windows refuses to create).  Profile export/import is a portable state
+# snapshot, not a byte-for-byte cache backup, so these are safe to drop.
+_PROFILE_PORTABLE_EXCLUDE_DIRS = frozenset({
+    "__pycache__",
+    ".cache",
+    ".tox",
+    ".nox",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "venv",
+    "site-packages",
+    "node_modules",
+    "http-cache",
+})
+
+_PROFILE_PORTABLE_EXCLUDE_SUFFIXES = (
+    ".pyc",
+    ".pyo",
+    ".sock",
+    ".tmp",
+)
+
 # Names that cannot be used as profile aliases
 _RESERVED_NAMES = frozenset({
     "hermes", "default", "test", "tmp", "root", "sudo",
@@ -1508,28 +1535,56 @@ def get_active_profile_name() -> str:
 # Export / Import
 # ---------------------------------------------------------------------------
 
-def _default_export_ignore(root_dir: Path):
-    """Return an *ignore* callable for :func:`shutil.copytree`.
+def _is_portable_profile_excluded_part(part: str) -> bool:
+    """Return True for a single regeneratable archive path component."""
+    lowered = part.lower()
+    return (
+        lowered in _PROFILE_PORTABLE_EXCLUDE_DIRS
+        or lowered.endswith(_PROFILE_PORTABLE_EXCLUDE_SUFFIXES)
+    )
 
-    At the root level it excludes everything in ``_DEFAULT_EXPORT_EXCLUDE_ROOT``.
-    At all levels it excludes ``__pycache__``, sockets, and temp files.
-    """
+
+def _is_portable_profile_excluded_path(parts: List[str]) -> bool:
+    """Return True when an archive member lives under a skipped cache tree."""
+    return any(_is_portable_profile_excluded_part(part) for part in parts)
+
+
+def _profile_export_ignore(root_dir: Path, root_excludes: set[str] | frozenset[str]):
+    """Return a portable profile export ignore callable for ``copytree``."""
+    try:
+        root_resolved = root_dir.resolve()
+    except (OSError, ValueError):
+        root_resolved = root_dir
 
     def _ignore(directory: str, contents: list) -> set:
         ignored: set = set()
         for entry in contents:
-            # Universal exclusions (any depth)
-            if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
+            # Universal exclusions (any depth).
+            if _is_portable_profile_excluded_part(entry):
                 ignored.add(entry)
-            # npm lockfiles can appear at root
+            # npm lockfiles can appear at root.
             elif entry in {"package.json", "package-lock.json"}:
                 ignored.add(entry)
-        # Root-level exclusions
-        if Path(directory) == root_dir:
-            ignored.update(c for c in contents if c in _DEFAULT_EXPORT_EXCLUDE_ROOT)
+
+        try:
+            at_root = Path(directory).resolve() == root_resolved
+        except (OSError, ValueError):
+            at_root = Path(directory) == root_dir
+        if at_root:
+            ignored.update(c for c in contents if c in root_excludes)
         return ignored
 
     return _ignore
+
+
+def _default_export_ignore(root_dir: Path):
+    """Return an *ignore* callable for :func:`shutil.copytree`.
+
+    At the root level it excludes everything in ``_DEFAULT_EXPORT_EXCLUDE_ROOT``.
+    At all levels it excludes regeneratable cache/dependency trees, bytecode,
+    sockets, and temp files.
+    """
+    return _profile_export_ignore(root_dir, _DEFAULT_EXPORT_EXCLUDE_ROOT)
 
 
 def export_profile(name: str, output_path: str) -> Path:
@@ -1563,14 +1618,16 @@ def export_profile(name: str, output_path: str) -> Path:
             result = shutil.make_archive(base, "gztar", tmpdir, "default")
             return Path(result)
 
-    # Named profiles — stage a filtered copy to exclude credentials
+    # Named profiles — stage a filtered copy to exclude credentials and
+    # regeneratable cache/dependency trees that do not belong in portable
+    # profile archives.
     with tempfile.TemporaryDirectory() as tmpdir:
         staged = Path(tmpdir) / canon
         _CREDENTIAL_FILES = {"auth.json", ".env"}
         shutil.copytree(
             profile_dir,
             staged,
-            ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
+            ignore=_profile_export_ignore(profile_dir, _CREDENTIAL_FILES),
         )
         result = shutil.make_archive(base, "gztar", tmpdir, canon)
         return Path(result)
@@ -1603,6 +1660,8 @@ def _safe_extract_profile_archive(archive: Path, destination: Path) -> None:
     with tarfile.open(archive, "r:gz") as tf:
         for member in tf.getmembers():
             parts = _normalize_profile_archive_parts(member.name)
+            if _is_portable_profile_excluded_path(parts):
+                continue
             target = destination.joinpath(*parts)
 
             if member.isdir():

@@ -1137,6 +1137,51 @@ class TestExportImport:
         assert not absolute_target.exists()
         assert not get_profile_dir("coder").exists()
 
+    def test_import_skips_regeneratable_cache_members_from_legacy_archive(
+        self, profile_env, tmp_path
+    ):
+        archive_path = tmp_path / "export" / "legacy-cache.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            config_data = b"model: test\n"
+            config_info = tarfile.TarInfo("wolffish/config.yaml")
+            config_info.size = len(config_data)
+            tf.addfile(config_info, io.BytesIO(config_data))
+
+            cache_data = b"cached response"
+            cache_info = tarfile.TarInfo(
+                "wolffish/home/.local/share/NuGet/http-cache/"
+                "670c1461$ps:_api.nuget.org_v3_index.json"
+            )
+            cache_info.size = len(cache_data)
+            tf.addfile(cache_info, io.BytesIO(cache_data))
+
+        imported = import_profile(str(archive_path), name="wolffish")
+
+        assert (imported / "config.yaml").read_text() == "model: test\n"
+        assert not (imported / "home" / ".local" / "share" / "NuGet" / "http-cache").exists()
+
+    def test_export_named_profile_excludes_regeneratable_cache_dirs(
+        self, profile_env, tmp_path
+    ):
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+        (profile_dir / "marker.txt").write_text("hello")
+        cache_dir = profile_dir / "home" / ".local" / "share" / "NuGet" / "http-cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "670c1461$ps:_api.nuget.org_v3_index.json").write_text("cache")
+
+        archive_path = tmp_path / "export" / "coder.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("coder", str(archive_path))
+
+        with tarfile.open(str(archive_path), "r:gz") as tf:
+            names = tf.getnames()
+
+        assert "coder/marker.txt" in names
+        assert not any("http-cache" in name for name in names)
+
     def test_export_nonexistent_raises(self, profile_env, tmp_path):
         with pytest.raises(FileNotFoundError):
             export_profile("nonexistent", str(tmp_path / "out.tar.gz"))

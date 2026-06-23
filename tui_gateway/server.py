@@ -4533,6 +4533,24 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"session_id": None})
 
 
+@method("project.facts")
+def _(rid, params: dict) -> dict:
+    """Structured project facts for a cwd — manifests, package manager, the
+    exact verify commands, and context files.
+
+    The same detection the coding-context posture (#43316) bakes into the system
+    prompt, exposed so UIs (the desktop verify surface) consume it instead of
+    re-sniffing. ``{"facts": null}`` means the cwd isn't a code workspace.
+    """
+    try:
+        from agent.coding_context import project_facts_for
+
+        return _ok(rid, {"facts": project_facts_for(params.get("cwd"))})
+    except Exception:
+        logger.exception("project.facts failed")
+        return _ok(rid, {"facts": None})
+
+
 @method("session.resume")
 def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")

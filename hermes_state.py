@@ -2886,12 +2886,29 @@ class SessionDB:
 
         Ordered by AUTOINCREMENT id (true insertion order) rather than
         timestamp — see c03acca50 for the WSL2 clock-regression rationale.
+
+        When the current session was created by a ``model_switch`` split,
+        messages from ancestor sessions in the model-switch chain are
+        included automatically so that conversational context survives
+        across model changes.  The chain stops at the first ancestor whose
+        ``end_reason`` is not ``'model_switch'`` (or has no parent).
         """
         active_clause = "" if include_inactive else " AND active = 1"
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT * FROM messages WHERE session_id = ?"
-                f"{active_clause} ORDER BY id",
+                "WITH RECURSIVE chain(sid) AS ("
+                "  SELECT ? AS sid"
+                "  UNION ALL"
+                "  SELECT parent.id"
+                "    FROM chain c"
+                "    JOIN sessions child  ON child.id = c.sid"
+                "    JOIN sessions parent ON parent.id = child.parent_session_id"
+                "   WHERE parent.end_reason = 'model_switch'"
+                ")"
+                " SELECT m.* FROM messages m"
+                " JOIN chain ON m.session_id = chain.sid"
+                f" WHERE 1=1{active_clause}"
+                " ORDER BY m.id",
                 (session_id,),
             )
             rows = cursor.fetchall()

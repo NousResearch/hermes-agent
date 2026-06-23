@@ -270,6 +270,15 @@ export interface Translations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
+      fontTitle: string
+      fontDesc: string
+      fontSans: string
+      fontSansDesc: string
+      fontMono: string
+      fontMonoDesc: string
+      fontSize: string
+      fontSizeDesc: string
+      fontReset: string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>

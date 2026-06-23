@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { SegmentedControl } from '@/components/ui/segmented-control'
@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
-import { useTheme } from '@/themes/context'
+import { $userFontSans, $userFontMono, $userFontSize, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import { isUserTheme, removeUserTheme, resolveTheme } from '@/themes/user-themes'
 
@@ -132,6 +132,101 @@ function VscodeThemeInstaller() {
   )
 }
 
+function FontSettings() {
+  const { t } = useI18n()
+  const a = t.settings.appearance
+  const currentSans = useStore($userFontSans)
+  const currentMono = useStore($userFontMono)
+  const currentSize = useStore($userFontSize)
+
+  const updateSans = (value: string) => {
+    $userFontSans.set(value)
+    if (value) {
+      localStorage.setItem('hermes-font-sans', value)
+    } else {
+      localStorage.removeItem('hermes-font-sans')
+    }
+  }
+
+  const updateMono = (value: string) => {
+    $userFontMono.set(value)
+    if (value) {
+      localStorage.setItem('hermes-font-mono', value)
+    } else {
+      localStorage.removeItem('hermes-font-mono')
+    }
+  }
+
+  const updateSize = (value: string) => {
+    $userFontSize.set(value)
+    if (value) {
+      localStorage.setItem('hermes-font-size', value)
+    } else {
+      localStorage.removeItem('hermes-font-size')
+    }
+  }
+
+  const inputClass =
+    'min-w-0 flex-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 font-mono text-[length:var(--conversation-caption-font-size)] outline-none placeholder:text-(--ui-text-tertiary) focus:border-(--ui-stroke-secondary)'
+
+  return (
+    <div className="mt-3 space-y-3">
+      <div className="flex items-center gap-2">
+        <input
+          className={inputClass}
+          onChange={e => updateSans(e.target.value)}
+          placeholder='"LXGW WenKai", sans-serif'
+          spellCheck={false}
+          value={currentSans}
+        />
+        <button
+          className="shrink-0 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] font-medium transition hover:bg-(--chrome-action-hover) disabled:opacity-50"
+          disabled={!currentSans}
+          onClick={() => updateSans('')}
+          type="button"
+        >
+          {a.fontReset}
+        </button>
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          className={inputClass}
+          onChange={e => updateMono(e.target.value)}
+          placeholder='"LXGW WenKai Mono", monospace'
+          spellCheck={false}
+          value={currentMono}
+        />
+        <button
+          className="shrink-0 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] font-medium transition hover:bg-(--chrome-action-hover) disabled:opacity-50"
+          disabled={!currentMono}
+          onClick={() => updateMono('')}
+          type="button"
+        >
+          {a.fontReset}
+        </button>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary) w-16">{a.fontSize}</span>
+        <input
+          className={inputClass}
+          onChange={e => updateSize(e.target.value)}
+          placeholder="13px"
+          spellCheck={false}
+          value={currentSize}
+        />
+        <button
+          className="shrink-0 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] font-medium transition hover:bg-(--chrome-action-hover) disabled:opacity-50"
+          disabled={!currentSize}
+          onClick={() => updateSize('')}
+          type="button"
+        >
+          {a.fontReset}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
@@ -209,6 +304,13 @@ export function AppearanceSettings() {
             }
             description={a.translucencyDesc}
             title={a.translucencyTitle}
+          />
+
+          <ListRow
+            below={<FontSettings />}
+            description={a.fontDesc}
+            title={a.fontTitle}
+            wide
           />
 
           <ListRow

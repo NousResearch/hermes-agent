@@ -372,7 +372,16 @@ export const en: Translations = {
       installError: 'Could not install that theme.',
       installed: name => `Installed “${name}”.`,
       removeTheme: 'Remove theme',
-      importedBadge: 'Imported'
+      importedBadge: 'Imported',
+      fontTitle: 'Font',
+      fontDesc: 'Override theme fonts. These persist across theme switches.',
+      fontSans: 'UI Font',
+      fontSansDesc: 'Sans-serif font for the interface. Leave empty for theme default.',
+      fontMono: 'Code Font',
+      fontMonoDesc: 'Monospace font for code blocks and terminal. Leave empty for theme default.',
+      fontSize: 'Font Size',
+      fontSizeDesc: 'Base font size in pixels or rem. e.g. 14px or 0.875rem. Leave empty for default (13px).',
+      fontReset: 'Reset'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,

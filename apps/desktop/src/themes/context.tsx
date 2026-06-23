@@ -9,6 +9,7 @@
  * The two are persisted independently. Shift+X toggles light/dark.
  */
 
+import { atom } from 'nanostores'
 import { useStore } from '@nanostores/react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
@@ -38,6 +39,12 @@ const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
 export type ThemeMode = 'light' | 'dark' | 'system'
 
 const INJECTED_FONT_URLS = new Set<string>()
+
+// User font preferences — override theme typography when set.
+// Persisted in localStorage; read by applyTheme, written by FontSettings.
+export const $userFontSans = atom<string>(typeof localStorage !== 'undefined' ? localStorage.getItem('hermes-font-sans') ?? '' : '')
+export const $userFontMono = atom<string>(typeof localStorage !== 'undefined' ? localStorage.getItem('hermes-font-mono') ?? '' : '')
+export const $userFontSize = atom<string>(typeof localStorage !== 'undefined' ? localStorage.getItem('hermes-font-size') ?? '' : '')
 
 const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-scheme: dark)')): 'light' | 'dark' =>
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
@@ -172,7 +179,15 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
 
   const root = document.documentElement
   const c = theme.colors
-  const typo = { ...DEFAULT_TYPOGRAPHY, ...nousTheme.typography, ...theme.typography }
+  // User font preferences override theme typography, so switching themes never
+  // changes the user's font. Read from nanostores (synced with localStorage).
+  const themeTypo = { ...DEFAULT_TYPOGRAPHY, ...nousTheme.typography, ...theme.typography }
+  const typo = {
+    fontSans: $userFontSans.get() || themeTypo.fontSans,
+    fontMono: $userFontMono.get() || themeTypo.fontMono,
+    fontUrl: themeTypo.fontUrl
+  }
+  const userFontSize = $userFontSize.get()
   const rendered = renderedModeFor(c, mode)
   const isDark = rendered === 'dark'
   const midground = c.midground ?? c.ring
@@ -215,6 +230,8 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--dt-user-bubble-border': c.userBubbleBorder ?? c.border,
     '--dt-font-sans': typo.fontSans,
     '--dt-font-mono': typo.fontMono,
+    '--dt-base-size': userFontSize || '0.8125rem',
+    '--conversation-text-font-size': userFontSize || '0.8125rem',
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
   }
 
@@ -343,7 +360,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // What actually gets painted (matches the `.dark` class applyTheme toggles).
   const renderedMode = useMemo(() => renderedModeFor(activeTheme.colors, resolvedMode), [activeTheme, resolvedMode])
 
-  useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
+  // Re-apply when theme, mode, or user font preferences change.
+  const userFontSans = useStore($userFontSans)
+  const userFontMono = useStore($userFontMono)
+  const userFontSize = useStore($userFontSize)
+  useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode, userFontSans, userFontMono, userFontSize])
 
   // Keep the native window appearance pinned to the app theme (vibrancy
   // material, titlebar, new-window pre-paint background).

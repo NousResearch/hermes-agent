@@ -364,7 +364,16 @@ export const zh: Translations = {
       installError: '无法安装该主题。',
       installed: name => `已安装「${name}」。`,
       removeTheme: '移除主题',
-      importedBadge: '已导入'
+      importedBadge: '已导入',
+      fontTitle: '字体',
+      fontDesc: '覆盖主题字体，切换主题后仍保持不变。',
+      fontSans: '界面字体',
+      fontSansDesc: '界面用无衬线字体，留空则用主题默认。',
+      fontMono: '代码字体',
+      fontMonoDesc: '代码块和终端用等宽字体，留空则用主题默认。',
+      fontSize: '字号',
+      fontSizeDesc: '基础字号，支持 px 或 rem，如 14px 或 0.875rem。留空用默认值（13px）。',
+      fontReset: '重置'
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',

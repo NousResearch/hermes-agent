@@ -276,7 +276,16 @@ export const zhHant = defineLocale({
       installError: '無法安裝該主題。',
       installed: name => `已安裝「${name}」。`,
       removeTheme: '移除主題',
-      importedBadge: '已匯入'
+      importedBadge: '已匯入',
+      fontTitle: '字型',
+      fontDesc: '覆蓋主題字型，切換主題後仍保持不變。',
+      fontSans: '介面字型',
+      fontSansDesc: '介面用無襯線字型，留空則用主題預設。',
+      fontMono: '程式碼字型',
+      fontMonoDesc: '程式碼區塊和終端機用等寬字型，留空則用主題預設。',
+      fontSize: '字型大小',
+      fontSizeDesc: '基礎字型大小，支援 px 或 rem，如 14px 或 0.875rem。留空用預設值（13px）。',
+      fontReset: '重置'
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',

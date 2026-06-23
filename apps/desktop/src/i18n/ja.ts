@@ -287,7 +287,16 @@ export const ja = defineLocale({
       installError: 'そのテーマをインストールできませんでした。',
       installed: name => `「${name}」をインストールしました。`,
       removeTheme: 'テーマを削除',
-      importedBadge: 'インポート済み'
+      importedBadge: 'インポート済み',
+      fontTitle: 'フォント',
+      fontDesc: 'テーマのフォントを上書き。テーマ切替後も保持されます。',
+      fontSans: 'UIフォント',
+      fontSansDesc: 'インターフェース用サンセリフフォント。空欄ならテーマ既定値。',
+      fontMono: 'コードフォント',
+      fontMonoDesc: 'コードブロックとターミナル用モノスペースフォント。空欄ならテーマ既定値。',
+      fontSize: 'フォントサイズ',
+      fontSizeDesc: '基本フォントサイズ（px または rem）。例: 14px や 0.875rem。空欄なら既定値（13px）。',
+      fontReset: 'リセット'
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',

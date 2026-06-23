@@ -265,6 +265,16 @@ def test_repeated_crashes_breaks_on_recent_success():
     assert kd.compute_task_diagnostics(task, [], runs) == []
 
 
+def test_repeated_crashes_breaks_on_recent_blocked_gate():
+    task = _task(status="blocked", assignee="pm")
+    runs = [
+        _run(outcome="crashed", run_id=1),
+        _run(outcome="crashed", run_id=2),
+        _run(outcome="blocked", run_id=3),
+    ]
+    assert kd.compute_task_diagnostics(task, [], runs) == []
+
+
 def test_repeated_crashes_escalates_on_many_crashes():
     task = _task(status="ready", assignee="x")
     runs = [_run(outcome="crashed", run_id=i) for i in range(1, 6)]  # 5 in a row

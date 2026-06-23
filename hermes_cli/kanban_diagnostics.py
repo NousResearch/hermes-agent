@@ -672,13 +672,16 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
             consecutive += 1
             if last_err is None:
                 last_err = _task_field(r, "error")
-        elif outcome in {"completed", "reclaimed"}:
-            # A success (or manual reclaim) breaks the streak.
+        elif outcome in {"completed", "reclaimed", "blocked"}:
+            # A success, manual reclaim, or intentional protocol block breaks
+            # the streak. A blocked run means the worker reached a human gate
+            # or known recovery point; stale pre-gate crashes should not keep
+            # the card red after the latest outcome is a valid block.
             break
         else:
-            # Other outcomes (timed_out, blocked, spawn_failed, gave_up)
-            # aren't crash signals — don't count them, but they also
-            # don't break the crash streak.
+            # Other outcomes (timed_out, spawn_failed, gave_up) aren't crash
+            # signals — don't count them, but they also don't break the crash
+            # streak.
             continue
     if consecutive < threshold:
         return []

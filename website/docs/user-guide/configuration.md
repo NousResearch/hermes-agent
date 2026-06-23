@@ -1301,6 +1301,37 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 /reasoning hide      # Hide model thinking
 ```
 
+#### Per-Model Reasoning Overrides
+
+You can set different reasoning effort levels for different models. This is useful when you want high reasoning for complex models but medium for faster ones:
+
+```yaml
+agent:
+  reasoning_effort: "medium"       # global default
+  reasoning_overrides:
+    "openrouter/anthropic/claude-opus-4.5": "xhigh"
+    "openai/gpt-5": "low"
+    "claude-sonnet-4.6": "high"    # bare model name also works
+```
+
+The key matching is **spelling-tolerant** — any reasonable spelling will match:
+- `claude-opus-4.5`, `claude-opus-4-5`, `claude-opus.4.5` (dots and dashes are interchangeable)
+- `anthropic/claude-opus-4.5`, `openrouter/anthropic/claude-opus-4.5` (provider prefix optional)
+- Exact matches take precedence over variants
+
+:::note
+There is no `hermes config set` support for `reasoning_overrides` keys — edit the YAML file directly. This is because model names often contain dots (e.g. `claude-opus-4.5`), which conflict with the CLI's dotted-key syntax.
+:::
+
+**Resolution priority:**
+
+1. Session-scoped `/reasoning --session` override (gateway only)
+2. Per-model override from `agent.reasoning_overrides` (spelling-tolerant)
+3. Global `agent.reasoning_effort`
+4. Provider default
+
+The override applies automatically everywhere: CLI startup, messaging gateway, Desktop/TUI, cron jobs, `/model` mid-session switches, and fallback model activation.
+
 ## Tool-Use Enforcement
 
 Some models occasionally describe intended actions as text instead of making tool calls ("I would run the tests..." instead of actually calling the terminal). Tool-use enforcement injects system prompt guidance that steers the model back to actually calling tools.

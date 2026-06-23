@@ -1305,6 +1305,13 @@ def restore_primary_runtime(agent) -> bool:
                         primary_provider or "?",
                     )
 
+        # ── Restore reasoning_config if it was saved ──
+        # switch_model saves reasoning_config in _primary_runtime. If the
+        # snapshot predates that (older sessions), keep the current value.
+        saved_reasoning = rt.get("reasoning_config")
+        if saved_reasoning is not None:
+            agent.reasoning_config = dict(saved_reasoning)
+
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
@@ -2065,6 +2072,45 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             api_mode=agent.api_mode,
         )
 
+    # ── Re-resolve reasoning_config from per-model override ──
+    # The new model may have a different reasoning_effort override. Re-read
+    # config so the override takes effect immediately on /model switch.
+    # Try both agent.model (normalized, e.g. "claude-opus-4-5") AND the raw
+    # config default (user's original spelling, e.g. "claude-opus-4.5") so
+    # override keys match regardless of how downstream consumers normalized
+    # the input. See plan FINDING #7 + session follow-up.
+    try:
+        from hermes_constants import (
+            parse_reasoning_effort,
+            resolve_per_model_reasoning_effort,
+        )
+        from hermes_cli.config import load_config as _sm_load_config
+
+        _reasoning_cfg = _sm_load_config() or {}
+        _sm_overrides = (_reasoning_cfg.get("agent") or {}).get("reasoning_overrides", {}) or {}
+        # Try the normalized agent.model first, then the raw config default
+        _sm_raw_model_default = str((_reasoning_cfg.get("model") or {}).get("default", "") or "").strip()
+        _sm_per_model = None
+        for _candidate in (agent.model, _sm_raw_model_default):
+            if _candidate:
+                _sm_per_model = resolve_per_model_reasoning_effort(_candidate, _sm_overrides)
+                if _sm_per_model is not None:
+                    break
+        if _sm_per_model is not None:
+            agent.reasoning_config = _sm_per_model
+            logger.info(
+                "switch_model: reasoning_config resolved to per-model override for %s: %s",
+                agent.model, _sm_per_model,
+            )
+        else:
+            # Raw value — a YAML boolean False means thinking disabled,
+            # see parse_reasoning_effort. Do NOT str()/strip() coerce.
+            _sm_global = (_reasoning_cfg.get("agent") or {}).get("reasoning_effort", "")
+            agent.reasoning_config = parse_reasoning_effort(_sm_global)
+            logger.info("switch_model: reasoning_config resolved to global effort: %s", _sm_global or "(none)")
+    except Exception as _reasoning_err:
+        logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
+
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
 
@@ -2087,6 +2133,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
+        "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",

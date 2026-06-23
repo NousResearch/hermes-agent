@@ -187,6 +187,20 @@ def test_dockerfile_preinstalls_matrix_dependencies(dockerfile_text):
     )
 
 
+def test_dockerfile_preinstalls_firecrawl_web_dependency(dockerfile_text):
+    sync_steps = [
+        step for step in _run_steps(dockerfile_text)
+        if "uv sync" in step and "--no-install-project" in step
+    ]
+
+    assert sync_steps, "Dockerfile must install Python dependencies with uv sync"
+    assert any("--extra firecrawl" in step for step in sync_steps), (
+        "Published Docker images must preload the [firecrawl] extra because "
+        "Firecrawl remains a default web backend but container images disable "
+        "runtime lazy installs into /opt/hermes (#51136)."
+    )
+
+
 def test_dockerfile_installs_matrix_native_build_dependencies(dockerfile_text):
     instructions = _instruction_text(dockerfile_text)
 

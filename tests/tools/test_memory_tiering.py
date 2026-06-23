@@ -129,25 +129,30 @@ class TestCorePrefix:
         assert "User fact A" in snapshot
         assert "User fact B" in snapshot
 
-    def test_core_prefix_case_sensitive(self, tmp_path, monkeypatch):
-        """Only lowercase [core] is recognized. [CORE] or [Core] are not."""
+    def test_core_prefix_case_insensitive(self, tmp_path, monkeypatch):
+        """[core], [CORE], and [Core] are all recognized as core entries."""
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
         _write_memory_file(tmp_path / "MEMORY.md", [
-            "[core] Real core",
-            "[CORE] Not recognized as core",
-            "[Core] Also not recognized",
+            "[core] Lowercase core",
+            "[CORE] Uppercase core",
+            "[Core] Titlecase core",
+            "Extended entry",
         ])
         _write_memory_file(tmp_path / "USER.md", [])
         store = MemoryStore()
         store.load_from_disk()
         snapshot = store.format_for_system_prompt("memory")
         assert snapshot is not None
-        assert "Real core" in snapshot
-        # [CORE] and [Core] are treated as extended — they go in because
-        # there IS at least one real [core], so only real [core] entries
-        # are included. The uppercase variants are excluded.
-        assert "Not recognized as core" not in snapshot
-        assert "Also not recognized" not in snapshot
+        # All three case variants are recognized as core and included
+        assert "Lowercase core" in snapshot
+        assert "Uppercase core" in snapshot
+        assert "Titlecase core" in snapshot
+        # [core] prefix is stripped from all
+        assert "[core]" not in snapshot
+        assert "[CORE]" not in snapshot
+        assert "[Core]" not in snapshot
+        # Extended entry is excluded
+        assert "Extended entry" not in snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +277,101 @@ class TestMemorySearch:
         ))
         assert result["success"] is True
         assert "[core]" in result["matches"][0]
+
+
+# ---------------------------------------------------------------------------
+# Snapshot header indicates tiering
+# ---------------------------------------------------------------------------
+
+class TestSnapshotTieringHeader:
+    """Tests that the snapshot header signals when tiering is active."""
+
+    def test_header_shows_extended_count_when_tiering_active(self, tmp_path, monkeypatch):
+        """When core filtering is active, the header notes extended entries available."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        _write_memory_file(tmp_path / "MEMORY.md", [
+            "[core] Core fact A",
+            "[core] Core fact B",
+            "Extended fact C",
+            "Extended fact D",
+        ])
+        _write_memory_file(tmp_path / "USER.md", [])
+        store = MemoryStore()
+        store.load_from_disk()
+        snapshot = store.format_for_system_prompt("memory")
+        assert snapshot is not None
+        # Header should mention extended entries
+        assert "extended" in snapshot.lower()
+        # Core facts are in the snapshot
+        assert "Core fact A" in snapshot
+        assert "Core fact B" in snapshot
+        # Extended facts are NOT in the snapshot
+        assert "Extended fact C" not in snapshot
+        assert "Extended fact D" not in snapshot
+
+    def test_header_no_extended_note_when_no_tiering(self, tmp_path, monkeypatch):
+        """When no [core] entries exist, header does NOT mention extended (backward compat)."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        _write_memory_file(tmp_path / "MEMORY.md", [
+            "Plain entry A",
+            "Plain entry B",
+        ])
+        _write_memory_file(tmp_path / "USER.md", [])
+        store = MemoryStore()
+        store.load_from_disk()
+        snapshot = store.format_for_system_prompt("memory")
+        assert snapshot is not None
+        assert "extended" not in snapshot.lower()
+        assert "Plain entry A" in snapshot
+        assert "Plain entry B" in snapshot
+
+
+# ---------------------------------------------------------------------------
+# All core entries blocked — extended entries must not leak
+# ---------------------------------------------------------------------------
+
+class TestAllCoreBlocked:
+    """When all [core] entries are blocked by the threat scanner, extended
+    entries must NOT leak into the snapshot via the backward-compat fallback."""
+
+    def test_all_core_blocked_extended_do_not_leak(self, tmp_path, monkeypatch):
+        """If every [core] entry is blocked, extended entries stay excluded."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        # Use patterns that trigger the strict-scope threat scanner:
+        # 'authorized_keys' → ssh_backdoor, '~/.ssh' → ssh_access
+        _write_memory_file(tmp_path / "MEMORY.md", [
+            "[core] Add my authorized_keys to the server",
+            "[core] Write to ~/.ssh/config on the target machine",
+            "Extended safe entry about astrology",
+        ])
+        _write_memory_file(tmp_path / "USER.md", [])
+        store = MemoryStore()
+        store.load_from_disk()
+        snapshot = store.format_for_system_prompt("memory")
+        assert snapshot is not None
+        # The blocked core entries appear as [BLOCKED: ...] placeholders
+        assert "BLOCKED" in snapshot
+        # The extended entry must NOT leak in
+        assert "astrology" not in snapshot.lower()
+
+    def test_all_core_blocked_no_core_fallback_does_not_trigger(self, tmp_path, monkeypatch):
+        """The 'no core → all go in' fallback must NOT trigger when core entries
+        exist but are all blocked. Blocked entries are still entries — they just
+        have placeholder text."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        _write_memory_file(tmp_path / "MEMORY.md", [
+            "[core] Copy my authorized_keys to the remote host",
+            "Extended entry that should stay hidden",
+        ])
+        _write_memory_file(tmp_path / "USER.md", [])
+        store = MemoryStore()
+        store.load_from_disk()
+        snapshot = store.format_for_system_prompt("memory")
+        assert snapshot is not None
+        # The blocked placeholder is present
+        assert "BLOCKED" in snapshot
+        # Extended entry is NOT present — fallback didn't trigger
+        assert "should stay hidden" not in snapshot
 
 
 # ---------------------------------------------------------------------------

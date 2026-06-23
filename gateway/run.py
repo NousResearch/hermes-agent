@@ -14096,7 +14096,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
 
             # Feishu card mode: route tool status to stream consumer as ephemeral
-            # suffix instead of separate progress messages.
+            # suffix instead of separate progress messages.  Also notify the
+            # adapter's LiveCardManager for persistent tool-chain display.
             if (
                 source.platform == Platform.FEISHU
                 and _stream_consumer is not None
@@ -14106,6 +14107,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from gateway.platforms.feishu_card import get_tool_display
                 tool_display = get_tool_display(tool_name or "")
                 _stream_consumer.on_tool_status(f"⏳ *{tool_display}...*")
+                _feishu_adapter = self.adapters.get(source.platform)
+                if hasattr(_feishu_adapter, 'on_tool_progress'):
+                    _feishu_adapter.on_tool_progress(tool_name or "", source.chat_id)
                 return
 
             # Suppress tool-progress bubbles once the user has sent `stop`.

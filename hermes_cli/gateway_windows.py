@@ -52,6 +52,65 @@ _ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IG
 _TASK_NAME_DEFAULT = "Hermes_Gateway"
 _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
+# Core modules the gateway imports at startup. The generated launcher
+# preflights these before `gateway run` so a broken/empty venv (e.g. a
+# botched `hermes update` that leaves zero packages, or a partial install
+# missing yaml / concurrent_log_handler / openai) fails the Scheduled Task
+# LOUDLY instead of dying silently on the first import before logging is
+# wired up. Keep this list in step with the runtime deps in pyproject.toml.
+_GATEWAY_PREFLIGHT_MODULES = [
+    "yaml",
+    "dotenv",
+    "openai",
+    "rich",
+    "concurrent_log_handler",
+    "hermes_cli",
+]
+
+
+def _build_preflight_python_arg() -> str:
+    """Return the `-c` program for the launcher's import preflight.
+
+    Emitted as a SINGLE physical line containing no newlines, no double
+    quotes, and no ``%`` so it survives ``_quote_cmd_script_arg`` and
+    cmd.exe's parser without any new quoting rules. The program:
+
+      - checks ``importlib.util.find_spec`` for every core module;
+      - on a healthy venv, ``sys.exit(0)`` and the launcher proceeds;
+      - on a missing module, appends ONE structured JSON record to
+        ``logs\\gateway-exit-diag.log`` (tag ``gateway.preflight_failed``,
+        same ts/tag/pid/python/platform schema as gateway.py's existing
+        ``_exit_diag``, plus ``missing``) and ``sys.exit(1)``.
+
+    Honors the same ``HERMES_GATEWAY_EXIT_DIAG`` gate as ``_exit_diag``
+    (anything other than "1" suppresses the diag write). The diag dir is
+    resolved from ``HERMES_HOME``, which the generated gateway.cmd always
+    ``set``s BEFORE this line runs, so it matches the gateway's own
+    ``get_hermes_home()``-resolved log dir.
+    """
+    mods = "[" + ",".join("'" + m + "'" for m in _GATEWAY_PREFLIGHT_MODULES) + "]"
+    program = (
+        "import importlib.util,os,sys,json,datetime as _dt; "
+        "mods=" + mods + "; "
+        "missing=[m for m in mods if importlib.util.find_spec(m) is None]; "
+        "sys.exit(0) if not missing else 0; "
+        "_gate=os.environ.get('HERMES_GATEWAY_EXIT_DIAG','1'); "
+        "_home=os.environ.get('HERMES_HOME') or os.getcwd(); "
+        "_dir=os.path.join(_home,'logs'); "
+        "(os.makedirs(_dir,exist_ok=True) if _gate=='1' else None); "
+        "_rec={'ts':_dt.datetime.now(_dt.timezone.utc).isoformat(),"
+        "'tag':'gateway.preflight_failed','pid':os.getpid(),"
+        "'python':sys.version.split()[0],'platform':sys.platform,'missing':missing}; "
+        "(open(os.path.join(_dir,'gateway-exit-diag.log'),'a',encoding='utf-8')"
+        ".write(json.dumps(_rec,default=str)+chr(10)) if _gate=='1' else None); "
+        "sys.exit(1)"
+    )
+    # cmd-safety invariants: a single physical line, no double quotes, no %.
+    assert "\n" not in program and "\r" not in program
+    assert '"' not in program
+    assert "%" not in program
+    return program
+
 
 def _schtasks_encoding() -> str:
     """Best-effort console encoding for decoding ``schtasks.exe`` output.
@@ -364,6 +423,15 @@ def _build_gateway_cmd_script(
     lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
 
     pythonw_path = _derive_venv_pythonw(python_path)
+    # Import preflight: run a short-lived `pythonw -c` that verifies the core
+    # modules import-resolve BEFORE the long-lived `gateway run`. Invoked
+    # directly (NOT via `start`), so cmd.exe waits for it and reads its exit
+    # code; on a broken/empty venv it exits 1 (and writes a
+    # `gateway.preflight_failed` diag record), letting the launcher `exit /b 1`
+    # so the Scheduled Task's Last Run Result is nonzero instead of a silent 0.
+    preflight_args = [pythonw_path, "-c", _build_preflight_python_arg()]
+    lines.append(" ".join(_quote_cmd_script_arg(a) for a in preflight_args))
+    lines.append("if errorlevel 1 exit /b 1")
     prog_args = [pythonw_path, "-m", "hermes_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())

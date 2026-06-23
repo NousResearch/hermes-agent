@@ -206,6 +206,98 @@ def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypa
     assert "exit /b 0" in content
 
 
+def test_preflight_python_arg_is_single_cmd_safe_line():
+    """The preflight `-c` program must be one physical line with no `"` or `%`.
+
+    Pins the cmd-safety contract the helper itself asserts: it has to survive
+    _quote_cmd_script_arg + cmd.exe's parser without any new quoting rules.
+    """
+    program = gateway_windows._build_preflight_python_arg()
+
+    assert "\n" not in program
+    assert "\r" not in program
+    assert '"' not in program
+    assert "%" not in program
+    # It is a real find_spec-based preflight, not an empty placeholder.
+    assert "importlib.util.find_spec" in program
+    # Names every core module that must import-resolve.
+    for mod in gateway_windows._GATEWAY_PREFLIGHT_MODULES:
+        assert "'" + mod + "'" in program
+
+
+def test_preflight_program_writes_preflight_failed_diag_schema():
+    """On a missing module the program writes the gateway.preflight_failed record."""
+    program = gateway_windows._build_preflight_python_arg()
+
+    # Tag and the ts/tag/pid/python/platform/missing schema fields.
+    assert "'tag':'gateway.preflight_failed'" in program
+    for field in ("'ts'", "'pid'", "'python'", "'platform'", "'missing'"):
+        assert field in program
+    # Writes to logs\gateway-exit-diag.log and honors the HERMES_GATEWAY_EXIT_DIAG gate.
+    assert "gateway-exit-diag.log" in program
+    assert "HERMES_GATEWAY_EXIT_DIAG" in program
+    # Resolves the diag dir from HERMES_HOME and exits nonzero on failure.
+    assert "HERMES_HOME" in program
+    assert "sys.exit(1)" in program
+
+
+def test_gateway_cmd_script_includes_import_preflight_before_run(monkeypatch):
+    """The generated launcher must preflight imports, then errorlevel-gate the run.
+
+    Ordering: preflight `-c` line -> `if errorlevel 1 exit /b 1` -> the
+    `gateway run` invocation -> final `exit /b 0`. The preflight uses the same
+    pythonw as the run line, is invoked via `-c` (not `start`), names every
+    core module, and writes a gateway.preflight_failed diag on failure.
+    """
+    monkeypatch.setattr(
+        gateway_windows,
+        "_derive_venv_pythonw",
+        lambda exe: exe.replace("python.exe", "pythonw.exe"),
+    )
+
+    content = gateway_windows._build_gateway_cmd_script(
+        r"C:\\Hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+        r"C:\\Hermes\\hermes-agent",
+        r"C:\\HermesHome\\profiles\\alice",
+        "--profile alice",
+    )
+
+    # The preflight import program is embedded verbatim in the launcher.
+    program = gateway_windows._build_preflight_python_arg()
+    assert program in content
+    assert "importlib.util.find_spec" in content
+    for mod in gateway_windows._GATEWAY_PREFLIGHT_MODULES:
+        assert "'" + mod + "'" in content
+
+    # The failure diag-write contract is present in the launcher text.
+    assert "'tag':'gateway.preflight_failed'" in content
+    assert "gateway-exit-diag.log" in content
+
+    # The errorlevel gate exists so cmd.exe propagates a nonzero exit.
+    assert "if errorlevel 1 exit /b 1" in content
+
+    # Preflight is a direct `-c` invocation, NOT a detached `start`.
+    lines = content.splitlines()
+    preflight_line = next(
+        ln for ln in lines if "importlib.util.find_spec" in ln
+    )
+    assert " -c " in preflight_line
+    assert not preflight_line.lstrip().startswith("start")
+    # Same pythonw as the run line drives the preflight.
+    assert "pythonw.exe" in preflight_line
+
+    # Ordering: preflight -> errorlevel gate -> gateway run -> exit /b 0.
+    i_preflight = next(
+        idx for idx, ln in enumerate(lines) if "importlib.util.find_spec" in ln
+    )
+    i_gate = next(
+        idx for idx, ln in enumerate(lines) if ln.strip() == "if errorlevel 1 exit /b 1"
+    )
+    i_run = next(idx for idx, ln in enumerate(lines) if "gateway" in ln and "run" in ln and "find_spec" not in ln)
+    i_exit0 = next(idx for idx, ln in enumerate(lines) if ln.strip() == "exit /b 0")
+    assert i_preflight < i_gate < i_run < i_exit0
+
+
 def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
     """UAC handoff should not leave a second elevated cmd.exe window open."""
     calls = []

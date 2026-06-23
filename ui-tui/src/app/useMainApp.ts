@@ -22,7 +22,7 @@ import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
-import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
+import { DEFAULT_INTERRUPT_KEY, DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
@@ -171,6 +171,7 @@ export function useMainApp(gw: GatewayClient) {
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [voiceRecordKey, setVoiceRecordKey] = useState<ParsedVoiceRecordKey>(DEFAULT_VOICE_RECORD_KEY)
+  const [interruptKey, setInterruptKey] = useState<ParsedVoiceRecordKey>(DEFAULT_INTERRUPT_KEY)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
   const [lastTurnEndedAt, setLastTurnEndedAt] = useState<null | number>(null)
@@ -510,7 +511,7 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [ui.busy, turnStartedAt])
 
-  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
+  useConfigSync({ gw, setBellOnComplete, setInterruptKey, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
 
   useEffect(() => {
     if (!ui.sid) {
@@ -719,6 +720,7 @@ export function useMainApp(gw: GatewayClient) {
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
     gateway,
+    interruptKey,
     terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
     voice: {
       enabled: voiceEnabled,

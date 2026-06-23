@@ -10,6 +10,7 @@ import type {
 } from '../gatewayTypes.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
+  parseInterruptKey,
   type ParsedVoiceRecordKey,
   parseVoiceRecordKey
 } from '../lib/platform.js'
@@ -174,10 +175,11 @@ const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number =
 export async function hydrateFullConfig(
   gw: GatewayClient,
   setBell: (v: boolean) => void,
-  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
+  setInterruptKey?: (v: ParsedVoiceRecordKey) => void
 ): Promise<ConfigFullResponse | null> {
   const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
-  applyDisplay(cfg, setBell, setVoiceRecordKey)
+  applyDisplay(cfg, setBell, setVoiceRecordKey, setInterruptKey)
 
   return cfg
 }
@@ -185,7 +187,8 @@ export async function hydrateFullConfig(
 export const applyDisplay = (
   cfg: ConfigFullResponse | null,
   setBell: (v: boolean) => void,
-  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
+  setInterruptKey?: (v: ParsedVoiceRecordKey) => void
 ) => {
   const d = cfg?.config?.display ?? {}
 
@@ -198,8 +201,9 @@ export const applyDisplay = (
   // (Copilot round-8 review on #19835). The mtime-poll loop advances
   // ``mtimeRef`` before this call, so staying silent on null preserves
   // the last-good state and lets the next successful poll refresh it.
-  if (setVoiceRecordKey && cfg) {
-    setVoiceRecordKey(_voiceRecordKeyFromConfig(cfg))
+  if (cfg) {
+    setVoiceRecordKey?.(_voiceRecordKeyFromConfig(cfg))
+    setInterruptKey?.(parseInterruptKey(d.interrupt_key))
   }
 
   patchUiState({
@@ -223,6 +227,7 @@ export const applyDisplay = (
 export function useConfigSync({
   gw,
   setBellOnComplete,
+  setInterruptKey,
   setVoiceEnabled,
   setVoiceRecordKey,
   sid
@@ -242,8 +247,8 @@ export function useConfigSync({
     quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
       mtimeRef.current = Number(r?.mtime ?? 0)
     })
-    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
-  }, [gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid])
+    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setInterruptKey)
+  }, [gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, setInterruptKey, sid])
 
   useEffect(() => {
     if (!sid) {
@@ -271,17 +276,18 @@ export function useConfigSync({
         quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
           r => r && turnController.pushActivity('MCP reloaded after config change')
         )
-        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
+        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setInterruptKey)
       })
     }, MTIME_POLL_MS)
 
     return () => clearInterval(id)
-  }, [gw, setBellOnComplete, setVoiceRecordKey, sid])
+  }, [gw, setBellOnComplete, setVoiceRecordKey, setInterruptKey, sid])
 }
 
 export interface UseConfigSyncOptions {
   gw: GatewayClient
   setBellOnComplete: (v: boolean) => void
+  setInterruptKey?: (v: ParsedVoiceRecordKey) => void
   setVoiceEnabled: (v: boolean) => void
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
   sid: null | string

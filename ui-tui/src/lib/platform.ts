@@ -344,6 +344,46 @@ const _isDefaultVoiceKey = (parsed: ParsedVoiceRecordKey): boolean =>
   parsed.ch === DEFAULT_VOICE_RECORD_KEY.ch &&
   parsed.named === DEFAULT_VOICE_RECORD_KEY.named
 
+// Configurable via display.interrupt_key in config.yaml. Default: bare Escape.
+// Uses ParsedVoiceRecordKey; bare keys set named+ch and leave mod unused.
+export const DEFAULT_INTERRUPT_KEY: ParsedVoiceRecordKey = {
+  ch: 'escape',
+  mod: 'ctrl', // unused for bare keys; isInterruptKey checks named when raw has no '+'
+  named: 'escape',
+  raw: 'escape'
+}
+
+// Parses display.interrupt_key. Supports bare named keys ("escape", "esc")
+// and modifier+key syntax ("ctrl+g"). Falls back to DEFAULT_INTERRUPT_KEY.
+export const parseInterruptKey = (raw: unknown): ParsedVoiceRecordKey => {
+  if (typeof raw !== 'string') return DEFAULT_INTERRUPT_KEY
+  const lower = raw.trim().toLowerCase()
+  if (!lower) return DEFAULT_INTERRUPT_KEY
+  // Bare named key — no modifier prefix
+  const named = _NAMED_KEY_ALIASES[lower]
+  if (named) return { ch: named, mod: 'ctrl', named, raw: lower }
+  // Modifier+key (ctrl+g, alt+i, …) — reuse voice parser
+  const parsed = parseVoiceRecordKey(raw)
+  return parsed === DEFAULT_VOICE_RECORD_KEY ? DEFAULT_INTERRUPT_KEY : parsed
+}
+
+// Returns true when the keystroke matches the configured interrupt key.
+// Bare keys (no '+' in raw) require no modifiers; modifier keys use isVoiceToggleKey.
+export const isInterruptKey = (
+  key: RuntimeKeyEvent,
+  ch: string,
+  configured: ParsedVoiceRecordKey = DEFAULT_INTERRUPT_KEY
+): boolean => {
+  if (configured.named && !configured.raw.includes('+')) {
+    if (!_matchesNamedKey(configured.named, key, ch)) return false
+    // hermes-ink sets key.meta=true when escape is pressed (legacy Ink compat,
+    // see input-event.ts). Ignore meta for bare-escape so it doesn't block the match.
+    const ignoreMetaForEscape = configured.named === 'escape' && key.escape === true
+    return !key.ctrl && !key.alt && (ignoreMetaForEscape || !key.meta) && !key.shift && key.super !== true
+  }
+  return isVoiceToggleKey(key, ch, configured)
+}
+
 export const isVoiceToggleKey = (
   key: RuntimeKeyEvent,
   ch: string,

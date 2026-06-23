@@ -156,6 +156,8 @@ export interface ConfigDisplayConfig {
   busy_input_mode?: string
   details_mode?: string
   inline_diffs?: boolean
+  // Raw yaml value; may be non-string if hand-edited. parseInterruptKey() normalizes.
+  interrupt_key?: unknown
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
   show_cost?: boolean

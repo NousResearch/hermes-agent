@@ -153,27 +153,21 @@ def test_show_status_discovers_plugin_platforms(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
 
-    platform_registry.unregister("status_demo")
+    entry = PlatformEntry(
+        name="status_demo",
+        label="StatusDemo",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        source="plugin",
+    )
 
-    def _discover_status_demo():
-        platform_registry.register(
-            PlatformEntry(
-                name="status_demo",
-                label="StatusDemo",
-                adapter_factory=lambda cfg: None,
-                check_fn=lambda: True,
-                source="plugin",
-            )
-        )
+    monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+    monkeypatch.setattr(platform_registry, "plugin_entries", lambda: [entry])
 
-    monkeypatch.setattr(plugins_mod, "discover_plugins", _discover_status_demo)
-    try:
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
-        output = capsys.readouterr().out
-        assert "StatusDemo" in output
-        assert "(plugin)" in output
-    finally:
-        platform_registry.unregister("status_demo")
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+    output = capsys.readouterr().out
+    assert "StatusDemo" in output
+    assert "(plugin)" in output
 
 
 # ---------------------------------------------------------------------------

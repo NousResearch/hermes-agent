@@ -218,7 +218,8 @@ def run_oneshot(
         real_stderr.flush()
         return 1
 
-    assert response is not None  # narrowed by the empty-response guard above
+    if response is None:
+        raise RuntimeError("response should not be None after empty-response guard")
     real_stdout.write(response)
     if not response.endswith("\n"):
         real_stdout.write("\n")

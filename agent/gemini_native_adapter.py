@@ -517,7 +517,14 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
         if not isinstance(part, dict):
             continue
         if part.get("thought") is True and isinstance(part.get("text"), str):
-            reasoning_pieces.append(part["text"])
+            text_val = part["text"]
+            # Filter out encrypted thought signatures that leak as thinking text
+            if len(text_val.strip()) > 64 and " " not in text_val.strip() and not any(c in text_val for c in ".,!?-*#"):
+                import re
+                if re.match(r"^[A-Za-z0-9+/=]+$", text_val.strip()):
+                    logger.debug("Filtered out encrypted thought signature from non-streaming reasoning")
+                    continue
+            reasoning_pieces.append(text_val)
             continue
         if isinstance(part.get("text"), str):
             text_pieces.append(part["text"])
@@ -656,7 +663,14 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
         if not isinstance(part, dict):
             continue
         if part.get("thought") is True and isinstance(part.get("text"), str):
-            chunks.append(_make_stream_chunk(model=model, reasoning=part["text"]))
+            text_val = part["text"]
+            # Filter out encrypted thought signatures that leak as thinking text
+            if len(text_val.strip()) > 64 and " " not in text_val.strip() and not any(c in text_val for c in ".,!?-*#"):
+                import re
+                if re.match(r"^[A-Za-z0-9+/=]+$", text_val.strip()):
+                    logger.debug("Filtered out encrypted thought signature from streaming reasoning")
+                    continue
+            chunks.append(_make_stream_chunk(model=model, reasoning=text_val))
             continue
         if isinstance(part.get("text"), str) and part["text"]:
             chunks.append(_make_stream_chunk(model=model, content=part["text"]))

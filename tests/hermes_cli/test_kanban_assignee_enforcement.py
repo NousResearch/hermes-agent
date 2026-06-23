@@ -99,3 +99,35 @@ def test_reject_mode_raises_for_unknown_assignee(isolated_kanban_home, monkeypat
         kb.create_board(slug="default", name="Test")
         with pytest.raises(ValueError):
             kb.create_task(conn, title="t1", assignee="The Reviewer")
+
+
+# --- created_by canonicalization (consistent attribution, no enforcement) ---
+
+def test_canonical_actor_lowercases_and_handles_empty(isolated_kanban_home):
+    kb, _ = isolated_kanban_home
+    assert kb._canonical_actor("XO") == "xo"
+    assert kb._canonical_actor("Orchestrator") == "orchestrator"
+    assert kb._canonical_actor("  worker ") == "worker"
+    assert kb._canonical_actor(None) is None
+    assert kb._canonical_actor("   ") is None
+
+
+def test_created_by_is_canonicalized_on_create(isolated_kanban_home):
+    kb, _ = isolated_kanban_home
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = kb.create_task(conn, title="t", assignee="default", created_by="XO")
+        row = conn.execute("SELECT created_by FROM tasks WHERE id=?", (tid,)).fetchone()
+    assert row["created_by"] == "xo"  # 'XO' canonicalized, not stored mixed-case
+
+
+def test_created_by_sentinel_and_none_preserved(isolated_kanban_home):
+    kb, _ = isolated_kanban_home
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        t1 = kb.create_task(conn, title="t1", assignee="default", created_by="worker")
+        t2 = kb.create_task(conn, title="t2", assignee="default", created_by=None)
+        r1 = conn.execute("SELECT created_by FROM tasks WHERE id=?", (t1,)).fetchone()
+        r2 = conn.execute("SELECT created_by FROM tasks WHERE id=?", (t2,)).fetchone()
+    assert r1["created_by"] == "worker"
+    assert r2["created_by"] is None

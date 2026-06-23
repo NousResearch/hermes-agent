@@ -2305,6 +2305,20 @@ def _enforce_assignee_profile(assignee: Optional[str]) -> None:
     logging.getLogger(__name__).warning("kanban.assignee_enforcement: %s", msg)
 
 
+def _canonical_actor(actor: Optional[str]) -> Optional[str]:
+    """Lowercase-normalize a created_by/actor value for consistent attribution.
+
+    Unlike the assignee path this only canonicalizes case (so e.g. ``XO`` and
+    ``xo`` do not diverge in the tasks table); it does NOT enforce profile
+    existence — created_by may legitimately be a non-profile sentinel
+    (``worker``, ``user``, ``system``, automation).
+    """
+    if actor is None:
+        return None
+    s = str(actor).strip()
+    return s.lower() if s else None
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2354,6 +2368,7 @@ def create_task(
     """
     assignee = _canonical_assignee(assignee)
     _enforce_assignee_profile(assignee)
+    created_by = _canonical_actor(created_by)
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:

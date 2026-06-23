@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 from gateway.run import GatewayRunner
 from gateway.status import read_runtime_status
 
@@ -456,6 +457,54 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
         "No adapter could be created" in record.message
         for record in caplog.records
     ), "Expected degraded-mode warning when all adapters are missing"
+
+
+class _NonRetryableFailureAdapter(BasePlatformAdapter):
+    """Simulates a fatal config error like token collision."""
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
+
+    async def connect(self) -> bool:
+        self._set_fatal_error(
+            "discord-bot-token_lock",
+            "Discord bot token already in use (PID 999). Stop the other gateway first.",
+            retryable=False,
+        )
+        return False
+
+    async def disconnect(self) -> None:
+        self._mark_disconnected()
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        raise NotImplementedError
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
+
+
+@pytest.mark.asyncio
+async def test_runner_exits_with_ex_config_on_nonretryable_startup_error(monkeypatch, tmp_path):
+    """Non-retryable startup errors (token collision, no platforms) must
+    set exit_code to 78 (EX_CONFIG) so the s6 finish script can translate
+    it to exit 125 (permanent failure).  See #51228."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _NonRetryableFailureAdapter())
+
+    ok = await runner.start()
+
+    assert ok is True  # start() returns True (clean exit requested)
+    assert runner.should_exit_cleanly is True
+    assert runner.exit_code == GATEWAY_FATAL_CONFIG_EXIT_CODE
+    state = read_runtime_status()
+    assert state["gateway_state"] == "startup_failed"
 
 
 def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatch, tmp_path, caplog):

@@ -55,6 +55,12 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── Composer ─────────────────────────────────────────────────────────────
   { id: 'composer.focus', category: 'composer', defaults: [] },
   { id: 'composer.modelPicker', category: 'composer', defaults: [] },
+  // Toggle push-to-talk dictation on the active composer. Shipped unbound
+  // (defaults:[]) — dictation lives behind a permission-gated mic state, and
+  // ⌘D is already taken by profile.default. The Shortcuts panel surfaces
+  // this row so the user can pick a chord (the row-11936 ask was for the
+  // *capability*, not a specific default).
+  { id: 'composer.dictate', category: 'composer', defaults: [] },
 
   // ── Profiles ─────────────────────────────────────────────────────────────
   { id: 'profile.default', category: 'profiles', defaults: ['mod+d'] },

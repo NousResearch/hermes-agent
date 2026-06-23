@@ -77,6 +77,7 @@ import {
   type ComposerInsertMode,
   focusComposerInput,
   markActiveComposer,
+  onComposerDictateRequest,
   onComposerFocusRequest,
   onComposerInsertRefsRequest,
   onComposerInsertRequest
@@ -266,6 +267,10 @@ export function ChatBar({
   // can't spin-loop. Cleared on success; reset naturally on remount/reconnect.
   const drainFailuresRef = useRef(new Map<string, number>())
   const urlInputRef = useRef<HTMLInputElement | null>(null)
+  // Live closure from useVoiceRecorder — kept in a ref so the external-event
+  // subscription (set up before useVoiceRecorder) can call the latest version
+  // without re-subscribing on every render.
+  const dictateRef = useRef<() => void>(() => {})
 
   const [urlOpen, setUrlOpen] = useState(false)
   const [urlValue, setUrlValue] = useState('')
@@ -407,9 +412,18 @@ export function ChatBar({
       }
     })
 
+    // `dictate` is a fresh closure from useVoiceRecorder on every render; keep
+    // the subscription stable by reading through a ref the effect captures.
+    const offDictate = onComposerDictateRequest(target => {
+      if (target === 'main') {
+        dictateRef.current()
+      }
+    })
+
     return () => {
       offFocus()
       offInsert()
+      offDictate()
     }
   }, [appendExternalText, inputDisabled])
 
@@ -1766,6 +1780,13 @@ export function ChatBar({
     onTranscript: insertText,
     onTranscribeAudio
   })
+
+  // Keep the subscription's ref pointed at the latest dictate closure. The
+  // event listener reads through dictateRef, so this single-line bridge is all
+  // we need to wire a keybind (or any external caller) to the recorder.
+  useEffect(() => {
+    dictateRef.current = dictate
+  }, [dictate])
 
   const pendingResponse = () => {
     const messages = $messages.get()

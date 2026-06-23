@@ -34,6 +34,7 @@ interface InsertRefsDetail {
 const FOCUS_EVENT = 'hermes:composer-focus'
 const INSERT_EVENT = 'hermes:composer-insert'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
+const DICTATE_EVENT = 'hermes:composer-dictate'
 
 let activeTarget: ComposerTarget = 'main'
 
@@ -104,6 +105,15 @@ export const requestComposerInsertRefs = (
 
 export const onComposerInsertRefsRequest = (handler: (detail: InsertRefsDetail) => void) =>
   subscribe<InsertRefsDetail>(INSERT_REFS_EVENT, handler)
+
+/** Toggle dictation on the targeted composer. The composer owns the
+ * push-to-talk state machine (recording / transcribing / idle) — we just
+ * dispatch the intent and let the matching instance drive the recorder. */
+export const requestComposerDictate = (target: ComposerTarget | 'active' = 'active') =>
+  dispatch<FocusDetail>(DICTATE_EVENT, { target: resolve(target) })
+
+export const onComposerDictateRequest = (handler: (target: ComposerTarget) => void) =>
+  subscribe<FocusDetail>(DICTATE_EVENT, ({ target }) => handler(target))
 
 /**
  * Focus a composer input across React commit + browser focus restore.

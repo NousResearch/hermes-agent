@@ -204,6 +204,44 @@ class TestCompress:
             f"#49307), found {count}x:\n{summary}"
         )
 
+    def test_threshold_below_window_at_minimum_ctx(self):
+        """Regression for #14690: at context_length == MINIMUM_CONTEXT_LENGTH
+        the floored threshold used to equal the whole window, so
+        auto-compression could never fire. It now triggers at 85% of the
+        window — high enough not to waste the small budget, below 100% so it
+        actually fires."""
+        from agent.context_compressor import MINIMUM_CONTEXT_LENGTH
+        t = ContextCompressor._compute_threshold_tokens(MINIMUM_CONTEXT_LENGTH, 0.50)
+        assert t < MINIMUM_CONTEXT_LENGTH
+        assert t == 54400  # 85% of 64000
+
+    def test_threshold_below_window_for_small_ctx(self):
+        # 32K model: the 64000 floor exceeds the window — trigger at 85%.
+        t = ContextCompressor._compute_threshold_tokens(32000, 0.50)
+        assert t == 27200  # 85% of 32000
+        assert t < 32000
+
+    def test_threshold_floored_for_large_ctx(self):
+        from agent.context_compressor import MINIMUM_CONTEXT_LENGTH
+        # 200K model at 50% = 100000 (above floor) — unchanged.
+        assert ContextCompressor._compute_threshold_tokens(200000, 0.50) == 100000
+        # 100K model at 50% = 50000 (below floor) — floored to MINIMUM.
+        assert ContextCompressor._compute_threshold_tokens(100000, 0.50) == MINIMUM_CONTEXT_LENGTH
+
+    def test_minimum_ctx_model_can_actually_compress(self):
+        """End-to-end: a model at exactly the minimum context length must have
+        should_compress() fire below its window (at the 85% trigger), not only
+        at 100%."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=64000):
+            c = ContextCompressor(model="small-64k", quiet_mode=True)
+            c.context_length = 64000
+            c.threshold_tokens = c._compute_threshold_tokens(64000, c.threshold_percent)
+        assert c.threshold_tokens == 54400
+        assert c.threshold_tokens < 64000
+        # At 85%+ usage compaction fires; below it, it doesn't (no premature compact).
+        assert c.should_compress(55000) is True
+        assert c.should_compress(40000) is False
+
     def test_compression_increments_count(self, compressor):
         msgs = self._make_messages(10)
         # Default config (abort_on_summary_failure=False) — fallback path
@@ -224,6 +262,39 @@ class TestCompress:
         # (head=assistant, tail=user in this fixture).  Verify the
         # original content is present in either case.
         assert msgs[-2]["content"] in result[-2]["content"]
+
+    def test_protect_first_n_decays_after_first_compression(self):
+        """Regression for #11996: protect_first_n must protect early turns on
+        the FIRST compaction but DECAY afterwards, so the same early user
+        messages don't get re-copied verbatim into every child session and
+        fossilize (grow immortal) across a long, repeatedly-compressed
+        session. The system prompt is always protected separately."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3)
+
+        msgs = [{"role": "system", "content": "sys"}] + [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"}
+            for i in range(10)
+        ]
+
+        # First compaction: protect system + first 3 non-system.
+        assert c.compression_count == 0
+        assert c._effective_protect_first_n() == 3
+        assert c._protect_head_size(msgs) == 1 + 3
+
+        # Simulate having compressed once — early turns now live in the summary.
+        c.compression_count = 1
+        assert c._effective_protect_first_n() == 0
+        assert c._protect_head_size(msgs) == 1  # system prompt only
+
+    def test_protect_first_n_decays_when_previous_summary_exists(self):
+        """Even if compression_count was reset, an existing handoff summary
+        means the early turns are already captured — decay still applies."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3)
+        c.compression_count = 0
+        c._previous_summary = "[CONTEXT SUMMARY]: earlier work"
+        assert c._effective_protect_first_n() == 0
 
 
 class TestGenerateSummaryNoneContent:
@@ -286,10 +357,40 @@ class TestNonStringContent:
         assert isinstance(summary, str)
         assert summary.startswith(SUMMARY_PREFIX)
 
-    def test_none_content_coerced_to_empty(self):
+    def test_none_content_treated_as_failure_not_empty_summary(self):
+        """Regression #11978/#11914: a well-formed response with ``content=None``
+        (some OpenAI-compatible proxies, e.g. cmkey.cn, return HTTP 200 with
+        null/empty content) must NOT be stored as a prefix-only summary that
+        silently wipes the compacted turns. It is treated as a summary failure
+        and routed through cooldown so the turns are dropped without a summary
+        rather than replaced by an empty one."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = None
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            # summary_model == model here, so no fallback path: straight to cooldown.
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary(messages)
+        # Empty content → failure → None (drop turns), NOT a prefix-only summary.
+        assert summary is None
+        assert summary != SUMMARY_PREFIX
+        # Transient cooldown engaged so we don't immediately retry the bad proxy.
+        assert c._summary_failure_cooldown_until > 0
+
+    def test_empty_string_content_treated_as_failure(self):
+        """An empty-string (or whitespace-only) ``content`` is handled the same
+        as ``None`` — failure, not an empty summary (#11978)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "   \n  "
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
@@ -301,9 +402,36 @@ class TestNonStringContent:
 
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             summary = c._generate_summary(messages)
-        # None content → empty string → standardized compaction handoff prefix added
-        assert summary is not None
-        assert summary == SUMMARY_PREFIX
+        assert summary is None
+        assert c._summary_failure_cooldown_until > 0
+
+    def test_empty_content_falls_back_to_main_model(self):
+        """When the auxiliary summary model returns empty content and a distinct
+        main model is configured, compression falls back to the main model
+        before entering cooldown (#11978 glm-5.1 → glm-5 path)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="glm-5",
+                summary_model_override="glm-5.1",
+                quiet_mode=True,
+            )
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            summary = c._generate_summary(messages)
+        # Two calls: aux model (glm-5.1) then fallback to main (glm-5).
+        assert mock_call.call_count == 2
+        assert c._summary_model_fallen_back is True
+        assert summary is None
+        assert c._summary_failure_cooldown_until > 0
 
     def test_summary_call_does_not_force_temperature(self):
         mock_response = MagicMock()
@@ -2242,6 +2370,53 @@ class TestUpdateModelBudgets:
         comp.update_model("model-b", context_length=10_000)
         assert comp.tail_token_budget == int(comp.threshold_tokens * comp.summary_target_ratio)
         assert comp.max_summary_tokens == min(int(10_000 * 0.05), 4000)
+
+
+class TestUpdateModelResetsCalibration:
+    """#23767: update_model() must clear stale cross-call calibration state.
+
+    Old-model real-usage / defer baselines must not suppress a preflight
+    compression the new (smaller) model actually needs.
+    """
+
+    def _comp(self):
+        from unittest.mock import patch
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            return ContextCompressor("big-model", threshold_percent=0.50, quiet_mode=True)
+
+    def test_real_usage_state_cleared(self):
+        comp = self._comp()
+        # Simulate a large-model session that proved a prompt fit.
+        comp.last_prompt_tokens = 120_000
+        comp.last_real_prompt_tokens = 120_000
+        comp.last_rough_tokens_when_real_prompt_fit = 130_000
+        comp.last_compression_rough_tokens = 130_000
+        comp.awaiting_real_usage_after_compression = True
+        comp._ineffective_compression_count = 2
+
+        comp.update_model("small-model", context_length=65_536)
+
+        assert comp.last_prompt_tokens == 0
+        assert comp.last_real_prompt_tokens == 0
+        assert comp.last_rough_tokens_when_real_prompt_fit == 0
+        assert comp.last_compression_rough_tokens == 0
+        assert comp.awaiting_real_usage_after_compression is False
+        assert comp._ineffective_compression_count == 0
+
+    def test_defer_no_longer_suppresses_after_switch(self):
+        """The exact #23767 failure: old model's 'it fit' must not defer
+        preflight on the new smaller model."""
+        comp = self._comp()
+        comp.last_real_prompt_tokens = 50_000
+        comp.last_rough_tokens_when_real_prompt_fit = 90_000
+        # Before switch, a modest rough growth would defer.
+        comp.threshold_tokens = 85_000
+        assert comp.should_defer_preflight_to_real_usage(93_000) is True
+
+        # After switching to a 65K model, the stale state is gone, so a rough
+        # estimate over the new threshold is NOT deferred — preflight will run.
+        comp.update_model("small-model", context_length=65_536)
+        assert comp.should_defer_preflight_to_real_usage(comp.threshold_tokens + 5_000) is False
 
 
 class TestTruncateToolCallArgsJson:

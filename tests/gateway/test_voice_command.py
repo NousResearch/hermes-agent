@@ -402,6 +402,78 @@ class TestAutoVoiceReply:
         }]
         assert self._call(runner, "all", MessageType.TEXT, agent_messages=messages) is True
 
+    # -- Discord DM regression: adapter won't auto-TTS, runner must fire (#51282) --
+
+    def _call_with_adapter(self, runner, voice_mode, message_type, adapter_will_tts,
+                           response="Hello!", already_sent=False):
+        """Call _should_send_voice_reply with a mock adapter that has _should_auto_tts_for_chat."""
+        chat_id = "123"
+        platform = MagicMock()
+        platform.value = "discord"
+
+        if voice_mode != "off":
+            runner._voice_mode[f"discord:{chat_id}"] = voice_mode
+        else:
+            runner._voice_mode.pop(f"discord:{chat_id}", None)
+
+        source = MagicMock()
+        source.chat_id = chat_id
+        source.platform = platform
+        source.thread_id = None
+
+        event = MagicMock()
+        event.source = source
+        event.message_type = message_type
+
+        mock_adapter = MagicMock()
+        mock_adapter._should_auto_tts_for_chat = MagicMock(return_value=adapter_will_tts)
+        runner.adapters[platform] = mock_adapter
+
+        return runner._should_send_voice_reply(event, response, [], already_sent=already_sent)
+
+    def test_discord_dm_voice_only_adapter_wont_tts_runner_fires(self, runner):
+        """Regression #51282: voice_only + voice input + adapter not configured to
+        auto-TTS for this chat → runner must fire instead of silently dropping TTS."""
+        result = self._call_with_adapter(
+            runner, "voice_only", MessageType.VOICE, adapter_will_tts=False
+        )
+        assert result is True
+
+    def test_discord_dm_voice_only_adapter_will_tts_runner_skips(self, runner):
+        """voice_only + voice input + adapter IS configured → runner defers (no double TTS)."""
+        result = self._call_with_adapter(
+            runner, "voice_only", MessageType.VOICE, adapter_will_tts=True
+        )
+        assert result is False
+
+    def test_discord_dm_already_sent_runner_always_fires(self, runner):
+        """already_sent=True: adapter can't run auto-TTS (no text), runner must handle."""
+        result = self._call_with_adapter(
+            runner, "voice_only", MessageType.VOICE, adapter_will_tts=True, already_sent=True
+        )
+        assert result is True
+
+    def test_discord_dm_no_adapter_falls_back_to_defer(self, runner):
+        """No live adapter for platform → fall back to old behaviour (defer) to avoid
+        double-TTS on unknown platforms."""
+        chat_id = "123"
+        platform = MagicMock()
+        platform.value = "discord"
+        runner._voice_mode[f"discord:{chat_id}"] = "voice_only"
+        # No adapter registered for this platform
+        runner.adapters.clear()
+
+        source = MagicMock()
+        source.chat_id = chat_id
+        source.platform = platform
+        source.thread_id = None
+        event = MagicMock()
+        event.source = source
+        event.message_type = MessageType.VOICE
+
+        result = runner._should_send_voice_reply(event, "Hello!", [])
+        assert result is False
+
 
 # =====================================================================
 # _send_voice_reply

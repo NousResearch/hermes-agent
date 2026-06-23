@@ -5477,7 +5477,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             os.getenv(v, "").lower() in {"true", "1", "yes"}
             for v in _builtin_allow_all_vars + _plugin_allow_all_vars
         )
-        if not _any_allowlist and not _allow_all:
+        # API Server / webhooks authenticate by API key or route secret rather
+        # than user allowlists.  In local/API-only deployments, warning about
+        # missing chat allowlists is noisy and misleading: there are no inbound
+        # human chat users to authorize.  Keep the warning for actual messaging
+        # adapters (Telegram, Discord, Slack, etc.) where no allowlist means all
+        # unauthorized users will be denied at message time.
+        _non_user_allowlist_platforms = {
+            Platform.API_SERVER,
+            Platform.WEBHOOK,
+            getattr(Platform, "MSGRAPH_WEBHOOK", None),
+        }
+        _enabled_user_allowlist_platforms = [
+            platform for platform, platform_config in self.config.platforms.items()
+            if platform_config.enabled and platform not in _non_user_allowlist_platforms
+        ]
+        if _enabled_user_allowlist_platforms and not _any_allowlist and not _allow_all:
             logger.warning(
                 "No user allowlists configured. All unauthorized users will be denied. "
                 "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env to allow open access, "

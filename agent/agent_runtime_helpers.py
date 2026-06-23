@@ -1825,6 +1825,38 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             )
 
 
+def _execute_memory_tool(agent, next_args: dict, tool_call_id: Optional[str] = None) -> str:
+    """Execute a memory tool call and return the JSON result string.
+
+    Shared between the sequential path (tool_executor.py) and the concurrent
+    path (invoke_tool below).  Keeps the parameter list in one place so new
+    memory_tool() parameters don't get dropped in one path.
+    """
+    target = next_args.get("target", "memory")
+    operations = next_args.get("operations")
+    from tools.memory_tool import memory_tool as _memory_tool
+    result = _memory_tool(
+        action=next_args.get("action"),
+        target=target,
+        content=next_args.get("content"),
+        old_text=next_args.get("old_text"),
+        query=next_args.get("query"),
+        operations=operations,
+        store=agent._memory_store,
+    )
+    # Mirror successful built-in memory writes to external providers.
+    if agent._memory_manager:
+        agent._memory_manager.notify_memory_tool_write(
+            result,
+            next_args,
+            build_metadata=lambda: agent._build_memory_write_metadata(
+                task_id=getattr(agent, "_current_task_id", ""),
+                tool_call_id=tool_call_id,
+            ),
+        )
+    return result
+
+
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
                  tool_call_id: Optional[str] = None, messages: list = None,
                  pre_tool_block_checked: bool = False,
@@ -1953,31 +1985,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
     elif function_name == "memory":
         def _execute(next_args: dict) -> Any:
-            target = next_args.get("target", "memory")
-            operations = next_args.get("operations")
-            from tools.memory_tool import memory_tool as _memory_tool
-            result = _memory_tool(
-                action=next_args.get("action"),
-                target=target,
-                content=next_args.get("content"),
-                old_text=next_args.get("old_text"),
-                query=next_args.get("query"),
-                operations=operations,
-                store=agent._memory_store,
+            from agent.agent_runtime_helpers import _execute_memory_tool
+            return _finish_agent_tool(
+                _execute_memory_tool(agent, next_args, tool_call_id=tool_call_id),
+                next_args,
             )
-            # Mirror successful built-in memory writes to external providers.
-            # All gating/op-expansion lives behind the manager interface
-            # (MemoryManager.notify_memory_tool_write).
-            if agent._memory_manager:
-                agent._memory_manager.notify_memory_tool_write(
-                    result,
-                    next_args,
-                    build_metadata=lambda: agent._build_memory_write_metadata(
-                        task_id=effective_task_id,
-                        tool_call_id=tool_call_id,
-                    ),
-                )
-            return _finish_agent_tool(result, next_args)
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._memory_manager.handle_tool_call(function_name, next_args), next_args)

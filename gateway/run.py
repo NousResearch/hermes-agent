@@ -17369,6 +17369,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                  Useful for systemd services to avoid restart-loop deadlocks
                  when the previous process hasn't fully exited yet.
     """
+    # Snapshot the checkout revision now, while sys.modules still matches disk,
+    # so a later `git pull` under this long-lived process can be detected (and
+    # risky work like model switching refused) instead of crashing on a stale
+    # in-memory module.
+    from gateway.code_skew import record_boot_fingerprint
+    record_boot_fingerprint()
+
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same HERMES_HOME.
     # The PID file is scoped to HERMES_HOME, so future multi-profile

@@ -1438,6 +1438,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._event_handler: Optional[Any] = None
         self._seen_message_ids: Dict[str, float] = {}  # message_id → seen_at (time.time())
         self._seen_message_order: List[str] = []
+        self._seen_event_ids: Dict[str, float] = {}  # event_id → seen_at (time.time())
+        self._seen_event_order: List[str] = []
         self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
         self._dedup_lock = threading.Lock()
         self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
@@ -2413,6 +2415,14 @@ class FeishuAdapter(BasePlatformAdapter):
         sender = getattr(event, "sender", None)
         if not message or not sender or not getattr(sender, "sender_id", None):
             logger.debug("[Feishu] Dropping malformed inbound event: missing message/sender")
+            return
+
+        # Deduplicate by event_id first (survives WS reconnect redelivery where
+        # Feishu sends the same event with different message_ids).
+        header = getattr(data, "header", None)
+        event_id = str(getattr(header, "event_id", "") or "")
+        if event_id and self._is_event_duplicate(event_id):
+            logger.debug("[Feishu] Dropping duplicate event_id: %s", event_id)
             return
 
         message_id = getattr(message, "message_id", None)
@@ -4358,6 +4368,23 @@ class FeishuAdapter(BasePlatformAdapter):
         sorted_ids = sorted(valid, key=lambda k: valid[k], reverse=True)[:self._dedup_cache_size]
         self._seen_message_order = list(reversed(sorted_ids))
         self._seen_message_ids = {k: valid[k] for k in sorted_ids}
+        # Load event_ids as well (same format, stored under "event_ids" key)
+        event_data = payload.get("event_ids", {}) if isinstance(payload, dict) else {}
+        if isinstance(event_data, dict):
+            event_entries = {}
+            for key, value in event_data.items():
+                if isinstance(key, str) and key.strip():
+                    try:
+                        event_entries[key] = float(value)
+                    except (TypeError, ValueError):
+                        continue
+            event_valid = {
+                eid: ts for eid, ts in event_entries.items()
+                if ts == 0.0 or ttl <= 0 or now - ts < ttl
+            }
+            sorted_events = sorted(event_valid, key=lambda k: event_valid[k], reverse=True)[:self._dedup_cache_size]
+            self._seen_event_order = list(reversed(sorted_events))
+            self._seen_event_ids = {k: event_valid[k] for k in sorted_events}
 
     def _persist_seen_message_ids(self) -> None:
         try:
@@ -4365,6 +4392,9 @@ class FeishuAdapter(BasePlatformAdapter):
             recent = self._seen_message_order[-self._dedup_cache_size:]
             # Save as {msg_id: timestamp} so TTL filtering works across restarts.
             payload = {"message_ids": {k: self._seen_message_ids[k] for k in recent if k in self._seen_message_ids}}
+            # Also persist event_ids for WS reconnect dedup.
+            recent_events = self._seen_event_order[-self._dedup_cache_size:]
+            payload["event_ids"] = {k: self._seen_event_ids[k] for k in recent_events if k in self._seen_event_ids}
             atomic_json_write(self._dedup_state_path, payload, indent=None)
         except OSError:
             logger.warning("[Feishu] Failed to persist dedup state to %s", self._dedup_state_path, exc_info=True)
@@ -4382,6 +4412,27 @@ class FeishuAdapter(BasePlatformAdapter):
             while len(self._seen_message_order) > self._dedup_cache_size:
                 stale = self._seen_message_order.pop(0)
                 self._seen_message_ids.pop(stale, None)
+            self._persist_seen_message_ids()
+            return False
+
+    def _is_event_duplicate(self, event_id: str) -> bool:
+        """Deduplicate by Feishu event_id (header-level, survives WS reconnect redelivery).
+
+        Feishu redelivers events with different message_ids after WebSocket reconnect,
+        so message_id dedup alone is insufficient. event_id is unique per Feishu event
+        and survives across redelivery.
+        """
+        now = time.time()
+        ttl = _FEISHU_DEDUP_TTL_SECONDS
+        with self._dedup_lock:
+            seen_at = self._seen_event_ids.get(event_id)
+            if seen_at is not None and (ttl <= 0 or now - seen_at < ttl):
+                return True
+            self._seen_event_ids[event_id] = now
+            self._seen_event_order.append(event_id)
+            while len(self._seen_event_order) > self._dedup_cache_size:
+                stale = self._seen_event_order.pop(0)
+                self._seen_event_ids.pop(stale, None)
             self._persist_seen_message_ids()
             return False
 

@@ -173,6 +173,84 @@ class TestSerializePayload:
         assert payload["extra"]["obj"] == "<weird>"
 
 
+# ── _live_terminal_cwd (payload cwd reflects the shell's live cwd) ─────────
+
+
+class TestLiveTerminalCwd:
+    """The pre_tool_call payload cwd must track the terminal tool's live
+    working directory, not the agent process's Path.cwd(). Without this a
+    bare ``git commit`` is judged against a stale directory and the
+    feature-branch guard false-blocks in a worktree-off-main layout.
+    """
+
+    def _patch_active_env(self, monkeypatch, cwd):
+        """Install a fake tools.terminal_tool.get_active_env returning an
+        object whose .cwd is *cwd* (or a module that raises if cwd is the
+        sentinel ``RAISE``)."""
+        import sys
+        import types
+
+        class _Env:
+            def __init__(self, cwd):
+                self.cwd = cwd
+
+        def _get_active_env(task_id):
+            if cwd == "RAISE":
+                raise RuntimeError("boom")
+            if cwd is None:
+                return None
+            return _Env(cwd)
+
+        mod = types.ModuleType("tools.terminal_tool")
+        mod.get_active_env = _get_active_env
+        # Ensure the parent package exists so `from tools.terminal_tool import`
+        # resolves to our stub.
+        pkg = sys.modules.get("tools") or types.ModuleType("tools")
+        monkeypatch.setitem(sys.modules, "tools", pkg)
+        monkeypatch.setitem(sys.modules, "tools.terminal_tool", mod)
+
+    def test_terminal_uses_live_env_cwd(self, monkeypatch):
+        self._patch_active_env(monkeypatch, "/live/worktree")
+        raw = shell_hooks._serialize_payload(
+            "pre_tool_call",
+            {"tool_name": "terminal", "args": {"command": "git commit"}, "task_id": "t-1"},
+        )
+        assert json.loads(raw)["cwd"] == "/live/worktree"
+
+    def test_non_terminal_tool_falls_back_to_process_cwd(self, monkeypatch):
+        # Even if an env exists, a non-terminal tool must not adopt it.
+        self._patch_active_env(monkeypatch, "/live/worktree")
+        raw = shell_hooks._serialize_payload(
+            "pre_tool_call",
+            {"tool_name": "read_file", "args": {"path": "x"}, "task_id": "t-1"},
+        )
+        assert json.loads(raw)["cwd"] == str(Path.cwd())
+
+    def test_no_active_env_falls_back_to_process_cwd(self, monkeypatch):
+        self._patch_active_env(monkeypatch, None)
+        raw = shell_hooks._serialize_payload(
+            "pre_tool_call",
+            {"tool_name": "terminal", "args": {"command": "ls"}, "task_id": "t-1"},
+        )
+        assert json.loads(raw)["cwd"] == str(Path.cwd())
+
+    def test_env_lookup_error_fails_open_to_process_cwd(self, monkeypatch):
+        self._patch_active_env(monkeypatch, "RAISE")
+        raw = shell_hooks._serialize_payload(
+            "pre_tool_call",
+            {"tool_name": "terminal", "args": {"command": "ls"}, "task_id": "t-1"},
+        )
+        assert json.loads(raw)["cwd"] == str(Path.cwd())
+
+    def test_blank_env_cwd_falls_back_to_process_cwd(self, monkeypatch):
+        self._patch_active_env(monkeypatch, "   ")
+        raw = shell_hooks._serialize_payload(
+            "pre_tool_call",
+            {"tool_name": "terminal", "args": {"command": "ls"}, "task_id": "t-1"},
+        )
+        assert json.loads(raw)["cwd"] == str(Path.cwd())
+
+
 # ── Matcher behaviour ─────────────────────────────────────────────────────
 
 

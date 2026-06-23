@@ -515,14 +515,49 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
     return _callback
 
 
+def _live_terminal_cwd(kwargs: Dict[str, Any]) -> Optional[str]:
+    """Best-effort resolve the live working directory of the terminal tool.
+
+    The default payload ``cwd`` is the agent/gateway process's own
+    ``Path.cwd()`` (see :func:`_serialize_payload`), which never tracks the
+    shell's ``cd`` state: the terminal tool runs commands in a persistent
+    backend env whose cwd lives in ``tools.terminal_tool`` process memory, not
+    in this process's cwd. For a ``pre_tool_call`` on a ``terminal`` command,
+    the honest "where will this run" answer is that env's tracked cwd, which is
+    updated from ``pwd -P`` after every command. Hooks that resolve git state
+    (e.g. the feature-branch guard) need the live value, or a bare
+    ``git commit`` is judged against a stale directory and can false-block in a
+    worktree-off-main layout.
+
+    Lazy import: terminal_tool is heavy and importing it at module load would
+    risk a cycle. Fail-open: any miss (no env, no task, import error) returns
+    None so the caller falls back to ``Path.cwd()`` and the prior behavior.
+    """
+    if kwargs.get("tool_name") != "terminal":
+        return None
+    task_id = kwargs.get("task_id") or ""
+    try:
+        from tools.terminal_tool import get_active_env
+
+        env = get_active_env(task_id)
+        cwd = getattr(env, "cwd", None) if env is not None else None
+        if isinstance(cwd, str) and cwd.strip():
+            return cwd
+    except Exception:
+        return None
+    return None
+
+
 def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> str:
     """Render the stdin JSON payload.  Unserialisable values are
     stringified via ``default=str`` rather than dropped."""
     extras = {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS}
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        cwd = ""
+    cwd = _live_terminal_cwd(kwargs)
+    if cwd is None:
+        try:
+            cwd = str(Path.cwd())
+        except OSError:
+            cwd = ""
     payload = {
         "hook_event_name": event,
         "tool_name": kwargs.get("tool_name"),

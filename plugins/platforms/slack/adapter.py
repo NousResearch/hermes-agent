@@ -333,6 +333,25 @@ _SLACK_STT_SUPPORTED_EXTS = frozenset(
     {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 )
 
+# Cached-extension → reported ``audio/*`` mimetype. Used when re-routing a
+# ``video/mp4``-mislabeled voice clip onto the audio path so the reported
+# media_type stays coherent with the bytes we actually cached (the gateway's
+# STT gate keys on the ``audio/`` prefix + the cached filename extension, but a
+# matching mimetype avoids surprising any consumer that inspects it). Anything
+# unmapped falls back to ``audio/mp4`` — Slack voice clips are MP4/AAC.
+_SLACK_EXT_TO_AUDIO_MIME = {
+    ".mp4": "audio/mp4",
+    ".m4a": "audio/mp4",
+    ".mp3": "audio/mpeg",
+    ".mpeg": "audio/mpeg",
+    ".mpga": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".webm": "audio/webm",
+    ".ogg": "audio/ogg",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+}
+
 
 def _resolve_slack_audio_ext(file_obj: Dict[str, Any], mimetype: str) -> str:
     """Pick the cache extension that matches an inbound Slack audio file's bytes.
@@ -2746,7 +2765,7 @@ class SlackAdapter(BasePlatformAdapter):
                     # Report a coherent audio mimetype matching the cached
                     # extension so downstream STT routing recognizes it.
                     media_types.append(
-                        {".m4a": "audio/mp4"}.get(ext, "audio/mp4")
+                        _SLACK_EXT_TO_AUDIO_MIME.get(ext, "audio/mp4")
                     )
                     logger.debug(
                         "[Slack] Cached voice clip (mislabeled %s) as audio: %s",

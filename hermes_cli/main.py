@@ -1370,19 +1370,6 @@ def _print_tui_exit_summary(
     )
 
 
-_NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer"})
-"""Lockfile fields npm writes non-deterministically at install time.
-
-``ideallyInert`` is npm's runtime annotation for packages it skipped installing
-(per-platform opt-outs).  ``peer`` is dropped from the hidden ``.package-lock.json``
-on dev-dependencies that are *also* declared as peers — the canonical
-``package-lock.json`` records the dual role, but npm 9's actualized tree strips
-it.  Neither key represents a real skew between what was declared and what was
-installed, so we exclude them from the comparison in :func:`_tui_need_npm_install`
-to avoid false-positive reinstalls on every launch.
-"""
-
-
 def _workspace_root(dir: Path) -> Path:
     """Return the npm workspace root for *dir*.
 
@@ -1437,75 +1424,35 @@ def _termux_workspace_install_context(
 
 
 def _tui_need_npm_install(root: Path) -> bool:
-    """True when @hermes/ink is missing, or the TUI hasn't been built yet.
+    """True when the TUI needs an ``npm ci`` before it can run.
 
     Prebuilt bundle mode: when ``dist/entry.js`` exists and there is no
-    ``package-lock.json`` (nix install layout), skip reinstall entirely.
+    ``package-lock.json`` (nix layout), skip entirely — the bundle is
+    self-contained and there is nothing to install.
 
-    Workspace mode: when ``dist/entry.js`` exists and ``@hermes/ink`` is
-    installed, assume deps are satisfied. The root lockfile in a monorepo
-    contains entries for ALL workspaces (apps/*, web) that were never
-    installed via ``--workspace ui-tui``, so a full lockfile content
-    comparison would spuriously trigger reinstall every time.
-
-    Non-workspace fallback: compares ``package-lock.json`` against
-    ``node_modules/.package-lock.json`` by content (not mtime).
+    Otherwise checks whether the TUI has been built and its core dependency
+    (``@hermes/ink``) is already installed.  Full lockfile comparison is
+    unreliable in a monorepo because the root ``package-lock.json`` contains
+    entries for all workspaces, not just ``ui-tui`` — comparing against
+    ``node_modules/.package-lock.json`` would always find "missing" packages
+    from other workspaces and trigger a spurious install every launch.
     """
-    # Prebuilt self-contained bundle (nix / packaged release): no lockfile
-    # shipped, dist/entry.js is the single runtime artefact.
     entry = root / "dist" / "entry.js"
-    # With npm workspaces the lockfile lives at the workspace root.
     ws_root = _workspace_root(root)
-    lock = ws_root / "package-lock.json"
-    if entry.is_file() and not lock.is_file():
+
+    # Prebuilt bundle: no lockfile, just a self-contained .js bundle.
+    if entry.is_file() and not (ws_root / "package-lock.json").is_file():
         return False
 
     ink = ws_root / "node_modules" / "@hermes" / "ink" / "package.json"
     if not ink.is_file():
         return True
-    # For workspace-based installs (`--workspace ui-tui`), the root
-    # package-lock.json contains entries for ALL workspaces (apps/*, web,
-    # etc.) that are never installed. Full content comparison against the
-    # hidden lockfile would always find missing entries and trigger a
-    # spurious install. Instead just check whether the TUI is already
-    # built and its core dependency is present.
-    if entry.is_file() and ink.is_file():
+
+    # Already built and core dep is present — good enough.
+    if entry.is_file():
         return False
 
-    if not lock.is_file():
-        return False
-    marker = ws_root / "node_modules" / ".package-lock.json"
-    if not marker.is_file():
-        return True
-
-    # Fallback content comparison for non-workspace layouts.
-    try:
-        wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
-        installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return lock.stat().st_mtime > marker.stat().st_mtime
-
-    def comparable(pkg: dict) -> dict:
-        return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
-
-    for name, pkg in wanted.items():
-        if not name:
-            continue
-
-        if not isinstance(pkg, dict):
-            continue
-
-        if name not in installed:
-            if pkg.get("optional") or pkg.get("peer"):
-                continue
-            return True
-
-        if isinstance(installed[name], dict) and comparable(pkg) != comparable(
-            installed[name]
-        ):
-            return True
-
-    return False
+    return True
 
 
 _TUI_BUILD_INPUT_DIRS = (

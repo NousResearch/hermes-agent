@@ -1461,7 +1461,6 @@ class SessionDB:
             )
 
             # 2. Create child with parent_session_id
-            import json
             conn.execute(
                 """INSERT INTO sessions
                    (id, source, user_id, model, parent_session_id,

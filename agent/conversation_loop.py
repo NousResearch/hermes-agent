@@ -3842,6 +3842,8 @@ def run_conversation(
                             assistant_message.content or "", _thinking_state
                         )
                         if escalate(_thinking_state):
+                            # Store reason in state for user notification
+                            _thinking_state.escalation_reason = escalation_reason
                             # Strip the escalation marker from content
                             if assistant_message.content:
                                 assistant_message.content = strip_escalation_marker(
@@ -4247,6 +4249,14 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
+                
+                # Self-escalation: prefix response with thinking activation reason
+                if (_thinking_state is not None 
+                        and _thinking_state.escalation_reason 
+                        and final_response):
+                    reason_prefix = f"*🧠 Thinking activé : {_thinking_state.escalation_reason}*\n\n"
+                    final_response = reason_prefix + final_response
+                
                 # Self-escalation: reset for next user turn
                 if _thinking_state is not None:
                     _thinking_state.reset()

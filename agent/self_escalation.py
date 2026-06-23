@@ -26,10 +26,12 @@ class ThinkingState:
     max_escalations: int = 1
     marker: str = "[ESCALATE_THINKING"
     default_state: str = "off"
+    escalation_reason: str = ""  # Store reason for user notification
 
     def reset(self) -> None:
         """Reset escalation counter for a new user turn."""
         self.escalation_count = 0
+        self.escalation_reason = ""  # Clear reason for next turn
         # active returns to default_state
         self.active = self.default_state == "on"
 

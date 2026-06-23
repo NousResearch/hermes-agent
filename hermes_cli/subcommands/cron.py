@@ -70,6 +70,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
+    cron_create.add_argument(
+        "--profile",
+        help="Hermes profile the job should EXECUTE under (its .env / config.yaml / credentials). Defaults to the profile that created the job. Jobs live in one shared root store (#32091); this scopes a job's runtime environment to the named profile so it runs with that profile's permissions.",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(

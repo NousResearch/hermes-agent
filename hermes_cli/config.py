@@ -2000,6 +2000,11 @@ DEFAULT_CONFIG = {
         # what the reviewer returned, and which path was taken. Off by default.
         "adr": False,
         "adr_path": "",            # "" = <workspace>/.hermes/autopilot/adr/AUTOPILOT-<session>-<date>.md
+        # Anti-deception reinforcement: re-assert the behavioral contract every N
+        # continuations so it stays salient over a long run (a one-time system
+        # prompt fades by recency, which is when models derail). 0 disables the
+        # cadence; deception detections still trigger reinforcement regardless.
+        "reinforce_every_n": 5,
     },
 
     # Skills — external skill directories for sharing skills across tools/agents.

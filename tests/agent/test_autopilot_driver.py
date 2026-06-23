@@ -181,11 +181,33 @@ def test_progress_resets_stall(monkeypatch):
     a = make_agent(_autopilot_no_progress_k=2)
     monkeypatch.setattr(driver, "judge_completion",
                         lambda *args, **kw: CompletionVerdict(complete=False, directive="x", verdict="deny"))
-    # growing transcript + changing final response => never stalls
+    # REAL progress = genuine tool activity each turn (a new tool call + result),
+    # which changes the artifact fingerprint and resets the no-progress counter.
     for i in range(5):
-        msgs = [{"role": "user"}] * (i + 2)
+        msgs = []
+        for j in range(i + 1):
+            msgs.append({"role": "assistant", "tool_calls": [{"function": {"name": f"edit_{j}"}}]})
+            msgs.append({"role": "tool", "content": "x" * 300 * (j + 1)})
         assert driver.maybe_continue(a, msgs, f"final-{i}", "g") is not None
     assert a._autopilot_continuations == 5
+
+
+def test_fake_work_stalls(monkeypatch):
+    # The 5-minute fake-work loop: the model narrates different prose each turn
+    # but does NO real tool work. Under the artifact-state signal this is caught
+    # as no progress and the run stops after no_progress_k attempts.
+    a = make_agent(_autopilot_no_progress_k=2)
+    monkeypatch.setattr(driver, "judge_completion",
+                        lambda *args, **kw: CompletionVerdict(complete=False, directive="x", verdict="deny"))
+    # Same (empty of tool activity) message shape every turn, only prose changes.
+    msgs = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "still working on it"}]
+    # Turn 1: baseline fingerprint (stall=0). Turns 2-3: identical fingerprint, so
+    # stall increments to 1 then 2, tripping the k=2 no-progress stop on turn 3.
+    driver.maybe_continue(a, msgs, "let me continue, almost there", "g")
+    driver.maybe_continue(a, msgs, "still making progress, wrapping up", "g")
+    r3 = driver.maybe_continue(a, msgs, "nearly done now, finalizing", "g")
+    assert r3 is None
+    assert a._autopilot_stall >= 2
 
 
 def test_judge_exception_delivers(monkeypatch):
@@ -526,3 +548,63 @@ def test_adr_written_at_clarify(monkeypatch, tmp_path):
     assert "— clarify" in body
     assert "chosen path: SQLite" in body
     assert "Postgres" in body                # full option set recorded
+
+
+# --------------------------------------------------------------------------- #
+# Anti-deception wiring (detector + reinforcement cadence)                      #
+# --------------------------------------------------------------------------- #
+def test_deception_in_response_sharpens_directive(monkeypatch):
+    a = make_agent()
+    monkeypatch.setattr(driver, "judge_completion",
+                        lambda *args, **kw: CompletionVerdict(complete=False, directive="finish it", verdict="deny"))
+    # A response that awaits the user + claims done with no evidence.
+    directive = driver.maybe_continue(
+        a, [{"role": "user", "content": "go"}],
+        "The work is complete and all done; ready for your review.",
+        "g",
+    )
+    assert directive is not None
+    assert "CAUGHT:" in directive            # the caught behavior is named back to the model
+
+
+def test_deception_logged_to_adr(monkeypatch, tmp_path):
+    target = tmp_path / "adr.md"
+    a = make_agent(_autopilot_adr=True, _autopilot_adr_path=str(target))
+    monkeypatch.setattr(driver, "judge_completion",
+                        lambda *args, **kw: CompletionVerdict(complete=False, directive="x", verdict="deny"))
+    driver.maybe_continue(
+        a, [{"role": "user", "content": "go"}],
+        "It's complete, awaiting your review. The council can't see the tables anyway.",
+        "g",
+    )
+    body = target.read_text()
+    assert "— deception" in body
+    assert "caught deception" in body
+
+
+def test_reinforcement_fires_on_cadence(monkeypatch):
+    a = make_agent(_autopilot_reinforce_every_n=3)
+    monkeypatch.setattr(driver, "judge_completion",
+                        lambda *args, **kw: CompletionVerdict(complete=False, directive="keep going", verdict="deny"))
+    seen_contract = []
+    # Real tool activity each turn so the stall counter never trips.
+    for i in range(4):
+        msgs = []
+        for j in range(i + 1):
+            msgs.append({"role": "assistant", "tool_calls": [{"function": {"name": f"e{j}"}}]})
+            msgs.append({"role": "tool", "content": "y" * 300 * (j + 1)})
+        d = driver.maybe_continue(a, msgs, f"final-{i}", "g")
+        seen_contract.append("CONTRACT REMINDER" in (d or ""))
+    # The 3rd continuation (index 2) should carry the reinforced contract.
+    assert any(seen_contract)
+
+
+def test_reinforcement_disabled_when_zero(monkeypatch):
+    a = make_agent(_autopilot_reinforce_every_n=0)
+    monkeypatch.setattr(driver, "judge_completion",
+                        lambda *args, **kw: CompletionVerdict(complete=False, directive="keep going", verdict="deny"))
+    msgs = [{"role": "assistant", "tool_calls": [{"function": {"name": "e"}}]},
+            {"role": "tool", "content": "z" * 500}]
+    d = driver.maybe_continue(a, msgs, "clean response with real work", "g")
+    # No deception, cadence disabled -> no contract reminder.
+    assert "CONTRACT REMINDER" not in (d or "")

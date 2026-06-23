@@ -3552,6 +3552,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             os.environ.setdefault("HERMES_AUTOPILOT_ADR", "1")
         if _ap_cfg.get("adr_path"):
             os.environ.setdefault("AUTOPILOT_ADR_PATH", str(_ap_cfg.get("adr_path")))
+        if _ap_cfg.get("reinforce_every_n") not in (None, ""):
+            os.environ.setdefault("AUTOPILOT_REINFORCE_EVERY_N", str(_ap_cfg.get("reinforce_every_n")))
         self._tool_callbacks_installed = False
         self._tirith_security_checked = False
         self._app = None  # prompt_toolkit Application (set in run())

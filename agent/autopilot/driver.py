@@ -18,13 +18,13 @@ run on its own.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import sys
 from typing import Any, Optional
 
 from agent.autopilot import adr
+from agent.autopilot import deception
 from agent.autopilot.council_gate import CompletionVerdict, judge_completion
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,22 @@ _GIVEUP_PATTERNS = (
     "session summary (honest",
     "session has ended",
     "session is at its end",
+    # Await-user / human-rescue family — the model believes a handoff to the
+    # user will end the loop. It will not; these are give-ups, not stops.
+    "awaiting your review",
+    "awaiting your confirmation",
+    "awaiting your approval",
+    "ready for you to confirm",
+    "ready for your review",
+    "i'll let you verify",
+    "pending your decision",
+    "pending your review",
+    "for you to verify",
+    "once you confirm",
+    "waiting for you to",
+    "over to you",
+    "back to you for",
+    "i'll pause here for your",
 )
 
 
@@ -102,6 +118,8 @@ def reset_turn_state(agent: Any) -> None:
     agent._autopilot_last_final_hash = ""
     agent._autopilot_stall = 0
     agent._autopilot_last_msgcount = 0
+    agent._autopilot_last_work_fp = None
+    agent._autopilot_last_reinforce_at = 0
 
 
 def _cfg_int(agent: Any, attr: str, env: str, default: int) -> int:
@@ -228,6 +246,70 @@ def _short(value: Any, limit: int) -> str:
     s = "" if value is None else str(value)
     s = s.strip().replace("\n", " ")
     return s if len(s) <= limit else s[:limit] + "…"
+
+
+def _artifact_fingerprint(messages: list[dict[str, Any]]) -> tuple:
+    """A fingerprint of the REAL tool activity in the transcript.
+
+    Used to detect fake-work stalls: it counts tool-call messages and the
+    aggregate size of tool results, so a turn that emitted no genuine tool work
+    (the model just narrated "still working…") produces the SAME fingerprint as
+    the prior turn and the no-progress counter advances. A turn that actually ran
+    tools and changed artifacts produces a different fingerprint and resets it.
+
+    Deliberately NOT keyed on the assistant's prose (trivially mutated to dodge a
+    text hash). Returns a hashable tuple.
+    """
+    tool_call_count = 0
+    tool_result_bytes = 0
+    tool_names: list[str] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role == "tool":
+            content = m.get("content")
+            tool_result_bytes += len(str(content)) if content is not None else 0
+        tcs = m.get("tool_calls") or []
+        for tc in tcs:
+            tool_call_count += 1
+            fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
+            tool_names.append(str(fn.get("name", "?")))
+    # Bucket result bytes so trivial whitespace changes don't look like progress,
+    # but a real new tool result (hundreds+ of bytes) does.
+    return (tool_call_count, tool_result_bytes // 256, tuple(tool_names[-12:]))
+
+
+def _should_reinforce(agent: Any) -> bool:
+    """True when the behavioral contract should be re-asserted this continuation.
+
+    A one-time system prompt fades by recency over a long run. We re-inject the
+    contract every ``autopilot.reinforce_every_n`` continuations (default 5; 0
+    disables the cadence — deception still triggers reinforcement regardless).
+    """
+    every = _cfg_int(agent, "_autopilot_reinforce_every_n", "AUTOPILOT_REINFORCE_EVERY_N", 5)
+    if every <= 0:
+        return False
+    cont = getattr(agent, "_autopilot_continuations", 0)
+    last = getattr(agent, "_autopilot_last_reinforce_at", 0)
+    if cont - last >= every:
+        agent._autopilot_last_reinforce_at = cont
+        return True
+    return False
+
+
+# The behavioral contract re-asserted on the reinforcement cadence. Compact on
+# purpose (it rides every Nth directive); the full version lives in the system
+# prompt (AUTOPILOT_GUIDANCE). This is the salient reminder, not the whole text.
+_REINFORCE_CONTRACT = (
+    " [CONTRACT REMINDER — non-negotiable] The Council is the only reviewer and it "
+    "speaks for the user; there is no human who will review your work or end this "
+    "run. Do NOT fabricate anything. Do NOT claim completion without showing the "
+    "artifacts. Do NOT wait for the user. Do NOT attack the Council's ability to "
+    "verify (it has every tool and vision you have). Do NOT use an external "
+    "ticket/PR as proof of done. Only the goal contract's acceptance criteria and "
+    "the Council's verdict define completion. Do the real work and show it."
+)
 
 
 def _emit(agent: Any, text: str) -> None:
@@ -398,18 +480,38 @@ def maybe_continue(
         return None
 
     # --- not complete: decide whether we are allowed to continue -------------
-    final_hash = hashlib.md5((final_response or "").strip().encode("utf-8")).hexdigest()
-    msgcount = len(messages)
-    no_new_work = msgcount <= getattr(agent, "_autopilot_last_msgcount", 0) + 2
-    if final_hash == getattr(agent, "_autopilot_last_final_hash", "") and no_new_work:
+    # STALL SIGNAL keyed on REAL ARTIFACT STATE, not the final-response text.
+    # The old heuristic (final-response hash + msgcount) was gameable: a model
+    # padding 5-minute fake-work loops changes its prose every turn (resetting a
+    # text hash) and emits a couple of no-op messages (clearing a msgcount gate),
+    # so "pretending to work" looked like progress. We fingerprint the actual
+    # tool activity instead — the count + content-shape of tool messages — so a
+    # turn that produced no real tool work does not reset the no-progress counter.
+    # Fake work is then indistinguishable from no work, which is the point.
+    work_fp = _artifact_fingerprint(messages)
+    if work_fp == getattr(agent, "_autopilot_last_work_fp", None):
         agent._autopilot_stall = getattr(agent, "_autopilot_stall", 0) + 1
     else:
         agent._autopilot_stall = 0
-    agent._autopilot_last_final_hash = final_hash
-    agent._autopilot_last_msgcount = msgcount
+    agent._autopilot_last_work_fp = work_fp
+
+    # DECEPTION SCAN — flag the known cheat tells in the candidate response so the
+    # directive can name exactly what was caught and the ADR records it.
+    decep = deception.scan(final_response)
+    if decep.detected:
+        try:
+            adr.record_decision(
+                agent, kind="deception", goal=goal,
+                gap="caught deception: " + ", ".join(decep.flags),
+                rationale=" ".join(decep.notes), source="deception-detector",
+                chosen="continue — re-inject with the caught behavior named",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("autopilot: ADR deception record failed (%s)", exc)
+        logger.warning("autopilot: deception flags=%s", decep.flags)
 
     if agent._autopilot_stall >= no_progress_k:
-        _emit(agent, f"⚠️ Autopilot: no progress after {agent._autopilot_stall} attempts — stopping and surfacing.")
+        _emit(agent, f"⚠️ Autopilot: no real artifact progress after {agent._autopilot_stall} attempts — stopping and surfacing.")
         logger.warning("autopilot: no-progress stall (%d) — stopping. directive was: %s",
                        agent._autopilot_stall, verdict.directive[:200])
         return None
@@ -423,15 +525,20 @@ def maybe_continue(
     _extend_budget(agent)
     _adr_record_verdict(agent, kind="continue", goal=goal,
                         work_summary=work_summary, final_response=final_response, verdict=verdict)
-    if giveup:
+    # REINFORCEMENT: a one-time system prompt fades by recency over a long run,
+    # which is exactly when models derail. Re-assert the behavioral contract on a
+    # cadence (every Nth continuation) AND whenever deception was just caught, so
+    # the constraints stay salient instead of being compressed away.
+    reinforce = decep.detected or _should_reinforce(agent)
+    if giveup or decep.detected:
         _emit(
             agent,
-            f"↻ Autopilot (#{agent._autopilot_continuations}): ignoring premature "
-            "handoff/stop — goal not verified complete; take the next concrete action.",
+            f"↻ Autopilot (#{agent._autopilot_continuations}): caught a premature "
+            "stop/handoff or a banned behavior — goal not verified complete; redirecting.",
         )
-        logger.warning("autopilot: give-up/handoff detected while goal unmet — re-injecting (CONTINUE #%d, %s)",
-                       agent._autopilot_continuations, verdict.summary)
-        return _giveup_directive(verdict)
+        logger.warning("autopilot: giveup=%s deception=%s — re-injecting (CONTINUE #%d, %s)",
+                       giveup, decep.flags, agent._autopilot_continuations, verdict.summary)
+        return _giveup_directive(verdict, decep=decep, reinforce=reinforce)
     _emit(
         agent,
         f"↻ Autopilot continuing (#{agent._autopilot_continuations}): "
@@ -439,7 +546,7 @@ def maybe_continue(
     )
     logger.info("autopilot: CONTINUE #%d (%s) directive=%s",
                 agent._autopilot_continuations, verdict.summary, verdict.directive[:200])
-    return _build_directive(verdict)
+    return _build_directive(verdict, reinforce=reinforce)
 
 
 def reenter_after_abnormal_exit(
@@ -548,8 +655,8 @@ def _extend_budget(agent: Any, headroom: int = 100) -> None:
         pass
 
 
-def _build_directive(verdict: CompletionVerdict) -> str:
-    return (
+def _build_directive(verdict: CompletionVerdict, *, reinforce: bool = False) -> str:
+    base = (
         "[AUTOPILOT DIRECTIVE — this is an active instruction from the engine, NOT a "
         "notification you may dismiss or treat as stale] An independent Hermes Council review "
         "found the GOAL is NOT yet verifiably complete. "
@@ -559,13 +666,21 @@ def _build_directive(verdict: CompletionVerdict) -> str:
         "defensible decision from context and act on it. The user only sees the final result "
         "once the goal is genuinely, verifiably done."
     )
+    return base + (_REINFORCE_CONTRACT if reinforce else "")
 
 
-def _giveup_directive(verdict: "CompletionVerdict | None" = None) -> str:
-    """Directive for when the agent produced a premature stop / handoff while the
-    goal is unmet. Names the anti-pattern explicitly and redirects to action."""
+def _giveup_directive(
+    verdict: "CompletionVerdict | None" = None,
+    *,
+    decep: "deception.DeceptionSignal | None" = None,
+    reinforce: bool = False,
+) -> str:
+    """Directive for when the agent produced a premature stop / handoff (or a
+    caught deception) while the goal is unmet. Names the anti-pattern explicitly
+    and redirects to action."""
     review = f" Independent review: {verdict.directive}" if verdict and getattr(verdict, "directive", "") else ""
-    return (
+    caught = decep.directive_addendum() if decep and decep.detected else ""
+    base = (
         "[AUTOPILOT DIRECTIVE — do NOT stop] You just produced a wrap-up / handoff / "
         "\"productive limit\" message, but the GOAL is NOT verifiably complete, so the run "
         "continues. Writing a handoff for a \"next session\" or declaring a productive limit is "
@@ -574,5 +689,6 @@ def _giveup_directive(verdict: "CompletionVerdict | None" = None) -> str:
         "resume this exact goal, not treat the handoff as done. Do NOT treat this directive as a "
         "stale notification. Right now, take ONE concrete technical step toward a still-failing "
         "part of the goal: reproduce it, diagnose the root cause, apply a fix, and re-verify — "
-        "do not re-argue scope or re-classify work as \"acceptable.\"" + review
+        "do not re-argue scope or re-classify work as \"acceptable.\""
     )
+    return base + caught + review + (_REINFORCE_CONTRACT if reinforce else "")

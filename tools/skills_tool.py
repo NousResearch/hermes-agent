@@ -499,12 +499,19 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     For paths like: ~/.hermes/skills/mlops/axolotl/SKILL.md -> "mlops"
     Also works for external skill dirs configured via skills.external_dirs.
     """
-    # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
-    # then fall back to external dirs from config.
-    dirs_to_check = [SKILLS_DIR]
+    # Walk local + platform + external. ADR-0001 makes the platform dir
+    # visible in profile mode; get_all_skills_dirs() handles that walk-up.
+    # Always start with the module-level SKILLS_DIR so existing tests that
+    # monkeypatch tools.skills_tool.SKILLS_DIR keep working — the patched
+    # value (typically a tmp_path) is the local root for the test, and
+    # get_all_skills_dirs() only sees the real ~/.hermes.
+    dirs_to_check: List[Path] = [SKILLS_DIR]
     try:
-        from agent.skill_utils import get_external_skills_dirs
-        dirs_to_check.extend(get_external_skills_dirs())
+        from agent.skill_utils import get_all_skills_dirs
+
+        for d in get_all_skills_dirs():
+            if d not in dirs_to_check:
+                dirs_to_check.append(d)
     except Exception:
         pass
     for skills_dir in dirs_to_check:
@@ -618,11 +625,22 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
-    dirs_to_scan = []
+    # Scan local + platform + external dirs (local takes precedence).
+    # Always start with the module-level SKILLS_DIR so existing tests that
+    # monkeypatch tools.skills_tool.SKILLS_DIR keep working. Then append
+    # whatever get_all_skills_dirs() returns (ADR-0001 adds the platform
+    # skills dir in profile mode). Dedup preserves the local-wins contract.
+    dirs_to_scan: List[Path] = []
     if SKILLS_DIR.exists():
         dirs_to_scan.append(SKILLS_DIR)
-    dirs_to_scan.extend(get_external_skills_dirs())
+    try:
+        from agent.skill_utils import get_all_skills_dirs
+
+        for d in get_all_skills_dirs():
+            if d not in dirs_to_scan and d.exists():
+                dirs_to_scan.append(d)
+    except Exception:
+        pass
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
@@ -980,11 +998,22 @@ def skill_view(
                     ensure_ascii=False,
                 )
 
-        # Build list of all skill directories to search
-        all_dirs = []
+        # Build list of all skill directories to search. Always start with
+        # the module-level SKILLS_DIR (monkeypatch-friendly local root for
+        # tests) and append whatever get_all_skills_dirs() returns. ADR-0001
+        # makes the platform skills dir visible in profile mode via that
+        # function; external_dirs from config.yaml follow.
+        all_dirs: List[Path] = []
         if SKILLS_DIR.exists():
             all_dirs.append(SKILLS_DIR)
-        all_dirs.extend(get_external_skills_dirs())
+        try:
+            from agent.skill_utils import get_all_skills_dirs
+
+            for d in get_all_skills_dirs():
+                if d not in all_dirs and d.exists():
+                    all_dirs.append(d)
+        except Exception:
+            pass
 
         if not all_dirs:
             return json.dumps(

@@ -360,11 +360,23 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
-        # Scan local dir first, then external dirs
-        dirs_to_scan = []
+        # Scan local + platform + external dirs (local takes precedence).
+        # Always start with the module-level SKILLS_DIR (monkeypatch-friendly
+        # local root for tests) and append whatever get_all_skills_dirs()
+        # returns. ADR-0001 makes the platform skills dir visible in
+        # profile mode via that function; external_dirs follow. Dedup
+        # preserves the local-wins contract.
+        from agent.skill_utils import get_all_skills_dirs
+
+        dirs_to_scan: list = []
         if SKILLS_DIR.exists():
             dirs_to_scan.append(SKILLS_DIR)
-        dirs_to_scan.extend(get_external_skills_dirs())
+        try:
+            for d in get_all_skills_dirs():
+                if d not in dirs_to_scan and d.exists():
+                    dirs_to_scan.append(d)
+        except Exception:
+            pass
 
         for scan_dir in dirs_to_scan:
             for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
@@ -561,6 +573,89 @@ def build_skill_invocation_message(
     )
 
 
+
+
+def _log_stub_fallback(
+    skill_name: str,
+    skill_dir: "Path | None",
+    loaded_skill: dict,
+) -> None:
+    """Emit a WARN log when a skill was loaded from a platform-level stub.
+
+    The check has two layers:
+
+    1. **Explicit marker** (``metadata.hermes.stub: true``) — preferred.
+       The stub author declares their intent, so the signal is unambiguous
+       and tests can flip the marker without changing file size heuristics.
+    2. **Path heuristic** (last resort) — if the resolved skill_dir is
+       inside ``<platform_root>/skills/`` but NOT inside the active
+       profile's skills/ dir, AND the SKILL.md is suspiciously small
+       (under 4 KB), assume stub. This catches unannotated stubs that
+       predate the marker convention.
+
+    A real skill (with full references/, scripts/, etc.) is almost always
+    >4 KB and has full body content; the heuristic is a defensive backstop,
+    not a primary signal.
+    """
+    if not skill_dir:
+        return
+    try:
+        from agent.skill_utils import parse_frontmatter
+        from hermes_constants import get_default_hermes_root
+
+        # Layer 1: explicit marker
+        raw = str(loaded_skill.get("raw_content") or "")
+        if not raw:
+            # Some loaders strip raw_content; fall back to reading the file
+            try:
+                raw = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+            except Exception:
+                raw = ""
+        if raw:
+            frontmatter, _ = parse_frontmatter(raw)
+            hermes_meta = (frontmatter.get("metadata") or {}).get("hermes") or {}
+            if isinstance(hermes_meta, dict) and hermes_meta.get("stub") is True:
+                canonical = hermes_meta.get("canonical_source") or "<unspecified>"
+                alias = hermes_meta.get("stub_alias_of")
+                msg = (
+                    f"[Skill stub] Loaded platform-level stub for '{skill_name}' "
+                    f"from {skill_dir}. Canonical content at {canonical}."
+                )
+                if alias:
+                    msg += f" This name is an alias for '{alias}'."
+                logging.getLogger(__name__).warning(msg)
+                return
+
+        # Layer 2: path heuristic — small SKILL.md under platform/skills/
+        try:
+            platform_skills = (get_default_hermes_root() / "skills").resolve()
+            skill_dir_resolved = skill_dir.resolve()
+        except Exception:
+            return
+        try:
+            skill_dir_resolved.relative_to(platform_skills)
+        except ValueError:
+            return  # not under the platform dir → not a platform stub
+        skill_md = skill_dir / "SKILL.md"
+        try:
+            size = skill_md.stat().st_size
+        except OSError:
+            size = 0
+        if 0 < size < 4096:
+            logging.getLogger(__name__).warning(
+                "[Skill stub heuristic] '%s' resolved under platform skills dir "
+                "with SKILL.md size %d bytes (<4 KB) and no explicit stub marker. "
+                "Add metadata.hermes.stub: true to suppress this warning, or "
+                "install the canonical skill into the active profile. "
+                "Resolved dir: %s",
+                skill_name,
+                size,
+                skill_dir,
+            )
+    except Exception:
+        pass  # Stub logging is best-effort; never block skill loading
+
+
 def build_preloaded_skills_prompt(
     skill_identifiers: list[str],
     task_id: str | None = None,
@@ -587,7 +682,19 @@ def build_preloaded_skills_prompt(
 
         loaded_skill, skill_dir, skill_name = loaded
 
-        # Track active usage for Curator lifecycle management (#17782)
+        # Stub-fallback logging (ADR-0001). When the dispatcher falls back to
+        # a platform-level stub (metadata.hermes.stub: true), emit a single
+        # WARN-level line so operators can see when a task is loading a stub
+        # instead of the canonical skill content. The stub itself says where
+        # to find the real content so operators can install it.
+        try:
+            _log_stub_fallback(skill_name, skill_dir, loaded_skill)
+        except Exception:
+            pass  # Non-critical — stub detection is best-effort
+
+        # Track active usage for Curator lifecycle management (#17782).
+        # Stubs ARE tracked — the "stub was used" signal is operator-useful
+        # because it correlates with profiles that lack the canonical skill.
         try:
             from tools.skill_usage import bump_use
             bump_use(skill_name)

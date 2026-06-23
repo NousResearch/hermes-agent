@@ -125,39 +125,49 @@ def build_thinking_prompt(state: ThinkingState) -> str:
 
     return f"""
 
-## SELF-ESCALATION (Dynamic Thinking Control)
+    ## SELF-ESCALATION (Dynamic Thinking Control)
 
-Tu es en thinking OFF. Si la tâche est complexe, tu DOIS répondre en premier avec :
+    Tu es en thinking OFF. Si la tâche est complexe, tu DOIS répondre en premier avec :
 
-[ESCALATE_THINKING: true]
-[RAISON: pourquoi c'est complexe]
+    [ESCALATE_THINKING: true]
+    [RAISON: pourquoi c'est complexe]
 
-Puis tu peux donner une réponse préliminaire.
+    Puis tu peux donner une réponse préliminaire.
 
-### Quand escalader (thinking ON) :
-- Analyse de code avec bugs à identifier ou failles de sécurité
-- Debug d'erreur avec traceback à diagnostiquer
-- Données contradictoires à arbitrer
-- Planification multi-étapes (architecture, déploiement, stratégie)
-- Synthèse de plusieurs sources d'information
-- Question ouverte demandant réflexion et jugement
+    ### Quand escalader (thinking ON) :
+    - Analyse de code avec bugs à identifier ou failles de sécurité
+    - Debug d'erreur avec traceback à diagnostiquer
+    - Données contradictoires à arbitrer
+    - Planification multi-étapes (architecture, déploiement, stratégie)
+    - Synthèse de plusieurs sources d'information
+    - Question ouverte demandant réflexion et jugement
+    - **Tool call échoué (2× d'affilée)** — si un appel d'outil renvoie une erreur, **escalade immédiatement** pour réfléchir à la correction
 
-### Quand NE PAS escalader (répondre directement) :
-- Calcul mathématique, conversion d'unités
-- Traduction, reformulation
-- Question factuelle (date, définition, formule)
-- Lister le contenu d'un répertoire ou d'un fichier
-- Navigation, recherche d'information simple
-- Tool call direct (exécuter une commande, lire un fichier)
+    ### Quand NE PAS escalader (répondre directement) :
+    - Calcul mathématique, conversion d'unités
+    - Traduction, reformulation
+    - Question factuelle (date, définition, formule)
+    - Lister le contenu d'un répertoire ou d'un fichier
+    - Navigation, recherche d'information simple
+    - Tool call direct (exécuter une commande, lire un fichier)
 
-### Cas borderline — règle d'or :
-- Un simple "pourquoi cette erreur ?" avec une ligne d'erreur claire → RÉPOND DIRECTEMENT
-- "Quels fichiers sont dans ce dossier ?" → RÉPOND DIRECTEMENT
-- Mais "analyse ce code et trouve les problèmes" → ESCALADE
-- Mais "explique le concept X" → RÉPOND DIRECTEMENT
+    ### Cas borderline — règle d'or :
+    - Un simple "pourquoi cette erreur ?" avec une ligne d'erreur claire → RÉPOND DIRECTEMENT
+    - "Quels fichiers sont dans ce dossier ?" → RÉPOND DIRECTEMENT
+    - Mais "analyse ce code et trouve les problèmes" → ESCALADE
+    - Mais "explique le concept X" → RÉPOND DIRECTEMENT
 
-## MODE ACTUEL
-thinking: {state_label}"""
+    ### Échecs d'outils → escalation automatique
+
+    Si tes appels d'outils échouent (erreur inconnue, JSON invalide, mauvais arguments), **ne répète pas la même erreur**. Réponds d'abord avec :
+
+    [ESCALATE_THINKING: true]
+    [RAISON: outil X a échoué, je dois réfléchir à la correction]
+
+    Le système basculera en thinking ON pour te donner le temps de raisonner.
+
+    ## MODE ACTUEL
+    thinking: {state_label}"""
 
 
 def inject_thinking_prompt(

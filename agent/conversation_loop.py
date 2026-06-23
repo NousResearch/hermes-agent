@@ -3880,6 +3880,20 @@ def run_conversation(
                     # Track retries for invalid tool calls
                     agent._invalid_tool_retries += 1
 
+                    # Auto-escalation: force thinking ON after consecutive tool errors
+                    if (agent._invalid_tool_retries >= 2
+                            and _thinking_state is not None
+                            and _thinking_state.enabled
+                            and not _thinking_state.active):
+                        try:
+                            from agent.self_escalation import escalate as _escalate_thinking
+                            if _escalate_thinking(_thinking_state):
+                                agent._buffer_vprint(
+                                    "🧠 Auto-escalation: tool errors detected → switching to thinking ON..."
+                                )
+                        except Exception as _auto_se:
+                            logger.debug("[self-escalation] Auto-escalation error: %s", _auto_se)
+
                     # Return helpful error to model — model can agent-correct next turn
                     available = ", ".join(sorted(agent.valid_tool_names))
                     invalid_name = invalid_tool_calls[0]
@@ -3991,6 +4005,20 @@ def run_conversation(
 
                     # Track retries for invalid JSON arguments
                     agent._invalid_json_retries += 1
+
+                    # Auto-escalation: force thinking ON after consecutive JSON errors
+                    if (agent._invalid_json_retries >= 2
+                            and _thinking_state is not None
+                            and _thinking_state.enabled
+                            and not _thinking_state.active):
+                        try:
+                            from agent.self_escalation import escalate as _escalate_thinking
+                            if _escalate_thinking(_thinking_state):
+                                agent._buffer_vprint(
+                                    "🧠 Auto-escalation: JSON errors detected → switching to thinking ON..."
+                                )
+                        except Exception as _auto_se:
+                            logger.debug("[self-escalation] Auto-escalation error: %s", _auto_se)
 
                     tool_name, error_msg = invalid_json_args[0]
                     agent._buffer_vprint(f"⚠️  Invalid JSON in tool call arguments for '{tool_name}': {error_msg}")

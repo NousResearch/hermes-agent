@@ -3114,8 +3114,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 inbound_type = MessageType.COMMAND
 
         # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
-        if inbound_type == MessageType.TEXT and not text and not media_urls:
-            logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
+        # Also catches non-TEXT types (sticker, unrecognised message, failed image parse,
+        # etc.) that yield neither text nor media — these would produce a blank
+        # ContentBlock and cause HTTP 400 "text field is blank" errors from Bedrock/Anthropic.
+        if not text and not media_urls:
+            logger.debug("[Feishu] Ignoring empty message id=%s (type=%s)", message_id, inbound_type.value)
             return
 
         if inbound_type != MessageType.COMMAND:

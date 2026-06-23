@@ -9,6 +9,7 @@ Verifies that the agent cache correctly:
 - Preserves frozen system prompt across turns
 """
 
+import os
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -375,7 +376,9 @@ class TestExtractCacheBustingConfig:
         assert first["honcho.user_peer_aliases"] == [("123", "eri")]
         assert parse_calls == [config_path]
 
+        before_mtime_ns = config_path.stat().st_mtime_ns
         config_path.write_text("{\n  \"changed\": true\n}")
+        os.utime(config_path, ns=(before_mtime_ns + 1_000_000_000, before_mtime_ns + 1_000_000_000))
         third = GatewayRunner._extract_honcho_cache_busting_config()
 
         assert third == first
@@ -677,7 +680,7 @@ class TestAgentCacheBoundedGrowth:
         """_sweep_idle_cached_agents removes agents idle past the TTL."""
         from gateway import run as gw_run
 
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.05)
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 1.0)
         runner = self._bounded_runner()
         runner._cleanup_agent_resources = MagicMock()
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "scrapling-feeds"
@@ -59,7 +59,7 @@ def test_parse_rss_extracts_entry():
 def test_filter_entries_since():
     rss_parse = _load_module("rss_parse")
     entries = rss_parse.parse_feed_xml(SAMPLE_RSS)
-    since = datetime.now(timezone.utc) - timedelta(hours=48)
+    since = entries[0]["published_dt"] - timedelta(hours=1)
     filtered = rss_parse.filter_entries_since(entries, since=since, max_items=5)
     assert len(filtered) == 1
 

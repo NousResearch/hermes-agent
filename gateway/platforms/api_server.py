@@ -869,6 +869,23 @@ class APIServerAdapter(BasePlatformAdapter):
         # (the /v1/runs path tracks its own in-flight set via _run_streams).
         self._inflight_agent_runs: int = 0
 
+    def _ensure_response_store(self) -> ResponseStore:
+        store = getattr(self, "_response_store", None)
+        if store is None:
+            store = ResponseStore()
+            self._response_store = store
+        return store
+
+    def _close_response_store(self) -> None:
+        store = getattr(self, "_response_store", None)
+        if store is None:
+            return
+        self._response_store = None
+        try:
+            store.close()
+        except Exception:
+            logger.debug("Failed to close API response store", exc_info=True)
+
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
         """Normalize configured CORS origins into a stable tuple."""

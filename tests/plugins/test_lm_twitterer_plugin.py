@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 import sys
 import time
@@ -471,7 +472,7 @@ def test_post_accepts_explicit_text_and_media_paths_for_cookie_upload(tmp_path, 
     monkeypatch.setattr(core, "_llm_generate", _boom)
     monkeypatch.setattr(core, "_twitter_client", lambda cfg: Client())
     monkeypatch.setattr(core, "_upload_media_with_cookies", lambda cfg, path: uploaded.append(path.name) or "12345")
-    monkeypatch.setattr(core, "_safe_post_create_tweet", lambda post_api, *, tweet_text, media_ids=None, **kwargs: Created())
+    monkeypatch.setattr(core, "_create_tweet_with_cookies", lambda cfg_arg, *, tweet_text, media_ids=None, **kwargs: Created())
 
     result = core.post(
         "",
@@ -486,6 +487,81 @@ def test_post_accepts_explicit_text_and_media_paths_for_cookie_upload(tmp_path, 
     assert result["url"] == "https://x.com/i/web/status/999"
     assert result["media_ids"] == ["12345"]
     assert uploaded == ["clip.mp4"]
+
+
+def test_media_paths_resolve_relative_names_under_plugin_media_dir(tmp_path):
+    plugin = load_plugin()
+    core = plugin.core
+    cfg = make_settings(core, tmp_path)
+    media = cfg.media_dir / "clip.mp4"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"fake-mp4")
+
+    assert core._coerce_media_paths(["clip.mp4"], cfg) == [media.resolve()]
+
+
+def test_create_tweet_with_cookies_uses_raw_graphql_without_optional_placeholders(tmp_path, monkeypatch):
+    plugin = load_plugin()
+    core = plugin.core
+    cfg = make_settings(core, tmp_path, auth_token="auth", ct0="csrf")
+    captured = {}
+
+    class Response:
+        def __init__(self, body: bytes):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return self.body
+
+    placeholder = {
+        "CreateTweet": {
+            "queryId": "qid123",
+            "variables": {
+                "tweet_text": "template",
+                "attachment_url?": "https://x.com/template/status/1",
+                "semantic_annotation_ids": [],
+                "media": {
+                    "media_entities": [],
+                    "media_entities?": [{"media_id": "template", "tagged_users": ["1"]}],
+                    "possibly_sensitive": True,
+                },
+            },
+            "features": {"good_feature": True, "draft_feature?": False},
+        }
+    }
+
+    def fake_urlopen(request, timeout=None):
+        if isinstance(request, str):
+            return Response(json.dumps(placeholder).encode())
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return Response(
+            b'{"data":{"create_tweet":{"tweet_results":{"result":{"rest_id":"42"}}}}}'
+        )
+
+    monkeypatch.setattr(core.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(core, "_twitter_web_headers", lambda cfg_arg, content_type="application/json": {"Content-Type": content_type})
+
+    created = core._create_tweet_with_cookies(cfg, tweet_text="hello", media_ids=["12345"])
+
+    assert core._tweet_url_from_result(created) == "https://x.com/i/web/status/42"
+    assert captured["url"] == "https://x.com/i/api/graphql/qid123/CreateTweet"
+    variables = captured["body"]["variables"]
+    assert variables["tweet_text"] == "hello"
+    assert variables["attachment_url"] is None
+    assert variables["media"] == {
+        "media_entities": [{"media_id": "12345", "tagged_users": []}],
+        "possibly_sensitive": False,
+    }
+    assert "attachment_url?" not in variables
+    assert "media_entities?" not in variables["media"]
+    assert "draft_feature?" not in captured["body"]["features"]
 
 
 def test_post_rejects_media_paths_outside_plugin_media_dir(tmp_path):

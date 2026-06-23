@@ -4534,8 +4534,10 @@ class TestStatusRemoteGateway:
     def test_status_falls_back_to_remote_probe(self, monkeypatch):
         """When local PID check fails and remote probe succeeds, gateway shows running."""
         import hermes_cli.web_server as ws
+        import hermes_cli.gateway as gateway_cli
 
         monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [])
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
         monkeypatch.setattr(
@@ -4590,8 +4592,10 @@ class TestStatusRemoteGateway:
     def test_status_remote_probe_not_attempted_when_no_url(self, monkeypatch):
         """When GATEWAY_HEALTH_URL is unset, no probe is attempted."""
         import hermes_cli.web_server as ws
+        import hermes_cli.gateway as gateway_cli
 
         monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [])
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
 
@@ -4604,8 +4608,10 @@ class TestStatusRemoteGateway:
     def test_status_remote_running_null_pid(self, monkeypatch):
         """Remote gateway running but PID not in response — pid should be None."""
         import hermes_cli.web_server as ws
+        import hermes_cli.gateway as gateway_cli
 
         monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [])
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
         monkeypatch.setattr(
@@ -4702,8 +4708,10 @@ class TestGatewayBusyReadout:
         """Gateway down (no PID, no remote probe): busy/drainable False,
         active_agents 0 — never a spurious busy that would wedge NAS."""
         import hermes_cli.web_server as ws
+        import hermes_cli.gateway as gateway_cli
 
         monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [])
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
 
@@ -4718,8 +4726,10 @@ class TestGatewayBusyReadout:
         read as busy when the live PID probe says the gateway is down. Liveness
         wins over the file."""
         import hermes_cli.web_server as ws
+        import hermes_cli.gateway as gateway_cli
 
         monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [])
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
         # File says running with active turns, but get_running_pid()==None and
         # get_runtime_status_running_pid finds no live PID → gateway_running False.

@@ -467,7 +467,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         cfg.extra.get("phone_number_id") and cfg.extra.get("access_token")
     ),
     Platform.SIGNAL: lambda cfg: bool(cfg.extra.get("http_url")),
-    Platform.API_SERVER: lambda cfg: True,
+    Platform.API_SERVER: lambda cfg: bool(cfg.extra.get("key")),
     Platform.WEBHOOK: lambda cfg: True,
     Platform.MSGRAPH_WEBHOOK: lambda cfg: bool(
         str(cfg.extra.get("client_state") or "").strip()
@@ -1921,6 +1921,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 logger.debug("unknown platform name %r: %s", entry.name, e)
                 continue
             existing_cfg = config.platforms.get(platform)
+            if existing_cfg is None:
+                existing_cfg = PlatformConfig()
+                config.platforms[platform] = existing_cfg
             # Respect an explicit ``enabled: false`` (YAML / gateway.json /
             # dashboard PUT).  ``_enabled_explicit`` is set in
             # load_gateway_config() (via _merge_platform_map / the shared-key
@@ -1957,7 +1960,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             # explicitly configured in YAML / env (existing_cfg with
             # enabled=True means the user wrote it themselves or another
             # env-var bridge enabled it — keep that decision).
-            if existing_cfg is None or not existing_cfg.enabled:
+            if not existing_cfg.enabled:
                 if entry.is_connected is not None:
                     try:
                         # Probe with ``enabled=True`` since we're asking
@@ -1967,15 +1970,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                         # ``config.enabled`` being False, which on the
                         # default ``PlatformConfig()`` would fail the
                         # gate even with proper env vars set.
-                        if existing_cfg is not None:
-                            probe_cfg = existing_cfg
-                            if not probe_cfg.enabled:
-                                probe_cfg = PlatformConfig(
-                                    enabled=True,
-                                    extra=dict(probe_cfg.extra or {}),
-                                )
-                        else:
-                            probe_cfg = PlatformConfig(enabled=True)
+                        probe_cfg = existing_cfg
+                        if not probe_cfg.enabled:
+                            probe_cfg = PlatformConfig(
+                                enabled=True,
+                                extra=dict(probe_cfg.extra or {}),
+                            )
                         if isinstance(seed_for_probe, dict) and seed_for_probe:
                             # Don't mutate ``existing_cfg``; the probe gets
                             # a transient view with env-seeded extras layered
@@ -2019,8 +2019,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             except Exception as e:
                 logger.debug("check_fn for %s raised: %s", entry.name, e)
                 continue
-            if platform not in config.platforms:
-                config.platforms[platform] = PlatformConfig()
             config.platforms[platform].enabled = True
             # Commit env-seeded extras onto the now-enabled platform.
             # We've already called ``env_enablement_fn`` above (for the

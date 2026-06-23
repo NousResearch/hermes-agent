@@ -12780,6 +12780,20 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
 _NON_BUNDLED_PLUGIN_SOURCES = frozenset({"user", "project"})
 
 
+def _dashboard_plugin_config_identity(plugin_dir: Path, dashboard_name: str) -> tuple[str, str]:
+    plugin_yaml = plugin_dir / "plugin.yaml"
+    config_name = dashboard_name
+    if plugin_yaml.exists():
+        try:
+            data = yaml.safe_load(plugin_yaml.read_text(encoding="utf-8")) or {}
+            raw_name = data.get("name")
+            if isinstance(raw_name, str) and raw_name.strip():
+                config_name = raw_name.strip()
+        except Exception as exc:
+            _log.warning("Bad plugin manifest %s: %s", plugin_yaml, exc)
+    return config_name, plugin_dir.name
+
+
 def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
@@ -12862,16 +12876,22 @@ def _discover_dashboard_plugins() -> list:
                 raw_api = data.get("api")
                 dashboard_dir = child / "dashboard"
                 safe_api = _safe_plugin_api_relpath(raw_api, dashboard_dir=dashboard_dir)
-                if source in _NON_BUNDLED_PLUGIN_SOURCES and safe_api:
+                if source == "project" and safe_api:
                     _log.warning(
                         "Plugin %s: refusing dashboard backend api=%s "
-                        "(only bundled plugins may auto-import Python "
-                        "backend routes; non-bundled plugins may extend "
+                        "(project plugins may not auto-import Python "
+                        "backend routes; they may extend "
                         "the dashboard with static UI assets only)",
                         name, safe_api,
                     )
                     safe_api = None
                     raw_api = None
+                if source == "user" and safe_api:
+                    from hermes_cli.plugins import is_plugin_enabled_by_config
+
+                    if not is_plugin_enabled_by_config(config_name, key=config_key):
+                        safe_api = None
+                        raw_api = None
                 if raw_api and safe_api is None:
                     _log.warning(
                         "Plugin %s: refusing unsafe api path %r (must be a "
@@ -13312,7 +13332,7 @@ def _mount_plugin_api_routes():
         if not api_file_name:
             continue
         source = plugin.get("source")
-        if source in _NON_BUNDLED_PLUGIN_SOURCES:
+        if source == "project":
             # Backend Python auto-import is reserved for bundled plugins; user
             # and project plugins extend the dashboard with static UI assets
             # only (GHSA-5qr3-c538-wm9j / #43719). Defence-in-depth: discovery

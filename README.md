@@ -215,6 +215,8 @@ pip install -e ".[all,dev]"
 python -m hermes_cli.main setup
 ```
 
+For the Windows installer path, use `scripts/install.ps1`.
+
 Run the main surfaces:
 
 ```powershell

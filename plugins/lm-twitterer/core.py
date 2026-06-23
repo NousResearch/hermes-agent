@@ -810,6 +810,9 @@ def _format_thread(thread: list[dict[str, str]]) -> str:
 
 
 def _tweet_url_from_result(result: Any) -> str:
+    if isinstance(result, dict):
+        rest_id = _tweet_id_from_mapping(result)
+        return f"https://x.com/i/web/status/{rest_id}" if rest_id else ""
     for path in (("data", "create_tweet"), ("data", "data", "create_tweet")):
         try:
             created = result
@@ -822,6 +825,109 @@ def _tweet_url_from_result(result: Any) -> str:
         except Exception:
             continue
     return ""
+
+
+def _tweet_id_from_mapping(payload: dict[str, Any]) -> str:
+    """Extract a created tweet id from raw GraphQL CreateTweet JSON."""
+    paths = (
+        ("data", "create_tweet", "tweet_results", "result", "rest_id"),
+        ("data", "data", "create_tweet", "tweet_results", "result", "rest_id"),
+        ("create_tweet", "tweet_results", "result", "rest_id"),
+    )
+    for path in paths:
+        cur: Any = payload
+        for part in path:
+            if not isinstance(cur, dict):
+                cur = None
+                break
+            cur = cur.get(part)
+        if cur:
+            return str(cur)
+    return ""
+
+
+def _strip_optional_placeholder_keys(value: Any) -> Any:
+    """Remove twitter-openapi placeholder-only keys ending in '?'."""
+    if isinstance(value, dict):
+        return {
+            key: _strip_optional_placeholder_keys(item)
+            for key, item in value.items()
+            if not str(key).endswith("?")
+        }
+    if isinstance(value, list):
+        return [_strip_optional_placeholder_keys(item) for item in value]
+    return value
+
+
+def _create_tweet_with_cookies(
+    cfg: Settings,
+    *,
+    tweet_text: str,
+    media_ids: Iterable[str] | None = None,
+    in_reply_to_tweet_id: str | None = None,
+) -> dict[str, Any]:
+    """Create a tweet via X GraphQL without x-client-transaction scraping.
+
+    twitter-openapi-python currently initializes its client by scraping X's
+    on-demand JavaScript bundle for a transaction-id generator. X changes that
+    page frequently; when the regex fails, client construction raises
+    ``AttributeError: 'NoneType' object has no attribute 'group'`` before a post
+    can be attempted. Posting does not need that initialization step, so this
+    path reuses the same public placeholder query id/features but sends the
+    authenticated GraphQL request directly with the configured cookies.
+    """
+    from twitter_openapi_python.client import TwitterOpenapiPython
+
+    client_meta = TwitterOpenapiPython()
+    with urllib.request.urlopen(
+        client_meta.placeholder_url.format(hash=client_meta.hash),
+        timeout=30,
+    ) as response:  # nosec B310 - fixed upstream placeholder URL.
+        placeholder = json.loads(response.read().decode("utf-8", errors="replace"))
+    flag = placeholder.get("CreateTweet") or {}
+    query_id = str(flag.get("queryId") or "").strip()
+    if not query_id:
+        raise RuntimeError("Could not resolve X CreateTweet query id")
+
+    variables = _strip_optional_placeholder_keys(flag.get("variables") or {})
+    features = _strip_optional_placeholder_keys(flag.get("features") or {})
+    variables["tweet_text"] = tweet_text
+    variables["attachment_url"] = None
+    variables["semantic_annotation_ids"] = variables.get("semantic_annotation_ids") or []
+    variables["dark_request"] = False
+    variables["reply"] = None
+    if in_reply_to_tweet_id:
+        variables["reply"] = {
+            "in_reply_to_tweet_id": str(in_reply_to_tweet_id),
+            "exclude_reply_user_ids": [],
+        }
+    media_id_list = [str(media_id) for media_id in (media_ids or []) if str(media_id).strip()]
+    variables["media"] = {
+        "media_entities": [
+            {"media_id": media_id, "tagged_users": []} for media_id in media_id_list
+        ],
+        "possibly_sensitive": False,
+    }
+    body = json.dumps(
+        {"variables": variables, "features": features, "queryId": query_id},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"https://x.com/i/api/graphql/{query_id}/CreateTweet",
+        data=body,
+        headers=_twitter_web_headers(cfg, content_type="application/json"),
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:  # nosec B310 - fixed X API URL.
+            payload = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        payload = exc.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError(f"CreateTweet HTTP {exc.code}: {payload}") from exc
+    data = json.loads(payload or "{}")
+    if isinstance(data, dict) and data.get("errors") and not _tweet_id_from_mapping(data):
+        raise RuntimeError(f"CreateTweet returned errors: {data.get('errors')}")
+    return data
 
 
 def _safe_post_create_tweet(
@@ -889,6 +995,8 @@ def _coerce_media_paths(
     paths: list[Path] = []
     for raw in media_paths or []:
         path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = allowed_root / path
         try:
             path = path.resolve(strict=True)
         except FileNotFoundError as exc:
@@ -1001,7 +1109,10 @@ def _upload_media_with_cookies(cfg: Settings, path: Path) -> str:
 
 def _post_with_cookie_media(cfg: Settings, post_api: Any, tweet_text: str, media_paths: list[Path]) -> tuple[str, list[str]]:
     media_ids = [_upload_media_with_cookies(cfg, path) for path in media_paths]
-    created = _safe_post_create_tweet(post_api, tweet_text=tweet_text, media_ids=media_ids)
+    try:
+        created = _create_tweet_with_cookies(cfg, tweet_text=tweet_text, media_ids=media_ids)
+    except Exception:
+        created = _safe_post_create_tweet(post_api, tweet_text=tweet_text, media_ids=media_ids)
     return _tweet_url_from_result(created), media_ids
 
 
@@ -1057,11 +1168,9 @@ def post(
         return result
     if media:
         try:
-            client = _twitter_client(cfg)
-            post_api = client.get_post_api()
-            url, media_ids = _post_with_cookie_media(cfg, post_api, tweet_text, media)
-            if not url:
-                url = _find_recent_tweet_url_by_text(client, cfg, tweet_text)
+            media_ids = [_upload_media_with_cookies(cfg, path) for path in media]
+            created = _create_tweet_with_cookies(cfg, tweet_text=tweet_text, media_ids=media_ids)
+            url = _tweet_url_from_result(created)
         except Exception as exc:
             result.update({"ok": False, "posted": False, "error": str(exc)})
             _append_log({"action": "post", **result}, cfg)
@@ -1070,10 +1179,13 @@ def post(
         _append_log({"action": "post", **result}, cfg)
         _remember_generated_post(tweet_text, cfg, dry_run=False, topic=topic)
         return result
-    client = _twitter_client(cfg)
-    post_api = client.get_post_api()
-    created = _safe_post_create_tweet(post_api, tweet_text=tweet_text)
-    url = _tweet_url_from_result(created)
+    try:
+        created = _create_tweet_with_cookies(cfg, tweet_text=tweet_text)
+        url = _tweet_url_from_result(created)
+    except Exception as exc:
+        result.update({"ok": False, "posted": False, "error": str(exc)})
+        _append_log({"action": "post", **result}, cfg)
+        return result
     result.update({"posted": True, "url": url})
     _append_log({"action": "post", **result}, cfg)
     _remember_generated_post(tweet_text, cfg, dry_run=False, topic=topic)

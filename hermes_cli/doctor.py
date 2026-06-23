@@ -824,11 +824,21 @@ def run_doctor(args):
                 or provider_policy_id == "custom"
                 or provider_policy_id.startswith("custom:")
             )
+            # Fireworks native model IDs use a multi-segment path shape such as
+            # ``accounts/fireworks/models/qwen3p7-plus``. That contains slashes,
+            # but it is not an aggregator-style ``vendor/model`` slug and is
+            # valid for the native Fireworks provider.
+            is_native_fireworks_model_id = (
+                provider_policy_id == "fireworks"
+                and default_model.startswith("accounts/")
+                and "/models/" in default_model
+            )
             if (
                 default_model
                 and "/" in default_model
                 and provider_policy_id
                 and not provider_accepts_vendor_slug
+                and not is_native_fireworks_model_id
             ):
                 check_warn(
                     f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",

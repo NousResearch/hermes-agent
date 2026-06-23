@@ -540,6 +540,62 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
         )
 
 
+def test_run_doctor_accepts_native_fireworks_account_model_ids(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text("FIREWORKS_API_KEY=***\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: fireworks\n"
+        "  default: accounts/fireworks/models/qwen3p7-plus\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setitem(
+            _auth_mod.PROVIDER_REGISTRY,
+            "fireworks",
+            _auth_mod.ProviderConfig(
+                id="fireworks",
+                name="Fireworks AI",
+                auth_type="api_key",
+                api_key_env_vars=("FIREWORKS_API_KEY",),
+            ),
+        )
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_auth_status", lambda provider: {"configured": True})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'fireworks' is not a recognised provider" not in out
+    assert "model.provider 'fireworks' is unknown" not in out
+    assert (
+        "model.default 'accounts/fireworks/models/qwen3p7-plus' uses a vendor/model slug "
+        "but provider is 'fireworks'"
+        not in out
+    )
+    assert "Either set model.provider to 'openrouter', or drop the vendor prefix." not in out
+
+
 def test_run_doctor_accepts_vendor_slugs_for_named_custom_provider(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

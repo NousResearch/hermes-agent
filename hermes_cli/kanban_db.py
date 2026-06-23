@@ -919,6 +919,8 @@ class Task:
     tenant: Optional[str]
     branch_name: Optional[str] = None
     project_id: Optional[str] = None
+    workspace_base_ref: Optional[str] = None
+    workspace_base_commit: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
@@ -1005,6 +1007,12 @@ class Task:
             workspace_path=row["workspace_path"],
             branch_name=row["branch_name"] if "branch_name" in keys else None,
             project_id=row["project_id"] if "project_id" in keys else None,
+            workspace_base_ref=(
+                row["workspace_base_ref"] if "workspace_base_ref" in keys else None
+            ),
+            workspace_base_commit=(
+                row["workspace_base_commit"] if "workspace_base_commit" in keys else None
+            ),
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
@@ -1174,6 +1182,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- the task's worktree is anchored under the project's primary repo with a
     -- deterministic branch name instead of a random wt/<task-id> fallback.
     project_id           TEXT,
+    workspace_base_ref   TEXT,
+    workspace_base_commit TEXT,
     claim_lock           TEXT,
     claim_expires        INTEGER,
     tenant               TEXT,
@@ -1926,6 +1936,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "branch_name", "branch_name TEXT")
     if "project_id" not in cols:
         _add_column_if_missing(conn, "tasks", "project_id", "project_id TEXT")
+    if "workspace_base_ref" not in cols:
+        _add_column_if_missing(conn, "tasks", "workspace_base_ref", "workspace_base_ref TEXT")
+    if "workspace_base_commit" not in cols:
+        _add_column_if_missing(conn, "tasks", "workspace_base_commit", "workspace_base_commit TEXT")
     if "idempotency_key" not in cols:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
@@ -5780,7 +5794,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":
-        p, _branch_name = _resolve_worktree_workspace(task, board=board)
+        p, _branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(task, board=board)
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
 
@@ -5792,6 +5806,16 @@ def set_workspace_path(
         conn.execute(
             "UPDATE tasks SET workspace_path = ? WHERE id = ?",
             (str(path), task_id),
+        )
+
+
+def set_workspace_kind(
+    conn: sqlite3.Connection, task_id: str, workspace_kind: str
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET workspace_kind = ? WHERE id = ?",
+            (str(workspace_kind), task_id),
         )
 
 
@@ -6031,11 +6055,9 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
             if board_default:
                 repo_root = _repo_root_for_worktree_target(Path(str(board_default)).expanduser())
         if repo_root is None:
-            repo_root = _git_toplevel(Path.cwd())
-        if repo_root is None:
             raise ValueError(
                 f"task {task.id} has workspace_kind=worktree but no workspace_path, "
-                "and no git repo could be discovered from the board default_workdir or cwd"
+                "and no git repo could be discovered from the board default_workdir"
             )
         target = repo_root / ".worktrees" / task.id
         _ensure_git_worktree(repo_root, target, branch_name, base_ref)
@@ -8525,6 +8547,17 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # by the seconds it takes to build the block).
     _now = int(time.time())
 
+    live_workspace = os.environ.get("HERMES_KANBAN_WORKSPACE")
+    workspace_kind = task.workspace_kind
+    workspace_path = task.workspace_path
+    branch_name = task.branch_name
+    if live_workspace:
+        live_path = Path(live_workspace).expanduser()
+        if live_path.exists() and _is_linked_worktree_checkout(live_path):
+            workspace_kind = "worktree"
+            workspace_path = str(live_path)
+            branch_name = _git_current_branch(live_path) or branch_name
+
     def _cap(s: Optional[str], limit: int = _CTX_MAX_FIELD_BYTES) -> str:
         """Truncate a string to `limit` chars with a visible ellipsis."""
         if not s:
@@ -8541,7 +8574,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     lines.append(f"Status:   {task.status}")
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
-    lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+    lines.append(f"Workspace: {workspace_kind} @ {workspace_path or '(unresolved)'}")
     if task.max_runtime_seconds is not None:
         terminal_timeout = _worker_terminal_timeout_env(
             task.max_runtime_seconds,
@@ -8551,8 +8584,8 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         lines.append(f"Max runtime: {task.max_runtime_seconds}s")
         if effective_terminal_timeout:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
-    if task.branch_name:
-        lines.append(f"Branch:   {task.branch_name}")
+    if branch_name:
+        lines.append(f"Branch:   {branch_name}")
     lines.append("")
 
     if task.body and task.body.strip():

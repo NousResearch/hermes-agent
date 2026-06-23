@@ -1,0 +1,6 @@
+name: turso
+version: 0.1.0
+description: "Turso memory — local-first SQLite-compatible semantic memory with optional Turso Cloud sync."
+hooks:
+  - on_memory_write
+  - on_session_end

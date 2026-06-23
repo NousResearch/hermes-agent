@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Turso"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, turso
 ```
 
 ## How It Works
@@ -449,6 +449,40 @@ hermes config set memory.provider holographic
 - `reason` — compositional AND queries across multiple entities
 - `contradict` — automated detection of conflicting facts
 - Trust scoring with asymmetric feedback (+0.05 helpful / -0.10 unhelpful)
+
+---
+
+### Turso
+
+Local-first SQLite-compatible semantic memory with optional Turso Cloud sync hooks. Turso memory is for deeper searchable recall; the built-in `memory` tool remains the compact always-on profile.
+
+| | |
+|---|---|
+| **Best for** | Local-first memory that can later sync across machines |
+| **Requires** | Nothing for local mode. Optional `pyturso` + Turso credentials for cloud sync. |
+| **Data storage** | `$HERMES_HOME/turso-memory.db` by default |
+| **Cost** | Free local mode; Turso pricing for cloud sync |
+
+**Tools:** `turso_memory_search`, `turso_memory_add`, `turso_memory_update`, `turso_memory_delete`, `turso_memory_sync`
+
+**Setup:**
+```bash
+hermes memory setup    # select "turso"
+# Or manually:
+hermes config set memory.provider turso
+```
+
+**Config:** `$HERMES_HOME/turso.json`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `db_path` | `$HERMES_HOME/turso-memory.db` | Local SQLite-compatible database path |
+| `sync_enabled` | `false` | Enable best-effort Turso Cloud sync hooks |
+| `top_k` | `6` | Automatic recall result count |
+| `min_similarity` | `0.15` | Minimum automatic recall score |
+| `auto_capture` | `false` | Store completed turns as searchable conversation memories |
+
+Secrets for sync live in `.env`: `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`.
 
 ---
 

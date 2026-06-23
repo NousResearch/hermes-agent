@@ -454,6 +454,11 @@ def init_agent(
     # existing tool message rather than inserting a new user turn).
     agent._pending_steer: Optional[str] = None
     agent._pending_steer_lock = threading.Lock()
+    # One-shot ephemeral system note for a /steer that arrived with no tool
+    # message in the tail to attach to. Folded into the next API call's system
+    # message and cleared, so a steer lands on the next iteration even when the
+    # agent is mid-long-turn (no tool batch to piggyback on).
+    agent._pending_steer_systemnote: Optional[str] = None
 
     # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
     # runs each tool on its own ThreadPoolExecutor worker — those worker

@@ -685,18 +685,26 @@ def run_conversation(
                     )
                     break
             if not _injected:
-                # No tool message to inject into — put it back so
-                # the post-tool-execution drain picks it up later.
-                _lock = getattr(agent, "_pending_steer_lock", None)
-                if _lock is not None:
-                    with _lock:
-                        if agent._pending_steer:
-                            agent._pending_steer = agent._pending_steer + "\n" + _pre_api_steer
-                        else:
-                            agent._pending_steer = _pre_api_steer
-                else:
-                    existing = getattr(agent, "_pending_steer", None)
-                    agent._pending_steer = (existing + "\n" + _pre_api_steer) if existing else _pre_api_steer
+                # No tool message to inject into (the history tail is a user
+                # or assistant message, e.g. the agent is mid-long-turn or the
+                # last batch was skipped). The OLD behavior re-parked the steer
+                # and waited for a future tool batch — which, during a long
+                # long unattended turn that sits inside one multi-minute tool could
+                # starve for hours. Instead, surface the steer as a one-shot
+                # ephemeral SYSTEM note folded into THIS API call's system
+                # message. That lands the steer on the very next iteration
+                # regardless of message shape and never breaks user/assistant
+                # role alternation (system is a separate role).
+                from agent.prompt_builder import format_steer_marker
+                _note = format_steer_marker(_pre_api_steer).strip()
+                _existing_note = getattr(agent, "_pending_steer_systemnote", None)
+                agent._pending_steer_systemnote = (
+                    (_existing_note + "\n" + _note) if _existing_note else _note
+                )
+                logger.debug(
+                    "Pre-API-call steer drain: no tool msg in tail; surfacing "
+                    "as ephemeral system note for this iteration",
+                )
 
         # Prepare messages for API call
         # If we have an ephemeral system prompt, prepend it to the messages
@@ -798,6 +806,13 @@ def run_conversation(
         effective_system = active_system_prompt or ""
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        # One-shot steer system note: a /steer that arrived with no tool message
+        # in the tail (set just above). Fold it into THIS request's system
+        # message and clear it so it lands exactly once on this iteration.
+        _steer_note = getattr(agent, "_pending_steer_systemnote", None)
+        if _steer_note:
+            effective_system = (effective_system + "\n\n" + _steer_note).strip()
+            agent._pending_steer_systemnote = None
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 

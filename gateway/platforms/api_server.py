@@ -1098,6 +1098,13 @@ class APIServerAdapter(BasePlatformAdapter):
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
+        # Fallback providers return an explicit model inside runtime_kwargs;
+        # honour it and drop the duplicate so AIAgent isn't passed ``model``
+        # twice (mirrors gateway/run.py:2744). Without this, an activated
+        # fallback crashes with: got multiple values for keyword argument 'model'.
+        _fb_model = runtime_kwargs.pop("model", None)
+        if _fb_model:
+            model = _fb_model
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))

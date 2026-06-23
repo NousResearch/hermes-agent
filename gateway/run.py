@@ -9846,11 +9846,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         skip_db=agent_persisted,
                     )
                     if response:
-                        self.session_store.append_to_transcript(
-                            session_entry.session_id,
-                            {"role": "assistant", "content": response, "timestamp": ts},
-                            skip_db=agent_persisted,
-                        )
+                        # Do NOT persist guardrail halt response as an assistant
+                        # transcript entry — it is user-visible but must not
+                        # enter model context on the next turn (#49631).
+                        _turn_exit = agent_result.get("turn_exit_reason", "")
+                        if _turn_exit != "guardrail_halt":
+                            self.session_store.append_to_transcript(
+                                session_entry.session_id,
+                                {"role": "assistant", "content": response, "timestamp": ts},
+                                skip_db=agent_persisted,
+                            )
                 else:
                     # Attach the inbound platform message_id to the first user
                     # entry written this turn so platform-level quote-resolution

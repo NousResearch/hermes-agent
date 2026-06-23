@@ -421,6 +421,44 @@ class TestRoutingDecisionWiring:
                           side_effect=ValueError("policy bug")):
             assert cu_tool._should_route_through_aux_vision() is False
 
+    def test_opencode_go_vision_capable_model_keeps_multimodal(self):
+        """Regression: opencode-go + a vision-capable model must take the
+        native fast path, not the aux vision text path.
+
+        Without the fix in tools/vision_tools.py and
+        plugins/model-providers/opencode-zen/__init__.py,
+        ``_supports_media_in_tool_results("opencode-go", ...)`` returns
+        False, which causes ``should_route_capture_to_aux_vision`` to
+        return True and screenshots get pre-described by an auxiliary
+        LLM instead of being delivered to the main model natively.
+        """
+        from tools.computer_use import tool as cu_tool
+
+        cfg = {
+            "model": {"default": "minimax-m3", "provider": "opencode-go"},
+        }
+        with patch("agent.auxiliary_client._read_main_provider",
+                   return_value="opencode-go"), \
+             patch("agent.auxiliary_client._read_main_model",
+                   return_value="minimax-m3"), \
+             patch("hermes_cli.config.load_config", return_value=cfg):
+            assert cu_tool._should_route_through_aux_vision() is False
+
+    def test_opencode_zen_vision_capable_model_keeps_multimodal(self):
+        """Regression: opencode-zen + a vision-capable model takes the
+        native fast path, same as opencode-go (sibling provider)."""
+        from tools.computer_use import tool as cu_tool
+
+        cfg = {
+            "model": {"default": "claude-sonnet-4-6", "provider": "opencode-zen"},
+        }
+        with patch("agent.auxiliary_client._read_main_provider",
+                   return_value="opencode-zen"), \
+             patch("agent.auxiliary_client._read_main_model",
+                   return_value="claude-sonnet-4-6"), \
+             patch("hermes_cli.config.load_config", return_value=cfg):
+            assert cu_tool._should_route_through_aux_vision() is False
+
 
 # ---------------------------------------------------------------------------
 # Bug reproduction marker — proves the fix is needed.

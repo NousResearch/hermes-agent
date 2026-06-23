@@ -557,10 +557,12 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     # Aggregators that route to multiple vendors — assume support since
     # users on these aggregators are typically using vision-capable
     # frontier models. Falling back to text would be a regression for
-    # them.
+    # them. opencode-go and opencode-zen are flat-namespace resellers
+    # that front Anthropic / OpenAI / Gemini / MiniMax / Qwen models
+    # with vision support; treat them the same as openrouter/nous.
     _AGGREGATORS = {
         "openrouter", "nous", "vertex", "bedrock", "anthropic-vertex",
-        "google-vertex",
+        "google-vertex", "opencode-go", "opencode-zen",
     }
     if p in _AGGREGATORS:
         return True

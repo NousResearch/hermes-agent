@@ -312,7 +312,7 @@ Three-tier automatic storage:
 - Graceful degradation: keyword+FTS5 fallback when embedding server is offline
 - Schema migration automatic on `pip install --upgrade`
 - MCP server for non-Hermes agents (Claude Code, Codex, Gemini CLI)
-- [Benchmark report](https://github.com/Jnocode/recall-memory/blob/main/BENCHMARK.md) vs all other providers
+- [Benchmark report](https://github.com/Jnocode/recall-memory/blob/master/BENCHMARK.md) vs all other providers
 
 **Config:**
 

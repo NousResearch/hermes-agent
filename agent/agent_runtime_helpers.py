@@ -1512,6 +1512,13 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "_anthropic_base_url",
             "_is_anthropic_oauth",
             "_config_context_length",
+            # Prompt-cache flags are re-evaluated as part of the swap (inside
+            # the try, before the client rebuild). Snapshot them so the
+            # rollback restores the old cache policy too — otherwise a failed
+            # swap could leave the NEW policy bolted onto the restored OLD
+            # model/provider, corrupting the prompt-cache prefix next turn.
+            "_use_prompt_caching",
+            "_use_native_cache_layout",
         )
     }
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
@@ -1540,6 +1547,23 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent._transport_cache.clear()
         if api_key:
             agent.api_key = api_key
+
+        # ── Re-evaluate prompt caching (inside try → covered by rollback) ──
+        # Compute the new model's cache policy as part of the atomic swap,
+        # BEFORE the client rebuild. The core fields (model/provider/base_url/
+        # api_mode) are already set above, so the policy sees the new state.
+        # Keeping this inside the try means any failure here — or in the
+        # client build below — rolls back the flags alongside everything else,
+        # instead of leaving the agent half-swapped (the policy call used to
+        # live after the except/raise, with no rollback coverage).
+        agent._use_prompt_caching, agent._use_native_cache_layout = (
+            agent._anthropic_prompt_cache_policy(
+                provider=new_provider,
+                base_url=agent.base_url,
+                api_mode=api_mode,
+                model=new_model,
+            )
+        )
 
         # ── Build new client ──
         if api_mode == "anthropic_messages":
@@ -1609,16 +1633,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             except Exception:  # noqa: BLE001
                 pass
         raise
-
-    # ── Re-evaluate prompt caching ──
-    agent._use_prompt_caching, agent._use_native_cache_layout = (
-        agent._anthropic_prompt_cache_policy(
-            provider=new_provider,
-            base_url=agent.base_url,
-            api_mode=api_mode,
-            model=new_model,
-        )
-    )
 
     # ── LM Studio: preload before probing context length ──
     agent._ensure_lmstudio_runtime_loaded()

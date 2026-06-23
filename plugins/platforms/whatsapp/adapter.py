@@ -158,7 +158,7 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     try:
         # Format: line 1 = pid, optional line 2 = kernel start time. Legacy
         # files written before the guard existed have only the pid.
-        lines = pid_file.read_text().split("\n")
+        lines = pid_file.read_text(encoding="utf-8").split("\n")
         pid = int(lines[0].strip())
         if len(lines) > 1 and lines[1].strip():
             recorded_start = int(lines[1].strip())
@@ -481,7 +481,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             _deps_fresh = False
             if (bridge_dir / "node_modules").exists():
                 try:
-                    _deps_fresh = (_dep_stamp.read_text().strip() == _pkg_hash) and bool(_pkg_hash)
+                    _deps_fresh = (_dep_stamp.read_text(encoding="utf-8").strip() == _pkg_hash) and bool(_pkg_hash)
                 except OSError:
                     _deps_fresh = False
             if not _deps_fresh:

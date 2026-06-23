@@ -159,7 +159,7 @@ def load_state() -> Dict[str, Any]:
     if not path.exists():
         return {"unlocks": {}}
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {"unlocks": {}}
 
@@ -185,7 +185,7 @@ def load_snapshot() -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             return data
     except Exception:
@@ -204,7 +204,7 @@ def load_checkpoint() -> Dict[str, Any]:
     if not path.exists():
         return {"schema_version": 1, "generated_at": 0, "sessions": {}}
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             data.setdefault("schema_version", 1)
             data.setdefault("generated_at", 0)

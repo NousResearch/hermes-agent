@@ -3978,7 +3978,8 @@ def run_conversation(
                     # a chance to re-plan. Track recovery attempts and blocked
                     # signatures to prevent infinite recovery loops.
                     controller = agent._tool_guardrails
-                    controller.record_recovery(decision.signature)
+                    if decision.signature is not None:
+                        controller.record_recovery(decision.signature)
 
                     # Check if recovery budget is exhausted — if so, final halt.
                     if controller.recovery_exhausted:
@@ -4007,12 +4008,16 @@ def run_conversation(
                         # Append a short, structured model-facing recovery observation.
                         # Tag it so _persist_session can strip it before writing
                         # to session DB (guardrail content must not be persisted).
+                        _blocked_sig = (
+                            decision.signature.to_metadata() if decision.signature is not None else {}
+                        )
                         messages.append({
                             "role": "tool",
                             "content": (
                                 f"TOOL_GUARDRAIL_RECOVERY_REQUIRED: blocked_tool={decision.tool_name}; "
                                 f"blocked_code={decision.code}; "
                                 f"recovery_attempt={controller.recovery_attempts}/{controller._max_recovery_attempts}; "
+                                f"blocked_signature={json.dumps(_blocked_sig, ensure_ascii=False)}; "
                                 f"The previous tool call made no progress repeatedly. "
                                 f"Do not retry the same tool with the same arguments. "
                                 f"Re-plan from the original user goal. First diagnose why "

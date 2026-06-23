@@ -57,6 +57,7 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+CORE_PREFIX = "[core]"
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +451,23 @@ class MemoryStore:
 
         return self._success_response(target, "Entry removed.")
 
+    def search(self, target: str, query: str) -> Dict[str, Any]:
+        """Search entries for a case-insensitive substring match.
+
+        Returns all entries (including ``[core]`` prefix if present) that
+        contain *query* as a case-insensitive substring.  Empty query or
+        no matches returns an empty list.
+
+        This is the on-demand retrieval path for extended memory entries
+        that are not injected into the system prompt.
+        """
+        entries = self._entries_for(target)
+        q = query.strip().lower()
+        if not q:
+            return {"success": True, "matches": []}
+        matches = [e for e in entries if q in e.lower()]
+        return {"success": True, "matches": matches}
+
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply a sequence of add/replace/remove ops to one target atomically.
 
@@ -609,9 +627,26 @@ class MemoryStore:
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """Render a system prompt block with header and usage indicator.
+
+        For the ``memory`` target: if any entry is prefixed with ``[core]``,
+        only core entries are included in the system prompt snapshot and the
+        prefix is stripped.  Extended entries (no prefix) are available via
+        the ``search`` action.  When no entries have ``[core]``, all entries
+        go in (backward compatible).
+
+        For the ``user`` target: all entries always go in — user profile is
+        small and always relevant.
+        """
         if not entries:
             return ""
+
+        # Core filtering for memory target only.
+        if target == "memory":
+            core_entries = [e for e in entries if e.startswith(CORE_PREFIX)]
+            if core_entries:
+                # Strip prefix for display
+                entries = [e[len(CORE_PREFIX):].strip() for e in core_entries]
 
         limit = self._char_limit(target)
         content = ENTRY_DELIMITER.join(entries)
@@ -908,6 +943,7 @@ def memory_tool(
     target: str = "memory",
     content: str = None,
     old_text: str = None,
+    query: Optional[str] = None,
     operations: Optional[List[Dict[str, Any]]] = None,
     store: Optional[MemoryStore] = None,
 ) -> str:
@@ -915,10 +951,11 @@ def memory_tool(
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
 
     Two shapes:
-      - Single op: action + (content / old_text).
+      - Single op: action + (content / old_text / query).
       - Batch:     operations=[{action, content?, old_text?}, ...] applied
                    atomically against the final char budget in ONE call.
 
+    Actions: add, replace, remove, search.
     Returns JSON string with results.
     """
     if store is None:
@@ -969,8 +1006,13 @@ def memory_tool(
     elif action == "remove":
         result = store.remove(target, old_text)
 
+    elif action == "search":
+        if not query:
+            return tool_error("query is required for 'search' action.", success=False)
+        result = store.search(target, query)
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, search", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -1022,6 +1064,11 @@ MEMORY_SCHEMA = {
         "removes or shortens enough stale entries and adds the new one together.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
         "notes (environment, conventions, tool quirks, lessons).\n\n"
+        "CORE vs EXTENDED: Prefix memory entries with '[core]' to mark them as always-injected "
+        "into the system prompt. Entries without '[core]' are extended — available on-demand "
+        "via the 'search' action. When any entry has '[core]', only core entries go into the "
+        "system prompt. When no entries have '[core]', all go in (backward compatible). "
+        "Use '[core]' sparingly — only for facts needed in every conversation.\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
         "completed-work logs, temporary TODO state (use session_search for those). Reusable "
         "procedures belong in a skill, not memory."
@@ -1031,7 +1078,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "search"],
                 "description": "The action to perform (single-op shape). Omit when using 'operations'."
             },
             "target": {
@@ -1046,6 +1093,10 @@ MEMORY_SCHEMA = {
             "old_text": {
                 "type": "string",
                 "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
+            },
+            "query": {
+                "type": "string",
+                "description": "REQUIRED for 'search' action: a case-insensitive substring to find in memory entries. Returns matching entries (including [core] prefix if present)."
             },
             "operations": {
                 "type": "array",

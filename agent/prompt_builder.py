@@ -1741,6 +1741,41 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
         return None
 
 
+def load_rules_md(context_length: Optional[int] = None) -> Optional[str]:
+    """Load RULES.md from HERMES_HOME and return its content, or None.
+
+    Injected into the stable system prompt tier after SOUL.md to provide
+    global operational rules that apply across all sessions, separate from
+    identity/persona.
+    """
+    try:
+        from hermes_cli.config import ensure_hermes_home
+
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading RULES.md: %s", e)
+
+    rules_path = get_hermes_home() / "RULES.md"
+    if not rules_path.exists():
+        return None
+    try:
+        content = rules_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        content = _scan_context_content(content, "RULES.md")
+        content = _truncate_content(
+            content,
+            "RULES.md",
+            context_length=context_length,
+            read_path=str(rules_path),
+        )
+        return content
+    except Exception as e:
+        logger.debug("Could not read RULES.md from %s: %s", rules_path, e)
+        return None
+
+
+
 def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """.hermes.md / HERMES.md — walk to git root."""
     hermes_md_path = _find_hermes_md(cwd_path)

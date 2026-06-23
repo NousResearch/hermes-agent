@@ -161,6 +161,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
+    # Load global RULES.md from HERMES_HOME — operational rules that apply
+    # across all sessions, separate from identity/persona.
+    _rules_content = _r.load_rules_md(_ctx_len)
+    if _rules_content:
+        stable_parts.append(_rules_content)
+
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 

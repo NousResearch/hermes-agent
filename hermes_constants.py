@@ -823,6 +823,131 @@ def parse_reasoning_effort(effort) -> dict | None:
     return None
 
 
+def _canonical_model_variants(model: str) -> list[str]:
+    """Generate bounded spelling variants for tolerant override matching.
+
+    Model names mix two types of separators:
+    - **Word separators**: dashes between words (``claude-opus``)
+    - **Version separators**: dots or dashes between version digits (``4.5``, ``4-5``)
+
+    The tricky case is that ``.`` appears in BOTH roles (word sep in some
+    spellings, version sep in others), so a blanket ``.replace('.', '-')``
+    is lossy — it collapses version dots into dashes and no later step
+    recovers the canonical form (``claude-opus-4.5``).
+
+    Strategy: generate a small set of base forms, then apply version-dot
+    recovery to EACH of them. This ensures symmetry:
+    ``claude-opus-4.5``, ``claude-opus-4-5``, and ``claude-opus.4.5`` all
+    produce the same variant set.
+
+    Steps:
+    1. Exact input
+    2. Dots/dashes cross-substitution on the entire string
+    3. Version-dot recovery applied to ALL derivatives
+    4. Strip provider/aggregator prefix → bare model variants
+    5. Apply version-dot recovery to bare derivatives
+    6. Prepend known provider/aggregator prefixes
+
+    Duplicates removed in insertion order (exact always wins).
+    """
+    import re
+
+    # Version-dot regexes — digit-separator-digit interconversion
+    _dash_to_dot = lambda s: re.sub(r'(\d)-(\d)', r'\1.\2', s)
+    _dot_to_dash = lambda s: re.sub(r'(\d)\.(\d)', r'\1-\2', s)
+
+    seen = set()
+    variants = []
+
+    def _add(v):
+        if v and v not in seen:
+            seen.add(v)
+            variants.append(v)
+
+    def _add_with_derivatives(s):
+        """Add s plus its dots↔dashes and version-dot derivatives."""
+        _add(s)
+        all_dashed = s.replace('.', '-')
+        _add(all_dashed)
+        all_dotted = s.replace('-', '.')
+        _add(all_dotted)
+        # Version-dot recovery on each base form
+        _add(_dash_to_dot(s))
+        _add(_dot_to_dash(s))
+        _add(_dash_to_dot(all_dashed))
+        _add(_dot_to_dash(all_dotted))
+
+    # 1-3. Base variants for the full string
+    _add_with_derivatives(model)
+
+    # Split by / to handle provider prefix
+    parts = model.split('/')
+
+    # 4. Bare model variants (strip provider/aggregator prefix)
+    if len(parts) >= 2:
+        bare = parts[-1]
+        _add_with_derivatives(bare)
+
+    # Strip aggregator only (3+ parts)
+    # e.g. "openrouter/anthropic/claude-opus-4.5" → "anthropic/claude-opus-4.5"
+    if len(parts) >= 3:
+        _add_with_derivatives('/'.join(parts[1:]))
+
+    # 5. Prepend known provider prefixes to bare variants
+    known_providers = (
+        'anthropic', 'openai', 'google', 'openrouter', 'groq', 'mistral',
+        'xai', 'cohere', 'perplexity', 'together', 'fireworks', 'deepseek',
+    )
+    bare_variants = [v for v in variants if '/' not in v]
+    for v in bare_variants:
+        for provider in known_providers:
+            _add(f"{provider}/{v}")
+
+    # Prepend aggregator to single-slash variants
+    single_slash_variants = [v for v in variants if v.count('/') == 1]
+    known_aggregators = ('openrouter', 'opencode', 'fireworks', 'groq', 'together')
+    for v in single_slash_variants:
+        for agg in known_aggregators:
+            _add(f"{agg}/{v}")
+
+    return variants
+
+
+def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> dict | None:
+    """Lookup a per-model reasoning_effort override with spelling-tolerance.
+
+    Args:
+        model: The model string (any spelling — exact, normalized, bare,
+               with provider prefix, etc.)
+        overrides: The dict of per-model overrides from
+                   agent.reasoning_overrides in config.yaml. Keys can be
+                   any sensible spelling of the model name.
+
+    Returns:
+        The parsed reasoning_config dict if a match is found,
+        None otherwise (caller should fall back to global reasoning_effort).
+
+    Resolution order:
+    1. Exact match
+    2. Dots ↔ dashes variants
+    3. Strip provider prefix (bare model name only)
+    4. Strip aggregator prefix (middle segment only)
+    5. Prepend known aggregator prefixes to bare/single-slash variants
+
+    First non-None parse_reasoning_effort result wins.
+    """
+    if not overrides or not isinstance(overrides, dict) or not model:
+        return None
+
+    for variant in _canonical_model_variants(model):
+        if variant in overrides:
+            result = parse_reasoning_effort(overrides[variant])
+            if result is not None:
+                return result
+
+    return None
+
+
 def is_termux() -> bool:
     """Return True when running inside a Termux (Android) environment.
 

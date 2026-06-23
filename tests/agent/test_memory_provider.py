@@ -1366,16 +1366,12 @@ class TestOnMemoryWriteBridge:
         mgr.on_memory_write("replace", "user", "updated pref")
         assert p.memory_writes == [("replace", "user", "updated pref")]
 
-    def test_on_memory_write_remove_not_bridged(self):
-        """The bridge intentionally skips 'remove' — only add/replace notify."""
-        # This tests the contract that run_agent.py checks:
-        #   function_args.get("action") in ("add", "replace")
+    def test_on_memory_write_remove_supported_by_manager(self):
+        """The manager forwards remove actions when a caller elects to bridge them."""
         mgr = MemoryManager()
         p = FakeMemoryProvider("ext")
         mgr.add_provider(p)
 
-        # Manager itself doesn't filter — run_agent.py does.
-        # But providers should handle remove gracefully.
         mgr.on_memory_write("remove", "memory", "old fact")
         assert p.memory_writes == [("remove", "memory", "old fact")]
 

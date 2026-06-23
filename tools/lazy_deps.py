@@ -191,6 +191,15 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
     "tool.vision": ("Pillow==12.2.0",),
+    # Computer Use (cua-driver) — the MCP client SDK used to spawn and talk
+    # to the cua-driver process over stdio. Matches the `mcp` / `computer-use`
+    # extras in pyproject.toml. The one-liner installer pulls this in via
+    # `[all]`; lazy-installing here covers lean / partial / broken-extra
+    # installs so computer_use never dead-ends on `No module named 'mcp'`.
+    "tool.computer_use": (
+        "mcp==1.26.0",
+        "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
+    ),
 }
 
 

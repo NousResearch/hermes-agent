@@ -22,9 +22,10 @@ import logging
 from typing import Any, Callable, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.transport import RelayTransport
+from gateway.session import SessionSource
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,13 @@ class RelayAdapter(BasePlatformAdapter):
         set_interrupt = getattr(self._transport, "set_interrupt_inbound_handler", None)
         if callable(set_interrupt):
             set_interrupt(self.on_interrupt)
+        # Passthrough-plane forwards (Discord interactions, Twilio, …) also ride
+        # the SAME outbound WS (Phase 5 §5.1) — the connector edge-ACKed and
+        # forwards the real request here, so a hosted gateway needs no public
+        # inbound port. Bridge them to the adapter's passthrough handler.
+        set_passthrough = getattr(self._transport, "set_passthrough_handler", None)
+        if callable(set_passthrough):
+            set_passthrough(self._on_passthrough)
         ok = await self._transport.connect()
         if not ok:
             return False
@@ -154,6 +162,95 @@ class RelayAdapter(BasePlatformAdapter):
         the right turn without touching sibling sessions.
         """
         await self.interrupt_session_activity(session_key, chat_id)
+
+    async def _on_passthrough(self, forward, buffer_id: Optional[str] = None) -> None:
+        """Handle a connector-forwarded passthrough request (Phase 5 §5.1).
+
+        The passthrough plane (Discord interactions, Twilio webhooks, …) answers
+        the provider's latency-critical ACK at the connector EDGE, then forwards
+        the real, ALREADY-SANITIZED request to this gateway over the outbound WS.
+        The connector is the trust boundary: it verified the provider signature
+        at the edge and stripped any shared-identity credential (e.g. a Discord
+        interaction follow-up token) into its vault — so this body carries no
+        token, and the agent later acts on it via the token-less ``follow_up``
+        path (``send_follow_up``), never holding the credential.
+
+        For a Discord interaction we decode the (JSON) body and convert it to a
+        normalized ``MessageEvent`` so it flows through the SAME agent path as a
+        chat message (``handle_message``); the agent's reply egresses over the
+        normal outbound/follow_up path. Non-JSON or non-interaction forwards are
+        logged and dropped for now (Twilio/SMS over the relay is a later unit).
+
+        NEVER raises: a malformed forward must not kill the read loop.
+
+        NOTE (open semantic sub-design, flagged for review): the interaction ->
+        MessageEvent mapping below is the v1 default. The exact agent UX for a
+        slash-command / button interaction (vs. a plain message) — command name
+        surfacing, option rendering, deferred-vs-immediate response — is the open
+        piece tracked in the spec; the TRANSPORT + receive mechanism (this whole
+        path) is settled.
+        """
+        try:
+            platform = getattr(forward, "platform", "") or ""
+            if platform == "discord":
+                event = self._discord_interaction_to_event(forward)
+                if event is not None:
+                    self._capture_scope(event)
+                    await self.handle_message(event)
+                    return
+            logger.info(
+                "relay passthrough_forward dropped (no handler): platform=%s method=%s path=%s",
+                platform,
+                getattr(forward, "method", "?"),
+                getattr(forward, "path", "?"),
+            )
+        except Exception:  # noqa: BLE001 - a bad forward must never break the reader
+            logger.warning("relay passthrough_forward handling failed", exc_info=True)
+
+    def _discord_interaction_to_event(self, forward):
+        """Convert a forwarded Discord interaction body to a MessageEvent, or None.
+
+        Builds the session source the same way the connector does for an
+        interaction (``interactionSessionSource`` on the connector side), so the
+        agent's session key matches the one the connector bound the follow-up
+        capability under. Returns None when the body isn't a usable interaction
+        (e.g. a PING, which the connector already answers at the edge and never
+        forwards).
+        """
+        import json
+
+        from gateway.platforms.base import MessageType
+
+        try:
+            payload = json.loads(bytes(getattr(forward, "body", b"")).decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(payload, dict):
+            return None
+        # type 1 = PING (answered at the edge, never forwarded); 2 = APPLICATION_COMMAND;
+        # 3 = MESSAGE_COMPONENT; 5 = MODAL_SUBMIT. Surface a best-effort text.
+        itype = payload.get("type")
+        data = payload.get("data") or {}
+        if itype == 2:
+            text = str(data.get("name") or "")
+        elif itype == 3:
+            text = str(data.get("custom_id") or "")
+        else:
+            text = ""
+        member = payload.get("member") or {}
+        user = (member.get("user") if isinstance(member, dict) else None) or payload.get("user") or {}
+        channel_id = str(payload.get("channel_id") or "")
+        guild_id = payload.get("guild_id")
+        source = SessionSource(
+            platform=Platform.RELAY,
+            chat_id=channel_id,
+            chat_type="channel" if guild_id else "dm",
+            user_id=str(user.get("id")) if isinstance(user, dict) and user.get("id") else None,
+            user_name=str(user.get("username")) if isinstance(user, dict) and user.get("username") else None,
+            guild_id=str(guild_id) if guild_id else None,
+            message_id=str(payload.get("id")) if payload.get("id") else None,
+        )
+        return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
 
     async def disconnect(self) -> None:
         if self._transport is not None:

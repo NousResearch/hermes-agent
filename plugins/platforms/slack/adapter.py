@@ -47,6 +47,7 @@ from gateway.platforms.base import (
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_VIDEO_TYPES,
+    _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy,
     resolve_proxy_url,
     safe_url_for_log,
@@ -339,6 +340,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Slack blocks typed native slash commands inside threads ("/approve is
     # not supported in threads. Sorry!").  The adapter rewrites a leading
     # "!" to "/" for known commands (see _handle_slack_message), so "!" is
@@ -2509,7 +2511,10 @@ class SlackAdapter(BasePlatformAdapter):
         #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         routing_text = original_text or ""
-        is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
+        is_mentioned = bool(
+            (bot_uid and f"<@{bot_uid}>" in routing_text)
+            or self._slack_message_matches_mention_patterns(routing_text)
+        )
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
@@ -2724,8 +2729,12 @@ class SlackAdapter(BasePlatformAdapter):
                         }
                         ext = mime_to_ext.get(mimetype, "")
 
-                    if ext not in SUPPORTED_DOCUMENT_TYPES:
-                        continue  # Skip unsupported file types silently
+                    # Any file type is accepted — authorization to message the
+                    # agent is the gate, not the file extension. Known types keep
+                    # their precise MIME; unknown types fall back to the source
+                    # mimetype or octet-stream so the agent reaches for terminal
+                    # tools.
+                    in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
 
                     # Check file size (Slack limit: 20 MB for bots)
                     file_size = f.get("size", 0)
@@ -2741,36 +2750,28 @@ class SlackAdapter(BasePlatformAdapter):
                         url, team_id=team_id
                     )
                     cached_path = cache_document_from_bytes(
-                        raw_bytes, original_filename or f"document{ext}"
+                        raw_bytes, original_filename or f"document{ext or '.bin'}"
                     )
-                    doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                    if in_allowlist:
+                        doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                    else:
+                        doc_mime = mimetype or "application/octet-stream"
                     media_urls.append(cached_path)
                     media_types.append(doc_mime)
-                    logger.debug("[Slack] Cached user document: %s", cached_path)
+                    logger.debug("[Slack] Cached user document: %s (%s)", cached_path, doc_mime)
 
                     # Inject small text-ish files directly into the prompt so
-                    # snippets like JSON/YAML/configs are actually visible to the agent.
+                    # snippets like JSON/YAML/configs are actually visible to the
+                    # agent. Gate on a text-like extension/MIME — NOT a blind
+                    # UTF-8 decode, since binary formats (PDF/zip/docx) can have
+                    # decodable ASCII headers. Binary files are surfaced as a
+                    # cached path only (run.py emits a path-pointing note).
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
-                    TEXT_INJECT_EXTENSIONS = {
-                        ".md",
-                        ".txt",
-                        ".csv",
-                        ".log",
-                        ".json",
-                        ".xml",
-                        ".yaml",
-                        ".yml",
-                        ".toml",
-                        ".ini",
-                        ".cfg",
-                    }
-                    if (
-                        ext in TEXT_INJECT_EXTENSIONS
-                        and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES
-                    ):
+                    _is_text = ext in _TEXT_INJECT_EXTENSIONS or (mimetype or "").startswith("text/")
+                    if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                         try:
                             text_content = raw_bytes.decode("utf-8")
-                            display_name = original_filename or f"document{ext}"
+                            display_name = original_filename or f"document{ext or '.txt'}"
                             display_name = re.sub(r"[^\w.\- ]", "_", display_name)
                             injection = f"[Content of {display_name}]:\n{text_content}"
                             if text:
@@ -3839,6 +3840,60 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, str) and raw.strip():
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
+
+    def _slack_mention_patterns(self) -> List["re.Pattern"]:
+        """Compile optional regex wake-word patterns for channel triggers.
+
+        Parity with the other adapters (Telegram, DingTalk, Mattermost,
+        WhatsApp, BlueBubbles, Photon): when ``require_mention`` is on, a
+        channel message matching one of these patterns triggers the bot even
+        without a literal ``<@BOTUID>`` mention. Reads ``slack.mention_patterns``
+        (a list or single string) or ``SLACK_MENTION_PATTERNS`` (a JSON list, or
+        newline/comma-separated values). Compiled patterns are cached on the
+        instance. Previously this documented field was silently dropped.
+        """
+        cached = getattr(self, "_compiled_mention_patterns", None)
+        if cached is not None:
+            return cached
+
+        patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
+        if patterns is None:
+            raw = os.getenv("SLACK_MENTION_PATTERNS", "").strip()
+            if raw:
+                try:
+                    import json as _json
+                    patterns = _json.loads(raw)
+                except Exception:
+                    patterns = [p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()]
+
+        if isinstance(patterns, str):
+            patterns = [patterns]
+
+        compiled: List["re.Pattern"] = []
+        if isinstance(patterns, list):
+            for pat in patterns:
+                if not isinstance(pat, str) or not pat.strip():
+                    continue
+                try:
+                    compiled.append(re.compile(pat, re.IGNORECASE))
+                except re.error as exc:
+                    logger.warning("[Slack] Invalid mention pattern %r: %s", pat, exc)
+        elif patterns is not None:
+            logger.warning(
+                "[Slack] mention_patterns must be a list or string; got %s",
+                type(patterns).__name__,
+            )
+
+        if compiled:
+            logger.info("[Slack] Loaded %d mention pattern(s)", len(compiled))
+        self._compiled_mention_patterns = compiled
+        return compiled
+
+    def _slack_message_matches_mention_patterns(self, text: str) -> bool:
+        """Return True when ``text`` matches a configured wake-word pattern."""
+        if not text:
+            return False
+        return any(pattern.search(text) for pattern in self._slack_mention_patterns())
 
 
 # ──────────────────────────────────────────────────────────────────────────

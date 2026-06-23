@@ -182,12 +182,6 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
     that direct-key problem into the final blocking summary.
     """
     normalized = (provider_label or "").strip().lower()
-    if normalized in {"google / gemini", "gemini"}:
-        try:
-            from hermes_cli.auth import get_gemini_oauth_auth_status
-            return bool((get_gemini_oauth_auth_status() or {}).get("logged_in"))
-        except Exception:
-            return False
     if normalized == "minimax":
         try:
             from hermes_cli.auth import get_minimax_oauth_auth_status
@@ -1104,7 +1098,6 @@ def run_doctor(args):
         from hermes_cli.auth import (
             get_nous_auth_status,
             get_codex_auth_status,
-            get_gemini_oauth_auth_status,
             get_minimax_oauth_auth_status,
         )
 
@@ -1131,20 +1124,6 @@ def run_doctor(args):
                     "(optional — only required to import tokens "
                     "from an existing Codex CLI login)"
                 )
-
-        gemini_status = get_gemini_oauth_auth_status()
-        if gemini_status.get("logged_in"):
-            email = gemini_status.get("email") or ""
-            project = gemini_status.get("project_id") or ""
-            pieces = []
-            if email:
-                pieces.append(email)
-            if project:
-                pieces.append(f"project={project}")
-            suffix = f" ({', '.join(pieces)})" if pieces else ""
-            check_ok("Google Gemini OAuth", f"(logged in{suffix})")
-        else:
-            check_warn("Google Gemini OAuth", "(not logged in)")
 
         minimax_status = get_minimax_oauth_auth_status()
         if minimax_status.get("logged_in"):

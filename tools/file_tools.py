@@ -25,6 +25,29 @@ logger = logging.getLogger(__name__)
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
+
+def _expand_tilde(path: str) -> str:
+    """Expand ``~`` using the effective profile home when available.
+
+    In-process file tools share the gateway process's HOME, which may differ
+    from the profile-specific HOME that interactive CLI sessions use.  This
+    mirrors ``hermes_constants.get_subprocess_home()`` so that ``~`` resolves
+    consistently regardless of whether the tool runs interactively or inside a
+    gateway-driven cron job (#48552).
+    """
+    if not path or "~" not in path:
+        return path
+    try:
+        from hermes_constants import get_subprocess_home
+
+        home = get_subprocess_home()
+    except Exception:
+        home = None
+    if home and (path == "~" or path.startswith("~/")):
+        return home if path == "~" else os.path.join(home, path[2:])
+    return os.path.expanduser(path)
+
+
 # ---------------------------------------------------------------------------
 # Read-size guard: cap the character count returned to the model.
 # We're model-agnostic so we can't count tokens; characters are a safe proxy.
@@ -119,7 +142,7 @@ def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
     raw = str(raw or "").strip()
     if raw.lower() in _TERMINAL_CWD_SENTINELS:
         return None
-    expanded = os.path.expanduser(raw)
+    expanded = _expand_tilde(raw)
     if not os.path.isabs(expanded):
         return None
     return expanded
@@ -237,7 +260,7 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     """
     root = _authoritative_workspace_root(task_id)
     if root:
-        base = Path(root).expanduser()
+        base = Path(_expand_tilde(root))
     else:
         base = Path(os.getcwd())
     if not base.is_absolute():
@@ -259,7 +282,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
-    p = Path(_msys_path_to_windows(filepath)).expanduser()
+    p = Path(_expand_tilde(filepath))
     if p.is_absolute():
         return p.resolve()
     return (_resolve_base_dir(task_id) / p).resolve()
@@ -283,12 +306,12 @@ def _path_resolution_warning(
     (no ``cd`` run yet) is warned on the very first write.
     """
     try:
-        if Path(filepath).expanduser().is_absolute():
+        if Path(_expand_tilde(filepath)).is_absolute():
             return None
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:
             return None  # No authoritative workspace root to compare against.
-        root = Path(workspace_root).expanduser().resolve()
+        root = Path(_expand_tilde(workspace_root)).resolve()
         # Is `resolved` inside `root`?
         try:
             resolved.relative_to(root)
@@ -307,7 +330,7 @@ def _path_resolution_warning(
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
-    normalized = os.path.expanduser(path)
+    normalized = os.path.normpath(_expand_tilde(path))
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
@@ -328,21 +351,42 @@ def _is_blocked_device_path(path: str) -> bool:
     return False
 
 
-def _is_blocked_device(filepath: str) -> bool:
+def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> bool:
     """Return True if the path would hang the process (infinite output or blocking input).
 
     Check the literal path first so aliases like /dev/stdin are caught before
-    they resolve to terminal-specific paths. Then check the resolved path so a
-    workspace symlink to /dev/zero cannot bypass the guard.
+    they resolve to terminal-specific paths. Then check each symlink hop before
+    the final resolved path so aliases to devices cannot bypass the guard.
     """
-    normalized = os.path.expanduser(filepath)
+    expanded = _expand_tilde(filepath)
+    if base_dir is not None and not os.path.isabs(expanded):
+        expanded = os.path.join(os.fspath(base_dir), expanded)
+    normalized = os.path.normpath(expanded)
     if _is_blocked_device_path(normalized):
         return True
+
+    seen: set[str] = set()
+    current = normalized
+    for _ in range(20):
+        try:
+            target = os.readlink(current)
+        except OSError:
+            break
+        if not os.path.isabs(target):
+            target = os.path.join(os.path.dirname(current), target)
+        target = os.path.normpath(target)
+        if _is_blocked_device_path(target):
+            return True
+        if target in seen:
+            break
+        seen.add(target)
+        current = target
+
     try:
-        resolved = os.path.realpath(normalized)
+        resolved = os.path.normpath(os.path.realpath(normalized))
     except (OSError, ValueError):
         return False
-    if resolved != normalized and _is_blocked_device_path(resolved):
+    if _is_blocked_device_path(resolved):
         return True
     return False
 
@@ -423,9 +467,7 @@ def _get_hermes_config_resolved() -> str | None:
         _hermes_config_resolved = str(get_config_path().resolve())
     except Exception:
         try:
-            _hermes_config_resolved = str(
-                Path("~/.hermes/config.yaml").expanduser().resolve()
-            )
+            _hermes_config_resolved = str(Path(_expand_tilde("~/.hermes/config.yaml")).resolve())
         except Exception:
             _hermes_config_resolved = None
     return _hermes_config_resolved
@@ -437,7 +479,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
-    normalized = os.path.normpath(os.path.expanduser(filepath))
+    normalized = os.path.normpath(_expand_tilde(filepath))
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
@@ -724,6 +766,49 @@ def _is_internal_file_status_text(content: str) -> bool:
     return False
 
 
+def _looks_like_read_file_line_numbered_content(content: str) -> bool:
+    """Return True for content dominated by read_file's ``LINE_NUM|CONTENT`` display.
+
+    ``read_file`` intentionally returns line-numbered text to the model. If
+    that display format is echoed into ``write_file``, config/source files are
+    silently corrupted with prefixes like `` 1|``.  We reject writes where the
+    non-empty lines are mostly consecutive read_file-style numbered lines, while
+    allowing sparse literal pipe content such as a single ``1|value`` line.
+    """
+    if not isinstance(content, str):
+        return False
+
+    lines = [line for line in content.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+
+    numbered: list[int] = []
+    for line in lines:
+        stripped = line.lstrip()
+        prefix, sep, _rest = stripped.partition("|")
+        if sep and prefix.isdigit():
+            numbered.append(int(prefix))
+
+    if len(numbered) < 2:
+        return False
+    if len(numbered) / len(lines) < 0.6:
+        return False
+
+    consecutive_pairs = sum(
+        1 for prev, current in zip(numbered, numbered[1:])
+        if current == prev + 1
+    )
+    return consecutive_pairs >= len(numbered) - 1
+
+
+def _is_internal_file_tool_content(content: str) -> bool:
+    """Return True when content is file-tool display text, not intended file bytes."""
+    return (
+        _is_internal_file_status_text(content)
+        or _looks_like_read_file_line_numbered_content(content)
+    )
+
+
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     """Get or create ShellFileOperations for a terminal environment.
 
@@ -888,7 +973,8 @@ def read_file_tool(
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
         # blocking on input).  Pure path check — no I/O.
-        if _is_blocked_device(path):
+        device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
+        if _is_blocked_device(path, base_dir=device_base):
             return json.dumps({
                 "error": (
                     f"Cannot read '{path}': this is a device file that would "
@@ -1317,10 +1403,11 @@ def write_file_tool(
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
             return tool_error(cross_warning)
-    if _is_internal_file_status_text(content):
+    if _is_internal_file_tool_content(content):
         return tool_error(
-            "Refusing to write internal read_file status text as file content. "
-            "Re-read the file or reconstruct the intended file contents before writing."
+            "Refusing to write internal read_file display text as file content. "
+            "Strip read_file line-number prefixes or reconstruct the intended "
+            "file contents before writing."
         )
     try:
         # Resolve once for the registry lock + stale check.  Failures here

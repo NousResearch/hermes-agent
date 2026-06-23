@@ -7,9 +7,73 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+class TestPerJobToolsetMcpMerge:
+    """A per-job enabled_toolsets allowlist must not silently drop MCP servers."""
+
+    CFG = {
+        "mcp_servers": {
+            "finnhub": {"enabled": True},
+            "playwright": {"enabled": True},
+            "disabled_one": {"enabled": False},
+            "string_enabled": {"enabled": "true"},
+            "not_a_dict": "ignored",
+        }
+    }
+
+    def _enabled_names(self):
+        return {"finnhub", "playwright", "string_enabled"}
+
+    def test_native_only_list_gets_all_enabled_mcp_servers(self):
+        result = _merge_mcp_into_per_job_toolsets(["web", "terminal"], self.CFG)
+        assert result[:2] == ["web", "terminal"]
+        assert set(result) == {"web", "terminal"} | self._enabled_names()
+
+    def test_disabled_servers_are_not_added(self):
+        result = _merge_mcp_into_per_job_toolsets(["web"], self.CFG)
+        assert "disabled_one" not in result
+
+    def test_explicit_mcp_name_is_treated_as_allowlist(self):
+        # User named one server -> add nothing further.
+        result = _merge_mcp_into_per_job_toolsets(["web", "finnhub"], self.CFG)
+        assert result == ["web", "finnhub"]
+        assert "playwright" not in result
+
+    def test_no_mcp_sentinel_opts_out_and_is_stripped(self):
+        result = _merge_mcp_into_per_job_toolsets(["web", "no_mcp"], self.CFG)
+        assert result == ["web"]
+        assert not (set(result) & self._enabled_names())
+
+    def test_no_mcp_config_adds_nothing(self):
+        result = _merge_mcp_into_per_job_toolsets(["web"], {})
+        assert result == ["web"]
+
+    def test_no_duplicate_when_listed_name_also_globally_enabled(self):
+        result = _merge_mcp_into_per_job_toolsets(["finnhub", "finnhub"], self.CFG)
+        assert result.count("finnhub") == 2  # input dups preserved, none added
+
+    def test_resolver_uses_merge_for_per_job_lists(self):
+        job = {"enabled_toolsets": ["web", "terminal"]}
+        result = _resolve_cron_enabled_toolsets(job, self.CFG)
+        assert set(result) == {"web", "terminal"} | self._enabled_names()
+
+    def test_resolver_empty_per_job_falls_through_to_platform(self):
+        # No per-job list -> must delegate to _get_platform_tools (the platform
+        # fallback), NOT the per-job merge. Stub the platform resolver and assert
+        # it is the path taken and its result is returned.
+        job = {"enabled_toolsets": None}
+        sentinel = ["web", "finnhub"]
+        with patch("hermes_cli.tools_config._get_platform_tools",
+                   return_value=set(sentinel)) as m_platform:
+            result = _resolve_cron_enabled_toolsets(job, self.CFG)
+        m_platform.assert_called_once()
+        # _get_platform_tools args: (cfg, "cron")
+        assert m_platform.call_args[0][1] == "cron"
+        assert set(result) == set(sentinel)
 
 
 class TestResolveOrigin:
@@ -1329,6 +1393,52 @@ class TestRunJobSessionPersistence:
         assert success is True
         assert error is None
         assert final_response == "all good"
+
+    def test_run_job_delivers_max_iteration_fallback_summary(self, tmp_path):
+        """Cron should deliver a usable max-iteration fallback summary.
+
+        A cron run can exhaust the iteration budget, get a final text summary
+        from the no-tools fallback call, and still have ``completed=False`` in
+        the generic agent result. That should not make cron raise the report
+        text as a RuntimeError.
+        """
+        job = {
+            "id": "summary-job",
+            "name": "summary",
+            "prompt": "finish the report",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "final fallback report",
+                "completed": False,
+                "failed": False,
+                "turn_exit_reason": "max_iterations_reached(60/60)",
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "final fallback report"
+        assert "final fallback report" in output
+        assert "(FAILED)" not in output
 
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,

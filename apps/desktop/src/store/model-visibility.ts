@@ -106,19 +106,29 @@ export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): S
   const keys = new Set<string>()
 
   for (const provider of providers) {
-    const families = collapseModelFamilies(provider.models ?? [])
-
-    for (const family of families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)) {
-      keys.add(modelVisibilityKey(provider.slug, family.id))
-    }
+    expandProviderDefaults(provider, keys)
   }
 
   return keys
 }
 
-/** Resolve which keys are currently visible: the user's explicit set when
- *  configured, otherwise the curated default for the given providers. */
-export function effectiveVisibleKeys(
+/** Add a provider's curated default model keys (top-N collapsed families) to
+ *  `target`. Shared by `defaultVisibleKeys` and `resolveVisibleKeys` so the
+ *  expansion rule lives in exactly one place. */
+function expandProviderDefaults(provider: ModelOptionProvider, target: Set<string>): void {
+  const families = collapseModelFamilies(provider.models ?? [])
+
+  for (const family of families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)) {
+    target.add(modelVisibilityKey(provider.slug, family.id))
+  }
+}
+
+/** Resolve the canonical working set: the user's stored keys plus the curated
+ *  default expansion for any provider they haven't customized. Hide-all
+ *  sentinels are PRESERVED here — this is the set the toggle handler mutates and
+ *  persists, so dropping a sentinel would silently re-enable a provider the user
+ *  emptied. Use `effectiveVisibleKeys` for display (sentinels stripped). */
+export function resolveVisibleKeys(
   stored: Set<string> | null,
   providers: readonly ModelOptionProvider[]
 ): Set<string> {
@@ -145,18 +155,64 @@ export function effectiveVisibleKeys(
       continue
     }
 
-    const families = collapseModelFamilies(provider.models ?? [])
-
-    for (const family of families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)) {
-      next.add(modelVisibilityKey(provider.slug, family.id))
-    }
+    expandProviderDefaults(provider, next)
   }
+
+  return next
+}
+
+/** Resolve which keys are currently visible for DISPLAY: the resolved working
+ *  set with bookkeeping sentinels stripped (they are not real models). */
+export function effectiveVisibleKeys(
+  stored: Set<string> | null,
+  providers: readonly ModelOptionProvider[]
+): Set<string> {
+  const next = resolveVisibleKeys(stored, providers)
 
   // Strip sentinel keys — they are bookkeeping, not real visibility entries.
   for (const key of [...next]) {
     if (isProviderSentinel(key)) {
       next.delete(key)
     }
+  }
+
+  return next
+}
+
+/** Compute the next persisted visibility set when one model row is toggled.
+ *  Seeds from `resolveVisibleKeys` (NOT `effectiveVisibleKeys`) so other
+ *  providers' hide-all sentinels survive the persist. When the last visible
+ *  model of a provider is toggled off, a sentinel records the explicit
+ *  hide-all; re-enabling a model clears THAT provider's sentinel (only). */
+export function toggleModelVisibility(
+  stored: Set<string> | null,
+  providers: readonly ModelOptionProvider[],
+  providerSlug: string,
+  model: string
+): Set<string> {
+  // `resolveVisibleKeys` always returns a fresh Set, so we can mutate it directly.
+  const next = resolveVisibleKeys(stored, providers)
+  const key = modelVisibilityKey(providerSlug, model)
+  const sentinel = emptyProviderSentinelKey(providerSlug)
+
+  if (next.has(key)) {
+    next.delete(key)
+
+    // Check if this was the last real model for this provider.
+    const remainingForProvider = [...next].some(
+      k => k.startsWith(`${providerSlug}::`) && !isProviderSentinel(k)
+    )
+
+    if (!remainingForProvider) {
+      next.add(sentinel)
+    }
+  } else {
+    // Re-enabling promotes a previously hidden-all provider to an explicit
+    // set of exactly the one re-enabled model — the curated defaults are NOT
+    // restored. Intentional: "you hid everything, you get back only what you
+    // re-enable." (Locked in by the sentinel-clear-on-re-enable test.)
+    next.delete(sentinel)
+    next.add(key)
   }
 
   return next

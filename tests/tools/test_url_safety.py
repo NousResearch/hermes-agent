@@ -165,6 +165,31 @@ class TestIsSafeUrl:
         ]):
             assert is_safe_url("http://[::ffff:169.254.169.254]/") is False
 
+    def test_ipv6_scope_id_link_local_blocked(self):
+        """fe80::1%eth0 — a scope-ID-bearing link-local address must not bypass
+        the guard. ``ipaddress.ip_address`` rejects the ``%scope`` suffix, so
+        the scope must be stripped before the block check rather than skipped.
+        """
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("fe80::1%eth0", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://[fe80::1%eth0]/") is False
+
+    def test_ipv6_scope_id_loopback_blocked(self):
+        """::1%lo — scoped IPv6 loopback must still be blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::1%lo", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://[::1%lo]/") is False
+
+    def test_unparseable_ip_after_scope_strip_fails_closed(self):
+        """An address that is still unparseable after stripping the scope ID
+        must fail closed (block), not be silently skipped."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("not-an-ip%garbage", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://example.invalid/") is False
+
     def test_unspecified_address_blocked(self):
         """0.0.0.0 — unspecified address, can bind to all interfaces."""
         with patch("socket.getaddrinfo", return_value=[
@@ -501,6 +526,15 @@ class TestIsAlwaysBlockedUrl:
         """Attacker-controlled hostname resolving to IMDS still blocks."""
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("169.254.169.254", 0)),
+        ]):
+            assert is_always_blocked_url("http://attacker-controlled.example.com/") is True
+
+    def test_scope_id_imds_in_floor_blocked(self):
+        """A scope-ID suffix on an IPv4-mapped IMDS address resolving in the
+        always-blocked floor must be caught after the scope is stripped, not
+        skipped as unparseable."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::ffff:169.254.169.254%eth0", 0, 0, 0)),
         ]):
             assert is_always_blocked_url("http://attacker-controlled.example.com/") is True
 

@@ -3689,7 +3689,15 @@ def resolve_provider_client(
                 "Dropping OpenRouter-format model %r for non-OpenRouter "
                 "auxiliary provider (using %r instead)", model, resolved)
             model = None
-        final_model = model or resolved
+        # Prefer the model resolved by _resolve_auto (from fallback chain)
+        # over the model pre-filled at the top of this function.  When
+        # provider is "auto" and the caller passed model=None, the
+        # pre-fill step substitutes the *main* session model (e.g.
+        # "MiniMax-M3"), but _resolve_auto may have landed on a different
+        # provider (e.g. DeepSeek) whose correct model is in ``resolved``.
+        # Using the pre-filled main model on the wrong endpoint causes
+        # HTTP 400 "Model Not Exist" errors (GH #51278).
+        final_model = resolved if resolved else model
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 

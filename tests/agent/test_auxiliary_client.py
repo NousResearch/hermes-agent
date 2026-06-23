@@ -3993,6 +3993,64 @@ class TestAuxUnhealthyCache:
             assert _is_provider_unhealthy("openrouter") is True
 
 
+class TestAutoModelResolution:
+    """Regression: provider='auto' must prefer the model resolved by
+    _resolve_auto over the main-model pre-fill (GH #51278)."""
+
+    def test_auto_prefers_resolved_model_over_main_model_prefill(self):
+        """When provider='auto' and model=None, the model returned by
+        _resolve_auto (from fallback chain) must win over the main
+        session model that gets pre-filled at the top of
+        resolve_provider_client.
+
+        Reproduces GH #51278: title generation sends "MiniMax-M3" to
+        DeepSeek's endpoint instead of "deepseek-v4-flash" because the
+        main model pre-fill takes priority over _resolve_auto's result.
+        """
+        fallback_client = MagicMock()
+        with patch("agent.auxiliary_client._resolve_auto",
+                    return_value=(fallback_client, "deepseek-v4-flash")), \
+             patch("agent.auxiliary_client._get_aux_model_for_provider",
+                    return_value=""), \
+             patch("agent.auxiliary_client._read_main_model",
+                    return_value="MiniMax-M3"):
+            client, model = resolve_provider_client("auto")
+        assert client is fallback_client
+        assert model == "deepseek-v4-flash"
+
+    def test_auto_falls_back_to_prefill_when_resolved_model_empty(self):
+        """When _resolve_auto returns no model, the pre-filled model
+        (from _get_aux_model_for_provider or _read_main_model) should
+        still be used as a fallback."""
+        fallback_client = MagicMock()
+        with patch("agent.auxiliary_client._resolve_auto",
+                    return_value=(fallback_client, None)), \
+             patch("agent.auxiliary_client._get_aux_model_for_provider",
+                    return_value=""), \
+             patch("agent.auxiliary_client._read_main_model",
+                    return_value="gpt-4o-mini"):
+            client, model = resolve_provider_client("auto")
+        assert client is fallback_client
+        assert model == "gpt-4o-mini"
+
+    def test_auto_prefers_resolved_over_explicit_model_openrouter_format(self):
+        """When auto lands on a non-OpenRouter provider, an OpenRouter-
+        format model is dropped and resolved wins (existing behavior
+        preserved by this fix)."""
+        fallback_client = MagicMock()
+        with patch("agent.auxiliary_client._resolve_auto",
+                    return_value=(fallback_client, "deepseek-v4-flash")), \
+             patch("agent.auxiliary_client._get_aux_model_for_provider",
+                    return_value=""), \
+             patch("agent.auxiliary_client._read_main_model",
+                    return_value="MiniMax-M3"):
+            # Explicit OpenRouter-format model should be dropped
+            client, model = resolve_provider_client(
+                "auto", model="google/gemini-3-flash-preview")
+        assert client is fallback_client
+        assert model == "deepseek-v4-flash"
+
+
 # ── auxiliary_max_tokens_param ──────────────────────────────────────────────
 
 

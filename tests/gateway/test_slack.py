@@ -1026,6 +1026,50 @@ class TestSendDocument:
         assert adapter._app.client.files_upload_v2.await_count == 2
         sleep_mock.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_standalone_send_uploads_media_files(self, monkeypatch, tmp_path):
+        """Cron/send_message Slack delivery should upload MEDIA files natively."""
+        test_file = tmp_path / "report.pdf"
+        test_file.write_bytes(b"%PDF-1.4 fake content")
+        upload_calls = []
+        created_clients = []
+
+        class FakeAsyncWebClient:
+            def __init__(self, **kwargs):
+                created_clients.append(kwargs)
+
+            async def files_upload_v2(self, **kwargs):
+                upload_calls.append(kwargs)
+                return {"ok": True, "files": [{"id": "F123"}]}
+
+        monkeypatch.setattr(
+            "slack_sdk.web.async_client.AsyncWebClient",
+            FakeAsyncWebClient,
+        )
+        monkeypatch.setattr("gateway.platforms.base.resolve_proxy_url", lambda: None)
+
+        result = await _slack_mod._standalone_send(
+            MagicMock(token="xoxb-test"),
+            "C123",
+            "**report** ready",
+            thread_id="171.000001",
+            media_files=[(str(test_file), False)],
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "F123"
+        assert created_clients == [{"token": "xoxb-test"}]
+        assert upload_calls == [
+            {
+                "channel": "C123",
+                "file_uploads": [
+                    {"file": str(test_file), "filename": "report.pdf"},
+                ],
+                "initial_comment": "*report* ready",
+                "thread_ts": "171.000001",
+            }
+        ]
+
 
 class TestSendPrivateNotice:
     @pytest.mark.asyncio

@@ -3921,6 +3921,66 @@ async def _standalone_send(
                 exc_info=True,
             )
 
+    media_files = list(media_files or [])
+    if media_files:
+        try:
+            from slack_sdk.web.async_client import AsyncWebClient as _AsyncWebClient
+        except ImportError:
+            return {"error": "Slack file upload failed: slack-sdk not installed. Run: pip install slack-sdk"}
+
+        try:
+            from gateway.platforms.base import resolve_proxy_url
+
+            _proxy = resolve_proxy_url()
+            if _proxy:
+                client = _AsyncWebClient(token=token, proxy=str(_proxy))
+            else:
+                client = _AsyncWebClient(token=token)
+
+            uploadable_files = []
+            for media_path, _is_voice in media_files:
+                media_path = str(media_path)
+                if not os.path.exists(media_path):
+                    return {"error": f"Slack file upload failed: file not found: {media_path}"}
+                uploadable_files.append(
+                    {"file": media_path, "filename": os.path.basename(media_path)}
+                )
+
+            if not uploadable_files:
+                if not formatted.strip():
+                    return {"error": "Slack file upload failed: no media files to upload"}
+            else:
+                last_result = None
+                chunk_size = 10  # Slack files_upload_v2 server-side batch cap.
+                for idx in range(0, len(uploadable_files), chunk_size):
+                    upload_chunk = uploadable_files[idx : idx + chunk_size]
+                    result = await client.files_upload_v2(
+                        channel=chat_id,
+                        file_uploads=upload_chunk,
+                        initial_comment=formatted if idx == 0 else "",
+                        thread_ts=thread_id,
+                    )
+                    if not result.get("ok", True):
+                        return {"error": f"Slack file upload failed: {result.get('error', 'unknown')}"}
+                    last_result = result
+
+                first_file_id = None
+                if last_result is not None:
+                    files = last_result.get("files") or []
+                    if files and isinstance(files[0], dict):
+                        first_file_id = files[0].get("id")
+                    file_info = last_result.get("file")
+                    if not first_file_id and isinstance(file_info, dict):
+                        first_file_id = file_info.get("id")
+                return {
+                    "success": True,
+                    "platform": "slack",
+                    "chat_id": chat_id,
+                    "message_id": first_file_id,
+                }
+        except Exception as e:
+            return {"error": f"Slack file upload failed: {e}"}
+
     try:
         import aiohttp
     except ImportError:

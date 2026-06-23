@@ -783,6 +783,66 @@ class TestSendToPlatformChunking:
         sent_text = send.await_args.args[2]
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in sent_text
 
+    def test_slack_media_attaches_to_last_chunk(self, monkeypatch, tmp_path):
+        """Slack send_message MEDIA attachments must reach the Slack sender.
+
+        Regression: Slack was migrated to the plugin standalone sender, but
+        the generic send_message router still treated it as a non-media
+        platform, so MEDIA files were silently omitted from Slack deliveries.
+        """
+        _ensure_slack_mock(monkeypatch)
+        import plugins.platforms.slack.adapter as slack_mod
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+
+        doc_path = tmp_path / "report.pdf"
+        doc_path.write_bytes(b"%PDF-1.4 fake")
+        media = [(str(doc_path), False)]
+        sent_calls = []
+
+        async def fake_slack_sender(
+            pconfig,
+            chat_id,
+            message,
+            *,
+            thread_id=None,
+            media_files=None,
+            force_document=False,
+        ):
+            sent_calls.append(
+                {
+                    "message": message,
+                    "thread_id": thread_id,
+                    "media_files": media_files or [],
+                    "force_document": force_document,
+                }
+            )
+            return {"success": True, "platform": "slack", "message_id": str(len(sent_calls))}
+
+        entry = _slack_entry()
+        assert entry is not None
+        original = entry.standalone_sender_fn
+        entry.standalone_sender_fn = fake_slack_sender
+        try:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "C123",
+                    "word " * 9000,
+                    media_files=media,
+                    thread_id="171.000001",
+                )
+            )
+        finally:
+            entry.standalone_sender_fn = original
+
+        assert result["success"] is True
+        assert len(sent_calls) >= 2
+        assert all(call["media_files"] == [] for call in sent_calls[:-1])
+        assert sent_calls[-1]["media_files"] == media
+        assert sent_calls[-1]["thread_id"] == "171.000001"
+        assert sent_calls[-1]["force_document"] is False
+
     def test_telegram_media_attaches_to_last_chunk(self):
 
         sent_calls = []

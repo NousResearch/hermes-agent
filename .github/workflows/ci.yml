@@ -98,7 +98,7 @@ jobs:
   docker:
     needs: detect
     if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true'
-    uses: ./.github/workflows/docker-publish.yml
+    uses: ./.github/workflows/docker.yml
 
   supply-chain:
     needs: detect

@@ -238,7 +238,7 @@ RUN mkdir -p /opt/hermes/bin && \
 #
 # The arg is optional — local `docker build` without --build-arg simply
 # omits the file, and the runtime falls back to live-git lookup.  CI
-# (.github/workflows/docker-publish.yml) passes ${{ github.sha }} so
+# (.github/workflows/docker.yml) passes ${{ github.sha }} so
 # every published image has it.
 ARG HERMES_GIT_SHA=
 RUN if [ -n "${HERMES_GIT_SHA}" ]; then \

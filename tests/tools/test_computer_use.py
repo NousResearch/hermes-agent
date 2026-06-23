@@ -2810,9 +2810,11 @@ class TestCuaToolCoverageExpansion:
 
     def test_launch_app_requires_bundle_id_or_name(self):
         backend = self._backend()
-        import pytest
-        with pytest.raises(ValueError, match="bundle_id or name"):
-            backend.launch_app()
+        result = backend.launch_app()
+        assert result.ok is False
+        assert result.action == "launch_app"
+        assert "bundle_id or name" in result.message
+        assert backend._session.call_tool.called is False
 
     def test_launch_app_minimal_call(self):
         backend = self._backend(structured={"pid": 99, "windows": []})
@@ -2824,7 +2826,9 @@ class TestCuaToolCoverageExpansion:
         # Optional flags absent when not supplied.
         assert "name" not in args
         assert "creates_new_application_instance" not in args
-        assert result["pid"] == 99
+        assert result.ok is True
+        assert result.meta["pid"] == 99
+        assert backend._active_pid == 99
 
     def test_launch_app_carries_all_optional_args(self):
         backend = self._backend(structured={"pid": 1})

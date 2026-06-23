@@ -1573,17 +1573,25 @@ class CuaDriverBackend(ComputerUseBackend):
         urls: Optional[List[str]] = None,
         additional_arguments: Optional[List[str]] = None,
         creates_new_application_instance: bool = False,
-    ) -> Dict[str, Any]:
-        """Idempotent launch. Returns ``{pid, bundle_id, name, windows[]}``
-        so callers can skip an extra ``list_windows`` round-trip before
-        ``get_window_state``.
+        start_minimized: bool = False,
+    ) -> ActionResult:
+        """Idempotent launch. On success updates the sticky context
+        (``_active_pid`` / ``_active_window_id`` / ``_last_app``) so a
+        follow-up ``click``/``type``/``capture`` lands on the right
+        target without an extra ``list_windows`` round-trip.
 
         ``creates_new_application_instance=True`` forces a new instance
         even if the app is already running — use it when concurrent
         runs may touch the same app so each session gets its own
-        isolated window."""
+        isolated window.
+
+        ``start_minimized=True`` (Windows) keeps the launched window in
+        the taskbar so the user's frontmost window stays visually on
+        top."""
         if not bundle_id and not name:
-            raise ValueError("launch_app requires either bundle_id or name")
+            return ActionResult(
+                ok=False, action="launch_app",
+                message="launch_app requires either bundle_id or name")
         args: Dict[str, Any] = {"session": self._session_id}
         if bundle_id:
             args["bundle_id"] = bundle_id
@@ -1595,8 +1603,47 @@ class CuaDriverBackend(ComputerUseBackend):
             args["additional_arguments"] = list(additional_arguments)
         if creates_new_application_instance:
             args["creates_new_application_instance"] = True
-        out = self._session.call_tool("launch_app", args)
-        return out["structuredContent"] or {"data": out["data"]}
+        if start_minimized:
+            args["start_minimized"] = True
+        try:
+            out = self._session.call_tool("launch_app", args)
+        except Exception as e:
+            logger.exception("cua-driver launch_app call failed")
+            return ActionResult(
+                ok=False, action="launch_app",
+                message=f"cua-driver error: {e}")
+        ok = not out.get("isError", False)
+        structured = out.get("structuredContent") or {}
+        data = out.get("data")
+        if ok and isinstance(structured, dict):
+            pid = structured.get("pid")
+            if isinstance(pid, int):
+                self._active_pid = pid
+            windows = structured.get("windows") or []
+            if isinstance(windows, list) and windows:
+                first = windows[0]
+                if isinstance(first, dict):
+                    wid = first.get("window_id")
+                    if isinstance(wid, int):
+                        self._active_window_id = wid
+            app_name = structured.get("name") or name
+            if app_name:
+                self._last_app = app_name
+        message = ""
+        if isinstance(data, str):
+            message = data
+        elif isinstance(data, dict):
+            message = str(data.get("message", ""))
+        return ActionResult(
+            ok=ok, action="launch_app", message=message,
+            meta=structured if isinstance(structured, dict) else {})
+
+    def list_apps(self) -> Any:
+        """Return the running-apps array from cua-driver verbatim. Each
+        entry is ``{name, pid, bundle_id?}``."""
+        out = self._session.call_tool(
+            "list_apps", {"session": self._session_id})
+        return out.get("data")
 
     def kill_app(self, *, pid: int) -> ActionResult:
         """Terminate by pid. Equivalent to ``kill -9`` on POSIX,

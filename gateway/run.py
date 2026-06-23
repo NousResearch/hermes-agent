@@ -2571,6 +2571,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._active_session_leases: Dict[str, Any] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        # Busy-input ask mode: prompt records keyed by compact button IDs.
+        # The event is held out of the normal pending queue until the user
+        # chooses whether to queue, interrupt, steer, or ignore it.
+        self._busy_prompt_events: Dict[str, tuple[str, MessageEvent]] = {}
         # Last successfully-resolved (non-empty) model, keyed by session. Used
         # as a fallback when a fresh config read transiently returns an empty
         # model (e.g. an mtime-keyed config-cache miss during a post-interrupt
@@ -2650,6 +2654,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # some platforms).
         import itertools as _itertools
         self._slash_confirm_counter = _itertools.count(1)
+        self._busy_prompt_counter = _itertools.count(1)
 
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
@@ -3954,6 +3959,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "queue"
         if mode == "steer":
             return "steer"
+        if mode == "ask":
+            return "ask"
         return "interrupt"
 
     @staticmethod
@@ -3967,7 +3974,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``interrupt`` | ``queue`` (``steer`` is handled upstream by
         ``busy_input_mode`` and maps to non-queue text handling here).
         """
-        # Legacy explicit override wins for backward compat.
+        input_mode = GatewayRunner._load_busy_input_mode()
+        # ask/steer must reach the runner's busy handler. A stale legacy
+        # busy_text_mode=queue should not silently bypass the prompt/buttons.
+        if input_mode in {"ask", "steer"}:
+            return "interrupt"
+
+        # Legacy explicit override wins for backward compat when the primary
+        # busy_input_mode is queue/interrupt.
         legacy = os.getenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "").strip().lower()
         if not legacy:
             cfg = _load_gateway_runtime_config()
@@ -3977,7 +3991,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if legacy == "queue":
             return "queue"
         # No explicit legacy knob → follow busy_input_mode.
-        input_mode = GatewayRunner._load_busy_input_mode()
         return "queue" if input_mode == "queue" else "interrupt"
 
     @staticmethod
@@ -4207,6 +4220,147 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    def _busy_prompt_id(self) -> str:
+        counter = getattr(self, "_busy_prompt_counter", None)
+        if counter is None:
+            import itertools as _itertools
+            counter = _itertools.count(1)
+            self._busy_prompt_counter = counter
+        return f"{next(counter)}"
+
+    def _register_busy_prompt_event(self, session_key: str, event: MessageEvent) -> str:
+        prompt_id = self._busy_prompt_id()
+        store = getattr(self, "_busy_prompt_events", None)
+        if store is None:
+            store = {}
+            self._busy_prompt_events = store
+        store[prompt_id] = (session_key, event)
+        # Bound memory if a user never clicks old prompts.
+        if len(store) > 64:
+            for old_id in list(store)[: len(store) - 64]:
+                store.pop(old_id, None)
+        return prompt_id
+
+    def _session_is_active(self, session_key: str, adapter: Any) -> bool:
+        if session_key in getattr(self, "_running_agents", {}):
+            return True
+        active_sessions = getattr(adapter, "_active_sessions", None)
+        return isinstance(active_sessions, dict) and session_key in active_sessions
+
+    async def resolve_busy_prompt_choice(self, prompt_id: str, choice: str) -> bool:
+        """Apply a Telegram/adapter busy-input prompt choice.
+
+        Returns True when the prompt was found and consumed. The stored user
+        message is deliberately not queued until the button click so ask mode
+        can implement Queue / Interrupt / Steer / Ignore without surprising the
+        user.
+        """
+        store = getattr(self, "_busy_prompt_events", None) or {}
+        record = store.pop(str(prompt_id), None)
+        if record is None:
+            return False
+
+        session_key, event = record
+        adapter = self.adapters.get(event.source.platform)
+        if adapter is None:
+            return True
+
+        choice = (choice or "").strip().lower()
+        running_agent = self._running_agents.get(session_key)
+
+        if choice == "ignore":
+            logger.info("Busy prompt ignored for session %s", session_key)
+            return True
+
+        if choice == "steer":
+            steer_text = (event.text or "").strip()
+            can_steer = (
+                steer_text
+                and running_agent is not None
+                and running_agent is not _AGENT_PENDING_SENTINEL
+                and hasattr(running_agent, "steer")
+            )
+            if can_steer:
+                try:
+                    if bool(running_agent.steer(steer_text)):
+                        logger.info("Busy prompt steered message into session %s", session_key)
+                        return True
+                except Exception as exc:
+                    logger.warning("Busy prompt steer failed for session %s: %s", session_key, exc)
+            choice = "queue"
+
+        if choice == "interrupt":
+            merge_pending_message_event(
+                adapter._pending_messages,
+                session_key,
+                event,
+                merge_text=event.message_type == MessageType.TEXT,
+            )
+            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                try:
+                    running_agent.interrupt(event.text)
+                except Exception:
+                    pass
+            if not self._session_is_active(session_key, adapter) and hasattr(adapter, "_start_session_processing"):
+                adapter._start_session_processing(event, session_key)
+            logger.info("Busy prompt interrupted session %s", session_key)
+            return True
+
+        # Default/fallback: queue for the next turn, or start immediately if
+        # the original active run has already finished before the user clicked.
+        if self._session_is_active(session_key, adapter):
+            self._queue_or_replace_pending_event(session_key, event)
+        elif hasattr(adapter, "_start_session_processing"):
+            adapter._start_session_processing(event, session_key)
+        else:
+            self._queue_or_replace_pending_event(session_key, event)
+        logger.info("Busy prompt queued message for session %s", session_key)
+        return True
+
+    async def _send_busy_prompt(self, adapter: Any, event: MessageEvent, session_key: str) -> bool:
+        prompt_id = self._register_busy_prompt_event(session_key, event)
+        send_prompt = getattr(adapter, "send_busy_prompt", None)
+        if not callable(send_prompt):
+            # Non-interactive platform: fall back to queue semantics.
+            await self.resolve_busy_prompt_choice(prompt_id, "queue")
+            return True
+
+        running_agent = self._running_agents.get(session_key)
+        status_parts = []
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                summary = running_agent.get_activity_summary()
+                current_tool = summary.get("current_tool")
+                if current_tool:
+                    status_parts.append(f"running: {current_tool}")
+            except Exception:
+                pass
+        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+        message = (
+            f"⏳ Hermes is still working{status_detail}. "
+            f"What should I do with your new message?"
+        )
+        reply_anchor = self._reply_anchor_for_event(event)
+        metadata = self._thread_metadata_for_source(event.source, reply_anchor)
+        result = await send_prompt(
+            chat_id=event.source.chat_id,
+            prompt=message,
+            prompt_id=prompt_id,
+            session_key=session_key,
+            can_steer=bool((event.text or "").strip()),
+            reply_to=(
+                reply_anchor
+                if event.source.platform == Platform.TELEGRAM
+                and event.source.chat_type == "dm"
+                and event.source.thread_id
+                else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+            ),
+            metadata=metadata,
+        )
+        if not getattr(result, "success", False):
+            await self.resolve_busy_prompt_choice(prompt_id, "queue")
+        return True
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -4274,6 +4428,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode
+        if effective_mode == "ask":
+            return await self._send_busy_prompt(adapter, event, session_key)
+
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
         if (
             event.message_type == MessageType.TEXT

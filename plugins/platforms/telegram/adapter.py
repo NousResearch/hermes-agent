@@ -3576,6 +3576,58 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_busy_prompt(
+        self,
+        chat_id: str,
+        prompt: str,
+        prompt_id: str,
+        session_key: str = "",
+        can_steer: bool = True,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a busy-input decision prompt with inline buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            rows = [
+                [
+                    InlineKeyboardButton("➕ Queue", callback_data=f"bp:queue:{prompt_id}"),
+                    InlineKeyboardButton("⚡ Interrupt", callback_data=f"bp:interrupt:{prompt_id}"),
+                ]
+            ]
+            if can_steer:
+                rows.append([InlineKeyboardButton("⏩ Steer", callback_data=f"bp:steer:{prompt_id}")])
+            rows.append([InlineKeyboardButton("✖ Ignore", callback_data=f"bp:ignore:{prompt_id}")])
+            keyboard = InlineKeyboardMarkup(rows)
+
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(
+                reply_to, metadata, reply_to_mode=self._reply_to_mode
+            )
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": self.format_message(prompt),
+                "parse_mode": ParseMode.MARKDOWN_V2,
+                "reply_markup": keyboard,
+                "reply_to_message_id": reply_to_id,
+                **self._link_preview_kwargs(),
+            }
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                )
+            )
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_busy_prompt failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
@@ -4202,6 +4254,61 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
             )
+            return
+
+        # --- Busy-input callbacks (bp:choice:prompt_id) ---
+        if data.startswith("bp:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                choice = parts[1]
+                prompt_id = parts[2]
+
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    return
+
+                label_map = {
+                    "queue": "➕ Queued",
+                    "interrupt": "⚡ Interrupting",
+                    "steer": "⏩ Steered",
+                    "ignore": "✖ Ignored",
+                }
+                label = label_map.get(choice, "Resolved")
+                user_display = getattr(query.from_user, "first_name", "User")
+
+                runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+                resolver = getattr(runner, "resolve_busy_prompt_choice", None)
+                if not callable(resolver):
+                    await query.answer(text="Busy prompt resolver unavailable.")
+                    return
+
+                resolved = await resolver(prompt_id, choice)
+                if not resolved:
+                    await query.answer(text="This prompt has already been resolved.")
+                    return
+
+                await query.answer(text=label)
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message(f"{label} by {user_display}"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                logger.info(
+                    "Telegram busy prompt resolved (id=%s, choice=%s, user=%s)",
+                    prompt_id,
+                    choice,
+                    user_display,
+                )
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---

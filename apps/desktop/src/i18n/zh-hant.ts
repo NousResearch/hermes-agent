@@ -1275,6 +1275,8 @@ export const zhHant = defineLocale({
       actionsFor: title => `${title} 的動作`,
       sessionActions: '工作階段動作',
       sessionRunning: '工作階段執行中',
+      sessionCompleted: '工作階段已完成',
+      readyToReview: '可查看',
       needsInput: '需要您的輸入',
       waitingForAnswer: '等待您的回答',
       handoffOrigin: platform => `從 ${platform} 轉接`,

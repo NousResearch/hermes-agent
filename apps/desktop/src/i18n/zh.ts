@@ -1379,6 +1379,8 @@ export const zh: Translations = {
       actionsFor: title => `${title} 的操作`,
       sessionActions: '会话操作',
       sessionRunning: '会话运行中',
+      sessionCompleted: '会话已完成',
+      readyToReview: '可查看',
       needsInput: '需要你输入',
       waitingForAnswer: '正在等待你的回答',
       handoffOrigin: platform => `从 ${platform} 转接`,

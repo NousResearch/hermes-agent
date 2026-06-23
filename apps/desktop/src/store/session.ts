@@ -203,6 +203,10 @@ export const $messagingTruncated = atom<boolean>(false)
 export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
+// Stored session ids whose latest turn has finished and has not been opened
+// since. The sidebar renders these as "ready for review" so selected/open row
+// state does not get mistaken for work state when several sessions are running.
+export const $completedSessionIds = atom<string[]>([])
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export const $messages = atom<ChatMessage[]>([])
@@ -275,6 +279,7 @@ export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =
   updateAtom($sessionProfileTotals, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
+export const setCompletedSessionIds = (next: Updater<string[]>) => updateAtom($completedSessionIds, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
@@ -445,6 +450,16 @@ export const setAttentionSessionIds = (next: Updater<string[]>) => updateAtom($a
 export function setSessionAttention(sessionId: string | null | undefined, needsInput: boolean) {
   if (sessionId) {
     toggleMembership(setAttentionSessionIds, sessionId, needsInput)
+
+    if (needsInput) {
+      toggleMembership(setCompletedSessionIds, sessionId, false)
+    }
+  }
+}
+
+export function acknowledgeSessionCompletion(sessionId: string | null | undefined) {
+  if (sessionId) {
+    toggleMembership(setCompletedSessionIds, sessionId, false)
   }
 }
 
@@ -461,6 +476,7 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
   // noteSessionActivity() from a streaming event refreshes the timer.
   if (working) {
     clearSessionSettled(sessionId)
+    toggleMembership(setCompletedSessionIds, sessionId, false)
     armSessionWatchdog(sessionId)
   } else {
     clearSessionWatchdog(sessionId)
@@ -471,6 +487,7 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
     // aggregator to return its now-persisted row.
     if (wasWorking) {
       markSessionSettled(sessionId)
+      toggleMembership(setCompletedSessionIds, sessionId, true)
     }
   }
 }

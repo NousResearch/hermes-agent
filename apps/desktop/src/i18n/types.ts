@@ -920,6 +920,8 @@ export interface Translations {
       actionsFor: (title: string) => string
       sessionActions: string
       sessionRunning: string
+      sessionCompleted: string
+      readyToReview: string
       needsInput: string
       waitingForAnswer: string
       handoffOrigin: (platform: string) => string

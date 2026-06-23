@@ -5,9 +5,11 @@ import type { SessionInfo } from '@/types/hermes'
 import {
   $activeSessionId,
   $attentionSessionIds,
+  $completedSessionIds,
   $connection,
   $currentCwd,
   $workingSessionIds,
+  acknowledgeSessionCompletion,
   applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
   mergeSessionPage,
@@ -62,6 +64,52 @@ describe('setSessionAttention', () => {
     setSessionAttention('', true)
     setSessionAttention('missing', false)
     expect($attentionSessionIds.get()).toEqual([])
+  })
+
+  it('clears completed state when a session needs input', () => {
+    $attentionSessionIds.set([])
+    $completedSessionIds.set(['s1'])
+
+    setSessionAttention('s1', true)
+
+    expect($attentionSessionIds.get()).toEqual(['s1'])
+    expect($completedSessionIds.get()).toEqual([])
+  })
+})
+
+describe('completed session indicators', () => {
+  afterEach(() => {
+    $completedSessionIds.set([])
+    $workingSessionIds.set([])
+  })
+
+  it('marks a real working-to-idle transition as completed', () => {
+    setSessionWorking('s1', true)
+    setSessionWorking('s1', false)
+
+    expect($completedSessionIds.get()).toEqual(['s1'])
+  })
+
+  it('does not mark repeated idle assertions as completed', () => {
+    setSessionWorking('idle', false)
+    setSessionWorking('idle', false)
+
+    expect($completedSessionIds.get()).toEqual([])
+  })
+
+  it('clears completed state when a session starts working again or is acknowledged', () => {
+    setSessionWorking('s1', true)
+    setSessionWorking('s1', false)
+    expect($completedSessionIds.get()).toEqual(['s1'])
+
+    setSessionWorking('s1', true)
+    expect($completedSessionIds.get()).toEqual([])
+
+    setSessionWorking('s1', false)
+    expect($completedSessionIds.get()).toEqual(['s1'])
+
+    acknowledgeSessionCompletion('s1')
+    expect($completedSessionIds.get()).toEqual([])
   })
 })
 

@@ -1193,6 +1193,8 @@ export const en: Translations = {
       actionsFor: title => `Actions for ${title}`,
       sessionActions: 'Session actions',
       sessionRunning: 'Session running',
+      sessionCompleted: 'Session complete',
+      readyToReview: 'Ready to review',
       needsInput: 'Needs your input',
       waitingForAnswer: 'Waiting for your answer',
       handoffOrigin: platform => `Handed off from ${platform}`,

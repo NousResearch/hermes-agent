@@ -12,7 +12,8 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session'
+import { $attentionSessionIds, $completedSessionIds, acknowledgeSessionCompletion } from '@/store/session'
+import { $subagentsBySession, activeSubagentCount } from '@/store/subagents'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
@@ -80,6 +81,10 @@ export function SidebarSessionRow({
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+  const completed = useStore($completedSessionIds).includes(session.id)
+  const subagentCount = activeSubagentCount(useStore($subagentsBySession)[session.id] ?? [])
+  const sessionWorkActive = isWorking || subagentCount > 0
+  const sessionCompleted = completed && !needsInput && !sessionWorkActive
 
   return (
     <SessionContextMenu
@@ -95,13 +100,13 @@ export function SidebarSessionRow({
         className={cn(
           'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
           isSelected && 'bg-(--ui-row-active-background)',
-          isWorking && 'text-foreground',
+          sessionWorkActive && 'text-foreground',
           // Opaque surface while lifted so the dragged row erases what's under
           // it (translucency let the rows below bleed through).
           dragging && 'z-10 cursor-grabbing bg-(--ui-sidebar-surface-background)',
           className
         )}
-        data-working={isWorking ? 'true' : undefined}
+        data-working={sessionWorkActive ? 'true' : undefined}
         draggable
         onDragStart={event => {
           // Reorder drags belong to dnd-kit (the grab handle) — cancel the
@@ -122,7 +127,7 @@ export function SidebarSessionRow({
         style={style}
         {...rest}
       >
-        {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
+        {sessionWorkActive && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <button
           className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
           onClick={event => {
@@ -130,6 +135,7 @@ export function SidebarSessionRow({
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
+              acknowledgeSessionCompletion(session.id)
               onPin()
 
               return
@@ -143,11 +149,13 @@ export function SidebarSessionRow({
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
+              acknowledgeSessionCompletion(session.id)
               void openSessionInNewWindow(session.id)
 
               return
             }
 
+            acknowledgeSessionCompletion(session.id)
             onResume()
           }}
           type="button"
@@ -172,8 +180,10 @@ export function SidebarSessionRow({
             >
               <SidebarRowDot
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
-                isWorking={isWorking}
+                isCompleted={sessionCompleted}
+                isWorking={sessionWorkActive}
                 needsInput={needsInput}
+                subagentCount={subagentCount}
               />
               <Codicon
                 className={cn(
@@ -191,7 +201,12 @@ export function SidebarSessionRow({
                 needsInput ? 'overflow-visible' : 'overflow-hidden'
               )}
             >
-              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+              <SidebarRowDot
+                isCompleted={sessionCompleted}
+                isWorking={sessionWorkActive}
+                needsInput={needsInput}
+                subagentCount={subagentCount}
+              />
             </span>
           )}
           {handoffSource && handoffLabel ? (
@@ -208,7 +223,7 @@ export function SidebarSessionRow({
           </span>
         </button>
         <div className="relative z-2 grid w-[1.375rem] place-items-center">
-          {!isWorking && (
+          {!sessionWorkActive && (
             <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
               {age}
             </span>
@@ -239,12 +254,16 @@ export function SidebarSessionRow({
 }
 
 function SidebarRowDot({
+  isCompleted = false,
   isWorking,
   needsInput = false,
+  subagentCount = 0,
   className
 }: {
+  isCompleted?: boolean
   isWorking: boolean
   needsInput?: boolean
+  subagentCount?: number
   className?: string
 }) {
   const { t } = useI18n()
@@ -265,17 +284,40 @@ function SidebarRowDot({
     )
   }
 
-  return (
-    <span
-      aria-label={isWorking ? r.sessionRunning : undefined}
-      className={cn(
-        'rounded-full',
-        isWorking
-          ? "relative size-1.5 bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-(--ui-accent) before:opacity-70 before:content-['']"
-          : 'size-1 bg-(--ui-text-quaternary) opacity-80',
-        className
-      )}
-      role={isWorking ? 'status' : undefined}
-    />
-  )
+  if (isWorking) {
+    const runningTitle =
+      subagentCount > 0
+        ? `${r.sessionRunning} • ${subagentCount} active agent${subagentCount === 1 ? '' : 's'}`
+        : r.sessionRunning
+
+    return (
+      <span
+        aria-label={runningTitle}
+        className={cn(
+          "relative size-1.5 rounded-full bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-(--ui-accent) before:opacity-70 before:content-['']",
+          className
+        )}
+        role="status"
+        title={runningTitle}
+      />
+    )
+  }
+
+  if (isCompleted) {
+    return (
+      <span
+        aria-label={r.sessionCompleted}
+        className={cn(
+          'grid size-3 place-items-center rounded-full bg-emerald-500/15 text-emerald-400 shadow-[0_0_0.5rem_rgba(16,185,129,0.55)]',
+          className
+        )}
+        role="status"
+        title={r.readyToReview}
+      >
+        <Codicon aria-hidden="true" name="check" size="0.625rem" />
+      </span>
+    )
+  }
+
+  return <span className={cn('size-1 rounded-full bg-(--ui-text-quaternary) opacity-80', className)} />
 }

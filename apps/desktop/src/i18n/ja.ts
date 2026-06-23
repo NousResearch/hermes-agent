@@ -1322,6 +1322,8 @@ export const ja = defineLocale({
       actionsFor: title => `${title} のアクション`,
       sessionActions: 'セッションアクション',
       sessionRunning: 'セッション実行中',
+      sessionCompleted: 'セッション完了',
+      readyToReview: '確認できます',
       needsInput: '入力が必要です',
       waitingForAnswer: '回答を待っています',
       handoffOrigin: platform => `${platform} から引き継ぎ`,

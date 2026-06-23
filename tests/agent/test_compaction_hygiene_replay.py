@@ -60,15 +60,26 @@ def _select_sessions(con: sqlite3.Connection, n_tool_heavy: int = 6) -> list[str
     return sids
 
 
-def _hygiene_replay(history: list[dict]):
+def _hygiene_replay(history: list[dict], *, sanitize_tail: bool = False):
     """Reconstruct the gateway hygiene populations + a realistic LCM compressed
-    shape, then build + validate stats. Returns (stats, rendered_line)."""
+    shape, then build + validate stats. Returns (stats, rendered_line).
+
+    ``sanitize_tail=True`` mutates the kept-tail copies so they no longer
+    signature-match their raw originals — the REAL LCM behavior (it cleans
+    assistant content / strips tool scaffolding). This exercises the
+    two-population divergence (pre-side kept != comp-side kept) that the
+    2026-06-22 token fix + the PR #101 message-axis fix both address.
+    """
     # gateway: raw_history is a per-row shallow copy snapshot
     raw_history = [{**m} for m in history]
     # SHARED filter (OQ-F): identical to the live gateway filter
     eligible = hygiene_eligible_msgs(history)
     # LCM compresses the eligible set → [summary] + fresh-tail-of-eligible
     fresh_tail = [{**m} for m in eligible[-_FRESH_TAIL:]]
+    if sanitize_tail:
+        for m in fresh_tail:
+            if m.get("role") == "assistant":
+                m["content"] = (m.get("content") or "")[:40] + " [sanitized]"
     summary = [{"role": "user", "content": "[Recent Summary (d0, node 1)] folded chat ..."}]
     compressed = summary + fresh_tail
     stats = build_hygiene_stats(
@@ -86,7 +97,7 @@ def _hygiene_replay(history: list[dict]):
         trigger_reason="hygiene_messages", trigger_value=1000,
         stats=stats,
     )
-    return stats, line
+    return stats, line, compressed
 
 
 @pytest.mark.skipif(not os.path.exists(_LCM_DB), reason="no local lcm.db (CI / fresh checkout)")
@@ -101,13 +112,28 @@ def test_replay_real_sessions_reconcile_and_render_granular():
             eligible = hygiene_eligible_msgs(history)
             if len(eligible) < _MIN_ELIGIBLE:
                 continue  # the gateway wouldn't compress this; skip
-            stats, line = _hygiene_replay(history)
-            ok, reason = stats.validate()
-            assert ok, f"session {sid} did NOT reconcile: {reason}"
-            assert line is not None, f"session {sid} rendered no announce"
-            assert "Removed from live context" in line, (
-                f"session {sid} degraded to two-line instead of granular:\n{line}"
-            )
+            # Both the verbatim tail AND the sanitized tail (real LCM) must reconcile
+            # AND render granular with the CORRECT kept count (the message-axis bug
+            # rendered "kept 0 recent chat" on sanitized tails — PR #101).
+            for sanitize in (False, True):
+                stats, line, compressed = _hygiene_replay(history, sanitize_tail=sanitize)
+                ok, reason = stats.validate()
+                assert ok, f"session {sid} (sanitize={sanitize}) did NOT reconcile: {reason}"
+                assert line is not None, f"session {sid} rendered no announce"
+                assert "Removed from live context" in line, (
+                    f"session {sid} (sanitize={sanitize}) degraded to two-line:\n{line}"
+                )
+                # the displayed kept count is the COMP-side kept tail, not pre-side 0
+                expected_kept = sum(
+                    1 for m in compressed
+                    if m.get("role") != "system" and "[Recent Summary" not in (m.get("content") or "")
+                )
+                assert stats.kept_messages == expected_kept, (
+                    f"session {sid} (sanitize={sanitize}): kept_messages "
+                    f"{stats.kept_messages} != comp-side kept tail {expected_kept}"
+                )
+                assert f"kept {stats.kept_messages} recent chat" in line
+                assert stats.post_messages == len(compressed)
             checked += 1
         assert checked >= 1, "no eligible real sessions were checked"
     finally:

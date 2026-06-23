@@ -1037,3 +1037,301 @@ def test_tag_missing_silent_when_engine_not_lcm():
     assert sum(fires) == 0
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# Hygiene reconcile fix — comp-side vs pre-side kept tokens (2026-06-22 live bug)
+# Spec: plans/2026-06-22_hygiene-reconcile-fix-and-stats-watcher-SPEC.md
+# The post identity (kept+summary+anchor==post=estimator(comp)) must use a
+# COMP-side kept-token measurement; the pre identity (cleared+folded+kept==pre)
+# uses the PRE-side kept rows. Conflating them was the live reconcile failure.
+# ───────────────────────────────────────────────────────────────────────────
+
+def _hyg_sanitized_tail():
+    """A hygiene shape where the comp kept tail does NOT signature-match its raw
+    original (LCM sanitized it) — pre-side kept rows differ from comp-side."""
+    marker = "[Session Arc Summary (d1, node 7)] " + ("S " * 80)
+    # raw history: folded chat + two BIG kept-tail originals
+    raw_kept_1 = {"role": "user", "content": "KEPT ONE " + ("x " * 400)}
+    raw_kept_2 = {"role": "assistant", "content": "KEPT TWO " + ("y " * 400)}
+    pre = [{"role": "user", "content": f"folded {i} " + ("z " * 40)} for i in range(8)] + [
+        raw_kept_1, raw_kept_2,
+    ]
+    # comp: summary + SANITIZED (smaller, non-sig-matching) kept tail
+    comp = [
+        {"role": "assistant", "content": marker, "_lcm_summary": True},
+        {"role": "user", "content": "KEPT ONE small"},
+        {"role": "assistant", "content": "KEPT TWO small"},
+    ]
+    return pre, comp
+
+
+def test_hygiene_reconciles_when_kept_tail_sanitized():
+    """RED on pre-fix: post identity used pre-side kept (28) but comp post is small,
+    so kept(pre) != comp kept → fails. GREEN: comp-side kept_tokens reconciles."""
+    from agent.compaction_stats import build_hygiene_stats
+    pre, comp = _hyg_sanitized_tail()
+    stats = build_hygiene_stats(raw_history=pre, eligible_msgs=pre, compressed=comp,
+                                estimator=_est, engine_is_lcm=True)
+    ok, why = stats.validate()
+    assert ok, why
+
+
+def test_hygiene_reconciles_when_kept_pre_larger_than_comp():
+    """The live 16:34 shape: the comp kept tail is SANITIZED smaller than its raw
+    original, so pre-side and comp-side kept-token measurements diverge. The fix
+    measures the POST identity over the comp-side tail → reconciles."""
+    from agent.compaction_stats import build_hygiene_stats
+    # raw kept originals are BIG; the comp tail is the SAME rows but content-cleaned
+    # (sanitized) so they no longer signature-match → pre-side kept rows fold, and
+    # the post identity must rest on the comp-side tail, not the big pre originals.
+    big1 = "KEPT ALPHA " + ("q " * 2000)
+    big2 = "KEPT BETA " + ("w " * 2000)
+    pre = [{"role": "user", "content": f"f{i} " + ("z " * 30)} for i in range(6)] + [
+        {"role": "user", "content": big1}, {"role": "assistant", "content": big2},
+    ]
+    comp = [
+        {"role": "assistant", "content": "[Recent Summary (d0, node 1)] " + ("s " * 200), "_lcm_summary": True},
+        {"role": "user", "content": "KEPT ALPHA (cleaned)"},
+        {"role": "assistant", "content": "KEPT BETA (cleaned)"},
+    ]
+    stats = build_hygiene_stats(raw_history=pre, eligible_msgs=pre, compressed=comp,
+                                estimator=_est, engine_is_lcm=True)
+    ok, why = stats.validate()
+    assert ok, why
+
+
+def test_hygiene_pre_identity_still_holds():
+    """The pre token identity (cleared+folded+kept_pre==pre) must still reconcile
+    after the fix — it uses the pre-side kept rows."""
+    from agent.compaction_stats import build_hygiene_stats
+    pre, comp = _hyg_sanitized_tail()
+    stats = build_hygiene_stats(raw_history=pre, eligible_msgs=pre, compressed=comp,
+                                estimator=_est, engine_is_lcm=True)
+    # pre identity: cleared + folded + kept_pre ≈ pre
+    lhs = stats.cleared_tokens + stats.folded_tokens + (stats.kept_pre_tokens or 0)
+    assert abs(lhs - stats.pre_tokens) <= 8, (lhs, stats.pre_tokens)
+
+
+def test_postfix_reconciles_real_session_sanitized_tail():
+    """Real-session replay oracle (Pass-2 bpp B2 — replaces the v0.2 tautology).
+    Load a real session from the live lcm.db, build a SANITIZED kept tail
+    (assistant content cleaned so it no longer signature-matches raw — the real
+    LCM behavior), and assert the fix reconciles, with kept measured over the
+    ACTUAL comp rows (not post-summary-anchor). Skips when no lcm.db (CI)."""
+    import os, sqlite3
+    from agent.compaction_stats import build_hygiene_stats, hygiene_eligible_msgs
+    db = os.path.expanduser("~/.hermes/lcm.db")
+    if not os.path.exists(db):
+        import pytest
+        pytest.skip("no local lcm.db (CI / fresh checkout)")
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        row = con.execute(
+            "SELECT session_id, COUNT(*) n FROM messages GROUP BY session_id "
+            "HAVING n>=200 ORDER BY n DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            import pytest
+            pytest.skip("no large real session available")
+        sid = row[0]
+        msgs = con.execute(
+            "SELECT role, content FROM messages WHERE session_id=? ORDER BY store_id", (sid,)
+        ).fetchall()
+    finally:
+        con.close()
+    history = [{"role": r[0], "content": (r[1] or "")} for r in msgs]
+    eligible = hygiene_eligible_msgs(history)
+    raw = [{**m} for m in history]
+    fresh = [{**m} for m in eligible[-32:]]
+    for m in fresh:  # sanitize the tail → no signature match against raw (real LCM)
+        if m["role"] == "assistant":
+            m["content"] = (m["content"] or "")[:50] + " [sanitized]"
+    comp = [{"role": "user", "content": "[Recent Summary (d0, node 1)] x"}] + fresh
+    stats = build_hygiene_stats(raw_history=raw, eligible_msgs=eligible, compressed=comp,
+                                estimator=_est, engine_is_lcm=True)
+    ok, why = stats.validate()
+    assert ok, f"real-session sanitized-tail must reconcile after the fix: {why}"
+    assert stats.kept_pre_tokens != stats.kept_tokens, (
+        "fixture didn't exercise the pre/comp divergence — pick a session whose tail sanitizes"
+    )
+
+
+def test_postfix_reconciles_committed_realshape_fixture():
+    """CI-runnable non-tautological floor (Pass-3 bpp #1): a COMMITTED
+    content-scrubbed real-shape fixture (same-length filler → identical estimator
+    inputs + signature behavior, zero real content). Runs in CI where lcm.db is
+    absent. Sanitizes the kept tail → exercises the pre/comp divergence, recomputes
+    kept from the ACTUAL comp rows, asserts reconcile."""
+    from agent.compaction_stats import build_hygiene_stats, hygiene_eligible_msgs
+    fx = os.path.join(os.path.dirname(__file__), "fixtures", "hygiene_reconcile_real_shape.json")
+    with open(fx, encoding="utf-8") as fh:
+        scrubbed = json.load(fh)["messages"]
+    eligible = hygiene_eligible_msgs(scrubbed)
+    raw = [{**m} for m in scrubbed]
+    fresh = [{**m} for m in eligible[-32:]]
+    for m in fresh:  # sanitize the tail → no signature match (real LCM behavior)
+        if m["role"] == "assistant":
+            m["content"] = (m["content"] or "")[:50] + "yyyy"
+    comp = [{"role": "user", "content": "[Recent Summary (d0, node 1)] " + ("z" * 200)}] + fresh
+    stats = build_hygiene_stats(raw_history=raw, eligible_msgs=eligible, compressed=comp,
+                                estimator=_est, engine_is_lcm=True)
+    ok, why = stats.validate()
+    assert ok, f"committed real-shape fixture must reconcile after the fix: {why}"
+    assert stats.kept_pre_tokens != stats.kept_tokens, "fixture must exercise pre/comp divergence"
+
+
+def test_text_part_type_sets_agree_across_sites():
+    """Part 3 drift-guard (Pass-1 bpp): the {text,input_text,output_text} set is
+    defined in FOUR places (core compaction_stats, LCM message_content, LCM engine,
+    gateway api_server). The 4-way dedup is WONTFIX (cross-layer, ~zero gain), but
+    this asserts MEMBERSHIP equality so the duplicated constant can't silently
+    drift into the '5th part-type outage' class. set()-normalized (tuple vs set
+    vs frozenset all compare)."""
+    from agent.compaction_stats import _TEXT_PART_TYPES as core_set
+    from plugins.context_engine.lcm.message_content import _TEXT_PART_TYPES as lcm_mc
+    from plugins.context_engine.lcm.engine import _VISIBLE_TEXT_PART_TYPES as lcm_eng
+    from gateway.platforms.api_server import _TEXT_PART_TYPES as api_set
+    canonical = {"text", "input_text", "output_text"}
+    assert set(core_set) == canonical
+    assert set(lcm_mc) == canonical
+    assert set(lcm_eng) == canonical
+    assert set(api_set) == canonical
+
+
+def test_preaxis_reconciles_on_real_sessions():
+    """Codifies the §0.13 investigation: the PRE identity holds on real sessions —
+    the 00:48 179K gap is NOT a live bug. Guards a future regression that would
+    make the pre partition non-exhaustive."""
+    import os, sqlite3
+    from agent.compaction_stats import build_hygiene_stats, hygiene_eligible_msgs
+    db = os.path.expanduser("~/.hermes/lcm.db")
+    if not os.path.exists(db):
+        import pytest
+        pytest.skip("no local lcm.db")
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        rows = con.execute(
+            "SELECT session_id FROM messages GROUP BY session_id HAVING COUNT(*)>=200 "
+            "ORDER BY COUNT(*) DESC LIMIT 5"
+        ).fetchall()
+        checked = 0
+        for (sid,) in rows:
+            msgs = con.execute(
+                "SELECT role, content FROM messages WHERE session_id=? ORDER BY store_id", (sid,)
+            ).fetchall()
+            history = [{"role": r[0], "content": (r[1] or "")} for r in msgs]
+            eligible = hygiene_eligible_msgs(history)
+            if len(eligible) < 4:
+                continue
+            raw = [{**m} for m in history]
+            fresh = [{**m} for m in eligible[-32:]]
+            comp = [{"role": "user", "content": "[Recent Summary (d0, node 1)] x"}] + fresh
+            stats = build_hygiene_stats(raw_history=raw, eligible_msgs=eligible, compressed=comp,
+                                        estimator=_est, engine_is_lcm=True)
+            lhs = stats.cleared_tokens + stats.folded_tokens + (stats.kept_pre_tokens or 0)
+            assert abs(lhs - stats.pre_tokens) <= 8, f"{sid}: pre axis gap {stats.pre_tokens - lhs}"
+            checked += 1
+        if checked == 0:
+            import pytest
+            pytest.skip("no eligible real sessions")
+    finally:
+        con.close()
+
+
+
+def test_estimator_additive_over_comp_partition():
+    """§0.10: the estimator IS row-additive within tol over the comp 3-subset
+    partition — so the comp-side fix reconciles LIVE, not just synthetic. (Locks
+    the premise the Pass-1 BLOCK feared was false.)"""
+    summary = [{"role": "assistant", "content": "word " * 8000}]
+    kept = [{"role": "user", "content": "u " * 1200}, {"role": "assistant", "content": "a " * 1100}]
+    anchor = []
+    comp = summary + kept + anchor
+    whole = _est(comp)
+    parts = _est(summary) + _est(kept) + (_est(anchor) if anchor else 0)
+    assert abs(parts - whole) <= 8, (parts, whole)
+
+
+def test_both_kept_populations_measured_independently():
+    """Each kept field has teeth: corrupt kept_tokens ALONE → post fails; corrupt
+    kept_pre_tokens ALONE → pre fails. Neither is a total-minus-others derivation."""
+    from agent.compaction_stats import build_hygiene_stats
+    import dataclasses
+    pre, comp = _hyg_sanitized_tail()
+    stats = build_hygiene_stats(raw_history=pre, eligible_msgs=pre, compressed=comp,
+                                estimator=_est, engine_is_lcm=True)
+    assert stats.validate()[0]
+    bad_post = dataclasses.replace(stats, kept_tokens=stats.kept_tokens + 5000)
+    assert not bad_post.validate()[0], "corrupting comp-side kept must fail the post identity"
+    bad_pre = dataclasses.replace(stats, kept_pre_tokens=(stats.kept_pre_tokens or 0) + 5000)
+    assert not bad_pre.validate()[0], "corrupting pre-side kept must fail the pre identity"
+
+
+def test_kept_messages_display_unchanged():
+    """The announce renders kept_messages (a COUNT). Post-message-axis-fix it is the
+    COMP-side count (what's actually in live context), so the granular announce shows
+    the real kept-tail size — never the pre-side 0 that the sanitized-tail bug produced."""
+    from agent.compaction_stats import build_hygiene_stats
+    pre, comp = _hyg_sanitized_tail()
+    stats = build_hygiene_stats(raw_history=pre, eligible_msgs=pre, compressed=comp,
+                                estimator=_est, engine_is_lcm=True)
+    # comp kept tail = 2 sanitized rows → kept_messages == 2 (truth in context),
+    # while the pre-side kept count is 0 (sanitized rows don't signature-match raw).
+    assert stats.kept_messages == 2, "display count must be the comp-side kept tail"
+    assert stats._kept_pre_messages == 0, "pre-side kept is 0 here (sanitized tail)"
+    assert stats.kept_messages != stats._kept_pre_messages, "this fixture must diverge"
+
+
+def test_message_axis_two_populations_measured_independently():
+    """CI-caught regression (PR #101): the message axis has the SAME two-population
+    split as the token axis. kept_messages must be the COMP-side count (display +
+    POST identity); kept_pre_messages the PRE-side count (PRE/eligible identities).
+    Corrupt each independently → the matching identity fails. Guards against a future
+    collapse back to one field (which rendered 'kept 0 recent chat' on live sessions)."""
+    from agent.compaction_stats import build_hygiene_stats
+    import dataclasses
+    pre, comp = _hyg_sanitized_tail()
+    stats = build_hygiene_stats(raw_history=pre, eligible_msgs=pre, compressed=comp,
+                                estimator=_est, engine_is_lcm=True)
+    ok, why = stats.validate()
+    assert ok, f"sanitized-tail message axis must reconcile after the fix: {why}"
+    # post_messages is MEASURED (len(comp)), not the tautological kept+summary+anchor
+    assert stats.post_messages == len(comp)
+    # corrupt comp-side kept count → POST message identity fails
+    bad_post = dataclasses.replace(stats, kept_messages=stats.kept_messages + 3)
+    assert not bad_post.validate()[0], "corrupting comp-side kept_messages must fail POST"
+    # corrupt pre-side kept count → PRE/eligible message identity fails
+    bad_pre = dataclasses.replace(stats, kept_pre_messages=(stats._kept_pre_messages) + 3)
+    assert not bad_pre.validate()[0], "corrupting pre-side kept_pre_messages must fail PRE"
+
+
+def test_inturn_kept_pre_messages_defaults_to_comp_side():
+    """In-turn path doesn't set kept_pre_messages → it defaults to comp-side
+    kept_messages, so the in-turn (already-correct) reconcile is unchanged."""
+    from agent.compaction_stats import build_inturn_stats
+    anchor = {"role": "system", "content": "SYS " * 50}
+    summary = {"role": "assistant", "content": "[Recent Summary (d0, node 1)] x", "_lcm_summary": True}
+    body = [_blockmsg("assistant", f"chat {i}") for i in range(10)]
+    msgs = [anchor] + body
+    compressed = [anchor, summary] + msgs[-3:]
+    stats = build_inturn_stats(messages=msgs, compressed=compressed, estimator=_est)
+    assert stats.validate()[0]
+    assert stats.kept_pre_messages is None  # not set → property falls back to kept_messages
+    assert stats._kept_pre_messages == stats.kept_messages
+
+
+def test_inturn_kept_pre_defaults_to_comp_side():
+    """In-turn path doesn't set kept_pre_tokens → it defaults to comp-side kept_tokens,
+    so the in-turn (already-correct) reconcile is unchanged."""
+    from agent.compaction_stats import build_inturn_stats
+    anchor = {"role": "system", "content": "SYS " * 50}
+    summary = {"role": "assistant", "content": "[Recent Summary (d0, node 1)] x", "_lcm_summary": True}
+    body = [_blockmsg("assistant", f"chat {i}") for i in range(10)]
+    msgs = [anchor] + body
+    compressed = [anchor, summary] + msgs[-3:]
+    stats = build_inturn_stats(messages=msgs, compressed=compressed, estimator=_est)
+    assert stats.validate()[0]
+    assert stats.kept_pre_tokens is None  # not set → property falls back to kept_tokens
+    assert stats._kept_pre_tokens == stats.kept_tokens
+
+
+

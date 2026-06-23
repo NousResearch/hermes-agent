@@ -965,8 +965,11 @@ async def test_hygiene_msgcount_announces_limit_not_count(monkeypatch, tmp_path)
     # the clause shows the configured LIMIT (400 default), NOT the count (410)
     assert "message-count safety limit: 400 messages" in line
     assert "limit: 410" not in line  # the live bug: count masquerading as limit
-    # the COUNT appears only in the like-for-like delta: eligible (410) → compressed (33)
-    assert "410→33 messages" in line
+    # The count appears only in the like-for-like delta: pre (410) → post (33).
+    # Post-2026-06-22 the hygiene path RECONCILES (kept measured comp-side), so the
+    # granular form renders — the count lives in the "Messages:" body, never the clause.
+    assert "410 → 33" in line
+    assert "kept 33 recent chat" in line
     # LCM lossless recovery guidance, contentless (no Summary:)
     assert "lcm_grep" in line
     assert "Summary:" not in line

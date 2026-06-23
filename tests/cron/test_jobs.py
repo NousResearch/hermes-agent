@@ -193,10 +193,41 @@ class TestJobCRUD:
         assert job["prompt"] == "Check server status"
         assert job["enabled"] is True
         assert job["schedule"]["kind"] == "once"
+        assert "routing_advisory" in job
 
         fetched = get_job(job["id"])
         assert fetched is not None
         assert fetched["prompt"] == "Check server status"
+
+    def test_create_stores_route_advisory_without_changing_execution(self, tmp_cron_dir, monkeypatch):
+        def fake_advisory(prompt_text):
+            assert prompt_text == "Prepare BMI ASCAP radio promotion reminder"
+            return {
+                "route_id": "business-growth",
+                "profile": "business-growth",
+                "owner": "business-growth",
+                "confidence": 4.0,
+                "advisory_mode": True,
+                "auto_execute": False,
+                "requires_approval": True,
+                "blocked_actions": ["unapproved_account_access"],
+            }
+
+        monkeypatch.setattr("cron.jobs._build_route_advisory", fake_advisory)
+
+        job = create_job(
+            prompt="Prepare BMI ASCAP radio promotion reminder",
+            schedule="every 1h",
+            provider="openai-codex",
+            model="gpt-5.5",
+        )
+
+        assert job["routing_advisory"]["route_id"] == "business-growth"
+        assert job["routing_advisory"]["auto_execute"] is False
+        # R1 is advisory-only: cron execution remains on the explicitly chosen job config.
+        assert job["provider"] == "openai-codex"
+        assert job["model"] == "gpt-5.5"
+        assert job.get("routed_profile") is None
 
     def test_list_jobs(self, tmp_cron_dir):
         create_job(prompt="Job 1", schedule="every 1h")

@@ -229,6 +229,21 @@ export interface HermesConfig {
 
 export type HermesConfigRecord = Record<string, unknown>
 
+export interface RouteAdvisoryResponse {
+  advisory_mode?: boolean
+  auto_execute?: boolean
+  blocked?: boolean
+  blocked_actions?: string[]
+  confidence?: number
+  error?: null | string
+  owner?: string
+  profile?: string
+  prompt_class?: string
+  requires_approval?: boolean
+  route_id?: string
+  route_name?: string
+}
+
 export interface ModelInfoResponse {
   auto_context_length?: number
   capabilities?: Record<string, unknown>

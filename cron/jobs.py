@@ -199,6 +199,45 @@ def _coerce_job_text(value: Any, fallback: str = "") -> str:
     return str(value)
 
 
+def _build_route_advisory(prompt_text: str) -> Optional[Dict[str, Any]]:
+    """Create advisory-only routing metadata for a cron job prompt.
+
+    Cron creation must never fail just because the local routing helper is
+    unavailable. R1 stores/logs the advisory but does not change the job's
+    execution profile, model, provider, or schedule.
+    """
+    if not prompt_text or not prompt_text.strip():
+        return None
+    try:
+        from hermes_cli.route_advisory import classify_route_advisory
+
+        return classify_route_advisory(
+            prompt_text,
+            surface="cron:create",
+            log=True,
+        )
+    except Exception as exc:
+        logger.warning("Cron route advisory failed; keeping macos ownership: %s", exc)
+        return {
+            "surface": "cron:create",
+            "route_id": "main-hermes",
+            "route_name": "Main Hermes / Orchestration",
+            "owner": "macos",
+            "profile": "macos",
+            "prompt_class": "orchestration",
+            "action": "Main Hermes handles",
+            "blocked": False,
+            "blocked_actions": [],
+            "requires_approval": False,
+            "reason": "Route advisory failed; default to Main Hermes/macOS.",
+            "confidence": 0.0,
+            "advisory_mode": True,
+            "auto_execute": False,
+            "is_live": True,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def _schedule_display_for_job(job: Dict[str, Any]) -> str:
     display = _coerce_job_text(job.get("schedule_display")).strip()
     if display:
@@ -867,6 +906,7 @@ def create_job(
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        "routing_advisory": _build_route_advisory(prompt_text),
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
     }

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import { getRouteAdvisory, getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -55,6 +55,22 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
+    })
+  })
+
+  it('does not persist Desktop draft route previews by default', async () => {
+    api.mockResolvedValue({ route_id: 'main-hermes', profile: 'macos', auto_execute: false })
+
+    await getRouteAdvisory('draft text that has not been sent yet')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/route',
+      method: 'POST',
+      body: {
+        prompt: 'draft text that has not been sent yet',
+        surface: 'desktop',
+        log: false
+      }
     })
   })
 })

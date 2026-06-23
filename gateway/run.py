@@ -56,6 +56,7 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.route_advisory import classify_route_advisory, format_route_advisory
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -2532,6 +2533,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._route_advisory_config = self._load_route_advisory_config()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -2591,6 +2593,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
+        self._route_advisory_sent: Dict[str, tuple[str, float]] = {}
         self._session_run_generation: Dict[str, int] = {}
         # Startup restore gate: while restart-interrupted sessions are being
         # auto-resumed, real inbound messages are queued instead of competing
@@ -3979,6 +3982,145 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # No explicit legacy knob → follow busy_input_mode.
         input_mode = GatewayRunner._load_busy_input_mode()
         return "queue" if input_mode == "queue" else "interrupt"
+
+    @staticmethod
+    def _load_route_advisory_config() -> Dict[str, Any]:
+        """Load R1 profile-routing advisory settings.
+
+        R1 is intentionally advisory-only: this controls whether the gateway
+        announces a route suggestion before the normal macOS-owned agent turn.
+        It never switches profile or dispatches specialist execution.
+        """
+        cfg = _load_gateway_runtime_config()
+        enabled_raw = os.getenv("HERMES_ROUTE_ADVISORY_ENABLED", "").strip()
+        if enabled_raw:
+            enabled = is_truthy_value(enabled_raw, default=False)
+        else:
+            enabled = is_truthy_value(
+                cfg_get(
+                    cfg,
+                    "routing",
+                    "advisory",
+                    "enabled",
+                    default=cfg_get(cfg, "routing", "advisory_enabled", default=False),
+                ),
+                default=False,
+            )
+        gateway_notice = is_truthy_value(
+            cfg_get(cfg, "routing", "advisory", "gateway_notice", default=True),
+            default=True,
+        )
+        try:
+            min_confidence = float(
+                cfg_get(cfg, "routing", "advisory", "min_confidence", default=1.0)
+            )
+        except (TypeError, ValueError):
+            min_confidence = 1.0
+        try:
+            cooldown_seconds = float(
+                cfg_get(cfg, "routing", "advisory", "cooldown_seconds", default=3600)
+            )
+        except (TypeError, ValueError):
+            cooldown_seconds = 3600.0
+        platforms = cfg_get(cfg, "routing", "advisory", "platforms", default=["telegram"])
+        if isinstance(platforms, str):
+            raw_platforms = platforms.strip()
+            if raw_platforms.startswith("["):
+                try:
+                    parsed_platforms = json.loads(raw_platforms)
+                except Exception:
+                    parsed_platforms = None
+                platforms = parsed_platforms if isinstance(parsed_platforms, list) else [raw_platforms]
+            else:
+                platforms = [raw_platforms]
+        if not isinstance(platforms, list):
+            platforms = ["telegram"]
+        platforms = {str(platform).strip().lower() for platform in platforms if str(platform).strip()}
+        if not platforms:
+            platforms = {"telegram"}
+        return {
+            "enabled": bool(enabled),
+            "gateway_notice": bool(gateway_notice),
+            "min_confidence": min_confidence,
+            "cooldown_seconds": max(0.0, cooldown_seconds),
+            "platforms": platforms,
+        }
+
+    async def _maybe_send_route_advisory(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        *,
+        command: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Log and optionally announce an advisory-only route suggestion."""
+        route_cfg = getattr(self, "_route_advisory_config", None) or self._load_route_advisory_config()
+        if not route_cfg.get("enabled"):
+            return None
+        if command:
+            return None
+        if getattr(event, "internal", False):
+            return None
+        if event.message_type != MessageType.TEXT:
+            return None
+        prompt_text = (event.text or "").strip()
+        if not prompt_text:
+            return None
+
+        platform_value = getattr(source.platform, "value", str(source.platform or "")).lower()
+        surface = f"gateway:{platform_value or 'unknown'}"
+        loop = asyncio.get_running_loop()
+        try:
+            advisory = await loop.run_in_executor(
+                None,
+                lambda: classify_route_advisory(prompt_text, surface=surface, log=True),
+            )
+        except Exception as exc:
+            logger.debug("Route advisory failed for %s: %s", surface, exc)
+            return None
+
+        if not route_cfg.get("gateway_notice", True):
+            return advisory
+        if platform_value not in route_cfg.get("platforms", {"telegram"}):
+            return advisory
+        if advisory.get("route_id") in {None, "", "main-hermes"}:
+            return advisory
+        try:
+            confidence = float(advisory.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < float(route_cfg.get("min_confidence", 1.0)):
+            return advisory
+
+        session_key = self._session_key_for_source(source)
+        sent_cache = getattr(self, "_route_advisory_sent", None)
+        if sent_cache is None:
+            sent_cache = {}
+            self._route_advisory_sent = sent_cache
+        now = time.time()
+        cache_key = str(advisory.get("route_id") or "")
+        last_route, last_ts = sent_cache.get(session_key, ("", 0.0))
+        cooldown = float(route_cfg.get("cooldown_seconds", 3600.0))
+        if last_route == cache_key and cooldown > 0 and now - last_ts < cooldown:
+            return advisory
+
+        adapter = self.adapters.get(source.platform)
+        if adapter is None:
+            return advisory
+        notice = (
+            format_route_advisory(advisory)
+            + "\nR1 is advisory-only: continue normally to keep Main Hermes/macOS in control; "
+              "ask explicitly before any specialist profile or Kanban dispatch."
+        )
+        metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        try:
+            await adapter.send(source.chat_id, notice, metadata=metadata)
+            sent_cache[session_key] = (cache_key, now)
+        except Exception as exc:
+            logger.debug("Failed to send route advisory for %s: %s", surface, exc)
+        return advisory
+
+    @staticmethod
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -8477,6 +8619,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            await self._maybe_send_route_advisory(event, source, command=command)
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will

@@ -255,6 +255,7 @@ class HonchoMemoryProvider(MemoryProvider):
     def is_available(self) -> bool:
         """Check if Honcho is configured. No network calls."""
         try:
+            import honcho  # noqa: F401
             from plugins.memory.honcho.client import HonchoClientConfig
             cfg = HonchoClientConfig.from_global_config()
             # Port #2645: baseUrl-only verification — api_key OR base_url suffices

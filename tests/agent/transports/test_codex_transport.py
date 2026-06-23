@@ -289,6 +289,34 @@ class TestCodexBuildKwargs:
             "cron_abc_20260623_130000"
         ), "x-grok-conv-id must preserve the unique per-fire session_id"
 
+    def test_xai_no_session_id_still_gets_prompt_cache_key(self, transport):
+        """Regression for C3: the xAI extra_body block was previously gated on
+        session_id, so a cron one-shot call without a session_id would silently
+        drop prompt_cache_key from extra_body — defeating prefix-cache routing
+        for the exact case this feature was built for.
+
+        After the fix the block is gated on cache_key (content hash), so cron
+        fires and one-shot calls with no session_id still get prefix-cache routing.
+        """
+        messages = [
+            {"role": "system", "content": "Cron agent identity"},
+            {"role": "user", "content": "Run daily summary"},
+        ]
+        kw = transport.build_kwargs(
+            model="grok-4.3", messages=messages, tools=[],
+            session_id=None,
+            is_xai_responses=True,
+        )
+        body_pck = kw.get("extra_body", {}).get("prompt_cache_key", "")
+        assert body_pck.startswith("pck_"), (
+            f"xAI extra_body.prompt_cache_key must be set even when session_id is None; "
+            f"got {body_pck!r} — cron one-shot calls would be permanently cache-cold"
+        )
+        # No session_id → no x-grok-conv-id header (conversation isolation not needed)
+        assert "x-grok-conv-id" not in kw.get("extra_headers", {}), (
+            "x-grok-conv-id must not be set when session_id is None"
+        )
+
     def test_github_responses_no_cache_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

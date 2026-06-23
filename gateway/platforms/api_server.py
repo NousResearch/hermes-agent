@@ -986,6 +986,77 @@ class APIServerAdapter(BasePlatformAdapter):
     # that the sanitized form is safe to pass into Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
 
+    _LATEST_TEAMS_SESSION_ALIASES = frozenset({
+        "@latest:teams",
+        "latest:teams",
+        "@current:teams",
+        "current:teams",
+        "hermes:latest:teams",
+        "hermes:current:teams",
+    })
+
+    def _resolve_session_id_alias(self, raw_session_id: str):
+        """Resolve dynamic session-id aliases used by bridge clients.
+
+        Desktop/Apollo continuity should not require rewriting a laptop config
+        every time the operator's Teams DM rotates to a new Hermes session id.
+        A trusted client may send ``X-Hermes-Session-Id: latest:teams`` and the
+        Apollo API server resolves it at request time to the newest non-archived
+        Teams transcript in this profile's state.db.
+        """
+        normalized = (raw_session_id or "").strip().lower()
+        if normalized not in self._LATEST_TEAMS_SESSION_ALIASES:
+            return raw_session_id, None
+
+        db = self._ensure_session_db()
+        conn = getattr(db, "_conn", None)
+        lock = getattr(db, "_lock", None)
+        if conn is None:
+            return None, web.json_response(
+                _openai_error(
+                    "Cannot resolve latest Teams session: SessionDB unavailable.",
+                    code="session_alias_unavailable",
+                ),
+                status=503,
+            )
+
+        query = """
+            SELECT s.id
+            FROM sessions s
+            WHERE s.source = 'teams'
+              AND COALESCE(s.archived, 0) = 0
+            ORDER BY COALESCE(
+                (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id),
+                s.started_at
+            ) DESC, s.started_at DESC, s.id DESC
+            LIMIT 1
+        """
+        try:
+            if lock is not None:
+                with lock:
+                    row = conn.execute(query).fetchone()
+            else:
+                row = conn.execute(query).fetchone()
+        except Exception as exc:
+            logger.warning("Failed to resolve latest Teams session alias: %s", exc)
+            return None, web.json_response(
+                _openai_error(
+                    "Cannot resolve latest Teams session alias.",
+                    code="session_alias_resolution_failed",
+                ),
+                status=500,
+            )
+
+        if row is None:
+            return None, web.json_response(
+                _openai_error(
+                    "No active Teams session found for X-Hermes-Session-Id alias latest:teams.",
+                    code="session_alias_not_found",
+                ),
+                status=404,
+            )
+        return str(row["id"] if hasattr(row, "keys") else row[0]), None
+
     def _parse_session_key_header(
         self, request: "web.Request"
     ) -> tuple[Optional[str], Optional["web.Response"]]:
@@ -1902,7 +1973,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
                     status=400,
                 )
-            session_id = provided_session_id
+            session_id, alias_err = self._resolve_session_id_alias(provided_session_id)
+            if alias_err is not None:
+                return alias_err
+            session_id = session_id or provided_session_id
             try:
                 db = self._ensure_session_db()
                 if db is not None:

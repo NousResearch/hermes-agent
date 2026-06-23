@@ -15,6 +15,7 @@ Tests cover:
 import asyncio
 import json
 import os
+import sqlite3
 import stat
 import time
 import uuid
@@ -370,6 +371,103 @@ class TestAdapterInit:
 
         assert isinstance(agent, FakeAgent)
         assert captured["max_iterations"] == 200
+
+
+class TestSessionIdAliases:
+    def _fake_session_db(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                archived INTEGER DEFAULT 0,
+                started_at TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT,
+                timestamp TEXT
+            );
+            """
+        )
+        conn.executemany(
+            "INSERT INTO sessions (id, source, archived, started_at) VALUES (?, ?, ?, ?)",
+            [
+                ("teams-old", "teams", 0, "2026-06-09T10:00:00"),
+                ("teams-current", "teams", 0, "2026-06-10T10:00:00"),
+                ("teams-archived-newer", "teams", 1, "2026-06-11T10:00:00"),
+                ("api-newer", "api_server", 0, "2026-06-12T10:00:00"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO messages (session_id, timestamp) VALUES (?, ?)",
+            [
+                ("teams-old", "2026-06-09T10:30:00"),
+                ("teams-current", "2026-06-10T10:30:00"),
+                ("teams-archived-newer", "2026-06-11T10:30:00"),
+                ("api-newer", "2026-06-12T10:30:00"),
+            ],
+        )
+
+        class FakeDB:
+            _conn = conn
+            _lock = None
+
+        return FakeDB(), conn
+
+    def test_resolve_latest_teams_alias_selects_newest_active_teams_session(self, monkeypatch):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        fake_db, conn = self._fake_session_db()
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: fake_db)
+        try:
+            resolved, err = adapter._resolve_session_id_alias("latest:teams")
+        finally:
+            conn.close()
+
+        assert err is None
+        assert resolved == "teams-current"
+
+    def test_non_alias_session_id_passes_through_without_db_lookup(self, monkeypatch):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(
+            adapter,
+            "_ensure_session_db",
+            MagicMock(side_effect=AssertionError("DB lookup should not run for non-alias ids")),
+        )
+
+        resolved, err = adapter._resolve_session_id_alias("explicit-session-id")
+
+        assert err is None
+        assert resolved == "explicit-session-id"
+
+    def test_latest_teams_alias_returns_404_when_no_active_teams_session(self, monkeypatch):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, archived INTEGER, started_at TEXT);
+            CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, timestamp TEXT);
+            INSERT INTO sessions (id, source, archived, started_at)
+            VALUES ('archived-only', 'teams', 1, '2026-06-10T10:00:00');
+            """
+        )
+
+        class FakeDB:
+            _conn = conn
+            _lock = None
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: FakeDB())
+        try:
+            resolved, err = adapter._resolve_session_id_alias("@current:teams")
+        finally:
+            conn.close()
+
+        assert resolved is None
+        assert err is not None
+        assert err.status == 404
 
 
 # ---------------------------------------------------------------------------

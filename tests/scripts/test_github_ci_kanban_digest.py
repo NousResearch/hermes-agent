@@ -47,6 +47,36 @@ def baseline_red_runner(args: list[str]) -> str:
     return fake_runner(args)
 
 
+def baseline_red_workflow_name_runner(args: list[str]) -> str:
+    if args[:2] == ["run", "list"]:
+        return '[{"name":"CI","conclusion":"failure","status":"completed"}]'
+    return fake_runner(args)
+
+
+def pr_169_style_runner(args: list[str]) -> str:
+    if args[:2] == ["pr", "view"]:
+        return """
+        {
+          "number": 169,
+          "url": "https://github.com/NousResearch/hermes-agent/pull/169",
+          "headRefName": "fix/pr-169",
+          "headRefOid": "123456abcdef7890",
+          "baseRefName": "main",
+          "statusCheckRollup": [
+            {"name":"python tests", "conclusion":"FAILURE", "detailsUrl":"https://github.com/NousResearch/hermes-agent/actions/runs/333/jobs/444"}
+          ]
+        }
+        """
+    if args[:2] == ["run", "view"]:
+        assert "--log-failed" in args
+        return """
+        python tests\tRun pytest\ttests/tools/test_terminal_tool.py:117 AssertionError: expected command output to include cwd
+        """
+    if args[:2] == ["run", "list"]:
+        return "[]"
+    raise AssertionError(args)
+
+
 def test_extracts_concise_failures_from_pr_167_style_log():
     log = fake_runner(["run", "view", "111", "--repo", "NousResearch/hermes-agent", "--log-failed"])
     failures = digest.concise_failures(log)
@@ -75,10 +105,34 @@ def test_formats_pr_169_style_digest_without_raw_log_dump():
     assert "Red checks: web unit / vitest" in body
     assert "Green checks: biome lint" in body
     assert "apps/web/src/chat/session.test.tsx:42" in body
-    assert "pnpm test" in body
+    assert "pnpm --filter ./apps/web test src/chat/session.test.tsx" in body
     assert "duplicate listener count" in body
     # It is a digest, not the raw GitHub log table.
     assert "web unit / vitest\tRun tests" not in body
+
+
+def test_infers_frontend_repro_command_scoped_to_extracted_file_and_package():
+    info = digest.pr_status("NousResearch/hermes-agent", 167, fake_runner)
+    red = [c for c in info["checks"] if c.is_red]
+    failures = digest.concise_failures(fake_runner(["run", "view", "111", "--repo", "NousResearch/hermes-agent", "--log-failed"]))
+
+    commands = digest.infer_repro_commands(red, failures)
+
+    assert "pnpm --filter ./apps/web test src/chat/session.test.tsx" in commands
+    assert "pnpm test" not in commands
+
+
+def test_infers_pytest_repro_command_scoped_to_extracted_file():
+    info = digest.pr_status("NousResearch/hermes-agent", 169, pr_169_style_runner)
+    red = [c for c in info["checks"] if c.is_red]
+    failures = digest.concise_failures(
+        pr_169_style_runner(["run", "view", "333", "--repo", "NousResearch/hermes-agent", "--log-failed"])
+    )
+
+    commands = digest.infer_repro_commands(red, failures)
+
+    assert "python -m pytest -o 'addopts=' -q tests/tools/test_terminal_tool.py" in commands
+    assert "python -m pytest -o 'addopts=' -q" not in commands
 
 
 def test_posts_once_and_then_is_silent_for_same_failure(tmp_path, monkeypatch):
@@ -109,6 +163,17 @@ def test_classifies_baseline_stack_order_debt_when_base_has_same_red_check():
     red = [c for c in info["checks"] if c.is_red]
     base_red = digest.latest_base_red_check_names("NousResearch/hermes-agent", "main", baseline_red_runner)
     assert digest.classify_failure(red, base_red).startswith("baseline/stack-order debt likely")
+
+
+def test_classification_is_uncertain_when_base_red_workflow_name_differs_from_pr_job():
+    info = digest.pr_status("NousResearch/hermes-agent", 167, fake_runner)
+    red = [c for c in info["checks"] if c.is_red]
+    base_red = digest.latest_base_red_check_names("NousResearch/hermes-agent", "main", baseline_red_workflow_name_runner)
+
+    assessment = digest.classify_failure(red, base_red)
+
+    assert assessment.startswith("uncertain:")
+    assert "branch-specific likely" not in assessment
 
 
 def test_discovers_active_pr_gate_cards_only(tmp_path, monkeypatch):

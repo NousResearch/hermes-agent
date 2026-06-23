@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -231,27 +232,72 @@ def concise_failures(log_text: str, max_items: int = 6) -> list[str]:
     return items
 
 
+def _failure_paths(failures: list[str]) -> list[str]:
+    paths: list[str] = []
+    for failure in failures:
+        subject = failure.split(" — ", 1)[0]
+        match = PATH_RE.search(subject) or PATH_RE.search(failure)
+        if not match:
+            continue
+        path = match.group("path")
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _workspace_filter(path: str) -> str:
+    parts = path.split("/")
+    if len(parts) >= 2 and parts[0] in {"apps", "packages", "plugins"}:
+        return f"./{parts[0]}/{parts[1]}"
+    return ""
+
+
+def _workspace_relative_path(path: str) -> str:
+    parts = path.split("/")
+    if len(parts) >= 3 and parts[0] in {"apps", "packages", "plugins"}:
+        return "/".join(parts[2:])
+    return path
+
+
 def infer_repro_commands(red_checks: list[Check], failures: list[str]) -> list[str]:
     text = "\n".join([c.name for c in red_checks] + failures).lower()
+    paths = _failure_paths(failures)
+    py_paths = [p for p in paths if p.endswith(".py")]
+    js_paths = [p for p in paths if re.search(r"\.(tsx?|jsx?|mjs|cjs)$", p)]
     commands: list[str] = []
     if "biome" in text or "lint" in text:
-        commands.append("pnpm biome check .")
+        commands.append(f"pnpm biome check {shlex.quote(js_paths[0])}" if js_paths else "pnpm biome check .")
     if "vitest" in text or "unit" in text or re.search(r"\.(tsx?|jsx?)", text):
-        commands.append("pnpm test")
+        if js_paths:
+            workspace = _workspace_filter(js_paths[0])
+            if workspace:
+                commands.append(
+                    f"pnpm --filter {shlex.quote(workspace)} test {shlex.quote(_workspace_relative_path(js_paths[0]))}"
+                )
+            else:
+                commands.append(f"pnpm test {shlex.quote(js_paths[0])}")
+        else:
+            commands.append("pnpm test")
     if "pytest" in text or ".py" in text:
-        commands.append("python -m pytest -o 'addopts=' -q")
+        commands.append(
+            f"python -m pytest -o 'addopts=' -q {shlex.quote(py_paths[0])}"
+            if py_paths
+            else "python -m pytest -o 'addopts=' -q"
+        )
     if "typecheck" in text or "tsc" in text:
-        commands.append("pnpm typecheck")
+        workspace = _workspace_filter(js_paths[0]) if js_paths else ""
+        commands.append(f"pnpm --filter {shlex.quote(workspace)} typecheck" if workspace else "pnpm typecheck")
     if "build" in text:
-        commands.append("pnpm build")
+        workspace = _workspace_filter(js_paths[0]) if js_paths else ""
+        commands.append(f"pnpm --filter {shlex.quote(workspace)} build" if workspace else "pnpm build")
     if not commands:
         commands.append("gh run view <run-id> --log-failed")
     return list(dict.fromkeys(commands))[:4]
 
 
-def latest_base_red_check_names(repo: str, base: str, runner: Runner = run_gh) -> set[str]:
+def latest_base_red_check_names(repo: str, base: str, runner: Runner = run_gh) -> Optional[set[str]]:
     if not base:
-        return set()
+        return None
     try:
         runs = gh_json(
             runner,
@@ -269,7 +315,7 @@ def latest_base_red_check_names(repo: str, base: str, runner: Runner = run_gh) -
             ],
         )
     except Exception:
-        return set()
+        return None
     names = set()
     for run in runs or []:
         conclusion = str(run.get("conclusion") or run.get("status") or "").lower()
@@ -278,12 +324,27 @@ def latest_base_red_check_names(repo: str, base: str, runner: Runner = run_gh) -
     return names
 
 
-def classify_failure(red_checks: list[Check], base_red_names: set[str]) -> str:
+def _normalize_ci_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+
+
+def classify_failure(red_checks: list[Check], base_red_names: Optional[set[str]]) -> str:
+    if base_red_names is None:
+        return "uncertain: could not compare against the base branch checks"
     red_names = {c.name for c in red_checks}
     overlap = red_names & base_red_names
+    if not overlap:
+        normalized_base = {_normalize_ci_name(n): n for n in base_red_names}
+        overlap = {name for name in red_names if _normalize_ci_name(name) in normalized_base}
     if overlap:
         listed = ", ".join(sorted(overlap)[:3])
         return f"baseline/stack-order debt likely: base branch recently red on {listed}"
+    if base_red_names:
+        listed = ", ".join(sorted(base_red_names)[:3])
+        return (
+            "uncertain: base branch has red workflow run(s) "
+            f"({listed}), but PR red check/job names do not match those workflow names"
+        )
     return "branch-specific likely: red checks are not currently red on the base branch"
 
 

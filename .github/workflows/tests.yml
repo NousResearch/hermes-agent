@@ -74,16 +74,10 @@ jobs:
         run: uv python install 3.11
 
       - name: Install dependencies
-        # `uv sync --locked` installs the exact pinned set from uv.lock (and
-        # fails if the lock is out of sync with pyproject.toml), giving a
-        # reproducible env. It also creates .venv itself, so no separate
-        # `uv venv` step is needed.
-        run: uv sync --locked --python 3.11 --extra all --extra dev
-
-      - name: Minimize uv cache
-        # Optimized for CI: prunes pre-built wheels that are cheap to
-        # re-download, keeping the persisted cache small and fast to restore.
-        run: uv cache prune --ci
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv pip install -e ".[all,dev]"
 
       - name: Run tests (slice ${{ matrix.slice }}/6)
         # Per-file isolation via scripts/run_tests_parallel.py: discovers
@@ -196,16 +190,10 @@ jobs:
         run: uv python install 3.11
 
       - name: Install dependencies
-        # `uv sync --locked` installs the exact pinned set from uv.lock (and
-        # fails if the lock is out of sync with pyproject.toml), giving a
-        # reproducible env. It also creates .venv itself, so no separate
-        # `uv venv` step is needed.
-        run: uv sync --locked --python 3.11 --extra all --extra dev
-
-      - name: Minimize uv cache
-        # Optimized for CI: prunes pre-built wheels that are cheap to
-        # re-download, keeping the persisted cache small and fast to restore.
-        run: uv cache prune --ci
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv pip install -e ".[all,dev]"
 
       - name: Packaged-wheel i18n smoke test
         run: |

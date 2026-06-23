@@ -131,6 +131,17 @@ class FailingAgent:
         }
 
 
+class SlowAgent:
+    """Runs long enough for the gateway heartbeat task to fire repeatedly."""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.12)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -320,6 +331,54 @@ async def test_cleanup_noop_on_adapter_without_delete_support(monkeypatch, tmp_p
     # (The NoDeleteAdapter.delete_message would raise AssertionError if
     # the cleanup closure had somehow captured a reference to it.)
     assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_gateway_notify_interval_zero_disables_long_running_heartbeat(monkeypatch, tmp_path):
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, SlowAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=SessionSource(platform=Platform.DISCORD, chat_id="parent-1"),
+        session_id="sess-heartbeat-off",
+        session_key="agent:main:discord:thread:parent-1:thread-1",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_discord_long_running_heartbeat_reuses_one_status_message(monkeypatch, tmp_path):
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, SlowAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.02")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=SessionSource(platform=Platform.DISCORD, chat_id="parent-1"),
+        session_id="sess-heartbeat-edit",
+        session_key="agent:main:discord:thread:parent-1:thread-1",
+    )
+
+    assert result["final_response"] == "done"
+    heartbeat_sends = [msg for msg in adapter.sent if "Still working" in msg["content"]]
+    assert len(heartbeat_sends) == 1
+    assert len(adapter.edits) >= 1
+    assert all("Still working" in edit["content"] for edit in adapter.edits)
 
 
 @pytest.mark.asyncio

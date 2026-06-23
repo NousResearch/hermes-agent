@@ -1541,4 +1541,3 @@ def test_real_configurable_changes_still_reported_in_diff():
     new_enabled2 = (current - {"kanban"}) | {"vision"}
     assert ((new_enabled2 - current) & universe) == {"vision"}
 
-

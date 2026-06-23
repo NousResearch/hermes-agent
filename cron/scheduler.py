@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -253,7 +254,7 @@ _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
 
-# Sequential (env-mutating) cron jobs — workdir jobs that touch
+# Sequential (env/context-mutating) cron jobs — workdir/profile jobs that touch
 # process-global runtime state — must run one at a time, but must NOT block the
 # ticker thread.  A persistent single-thread executor preserves ordering across
 # ticks while keeping dispatch fire-and-forget, the same as the parallel pool.
@@ -277,10 +278,10 @@ def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadP
 def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
     """Return (or create) the persistent single-thread sequential pool.
 
-    A single worker guarantees env-mutating jobs never overlap, even
+    A single worker guarantees env/context-mutating jobs never overlap, even
     across ticks: a job queued by a newer tick waits for the previous tick's
-    sequential jobs to finish rather than corrupting their os.environ
-    state.
+    sequential jobs to finish rather than corrupting their os.environ /
+    profile state.
     """
     global _sequential_pool
     if _sequential_pool is None:
@@ -320,6 +321,71 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+@contextmanager
+def _job_profile_context(job_id: str, profile: Optional[str]):
+    """Temporarily run a job under a specific Hermes profile.
+
+    Cron jobs are stored and scheduled by the profile running the scheduler, but
+    an individual job can opt into a different runtime profile. While active,
+    the scheduler's test/override hook and a context-local Hermes home override
+    both point at the resolved profile directory so _get_hermes_home(),
+    .env/config loading, script resolution, AIAgent construction, and downstream
+    get_hermes_home() callers agree on the same home.
+
+    Some existing provider/config paths still load profile .env values through
+    os.environ, so profile jobs also snapshot and restore the process
+    environment on exit. tick() runs profile jobs sequentially to keep that
+    temporary mutation isolated from other scheduled jobs.
+    """
+    raw_profile = str(profile or "").strip()
+    if not raw_profile:
+        yield None
+        return
+
+    global _hermes_home
+    prior_override = _hermes_home
+    env_snapshot = os.environ.copy()
+
+    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    normalized_profile = normalize_profile_name(raw_profile)
+    try:
+        profile_home = Path(resolve_profile_env(normalized_profile)).resolve()
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning(
+            "Job '%s': configured profile %r no longer valid (%s) — "
+            "falling back to scheduler default",
+            job_id, raw_profile, exc,
+        )
+        yield None
+        return
+
+    override_token = None
+    try:
+        override_token = set_hermes_home_override(profile_home)
+        _hermes_home = profile_home
+        logger.info(
+            "Job '%s': using Hermes profile '%s' (%s)",
+            job_id,
+            normalized_profile,
+            profile_home,
+        )
+        yield normalized_profile
+    finally:
+        _hermes_home = prior_override
+        if override_token is not None:
+            reset_hermes_home_override(override_token)
+        # Delta-based restore: remove added keys, restore changed keys.
+        # Avoids a brief window where other threads see an empty env.
+        added = set(os.environ.keys()) - set(env_snapshot.keys())
+        for k in added:
+            os.environ.pop(k, None)
+        for k, v in env_snapshot.items():
+            if os.environ.get(k) != v:
+                os.environ[k] = v
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -1255,6 +1321,17 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     else:
         argv = [sys.executable, str(path)]
 
+    run_env = os.environ.copy()
+    run_env["HERMES_HOME"] = str(_get_hermes_home())
+    try:
+        from hermes_constants import get_subprocess_home
+
+        profile_home = get_subprocess_home()
+        if profile_home:
+            run_env["HOME"] = profile_home
+    except Exception:
+        pass
+
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
@@ -1265,7 +1342,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
-            env=_sanitize_subprocess_env(os.environ.copy()),
+            env=_sanitize_subprocess_env(run_env),
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()
@@ -1595,6 +1672,13 @@ def _scan_assembled_cron_prompt(
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+    """Execute a single cron job, applying any per-job profile override."""
+    job_id = job["id"]
+    with _job_profile_context(job_id, job.get("profile")):
+        return _run_job_impl(job)
+
+
+def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
     
@@ -1831,8 +1915,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     #     .cursorrules from the job's project dir, AND
     #   - the terminal, file, and code-exec tools run commands from there.
     #
-    # tick() serializes workdir-jobs outside the parallel pool, so mutating
-    # os.environ["TERMINAL_CWD"] here is safe for those jobs.  For workdir-less
+    # tick() serializes jobs that mutate process-global runtime state (workdir
+    # and/or profile jobs) outside the parallel pool, so mutating
+    # os.environ["TERMINAL_CWD"] here is safe for those jobs. For workdir-less
     # jobs we leave TERMINAL_CWD untouched — preserves the original behaviour
     # (skip_context_files=True, tools use whatever cwd the scheduler has).
     _job_workdir = (job.get("workdir") or "").strip() or None
@@ -2465,12 +2550,21 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             body."""
             return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
 
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
-        # so they MUST run sequentially to avoid corrupting each other.  Jobs
-        # without a workdir leave env untouched and stay parallel-safe.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        # Partition due jobs: jobs with a per-job workdir and/or profile touch
+        # process-global runtime state inside run_job. Workdir jobs temporarily
+        # set os.environ["TERMINAL_CWD"]; profile jobs use a context-local
+        # Hermes home override, scheduler _hermes_home hook, and temporary
+        # profile .env load into os.environ with snapshot/restore. They MUST run
+        # sequentially to avoid corrupting each other. Jobs without either field
+        # stay parallel-safe.
+        sequential_jobs = [
+            j for j in due_jobs
+            if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
+        ]
+        parallel_jobs = [
+            j for j in due_jobs
+            if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
+        ]
 
         _results: list = []
         _all_futures: list = []
@@ -2499,9 +2593,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
             return pool.submit(_run_and_release)
 
-        # Sequential pass for env-mutating (workdir) jobs.
+        # Sequential pass for env/context-mutating (workdir/profile) jobs.
         # Queued to a persistent single-thread pool so they run one at a time
-        # WITHOUT blocking the ticker thread — a long workdir job no
+        # WITHOUT blocking the ticker thread — a long workdir/profile job no
         # longer starves the rest of the schedule (same fix as the parallel
         # pass, just serialized).  The in-flight guard prevents a still-running
         # job from being re-queued on the next tick.

@@ -392,4 +392,3 @@ def test_supervised_gateway_stdout_reaches_docker_logs(
         "destination may have been dropped by the new s6-log script. "
         f"File contents:\n{file_contents}"
     )
-

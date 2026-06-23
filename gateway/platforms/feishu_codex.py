@@ -29,8 +29,11 @@ async def handle_codex_message(
     2. 调用 codex_review.run_review 执行 Codex + 提取 diff + 评分。
     3. 使用 codex_landing.post_result 将结果回写到飞书。
     """
-    # 1️⃣ 立即回复
-    await send_reply("🔎 Codex 正在执行，请稍候…")
+    # 1️⃣ 立即回复（不阻塞主流程）
+    try:
+        await send_reply("🔎 Codex 正在执行，请稍候…")
+    except Exception:
+        logger.warning("send_reply failed, continuing", exc_info=True)
 
     # 2️⃣ 调用审查子模块
     from .codex_review import run_review
@@ -52,9 +55,13 @@ async def handle_codex_message(
     # 3️⃣ 回写飞书（用 lark-cli 直发，不依赖闭包 self.send，避免 gateway 重启后失效）
     import subprocess
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["lark-cli", "im", "+messages-send", "--chat-id", chat_id, "--text", result_msg],
             capture_output=True, text=True, timeout=15,
         )
+        if result.returncode == 0:
+            logger.info("Codex result sent via lark-cli: chat_id=%s", chat_id)
+        else:
+            logger.error("lark-cli failed: exit=%d stderr=%s", result.returncode, result.stderr.strip())
     except Exception as e:
         logger.error("Failed to send Codex result via lark-cli: %s", e)

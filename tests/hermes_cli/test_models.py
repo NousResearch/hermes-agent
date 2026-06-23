@@ -907,3 +907,47 @@ class TestNousRecommendedModels:
             patch("hermes_cli.models.check_nous_free_tier", side_effect=RuntimeError("boom")),
         ):
             assert get_nous_recommended_aux_model(vision=False) == "paid-model"
+
+
+class TestLiveModelFetchDiagnostics:
+    """A failed live /models probe must surface *why* instead of silently
+    degrading to the static fallback list (the GLM-5.2-on-GMI report)."""
+
+    def test_probe_surfaces_error_reason(self):
+        import ssl
+        err = ssl.SSLCertVerificationError(
+            "certificate verify failed: unable to get local issuer certificate"
+        )
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=err):
+            res = _models_mod.probe_api_models("key", "https://example.com/v1")
+        assert res["models"] is None
+        assert res["error"] and "CERTIFICATE" in res["error"].upper()
+
+    def test_probe_success_has_null_error(self):
+        resp = MagicMock()
+        resp.read.return_value = b'{"data": [{"id": "m1"}, {"id": "m2"}]}'
+        resp.__enter__ = lambda s: resp
+        resp.__exit__ = lambda *a: False
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=resp):
+            res = _models_mod.probe_api_models("key", "https://example.com/v1")
+        assert res["models"] == ["m1", "m2"]
+        assert res["error"] is None
+
+    def test_warn_fires_once_with_ssl_hint(self, capsys):
+        _models_mod._LIVE_FETCH_WARNED.discard("gmi")
+        reason = "SSLCertVerificationError: certificate verify failed"
+        _models_mod._warn_live_model_fetch_failed("gmi", reason)
+        _models_mod._warn_live_model_fetch_failed("gmi", reason)  # deduped
+        err = capsys.readouterr().err
+        assert err.count("could not fetch the live model list") == 1
+        assert "SSL_CERT_FILE" in err
+
+    def test_warn_suppressed_for_no_catalog_404(self, capsys):
+        _models_mod._LIVE_FETCH_WARNED.discard("somesvc")
+        _models_mod._warn_live_model_fetch_failed(
+            "somesvc", "HTTPError: HTTP Error 404: Not Found"
+        )
+        assert capsys.readouterr().err == ""
+
+    def test_gmi_fallback_includes_glm_5_2(self):
+        assert "zai-org/GLM-5.2-FP8" in _models_mod._PROVIDER_MODELS["gmi"]

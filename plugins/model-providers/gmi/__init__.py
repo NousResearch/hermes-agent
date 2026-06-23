@@ -19,6 +19,7 @@ gmi = ProviderProfile(
     default_headers={"User-Agent": f"HermesAgent/{_HERMES_VERSION}"},
     default_aux_model="google/gemini-3.1-flash-lite-preview",
     fallback_models=(
+        "zai-org/GLM-5.2-FP8",
         "zai-org/GLM-5.1-FP8",
         "deepseek-ai/DeepSeek-V3.2",
         "moonshotai/Kimi-K2.5",

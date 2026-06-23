@@ -1009,7 +1009,7 @@ Subcommands:
 | `search` | Search skill registries. |
 | `install` | Install a skill. |
 | `inspect` | Preview a skill without installing it. |
-| `list` | List installed skills. |
+| `list` | List installed skills. Use `--provenance` to add a column showing each skill's install-origin path, and `--source {builtin,hub,local-edit,local}` to filter. Source and Trust reflect install origin, not current file location. |
 | `check` | Check installed hub skills for upstream updates. |
 | `update` | Reinstall hub skills with upstream changes when available. |
 | `audit` | Re-scan installed hub skills. |
@@ -1035,6 +1035,11 @@ hermes skills install official/migration/openclaw-migration
 hermes skills install skills-sh/anthropics/skills/pdf --force
 hermes skills install https://sharethis.chat/SKILL.md                     # Direct URL (single-file SKILL.md)
 hermes skills install https://example.com/SKILL.md --name my-skill        # Override name when frontmatter has none
+hermes skills list                                                       # all installed skills (Source/Trust/Status columns)
+hermes skills list --source builtin                                      # only bundled skills
+hermes skills list --source hub                                          # only hub-installed skills
+hermes skills list --source local-edit                                   # only bundled skills you've modified
+hermes skills list --provenance                                          # add the install-origin path column
 hermes skills check
 hermes skills update
 hermes skills config
@@ -1052,6 +1057,7 @@ Notes:
 - `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
 - `--source browse-sh` searches [browse.sh](https://browse.sh)'s catalog of 200+ site-specific browser-automation skills. Identifiers look like `browse-sh/airbnb.com/search-listings-ddgioa`.
 - Passing an `http(s)://…/*.md` URL installs a single-file SKILL.md directly. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
+- `hermes skills list --source` accepts `{all,builtin,hub,local-edit,local}`. The `--provenance` flag adds a column showing the install-origin path each skill was seeded from. Source and Trust now reflect **install origin**, not current file location — bundled skills report `builtin` even when their copy lives in `~/.hermes/skills/`, and bundled skills you've edited show up as `local-edit`. To audit "everything you've personally touched", filter by `--source local-edit` (use `local` only for hand-written skills living in your profile skills dir).
 
 ## `hermes bundles`
 

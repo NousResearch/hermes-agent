@@ -24,15 +24,22 @@ Every Hermes installation ships with bundled skills. See what's available:
 hermes skills list
 ```
 
-This shows a compact list with names and descriptions:
+This shows a compact table with name, category, install origin (`Source`), trust level (`Trust`), and enabled/disabled status:
 
 ```
-ascii-art         Generate ASCII art using pyfiglet, cowsay, boxes...
-arxiv             Search and retrieve academic papers from arXiv...
-github-pr-workflow Full PR lifecycle — create branches, commit...
-plan              Plan mode — inspect context, write a markdown...
-excalidraw        Create hand-drawn style diagrams using Excalidraw...
+Installed Skills
+┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┓
+┃ Name              ┃ Category     ┃ Source   ┃ Trust    ┃ Status  ┃
+┡━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━┩
+│ github-pr-workflow │ github       │ builtin  │ builtin  │ enabled │
+│ macos-computer-use │ apple        │ builtin  │ builtin  │ enabled │
+│ arxiv             │ research     │ official │ official │ enabled │
+│ argo-rollouts     │ devops       │ hub      │ trusted  │ enabled │
+│ my-team-workflow  │ internal     │ local    │ local    │ enabled │
+└───────────────────┴──────────────┴──────────┴──────────┴─────────┘
 ```
+
+`Source` and `Trust` reflect **install origin**, not where the file happens to live on disk. Add `--provenance` to see the install-origin path for each skill, and filter with `--source {builtin,hub,local-edit,local}` when you only want a subset. See [Inspecting installed skills](/user-guide/features/skills#inspecting-installed-skills-hermes-skills-list) for the full breakdown of what each source value means.
 
 ### Searching for a Skill
 

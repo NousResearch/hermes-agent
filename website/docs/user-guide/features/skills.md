@@ -673,6 +673,44 @@ Important behavior:
 | `trusted` | Trusted registries/repos such as `openai/skills`, `anthropics/skills`, `huggingface/skills`, `NVIDIA/skills` | More permissive policy than community sources |
 | `community` | Everything else (`skills.sh`, well-known endpoints, custom GitHub repos, most marketplaces) | Non-dangerous findings can be overridden with `--force`; `dangerous` verdicts stay blocked |
 
+### Inspecting installed skills (`hermes skills list`)
+
+The `hermes skills list` table now reports a skill's **install origin** — not its current file location — in the `Source` and `Trust` columns, and exposes a new `Provenance` column for the underlying install path.
+
+```bash
+hermes skills list                 # all installed skills
+hermes skills list --source builtin   # only bundled skills
+hermes skills list --source hub       # only skills installed from a registry
+hermes skills list --source local-edit   # only bundled skills you've modified
+hermes skills list --provenance     # add the install-origin path column
+```
+
+The Provenance column shows where each skill was originally seeded from. For a bundled skill, that's the canonical path inside the Hermes source tree (e.g. `/Users/.../.hermes/hermes-agent/skills/apple/macos-computer-use` for `macos-computer-use`). For a hub install, it's the upstream registry path recorded in the hub lock.
+
+:::note Migration: filter changes
+If you previously used `Source == local` to vet user-authored or hand-edited skills, that filter now means something different. `Source: local` only catches **hand-written skills living in your profile skills directory**; bundled skills you've customized are labeled `local-edit` instead, and bundled skills you haven't touched are labeled `builtin` regardless of where their copy happens to live on disk. To audit "everything you've personally touched", filter by `provenance == local-edit` (or pass `--source local-edit`). The table summary line counts each category so you can confirm the split at a glance:
+
+```text
+4 hub-installed, 14 builtin, 2 local-edit, 9 local — 27 enabled, 2 disabled
+```
+:::
+
+#### `--source` choices
+
+| Value | Matches | Notes |
+|-------|---------|-------|
+| `all` | Every installed skill | Default. |
+| `builtin` | Bundled skills shipped with Hermes (untouched) | Trust: `builtin`. |
+| `hub` | Skills installed from a registry (skills.sh, GitHub, official, clawhub, etc.) | Trust: the value the hub lock recorded (`trusted`, `community`, etc.). |
+| `local-edit` | Bundled skills the user has modified | Trust: `local` (downgraded because user-tampered). |
+| `local` | Hand-written skills living only in the profile skills directory | Trust: `local`. |
+
+#### Where the data comes from
+
+Source, Trust, and Provenance are read from a per-profile registry at `~/.hermes/skills/.provenance`, written at install / sync time by `HubLockFile.record_install` and `tools/skills_sync.sync_skills`. The registry is the source of truth; the path-based classification is only used as a backfill when the registry is missing an entry (which can happen for skills installed before this registry existed). When backfill runs, the table emits a single note listing the affected skills so you can run `hermes update` to refresh the registry.
+
+Because the registry records **install origin**, the same skill can have a Source of `builtin` whether its copy sits under `~/.hermes/hermes-agent/skills/` (the bundled source tree) or has been seeded into the profile's `~/.hermes/skills/`. What matters is where it came from, not where the file lives today.
+
 ### Update lifecycle
 
 The hub now tracks enough provenance to re-check upstream copies of installed skills:

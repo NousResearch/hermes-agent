@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Hermes Agent sidecar for @massalabs/gossip-sdk",
   "dependencies": {
-    "@massalabs/gossip-sdk": "file:../../../../../gossip/gossip-sdk"
+    "@massalabs/gossip-sdk": "^0.0.2",
+    "tslib": "^2.8.1"
   }
 }

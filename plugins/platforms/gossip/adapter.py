@@ -14,7 +14,6 @@ import logging
 import os
 import secrets
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -44,6 +43,54 @@ _MAX_MESSAGE_LENGTH = 8000
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
 _GOSSIP_SDK_DIR = _SIDECAR_DIR / "node_modules" / "@massalabs" / "gossip-sdk"
 _GOSSIP_SDK_DIST = _GOSSIP_SDK_DIR / "dist" / "index.js"
+
+
+def _terminate_process_tree(proc: subprocess.Popen, *, force: bool = False) -> None:
+    """Terminate the sidecar and any child processes it created."""
+    if sys.platform == "win32":
+        cmd = ["taskkill", "/PID", str(proc.pid), "/T"]
+        if force:
+            cmd.append("/F")
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except FileNotFoundError:
+            if force:
+                proc.kill()
+            else:
+                proc.terminate()
+            return
+
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout or "").strip()
+            raise OSError(details or f"taskkill failed for PID {proc.pid}")
+        return
+
+    import psutil
+
+    try:
+        parent = psutil.Process(proc.pid)
+        children = parent.children(recursive=True)
+        if force:
+            for child in children:
+                try:
+                    child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            parent.kill()
+        else:
+            for child in children:
+                try:
+                    child.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+            parent.terminate()
+    except psutil.NoSuchProcess:
+        return
 
 
 def _coerce_port(value: Any, default: int) -> int:
@@ -499,17 +546,11 @@ class GossipAdapter(BasePlatformAdapter):
             try:
                 proc.wait(timeout=3.0)
             except subprocess.TimeoutExpired:
-                if sys.platform != "win32":
-                    try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    except (ProcessLookupError, PermissionError):
-                        proc.terminate()
-                else:
-                    proc.terminate()
+                _terminate_process_tree(proc)
                 try:
                     proc.wait(timeout=2.0)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    _terminate_process_tree(proc, force=True)
         finally:
             self._sidecar_proc = None
             if self._sidecar_supervisor_task is not None:

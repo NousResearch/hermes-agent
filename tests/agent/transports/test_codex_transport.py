@@ -91,6 +91,59 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("prompt_cache_key") == "test-session-123"
 
+    def test_cache_key_defaults_to_session_id(self, transport):
+        """Absent an explicit cache_key, prompt_cache_key falls back to
+        session_id so interactive behavior is byte-identical."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            session_id="test-session-123",
+            cache_key=None,
+        )
+        assert kw.get("prompt_cache_key") == "test-session-123"
+
+    def test_explicit_cache_key_overrides_session_id(self, transport):
+        """An explicit cache_key drives prompt_cache_key while session_id
+        stays free to carry a per-run value (recurring cron pattern)."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            session_id="cron_job123_20260623_150000",
+            cache_key="cron_job123",
+        )
+        assert kw.get("prompt_cache_key") == "cron_job123"
+
+    def test_explicit_cache_key_drives_codex_headers(self, transport):
+        """On the Codex backend, the stable cache_key (not the per-run
+        session_id) populates the cache-scope routing headers."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            session_id="cron_job123_20260623_150000",
+            cache_key="cron_job123",
+            is_codex_backend=True,
+        )
+        headers = kw.get("extra_headers", {})
+        assert headers.get("session_id") == "cron_job123"
+        assert headers.get("x-client-request-id") == "cron_job123"
+
+    def test_explicit_cache_key_drives_xai_extra_body(self, transport):
+        """xAI cache routing uses the stable cache_key, but the xAI
+        conversation header (x-grok-conv-id) stays the per-run session_id."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4",
+            messages=messages,
+            tools=[],
+            session_id="cron_job123_20260623_150000",
+            cache_key="cron_job123",
+            is_xai_responses=True,
+        )
+        assert kw.get("extra_body", {}).get("prompt_cache_key") == "cron_job123"
+        assert kw.get("extra_headers", {}).get("x-grok-conv-id") == (
+            "cron_job123_20260623_150000"
+        )
+
     def test_github_responses_no_cache_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

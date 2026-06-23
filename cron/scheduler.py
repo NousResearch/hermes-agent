@@ -2077,6 +2077,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             skip_memory=True,  # Cron system prompts would corrupt user representations
             platform="cron",
             session_id=_cron_session_id,
+            # Stable prompt-cache scope: session_id carries a per-fire
+            # timestamp (cron_<id>_<ts>) so each run is cache-cold; pass the
+            # constant job_id as cache_key so repeated fires of the same job
+            # reuse the warm static prefix (identity + tools + job prompt).
+            cache_key=f"cron_{job_id}",
             session_db=_session_db,
         )
         

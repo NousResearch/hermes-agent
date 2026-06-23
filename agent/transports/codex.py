@@ -71,7 +71,12 @@ class ResponsesApiTransport(ProviderTransport):
         params:
             instructions: str — system prompt (extracted from messages[0] if not given)
             reasoning_config: dict | None — {effort, enabled}
-            session_id: str | None — used for prompt_cache_key + xAI conv header
+            session_id: str | None — transcript/session id; drives the xAI
+                conversation header and is the default prompt-cache scope
+            cache_key: str | None — explicit prompt-cache scope key; defaults
+                to session_id when absent. Lets recurring callers (e.g. cron)
+                keep a stable cache key across fires while session_id stays
+                per-run for transcript isolation
             max_tokens: int | None — max_output_tokens
             timeout: float | None — per-request timeout forwarded to the SDK
             request_overrides: dict | None — extra kwargs merged in
@@ -212,10 +217,17 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["parallel_tool_calls"] = True
 
         session_id = params.get("session_id")
+        # Prompt-cache scope key. Defaults to session_id so interactive
+        # behavior is byte-identical, but callers whose session_id changes on
+        # every invocation (recurring cron jobs use cron_<id>_<timestamp>) can
+        # pass a stable ``cache_key`` so repeated runs reuse the warm static
+        # prefix instead of paying a cold cache on each fire. This is a routing
+        # hint, never a correctness boundary — a stale key only costs a miss.
+        cache_key = params.get("cache_key") or session_id
         # xAI Responses takes prompt_cache_key in extra_body (set further
         # down); GitHub Models opts out of cache-key routing entirely.
-        if not is_github_responses and not is_xai_responses and session_id:
-            kwargs["prompt_cache_key"] = session_id
+        if not is_github_responses and not is_xai_responses and cache_key:
+            kwargs["prompt_cache_key"] = cache_key
 
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort
@@ -284,7 +296,7 @@ class ResponsesApiTransport(ProviderTransport):
             # remain high.  Send session_id / x-client-request-id as HTTP
             # headers while keeping ``prompt_cache_key`` in the body for
             # standard OpenAI routing as a belt-and-braces fallback.
-            cache_scope_id = str(session_id or "").strip()
+            cache_scope_id = str(cache_key or "").strip()
             if cache_scope_id:
                 existing_extra_headers = kwargs.get("extra_headers")
                 merged_extra_headers: Dict[str, str] = {}
@@ -326,7 +338,7 @@ class ResponsesApiTransport(ProviderTransport):
             merged_extra_body: Dict[str, Any] = {}
             if isinstance(existing_extra_body, dict):
                 merged_extra_body.update(existing_extra_body)
-            merged_extra_body.setdefault("prompt_cache_key", session_id)
+            merged_extra_body.setdefault("prompt_cache_key", cache_key)
             kwargs["extra_body"] = merged_extra_body
 
         return kwargs

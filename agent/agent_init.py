@@ -181,6 +181,7 @@ def init_agent(
     provider_data_collection: str = None,
     openrouter_min_coding_score: Optional[float] = None,
     session_id: str = None,
+    cache_key: str = None,
     tool_progress_callback: callable = None,
     tool_start_callback: callable = None,
     tool_complete_callback: callable = None,
@@ -251,6 +252,9 @@ def init_agent(
             openrouter/pareto-code router. Only applied when model == "openrouter/pareto-code".
             None or empty = let OpenRouter pick the strongest available coder.
         session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
+        cache_key (str): Stable prompt-cache scope key (optional). Defaults to None,
+            so transports fall back to session_id. Recurring callers (cron) pass a
+            per-job constant so repeated fires reuse the warm cache prefix.
         tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
         clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
             Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
@@ -1041,6 +1045,12 @@ def init_agent(
         timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]
         agent.session_id = f"{timestamp_str}_{short_uuid}"
+
+    # Optional stable prompt-cache scope key. Defaults to None, in which case
+    # transports fall back to session_id (interactive behavior unchanged).
+    # Recurring callers (cron) pass a per-job constant so repeated fires reuse
+    # the warm cache prefix even though session_id carries a per-run timestamp.
+    agent.cache_key = cache_key
 
     # Expose session ID to tools (terminal, execute_code) so agents can
     # reference their own session for --resume commands, cross-session

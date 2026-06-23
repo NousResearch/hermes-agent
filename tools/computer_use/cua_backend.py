@@ -47,6 +47,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from utils import is_truthy_value
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import (
@@ -120,7 +121,7 @@ def _cua_telemetry_disabled() -> bool:
         cfg = load_config() or {}
         cu = cfg.get("computer_use") or {}
         # opt-in flag: True => user wants telemetry => do NOT disable.
-        return not bool(cu.get("cua_telemetry", False))
+        return not is_truthy_value(cu.get("cua_telemetry"), default=False)
     except Exception:
         # Config unreadable — default to disabling telemetry (fail safe).
         return True

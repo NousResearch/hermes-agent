@@ -50,7 +50,7 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from utils import base_url_host_matches, is_truthy_value
+from utils import is_truthy_value,  base_url_host_matches, is_truthy_value
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
 # capture our warnings.  (run_agent.py also does
@@ -1250,19 +1250,19 @@ def init_agent(
     # as a separate flag from tool_use_enforcement because the guidance
     # applies to ALL models, not just the model families enforcement
     # targets.
-    agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
+    agent._task_completion_guidance = is_truthy_value(_agent_section.get("task_completion_guidance"), default=True)
 
     # Universal parallel-tool-call guidance toggle.  Default True.  Separate
     # flag from task_completion_guidance because a user may want one but not
     # the other.  Steers the model to batch independent tool calls into a
     # single turn; the runtime already executes such batches concurrently.
-    agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
+    agent._parallel_tool_call_guidance = is_truthy_value(_agent_section.get("parallel_tool_call_guidance"), default=True)
 
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics
     # are noisy.
-    agent._environment_probe = bool(_agent_section.get("environment_probe", True))
+    agent._environment_probe = is_truthy_value(_agent_section.get("environment_probe"), default=True)
 
     # Per-platform prompt-hint overrides (config.yaml → platform_hints).
     # Lets an enterprise admin append to or replace Hermes' built-in

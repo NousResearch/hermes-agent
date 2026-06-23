@@ -124,7 +124,7 @@ class TestHelperFunctions(unittest.TestCase):
         )
 
     def test_authenticated_sender_prefers_return_path(self):
-        from gateway.platforms.email import _authenticated_sender_address
+        from plugins.platforms.email.adapter import _authenticated_sender_address
 
         msg = MIMEText("hello", "plain", "utf-8")
         msg["From"] = "Allowed User <allowed@example.com>"
@@ -133,7 +133,7 @@ class TestHelperFunctions(unittest.TestCase):
         self.assertEqual(_authenticated_sender_address(msg), "bounce@example.net")
 
     def test_authenticated_sender_falls_back_to_from(self):
-        from gateway.platforms.email import _authenticated_sender_address
+        from plugins.platforms.email.adapter import _authenticated_sender_address
 
         msg = MIMEText("hello", "plain", "utf-8")
         msg["From"] = "Allowed User <allowed@example.com>"
@@ -141,7 +141,7 @@ class TestHelperFunctions(unittest.TestCase):
         self.assertEqual(_authenticated_sender_address(msg), "allowed@example.com")
 
     def test_dmarc_aligned_from_passed(self):
-        from gateway.platforms.email import _dmarc_aligned_from_passed
+        from plugins.platforms.email.adapter import _dmarc_aligned_from_passed
 
         msg = MIMEText("hello", "plain", "utf-8")
         msg["From"] = "Allowed User <allowed@example.com>"
@@ -154,7 +154,7 @@ class TestHelperFunctions(unittest.TestCase):
             self.assertTrue(_dmarc_aligned_from_passed(msg, "allowed@example.com"))
 
     def test_dmarc_aligned_from_rejects_wrong_domain(self):
-        from gateway.platforms.email import _dmarc_aligned_from_passed
+        from plugins.platforms.email.adapter import _dmarc_aligned_from_passed
 
         msg = MIMEText("hello", "plain", "utf-8")
         msg["From"] = "Allowed User <allowed@example.com>"
@@ -169,7 +169,7 @@ class TestHelperFunctions(unittest.TestCase):
     def test_dmarc_alignment_requires_trusted_authserv_id(self):
         """A forged topmost Authentication-Results must never satisfy DMARC
         alignment when no trusted authserv-id is configured."""
-        from gateway.platforms.email import _dmarc_aligned_from_passed
+        from plugins.platforms.email.adapter import _dmarc_aligned_from_passed
 
         msg = MIMEText("hello", "plain", "utf-8")
         msg["From"] = "Allowed User <allowed@example.com>"
@@ -186,7 +186,7 @@ class TestHelperFunctions(unittest.TestCase):
     def test_dmarc_alignment_ignores_untrusted_authserv_id(self):
         """An aligned dmarc=pass stamped by an authserv-id we do not trust is
         ignored, even though it is the topmost Authentication-Results header."""
-        from gateway.platforms.email import _dmarc_aligned_from_passed
+        from plugins.platforms.email.adapter import _dmarc_aligned_from_passed
 
         msg = MIMEText("hello", "plain", "utf-8")
         msg["From"] = "Allowed User <allowed@example.com>"

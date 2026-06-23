@@ -66,6 +66,18 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         default=[],
         help="Environment variables for stdio servers (KEY=VALUE)",
     )
+    mcp_add_p.add_argument(
+        "--allow-unresolved-env",
+        dest="allow_unresolved_env",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow saving an MCP server even when one or more ${VAR} placeholders "
+            "cannot be resolved at save time. A warning is emitted to stderr and "
+            "the unresolved variable names are stored as an advisory. "
+            "Not recommended — the server will likely fail at gateway boot."
+        ),
+    )
 
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
     mcp_rm_p.add_argument("name", help="Server name to remove")

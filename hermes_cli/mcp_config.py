@@ -25,7 +25,7 @@ from hermes_cli.config import (
 )
 from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
-from hermes_cli.mcp_security import validate_mcp_server_entry
+from hermes_cli.mcp_security import validate_mcp_server_entry, validate_mcp_server_secrets
 from tools.mcp_tool import _ENV_VAR_PATTERN
 
 logger = logging.getLogger(__name__)
@@ -85,12 +85,19 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     return servers
 
 
-def _save_mcp_server(name: str, server_config: dict) -> bool:
+def _save_mcp_server(name: str, server_config: dict, *, allow_unresolved_env: bool = False) -> bool:
     """Add or update a server entry in config.yaml.
 
     Returns False when a high-signal exfiltration-shaped stdio command is
     rejected. MCP stdio servers are user-chosen local commands, so this blocks
     shell+egress payloads rather than whitelisting command families.
+
+    Also refuses (by default) when any ``${VAR}`` placeholder in the config
+    cannot be resolved against the profile's effective env, to prevent entries
+    that will crash at gateway boot with a literal credential string.  Pass
+    ``allow_unresolved_env=True`` to bypass and save with a warning logged to
+    stderr and persisted as a ``_unresolved_env_vars`` advisory list in the
+    saved entry.
     """
     issues = validate_mcp_server_entry(name, server_config)
     if issues:
@@ -98,6 +105,46 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
             _warning(issue)
         _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
         return False
+
+    # Env-var placeholder gate: refuse if any ${VAR} won't resolve at runtime.
+    from hermes_constants import get_hermes_home as _get_hermes_home
+    _profile_dir = _get_hermes_home()
+    _shared_env = _profile_dir.parent / ".env"
+    secret_issues = validate_mcp_server_secrets(
+        name,
+        server_config,
+        profile_dir=_profile_dir,
+        shared_env_path=_shared_env,
+    )
+    if secret_issues:
+        if not allow_unresolved_env:
+            for issue in secret_issues:
+                _warning(issue)
+            _warning(
+                f"Server '{name}' was NOT saved. "
+                "Set the variable(s) above, then re-run `hermes mcp add`. "
+                "Use --allow-unresolved-env to bypass (not recommended)."
+            )
+            return False
+        else:
+            import sys as _sys
+            for issue in secret_issues:
+                print(f"WARNING: {issue}", file=_sys.stderr)
+            print(
+                f"WARNING: saving '{name}' with unresolved env vars "
+                "(--allow-unresolved-env override active).",
+                file=_sys.stderr,
+            )
+            # Persist advisory so `hermes doctor` can surface it later.
+            unresolved = [
+                iss.split("${", 1)[1].split("}")[0]
+                for iss in secret_issues
+                if "${" in iss
+            ]
+            if unresolved:
+                server_config = dict(server_config)
+                server_config["_unresolved_env_vars"] = unresolved
+
     config = load_config()
     config.setdefault("mcp_servers", {})[name] = server_config
     save_config(config)
@@ -310,6 +357,7 @@ def cmd_mcp_add(args):
     auth_type = getattr(args, "auth", None)
     preset_name = getattr(args, "preset", None)
     raw_env = getattr(args, "env", None)
+    allow_unresolved_env = getattr(args, "allow_unresolved_env", False)
 
     server_config: Dict[str, Any] = {}
     try:
@@ -362,6 +410,30 @@ def cmd_mcp_add(args):
             _warning(issue)
         _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
         return
+
+    # Peer check: refuse early if any ${VAR} placeholder won't resolve at
+    # save time.  This fires before the discovery probe so operators get a
+    # clear error message rather than a confusing connection failure or a
+    # broken saved entry.  --allow-unresolved-env bypasses the gate.
+    if not allow_unresolved_env:
+        from hermes_constants import get_hermes_home as _get_hermes_home
+        _profile_dir = _get_hermes_home()
+        _shared_env = _profile_dir.parent / ".env"
+        secret_issues = validate_mcp_server_secrets(
+            name,
+            server_config,
+            profile_dir=_profile_dir,
+            shared_env_path=_shared_env,
+        )
+        if secret_issues:
+            for issue in secret_issues:
+                _warning(issue)
+            _warning(
+                f"Server '{name}' was NOT saved. "
+                "Set the variable(s) above, then re-run `hermes mcp add`. "
+                "Use --allow-unresolved-env to bypass (not recommended)."
+            )
+            return
 
     # ── Authentication ────────────────────────────────────────────────
 
@@ -426,7 +498,7 @@ def cmd_mcp_add(args):
         _error(f"Failed to connect: {exc}")
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
-            if _save_mcp_server(name, server_config):
+            if _save_mcp_server(name, server_config, allow_unresolved_env=allow_unresolved_env):
                 _success(f"Saved '{name}' to config (disabled)")
                 _info("Fix the issue, then: hermes mcp test " + name)
         return
@@ -434,7 +506,7 @@ def cmd_mcp_add(args):
     if not tools:
         _warning("Server connected but reported no tools.")
         if _confirm("Save config anyway?", default=True):
-            if _save_mcp_server(name, server_config):
+            if _save_mcp_server(name, server_config, allow_unresolved_env=allow_unresolved_env):
                 _success(f"Saved '{name}' to config")
         return
 
@@ -492,7 +564,7 @@ def cmd_mcp_add(args):
     # ── Save ──────────────────────────────────────────────────────────
 
     server_config["enabled"] = True
-    if _save_mcp_server(name, server_config):
+    if _save_mcp_server(name, server_config, allow_unresolved_env=allow_unresolved_env):
         print()
         _success(f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{total} tools enabled)")
         _info("Start a new session to use these tools.")

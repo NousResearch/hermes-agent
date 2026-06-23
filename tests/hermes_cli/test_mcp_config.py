@@ -754,3 +754,134 @@ class TestMcpLogin:
 
         assert "Authenticated — 3 tool(s) available" in out
         assert "no OAuth token" not in out
+
+
+# ---------------------------------------------------------------------------
+# Tests: save-gate — unresolved env-var placeholders (t_09d9a0f6)
+# ---------------------------------------------------------------------------
+
+class TestEnvVarSaveGate:
+    """The env-var gate must refuse saves when ${VAR} can't be resolved,
+    allow them with --allow-unresolved-env, and stay silent when every
+    variable is already in the effective env.
+
+    Behaviour contract (AGENTS.md: 'behavior contracts over snapshots'):
+      - Unresolved single var -> save refused, issue text mentions the var name.
+      - Unresolved var nested inside the 'env' dict -> same refusal.
+      - All vars resolved -> save proceeds silently.
+      - --allow-unresolved-env bypass -> save proceeds, warning on stderr,
+        advisory stored in saved config.
+    """
+
+    def _make_add_args(self, **kwargs):
+        defaults = {
+            "name": "myserver",
+            "url": None,
+            "mcp_command": "npx",
+            "args": ["@example/mcp-server"],
+            "auth": None,
+            "preset": None,
+            "env": None,
+            "allow_unresolved_env": False,
+            "mcp_action": None,
+        }
+        defaults.update(kwargs)
+        return argparse.Namespace(**defaults)
+
+    def test_unresolved_single_var_refused(self, tmp_path, monkeypatch, capsys):
+        """A ${VAR} in --env that is not in the effective env must block the save."""
+        monkeypatch.delenv("MY_SECRET", raising=False)
+        # Ensure no .env file supplies it either.
+        (tmp_path / ".env").write_text("OTHER_KEY=irrelevant\n")
+        # Patch get_hermes_home to point at tmp_path so _save_mcp_server
+        # resolves the profile .env from tmp_path.
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+        # Stub out the probe so we don't need a live MCP server.
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, cfg: [("a_tool", "desc")],
+        )
+        monkeypatch.setattr("hermes_cli.mcp_config._confirm", lambda *a, **kw: True)
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        cmd_mcp_add(self._make_add_args(env=["MY_SECRET=${MY_SECRET}"]))
+
+        out, err = capsys.readouterr()
+        combined = out + err
+        # Save must have been refused.
+        assert "MY_SECRET" in combined
+        assert "NOT saved" in combined or "not set" in combined
+        # Nothing must have been written to config.yaml.
+        import yaml
+        cfg_path = tmp_path / "config.yaml"
+        if cfg_path.exists():
+            cfg = yaml.safe_load(cfg_path.read_text()) or {}
+            assert "myserver" not in (cfg.get("mcp_servers") or {})
+
+    def test_unresolved_var_in_nested_env_dict_refused(self, tmp_path, monkeypatch):
+        """${VAR} nested inside the env dict must also be caught."""
+        monkeypatch.delenv("NESTED_SECRET", raising=False)
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+        from hermes_cli.mcp_security import validate_mcp_server_secrets
+        cfg = {
+            "command": "npx",
+            "args": ["@example/mcp"],
+            "env": {"API_KEY": "${NESTED_SECRET}"},
+        }
+        issues = validate_mcp_server_secrets("myserver", cfg, profile_dir=tmp_path)
+        assert any("NESTED_SECRET" in iss for iss in issues), (
+            f"Expected NESTED_SECRET in issues, got: {issues}"
+        )
+
+    def test_all_resolved_passes(self, tmp_path, monkeypatch):
+        """When every ${VAR} is present in the effective env, no issues returned."""
+        monkeypatch.setenv("RESOLVED_KEY", "actualvalue")
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+        from hermes_cli.mcp_security import validate_mcp_server_secrets
+        cfg = {
+            "command": "npx",
+            "args": ["@example/mcp"],
+            "env": {"API_KEY": "${RESOLVED_KEY}"},
+        }
+        issues = validate_mcp_server_secrets("myserver", cfg, profile_dir=tmp_path)
+        assert issues == [], f"Expected no issues, got: {issues}"
+
+    def test_allow_unresolved_env_bypass_logs_and_proceeds(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--allow-unresolved-env must bypass the gate, warn to stderr,
+        and persist the advisory in saved config."""
+        monkeypatch.delenv("GHOST_ADMIN_API_KEY", raising=False)
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, cfg: [("a_tool", "desc")],
+        )
+        monkeypatch.setattr("hermes_cli.mcp_config._confirm", lambda *a, **kw: True)
+        # Stub the tool-selection input (Y/n/select) so the test doesn't read stdin.
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        cmd_mcp_add(
+            self._make_add_args(
+                env=["GHOST_ADMIN_API_KEY=${GHOST_ADMIN_API_KEY}"],
+                allow_unresolved_env=True,
+            )
+        )
+
+        _, err = capsys.readouterr()
+        # Warning must have been emitted to stderr.
+        assert "GHOST_ADMIN_API_KEY" in err or "unresolved" in err.lower()
+
+        # Advisory must be stored in saved config.
+        import yaml
+        cfg_path = tmp_path / "config.yaml"
+        assert cfg_path.exists(), "config.yaml was not written"
+        cfg = yaml.safe_load(cfg_path.read_text()) or {}
+        servers = cfg.get("mcp_servers") or {}
+        assert "myserver" in servers, f"myserver not saved; servers: {list(servers)}"
+        advisory = servers["myserver"].get("_unresolved_env_vars")
+        assert advisory is not None, "Advisory _unresolved_env_vars not stored"
+        assert "GHOST_ADMIN_API_KEY" in advisory

@@ -2501,6 +2501,14 @@ class TestFormatMessage:
         out = GoogleChatAdapter.format_message("rate is ** TBD")
         assert "**" in out  # not converted
 
+    def test_nested_formatting_restoration(self):
+        """Nested bold inline code formatting behaves correctly and placeholders resolve."""
+        input_text = "The status of your pod: **`broker-dbbb484c5-d8p9w`**: Running"
+        output = GoogleChatAdapter.format_message(input_text)
+        assert "broker-dbbb484c5-d8p9w" in output
+        assert "GC0" not in output
+        assert "GC1" not in output
+
 
 class TestADCFallback:
     """When no SA JSON is configured, fall back to Application Default Credentials.

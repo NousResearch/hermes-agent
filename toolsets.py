@@ -241,6 +241,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "claude_code_delegation": {
+        "description": (
+            "Delegate tool-heavy work to a Claude Code subprocess using "
+            "first-party OAuth/subscription billing and Claude Code's full "
+            "tool/MCP/skill surface."
+        ),
+        "tools": ["delegate_to_claude_code"],
+        "includes": [],
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 
@@ -390,6 +400,10 @@ TOOLSETS = {
     "hermes-api-server": {
         "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
         "tools": [
+            # Claude Code cascade delegation for tool-heavy OAuth turns.
+            # Listed here for API server completeness; gated by
+            # _DEFAULT_OFF_TOOLSETS + check_fn (requires Claude CLI).
+            "delegate_to_claude_code",
             # Web
             "web_search", "web_extract",
             # Terminal + process management

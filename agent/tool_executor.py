@@ -94,6 +94,10 @@ def _ra():
     return run_agent
 
 
+def _is_interpreter_shutdown_submit_error(exc: RuntimeError) -> bool:
+    return "cannot schedule new futures after interpreter shutdown" in str(exc)
+
+
 def _emit_terminal_post_tool_call(
     agent,
     *,
@@ -605,13 +609,40 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if runnable_calls:
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                for i, tc, name, args in runnable_calls:
+                for submit_index, (i, tc, name, args) in enumerate(runnable_calls):
                     # Propagate the agent turn's ContextVars (e.g.
                     # _approval_session_key) AND thread-local approval/sudo
                     # callbacks into the worker thread; clears callbacks on exit.
-                    f = executor.submit(
-                        propagate_context_to_thread(_run_tool), i, tc, name, args, parsed_calls[i][3]
-                    )
+                    try:
+                        f = executor.submit(
+                            propagate_context_to_thread(_run_tool), i, tc, name, args, parsed_calls[i][3]
+                        )
+                    except RuntimeError as submit_error:
+                        if not _is_interpreter_shutdown_submit_error(submit_error):
+                            raise
+                        skipped_calls = runnable_calls[submit_index:]
+                        logger.warning(
+                            "interpreter shutdown while scheduling concurrent tools; "
+                            "skipping %d unsubmitted tool(s)",
+                            len(skipped_calls),
+                        )
+                        for skipped_i, _tc, skipped_name, skipped_args in skipped_calls:
+                            if results[skipped_i] is None:
+                                middleware_trace = parsed_calls[skipped_i][3]
+                                result = (
+                                    f"Error executing tool '{skipped_name}': "
+                                    "Python interpreter is shutting down; tool was not started"
+                                )
+                                results[skipped_i] = (
+                                    skipped_name,
+                                    skipped_args,
+                                    result,
+                                    0.0,
+                                    True,
+                                    False,
+                                    middleware_trace,
+                                )
+                        break
                     futures.append(f)
 
                 # Wait for all to complete with periodic heartbeats so the

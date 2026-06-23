@@ -646,6 +646,52 @@ def read_runtime_status() -> Optional[dict[str, Any]]:
     return _read_json_file(_get_runtime_status_path())
 
 
+# Max age of a persisted ``gateway_state.json`` snapshot before its liveness
+# claim is treated as suspect.  A healthy gateway rewrites the file (advancing
+# ``updated_at``) far more often than this; a record older than the TTL whose
+# PID is also dead almost certainly outlived an ungracefully-killed writer
+# (taskkill /F, OOM, power loss) that never ran its shutdown handler.
+_RUNTIME_STATUS_STALE_TTL_S = 120
+
+
+def runtime_status_is_stale(
+    record: Optional[dict[str, Any]],
+    ttl_s: int = _RUNTIME_STATUS_STALE_TTL_S,
+) -> bool:
+    """Return True when the runtime-status snapshot is older than ``ttl_s``.
+
+    Delegates to the existing :func:`_marker_is_stale` on the record's
+    ``updated_at`` timestamp.  A missing or unparseable timestamp is treated as
+    stale (the freshness signal is absent, so it cannot vouch for the record).
+    """
+    if not isinstance(record, dict):
+        return True
+    return _marker_is_stale(record.get("updated_at") or "", ttl_s)
+
+
+def runtime_status_pid_is_live(record: Optional[dict[str, Any]]) -> bool:
+    """Return True when the PID recorded in the snapshot is still alive.
+
+    Uses the existing no-kill :func:`_pid_exists` probe and the same
+    ``start_time`` PID-reuse guard as :func:`get_runtime_status_running_pid`:
+    when both the recorded and live start-times are known they must match, so a
+    recycled PID (same number, different process) is not mistaken for the
+    original.  Degrades to ``False`` when the record has no usable PID.
+    """
+    pid = _pid_from_record(record)
+    if pid is None or not _pid_exists(pid):
+        return False
+    recorded_start = (record or {}).get("start_time")
+    current_start = _get_process_start_time(pid)
+    if (
+        recorded_start is not None
+        and current_start is not None
+        and current_start != recorded_start
+    ):
+        return False
+    return True
+
+
 def parse_active_agents(raw: Any) -> int:
     """Coerce a persisted ``active_agents`` value to a clamped non-negative int.
 

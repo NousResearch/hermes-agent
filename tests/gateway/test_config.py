@@ -350,6 +350,28 @@ class TestLoadGatewayConfig:
         assert relay.extra.get("relay_url") == "https://connector.example/relay"
         assert Platform.RELAY in config.get_connected_platforms()
 
+    def test_explicit_disabled_platform_stays_disabled_even_with_env_token(self, tmp_path, monkeypatch):
+        """A profile can keep PAT-backed tooling env vars without opening a chat adapter."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "mattermost:\n"
+            "  enabled: false\n"
+            "  unauthorized_dm_behavior: ignore\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("MATTERMOST_TOKEN", "pat-for-tools")
+        monkeypatch.setenv("MATTERMOST_URL", "https://mattermost.example")
+
+        config = load_gateway_config()
+
+        mattermost = config.platforms[Platform.MATTERMOST]
+        assert mattermost.enabled is False
+        assert mattermost.token == "pat-for-tools"
+        assert config.get_unauthorized_dm_behavior(Platform.MATTERMOST) == "ignore"
+        assert Platform.MATTERMOST not in config.get_connected_platforms()
+
     def test_relay_platform_absent_when_url_unset(self, tmp_path, monkeypatch):
         """No relay URL -> no RELAY platform, so direct/single-tenant gateways
         are unaffected."""

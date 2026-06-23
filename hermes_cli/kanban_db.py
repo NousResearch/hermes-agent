@@ -6778,6 +6778,14 @@ def _default_spawn(
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
 
+    # A dispatcher-spawned worker is its OWN single-session process, NOT the
+    # gateway. The gateway sets _HERMES_GATEWAY=1 process-wide; copying it into
+    # the worker (via dict(os.environ)) would misclassify the worker as "gateway"
+    # and suppress its single-process os.environ session writes (the worker's
+    # own session-id stamping relies on them). Pop it here — mirrors the restart
+    # watcher (gateway/run.py) which pops it for the same reason.
+    env.pop("_HERMES_GATEWAY", None)
+
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
     # config.  Without this, `env = dict(os.environ)` copies only the parent's

@@ -12875,6 +12875,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            session_id=context.session_id or "",
             message_id=str(context.source.message_id) if context.source.message_id else "",
         )
 
@@ -15327,9 +15328,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
 
-            # session_key is now set via contextvars in _set_session_env()
-            # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
-            os.environ["HERMES_SESSION_KEY"] = session_key or ""
+            # session_key is bound per-turn via contextvars in _set_session_env()
+            # (concurrency-safe). We deliberately do NOT mirror it into the
+            # process-global os.environ here: the gateway runs concurrent
+            # sessions in ONE process, so a per-turn os.environ write would
+            # clobber every other concurrent session's key (the v3-latch bug
+            # class). Every gateway-reachable reader of HERMES_SESSION_KEY is
+            # contextvar-first (get_current_session_key, terminal sudo-cache
+            # scope). CLI/cron-standalone set their own key via their entrypoints.
 
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))

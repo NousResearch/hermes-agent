@@ -38,6 +38,23 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 
+def _current_session_id() -> Optional[str]:
+    """Resolve the active session id contextvar-first, os.environ fallback.
+
+    In the GATEWAY (concurrent sessions in one process) the per-turn contextvar
+    is the only correct source — the process-global os.environ HERMES_SESSION_ID
+    can be clobbered by a concurrent session (the v3-latch bug class). In a
+    dispatcher-spawned WORKER subprocess (single process, no bound contextvar)
+    get_session_env falls through to that process's correct os.environ value.
+    Returns None when neither is set.
+    """
+    try:
+        from gateway.session_context import get_session_env
+        return get_session_env("HERMES_SESSION_ID") or None
+    except Exception:
+        return os.environ.get("HERMES_SESSION_ID")
+
+
 # ---------------------------------------------------------------------------
 # Gating
 # ---------------------------------------------------------------------------
@@ -121,7 +138,7 @@ def _stamp_worker_session_metadata(
     """Add trusted worker session id metadata for this worker's own task."""
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return metadata
-    session_id = os.environ.get("HERMES_SESSION_ID")
+    session_id = _current_session_id()
     if not session_id:
         return metadata
     stamped = dict(metadata or {})
@@ -741,7 +758,7 @@ def _handle_create(args: dict, **kw) -> str:
     # Stamp the originating session id when the agent loop runs under
     # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
     # CLI / dashboard paths and on legacy hosts that don't set the env.
-    session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
+    session_id = args.get("session_id") or _current_session_id()
     priority = args.get("priority")
     # Resolve workspace. If the caller passed one explicitly, honor it.
     # Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)

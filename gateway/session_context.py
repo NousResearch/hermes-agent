@@ -103,11 +103,22 @@ def set_current_session_id(session_id: str) -> None:
     reconstructing the entire agent. Tools still consult
     ``get_session_env("HERMES_SESSION_ID")`` with an ``os.environ`` fallback,
     so both storage paths must move together when the active session changes.
+
+    🔴 **Gateway-aware (PRD gateway-session-env-leak):** the gateway runs
+    concurrent sessions in ONE process, so an unconditional ``os.environ`` write
+    here would clobber every other concurrent session's id (the v3-latch bug
+    class). Inside the gateway (``_HERMES_GATEWAY=1``) we bind the **contextvar
+    only** — the per-turn ``_set_session_env`` already binds ``session_id`` into
+    the contextvar, and every gateway-reachable reader is contextvar-first. The
+    ``os.environ`` write is kept for **non-gateway single-process** entrypoints
+    (CLI rotation, cron-standalone, dispatcher-spawned workers) whose tools read
+    the ``os.environ`` fallback and where there is no concurrency to clobber.
     """
     import os
 
-    os.environ["HERMES_SESSION_ID"] = session_id
     _SESSION_ID.set(session_id)
+    if os.environ.get("_HERMES_GATEWAY") != "1":
+        os.environ["HERMES_SESSION_ID"] = session_id
 
 
 def set_session_vars(

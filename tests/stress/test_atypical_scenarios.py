@@ -48,6 +48,8 @@ def scenario(name):
             home = tempfile.mkdtemp(prefix=f"hermes_atyp_{name}_")
             os.environ["HERMES_HOME"] = home
             os.environ["HOME"] = home
+            os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
+            os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
             for m in list(sys.modules.keys()):
                 if m.startswith(("hermes_cli", "plugins", "gateway")):
                     del sys.modules[m]
@@ -536,6 +538,8 @@ def _(home, kb):
     weird = tempfile.mkdtemp(prefix="hermes with spaces ")
     os.environ["HERMES_HOME"] = weird
     os.environ["HOME"] = weird
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     conn = kb.connect()
@@ -562,6 +566,8 @@ def _(home, kb):
     os.makedirs(weird, exist_ok=True)
     os.environ["HERMES_HOME"] = weird
     os.environ["HOME"] = weird
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     conn = kb.connect()
@@ -589,6 +595,7 @@ def _(home, kb):
     try:
         os.environ["HERMES_HOME"] = link1
         os.environ["HOME"] = link1
+        os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
         kb._INITIALIZED_PATHS.clear()
         kb.init_db()
         conn1 = kb.connect()
@@ -598,6 +605,7 @@ def _(home, kb):
         # Switch to link2 pointing at the same dir
         os.environ["HERMES_HOME"] = link2
         os.environ["HOME"] = link2
+        os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
         conn2 = kb.connect()
         # Should see the task we created via link1
         all_tasks = kb.list_tasks(conn2)
@@ -690,6 +698,8 @@ def _idempotency_race_worker(hermes_home: str, key: str, result_file: str,
     """Subprocess body for the idempotency race test."""
     os.environ["HERMES_HOME"] = hermes_home
     os.environ["HOME"] = hermes_home
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
     sys.path.insert(0, str(WT))
     from hermes_cli import kanban_db as kb
 

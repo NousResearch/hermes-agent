@@ -42,6 +42,8 @@ def worker_loop(worker_id: int, hermes_home: str, result_file: str) -> None:
     """
     os.environ["HERMES_HOME"] = hermes_home
     os.environ["HOME"] = hermes_home
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
     sys.path.insert(0, WT)
 
     from hermes_cli import kanban_db as kb
@@ -123,6 +125,8 @@ def main():
     # Seed.
     os.environ["HERMES_HOME"] = home
     os.environ["HOME"] = home
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
     sys.path.insert(0, WT)
     from hermes_cli import kanban_db as kb
 

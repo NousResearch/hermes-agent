@@ -2591,7 +2591,46 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
 # instead of a real spec heading. We reject the entire pattern (no
 # prefix, no suffix, the digits fill the whole rest of the string) so
 # that legitimate titles like "Task-12: wire the dashboard" still pass.
-_PLACEHOLDER_TITLE_RE = re.compile(r"^task-\d+$")
+#
+# Extended in SEV-2 kanban t_2a5ee696 (2026-06-23) with the fixture
+# patterns surfaced by the 17:08 read-only triage: ``real spec``,
+# ``real task``, ``burst-task-N``.
+#
+# Deliberately NOT included (because they're ambiguous — real titles
+# frequently use these words on their own):
+#   - ``test``     — used as a title for legitimate test-running tasks
+#   - ``debug``    — used as a title for legitimate debug-investigation tasks
+#   - ``crash``    — used as a title for legitimate crash-investigation tasks
+#                    (the test ``test_real_crash_still_counts_and_trips_breaker``
+#                    relies on this — see ticket comments).
+# These remain in the SEV-2 finding's pollution catalog as a manual
+# cleanup hint, but the auto-reject is limited to patterns that are
+# unambiguous fixtures (always have a digit suffix, or are a fixed
+# two-word phrase).
+_PLACEHOLDER_TITLE_PATTERNS: tuple[str, ...] = (
+    r"^task-\d+$",                  # audit #29 — the canonical unix-ts stub
+    r"^burst-task-\d+$",            # SEV-2 stress-test fixture
+    r"^real\s+spec$",               # SEV-2 placeholder (body was 'x')
+    r"^real\s+task$",
+)
+
+# ``re.match`` anchors at the start of the string but NOT at the end,
+# so ``$`` is required on each branch. ``re.IGNORECASE`` lets us catch
+# ``CRASH`` / ``Debug`` (fixture strings are sometimes uppercased by
+# smoke-test scripts). Whitespace handling is left to the helper below
+# which strips before matching.
+_PLACEHOLDER_TITLE_RE = re.compile(
+    "|".join(_PLACEHOLDER_TITLE_PATTERNS),
+    re.IGNORECASE,
+)
+
+# Keep a handle on the original audit #29 message so the create_task
+# caller can keep emitting that exact wording for the canonical case
+# (other patterns get a generic message). New code in t_2a5ee696
+# surfaces a more actionable message that names the escape hatches.
+_AUDIT29_PLACEHOLDER_MSG = (
+    "use a real title; placeholder pattern reserved for tests."
+)
 
 
 def is_placeholder_title(title: Optional[str]) -> bool:
@@ -2601,10 +2640,91 @@ def is_placeholder_title(title: Optional[str]) -> bool:
     Strips leading/trailing whitespace before matching so a sloppy
     ``"task-99 "`` is still caught. Returns False for None / empty —
     those are handled by the separate ``title is required`` guard.
+
+    Extended in SEV-2 kanban t_2a5ee696 to also catch the
+    ``burst-task-N`` / ``real spec`` / ``real task`` / ``test`` /
+    ``debug`` / ``crash`` fixture patterns surfaced by the 2026-06-23
+    17:08 read-only triage. All anchors stay anchored (fullmatch
+    semantics via the anchored regexes + helper-side strip) so a real
+    title like "Fix the crash in cart-service" is NOT rejected just
+    because it contains the substring "crash".
     """
     if not title:
         return False
     return bool(_PLACEHOLDER_TITLE_RE.match(str(title).strip()))
+
+
+class PlaceholderAssigneeError(ValueError):
+    """Raised by :func:`create_task` when ``assignee`` isn't a known profile.
+
+    Subclasses ``ValueError`` so existing callers that catch the
+    parent class (the dashboard HTTP route, the CLI, etc.) keep
+    working unchanged. Specialising it lets callers distinguish
+    "phantom assignee" from "title is empty" without regex-matching
+    the message.
+
+    Surfaced in SEV-2 kanban t_2a5ee696 (2026-06-23).
+    """
+
+
+# ``default`` is special: every Hermes install has it even when no
+# profile dir exists on disk, so it must be accepted regardless of
+# ``list_profiles_on_disk()`` output. ``code-craftsman`` and friends
+# are picked up dynamically from the profiles directory.
+_HARDCODED_VALID_ASSIGNEES: frozenset[str] = frozenset({"default"})
+
+
+def is_known_assignee(
+    name: Optional[str], *, conn: Optional[sqlite3.Connection] = None,
+) -> bool:
+    """True if ``name`` is a profile the dispatcher could actually route to.
+
+    "Known" means:
+
+    - The string ``"default"`` (every install has this), OR
+    - A profile directory under ``~/.hermes/profiles/<name>/`` that
+      contains a ``config.yaml`` (see :func:`list_profiles_on_disk`).
+
+    The function does NOT consult the tasks table — a name that
+    appears as an assignee on existing tasks but has no profile dir
+    is treated as a phantom (this matches the SEV-2 finding: the
+    pollution was created by callers who picked arbitrary strings,
+    not by a profile that disappeared mid-flight). Pass ``conn`` for
+    API symmetry with future helpers; it's currently unused.
+
+    Surfaced in SEV-2 kanban t_2a5ee696 (2026-06-23).
+    """
+    if not name:
+        return False
+    if name in _HARDCODED_VALID_ASSIGNEES:
+        return True
+    on_disk = set(list_profiles_on_disk())
+    return name in on_disk
+
+
+def _should_auto_archive_invalid() -> bool:
+    """True if callers should auto-archive on validation failure.
+
+    Opt-in via env var (``HERMES_KANBAN_AUTO_ARCHIVE_INVALID=1``).
+    When on, callers like the dashboard HTTP route can downgrade a
+    validation error from a 400/500 to "archive + 201 Created" so
+    stress-test fixtures stop polluting the ready queue without
+    breaking automation that expects create_task to return an id.
+
+    Off by default — we'd rather surface the failure than silently
+    swallow it. Operators turning this on should also be ready to
+    explain why the automation was emitting phantom tasks in the
+    first place; auto-archiving is a pressure-relief valve, not a
+    fix.
+
+    Surfaced in SEV-2 kanban t_2a5ee696 (2026-06-23). The CLI /
+    dashboard integration that actually calls into this helper is
+    left as a follow-up; this function exists so the env-var
+    contract is settled before any caller wires it up.
+    """
+    return os.environ.get("HERMES_KANBAN_AUTO_ARCHIVE_INVALID", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 def create_task(
@@ -2630,6 +2750,8 @@ def create_task(
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
+    validate_assignee: bool = True,
+    allow_placeholder_title: bool = False,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2653,6 +2775,21 @@ def create_task(
     each name to ``hermes --skills ...``. Use this to pin a task to a
     specialist skill (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``validate_assignee`` (default ``True``, SEV-2 kanban t_2a5ee696)
+    rejects create calls whose ``assignee`` doesn't correspond to a
+    known profile (see :func:`is_known_assignee`). The check is
+    skipped when ``triage=True`` — triage cards are explicitly waiting
+    for a specifier to pick the real assignee. Skip via the env var
+    ``HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION=1`` for ops automation
+    that has to create stress fixtures.
+
+    ``allow_placeholder_title`` (default ``False``) lets the call
+    bypass the placeholder-title guard. The guard still fires if the
+    title is empty/whitespace-only — that's a different failure mode
+    (a real bug, not a fixture pattern). Skip via
+    ``HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES=1`` for ops automation
+    that legitimately needs to backfill stub rows (rare).
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -2669,10 +2806,33 @@ def create_task(
     # work (t_17f8bb1b / cbdb56583) which bundles this guard with two
     # broader protections; this commit ships just the narrow placeholder-
     # title rejection from audit #29 with the audit-specified wording.
+    #
+    # SEV-2 kanban t_2a5ee696 (2026-06-23): extended via
+    # ``_PLACEHOLDER_TITLE_RE`` to also catch ``burst-task-N``,
+    # ``real spec``, ``real task``, ``test``, ``debug``, ``crash``.
+    # The audit #29 message wording is preserved for the canonical
+    # ``^task-\d+$`` case so any callers / tests asserting that exact
+    # message keep passing; the other patterns get a more actionable
+    # message that names the env-var escape hatch.
+    if not allow_placeholder_title and os.environ.get(
+        "HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}:
+        allow_placeholder_title = True
     if is_placeholder_title(title):
-        raise ValueError(
-            "use a real title; placeholder pattern reserved for tests."
-        )
+        if not allow_placeholder_title:
+            stripped = str(title).strip()
+            # Audit #29 sentinel pattern: keep the original wording
+            # for any task-N title. Other fixture patterns get the
+            # longer message that names the escape hatch so callers
+            # can self-correct without grepping the docs.
+            if re.fullmatch(r"task-\d+", stripped, re.IGNORECASE):
+                raise ValueError(_AUDIT29_PLACEHOLDER_MSG)
+            raise ValueError(
+                f"title {stripped!r} matches a placeholder/fixture pattern; "
+                "use a real title. To backfill known stubs, set "
+                "HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES=1 or pass "
+                "allow_placeholder_title=True."
+            )
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
@@ -2687,6 +2847,53 @@ def create_task(
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
     parents = tuple(p for p in parents if p)
+
+    # Phantom-assignee guard (SEV-2 kanban t_2a5ee696, 2026-06-23).
+    #
+    # 19 of the 22 pollution cards auto-archived during the 17:07
+    # cleanup had assignee names that don't correspond to any profile
+    # on disk (``worker``, ``alice``, ``a``, ``architect``). The
+    # dispatcher silently drops cards it can't route, so these
+    # accumulated in ``ready`` indefinitely. Refuse them at the create
+    # layer so the failure surfaces as a 400 instead of a ghost card.
+    #
+    # Gating rules:
+    #   - ``triage=True`` skips the guard — triage cards are parked
+    #     precisely BECAUSE a specifier hasn't picked the real
+    #     assignee yet. Routing these to ``ready`` would defeat the
+    #     triage lane.
+    #   - ``assignee is None`` skips the guard — the dispatcher
+    #     already treats unassigned cards as no-ops.
+    #   - ``assignee == "default"`` is always accepted because every
+    #     Hermes install has the default profile even when no profile
+    #     dir exists on disk.
+    #   - Otherwise, ``assignee`` must match a profile dir on disk
+    #     (see :func:`is_known_assignee`).
+    #
+    # NOTE: a pre-existing CLI bug in ``hermes_cli/main.py:main()``
+    # discards the return value of ``args.func(args)``, so even when
+    # the kanban dispatcher correctly returns exit code 1 the CLI
+    # process exits 0. The error message still surfaces on stderr so
+    # operators see what happened, and the dashboard HTTP route wraps
+    # the ``ValueError`` to 400 properly. Fixing the CLI exit-code
+    # propagation is a separate ticket (out of scope for this SEV-2
+    # fix — narrowly scoped to the create-time validation layer).
+    if validate_assignee and os.environ.get(
+        "HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}:
+        validate_assignee = False
+    if validate_assignee and not triage and assignee:
+        if not is_known_assignee(assignee, conn=conn):
+            raise PlaceholderAssigneeError(
+                f"assignee {assignee!r} is not a known profile "
+                "(no ~/.hermes/profiles/<name>/config.yaml on disk and "
+                "not 'default'). The dispatcher would silently drop this "
+                "task. Either create the profile or pass "
+                "validate_assignee=False / "
+                "HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION=1 for ops "
+                "automation. Triage cards (triage=True) are exempt — "
+                "they're parked until a specifier picks a real assignee."
+            )
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't

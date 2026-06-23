@@ -236,6 +236,8 @@ def main():
         home = tempfile.mkdtemp(prefix=f"hermes_fuzz_{seq_idx}_")
         os.environ["HERMES_HOME"] = home
         os.environ["HOME"] = home
+        os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
+        os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
         sys.path.insert(0, WT)
 
         # Fresh module state per sequence to avoid cached init paths.

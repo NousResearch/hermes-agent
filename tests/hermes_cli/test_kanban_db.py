@@ -21,10 +21,56 @@ from hermes_cli import kanban_db as kb
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME with an empty kanban DB."""
+    """Isolated HERMES_HOME with an empty kanban DB.
+
+    Default fixture opt-out: ``HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION=1``
+    is set so pre-existing tests that use arbitrary assignee strings
+    (``"alice"``, ``"a"``, ``"ops"``, ``"w"``, etc.) keep working
+    unchanged. The SEV-2 phantom-assignee guard is exercised by
+    separate tests under :func:`kanban_home_strict` below — those
+    unset the env var so the guard actually fires.
+
+    Surfaced in SEV-2 kanban t_2a5ee696 (2026-06-23).
+    """
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # Opt out of phantom-assignee validation for the bulk of unit
+    # tests so they keep using cheap phantom assignees without each
+    # one having to drop a profile dir. See ``kanban_home_strict``
+    # for the explicit-enforcement variant.
+    monkeypatch.setenv("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    return home
+
+
+@pytest.fixture
+def kanban_home_strict(tmp_path, monkeypatch):
+    """Isolated HERMES_HOME with the SEV-2 phantom-assignee guard ON.
+
+    Drops two real profile dirs (``alice`` and ``code-craftsman``) so
+    tests can assert both the rejection path (``"worker"``) and the
+    acceptance path (``"alice"`` / ``"code-craftsman"`` / ``"default"``).
+
+    Surfaced in SEV-2 kanban t_2a5ee696 (2026-06-23).
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "profiles" / "alice").mkdir(parents=True)
+    (home / "profiles" / "alice" / "config.yaml").write_text(
+        "model: test\nprovider: test\n"
+    )
+    (home / "profiles" / "code-craftsman").mkdir(parents=True)
+    (home / "profiles" / "code-craftsman" / "config.yaml").write_text(
+        "model: test\nprovider: test\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # Strict mode: do NOT set SKIP_ASSIGNEE_VALIDATION — we want the
+    # guard to fire so the test asserts the rejection. Also drop the
+    # ALLOW_PLACEHOLDER_TITLES escape hatch for the same reason.
+    monkeypatch.delenv("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
@@ -372,6 +418,261 @@ def test_create_task_placeholder_guard_fires_before_other_validation(kanban_home
             workspace_kind="not-a-kind",
             parents=["t_ghost"],
         )
+
+
+# ---------------------------------------------------------------------------
+# SEV-2 hardening (kanban t_2a5ee696, 2026-06-23)
+# ---------------------------------------------------------------------------
+#
+# Acceptance criteria from the SEV-2 ticket:
+#   1. Trying to create a card with assignee='worker' fails with an
+#      actionable error.
+#   2. Trying to create with title='real spec' fails.
+#   3. The dispatcher (when re-run) does not see 22 phantom-assignee
+#      cards.
+#   4. 95% of the current backlog of similar cards in _archived/ is
+#      caught by the new validation.
+#
+# These tests cover (1) and (2) directly. (3) and (4) require a live
+# board state — covered by integration tests / dashboards, not unit
+# tests.
+
+def test_sev2_is_placeholder_title_catches_extended_patterns():
+    """SEV-2 expanded the placeholder-title list. Every pattern surfaced
+    by the 2026-06-23 17:08 read-only triage that is unambiguous must
+    be caught.
+
+    ``test``, ``debug``, and ``crash`` are deliberately NOT in the
+    auto-reject list — they're legitimate one-word titles for real
+    work and the test suite already uses ``title="crash"`` to name a
+    crash-investigation scenario. Those words remain in the SEV-2
+    pollution catalog as a manual cleanup hint, but the guard only
+    fires on patterns that are unambiguous fixtures (always-digit
+    suffix or a fixed two-word phrase)."""
+    # Canonical audit #29 patterns still work.
+    assert kb.is_placeholder_title("task-99")
+    assert kb.is_placeholder_title("task-1782227740")
+    # SEV-2 additions.
+    assert kb.is_placeholder_title("real spec")
+    assert kb.is_placeholder_title("real task")
+    assert kb.is_placeholder_title("burst-task-3")
+    assert kb.is_placeholder_title("burst-task-99")
+    # Whitespace tolerated.
+    assert kb.is_placeholder_title("  real spec  ")
+    # Non-matches: real titles must NOT be flagged.
+    assert not kb.is_placeholder_title("Fix the crash in cart-service")
+    assert not kb.is_placeholder_title("Add debug logging to the dashboard")
+    assert not kb.is_placeholder_title("Investigate the crash reporter")
+    # Non-matches: single words that the SEV-2 body listed but are
+    # ambiguous in normal usage. They stay allowed so legit single-
+    # word titles ("crash", "debug", "test") keep working.
+    assert not kb.is_placeholder_title("crash")
+    assert not kb.is_placeholder_title("debug")
+    assert not kb.is_placeholder_title("test")
+    assert not kb.is_placeholder_title("CRASH")
+    assert not kb.is_placeholder_title("Debug")
+
+
+def test_sev2_create_task_rejects_real_spec_title(kanban_home):
+    """The pollution body=``'x'`` + title=``'real spec'`` combo from the
+    17:08 read-only triage must be rejected at create time. Uses
+    ``kanban_home`` (not ``_strict``) because the placeholder-title
+    guard is independent of the assignee-validation env var."""
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="placeholder/fixture pattern",
+    ):
+        kb.create_task(conn, title="real spec", body="x")
+    # And the case-insensitive variant.
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="placeholder/fixture pattern",
+    ):
+        kb.create_task(conn, title="REAL SPEC", body="x")
+    # And burst-task-N.
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="placeholder/fixture pattern",
+    ):
+        kb.create_task(conn, title="burst-task-3", body="x")
+
+
+def test_sev2_create_task_rejects_phantom_assignee(kanban_home_strict):
+    """19 of the 22 pollution cards had assignees that don't correspond
+    to any profile on disk (``worker``, ``alice``, ``a``, ``architect``).
+    These must be rejected at create time with an actionable error that
+    names the escape hatch."""
+    for phantom in ("worker", "alice-not-here", "a", "architect", "🤖-bot"):
+        with kb.connect() as conn, pytest.raises(
+            kb.PlaceholderAssigneeError,
+            match="is not a known profile",
+        ):
+            kb.create_task(
+                conn,
+                title="ship something real",
+                assignee=phantom,
+                body="x",
+            )
+
+
+def test_sev2_create_task_accepts_known_assignee(kanban_home_strict):
+    """The fixture drops profiles/alice and profiles/code-craftsman;
+    create_task must accept those (and ``default``) without raising."""
+    for known in ("alice", "code-craftsman", "default"):
+        with kb.connect() as conn:
+            tid = kb.create_task(
+                conn,
+                title=f"task for {known}",
+                assignee=known,
+                body="x",
+            )
+        with kb.connect() as conn:
+            t = kb.get_task(conn, tid)
+        assert t is not None
+        assert t.assignee == known
+
+
+def test_sev2_create_task_skips_assignee_check_for_triage(kanban_home_strict):
+    """Triage cards are explicitly waiting for a specifier to pick the
+    real assignee — rejecting them would defeat the triage lane. The
+    guard must NOT fire when ``triage=True`` even if the assignee is
+    phantom (because no assignee is the specifier's whole point)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="needs a specifier to pick an assignee",
+            assignee="worker",  # phantom
+            body="x",
+            triage=True,
+        )
+    with kb.connect() as conn:
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.status == "triage"
+    # Phantom assignee preserved verbatim on triage cards (the specifier
+    # will reassign when promoting).
+    assert t.assignee == "worker"
+
+
+def test_sev2_create_task_skips_assignee_check_when_none(kanban_home_strict):
+    """Unassigned cards (assignee=None) must always pass — the
+    dispatcher already treats them as no-ops, no routing risk."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="unassigned real spec",
+            assignee=None,
+            body="x",
+        )
+    with kb.connect() as conn:
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.assignee is None
+
+
+def test_sev2_create_task_validate_assignee_false_bypass(kanban_home_strict):
+    """The ``validate_assignee=False`` kwarg must let ops automation /
+    stress fixtures through. The error must be the subclass
+    :class:`PlaceholderAssigneeError` so callers can distinguish
+    phantom-assignee from generic ValueError if they want to."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="stress fixture",
+            assignee="worker",
+            body="x",
+            validate_assignee=False,
+        )
+    with kb.connect() as conn:
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.assignee == "worker"
+
+
+def test_sev2_env_var_skip_assignee_validation(kanban_home, monkeypatch):
+    """``HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION=1`` is the global
+    override that lets ops automation create phantom tasks without
+    each call site having to pass ``validate_assignee=False``."""
+    # ``kanban_home`` fixture already sets the env var to 1, so a
+    # phantom assignee passes; but the phantom-assignee guard never
+    # fires under that fixture. To prove the env var works
+    # independently, simulate a strict-mode base and flip the env
+    # var inside the test.
+    monkeypatch.delenv("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", raising=False)
+    with kb.connect() as conn, pytest.raises(
+        kb.PlaceholderAssigneeError,
+    ):
+        kb.create_task(
+            conn, title="phantom without env", assignee="worker",
+        )
+    monkeypatch.setenv("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="phantom WITH env", assignee="worker",
+        )
+    assert tid is not None
+
+
+def test_sev2_env_var_allow_placeholder_titles(kanban_home, monkeypatch):
+    """``HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES=1`` lets ops automation
+    backfill stub rows. Independent of the assignee env var."""
+    monkeypatch.delenv("HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES", raising=False)
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="placeholder/fixture pattern",
+    ):
+        kb.create_task(conn, title="real spec", body="x")
+    monkeypatch.setenv("HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES", "1")
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="real spec", body="x")
+    assert tid is not None
+
+
+def test_sev2_placeholder_assignee_error_subclass():
+    """``PlaceholderAssigneeError`` is a :class:`ValueError` so existing
+    callers that catch the parent class keep working. Specialising it
+    lets callers distinguish phantom-assignee from other ValueErrors
+    without regex-matching the message."""
+    assert issubclass(kb.PlaceholderAssigneeError, ValueError)
+    exc = kb.PlaceholderAssigneeError("test")
+    assert isinstance(exc, ValueError)
+    assert str(exc) == "test"
+
+
+def test_sev2_is_known_assignee_unit():
+    """Unit-test the helper without spinning up a full create_task path.
+    Behaviour:
+      - ``default`` always valid (every install has it).
+      - Empty/None always invalid.
+      - Known profile dir on disk → valid.
+      - Unknown string → invalid.
+    """
+    assert kb.is_known_assignee("default")
+    assert not kb.is_known_assignee(None)
+    assert not kb.is_known_assignee("")
+    assert not kb.is_known_assignee("worker")
+    assert not kb.is_known_assignee("alice-not-here")
+
+
+def test_sev2_audit29_message_preserved_for_canonical_pattern(kanban_home):
+    """Sibling card audit #29 specifies the exact message wording
+    ``use a real title; placeholder pattern reserved for tests.``.
+    Callers / tests may assert that exact string; SEV-2 must NOT
+    regress it for the canonical ``task-N`` pattern. Other patterns
+    (``real spec`` etc.) get the longer actionable message that names
+    the env-var escape hatch."""
+    with kb.connect() as conn, pytest.raises(
+        ValueError,
+        match="^use a real title; placeholder pattern reserved for tests\\.$",
+    ):
+        kb.create_task(conn, title="task-99", body="x")
+
+
+def test_sev2_create_task_allow_placeholder_title_kwarg(kanban_home):
+    """``allow_placeholder_title=True`` lets ops automation backfill
+    stubs on a per-call basis (no env var needed)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="real spec", body="x",
+            allow_placeholder_title=True,
+        )
+    assert tid is not None
 
 
 def test_create_task_persists_worktree_branch_name(kanban_home, tmp_path):

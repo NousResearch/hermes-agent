@@ -638,3 +638,132 @@ def test_b2_search_with_trgm(pg_clean, tmp_path):
         pg.close()
         restore()
 
+
+# ── c-series: native FTS (v19 tsvector) parity ──────────────────────────────
+
+
+def test_c1_fts_migration_applies(pg_clean, tmp_path):
+    """c1 — the v19 migration creates the fts_content column and GIN index."""
+    pg, restore = _pg_session_db(pg_clean)
+    try:
+        pass  # _pg_session_db ran init_postgres_schema -> applied migrations
+    finally:
+        pg.close()
+        restore()
+
+    with psycopg.connect(pg_clean, autocommit=True) as conn:
+        col = conn.execute(
+            "SELECT 1 FROM pg_catalog.pg_attribute a"
+            " JOIN pg_catalog.pg_class c ON c.oid = a.attrelid"
+            " WHERE c.relname = 'messages' AND a.attname = 'fts_content'"
+            " AND a.attnum > 0"
+        ).fetchone()
+        assert col is not None, "fts_content column not created by v19"
+
+        idx = conn.execute(
+            "SELECT 1 FROM pg_indexes WHERE indexname = 'idx_messages_fts_gin'"
+        ).fetchone()
+        assert idx is not None, "idx_messages_fts_gin not created by v19"
+
+
+def test_c2_fts_multiword_and_search(pg_clean, tmp_path):
+    """c2 — multi-word query matches all words in any order (FTS5 parity).
+
+    This is the behavior ILIKE could NOT provide: "docker deployment" matches a
+    message containing both words NON-ADJACENTLY and in reverse order, while a
+    message with only one of the words does not match.
+    """
+    import time as _time
+
+    pg, restore = _pg_session_db(pg_clean)
+    try:
+        pg.create_session(session_id="s1", source="cli")
+        rows = [
+            # both words, non-adjacent + reversed order -> must match
+            ("user", "the deployment of our docker stack succeeded"),
+            # both words adjacent -> must match
+            ("user", "docker deployment pipeline"),
+            # only one word -> must NOT match an AND query
+            ("user", "docker logs are noisy"),
+            ("user", "deployment notes for friday"),
+            ("user", "totally unrelated message"),
+        ]
+        for role, content in rows:
+            pg._execute_write(
+                lambda c, r=role, ct=content: c.execute(
+                    "INSERT INTO messages"
+                    " (session_id, role, content, timestamp, active)"
+                    " VALUES (?, ?, ?, ?, 1)",
+                    ("s1", r, ct, _time.time()),
+                )
+            )
+
+        # Backfill any rows the per-INSERT hook didn't cover so the search path
+        # takes FTS (it only does so once no fts_content IS NULL rows remain).
+        with psycopg.connect(pg_clean, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE messages SET fts_content = to_tsvector('simple',"
+                " COALESCE(content,'') || ' ' || COALESCE(tool_name,'')"
+                " || ' ' || COALESCE(tool_calls,''))"
+                " WHERE fts_content IS NULL"
+            )
+
+        results = pg.search_messages("docker deployment")
+        snippets = [r.get("snippet", "") for r in results]
+
+        # Exactly the two messages containing BOTH words match.
+        assert len(results) == 2, (
+            f"Expected 2 AND-matches, got {len(results)}: {snippets}"
+        )
+        joined = " || ".join(snippets)
+        assert "docker stack" in joined or "deployment of our docker" in joined
+        assert "docker deployment pipeline" in joined
+        # Single-word-only rows must be absent.
+        assert "docker logs" not in joined
+        assert "deployment notes" not in joined
+
+        # Result-row contract intact.
+        required_keys = {
+            "id", "session_id", "role", "snippet", "timestamp",
+            "tool_name", "source", "model", "session_started", "context",
+        }
+        for r in results:
+            assert required_keys <= set(r.keys())
+    finally:
+        pg.close()
+        restore()
+
+
+def test_c3_fts_falls_back_to_ilike_before_backfill(pg_clean, tmp_path):
+    """c3 — with fts_content NULL on legacy rows, search still finds them.
+
+    Simulates the post-migration / pre-backfill window: a row whose fts_content
+    is NULL must remain findable (via the ILIKE fallback) rather than silently
+    disappearing from search.
+    """
+    import time as _time
+
+    pg, restore = _pg_session_db(pg_clean)
+    try:
+        pg.create_session(session_id="s1", source="cli")
+        pg._execute_write(
+            lambda c: c.execute(
+                "INSERT INTO messages"
+                " (session_id, role, content, timestamp, active)"
+                " VALUES (?, ?, ?, ?, 1)",
+                ("s1", "user", "kubernetes scaling notes", _time.time()),
+            )
+        )
+        # Force the legacy/un-backfilled state: clear fts_content.
+        with psycopg.connect(pg_clean, autocommit=True) as conn:
+            conn.execute("UPDATE messages SET fts_content = NULL")
+
+        results = pg.search_messages("kubernetes")
+        assert len(results) == 1, (
+            "row with NULL fts_content must remain findable via ILIKE fallback"
+        )
+        assert "kubernetes scaling" in results[0]["snippet"]
+    finally:
+        pg.close()
+        restore()
+

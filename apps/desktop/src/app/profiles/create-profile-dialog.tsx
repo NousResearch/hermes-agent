@@ -8,15 +8,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { createProfile, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { formatBackendError } from '@/lib/format-error'
 import { AlertTriangle } from '@/lib/icons'
+import { isValidProfileName, profileNameHint } from '@/lib/profile-names'
 import { cn } from '@/lib/utils'
 import type { ProfileInfo } from '@/types/hermes'
-
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
-
-export function isValidProfileName(name: string): boolean {
-  return PROFILE_NAME_RE.test(name.trim())
-}
 
 // Self-contained create flow (name + clone toggle + optional SOUL.md). Owns the
 // createProfile/updateProfileSoul calls so every caller just refreshes/selects
@@ -54,13 +50,14 @@ export function CreateProfileDialog({
 
   const trimmed = name.trim()
   const invalid = trimmed !== '' && !isValidProfileName(trimmed)
+  const nameHelp = profileNameHint(trimmed, p)
   const busy = status === 'saving' || status === 'done'
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
 
     if (!trimmed || invalid) {
-      setError(invalid ? p.invalidName(p.nameHint) : p.nameRequired)
+      setError(invalid ? p.invalidName(nameHelp) : p.nameRequired)
 
       return
     }
@@ -80,7 +77,7 @@ export function CreateProfileDialog({
       window.setTimeout(onClose, 800)
     } catch (err) {
       setStatus('idle')
-      setError(err instanceof Error ? err.message : p.failedCreate)
+      setError(formatBackendError(err, p.failedCreate))
     }
   }
 
@@ -106,7 +103,7 @@ export function CreateProfileDialog({
               value={name}
             />
             <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {p.nameHint}
+              {nameHelp}
             </p>
           </div>
 

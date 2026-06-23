@@ -25,19 +25,15 @@ import {
   updateProfileSoul
 } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { formatBackendError } from '@/lib/format-error'
 import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
+import { isValidProfileName, profileNameHint } from '@/lib/profile-names'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
-
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
-
-function isValidProfileName(name: string): boolean {
-  return PROFILE_NAME_RE.test(name.trim())
-}
 
 interface ProfilesViewProps {
   onClose: () => void
@@ -87,7 +83,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       const trimmed = name.trim()
 
       if (!isValidProfileName(trimmed)) {
-        throw new Error(p.nameHint)
+        throw new Error(profileNameHint(trimmed, p))
       }
 
       await createProfile({ name: trimmed, clone_from: cloneFrom })
@@ -107,7 +103,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       }
 
       if (!isValidProfileName(target)) {
-        throw new Error(p.nameHint)
+        throw new Error(profileNameHint(target, p))
       }
 
       await renameProfile(from, target)
@@ -483,12 +479,13 @@ function CreateProfileDialog({
 
   const trimmed = name.trim()
   const invalid = trimmed !== '' && !isValidProfileName(trimmed)
+  const nameHelp = profileNameHint(trimmed, p)
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
 
     if (!trimmed || invalid) {
-      setError(invalid ? p.invalidName(p.nameHint) : p.nameRequired)
+      setError(invalid ? p.invalidName(nameHelp) : p.nameRequired)
 
       return
     }
@@ -500,7 +497,7 @@ function CreateProfileDialog({
       await onCreate(trimmed, cloneFrom)
       onClose()
     } catch (err) {
-      setError(err instanceof Error ? err.message : p.failedCreate)
+      setError(formatBackendError(err, p.failedCreate))
     } finally {
       setSaving(false)
     }
@@ -528,7 +525,7 @@ function CreateProfileDialog({
               value={name}
             />
             <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {p.nameHint}
+              {nameHelp}
             </p>
           </div>
 
@@ -603,6 +600,7 @@ function RenameProfileDialog({
   const trimmed = name.trim()
   const unchanged = trimmed === currentName
   const invalid = trimmed !== '' && !unchanged && !isValidProfileName(trimmed)
+  const nameHelp = profileNameHint(trimmed, p)
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -614,7 +612,7 @@ function RenameProfileDialog({
     }
 
     if (!trimmed || invalid) {
-      setError(invalid ? p.invalidName(p.nameHint) : p.nameRequired)
+      setError(invalid ? p.invalidName(nameHelp) : p.nameRequired)
 
       return
     }
@@ -625,7 +623,7 @@ function RenameProfileDialog({
     try {
       await onRename(trimmed)
     } catch (err) {
-      setError(err instanceof Error ? err.message : p.failedRename)
+      setError(formatBackendError(err, p.failedRename))
     } finally {
       setSaving(false)
     }
@@ -656,7 +654,7 @@ function RenameProfileDialog({
               value={name}
             />
             <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {p.nameHint}
+              {nameHelp}
             </p>
           </div>
 

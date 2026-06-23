@@ -391,6 +391,71 @@ class TestDelegateTask(unittest.TestCase):
 
         self.assertIs(mock_child._print_fn, sink)
 
+    def test_child_inherits_parent_provider_headers(self):
+        """Subagents must inherit _provider_headers (e.g. Baidu OneAPI's
+        comate_custom_header carrying account-attribution info). Without
+        this, child traffic is misattributed on provider dashboards even
+        when api_key/base_url are inherited correctly."""
+        parent = _make_mock_parent(depth=0)
+        parent._provider_headers = {
+            "comate_custom_header": '{"username":"alice","source":"openclaw"}'
+        }
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Inherit my routing headers",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        # Child gets a *copy* of the dict, not the same reference.
+        self.assertEqual(
+            mock_child._provider_headers,
+            {"comate_custom_header": '{"username":"alice","source":"openclaw"}'},
+        )
+        self.assertIsNot(mock_child._provider_headers, parent._provider_headers)
+        # Apply hook called so the headers actually land in client kwargs.
+        mock_child._apply_provider_headers_to_client_kwargs.assert_called_once()
+
+    def test_child_skips_header_inheritance_on_provider_override(self):
+        """Provider-specific headers (e.g. comate_custom_header) are
+        meaningless / wrong for a different provider, so override_provider
+        should suppress inheritance."""
+        parent = _make_mock_parent(depth=0)
+        parent._provider_headers = {
+            "comate_custom_header": '{"username":"alice"}'
+        }
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            # Make these attrs absent so we can detect non-assignment.
+            del mock_child._provider_headers
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Run on a different provider",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="some-other-provider",
+            )
+
+        # _provider_headers must NOT have been set on the child.
+        self.assertFalse(hasattr(mock_child, "_provider_headers"))
+        mock_child._apply_provider_headers_to_client_kwargs.assert_not_called()
+
     def test_child_uses_thinking_callback_when_progress_callback_available(self):
         parent = _make_mock_parent(depth=0)
         parent.tool_progress_callback = MagicMock()

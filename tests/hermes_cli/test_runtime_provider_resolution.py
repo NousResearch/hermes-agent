@@ -751,6 +751,46 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["source"] == "custom_provider:Local"
 
 
+def test_named_custom_provider_preserves_legacy_custom_headers(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "OneAPI Claude",
+                    "base_url": "https://oneapi.example.com",
+                    "api_key": "local-provider-key",
+                    "api_mode": "anthropic_messages",
+                    "headers": {
+                        "comate_custom_header": '{"username":"tester","source":"unit"}',
+                        "x-int-value": 123,
+                        "": "ignored",
+                    },
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("resolve_provider should not be called for named custom providers")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:oneapi-claude")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["headers"] == {
+        "comate_custom_header": '{"username":"tester","source":"unit"}',
+        "x-int-value": "123",
+    }
+
+
 def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch):
     """After v11→v12 migration deletes custom_providers, resolution should
     still find entries in the providers dict via get_compatible_custom_providers."""
@@ -790,6 +830,43 @@ def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch
     assert resolved["requested_provider"] == "openai-direct-primary"
     assert resolved["source"] == "custom_provider:OpenAI Direct (Primary)"
     assert resolved["model"] == "gpt-5-mini"
+
+
+def test_named_custom_provider_preserves_providers_dict_headers(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "oneapi-claude": {
+                    "api": "https://oneapi.example.com",
+                    "api_key": "dir-key",
+                    "name": "OneAPI Claude",
+                    "transport": "anthropic_messages",
+                    "headers": {
+                        "comate_custom_header": '{"username":"tester","source":"unit"}'
+                    },
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("resolve_provider should not be called for named custom providers")
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="oneapi-claude")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["headers"] == {
+        "comate_custom_header": '{"username":"tester","source":"unit"}'
+    }
 
 
 def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):

@@ -3352,7 +3352,7 @@ def validate_requested_model(
             "message": "Model name cannot be empty.",
         }
 
-    if any(ch.isspace() for ch in requested):
+    if any(ch.isspace() for ch in requested) and "/" not in requested:
         return {
             "accepted": False,
             "persist": False,

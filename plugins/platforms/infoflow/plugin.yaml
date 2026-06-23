@@ -1,0 +1,9 @@
+name: infoflow-platform
+label: Infoflow
+kind: platform
+version: 1.0.0
+description: >
+  Infoflow (如流) gateway adapter for Hermes Agent.
+  Connects to Baidu Infoflow via WebSocket and relays messages
+  between Infoflow (single chat / group chat) and the Hermes agent.
+author: anjianjun01

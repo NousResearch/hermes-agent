@@ -25,12 +25,16 @@ piecemeal, the footer is sent as a separate trailing message via
 
 from __future__ import annotations
 
+import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
+_QUOTA_CACHE_REL = Path("cache") / "oneapi_comate_quota.json"
+_QUOTA_MAX_AGE_SECONDS = 6 * 60 * 60
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -52,6 +56,66 @@ def _model_short(model: Optional[str]) -> str:
     if not model:
         return ""
     return model.rsplit("/", 1)[-1]
+
+
+def _get_hermes_home() -> Path:
+    return Path(os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")).expanduser()
+
+
+def _money_display(value: Any) -> str:
+    try:
+        return f"¥{float(value):,.2f}".replace(".00", "")
+    except Exception:
+        return str(value)
+
+
+def _context_pct_text(context_tokens: int, context_length: Optional[int]) -> str:
+    if context_length and context_length > 0 and context_tokens >= 0:
+        pct = max(0, min(100, round((context_tokens / context_length) * 100)))
+        return f"{pct}%"
+    return ""
+
+
+def _read_oneapi_quota_footer() -> str:
+    """Return compact OneAPI monthly quota text from cache, or empty string.
+
+    This deliberately never performs network I/O on the response path.  The
+    cache is refreshed by ``~/.hermes/scripts/update_oneapi_quota.py`` using the
+    user's logged-in Windows Edge CDP session.
+    """
+    path = _get_hermes_home() / _QUOTA_CACHE_REL
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        used = data.get("monthly_used_display") or data.get("monthly_used_quota")
+        limit = data.get("monthly_limit_display") or data.get("monthly_quota_limit")
+        if used is None:
+            return ""
+        text = f"OneAPI本月 {used}"
+        if limit is not None:
+            text += f"/{limit}"
+
+        source_usage = data.get("source_usage") or {}
+        details: list[str] = []
+        for key, label in (("openclaw", "OpenClaw"), ("dodo", "DoDo")):
+            if key in source_usage and source_usage.get(key) is not None:
+                details.append(f"{label} {_money_display(source_usage.get(key))}")
+        if details:
+            text += f"（{'，'.join(details)}）"
+
+        updated = data.get("updated_at")
+        if updated:
+            try:
+                ts = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds()
+                if age > _QUOTA_MAX_AGE_SECONDS:
+                    text += "(stale)"
+            except Exception:
+                pass
+        return text
+    except Exception:
+        return ""
 
 
 def resolve_footer_config(
@@ -103,19 +167,32 @@ def format_runtime_footer(
     partially-populated footer is better than a line with ``?%`` or empty slots.
     """
     parts: list[str] = []
+    fields = tuple(fields)
+    folds_context_into_model = "model" in fields
     for field in fields:
         if field == "model":
             m = _model_short(model)
-            if m:
-                parts.append(m)
+            pct = _context_pct_text(context_tokens, context_length)
+            if m and pct:
+                parts.append(f"模型：{m}（上下文 {pct}）")
+            elif m:
+                parts.append(f"模型：{m}")
         elif field == "context_pct":
-            if context_length and context_length > 0 and context_tokens >= 0:
-                pct = max(0, min(100, round((context_tokens / context_length) * 100)))
-                parts.append(f"{pct}%")
+            # Kept for backwards compatibility.  When the model field is present,
+            # the percentage is folded into it to avoid a cryptic standalone "46%".
+            if folds_context_into_model:
+                continue
+            pct = _context_pct_text(context_tokens, context_length)
+            if pct:
+                parts.append(pct)
         elif field == "cwd":
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field in {"oneapi_quota", "oneapi_comate_quota"}:
+            quota = _read_oneapi_quota_footer()
+            if quota:
+                parts.append(quota)
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -141,10 +218,21 @@ def build_footer_line(
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
+    fields = list(cfg.get("fields") or _DEFAULT_FIELDS)
+    try:
+        display_cfg = (user_config or {}).get("display") or {}
+        if bool(display_cfg.get("show_perf_footer", False)):
+            # The agent-level perf footer already renders the model line and
+            # context percentage.  Do not append a second gateway-only
+            # "模型：..." footer; keep non-overlapping runtime fields such as
+            # cwd or oneapi_quota if the user configured them.
+            fields = [f for f in fields if f not in {"model", "context_pct"}]
+    except Exception:
+        pass
     return format_runtime_footer(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
-        fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        fields=fields,
     )

@@ -73,6 +73,42 @@ from utils import base_url_host_matches, env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+def _looks_like_upstream_timeout_empty_stream(agent) -> bool:
+    """Heuristic for proxy streams that ended empty after an upstream timeout.
+
+    This intentionally stays conservative: only classify when all known P0
+    signals line up (sandbox/proxy route, large context, and near-timeout
+    duration).  Plain short empty responses keep the existing retry/fallback
+    wording.
+    """
+    try:
+        model = str(getattr(agent, "model", "") or "").lower()
+        provider = str(getattr(agent, "provider", "") or "").lower()
+        base_url = str(getattr(agent, "base_url", "") or "").lower()
+        route = " ".join([model, provider, base_url])
+        is_proxy_route = (
+            "sandbox" in route
+            or "agent-sandbox" in route
+            or "/api/proxy/" in route
+        )
+        if not is_proxy_route:
+            return False
+
+        diag = getattr(agent, "_last_stream_diag", None) or {}
+        duration = float(diag.get("duration") or diag.get("elapsed") or 0.0)
+        if duration < 55.0:
+            return False
+
+        compressor = getattr(agent, "context_compressor", None)
+        prompt_tokens = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
+        if prompt_tokens < 100_000:
+            return False
+
+        return True
+    except Exception:
+        return False
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so callers can patch
     ``run_agent.handle_function_call`` / ``run_agent._set_interrupt`` /
@@ -533,6 +569,7 @@ def run_conversation(
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+    _turn_start_time = time.time()  # Wall-clock start for per-turn perf footer
 
     # Per-turn file-mutation verifier state.  Keyed by resolved path;
     # each failed ``write_file`` / ``patch`` call records the error
@@ -1668,6 +1705,33 @@ def run_conversation(
                     except Exception:
                         pass
                 agent._touch_activity(f"API call #{api_call_count} completed")
+
+                # ── Per-turn performance snapshot (intermediate) ───────────
+                # Save TTFB and per-call output tokens here (inside the retry
+                # loop where we have access to completion_tokens and api_duration).
+                # The final _last_perf_stats is written later, only when we
+                # confirm this is the text-response turn (no tool calls).
+                try:
+                    _this_call_out_toks = completion_tokens if "completion_tokens" in locals() else 0
+                    _ttfb_now = None
+                    try:
+                        _last_diag = getattr(agent, "_last_stream_diag", None)
+                        if isinstance(_last_diag, dict):
+                            _fc = _last_diag.get("first_chunk_at")
+                            _st = _last_diag.get("started_at")
+                            if _fc and _st:
+                                _ttfb_now = max(0.0, float(_fc) - float(_st))
+                    except Exception:
+                        pass
+                    # Stash intermediate data on agent for later use
+                    agent._perf_snapshot = {
+                        "ttfb": _ttfb_now,
+                        "last_api_duration": api_duration,
+                        "output_tokens": _this_call_out_toks,
+                    }
+                except Exception:
+                    pass
+
                 break  # Success, exit retry loop
 
             except InterruptedError:
@@ -2317,7 +2381,7 @@ def run_conversation(
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
                     # exceptions.  Fixes #11314 and #13636.
-                    pool_may_recover = _pool_may_recover_from_rate_limit(
+                    pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
                         agent._credential_pool,
                         provider=agent.provider,
                         base_url=getattr(agent, "base_url", None),
@@ -3393,6 +3457,44 @@ def run_conversation(
                     # _flush_messages_to_session_db writes compressed messages
                     # to the new session (see preflight compression comment).
                     conversation_history = None
+                elif (
+                    agent.compression_enabled
+                    and _real_tokens >= _compressor.threshold_tokens
+                    and getattr(_compressor, "_ineffective_compression_count", 0) >= 2
+                ):
+                    # Compression is no longer effective (summary itself is too large
+                    # to shrink further). Try switching to a larger-context fallback
+                    # model so the conversation can continue without losing history.
+                    # If no fallback is configured, emit a visible warning instead of
+                    # silently letting the context grow until the provider 400s.
+                    _fallback_activated = agent._try_activate_fallback()
+                    if _fallback_activated:
+                        logger.info(
+                            "Compression ineffective (%d consecutive passes <10%% savings) "
+                            "— switched to fallback model '%s' for larger context window.",
+                            _compressor._ineffective_compression_count,
+                            agent.model,
+                        )
+                        agent._emit_status(
+                            f"⚡ Context compression ineffective — switched to {agent.model} "
+                            "for larger context window."
+                        )
+                        # Reset the counter: the fallback model has a bigger window,
+                        # so compression may become effective again later.
+                        _compressor._ineffective_compression_count = 0
+                    else:
+                        logger.warning(
+                            "Compression ineffective and no fallback model configured. "
+                            "Context will continue to grow. Consider adding a large-context "
+                            "fallback_model (e.g. DeepSeek with 1M context) to config.yaml, "
+                            "or use /new to start a fresh session."
+                        )
+                        agent._emit_warning(
+                            "⚠ Context compression is no longer effective and no fallback "
+                            "model is configured. The context will keep growing. "
+                            "Add a large-context fallback_model in config.yaml, "
+                            "or use /new to start a fresh session."
+                        )
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages
@@ -3404,7 +3506,41 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
-                
+
+                # ── Finalize per-turn performance stats ───────────────────
+                # Now we know this is the text-response turn (no tool calls).
+                # Write _last_perf_stats using:
+                #   - TTFB from _perf_snapshot (this call's stream diag)
+                #   - duration = total wall-clock time since turn start
+                #     (includes all tool calls + all API calls this turn)
+                #   - output_tokens from this final API call only
+                try:
+                    _snap = getattr(agent, "_perf_snapshot", None) or {}
+                    _ttfb = _snap.get("ttfb")
+                    _final_out_toks = int(_snap.get("output_tokens", 0) or 0)
+                    _total_dur = time.time() - _turn_start_time
+                    _tps = (
+                        float(_final_out_toks) / _total_dur
+                        if _total_dur > 0 and _final_out_toks
+                        else None
+                    )
+                    _canonical_usage = locals().get("canonical_usage")
+                    agent._last_perf_stats = {
+                        "ttfb": _ttfb,
+                        "duration": _total_dur,
+                        "output_tokens": _final_out_toks,
+                        "input_tokens": int(getattr(_canonical_usage, "input_tokens", 0) or 0),
+                        "cache_read_tokens": int(getattr(_canonical_usage, "cache_read_tokens", 0) or 0),
+                        "cache_write_tokens": int(getattr(_canonical_usage, "cache_write_tokens", 0) or 0),
+                        "reasoning_tokens": int(getattr(_canonical_usage, "reasoning_tokens", 0) or 0),
+                        "tps": _tps,
+                        "model": agent.model,
+                        "provider": agent.provider or "unknown",
+                        "base_url": agent.base_url,
+                    }
+                except Exception:
+                    pass
+
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
                 # status messages.  _mute_post_response was set during a
@@ -3584,15 +3720,28 @@ def run_conversation(
                     )
                     if _truly_empty and (not _has_structured or _prefill_exhausted) and agent._empty_content_retries < 3:
                         agent._empty_content_retries += 1
+                        _timeout_like_empty = _looks_like_upstream_timeout_empty_stream(agent)
+                        _empty_log_label = (
+                            "upstream_timeout_or_cancelled_empty_stream"
+                            if _timeout_like_empty
+                            else "Empty response (no content or reasoning)"
+                        )
                         logger.warning(
-                            "Empty response (no content or reasoning) — "
-                            "retry %d/3 (model=%s)",
+                            "%s — retry %d/3 (model=%s)",
+                            _empty_log_label,
                             agent._empty_content_retries, agent.model,
                         )
-                        agent._emit_status(
-                            f"⚠️ Empty response from model — retrying "
-                            f"({agent._empty_content_retries}/3)"
-                        )
+                        if _timeout_like_empty:
+                            agent._emit_status(
+                                "⚠️ Provider stream ended without content, "
+                                "likely upstream timeout/cancelled — retrying "
+                                f"({agent._empty_content_retries}/3)"
+                            )
+                        else:
+                            agent._emit_status(
+                                f"⚠️ Empty response from model — retrying "
+                                f"({agent._empty_content_retries}/3)"
+                            )
                         continue
 
                     # ── Exhausted retries — try fallback provider ──
@@ -3602,16 +3751,30 @@ def run_conversation(
                     # (e.g. GLM-4.5-Air) consistently returns empty
                     # due to context degradation or provider issues.
                     if _truly_empty and agent._fallback_chain:
+                        _timeout_like_empty = _looks_like_upstream_timeout_empty_stream(agent)
+                        _empty_log_label = (
+                            "upstream_timeout_or_cancelled_empty_stream"
+                            if _timeout_like_empty
+                            else "Empty response"
+                        )
                         logger.warning(
-                            "Empty response after %d retries — "
+                            "%s after %d retries — "
                             "attempting fallback (model=%s, provider=%s)",
+                            _empty_log_label,
                             agent._empty_content_retries, agent.model,
                             agent.provider,
                         )
-                        agent._emit_status(
-                            "⚠️ Model returning empty responses — "
-                            "switching to fallback provider..."
-                        )
+                        if _timeout_like_empty:
+                            agent._emit_status(
+                                "⚠️ Provider stream ended without content, "
+                                "likely upstream timeout/cancelled — "
+                                "switching to fallback provider..."
+                            )
+                        else:
+                            agent._emit_status(
+                                "⚠️ Model returning empty responses — "
+                                "switching to fallback provider..."
+                            )
                         if agent._try_activate_fallback():
                             agent._empty_content_retries = 0
                             agent._emit_status(
@@ -3923,6 +4086,72 @@ def run_conversation(
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
+    # ── Per-turn performance footer ───────────────────────────────────
+    # Appended when display.show_perf_footer: true in config.yaml.
+    # Shows: TTFB / TPS / output tokens / total duration.
+    # Gate: text response exists, not interrupted, config enabled.
+    if final_response and not interrupted:
+        try:
+            _show_perf = False
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config() or {}
+                _disp = _cfg.get("display", {}) if isinstance(_cfg, dict) else {}
+                _show_perf = bool(_disp.get("show_perf_footer", False))
+            except Exception:
+                pass
+            if _show_perf:
+                _ps = getattr(agent, "_last_perf_stats", None)
+                if isinstance(_ps, dict) and _ps:
+                    # ── 模型行 ──
+                    _model_str = _ps.get("model") or agent.model or ""
+                    _prov_raw = _ps.get("provider") or agent.provider or ""
+                    # 友好名映射：custom:xxx → 取 xxx 部分；已知内部平台标注
+                    def _friendly_provider(p):
+                        if not p:
+                            return ""
+                        p = str(p)
+                        if p.startswith("custom:"):
+                            p = p[len("custom:"):]
+                        # 内部/外部标注（可按需扩展）
+                        _internal_keywords = {"oneapi", "baidu", "internal", "intranet"}
+                        _lower = p.lower()
+                        _tag = "内部" if any(k in _lower for k in _internal_keywords) else "外部"
+                        return f"{p}（{_tag}）"
+                    _prov_str = _friendly_provider(_prov_raw)
+                    _model_line = f"🤖 模型：{_model_str}"
+                    try:
+                        _ctx_tokens = int(getattr(agent.context_compressor, "last_prompt_tokens", 0) or 0)
+                        _ctx_len = int(getattr(agent.context_compressor, "context_length", 0) or 0)
+                        if _ctx_len > 0 and _ctx_tokens >= 0:
+                            _ctx_pct = max(0, min(100, round((_ctx_tokens / _ctx_len) * 100)))
+                            _model_line += f"（上下文 {_ctx_pct}%）"
+                    except Exception:
+                        pass
+                    if _prov_str:
+                        _model_line += f"  via {_prov_str}"
+                    # ── 性能行 ──
+                    _parts = []
+                    _ttfb = _ps.get("ttfb")
+                    _dur = _ps.get("duration")
+                    _tps = _ps.get("tps")
+                    _toks = _ps.get("output_tokens")
+                    if _ttfb is not None:
+                        _parts.append(f"⏱ TTFB {_ttfb:.1f}s")
+                    if _tps is not None:
+                        _parts.append(f"🚀 {_tps:.0f} tok/s")
+                    if _toks:
+                        _parts.append(f"📦 {int(_toks)} tokens")
+                    if _dur is not None:
+                        _parts.append(f"⏰ {_dur:.1f}s")
+                    _sep = "─" * 36
+                    _perf_line = _sep + "\n" + _model_line
+                    if _parts:
+                        _perf_line += "\n" + " │ ".join(_parts)
+                    final_response = final_response.rstrip() + "\n\n" + _perf_line
+        except Exception as _perf_err:
+            logger.debug("perf footer failed: %s", _perf_err)
+
     # Plugin hook: transform_llm_output
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can transform the LLM's output text before it's returned.
@@ -3956,14 +4185,41 @@ def run_conversation(
                 session_id=agent.session_id,
                 user_message=original_user_message,
                 assistant_response=final_response,
-                conversation_history=list(messages),
+                provider=agent.provider,
                 model=agent.model,
-                platform=getattr(agent, "platform", None) or "",
+                platform=agent.platform,
             )
-        except Exception as exc:
-            logger.warning("post_llm_call hook failed: %s", exc)
+        except Exception:
+            pass
 
-    # Extract reasoning from the CURRENT turn only.  Walk backwards
+    # Persist per-turn performance sample for later analysis.
+    if final_response and not interrupted and agent._session_db:
+        try:
+            _ps = getattr(agent, "_last_perf_stats", None) or {}
+            agent._session_db.insert_model_perf(
+                session_id=agent.session_id,
+                turn_id=f"{agent.session_id}:{int(time.time()*1000)}" if agent.session_id else None,
+                ts=time.time(),
+                model=_ps.get("model") or agent.model,
+                provider=_ps.get("provider") or agent.provider,
+                base_url=_ps.get("base_url") or agent.base_url,
+                ttfb=_ps.get("ttfb"),
+                duration=_ps.get("duration"),
+                tps=_ps.get("tps"),
+                input_tokens=int(_ps.get("input_tokens") or 0),
+                output_tokens=int(_ps.get("output_tokens") or 0),
+                cache_read_tokens=int(_ps.get("cache_read_tokens") or 0),
+                cache_write_tokens=int(_ps.get("cache_write_tokens") or 0),
+                reasoning_tokens=int(_ps.get("reasoning_tokens") or 0),
+                success=True,
+                finish_reason=finish_reason,
+                platform=agent.platform,
+                source=getattr(agent, "source", None),
+            )
+        except Exception as _perf_persist_err:
+            logger.debug("model perf persist failed: %s", _perf_persist_err)
+
+    # If no final_response but we have a failed/interrupted terminal turn,
     # but stop at the user message that started this turn — anything
     # earlier is from a prior turn and must not leak into the reasoning
     # box (confusing stale display; #17055).  Within the current turn

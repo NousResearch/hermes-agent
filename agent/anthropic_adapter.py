@@ -377,6 +377,17 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     return True  # Any other endpoint is a third-party proxy
 
 
+def _is_baidu_oneapi_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for Baidu internal Anthropic-compatible gateways."""
+    return any(
+        base_url_host_matches(base_url or "", host)
+        for host in (
+            "oneapi-comate.baidu-int.com",
+            "clawguard-llm.baidu-int.com",
+        )
+    )
+
+
 def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     """Return True for Kimi's /coding endpoint that requires claude-code UA."""
     normalized = _normalize_base_url_text(base_url)
@@ -525,6 +536,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    extra_headers: Optional[Dict[str, str]] = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -539,6 +551,19 @@ def build_anthropic_client(
     path in ``run_agent.py`` when a subscription rejects the beta; leave at
     its default on fresh clients so 1M-capable subscriptions keep the
     capability.
+
+    ``extra_headers`` are merged into the SDK ``default_headers`` after the
+    adapter's built-in headers are selected. This is used for user-defined
+    ``custom_providers[].headers`` (for example enterprise routing headers)
+    while preserving critical adapter headers such as ``anthropic-beta``.
+
+    For third-party Anthropic-compatible gateways we also mirror Claude Code's
+    request shape by sending ``Authorization: Bearer <api_key>`` alongside the
+    SDK's normal ``x-api-key`` header unless the caller explicitly supplied an
+    Authorization header. For Baidu OneAPI/ClawGuard endpoints specifically,
+    Hermes also uses Claude Code's beta query/header and user-agent fingerprint
+    because that internal gateway appears to route/account differently for the
+    Claude Code compatibility path.
 
     Returns an anthropic.Anthropic instance.
     """
@@ -555,7 +580,7 @@ def build_anthropic_client(
 
     normalized_base_url = _normalize_base_url_text(base_url)
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
-    kwargs = {
+    kwargs: Dict[str, Any] = {
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
     }
     if normalized_base_url:
@@ -569,6 +594,8 @@ def build_anthropic_client(
             kwargs["default_query"] = {"api-version": "2025-04-15"}
         else:
             kwargs["base_url"] = normalized_base_url
+            if _is_baidu_oneapi_anthropic_endpoint(normalized_base_url):
+                kwargs["default_query"] = {"beta": "true"}
     common_betas = _common_betas_for_base_url(
         normalized_base_url,
         drop_context_1m_beta=drop_context_1m_beta,
@@ -617,6 +644,60 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    existing_headers = kwargs.get("default_headers")
+    merged_headers = dict(existing_headers) if isinstance(existing_headers, dict) else {}
+    existing_header_names = {str(name).lower() for name in merged_headers}
+
+    if isinstance(extra_headers, dict) and extra_headers:
+        for header_name, header_value in extra_headers.items():
+            if isinstance(header_name, str) and header_name.strip() and header_value is not None:
+                clean_name = header_name.strip()
+                if clean_name.lower() not in existing_header_names:
+                    merged_headers[clean_name] = str(header_value)
+                    existing_header_names.add(clean_name.lower())
+
+    if _is_baidu_oneapi_anthropic_endpoint(normalized_base_url):
+        existing_beta = merged_headers.get("anthropic-beta")
+        beta_values = []
+        if isinstance(existing_beta, str) and existing_beta.strip():
+            beta_values.extend(v.strip() for v in existing_beta.split(",") if v.strip())
+        for beta in (
+            "claude-code-20250219",
+            "interleaved-thinking-2025-05-14",
+            "context-management-2025-06-27",
+            "prompt-caching-scope-2026-01-05",
+            "advisor-tool-2026-03-01",
+            "effort-2025-11-24",
+        ):
+            if beta not in beta_values:
+                beta_values.append(beta)
+        if beta_values:
+            merged_headers["anthropic-beta"] = ",".join(beta_values)
+            existing_header_names.add("anthropic-beta")
+        # Use "User-Agent" (capitalized) so it overrides the SDK's built-in
+        # "Anthropic/Python x.y.z" value. The Anthropic SDK stores its default
+        # User-Agent with a capital-U key and HTTP header matching is case-insensitive
+        # at the wire level, but the SDK's internal header-merge logic is case-sensitive
+        # and lowercase "user-agent" does NOT override the SDK's "User-Agent" entry.
+        # The Baidu OneAPI router uses the User-Agent to route to the correct quota bucket;
+        # presenting as claude-cli ensures it is counted against the same bucket as
+        # Claude Code CLI requests.
+        if "user-agent" not in existing_header_names:
+            merged_headers["User-Agent"] = f"claude-cli/{_get_claude_code_version()} (external, sdk-cli)"
+            existing_header_names.add("user-agent")
+
+    if (
+        api_key
+        and kwargs.get("api_key") == api_key
+        and _is_third_party_anthropic_endpoint(normalized_base_url)
+        and "authorization" not in existing_header_names
+    ):
+        merged_headers["Authorization"] = f"Bearer {api_key}"
+        existing_header_names.add("authorization")
+
+    if merged_headers:
+        kwargs["default_headers"] = merged_headers
 
     return _anthropic_sdk.Anthropic(**kwargs)
 

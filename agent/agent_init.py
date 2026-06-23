@@ -115,6 +115,7 @@ def init_agent(
     reasoning_config: Dict[str, Any] = None,
     service_tier: str = None,
     request_overrides: Dict[str, Any] = None,
+    headers: Optional[Dict[str, str]] = None,
     prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None,
     user_id: str = None,
@@ -394,6 +395,8 @@ def init_agent(
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
     agent.service_tier = service_tier
     agent.request_overrides = dict(request_overrides or {})
+    if isinstance(headers, dict) and headers:
+        agent.request_overrides["provider_headers"] = dict(headers)
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
     
@@ -498,6 +501,46 @@ def init_agent(
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = None
 
+    if not isinstance(request_overrides, dict):
+        request_overrides = {}
+
+    provider_headers: Dict[str, str] = {}
+    if isinstance(headers, dict):
+        provider_headers.update(
+            {
+                str(name): str(value)
+                for name, value in headers.items()
+                if isinstance(name, str) and name.strip() and value is not None
+            }
+        )
+    if isinstance(request_overrides, dict):
+        raw_provider_headers = request_overrides.get("provider_headers")
+        if isinstance(raw_provider_headers, dict):
+            provider_headers.update(
+                {
+                    str(name): str(value)
+                    for name, value in raw_provider_headers.items()
+                    if isinstance(name, str) and name.strip() and value is not None
+                }
+            )
+    agent._provider_headers = dict(provider_headers)
+    # provider_headers is an internal plumbing field used to populate the
+    # client's HTTP default_headers.  It must not remain in request_overrides:
+    # chat/codex transports merge request_overrides into per-request SDK kwargs,
+    # and OpenAI-compatible clients reject unknown kwargs like provider_headers.
+    if isinstance(agent.request_overrides, dict):
+        agent.request_overrides.pop("provider_headers", None)
+
+    def _merge_provider_headers(default_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        merged_headers = dict(default_headers or {})
+        existing_header_names = {str(name).lower() for name in merged_headers}
+        for header_name, header_value in provider_headers.items():
+            clean_name = header_name.strip()
+            if clean_name.lower() not in existing_header_names:
+                merged_headers[clean_name] = str(header_value)
+                existing_header_names.add(clean_name.lower())
+        return merged_headers
+
     # Cache anthropic image-to-text fallbacks per image payload/URL so a
     # single tool loop does not repeatedly re-run auxiliary vision on the
     # same image history.
@@ -554,7 +597,12 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            agent._anthropic_client = build_anthropic_client(
+                effective_key,
+                base_url,
+                timeout=_provider_timeout,
+                extra_headers=provider_headers,
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}
@@ -736,6 +784,9 @@ def init_agent(
                         "configuration."
                     )
         
+        if provider_headers:
+            client_kwargs["default_headers"] = _merge_provider_headers(client_kwargs.get("default_headers"))
+
         agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
         # Enable fine-grained tool streaming for Claude on OpenRouter.
@@ -746,15 +797,15 @@ def init_agent(
         # connection alive.
         _effective_base = str(client_kwargs.get("base_url", "")).lower()
         if base_url_host_matches(_effective_base, "openrouter.ai") and "claude" in (agent.model or "").lower():
-            headers = client_kwargs.get("default_headers") or {}
-            existing_beta = headers.get("x-anthropic-beta", "")
+            local_headers = dict(client_kwargs.get("default_headers") or {})
+            existing_beta = local_headers.get("x-anthropic-beta", "")
             _FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
             if _FINE_GRAINED not in existing_beta:
                 if existing_beta:
-                    headers["x-anthropic-beta"] = f"{existing_beta},{_FINE_GRAINED}"
+                    local_headers["x-anthropic-beta"] = f"{existing_beta},{_FINE_GRAINED}"
                 else:
-                    headers["x-anthropic-beta"] = _FINE_GRAINED
-                client_kwargs["default_headers"] = headers
+                    local_headers["x-anthropic-beta"] = _FINE_GRAINED
+                client_kwargs["default_headers"] = local_headers
 
         agent.api_key = client_kwargs.get("api_key", "")
         agent.base_url = client_kwargs.get("base_url", agent.base_url)

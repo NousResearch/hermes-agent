@@ -157,6 +157,7 @@ class InsightsEngine:
         skills = self._compute_skill_breakdown(skill_usage)
         activity = self._compute_activity_patterns(sessions)
         top_sessions = self._compute_top_sessions(sessions)
+        perf = self._compute_model_perf(cutoff, source)
 
         return {
             "days": days,
@@ -170,6 +171,7 @@ class InsightsEngine:
             "skills": skills,
             "activity": activity,
             "top_sessions": top_sessions,
+            "perf": perf,
         }
 
     # =========================================================================
@@ -202,6 +204,22 @@ class InsightsEngine:
             cursor = self._conn.execute(self._GET_SESSIONS_WITH_SOURCE, (cutoff, source))
         else:
             cursor = self._conn.execute(self._GET_SESSIONS_ALL, (cutoff,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def _get_model_perf_rows(self, cutoff: float, source: str = None) -> List[Dict]:
+        """Fetch persisted per-turn model performance rows within the time window."""
+        query = (
+            "SELECT model, provider, base_url, ttfb, duration, tps, input_tokens, "
+            "output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, "
+            "success, finish_reason, platform, source, ts "
+            "FROM model_perf WHERE ts >= ?"
+        )
+        params: list[Any] = [cutoff]
+        if source:
+            query += " AND source = ?"
+            params.append(source)
+        query += " ORDER BY ts DESC"
+        cursor = self._conn.execute(query, tuple(params))
         return [dict(row) for row in cursor.fetchall()]
 
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
@@ -719,6 +737,88 @@ class InsightsEngine:
 
         return top
 
+    def _compute_model_perf(self, cutoff: float, source: str = None) -> Dict[str, Any]:
+        """Aggregate persisted per-turn performance rows for stats-only reporting."""
+        rows = self._get_model_perf_rows(cutoff, source)
+        if not rows:
+            return {"summary": {}, "models": [], "recent": []}
+
+        grouped: dict[str, dict[str, Any]] = {}
+        successful = 0
+        ttfb_values: List[float] = []
+        duration_values: List[float] = []
+        tps_values: List[float] = []
+
+        for row in rows:
+            key = row.get("model") or "unknown"
+            bucket = grouped.setdefault(
+                key,
+                {
+                    "model": key,
+                    "provider": row.get("provider") or "",
+                    "samples": 0,
+                    "successes": 0,
+                    "ttfb_values": [],
+                    "duration_values": [],
+                    "tps_values": [],
+                    "output_tokens": 0,
+                    "input_tokens": 0,
+                    "last_ts": row.get("ts") or 0,
+                },
+            )
+            bucket["samples"] += 1
+            bucket["output_tokens"] += int(row.get("output_tokens") or 0)
+            bucket["input_tokens"] += int(row.get("input_tokens") or 0)
+            bucket["last_ts"] = max(float(bucket["last_ts"] or 0), float(row.get("ts") or 0))
+
+            if row.get("success"):
+                bucket["successes"] += 1
+                successful += 1
+
+            for field, store in (("ttfb", "ttfb_values"), ("duration", "duration_values"), ("tps", "tps_values")):
+                val = row.get(field)
+                if val is not None:
+                    fval = float(val)
+                    bucket[store].append(fval)
+                    if field == "ttfb":
+                        ttfb_values.append(fval)
+                    elif field == "duration":
+                        duration_values.append(fval)
+                    else:
+                        tps_values.append(fval)
+
+        models = []
+        for bucket in grouped.values():
+            samples = int(bucket["samples"] or 0)
+            success_rate = (bucket["successes"] / samples * 100.0) if samples else 0.0
+            models.append(
+                {
+                    "model": bucket["model"],
+                    "provider": bucket["provider"],
+                    "samples": samples,
+                    "success_rate": success_rate,
+                    "avg_ttfb": (sum(bucket["ttfb_values"]) / len(bucket["ttfb_values"])) if bucket["ttfb_values"] else None,
+                    "avg_duration": (sum(bucket["duration_values"]) / len(bucket["duration_values"])) if bucket["duration_values"] else None,
+                    "avg_tps": (sum(bucket["tps_values"]) / len(bucket["tps_values"])) if bucket["tps_values"] else None,
+                    "output_tokens": bucket["output_tokens"],
+                    "input_tokens": bucket["input_tokens"],
+                    "last_ts": bucket["last_ts"],
+                }
+            )
+
+        models.sort(key=lambda item: (-item["samples"], item["model"]))
+        return {
+            "summary": {
+                "samples": len(rows),
+                "successful_samples": successful,
+                "avg_ttfb": (sum(ttfb_values) / len(ttfb_values)) if ttfb_values else None,
+                "avg_duration": (sum(duration_values) / len(duration_values)) if duration_values else None,
+                "avg_tps": (sum(tps_values) / len(tps_values)) if tps_values else None,
+            },
+            "models": models,
+            "recent": rows[:5],
+        }
+
     # =========================================================================
     # Formatting
     # =========================================================================
@@ -861,6 +961,38 @@ class InsightsEngine:
                 lines.append(f"  {ts['label']:<20} {ts['value']:<18} ({ts['date']}, {ts['session_id']})")
             lines.append("")
 
+        perf = report.get("perf", {})
+        perf_summary = perf.get("summary", {}) if isinstance(perf, dict) else {}
+        perf_models = perf.get("models", []) if isinstance(perf, dict) else []
+        if perf_models:
+            lines.append("  ⚡ Model Performance")
+            lines.append("  " + "─" * 56)
+            lines.append(
+                f"  Samples: {perf_summary.get('samples', 0):,}"
+                f"  Success: {perf_summary.get('successful_samples', 0):,}"
+            )
+            summary_parts = []
+            _ttfb_avg = perf_summary.get("avg_ttfb")
+            _dur_avg = perf_summary.get("avg_duration")
+            _tps_avg = perf_summary.get("avg_tps")
+            if _ttfb_avg is not None:
+                summary_parts.append(f"avg TTFB {_ttfb_avg:.2f}s")
+            if _dur_avg is not None:
+                summary_parts.append(f"avg duration {_dur_avg:.2f}s")
+            if _tps_avg is not None:
+                summary_parts.append(f"avg tok/s {_tps_avg:.1f}")
+            if summary_parts:
+                lines.append("  " + " | ".join(summary_parts))
+            lines.append(f"  {'Model':<24} {'N':>4} {'TTFB':>8} {'tok/s':>8} {'Dur':>8} {'OK%':>7}")
+            for pm in perf_models[:10]:
+                ttfb_str = f"{pm['avg_ttfb']:.2f}s" if pm.get("avg_ttfb") is not None else "—"
+                tps_str = f"{pm['avg_tps']:.1f}" if pm.get("avg_tps") is not None else "—"
+                dur_str = f"{pm['avg_duration']:.2f}s" if pm.get("avg_duration") is not None else "—"
+                lines.append(
+                    f"  {pm['model'][:24]:<24} {pm['samples']:>4} {ttfb_str:>8} {tps_str:>8} {dur_str:>8} {pm['success_rate']:>6.1f}%"
+                )
+            lines.append("")
+
         return "\n".join(lines)
 
     def format_gateway(self, report: Dict) -> str:
@@ -901,6 +1033,25 @@ class InsightsEngine:
             lines.append("**🔧 Top Tools:**")
             for t in report["tools"][:8]:
                 lines.append(f"  {t['tool']} — {t['count']:,} calls ({t['percentage']:.1f}%)")
+            lines.append("")
+
+        perf = report.get("perf", {})
+        perf_models = perf.get("models", []) if isinstance(perf, dict) else []
+        perf_summary = perf.get("summary", {}) if isinstance(perf, dict) else {}
+        if perf_models:
+            lines.append("**⚡ Model Performance:**")
+            lines.append(
+                f"  Samples: {perf_summary.get('samples', 0):,} | "
+                f"Success: {perf_summary.get('successful_samples', 0):,}"
+            )
+            for pm in perf_models[:5]:
+                ttfb = f"{pm['avg_ttfb']:.2f}s" if pm.get("avg_ttfb") is not None else "—"
+                tps = f"{pm['avg_tps']:.1f}" if pm.get("avg_tps") is not None else "—"
+                dur = f"{pm['avg_duration']:.2f}s" if pm.get("avg_duration") is not None else "—"
+                lines.append(
+                    f"  {pm['model'][:22]} — {pm['samples']} samples, "
+                    f"TTFB {ttfb}, tok/s {tps}, dur {dur}, ok {pm['success_rate']:.1f}%"
+                )
             lines.append("")
 
         skills = report.get("skills", {})

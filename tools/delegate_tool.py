@@ -1136,6 +1136,27 @@ def _build_child_agent(
         iteration_budget=None,  # fresh budget per subagent
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+
+    # Inherit parent's custom provider headers (e.g. Baidu OneAPI's
+    # comate_custom_header which carries account-attribution info like
+    # {"username": "..."}). Without this, subagent traffic shows up under
+    # the wrong account on provider dashboards even though api_key/base_url
+    # are inherited correctly. Mirror cli.py:4291 + run_agent.py's
+    # _apply_provider_headers_to_client_kwargs flow.
+    #
+    # Skip when override_provider is set: those headers are specific to the
+    # parent's provider and would be meaningless / wrong for a different one.
+    if not override_provider:
+        parent_headers = getattr(parent_agent, "_provider_headers", None)
+        if isinstance(parent_headers, dict) and parent_headers:
+            child._provider_headers = dict(parent_headers)
+            apply_fn = getattr(child, "_apply_provider_headers_to_client_kwargs", None)
+            if callable(apply_fn):
+                try:
+                    apply_fn()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
     # Stash the post-degrade role for introspection (leaf if the

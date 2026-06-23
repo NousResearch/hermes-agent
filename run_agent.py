@@ -390,6 +390,7 @@ class AIAgent:
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
         request_overrides: Dict[str, Any] = None,
+        headers: Optional[Dict[str, str]] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         user_id: str = None,
@@ -459,6 +460,7 @@ class AIAgent:
             reasoning_config=reasoning_config,
             service_tier=service_tier,
             request_overrides=request_overrides,
+            headers=headers,
             prefill_messages=prefill_messages,
             platform=platform,
             user_id=user_id,
@@ -2398,8 +2400,14 @@ class AIAgent:
             # Explicitly read proxy settings while still honoring NO_PROXY for
             # loopback / local endpoints such as a locally hosted sub2api.
             _proxy = _get_proxy_for_base_url(base_url)
+            # Baidu agent-sandbox LLM proxy presents an internal/corporate TLS
+            # chain that is not trusted by the WSL Python/OpenAI SDK trust store.
+            # Direct probes require requests(..., verify=False). Keep this
+            # narrowly scoped to the sandbox host so oneapi-comate and all other
+            # providers retain normal certificate verification.
+            _verify = not base_url_host_matches(base_url, "agent-sandbox-fe.baidu-int.com")
             return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                transport=_httpx.HTTPTransport(socket_options=_sock_opts, verify=_verify),
                 proxy=_proxy,
             )
         except Exception:
@@ -2701,6 +2709,28 @@ class AIAgent:
         logger.info("Copilot credentials refreshed from %s", token_source)
         return True
 
+    def _merge_provider_headers_for_client(self, default_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        merged_headers = dict(default_headers or {})
+        existing_header_names = {str(name).lower() for name in merged_headers}
+        provider_headers = getattr(self, "_provider_headers", None)
+        if isinstance(provider_headers, dict):
+            for header_name, header_value in provider_headers.items():
+                if isinstance(header_name, str) and header_name.strip() and header_value is not None:
+                    clean_name = header_name.strip()
+                    if clean_name.lower() not in existing_header_names:
+                        merged_headers[clean_name] = str(header_value)
+                        existing_header_names.add(clean_name.lower())
+        return merged_headers
+
+    def _apply_provider_headers_to_client_kwargs(self) -> None:
+        provider_headers = getattr(self, "_provider_headers", None)
+        if not isinstance(provider_headers, dict) or not provider_headers:
+            return
+        current_headers = self._client_kwargs.get("default_headers")
+        self._client_kwargs["default_headers"] = self._merge_provider_headers_for_client(
+            current_headers if isinstance(current_headers, dict) else None
+        )
+
     def _try_refresh_anthropic_client_credentials(self) -> bool:
         if self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key"):
             return False
@@ -2734,10 +2764,12 @@ class AIAgent:
             pass
 
         try:
+            extra_headers = self._merge_provider_headers_for_client()
             self._anthropic_client = build_anthropic_client(
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                extra_headers=extra_headers,
             )
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
@@ -2794,6 +2826,7 @@ class AIAgent:
                 self._client_kwargs["default_headers"] = _ph_headers
             else:
                 self._client_kwargs.pop("default_headers", None)
+        self._apply_provider_headers_to_client_kwargs()
 
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
@@ -2809,9 +2842,11 @@ class AIAgent:
 
             self._anthropic_api_key = runtime_key
             self._anthropic_base_url = runtime_base
+            extra_headers = self._merge_provider_headers_for_client()
             self._anthropic_client = build_anthropic_client(
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                extra_headers=extra_headers,
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
@@ -2876,11 +2911,13 @@ class AIAgent:
             self._anthropic_client = build_anthropic_bedrock_client(region)
         else:
             from agent.anthropic_adapter import build_anthropic_client
+            extra_headers = self._merge_provider_headers_for_client()
             self._anthropic_client = build_anthropic_client(
                 self._anthropic_api_key,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
                 drop_context_1m_beta=_drop_1m,
+                extra_headers=extra_headers,
             )
 
     def _interruptible_api_call(self, api_kwargs: dict):

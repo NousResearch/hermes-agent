@@ -3086,6 +3086,82 @@ class TestRunConversation:
         assert result["final_response"] == "All done"
         assert result["completed"] is True
 
+    def test_ineffective_compression_triggers_fallback(self, agent):
+        """When compression is ineffective (counter >= 2) and tokens exceed threshold,
+        the agent should switch to the fallback model instead of silently doing nothing."""
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+
+        # Simulate compression has been ineffective twice
+        agent.context_compressor._ineffective_compression_count = 2
+        agent.context_compressor.threshold_tokens = 1000
+
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="All done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="result"),
+            patch.object(
+                agent.context_compressor, "should_compress", return_value=False
+            ),
+            patch.object(
+                agent.context_compressor, "last_prompt_tokens", new=5000
+            ),
+            patch.object(agent, "_try_activate_fallback", return_value=True) as mock_fallback,
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        # Fallback should be triggered, compression should NOT run
+        mock_fallback.assert_called_once()
+        mock_compress.assert_not_called()
+        assert result["final_response"] == "All done"
+        assert result["completed"] is True
+
+    def test_ineffective_compression_no_fallback_emits_warning(self, agent):
+        """When compression is ineffective and no fallback is configured,
+        a visible warning should be emitted."""
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+
+        agent.context_compressor._ineffective_compression_count = 2
+        agent.context_compressor.threshold_tokens = 1000
+
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="All done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        warnings_emitted = []
+
+        with (
+            patch("run_agent.handle_function_call", return_value="result"),
+            patch.object(
+                agent.context_compressor, "should_compress", return_value=False
+            ),
+            patch.object(
+                agent.context_compressor, "last_prompt_tokens", new=5000
+            ),
+            patch.object(agent, "_try_activate_fallback", return_value=False),
+            patch.object(
+                agent, "_emit_warning",
+                side_effect=lambda msg: warnings_emitted.append(msg)
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert any("compression" in w.lower() for w in warnings_emitted), \
+            f"Expected a compression warning, got: {warnings_emitted}"
+        assert result["final_response"] == "All done"
+
     def test_glm_prompt_exceeds_max_length_triggers_compression(self, agent):
         """GLM/Z.AI uses 'Prompt exceeds max length' for context overflow."""
         self._setup_agent(agent)

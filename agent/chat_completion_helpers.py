@@ -2049,6 +2049,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 usage=None,
             )
         raise result["error"]
+    # ── Persist stream diagnostics for per-turn perf footer ───────────
+    # Store the last completed stream's diagnostic dict on the agent so
+    # conversation_loop.py can read TTFB and compute TPS for the footer.
+    try:
+        _fin_diag = request_client_holder.get("diag")
+        if isinstance(_fin_diag, dict) and _fin_diag.get("first_chunk_at"):
+            agent._last_stream_diag = _fin_diag
+    except Exception:
+        pass
     return result["response"]
 
 # ── Provider fallback ──────────────────────────────────────────────────

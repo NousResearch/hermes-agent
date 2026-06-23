@@ -1,0 +1,12 @@
+name: memory_tencentdb
+display_name: memory-tencentdb
+version: 1.0.0
+description: "memory-tencentdb four-layer memory — L0 conversation recording, L1 episodic extraction, L2 scene blocks, L3 persona synthesis via local Node.js Gateway."
+hooks:
+  - on_memory_write
+  - on_session_end
+# Legacy provider name — kept so that users whose config still says
+# `memory.provider: tdai` continue to resolve to this provider.
+aliases:
+  - tdai
+  - memory-tencentdb

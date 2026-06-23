@@ -104,12 +104,68 @@ class TestBuildAnthropicClient:
 
     def test_custom_base_url(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
-            build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
+            build_anthropic_client("***", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
             assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+                "Authorization": "Bearer ***",
             }
+
+    def test_extra_headers_merge_with_default_headers(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "***",
+                base_url="https://custom.api.com",
+                extra_headers={
+                    "comate_custom_header": '{"username":"tester","source":"unit"}',
+                    "  x-trimmed  ": "yes",
+                    "anthropic-beta": "must-not-overwrite",
+                    "": "ignored",
+                },
+            )
+            headers = mock_sdk.Anthropic.call_args[1]["default_headers"]
+            assert headers["comate_custom_header"] == '{"username":"tester","source":"unit"}'
+            assert headers["x-trimmed"] == "yes"
+            assert headers["Authorization"] == "Bearer ***"
+            assert headers["anthropic-beta"] == (
+                "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+            )
+            assert "x-none" not in headers
+
+    def test_extra_headers_authorization_is_not_overwritten(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "primary-key",
+                base_url="https://custom.api.com",
+                extra_headers={"authorization": "Bearer explicit-token"},
+            )
+            headers = mock_sdk.Anthropic.call_args[1]["default_headers"]
+            assert headers["authorization"] == "Bearer explicit-token"
+            assert "Authorization" not in headers
+
+    def test_baidu_oneapi_endpoint_uses_claude_code_compat_request_shape(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "baidu-key",
+                base_url="https://oneapi-comate.baidu-int.com",
+                extra_headers={"comate_custom_header": '{"username":"tester","source":"unit"}'},
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["default_query"] == {"beta": "true"}
+            headers = kwargs["default_headers"]
+            assert headers["Authorization"] == "Bearer baidu-key"
+            # Header key is "User-Agent" (capital-U) so it overrides the SDK's built-in
+            # "Anthropic/Python …" value at header-merge time.
+            ua = headers.get("User-Agent") or headers.get("user-agent", "")
+            assert ua.startswith("claude-cli/")
+            assert headers["comate_custom_header"] == '{"username":"tester","source":"unit"}'
+            betas = headers["anthropic-beta"]
+            assert "claude-code-20250219" in betas
+            assert "context-management-2025-06-27" in betas
+            assert "prompt-caching-scope-2026-01-05" in betas
+            assert "advisor-tool-2026-03-01" in betas
+            assert "effort-2025-11-24" in betas
 
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:

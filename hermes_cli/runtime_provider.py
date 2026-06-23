@@ -433,6 +433,16 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 return None
 
     config = load_config()
+
+    def _extract_headers(entry: Dict[str, Any]) -> Dict[str, str]:
+        raw_headers = entry.get("headers")
+        if not isinstance(raw_headers, dict):
+            return {}
+        return {
+            str(name).strip(): str(value)
+            for name, value in raw_headers.items()
+            if isinstance(name, str) and name.strip() and value is not None
+        }
     
     # First check providers: dict (new-style user-defined providers)
     providers = config.get("providers")
@@ -453,7 +463,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
-                    result = {
+                    result: Dict[str, Any] = {
                         "name": entry.get("name", ep_name),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
@@ -469,6 +479,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
+                    headers = _extract_headers(entry)
+                    if headers:
+                        result["headers"] = headers
                     return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
@@ -478,7 +491,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     # Found match by display name
                     base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                     if base_url:
-                        result = {
+                        result: Dict[str, Any] = {
                             "name": display_name,
                             "base_url": base_url.strip(),
                             "api_key": resolved_api_key,
@@ -487,6 +500,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
+                        headers = _extract_headers(entry)
+                        if headers:
+                            result["headers"] = headers
                         return result
 
     # Fall back to custom_providers: list (legacy format)
@@ -517,7 +533,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         provider_menu_key = f"custom:{provider_key_norm}" if provider_key_norm else ""
         if requested_norm not in {name_norm, menu_key, provider_key_norm, provider_menu_key}:
             continue
-        result = {
+        result: Dict[str, Any] = {
             "name": name.strip(),
             "base_url": base_url.strip(),
             "api_key": str(entry.get("api_key", "") or "").strip(),
@@ -530,6 +546,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
+        headers = _extract_headers(entry)
+        if headers:
+            result["headers"] = headers
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
@@ -589,11 +608,13 @@ def _resolve_named_custom_runtime(
     # Check if a credential pool exists for this custom endpoint
     pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
     if pool_result:
-        # Propagate the model name even when using pooled credentials —
-        # the pool doesn't know about the custom_providers model field.
+        # Propagate custom provider fields even when using pooled credentials —
+        # the pool doesn't know about the custom_providers model/header fields.
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        if custom_provider.get("headers"):
+            pool_result["headers"] = dict(custom_provider["headers"])
         return pool_result
 
     api_key_candidates = [
@@ -605,7 +626,7 @@ def _resolve_named_custom_runtime(
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
-    result = {
+    result: Dict[str, Any] = {
         "provider": "custom",
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
@@ -614,6 +635,8 @@ def _resolve_named_custom_runtime(
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
     }
+    if custom_provider.get("headers"):
+        result["headers"] = dict(custom_provider["headers"])
     # Propagate the model name so callers can override self.model when the
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):

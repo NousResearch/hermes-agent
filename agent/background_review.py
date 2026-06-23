@@ -378,6 +378,15 @@ def _run_review_in_thread(
             # parent below so memory(action="add") writes from
             # the review still land on disk; the review just
             # has zero side effects on external providers.
+            # Inherit the parent's provider headers (e.g. OneAPI's
+            # comate_custom_header) so the background review fork
+            # carries the same identity/routing headers as the main
+            # turn.  Without this, provider dashboards classify
+            # fork traffic under a different identity, and auth-
+            # gated proxies may reject or misroute it.
+            _parent_provider_headers = getattr(
+                agent, "_provider_headers", None
+            )
             review_agent = AIAgent(
                 model=agent.model,
                 max_iterations=16,
@@ -390,6 +399,11 @@ def _run_review_in_thread(
                 credential_pool=getattr(agent, "_credential_pool", None),
                 parent_session_id=agent.session_id,
                 skip_memory=True,
+                headers=(
+                    dict(_parent_provider_headers)
+                    if isinstance(_parent_provider_headers, dict)
+                    else None
+                ),
             )
             review_agent._memory_write_origin = "background_review"
             review_agent._memory_write_context = "background_review"

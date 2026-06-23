@@ -4287,6 +4287,8 @@ class HermesCLI:
         self.acp_args = resolved_acp_args
         self._credential_pool = resolved_credential_pool
         self._provider_source = runtime.get("source")
+        runtime_headers = runtime.get("headers")
+        self._provider_headers = dict(runtime_headers) if isinstance(runtime_headers, dict) else {}
         self.api_key = api_key
         self.base_url = base_url
 
@@ -4353,6 +4355,9 @@ class HermesCLI:
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
         }
+        provider_headers = getattr(self, "_provider_headers", None)
+        if isinstance(provider_headers, dict) and provider_headers:
+            runtime["headers"] = dict(provider_headers)
         route = {
             "model": self.model,
             "runtime": runtime,
@@ -4377,6 +4382,17 @@ class HermesCLI:
             overrides = None
         route["request_overrides"] = overrides
         return route
+
+    def _with_provider_headers(self, request_overrides: dict | None, headers) -> dict | None:
+        if not isinstance(headers, dict) or not headers:
+            return request_overrides
+        merged = dict(request_overrides) if isinstance(request_overrides, dict) else {}
+        merged["provider_headers"] = {
+            str(name): str(value)
+            for name, value in headers.items()
+            if isinstance(name, str) and name.strip() and value is not None
+        }
+        return merged
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """
@@ -4465,6 +4481,10 @@ class HermesCLI:
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
+            if runtime_override is None:
+                provider_headers = getattr(self, "_provider_headers", None)
+                if isinstance(provider_headers, dict) and provider_headers:
+                    runtime["headers"] = dict(provider_headers)
             effective_model = model_override or self.model
             self.agent = AIAgent(
                 model=effective_model,
@@ -4484,7 +4504,10 @@ class HermesCLI:
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
-                request_overrides=request_overrides,
+                request_overrides=self._with_provider_headers(
+                    request_overrides or {},
+                    runtime.get("headers"),
+                ),
                 providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore,
                 providers_order=self._providers_order,

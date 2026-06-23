@@ -990,6 +990,7 @@ DEFAULT_CONFIG = {
         # `git status` to verify edits landed.  Set false to suppress.
         "file_mutation_verifier": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
+        "show_perf_footer": False, # Append per-turn perf stats (TTFB / TPS / tokens / duration) to final response
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent
@@ -1022,7 +1023,7 @@ DEFAULT_CONFIG = {
         # display.platforms.<platform>.runtime_footer.
         "runtime_footer": {
             "enabled": False,
-            "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
+            "fields": ["model", "context_pct", "cwd"],  # Also supports "oneapi_quota" from ~/.hermes/cache/oneapi_comate_quota.json
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },
@@ -2953,7 +2954,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
-        "discover_models",
+        "discover_models", "headers",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -3047,6 +3048,16 @@ def _normalize_custom_provider_entry(
     discover_models = entry.get("discover_models")
     if isinstance(discover_models, bool):
         normalized["discover_models"] = discover_models
+
+    headers = entry.get("headers")
+    if isinstance(headers, dict):
+        normalized_headers = {
+            str(name).strip(): str(value)
+            for name, value in headers.items()
+            if isinstance(name, str) and name.strip() and value is not None
+        }
+        if normalized_headers:
+            normalized["headers"] = normalized_headers
 
     return normalized
 
@@ -3211,7 +3222,7 @@ _VALID_CUSTOM_PROVIDER_FIELDS = {
     "context_length", "rate_limit_delay",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
-    "key_env",
+    "key_env", "headers",
 }
 
 # Fields that look like they should be inside custom_providers, not at root

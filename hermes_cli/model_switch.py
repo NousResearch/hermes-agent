@@ -826,6 +826,8 @@ def switch_model(
         # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
         is_custom = current_provider in {"custom", "local"} or (
+            current_provider.startswith("custom:")
+        ) or (
             "localhost" in _base or "127.0.0.1" in _base
         )
 
@@ -963,6 +965,15 @@ def switch_model(
                     if isinstance(entry_models, dict) and new_model in entry_models:
                         override = True
                         break
+                    # Also handle list-of-dicts format: [{id: "...", name: "..."}, ...]
+                    if isinstance(entry_models, list):
+                        if any(
+                            (isinstance(m, dict) and (m.get("id") == new_model or m.get("name") == new_model))
+                            or (isinstance(m, str) and m == new_model)
+                            for m in entry_models
+                        ):
+                            override = True
+                            break
         if override:
             validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
         else:

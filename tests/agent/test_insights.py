@@ -484,6 +484,49 @@ class TestTerminalFormatting:
 
         assert "█" in text  # Bar chart characters
 
+    def test_terminal_format_shows_model_perf(self, populated_db):
+        populated_db.insert_model_perf(
+            session_id="s1",
+            turn_id="s1:1",
+            ts=time.time(),
+            model="anthropic/claude-sonnet-4-20250514",
+            provider="anthropic",
+            base_url=None,
+            ttfb=0.8,
+            duration=4.0,
+            tps=75.0,
+            input_tokens=1000,
+            output_tokens=300,
+            success=True,
+            finish_reason="stop",
+            platform="cli",
+            source="cli",
+        )
+        populated_db.insert_model_perf(
+            session_id="s2",
+            turn_id="s2:1",
+            ts=time.time(),
+            model="gpt-4o",
+            provider="openai",
+            base_url=None,
+            ttfb=1.2,
+            duration=5.0,
+            tps=60.0,
+            input_tokens=800,
+            output_tokens=250,
+            success=True,
+            finish_reason="stop",
+            platform="telegram",
+            source="telegram",
+        )
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+        text = engine.format_terminal(report)
+
+        assert "Model Performance" in text
+        assert "avg TTFB" in text
+        assert "gpt-4o" in text
+
     def test_terminal_format_hides_cost_for_custom_models(self, db):
         """Cost display is hidden entirely — custom models no longer show 'N/A' either."""
         db.create_session(session_id="s1", source="cli", model="my-custom-model")
@@ -523,6 +566,31 @@ class TestGatewayFormatting:
 
         assert "$" not in text
         assert "cache" not in text.lower()
+
+    def test_gateway_format_shows_model_perf(self, populated_db):
+        populated_db.insert_model_perf(
+            session_id="s1",
+            turn_id="s1:2",
+            ts=time.time(),
+            model="anthropic/claude-sonnet-4-20250514",
+            provider="anthropic",
+            base_url=None,
+            ttfb=0.7,
+            duration=3.5,
+            tps=82.0,
+            input_tokens=900,
+            output_tokens=310,
+            success=True,
+            finish_reason="stop",
+            platform="cli",
+            source="cli",
+        )
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+        text = engine.format_gateway(report)
+
+        assert "Model Performance" in text
+        assert "TTFB" in text
 
     def test_gateway_format_shows_models(self, populated_db):
         engine = InsightsEngine(populated_db)

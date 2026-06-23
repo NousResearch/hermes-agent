@@ -1077,6 +1077,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
             api_key=runtime_kwargs.get("api_key"),
             provider=runtime_kwargs.get("provider"),
             api_mode=runtime_kwargs.get("api_mode"),
+            headers=runtime_kwargs.get("headers"),
             credential_pool=runtime_kwargs.get("credential_pool"),
             quiet_mode=True,
             skip_context_files=True,

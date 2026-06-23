@@ -244,10 +244,35 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS model_perf (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    turn_id TEXT,
+    ts REAL NOT NULL,
+    model TEXT,
+    provider TEXT,
+    base_url TEXT,
+    ttfb REAL,
+    duration REAL,
+    tps REAL,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    reasoning_tokens INTEGER DEFAULT 0,
+    success INTEGER DEFAULT 1,
+    finish_reason TEXT,
+    platform TEXT,
+    source TEXT,
+    FOREIGN KEY (session_id) REFERENCES sessions(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_model_perf_ts ON model_perf(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_model_perf_model_ts ON model_perf(model, ts DESC);
 """
 
 FTS_SQL = """
@@ -847,6 +872,63 @@ class SessionDB:
         )
         def _do(conn):
             conn.execute(sql, params)
+        self._execute_write(_do)
+
+    def insert_model_perf(
+        self,
+        *,
+        session_id: Optional[str],
+        turn_id: Optional[str],
+        ts: float,
+        model: Optional[str],
+        provider: Optional[str],
+        base_url: Optional[str],
+        ttfb: Optional[float],
+        duration: Optional[float],
+        tps: Optional[float],
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        success: bool = True,
+        finish_reason: Optional[str] = None,
+        platform: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> None:
+        """Persist one per-turn performance sample for later analysis."""
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO model_perf (
+                    session_id, turn_id, ts, model, provider, base_url,
+                    ttfb, duration, tps,
+                    input_tokens, output_tokens, cache_read_tokens,
+                    cache_write_tokens, reasoning_tokens,
+                    success, finish_reason, platform, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    turn_id,
+                    ts,
+                    model,
+                    provider,
+                    base_url,
+                    ttfb,
+                    duration,
+                    tps,
+                    int(input_tokens or 0),
+                    int(output_tokens or 0),
+                    int(cache_read_tokens or 0),
+                    int(cache_write_tokens or 0),
+                    int(reasoning_tokens or 0),
+                    1 if success else 0,
+                    finish_reason,
+                    platform,
+                    source,
+                ),
+            )
         self._execute_write(_do)
 
     def ensure_session(

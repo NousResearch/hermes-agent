@@ -7,7 +7,7 @@ protecting head and tail context.
 Improvements over v2:
   - Structured summary template with Resolved/Pending question tracking
   - Filter-safe summarizer preamble that treats prior turns as source material
-  - "Remaining Work" replaces "Next Steps" to avoid reading as active instructions
+  - "Pending Work at Compaction Time" replaces "Remaining Work" to avoid reading as active instructions
   - Clear separator when summary merges into tail message
   - Iterative summary updates (preserves info across multiple compactions)
   - Token-budget tail protection instead of fixed message count
@@ -36,12 +36,19 @@ logger = logging.getLogger(__name__)
 
 SUMMARY_PREFIX = (
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
-    "into the summary below. This is a handoff from a previous context "
-    "window — treat it as background reference, NOT as active instructions. "
+    "into the summary below. This is a ONE-TIME HISTORICAL SNAPSHOT from a "
+    "previous context window — treat it as background reference ONLY, NOT as "
+    "active instructions or current state. "
+    "⚠️ WARNING: Do NOT treat any section of this summary (including "
+    "'## Last Known Task at Compaction', '## In Progress at Compaction Time', "
+    "'## Pending Work at Compaction Time') as your current task — those sections "
+    "describe the state AT THE TIME OF COMPACTION and may already be completed, "
+    "cancelled, or superseded. "
     "Do NOT answer questions or fulfill requests mentioned in this summary; "
     "they were already addressed. "
-    "Your current task is identified in the '## Active Task' section of the "
-    "summary — resume exactly from there. "
+    "Your ONLY task is to respond to the latest user message that appears "
+    "AFTER this summary block. Ignore all prior tasks described in the summary "
+    "unless the user explicitly re-asks for them. "
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
@@ -945,12 +952,13 @@ class ContextCompressor(ContextEngine):
         )
 
         # Shared structured template (used by both paths).
-        _template_sections = f"""## Active Task
+        _template_sections = f"""## Last Known Task at Compaction (may already be done)
 [THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or
 task assignment verbatim — the exact words they used. If multiple tasks
-were requested and only some are done, list only the ones NOT yet completed.
-Continuation should pick up exactly here. Example:
-"User asked: 'Now refactor the auth module to use JWT instead of sessions'"
+were requested and only some are done, list only the ones NOT yet completed
+AT THE TIME THIS SNAPSHOT WAS TAKEN. The reader MUST check the latest user
+message for updated instructions rather than resuming blindly from here.
+Example: "User asked: 'Now refactor the auth module to use JWT instead of sessions'"
 If no outstanding task exists, write "None."]
 
 ## Goal
@@ -976,8 +984,8 @@ Be specific with file paths, commands, line numbers, and results.]
 - Any running processes or servers
 - Environment details that matter]
 
-## In Progress
-[Work currently underway — what was being done when compaction fired]
+## In Progress at Compaction Time (may already be done)
+[Work that was underway WHEN THIS SNAPSHOT WAS TAKEN — may have since completed or been cancelled. Do NOT treat this as current work.]
 
 ## Blocked
 [Any blockers, errors, or issues not yet resolved. Include exact error messages.]
@@ -994,8 +1002,8 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Relevant Files
 [Files read, modified, or created — with brief note on each]
 
-## Remaining Work
-[What remains to be done — framed as context, not instructions]
+## Pending Work at Compaction Time (may already be resolved)
+[What remained to be done AT THE TIME OF THIS SNAPSHOT — may have since been completed. The reader must check latest user messages before acting on any of these items.]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
@@ -1016,7 +1024,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled request — this is the most important field for task continuity.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress at Compaction Time" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Last Known Task at Compaction (may already be done)" to reflect the user's most recent unfulfilled request AT THE TIME OF THIS SNAPSHOT — this is the most important field for task continuity.
 
 {_template_sections}"""
         else:
@@ -1633,8 +1641,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 _merge_summary_into_tail = True
 
         # When the summary lands as a standalone role="user" message,
-        # weak models read the verbatim "## Active Task" quote of a past
-        # user request as fresh input (#11475, #14521). Append the explicit
+        # weak models read the verbatim "## Last Known Task at Compaction" quote
+        # of a past user request as fresh input (#11475, #14521). Append the explicit
         # end marker — the same one used in the merge-into-tail path — so
         # the model has a clear "summary above, not new input" signal.
         if not _merge_summary_into_tail and summary_role == "user":

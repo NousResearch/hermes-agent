@@ -3607,9 +3607,24 @@ def mount_spa(application: FastAPI):
                 css = css.replace(f"url({asset_dir}", f"url({prefix}{asset_dir}")
                 css = css.replace(f"url(\"{asset_dir}", f"url(\"{prefix}{asset_dir}")
                 css = css.replace(f"url('{asset_dir}", f"url('{prefix}{asset_dir}")
-        return Response(content=css, media_type="text/css")
+        return Response(
+            content=css,
+            media_type="text/css",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
-    application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
+    # Vite hashes asset filenames — safe to cache for 1 year (1-year immutable cache)
+    @application.get("/assets/{file_path:path}")
+    async def serve_assets(file_path: str):
+        asset_path = WEB_DIST / "assets" / file_path
+        if not asset_path.exists() or not asset_path.resolve().is_relative_to(
+            (WEB_DIST / "assets").resolve()
+        ):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return FileResponse(
+            asset_path,
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):

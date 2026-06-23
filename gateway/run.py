@@ -707,6 +707,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "headers": runtime.get("headers"),
     }
 
 
@@ -1913,6 +1914,12 @@ class GatewayRunner:
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
+            # Preserve custom provider routing headers (for example Baidu
+            # OneAPI's comate_custom_header).  Without this, gateway-created
+            # agents lose headers that the CLI path passes through, causing
+            # provider dashboards to classify CLI and gateway traffic as
+            # different identities/routes even when model/key/base_url match.
+            "headers": dict(runtime_kwargs.get("headers") or {}),
         }
         route = {
             "model": model,
@@ -1924,6 +1931,7 @@ class GatewayRunner:
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                tuple(sorted(runtime["headers"].items())),
             ),
         }
 
@@ -5566,6 +5574,13 @@ class GatewayRunner:
                 return None
             return YuanbaoAdapter(config)
 
+        elif platform == Platform.INFOFLOW:
+            from gateway.platforms.infoflow import InfoflowAdapter, check_infoflow_requirements
+            if not check_infoflow_requirements():
+                logger.warning("Infoflow: aiohttp not installed")
+                return None
+            return InfoflowAdapter(config)
+
         return None
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
@@ -6674,6 +6689,9 @@ class GatewayRunner:
 
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
+
+        if canonical == "webterm":
+            return await self._handle_webterm_command(event)
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -8906,6 +8924,158 @@ class GatewayRunner:
             return EphemeralReply(t("gateway.stop.stopped"))
         else:
             return t("gateway.stop.no_active")
+
+    async def _handle_webterm_command(self, event: MessageEvent) -> str:
+        """Handle /webterm on|off|status — control external access to ttyd.
+
+        The local ttyd service is managed separately by systemd. This command
+        only toggles the Windows portproxy/firewall exposure so Gateway can run
+        it without interactive sudo.
+        """
+        import subprocess
+
+        port = int(os.getenv("HERMES_WEBTERM_PORT", "7681"))
+        public_host = os.getenv("HERMES_WEBTERM_PUBLIC_HOST", "172.26.184.97")
+        rule_name = f"WSL Web Terminal {port}"
+
+        text = (event.text or "").strip()
+        parts = text.split(maxsplit=1)
+        action = (parts[1] if len(parts) > 1 else "status").strip().lower()
+        if action in {"enable", "start", "open"}:
+            action = "on"
+        if action in {"disable", "stop", "close"}:
+            action = "off"
+        if action not in {"on", "off", "status"}:
+            return "Usage: /webterm <on|off|status>"
+
+        def _run(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+
+        def _wsl_ip() -> str:
+            proc = _run(["ip", "-4", "addr", "show", "eth0"])
+            if proc.returncode != 0:
+                raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "ip addr failed")
+            m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)/", proc.stdout)
+            if not m:
+                raise RuntimeError("Could not determine WSL eth0 IPv4 address")
+            return m.group(1)
+
+        def _win_gw() -> str:
+            proc = _run(["ip", "route"])
+            if proc.returncode != 0:
+                raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "ip route failed")
+            m = re.search(r"^default\s+via\s+(\d+\.\d+\.\d+\.\d+)", proc.stdout, re.M)
+            if not m:
+                raise RuntimeError("Could not determine Windows gateway IP")
+            return m.group(1)
+
+        def _http_code(url: str, auth: bool = False) -> str:
+            args = ["curl", "-sS", "-o", os.devnull, "-w", "%{http_code}", "--max-time", "5"]
+            if auth:
+                # Auth is intentionally not needed for liveness; unauthenticated
+                # ttyd should return 401 when exposed correctly.
+                pass
+            args.append(url)
+            proc = _run(args, timeout=7)
+            if proc.returncode != 0 and not proc.stdout.strip():
+                return "000"
+            return (proc.stdout or "000").strip()[-3:]
+
+        def _ssh_windows_cmd(win_ip: str, cmd: str, timeout: int = 20) -> subprocess.CompletedProcess[str]:
+            # Use cmd.exe directly instead of wrapping PowerShell.  Windows
+            # OpenSSH default-shell quoting can make `powershell -Command "..."`
+            # fail before netsh runs; `cmd.exe /c netsh ...` is the stable
+            # path verified from WSL.
+            return _run([
+                "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
+                f"anjianjun01@{win_ip}", f"cmd.exe /c {cmd}",
+            ], timeout=timeout)
+
+        try:
+            wsl_ip = _wsl_ip()
+            win_ip = _win_gw()
+        except Exception as e:
+            return f"❌ /webterm failed: {e}"
+
+        logger.info(
+            "webterm command: action=%s port=%s public_host=%s wsl_ip=%s win_ip=%s",
+            action,
+            port,
+            public_host,
+            wsl_ip,
+            win_ip,
+        )
+
+        ttyd_cmd = [
+            "/usr/bin/ttyd", "--writable", "-i", "0.0.0.0", "-p", str(port),
+            "-c", "terminal:d64Z8eJiyfBTjni7hlZq4vPA", "/bin/bash", "-l",
+        ]
+
+        def _ttyd_running() -> bool:
+            proc = _run(["pgrep", "-f", f"ttyd.*-p {port}"])
+            return proc.returncode == 0
+
+        def _start_ttyd() -> None:
+            if not _ttyd_running():
+                subprocess.Popen(ttyd_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                import time; time.sleep(1)
+
+        def _stop_ttyd() -> None:
+            _run(["pkill", "-f", f"ttyd.*-p {port}"])
+
+        if action == "on":
+            _start_ttyd()
+            for cmd in [
+                f"netsh interface portproxy delete v4tov4 listenport={port} listenaddress=0.0.0.0",
+                f'netsh advfirewall firewall delete rule name="{rule_name} Block"',
+                f"netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport={port} connectaddress={wsl_ip} connectport={port}",
+                f'netsh advfirewall firewall delete rule name="{rule_name}"',
+                f'netsh advfirewall firewall add rule name="{rule_name}" dir=in action=allow protocol=TCP localport={port}',
+            ]:
+                _ssh_windows_cmd(win_ip, cmd)
+            import time; time.sleep(1)
+            public_code = _http_code(f"http://{public_host}:{port}/")
+            local_code = _http_code(f"http://127.0.0.1:{port}/")
+            if public_code in ("401", "200"):
+                return (
+                    "✅ Web terminal enabled\n"
+                    f"URL: http://{public_host}:{port}/\n"
+                    "Username: terminal\n"
+                    "Password: same as initial setup\n"
+                    f"Health: local={local_code}, external={public_code}"
+                )
+            return f"❌ Failed (external={public_code}, local={local_code})"
+
+        if action == "off":
+            for cmd in [
+                f"netsh interface portproxy delete v4tov4 listenport={port} listenaddress=0.0.0.0",
+                f'netsh advfirewall firewall delete rule name="{rule_name}"',
+                f'netsh advfirewall firewall delete rule name="{rule_name} Block"',
+                f'netsh advfirewall firewall add rule name="{rule_name} Block" dir=in action=block protocol=TCP localport={port}',
+            ]:
+                _ssh_windows_cmd(win_ip, cmd)
+            _stop_ttyd()
+            import time; time.sleep(1)
+            public_code = _http_code(f"http://{public_host}:{port}/")
+            ttyd_alive = _ttyd_running()
+            if public_code == "000" and not ttyd_alive:
+                return "✅ Web terminal stopped and proxy disabled"
+            return f"⚠️ off sent (external={public_code}, ttyd_alive={ttyd_alive})"
+
+        # status
+        ttyd_alive = _ttyd_running()
+        local_code = _http_code(f"http://127.0.0.1:{port}/")
+        public_code = _http_code(f"http://{public_host}:{port}/")
+        proc = _ssh_windows_cmd(win_ip, "netsh interface portproxy show v4tov4")
+        mapped = proc.returncode == 0 and str(port) in proc.stdout and wsl_ip in proc.stdout
+        return (
+            "**Web terminal status**\n"
+            f"ttyd process: {'running' if ttyd_alive else 'stopped'}\n"
+            f"Local: {local_code}\n"
+            f"External proxy: {'enabled' if mapped else 'disabled'}\n"
+            f"External: {public_code}\n"
+            f"URL: http://{public_host}:{port}/"
+        )
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — surface and

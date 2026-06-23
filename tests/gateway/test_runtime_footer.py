@@ -67,7 +67,7 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
         cwd=None,  # falls back to TERMINAL_CWD env var
         fields=("model", "context_pct", "cwd"),
     )
-    assert out == "gpt-5.4 · 68% · ~/projects/hermes"
+    assert out == "模型：gpt-5.4（上下文 68%） · ~/projects/hermes"
 
 
 def test_format_footer_skips_missing_context_length():
@@ -124,7 +124,7 @@ def test_format_footer_drops_cwd_when_empty(monkeypatch):
         fields=("model", "context_pct", "cwd"),
     )
     # cwd silently dropped; model + pct remain
-    assert out == "gpt-5.4 · 50%"
+    assert out == "模型：gpt-5.4（上下文 50%）"
 
 
 def test_format_footer_custom_field_order():
@@ -134,7 +134,7 @@ def test_format_footer_custom_field_order():
         cwd="/opt/project",
         fields=("context_pct", "model"),  # swapped + no cwd
     )
-    assert out == "50% · gpt-5.4"
+    assert out == "模型：gpt-5.4（上下文 50%）"
 
 
 def test_format_footer_unknown_field_silently_ignored():
@@ -144,7 +144,38 @@ def test_format_footer_unknown_field_silently_ignored():
         cwd="/x",
         fields=("model", "bogus", "context_pct"),
     )
-    assert out == "gpt-5.4 · 50%"
+    assert out == "模型：gpt-5.4（上下文 50%）"
+
+
+def test_format_footer_oneapi_quota_reads_cache(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    cache = hermes_home / "cache" / "oneapi_comate_quota.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(
+        '{"updated_at":"2099-01-01T00:00:00+00:00","monthly_used_display":"¥1,522.15","monthly_limit_display":"¥3,000","source_usage":{"openclaw":43.8,"dodo":1100.71}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=50,
+        context_length=100,
+        cwd="",
+        fields=("model", "oneapi_quota"),
+    )
+    assert out == "模型：gpt-5.4（上下文 50%） · OneAPI本月 ¥1,522.15/¥3,000（OpenClaw ¥43.80，DoDo ¥1,100.71）"
+
+
+def test_format_footer_oneapi_quota_missing_cache_silently_skips(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=50,
+        context_length=100,
+        cwd="",
+        fields=("oneapi_quota",),
+    )
+    assert out == ""
 
 
 # ---------------------------------------------------------------------------
@@ -260,3 +291,25 @@ def test_build_footer_no_data_returns_empty_even_when_enabled():
     # With no TERMINAL_CWD env either
     if not os.environ.get("TERMINAL_CWD"):
         assert out == ""
+
+
+def test_build_footer_perf_footer_suppresses_duplicate_model_and_context(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    proj = tmp_path / "proj"
+    proj.mkdir(exist_ok=True)
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "show_perf_footer": True,
+                "runtime_footer": {"enabled": True, "fields": ["model", "context_pct", "cwd"]},
+            }
+        },
+        platform_key="feishu",
+        model="openai/gpt-5.4",
+        context_tokens=70,
+        context_length=100,
+        cwd=str(proj),
+    )
+    assert out == "~/proj"
+    assert "模型：" not in out
+    assert "70%" not in out

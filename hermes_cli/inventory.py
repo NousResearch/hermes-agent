@@ -117,7 +117,8 @@ def build_models_payload(
     pricing: bool = False,
     capabilities: bool = False,
     force_fresh_nous_tier: bool = False,
-    max_models: int = 50,
+    refresh: bool = False,
+    max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
     needs from a single substrate call.
@@ -144,6 +145,10 @@ def build_models_payload(
       selecting Portal-recommended Nous models and applying tier gating. Keep
       this false for UI picker opens; explicit auth/model flows can opt in
       when they need freshly-purchased credits to show up immediately.
+    - ``refresh``: bust the per-provider model-id disk cache so every row
+      re-fetches its live catalog. Set only for an explicit user-triggered
+      "refresh models" action; normal picker opens leave it false to stay
+      snappy on the 1h cache.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -155,7 +160,53 @@ def build_models_payload(
         custom_providers=ctx.custom_providers,
         force_fresh_nous_tier=force_fresh_nous_tier,
         max_models=max_models,
+        refresh=refresh,
     )
+
+    # --- Deduplicate: remove models from aggregators that overlap with
+    # user-defined providers.  When a local proxy (e.g. litellm-proxy)
+    # serves a model whose name also appears in an aggregator's curated
+    # catalog, the picker would show the model under both providers.
+    # Selecting it from the aggregator row sets model.provider to the
+    # aggregator (e.g. openrouter) instead of the user's proxy — silently
+    # breaking the call.  Filtering at the payload level keeps the
+    # aggregator rows honest: they only show models the user can't get
+    # from a more-specific provider.  (#45954)
+    try:
+        from hermes_cli.providers import is_routing_aggregator as _is_routing_aggregator
+    except Exception:
+        _is_routing_aggregator = None  # type: ignore[assignment]
+
+    if _is_routing_aggregator is not None:
+        user_models: set[str] = set()
+        for row in rows:
+            if row.get("is_user_defined"):
+                user_models.update(m.lower() for m in (row.get("models") or []))
+        if user_models:
+            for row in rows:
+                # A user's own configured provider is never an "aggregator
+                # duplicate" of itself: user_models is built from these very
+                # rows, and is_routing_aggregator() reports True for every
+                # custom:* slug.  Without this guard the dedup strips a
+                # user-defined custom provider's entire model list (all of it
+                # lives in user_models), emptying its picker row.
+                if row.get("is_user_defined"):
+                    continue
+                slug = row.get("slug", "")
+                # Only strip overlaps from TRUE routing aggregators (OpenRouter,
+                # custom:* proxies). Flat-namespace resellers (opencode-go /
+                # opencode-zen) serve every listed model as a first-party model,
+                # so their rows must keep models that a user's proxy happens to
+                # share a name with — otherwise a subscription provider's own
+                # catalog (minimax-m3, glm-5, deepseek-v4-flash, ...) is silently
+                # gutted in the picker. (#47077)
+                if not _is_routing_aggregator(slug):
+                    continue
+                original = row.get("models") or []
+                filtered = [m for m in original if m.lower() not in user_models]
+                if len(filtered) < len(original):
+                    row["models"] = filtered
+                    row["total_models"] = len(filtered)
 
     if include_unconfigured:
         rows = list(rows) + _append_unconfigured_rows(rows, ctx)

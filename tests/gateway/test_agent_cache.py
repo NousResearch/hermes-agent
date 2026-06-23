@@ -1498,7 +1498,7 @@ class TestAgentConfigSignatureUserId:
         from gateway.run import GatewayRunner
         runtime = {"provider": "anthropic", "api_key": "k", "base_url": "", "api_mode": "chat_completions"}
         sig_a = GatewayRunner._agent_config_signature(
-            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="86701400"
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="7654321"
         )
         sig_b = GatewayRunner._agent_config_signature(
             "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="491827364"
@@ -1509,10 +1509,10 @@ class TestAgentConfigSignatureUserId:
         from gateway.run import GatewayRunner
         runtime = {"provider": "anthropic", "api_key": "k", "base_url": "", "api_mode": "chat_completions"}
         sig_1 = GatewayRunner._agent_config_signature(
-            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="86701400"
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="7654321"
         )
         sig_2 = GatewayRunner._agent_config_signature(
-            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="86701400"
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="7654321"
         )
         assert sig_1 == sig_2
 
@@ -1521,11 +1521,11 @@ class TestAgentConfigSignatureUserId:
         runtime = {"provider": "anthropic", "api_key": "k", "base_url": "", "api_mode": "chat_completions"}
         sig_a = GatewayRunner._agent_config_signature(
             "claude-sonnet-4", runtime, ["hermes-telegram"], "",
-            user_id="86701400", user_id_alt="@igor_tg",
+            user_id="7654321", user_id_alt="@igor_tg",
         )
         sig_b = GatewayRunner._agent_config_signature(
             "claude-sonnet-4", runtime, ["hermes-telegram"], "",
-            user_id="86701400", user_id_alt="@erosika_tg",
+            user_id="7654321", user_id_alt="@erosika_tg",
         )
         assert sig_a != sig_b
 

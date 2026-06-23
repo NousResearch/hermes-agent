@@ -91,26 +91,60 @@ function isUpdateToastSnoozed(): boolean {
 // v2: requires the file.attach RPC (remote-gateway non-image file upload).
 const REQUIRED_BACKEND_CONTRACT = 2
 const SKEW_TOAST_ID = 'backend-contract-skew'
+// The contract check runs on every session.resume (applyRuntimeInfo), so
+// without a snooze the warning re-popped on every thread the user opened, even
+// right after they closed it. Mirror the update toast: persist a cooldown when
+// the user dismisses it. It still reminds again after the window if the backend
+// is still behind, and clears immediately once the backend catches up.
+const SKEW_TOAST_SNOOZE_KEY = 'hermes:backend-skew-toast-snooze-until'
+const SKEW_TOAST_COOLDOWN_MS = 24 * 60 * 60 * 1000
+
+function snoozeSkewToast(): void {
+  persistString(SKEW_TOAST_SNOOZE_KEY, String(Date.now() + SKEW_TOAST_COOLDOWN_MS))
+}
+
+function isSkewToastSnoozed(): boolean {
+  const until = Number(storedString(SKEW_TOAST_SNOOZE_KEY) || 0)
+
+  return Number.isFinite(until) && Date.now() < until
+}
 
 /**
  * Guard against a desktop GUI talking to a backend that predates its contract
  * (e.g. a bb/gui-built app pointed at a `main` checkout). Rather than failing
- * cryptically downstream, surface a persistent warning with a one-click align
- * that runs the normal update flow (which self-heals to the right branch).
+ * cryptically downstream, surface a warning with a one-click align that runs
+ * the normal update flow (which self-heals to the right branch).
+ *
+ * Runs on every session open; closing the toast snoozes it for a cooldown so it
+ * doesn't nag on every thread switch.
  */
 export function reportBackendContract(contract: number | undefined): void {
   if ((contract ?? 0) >= REQUIRED_BACKEND_CONTRACT) {
     dismissNotification(SKEW_TOAST_ID)
+    // Backend caught up — forget any prior snooze so a future regression warns
+    // immediately rather than staying silent for the rest of the window.
+    persistString(SKEW_TOAST_SNOOZE_KEY, null)
 
     return
   }
 
+  if (isSkewToastSnoozed()) {
+    return
+  }
+
   notify({
-    action: { label: translateNow('notifications.updateHermes'), onClick: () => void applyBackendUpdate() },
+    action: {
+      label: translateNow('notifications.updateHermes'),
+      onClick: () => {
+        snoozeSkewToast()
+        void applyBackendUpdate()
+      }
+    },
     durationMs: 0,
     id: SKEW_TOAST_ID,
     kind: 'warning',
     message: translateNow('notifications.backendOutOfDateMessage'),
+    onDismiss: () => snoozeSkewToast(),
     title: translateNow('notifications.backendOutOfDateTitle')
   })
 }
@@ -159,6 +193,20 @@ export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
 
 export function openUpdatesWindow(): void {
   openUpdateOverlayFor(isRemoteMode() ? 'backend' : 'client')
+}
+
+/**
+ * Start applying the available update for the active target right away. Opens
+ * the updates overlay first so the user sees apply progress (the overlay
+ * renders ApplyingView once `applying` flips true), then kicks off the install.
+ * Used by the "Update now" affordance on the About panel, which would otherwise
+ * only be able to open the changelog overlay.
+ */
+export function startActiveUpdate(): void {
+  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
+  $updateOverlayTarget.set(target)
+  $updateOverlayOpen.set(true)
+  void (target === 'backend' ? applyBackendUpdate() : applyUpdates())
 }
 
 /** Re-read the running app's version from the Electron main process and
@@ -294,6 +342,70 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
         message: result.command ?? 'hermes update',
         command: result.command ?? 'hermes update'
       })
+
+      return result
+    }
+
+    // A detached relauncher took over (macOS bundle swap / Linux re-exec): the
+    // app is about to quit and reopen, so hold the "Restarting…" view until it
+    // does. Every other resolved outcome MUST land on a terminal, closeable
+    // state: the apply IPC resolves here, but the progress stream may have left
+    // us on a non-terminal stage (e.g. 'done'/'rebuild'), which renders as a
+    // spinner with no close button — the exact hang this guards against.
+    // Linux GUI/backend skew (#45205): the backend was updated but the running
+    // desktop app PACKAGE was not changed (AppImage/.deb/.rpm). We must NOT tell
+    // the user "the new version loads next launch" — that's false; this packaged
+    // shell keeps running old GUI code against the new backend. Land on the
+    // dedicated, closeable guiSkew terminal state telling them to update/reinstall
+    // the desktop app.
+    if (result?.guiSkew) {
+      $updateApply.set({
+        ...IDLE,
+        applying: false,
+        stage: 'guiSkew',
+        message: result.message ?? translateNow('updates.guiSkewBody')
+      })
+
+      return result
+    }
+
+    // Backend updated but the app couldn't auto-relaunch (e.g. the rebuilt
+    // sandbox helper isn't launchable): keep a closeable manual-restart state so
+    // the user keeps a working window instead of a dead app or a stuck spinner.
+    if (result?.ok && result?.manualRestart) {
+      $updateApply.set({
+        ...IDLE,
+        applying: false,
+        stage: 'manual',
+        message: result.message ?? translateNow('updates.manualPickedUp')
+      })
+
+      return result
+    }
+
+    if (!result?.handedOff) {
+      if (result?.ok) {
+        // Updated, but couldn't relaunch in place (AppImage / dev run). Dismiss
+        // the overlay and let the user know the new version loads next launch
+        // rather than stranding them on an un-closeable spinner.
+        setUpdateOverlayOpen(false)
+        resetUpdateApplyState()
+        notify({
+          durationMs: 8000,
+          id: UPDATE_TOAST_ID,
+          kind: 'success',
+          message: translateNow('updates.manualPickedUp'),
+          title: translateNow('updates.allSetTitle')
+        })
+      } else {
+        $updateApply.set({
+          ...$updateApply.get(),
+          applying: false,
+          stage: 'error',
+          error: result?.error ?? 'apply-failed',
+          message: result?.message ?? translateNow('updates.errorBody')
+        })
+      }
     }
 
     return result
@@ -409,7 +521,11 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 function ingestProgress(payload: DesktopUpdateProgress): void {
   const current = $updateApply.get()
   const log = [...current.log, { stage: payload.stage, message: payload.message, at: payload.at }].slice(-50)
-  const terminal = payload.stage === 'error' || payload.stage === 'restart' || payload.stage === 'manual'
+  const terminal =
+    payload.stage === 'error' ||
+    payload.stage === 'restart' ||
+    payload.stage === 'manual' ||
+    payload.stage === 'guiSkew'
 
   $updateApply.set({
     applying: !terminal,

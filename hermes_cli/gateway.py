@@ -131,22 +131,15 @@ def _get_service_pids() -> set:
         try:
             label = get_launchd_label()
             result = subprocess.run(
-                ["launchctl", "list", label],
+                ["launchctl", "print", _launchd_target(label)],
                 capture_output=True,
                 text=True,
                 timeout=5,
             )
             if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 3 and parts[2] == label:
-                        try:
-                            pid = int(parts[0])
-                            if pid > 0:
-                                pids.add(pid)
-                        except ValueError:
-                            pass
+                pid = _parse_launchd_print_pid(result.stdout)
+                if pid is not None and pid > 0:
+                    pids.add(pid)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -1119,14 +1112,19 @@ def _probe_launchd_service_running() -> bool:
         return False
     try:
         result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
+            ["launchctl", "print", _launchd_target()],
             capture_output=True,
             text=True,
             timeout=10,
         )
     except subprocess.TimeoutExpired:
         return False
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False
+    return (
+        _parse_launchd_print_pid(result.stdout) is not None
+        or "state = running" in result.stdout
+    )
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
@@ -3390,6 +3388,22 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
     return False
 
 
+def _launchd_target(label: str | None = None) -> str:
+    return f"{_launchd_domain()}/{label or get_launchd_label()}"
+
+
+def _parse_launchd_print_pid(output: str) -> int | None:
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("pid = "):
+            continue
+        try:
+            return int(stripped.split("=", 1)[1].strip())
+        except ValueError:
+            return None
+    return None
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     # Stable cwd anchor — never the volatile source checkout. See
@@ -3838,10 +3852,9 @@ def launchd_restart():
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
-    label = get_launchd_label()
     try:
         result = subprocess.run(
-            ["launchctl", "list", label],
+            ["launchctl", "print", _launchd_target()],
             capture_output=True,
             text=True,
             timeout=10,

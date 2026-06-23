@@ -1186,6 +1186,53 @@ class TestLaunchdDomainDetection:
         assert run_count[0] == 1  # Only probed once
 
 
+class TestLaunchdPrintStatus:
+    def test_parse_launchd_print_pid(self):
+        output = """
+        gui/501/ai.hermes.gateway = {
+            state = running
+            pid = 4242
+        }
+        """
+
+        assert gateway_cli._parse_launchd_print_pid(output) == 4242
+
+    def test_get_service_pids_reads_launchd_print_pid(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchd_target",
+            lambda label=None: f"gui/501/{label or 'ai.hermes.gateway'}",
+        )
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="state = running\npid = 4242\n", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._get_service_pids() == {4242}
+        assert calls == [["launchctl", "print", "gui/501/ai.hermes.gateway"]]
+
+    def test_probe_launchd_service_running_accepts_running_state_without_pid(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_target", lambda label=None: "gui/501/ai.hermes.gateway")
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="state = running\n", stderr=""),
+        )
+
+        assert gateway_cli._probe_launchd_service_running() is True
+
+
 class TestGatewayServiceDetection:
     def test_supports_systemd_services_requires_systemctl_binary(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)

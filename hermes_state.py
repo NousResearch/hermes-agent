@@ -664,6 +664,22 @@ END;
 """
 
 
+def create_session_db(db_path: "Path | None" = None) -> "SessionDB":
+    """
+    Factory function for SessionDB construction.
+
+    Centralizes the construction boundary so that future backend extensions
+    (e.g. external DB-backed session state) can be introduced without
+    scattering backend-specific logic across CLI, gateway, MCP, dashboard,
+    cron, and plugin code paths.
+
+    Currently returns the default SQLite-backed SessionDB. The returned
+    instance is fully initialized and ready to use; callers do not need
+    to call any additional setup methods.
+    """
+    return SessionDB(db_path=db_path)
+
+
 class SessionDB:
     """
     SQLite-backed session storage with FTS5 search.

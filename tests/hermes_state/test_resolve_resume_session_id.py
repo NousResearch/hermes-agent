@@ -138,3 +138,29 @@ def test_prefers_most_recent_child_when_fork_exists(db):
     ])
     db.append_message("newer_fork", role="user", content="x")
     assert db.resolve_resume_session_id("parent") == "newer_fork"
+
+
+def test_create_session_db_returns_session_db(tmp_path):
+    """Regression guard: create_session_db() returns a working SessionDB instance."""
+    from hermes_state import create_session_db
+
+    db = create_session_db(db_path=tmp_path / "state.db")
+    assert isinstance(db, SessionDB)
+    assert db.db_path == tmp_path / "state.db"
+
+    # Smoke test: can create and query a session
+    db.create_session("test-sid", source="cli")
+    sessions = db.search_sessions(source="cli", limit=10)
+    assert any(s["id"] == "test-sid" for s in sessions)
+
+    db.close()
+
+
+def test_create_session_db_default_path(tmp_path, monkeypatch):
+    """Factory uses DEFAULT_DB_PATH when no db_path is passed."""
+    from hermes_state import create_session_db, DEFAULT_DB_PATH
+
+    monkeypatch.setattr("hermes_state.create_session_db", lambda db_path=None: create_session_db.__wrapped__(tmp_path / "state.db"))
+    db = create_session_db()
+    assert isinstance(db, SessionDB)
+    db.close()

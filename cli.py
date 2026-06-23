@@ -23,9 +23,11 @@ except ModuleNotFoundError:
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
 
+import getpass
 import logging
 import os
 import shutil
+import socket
 import sys
 import json
 import re
@@ -4131,6 +4133,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     @staticmethod
+    def _short_cwd(cwd: str, max_len: int = 24) -> str:
+        """Shorten cwd for status bar: replace HOME with ~, truncate from left."""
+        home = os.path.expanduser("~")
+        p = cwd.replace(home, "~") if cwd.startswith(home) else cwd
+        return p if len(p) <= max_len else f"\u2026{p[-(max_len - 1):]}"
+
+    @staticmethod
     def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
         """Format per-prompt elapsed time for the status bar.
 
@@ -4222,6 +4231,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "compressions": 0,
             "active_background_tasks": 0,
             "active_background_processes": 0,
+            "cwd_short": self._short_cwd(os.getenv("TERMINAL_CWD", os.getcwd())),
+            "host_label": f"{getpass.getuser()}@{socket.gethostname().split('.')[0]}",
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -4506,13 +4517,34 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            bg_count = snapshot.get("active_background_tasks", 0)
+            bg_proc_count = snapshot.get("active_background_processes", 0)
+            out_tokens = snapshot.get("session_output_tokens", 0)
+            out_label = f"out {format_token_count_compact(out_tokens)}" if out_tokens else ""
+
+            if width < 120:
+                # Medium: model + ctx + bar + percent + duration (no host:cwd)
+                parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+                if compressions:
+                    parts.append(f"🗜️ {compressions}")
+                if bg_count:
+                    parts.append(f"▶ {bg_count}")
+                if bg_proc_count:
+                    parts.append(f"⚙ {bg_proc_count}")
+                parts.append(duration_label)
+                if yolo_active:
+                    parts.append("⚠ YOLO")
+                return self._trim_status_bar_text(" │ ".join(parts), width)
+
+            # Wide (≥120): host:cwd + model + ctx + bar + percent + out + duration + prompt + idle + yolo
+            host_cwd = f"{snapshot['host_label']}:{snapshot['cwd_short']}"
+            parts = [host_cwd, f"⚕ {snapshot['model_short']}", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
-            bg_count = snapshot.get("active_background_tasks", 0)
+            if out_label:
+                parts.append(out_label)
             if bg_count:
                 parts.append(f"▶ {bg_count}")
-            bg_proc_count = snapshot.get("active_background_processes", 0)
             if bg_proc_count:
                 parts.append(f"⚙ {bg_proc_count}")
             parts.append(duration_label)
@@ -4583,7 +4615,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
                     frags.append(("class:status-bar", " "))
-                else:
+                elif width < 120:
+                    # Medium: model + ctx + bar + percent + compressions + bg + duration
                     if snapshot["context_length"]:
                         ctx_total = _format_context_length(snapshot["context_length"])
                         ctx_used = format_token_count_compact(snapshot["context_tokens"])
@@ -4618,12 +4651,59 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
                     ])
-                    # Position 7: per-prompt elapsed timer (live or frozen)
+                    if yolo_active:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                    frags.append(("class:status-bar", " "))
+                else:
+                    # Wide (≥120): host:cwd + model + ctx + bar + percent + out + compressions + bg + duration + prompt + idle + yolo
+                    if snapshot["context_length"]:
+                        ctx_total = _format_context_length(snapshot["context_length"])
+                        ctx_used = format_token_count_compact(snapshot["context_tokens"])
+                        context_label = f"{ctx_used}/{ctx_total}"
+                    else:
+                        context_label = "ctx --"
+
+                    bar_style = self._status_bar_context_style(percent)
+                    compressions = snapshot.get("compressions", 0)
+                    bg_count = snapshot.get("active_background_tasks", 0)
+                    bg_proc_count = snapshot.get("active_background_processes", 0)
+                    out_tokens = snapshot.get("session_output_tokens", 0)
+                    out_label = f"out {format_token_count_compact(out_tokens)}" if out_tokens else ""
+                    host_cwd = f"{snapshot['host_label']}:{snapshot['cwd_short']}"
+
+                    frags = [
+                        ("class:status-bar-label", f" {host_cwd} "),
+                        ("class:status-bar-dim", "│ "),
+                        ("class:status-bar", "⚕ "),
+                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-dim", " │ "),
+                        ("class:status-bar-dim", context_label),
+                        ("class:status-bar-dim", " │ "),
+                        (bar_style, self._build_context_bar(percent)),
+                        ("class:status-bar-dim", " "),
+                        (bar_style, percent_label),
+                    ]
+                    if compressions:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
+                    if out_label:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", out_label))
+                    if bg_count:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", f"▶ {bg_count}"))
+                    if bg_proc_count:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
+                    frags.extend([
+                        ("class:status-bar-dim", " │ "),
+                        ("class:status-bar-dim", duration_label),
+                    ])
                     prompt_elapsed = snapshot.get("prompt_elapsed")
                     if prompt_elapsed:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-dim", prompt_elapsed))
-                    # Position 8: idle time since the last final agent response
                     idle_since = snapshot.get("idle_since")
                     if idle_since:
                         frags.append(("class:status-bar-dim", " │ "))
@@ -6186,6 +6266,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return False
 
         from hermes_cli.main import _relative_time
+        from agent.markdown_tables import _pad_to_width, _disp_width
 
         print()
         if reason == "history":
@@ -6193,13 +6274,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             print("  Recent sessions:")
         print()
-        print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+        # Column widths (display cells, not character count) — CJK-aware.
+        col_w = {"num": 3, "title": 32, "preview": 40, "active": 13, "id": 24}
+        print(
+            f"  {_pad_to_width('#', col_w['num'])}"
+            f"{_pad_to_width('Title', col_w['title'])} "
+            f"{_pad_to_width('Preview', col_w['preview'])} "
+            f"{_pad_to_width('Last Active', col_w['active'])} "
+            f"{'ID'}"
+        )
+        print(
+            f"  {'─' * col_w['num']} "
+            f"{'─' * col_w['title']} "
+            f"{'─' * col_w['preview']} "
+            f"{'─' * col_w['active']} "
+            f"{'─' * col_w['id']}"
+        )
         for idx, session in enumerate(sessions, start=1):
             title = session.get("title") or "—"
-            preview = (session.get("preview") or "")[:38]
+            preview = (session.get("preview") or "")
+            # Truncate preview to fit within the column's display width.
+            while _disp_width(preview) > col_w["preview"]:
+                preview = preview[:-1]
             last_active = _relative_time(session.get("last_active"))
-            print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+            print(
+                f"  {_pad_to_width(str(idx), col_w['num'])}"
+                f"{_pad_to_width(title, col_w['title'])} "
+                f"{_pad_to_width(preview, col_w['preview'])} "
+                f"{_pad_to_width(last_active, col_w['active'])} "
+                f"{session['id']}"
+            )
         print()
         print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
         print("  Example: /resume 2")
@@ -13967,6 +14071,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
             'status-bar-yolo': 'bg:#1a1a2e #FF4444 bold',
+            'status-bar-label': 'bg:#1a1a2e #5FB3B3 bold',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges

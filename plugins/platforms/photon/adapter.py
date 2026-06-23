@@ -85,6 +85,12 @@ _DEDUP_WINDOW_SECONDS = 48 * 3600
 
 _SIDECAR_DIR = Path(__file__).parent / "sidecar"
 
+# Minimum Node major the spectrum-ts SDK supports. The SDK itself declares no
+# engines, but its deps do — `@photon-ai/otel` requires Node >=20. On older
+# Node the sidecar dies at SDK import with a cryptic module error, so we check
+# up front and fail with an actionable message instead.
+_MIN_NODE_MAJOR = 20
+
 # Photon / Envoy / spectrum-ts error substrings that indicate a transient
 # upstream overload rather than a permanent failure.  These are not in the
 # core _RETRYABLE_ERROR_PATTERNS because they are specific to this adapter.
@@ -824,12 +830,47 @@ class PhotonAdapter(BasePlatformAdapter):
                 f"PHOTON_SIDECAR_PORT to a different port"
             )
 
+    def _check_node_version(self) -> None:
+        """Fail fast if `node` is too old for the spectrum-ts SDK.
+
+        Surfaces a clear setup error rather than letting the sidecar crash-loop
+        on a cryptic SDK import failure under an unsupported Node.
+        """
+        try:
+            out = subprocess.run(  # noqa: S603
+                [self._node_bin, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"could not run Node ({self._node_bin!r}): {exc} — install "
+                f"Node {_MIN_NODE_MAJOR}+ or set PHOTON_NODE_BIN"
+            ) from exc
+        raw = (out.stdout or "").strip()
+        match = re.match(r"v?(\d+)\.", raw)
+        if not match:
+            # An unparseable version isn't worth hard-failing on; let the SDK
+            # import surface any real incompatibility.
+            logger.warning("[photon] could not parse Node version %r", raw)
+            return
+        major = int(match.group(1))
+        if major < _MIN_NODE_MAJOR:
+            raise RuntimeError(
+                f"Photon's spectrum-ts SDK requires Node {_MIN_NODE_MAJOR}+, "
+                f"but {self._node_bin} is {raw}. Install Node {_MIN_NODE_MAJOR}+ "
+                f"or point PHOTON_NODE_BIN at a newer Node."
+            )
+
     async def _start_sidecar(self) -> None:
         if not (_SIDECAR_DIR / "node_modules").exists():
             raise RuntimeError(
                 f"Photon sidecar deps not installed. Run: "
                 f"cd {_SIDECAR_DIR} && npm install   (or `hermes photon setup`)"
             )
+        self._check_node_version()
         await self._reap_stale_sidecar()
 
         env = os.environ.copy()

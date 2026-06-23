@@ -134,6 +134,10 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
         pass
 
     monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
+    # The Node-version preflight is exercised separately; stub it here so the
+    # fake Popen (which can't act as a context manager for subprocess.run)
+    # doesn't trip the unrelated `node --version` probe.
+    monkeypatch.setattr(adapter, "_check_node_version", lambda: None)
     (tmp_path / "node_modules").mkdir()
     monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
 
@@ -169,3 +173,26 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_start_sidecar_rejects_unsupported_node(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """An old Node must fail fast with a clear error, not a crash-loop."""
+    adapter = _make_adapter(monkeypatch)
+    (tmp_path / "node_modules").mkdir()
+    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+
+    class _VersionProc:
+        stdout = "v18.20.4\n"
+        returncode = 0
+
+    def _fake_run(cmd: List[str], **kwargs: Any) -> _VersionProc:
+        assert cmd[1:] == ["--version"]
+        return _VersionProc()
+
+    monkeypatch.setattr(photon_adapter.subprocess, "run", _fake_run)
+
+    with pytest.raises(RuntimeError, match="requires Node 20"):
+        await adapter._start_sidecar()

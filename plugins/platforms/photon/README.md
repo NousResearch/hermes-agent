@@ -152,7 +152,7 @@ All env vars are documented in `plugin.yaml`. The most important:
   as a synthetic `reaction:added:<emoji>` event. Removal after a sidecar
   restart is best-effort — the live reaction handle is lost, so a stale
   tapback heals when the next reaction replaces it. Group spaces stay
-  reachable across restarts via spectrum-ts v3's `space.get(id)`.
+  reachable across restarts via spectrum-ts' `space.get(id)`.
 - **Message effects, polls** — supported by `spectrum-ts` but not yet
   exposed; the sidecar is the natural place to add them.
 
@@ -160,20 +160,33 @@ All env vars are documented in `plugin.yaml`. The most important:
 
 `spectrum-ts` is pinned to an **exact version** in `sidecar/package.json`
 (no `^` range) and installed with `npm ci`, because the SDK ships breaking
-majors (v2 removed `defineFusorPlatform`; v3 reworked space construction).
-A floating range or `npm install spectrum-ts@latest` would let a breaking
-release take down fresh setups silently. Upgrades are deliberate:
+majors (v2 removed `defineFusorPlatform`; v3 reworked space construction; v5
+split the SDK into a batteries-included `spectrum-ts` meta-package plus scoped
+`@spectrum-ts/*` packages). A floating range or `npm install spectrum-ts@latest`
+would let a breaking release take down fresh setups silently. Upgrades are
+deliberate:
 
 1. Read the [SDK release notes](https://github.com/photon-hq/spectrum-ts/releases)
-   for every version between the current pin and the target.
+   for every version between the current pin and the target. Verify claims
+   against the installed code — the release notes can lag or misstate (e.g. a
+   "gRPC → WebSocket" note that didn't land in the version we pin).
 2. Bump the exact pin in `sidecar/package.json`, then run `npm install`
-   inside `sidecar/` to regenerate `package-lock.json`. Commit both.
-3. Migrate `sidecar/index.mjs` against the new typings
-   (`sidecar/node_modules/spectrum-ts/dist/*.d.ts` is the source of truth —
-   the hosted docs can lag).
-4. Run `pytest tests/plugins/platforms/photon/`.
-5. Verify end-to-end: `hermes photon status`, a DM and a group roundtrip,
-   and an agent reply into a group right after a gateway restart (exercises
-   `space.get` rehydration).
+   inside `sidecar/` to regenerate `package-lock.json`. Commit both. Re-check
+   `engines.node` against the new dep tree (`npm ls`), and the `overrides`
+   block (`protobufjs`, the `@opentelemetry/*` exporters) — drop or bump any
+   that the tree no longer pulls in.
+3. Migrate `sidecar/index.mjs` against the new typings — the scoped
+   `sidecar/node_modules/@spectrum-ts/core/dist/*.d.ts` and
+   `@spectrum-ts/imessage/dist/*.d.ts` are the source of truth (the hosted
+   docs can lag).
+4. Re-target `sidecar/patch-spectrum-mixed-attachments.mjs` if the iMessage
+   inbound mapper moved or changed shape. As of v5 it lives in the bundled
+   `@spectrum-ts/imessage/dist/index.js`; the patch resolves that file and its
+   `replaceOnce` guards fail loudly if upstream reformats the branches.
+5. Run `pytest tests/plugins/platforms/photon/`.
+6. Verify end-to-end: `hermes photon status`, a DM and a group roundtrip,
+   a mixed text+attachment inbound message (exercises the patch), and an agent
+   reply into a group right after a gateway restart (exercises `space.get`
+   rehydration).
 
 [photon]: https://photon.codes/

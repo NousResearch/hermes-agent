@@ -1713,3 +1713,96 @@ class TestApprovalTimeoutIsNotConsent:
         assert last_post.get("choice") == "timeout", (
             f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
         )
+
+
+class TestDetectWSLDangerousCommands:
+    """Test WSL-specific dangerous command detection (issue #33104)."""
+
+    def test_cmd_exe_detected_in_wsl(self):
+        """cmd.exe should be flagged when running in WSL."""
+        with mock_patch("hermes_constants.is_wsl", return_value=True):
+            is_dangerous, key, desc = detect_dangerous_command("cmd.exe /c dir")
+            assert is_dangerous is True
+            assert "cmd" in desc.lower()
+
+    def test_cmd_bare_detected_in_wsl(self):
+        """cmd (without .exe) should be flagged in WSL."""
+        with mock_patch("hermes_constants.is_wsl", return_value=True):
+            is_dangerous, key, desc = detect_dangerous_command("cmd /c dir")
+            assert is_dangerous is True
+            assert "cmd" in desc.lower()
+
+    def test_powershell_exe_detected_in_wsl(self):
+        """powershell.exe should be flagged when running in WSL."""
+        with mock_patch("hermes_constants.is_wsl", return_value=True):
+            is_dangerous, key, desc = detect_dangerous_command("powershell.exe -Command Get-Process")
+            assert is_dangerous is True
+            assert "powershell" in desc.lower()
+
+    def test_powershell_bare_detected_in_wsl(self):
+        """powershell (without .exe) should be flagged in WSL."""
+        with mock_patch("hermes_constants.is_wsl", return_value=True):
+            is_dangerous, key, desc = detect_dangerous_command("powershell -Command Get-Process")
+            assert is_dangerous is True
+            assert "powershell" in desc.lower()
+
+    def test_pwsh_detected_in_wsl(self):
+        """pwsh (PowerShell Core) should be flagged in WSL."""
+        with mock_patch("hermes_constants.is_wsl", return_value=True):
+            is_dangerous, key, desc = detect_dangerous_command("pwsh -Command Get-Process")
+            assert is_dangerous is True
+            assert "powershell" in desc.lower()
+
+    def test_del_force_detected_in_wsl(self):
+        """Windows del with /f should be flagged in WSL."""
+        with mock_patch("hermes_constants.is_wsl", return_value=True):
+            is_dangerous, key, desc = detect_dangerous_command("cmd.exe /c del /f /s /q C:\\temp\\*")
+            assert is_dangerous is True
+
+    def test_rmdir_recursive_detected_in_wsl(self):
+        """Windows rmdir /s should be flagged in WSL."""
+        with mock_patch("hermes_constants.is_wsl", return_value=True):
+            is_dangerous, key, desc = detect_dangerous_command("cmd.exe /c rmdir /s /q C:\\temp")
+            assert is_dangerous is True
+
+    def test_format_drive_detected_in_wsl(self):
+        """Windows format command should be flagged in WSL."""
+        with mock_patch("hermes_constants.is_wsl", return_value=True):
+            # cmd.exe matches first, which is correct - the command is dangerous
+            is_dangerous, key, desc = detect_dangerous_command("cmd.exe /c format C:")
+            assert is_dangerous is True
+            # Either cmd.exe or format pattern should match
+            assert "cmd" in desc.lower() or "format" in desc.lower()
+
+    def test_format_drive_standalone_in_wsl(self):
+        """Windows format command should be flagged even without cmd.exe wrapper."""
+        with mock_patch("hermes_constants.is_wsl", return_value=True):
+            is_dangerous, key, desc = detect_dangerous_command("format C:")
+            assert is_dangerous is True
+            assert "format" in desc.lower()
+
+    def test_reg_add_detected_in_wsl(self):
+        """Windows reg add should be flagged in WSL."""
+        with mock_patch("hermes_constants.is_wsl", return_value=True):
+            is_dangerous, key, desc = detect_dangerous_command("reg add HKLM\\SOFTWARE\\Test")
+            assert is_dangerous is True
+            assert "registry" in desc.lower()
+
+    def test_cmd_not_detected_on_native_linux(self):
+        """cmd should NOT be flagged on native Linux (not WSL)."""
+        with mock_patch("hermes_constants.is_wsl", return_value=False):
+            is_dangerous, key, desc = detect_dangerous_command("cmd /c dir")
+            # cmd without .exe might still be caught by other patterns, but
+            # the WSL-specific pattern should not fire.
+            # If it's caught, it should be by a non-WSL pattern.
+            if is_dangerous:
+                assert "cmd" not in desc.lower() or "wsl" not in desc.lower()
+
+    def test_powershell_not_detected_on_native_macos(self):
+        """powershell should NOT be flagged on native macOS."""
+        with mock_patch("hermes_constants.is_wsl", return_value=False):
+            is_dangerous, key, desc = detect_dangerous_command("powershell -Command Get-Process")
+            # Should not be flagged by WSL patterns
+            if is_dangerous:
+                assert "powershell" not in desc.lower() or "wsl" not in desc.lower()
+

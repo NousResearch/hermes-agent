@@ -528,6 +528,36 @@ DANGEROUS_PATTERNS_COMPILED = [
     for pattern, description in DANGEROUS_PATTERNS
 ]
 
+# =========================================================================
+# WSL-specific dangerous patterns
+# =========================================================================
+# In WSL (Windows Subsystem for Linux), Windows executables like cmd.exe
+# and powershell.exe can be run directly from the Linux shell.  These
+# bypass the normal Unix-oriented dangerous-command detection because the
+# patterns above target rm/chmod/etc, not Windows CLI interpreters.
+# Issue #33104: Windows executables executed via WSL skip approval.
+
+_WSL_DANGEROUS_PATTERNS = [
+    # Windows command interpreters — can execute arbitrary Windows commands
+    # without triggering the Unix-oriented guard above.
+    (r'\bcmd(?:\.exe)?\b', "Windows cmd.exe (command interpreter)"),
+    (r'\bpowershell(?:\.exe)?\b', "Windows PowerShell"),
+    (r'\bpwsh(?:\.exe)?\b', "PowerShell Core (pwsh)"),
+    # Windows destructive commands that propagate through WSL interop.
+    # `del /f /s /q` is the Windows equivalent of `rm -rf`.
+    (r'\bdel\s+/[fFqQsS]', "Windows del with force/quiet/subdirectories"),
+    (r'\brmdir\s+/[sS]', "Windows rmdir with /s (recursive)"),
+    (r'\bformat\s+[a-zA-Z]:', "Windows format drive"),
+    # reg.exe can modify the Windows registry from WSL.
+    (r'\breg(?:\.exe)?\s+(add|delete|import)\b', "Windows registry modification"),
+]
+
+_WSL_DANGEROUS_PATTERNS_COMPILED = [
+    (re.compile(pattern, _RE_FLAGS), description)
+    for pattern, description in _WSL_DANGEROUS_PATTERNS
+]
+
+
 
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""
@@ -665,6 +695,18 @@ def detect_dangerous_command(command: str) -> tuple:
         if pattern_re.search(command_lower):
             pattern_key = description
             return (True, pattern_key, description)
+    # WSL-specific: Windows executables can be run directly from WSL and
+    # bypass the Unix-oriented patterns above.  Only check when running
+    # inside WSL to avoid false positives on native Linux/macOS.
+    try:
+        from hermes_constants import is_wsl
+        if is_wsl():
+            for pattern_re, description in _WSL_DANGEROUS_PATTERNS_COMPILED:
+                if pattern_re.search(command_lower):
+                    pattern_key = description
+                    return (True, pattern_key, description)
+    except ImportError:
+        pass
     return (False, None, None)
 
 

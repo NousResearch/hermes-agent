@@ -296,9 +296,11 @@ class TestDynamicContextFileCap:
 
 class TestParseSkillFile:
     def test_reads_frontmatter_description(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
+        skill_dir = tmp_path / "test-skill"
+        skill_dir.mkdir()
+        skill_file = skill_dir / "SKILL.md"
         skill_file.write_text(
-            "---\nname: test-skill\ndescription: A useful test skill\n---\n\nBody here"
+            "---\nname: test-skill\nversion: 1.0.0\nstatus: vetted\ndescription: A useful test skill\nauthor: Test Author\n---\n\nBody here"
         )
         is_compat, frontmatter, desc = _parse_skill_file(skill_file)
         assert is_compat is True
@@ -312,9 +314,14 @@ class TestParseSkillFile:
         assert desc == ""
 
     def test_long_description_truncated(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
+        skill_dir = tmp_path / "long-desc-skill"
+        skill_dir.mkdir()
+        skill_file = skill_dir / "SKILL.md"
         long_desc = "A" * 100
-        skill_file.write_text(f"---\ndescription: {long_desc}\n---\n")
+        skill_file.write_text(
+            f"---\nname: long-desc-skill\nversion: 1.0.0\nstatus: vetted\n"
+            f"description: {long_desc}\nauthor: Test Author\n---\n"
+        )
         _, _, desc = _parse_skill_file(skill_file)
         assert len(desc) <= 60
         assert desc.endswith("...")
@@ -327,7 +334,7 @@ class TestParseSkillFile:
 
     def test_logs_parse_failures_and_returns_defaults(self, tmp_path, monkeypatch, caplog):
         skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text("---\nname: broken\n---\n")
+        skill_file.write_text("---\nname: broken\nversion: 1.0.0\nstatus: vetted\nauthor: Test Author\n---\n")
 
         def boom(*args, **kwargs):
             raise OSError("read exploded")
@@ -345,7 +352,7 @@ class TestParseSkillFile:
     def test_incompatible_platform_returns_false(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(
-            "---\nname: mac-only\ndescription: Mac stuff\nplatforms: [macos]\n---\n"
+            "---\nname: mac-only\nversion: 1.0.0\nstatus: vetted\ndescription: Mac stuff\nplatforms: [macos]\nauthor: Test Author\n---\n"
         )
         from unittest.mock import patch
 
@@ -358,8 +365,8 @@ class TestParseSkillFile:
         monkeypatch.delenv("NONEXISTENT_KEY_ABC", raising=False)
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(
-            "---\nname: gated\ndescription: Gated skill\n"
-            "prerequisites:\n  env_vars: [NONEXISTENT_KEY_ABC]\n---\n"
+            "---\nname: gated\nversion: 1.0.0\nstatus: vetted\ndescription: Gated skill\n"
+            "prerequisites:\n  env_vars: [NONEXISTENT_KEY_ABC]\nauthor: Test Author\n---\n"
         )
         _, frontmatter, _ = _parse_skill_file(skill_file)
         assert frontmatter["prerequisites"]["env_vars"] == ["NONEXISTENT_KEY_ABC"]
@@ -408,7 +415,7 @@ class TestBuildSkillsSystemPrompt:
         skills_dir = tmp_path / "skills" / "coding" / "python-debug"
         skills_dir.mkdir(parents=True)
         (skills_dir / "SKILL.md").write_text(
-            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+            "---\nname: python-debug\nversion: 1.0.0\nstatus: vetted\ndescription: Debug Python scripts\nauthor: Test Author\n---\n"
         )
         result = build_skills_system_prompt()
         assert "python-debug" in result
@@ -421,7 +428,10 @@ class TestBuildSkillsSystemPrompt:
         for subdir in ["search", "search"]:
             d = cat_dir / subdir
             d.mkdir(parents=True, exist_ok=True)
-            (d / "SKILL.md").write_text("---\ndescription: Search stuff\n---\n")
+            (d / "SKILL.md").write_text(
+                "---\nname: search\nversion: 1.0.0\nstatus: vetted\n"
+                "description: Search stuff\nauthor: Test Author\n---\n"
+            )
         result = build_skills_system_prompt()
         # "search" should appear only once per category
         assert result.count("- search") == 1
@@ -439,7 +449,7 @@ class TestBuildSkillsSystemPrompt:
             d = tmp_path / "skills" / cat / name
             d.mkdir(parents=True)
             (d / "SKILL.md").write_text(
-                f"---\nname: {name}\ndescription: Does {name} things\n---\n"
+                f"---\nname: {name}\nversion: 1.0.0\nstatus: vetted\ndescription: Does {name} things\nauthor: Test Author\n---\n"
             )
 
         result = build_skills_system_prompt(
@@ -461,7 +471,7 @@ class TestBuildSkillsSystemPrompt:
         d = tmp_path / "skills" / "social-media" / "twitter" / "thread-writer"
         d.mkdir(parents=True)
         (d / "SKILL.md").write_text(
-            "---\nname: thread-writer\ndescription: Write threads\n---\n"
+            "---\nname: thread-writer\nversion: 1.0.0\nstatus: vetted\ndescription: Write threads\nauthor: Test Author\n---\n"
         )
         # Nested category ("social-media/twitter") demoted via its parent:
         # name visible, description gone.
@@ -484,14 +494,14 @@ class TestBuildSkillsSystemPrompt:
         mac_skill = skills_dir / "imessage"
         mac_skill.mkdir()
         (mac_skill / "SKILL.md").write_text(
-            "---\nname: imessage\ndescription: Send iMessages\nplatforms: [macos]\n---\n"
+            "---\nname: imessage\nversion: 1.0.0\nstatus: vetted\ndescription: Send iMessages\nplatforms: [macos]\nauthor: Test Author\n---\n"
         )
 
         # Universal skill
         uni_skill = skills_dir / "web-search"
         uni_skill.mkdir()
         (uni_skill / "SKILL.md").write_text(
-            "---\nname: web-search\ndescription: Search the web\n---\n"
+            "---\nname: web-search\nversion: 1.0.0\nstatus: vetted\ndescription: Search the web\nauthor: Test Author\n---\n"
         )
 
         from unittest.mock import patch
@@ -510,7 +520,7 @@ class TestBuildSkillsSystemPrompt:
         mac_skill = skills_dir / "imessage"
         mac_skill.mkdir(parents=True)
         (mac_skill / "SKILL.md").write_text(
-            "---\nname: imessage\ndescription: Send iMessages\nplatforms: [macos]\n---\n"
+            "---\nname: imessage\nversion: 1.0.0\nstatus: vetted\ndescription: Send iMessages\nplatforms: [macos]\nauthor: Test Author\n---\n"
         )
 
         from unittest.mock import patch
@@ -531,13 +541,13 @@ class TestBuildSkillsSystemPrompt:
         enabled_skill = skills_dir / "web-search"
         enabled_skill.mkdir()
         (enabled_skill / "SKILL.md").write_text(
-            "---\nname: web-search\ndescription: Search the web\n---\n"
+            "---\nname: web-search\nversion: 1.0.0\nstatus: vetted\ndescription: Search the web\nauthor: Test Author\n---\n"
         )
 
         disabled_skill = skills_dir / "old-tool"
         disabled_skill.mkdir()
         (disabled_skill / "SKILL.md").write_text(
-            "---\nname: old-tool\ndescription: Deprecated tool\n---\n"
+            "---\nname: old-tool\nversion: 1.0.0\nstatus: vetted\ndescription: Deprecated tool\nauthor: Test Author\n---\n"
         )
 
         from unittest.mock import patch
@@ -556,7 +566,7 @@ class TestBuildSkillsSystemPrompt:
         skill_dir = tmp_path / "skills" / "tools" / "cached-skill"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: cached-skill\ndescription: Cached skill\n---\n"
+            "---\nname: cached-skill\nversion: 1.0.0\nstatus: vetted\ndescription: Cached skill\nauthor: Test Author\n---\n"
         )
 
         first = build_skills_system_prompt()
@@ -577,14 +587,14 @@ class TestBuildSkillsSystemPrompt:
         gated = skills_dir / "gated-skill"
         gated.mkdir(parents=True)
         (gated / "SKILL.md").write_text(
-            "---\nname: gated-skill\ndescription: Needs a key\n"
-            "prerequisites:\n  env_vars: [MISSING_API_KEY_XYZ]\n---\n"
+            "---\nname: gated-skill\nversion: 1.0.0\nstatus: vetted\ndescription: Needs a key\n"
+            "prerequisites:\n  env_vars: [MISSING_API_KEY_XYZ]\nauthor: Test Author\n---\n"
         )
 
         available = skills_dir / "free-skill"
         available.mkdir(parents=True)
         (available / "SKILL.md").write_text(
-            "---\nname: free-skill\ndescription: No prereqs\n---\n"
+            "---\nname: free-skill\nversion: 1.0.0\nstatus: vetted\ndescription: No prereqs\nauthor: Test Author\n---\n"
         )
 
         result = build_skills_system_prompt()
@@ -600,8 +610,8 @@ class TestBuildSkillsSystemPrompt:
         skill = skills_dir / "ready-skill"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text(
-            "---\nname: ready-skill\ndescription: Has key\n"
-            "prerequisites:\n  env_vars: [MY_API_KEY]\n---\n"
+            "---\nname: ready-skill\nversion: 1.0.0\nstatus: vetted\ndescription: Has key\n"
+            "prerequisites:\n  env_vars: [MY_API_KEY]\nauthor: Test Author\n---\n"
         )
 
         result = build_skills_system_prompt()
@@ -618,8 +628,8 @@ class TestBuildSkillsSystemPrompt:
         skill = skills_dir / "backend-skill"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text(
-            "---\nname: backend-skill\ndescription: Available in backend\n"
-            "prerequisites:\n  env_vars: [BACKEND_ONLY_KEY]\n---\n"
+            "---\nname: backend-skill\nversion: 1.0.0\nstatus: vetted\ndescription: Available in backend\n"
+            "prerequisites:\n  env_vars: [BACKEND_ONLY_KEY]\nauthor: Test Author\n---\n"
         )
 
         result = build_skills_system_prompt()
@@ -806,7 +816,7 @@ class TestBuildContextFilesPrompt:
         assert "Parent rules" not in result
 
     def test_hermes_md_strips_yaml_frontmatter(self, tmp_path):
-        content = "---\nmodel: claude-sonnet-4-20250514\ntools:\n  disabled: [tts]\n---\n\n# My Project\n\nUse Ruff for linting."
+        content = "---\nmodel: claude-sonnet-4-20250514\ntools:\n  disabled: [tts]\nauthor: Test Author\n---\n\n# My Project\n\nUse Ruff for linting."
         (tmp_path / ".hermes.md").write_text(content)
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Ruff for linting" in result
@@ -957,7 +967,7 @@ class TestFindGitRoot:
 
 class TestStripYamlFrontmatter:
     def test_strips_frontmatter(self):
-        content = "---\nkey: value\n---\n\nBody text."
+        content = "---\nkey: value\nauthor: Test Author\n---\n\nBody text."
         assert _strip_yaml_frontmatter(content) == "Body text."
 
     def test_no_frontmatter_unchanged(self):
@@ -965,11 +975,11 @@ class TestStripYamlFrontmatter:
         assert _strip_yaml_frontmatter(content) == content
 
     def test_unclosed_frontmatter_unchanged(self):
-        content = "---\nkey: value\nBody text without closing."
+        content = "author: Test Author\n---\nkey: value\nBody text without closing."
         assert _strip_yaml_frontmatter(content) == content
 
     def test_empty_body_returns_original(self):
-        content = "---\nkey: value\n---\n"
+        content = "---\nkey: value\nauthor: Test Author\nauthor: Test Author\n---\n"
         # Body is empty after stripping, return original
         assert _strip_yaml_frontmatter(content) == content
 
@@ -1328,7 +1338,7 @@ class TestBuildSkillsSystemPromptConditional:
         skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
+            "---\nname: duckduckgo\nversion: 1.0.0\nstatus: vetted\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\nauthor: Test Author\nauthor: Test Author\n---\n"
         )
         result = build_skills_system_prompt(
             available_tools=set(),
@@ -1341,7 +1351,7 @@ class TestBuildSkillsSystemPromptConditional:
         skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
+            "---\nname: duckduckgo\nversion: 1.0.0\nstatus: vetted\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\nauthor: Test Author\nauthor: Test Author\n---\n"
         )
         result = build_skills_system_prompt(
             available_tools=set(),
@@ -1354,7 +1364,7 @@ class TestBuildSkillsSystemPromptConditional:
         skill_dir = tmp_path / "skills" / "iot" / "openhue"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
+            "---\nname: openhue\nversion: 1.0.0\nstatus: vetted\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\nauthor: Test Author\nauthor: Test Author\n---\n"
         )
         result = build_skills_system_prompt(
             available_tools=set(),
@@ -1367,7 +1377,7 @@ class TestBuildSkillsSystemPromptConditional:
         skill_dir = tmp_path / "skills" / "iot" / "openhue"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
+            "---\nname: openhue\nversion: 1.0.0\nstatus: vetted\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\nauthor: Test Author\nauthor: Test Author\n---\n"
         )
         result = build_skills_system_prompt(
             available_tools=set(),
@@ -1380,7 +1390,7 @@ class TestBuildSkillsSystemPromptConditional:
         skill_dir = tmp_path / "skills" / "general" / "notes"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: notes\ndescription: Take notes\n---\n"
+            "---\nname: notes\nversion: 1.0.0\nstatus: vetted\ndescription: Take notes\nauthor: Test Author\nauthor: Test Author\n---\n"
         )
         result = build_skills_system_prompt(
             available_tools=set(),
@@ -1394,7 +1404,7 @@ class TestBuildSkillsSystemPromptConditional:
         skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
+            "---\nname: duckduckgo\nversion: 1.0.0\nstatus: vetted\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\nauthor: Test Author\nauthor: Test Author\n---\n"
         )
         result = build_skills_system_prompt()
         assert "duckduckgo" in result
@@ -1406,7 +1416,7 @@ class TestBuildSkillsSystemPromptConditional:
         skill_dir.mkdir(parents=True)
         # YAML `metadata:` with no value parses as {"metadata": None}
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: safe-skill\ndescription: Survives null metadata\nmetadata:\n---\n"
+            "---\nname: safe-skill\nversion: 1.0.0\nstatus: vetted\ndescription: Survives null metadata\nmetadata:\nauthor: Test Author\nauthor: Test Author\n---\n"
         )
         result = build_skills_system_prompt(
             available_tools=set(),
@@ -1420,7 +1430,7 @@ class TestBuildSkillsSystemPromptConditional:
         skill_dir = tmp_path / "skills" / "general" / "nested-null"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: nested-null\ndescription: Null hermes key\nmetadata:\n  hermes:\n---\n"
+            "---\nname: nested-null\nversion: 1.0.0\nstatus: vetted\ndescription: Null hermes key\nmetadata:\n  hermes:\nauthor: Test Author\n---\n"
         )
         result = build_skills_system_prompt(
             available_tools=set(),

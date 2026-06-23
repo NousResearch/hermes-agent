@@ -45,6 +45,7 @@ Convert text to speech with ten providers:
 tts:
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
+  tag: ""                       # Optional style tag wrapped around the text, e.g. "fast" -> <fast>...</fast>
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
     speed: 1.0                  # Converted to rate percentage (+/-%)
@@ -98,6 +99,8 @@ tts:
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+**Style tag**: Many TTS voices interpret a wrapping style tag around the spoken text to control delivery, such as `<fast>...</fast>` or `<whisper>...</whisper>`. Set `tts.tag` to a bare tag name (e.g. `fast`) and Hermes wraps every request in `<fast>...</fast>` before sending it to the provider. A per-provider `tts.<provider>.tag` overrides the global value. The model can also override the tag per call through the `tag` parameter on the `text_to_speech` tool — its description reflects your configured default — and can pass an empty string to suppress the default for a single message. Which tags a voice understands depends on the provider; consult its documentation. Default is unset (no wrapping).
 
 ### Gemini Persona Prompts
 

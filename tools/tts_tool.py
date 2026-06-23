@@ -883,6 +883,73 @@ def _has_any_command_tts_provider(tts_config: Optional[Dict[str, Any]] = None) -
 
 
 # ===========================================================================
+# Wrapping style tag (e.g. <fast>...</fast>)
+# ===========================================================================
+#
+# Many TTS voices interpret a wrapping style tag around the spoken text to
+# control delivery (``<fast>``, ``<whisper>``, ``<soft>``, ...). The user sets
+# a default in config — ``tts.tag`` globally or ``tts.<provider>.tag`` per
+# provider — and the model can override it per call via the ``tag`` parameter
+# on ``text_to_speech``. The config value feeds the parameter's default.
+
+_TTS_TAG_FRAMING_RE = re.compile(r"[<>\[\]/]")
+
+
+def _normalize_tts_tag(tag: Any) -> str:
+    """Return a bare tag name, stripping whitespace and any bracket framing.
+
+    Accepts ``fast``, ``<fast>``, ``[fast]`` and ``</fast>`` and returns
+    ``fast``. Bracket and slash characters are removed wherever they appear,
+    not just at the ends, so wrapping can never emit an unbalanced tag from a
+    malformed value. ``None`` / blank values return ``""`` (meaning "no tag").
+    """
+    if tag is None:
+        return ""
+    return _TTS_TAG_FRAMING_RE.sub("", str(tag)).strip()
+
+
+def _resolve_tts_tag(
+    provider: Optional[str],
+    tts_config: Optional[Dict[str, Any]] = None,
+    tag_override: Optional[str] = None,
+) -> str:
+    """Resolve the wrapping tag for *provider*.
+
+    Resolution order:
+      1. ``tag_override`` (the model-supplied ``tag`` parameter) when not None.
+         An explicit empty string disables wrapping even if config sets a tag.
+      2. ``tts.<provider>.tag`` (per-provider config, including command/plugin
+         providers declared under ``tts.providers.<name>``).
+      3. ``tts.tag`` (global config default).
+
+    The returned value is normalized to a bare tag name, or ``""`` when no tag
+    applies.
+    """
+    if tag_override is not None:
+        return _normalize_tts_tag(tag_override)
+
+    cfg = tts_config if isinstance(tts_config, dict) else {}
+    key = (provider or "").lower().strip()
+
+    prov_cfg = _get_provider_section(cfg, key)
+    if not prov_cfg and key and key not in BUILTIN_TTS_PROVIDERS:
+        prov_cfg = _get_named_provider_config(cfg, key)
+
+    tag = prov_cfg.get("tag") if isinstance(prov_cfg, dict) else None
+    if tag is None:
+        tag = cfg.get("tag")
+    return _normalize_tts_tag(tag)
+
+
+def _apply_tts_tag(text: str, tag: str) -> str:
+    """Wrap *text* in ``<tag>...</tag>`` when *tag* is set, else return text."""
+    clean = _normalize_tts_tag(tag)
+    if not clean:
+        return text
+    return f"<{clean}>{text}</{clean}>"
+
+
+# ===========================================================================
 # ffmpeg Opus conversion (Edge TTS MP3 -> OGG Opus for Telegram)
 # ===========================================================================
 def _has_ffmpeg() -> bool:
@@ -2131,6 +2198,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
+    tag: Optional[str] = None,
 ) -> str:
     """
     Convert text to speech audio.
@@ -2145,6 +2213,10 @@ def text_to_speech_tool(
     Args:
         text: The text to convert to speech.
         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
+        tag: Optional wrapping style tag, e.g. "fast" wraps the text as
+            ``<fast>...</fast>`` before synthesis. Defaults to the configured
+            ``tts.tag`` (or per-provider ``tts.<provider>.tag``). Pass an empty
+            string to suppress a configured default for this call.
 
     Returns:
         str: JSON result with success, file_path, and optionally MEDIA tag.
@@ -2170,6 +2242,12 @@ def text_to_speech_tool(
             provider, len(text), max_len,
         )
         text = text[:max_len]
+
+    # Wrap the (already truncated) text in a style tag when configured or
+    # requested, e.g. <fast>...</fast>. The tag is small, so applying it after
+    # truncation keeps the closing tag intact without meaningfully exceeding
+    # the provider cap.
+    text = _apply_tts_tag(text, _resolve_tts_tag(provider, tts_config, tag))
 
     # Detect platform from gateway env var to choose the best output format.
     # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
@@ -2826,11 +2904,46 @@ TTS_SCHEMA = {
             "output_path": {
                 "type": "string",
                 "description": f"Optional custom file path to save the audio. Defaults to {display_hermes_home()}/audio_cache/<timestamp>.mp3"
+            },
+            "tag": {
+                "type": "string",
+                "description": "Optional style tag to wrap the spoken text in; e.g. \"fast\" sends the text as <fast>...</fast>. Many TTS voices interpret these to control delivery (fast, slow, whisper, soft, ...). Defaults to the user-configured tts.tag (or per-provider tts.<provider>.tag) when set; pass an empty string to suppress that default for this call."
             }
         },
         "required": ["text"]
     }
 }
+
+def _build_dynamic_tts_schema() -> Dict[str, Any]:
+    """Surface the user's configured default ``tag`` in the model-facing schema.
+
+    Plugged into ``ToolEntry.dynamic_schema_overrides`` so the model sees the
+    tag it will actually get if it omits the parameter. ``get_tool_definitions``
+    keys its cache on config.yaml mtime + size, so editing ``tts.tag`` in config
+    invalidates the memoized schema automatically.
+    """
+    try:
+        tts_config = _load_tts_config()
+        provider = _get_provider(tts_config)
+        default_tag = _resolve_tts_tag(provider, tts_config, None)
+    except Exception:  # noqa: BLE001 — defensive; fall back to the static schema
+        return {}
+
+    if not default_tag:
+        return {}
+
+    import copy
+
+    params = copy.deepcopy(TTS_SCHEMA["parameters"])
+    params["properties"]["tag"]["description"] = (
+        "Optional style tag to wrap the spoken text in; e.g. \"fast\" sends the "
+        "text as <fast>...</fast>. Many TTS voices interpret these to control "
+        f"delivery. The user has configured a default of \"{default_tag}\", so "
+        f"text is wrapped as <{default_tag}>...</{default_tag}> unless you pass a "
+        "different tag here; pass an empty string to suppress it for this call."
+    )
+    return {"parameters": params}
+
 
 registry.register(
     name="text_to_speech",
@@ -2838,7 +2951,9 @@ registry.register(
     schema=TTS_SCHEMA,
     handler=lambda args, **kw: text_to_speech_tool(
         text=args.get("text", ""),
-        output_path=args.get("output_path")),
+        output_path=args.get("output_path"),
+        tag=args.get("tag")),
     check_fn=check_tts_requirements,
+    dynamic_schema_overrides=_build_dynamic_tts_schema,
     emoji="🔊",
 )

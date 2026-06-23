@@ -465,7 +465,8 @@ export function useSessionActions({
           ...(newChatProfile ? { profile: newChatProfile } : {}),
           ...(uiModel ? { model: uiModel, ...(uiProvider ? { provider: uiProvider } : {}) } : {}),
           ...(uiEffort ? { reasoning_effort: uiEffort } : {}),
-          ...(uiFast ? { fast: true } : {})
+          ...(uiFast ? { fast: true } : {}),
+          source: "desktop"
         })
 
         const stored = created.stored_session_id ?? null
@@ -707,7 +708,8 @@ export function useSessionActions({
           session_id: storedSessionId,
           cols: 96,
           ...(watchWindow ? { lazy: true } : {}),
-          ...(sessionProfile ? { profile: sessionProfile } : {})
+          ...(sessionProfile ? { profile: sessionProfile } : {}),
+          source: "desktop"
         })
         // The rejection is consumed by the `await` below; this guard only
         // keeps it from surfacing as unhandled while the prefetch settles.

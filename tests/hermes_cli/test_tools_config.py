@@ -708,6 +708,67 @@ def test_local_browser_provider_is_saved_explicitly(monkeypatch):
     assert config["browser"]["cloud_provider"] == "local"
 
 
+def test_browser_post_setup_hooks_separate_local_and_cloud_rows():
+    providers = TOOL_CATEGORIES["browser"]["providers"]
+    local_provider = next(
+        provider for provider in providers if provider.get("browser_provider") == "local"
+    )
+    managed_cloud_provider = next(
+        provider
+        for provider in providers
+        if provider.get("browser_provider") == "browser-use"
+    )
+
+    assert local_provider["post_setup"] == "agent_browser"
+    assert managed_cloud_provider["post_setup"] == "agent_browser_cli"
+
+
+def test_configure_cloud_browser_provider_skips_local_chromium_install(
+    monkeypatch, tmp_path
+):
+    calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        if cmd[0] == "/fake/bin/npm":
+            node_modules = tmp_path / "node_modules" / "agent-browser"
+            node_modules.mkdir(parents=True)
+            local_bin = tmp_path / "node_modules" / ".bin"
+            local_bin.mkdir(parents=True)
+            (local_bin / "agent-browser").write_text("#!/bin/sh\n", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("hermes_cli.tools_config.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: f"/fake/bin/{name}" if name in {"npm", "npx"} else None,
+    )
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.get_env_value",
+        lambda key: "fake-key" if key == "FIRECRAWL_API_KEY" else None,
+    )
+    monkeypatch.setattr("hermes_cli.tools_config._print_success", lambda msg: None)
+    monkeypatch.setattr("hermes_cli.tools_config._print_info", lambda msg: None)
+    monkeypatch.setattr("hermes_cli.tools_config._print_warning", lambda msg: None)
+    monkeypatch.setattr("tools.browser_tool._chromium_installed", lambda: False)
+    monkeypatch.setattr("tools.browser_tool._running_in_docker", lambda: False)
+
+    provider = {
+        "name": "Firecrawl",
+        "browser_provider": "firecrawl",
+        "env_vars": [{"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key"}],
+        "post_setup": "agent_browser_cli",
+    }
+
+    _configure_provider(provider, {}, force_fresh=True)
+
+    assert [cmd for cmd in calls if cmd[:2] == ["/fake/bin/npm", "install"]] == [
+        ["/fake/bin/npm", "install", "--silent", "--workspaces=false"]
+    ]
+    assert [cmd for cmd in calls if "install" in cmd and "--with-deps" in cmd] == []
+
+
 def test_fresh_install_browser_default_is_free_local_not_paid_nous():
     """On a fresh install the browser picker must default to the free local
     backend, never the paid Nous Subscription gateway.
@@ -1540,5 +1601,3 @@ def test_real_configurable_changes_still_reported_in_diff():
     # User adds 'vision' (configurable) — must still report as added.
     new_enabled2 = (current - {"kanban"}) | {"vision"}
     assert ((new_enabled2 - current) & universe) == {"vision"}
-
-

@@ -1034,10 +1034,9 @@ def init_agent(
     
     # Session logging setup - auto-save conversation trajectories for debugging
     agent.session_start = datetime.now()
-    # Stable prompt-cache key — set explicitly by recurring cron jobs so
-    # every fire shares one cache prefix instead of busting it each time.
-    # None means "use session_id as the cache key" (the default for all
-    # interactive sessions and one-shot jobs).
+    # Explicit cache-key override forwarded to the Codex transport.
+    # None (the default) means the transport auto-derives prompt_cache_key
+    # from SHA-256(instructions + tools) on every call — no caller action needed.
     agent._prompt_cache_key = cache_key or None
     if session_id:
         # Use provided session ID (e.g., from CLI)

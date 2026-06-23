@@ -275,7 +275,7 @@ class TestEmailResponseDelivery(unittest.TestCase):
     def test_discord_response_delivery_does_not_call_smtp_send(self):
         import asyncio
         from gateway.config import PlatformConfig
-        from gateway.platforms.email import EmailAdapter
+        from plugins.platforms.email.adapter import EmailAdapter
 
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",
@@ -305,7 +305,7 @@ class TestEmailResponseDelivery(unittest.TestCase):
     def test_default_response_delivery_still_uses_email_send_path(self):
         import asyncio
         from gateway.config import PlatformConfig
-        from gateway.platforms.email import EmailAdapter
+        from plugins.platforms.email.adapter import EmailAdapter
 
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",

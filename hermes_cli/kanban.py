@@ -1483,6 +1483,30 @@ def _cmd_show(args: argparse.Namespace) -> int:
                     "worker_pid": r.worker_pid,
                     "started_at": r.started_at,
                     "ended_at": r.ended_at,
+                    # Nursery-exit boundary. ``graduated`` is True iff
+                    # the worker survived past the spawn-time nursery
+                    # window (closed runs: ``nursery_exit_at < ended_at``;
+                    # in-flight runs that have already passed the
+                    # boundary: ``nursery_exit_at < now``). False for
+                    # early-life deaths and for legacy runs predating
+                    # the column. ``nursery_died_in_window`` is True
+                    # for closed runs whose ``ended_at < nursery_exit_at``
+                    # — i.e. they crashed before graduating.
+                    "nursery_exit_at": r.nursery_exit_at,
+                    "graduated": (
+                        r.nursery_exit_at is not None
+                        and (
+                            (r.ended_at is not None
+                             and r.nursery_exit_at < r.ended_at)
+                            or (r.ended_at is None
+                                and r.nursery_exit_at < int(time.time()))
+                        )
+                    ),
+                    "nursery_died_in_window": (
+                        r.nursery_exit_at is not None
+                        and r.ended_at is not None
+                        and r.ended_at < r.nursery_exit_at
+                    ),
                 }
                 for r in runs
             ],
@@ -1590,8 +1614,25 @@ def _cmd_show(args: argparse.Namespace) -> int:
                        if r.ended_at else None)
             el = f"{elapsed}s" if elapsed is not None else "active"
             outcome = r.outcome or r.status or "active"
+            # Nursery tag: ``survived`` when the worker graduated (ran
+            # past the spawn-time nursery window before closing or is
+            # currently past it), ``died-in-nursery`` when the worker
+            # crashed before graduating. ``-`` for legacy runs predating
+            # the nursery concept (no ``nursery_exit_at``).
+            nursery_tag = "-"
+            if r.nursery_exit_at is not None:
+                if r.ended_at is not None:
+                    nursery_tag = (
+                        "died-in-nursery"
+                        if r.ended_at < r.nursery_exit_at
+                        else "survived"
+                    )
+                elif r.nursery_exit_at < int(time.time()):
+                    nursery_tag = "survived (active)"
+                else:
+                    nursery_tag = "in nursery (active)"
             print(f"  #{r.id:<3} {outcome:<12} @{r.profile or '-'}  {el}  "
-                  f"{_fmt_ts(r.started_at)}")
+                  f"nursery={nursery_tag:<17}  {_fmt_ts(r.started_at)}")
             if r.summary:
                 print(f"        → {r.summary.splitlines()[0][:160]}")
             if r.error:
@@ -2472,20 +2513,40 @@ def _cmd_runs(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
         runs = kb.list_runs(conn, args.task_id, **rsk)
     if getattr(args, "json", False):
-        print(json.dumps([
-            {
+        # Add a ``nursery_status`` field so JSON consumers don't have to
+        # redo the graduated / died-in-nursery classification themselves.
+        # Legacy rows (no ``nursery_exit_at``) report ``"unknown"``.
+        now_ts = int(time.time())
+        out = []
+        for r in runs:
+            if r.nursery_exit_at is None:
+                nursery_status = "unknown"
+            elif r.ended_at is not None:
+                nursery_status = (
+                    "died_in_nursery"
+                    if r.ended_at < r.nursery_exit_at
+                    else "survived"
+                )
+            elif r.nursery_exit_at < now_ts:
+                nursery_status = "survived"
+            else:
+                nursery_status = "in_nursery"
+            out.append({
                 "id": r.id, "profile": r.profile, "status": r.status,
                 "outcome": r.outcome, "started_at": r.started_at,
                 "ended_at": r.ended_at, "summary": r.summary,
                 "error": r.error, "metadata": r.metadata,
                 "worker_pid": r.worker_pid, "step_key": r.step_key,
-            } for r in runs
-        ], indent=2, ensure_ascii=False))
+                "nursery_exit_at": r.nursery_exit_at,
+                "nursery_status": nursery_status,
+            })
+        print(json.dumps(out, indent=2, ensure_ascii=False))
         return 0
     if not runs:
         print(f"(no runs yet for {args.task_id})")
         return 0
-    print(f"{'#':3s}  {'OUTCOME':12s}  {'PROFILE':16s}  {'ELAPSED':>8s}  STARTED")
+    print(f"{'#':3s}  {'OUTCOME':12s}  {'PROFILE':16s}  {'ELAPSED':>8s}  "
+          f"{'NURSERY':<17}  STARTED")
     for i, r in enumerate(runs, 1):
         end = r.ended_at or int(time.time())
         # Clamp to 0 so NTP backward-jumps don't print negative durations.
@@ -2497,7 +2558,21 @@ def _cmd_runs(args: argparse.Namespace) -> int:
         else:
             el = f"{elapsed / 3600:.1f}h"
         outcome = r.outcome or ("(running)" if not r.ended_at else r.status)
-        print(f"{i:3d}  {outcome:12s}  {(r.profile or '-'):16s}  {el:>8s}  {_fmt_ts(r.started_at)}")
+        # Nursery column mirrors the kanban show tag; see ``_cmd_show``.
+        if r.nursery_exit_at is None:
+            nursery = "-"
+        elif r.ended_at is not None:
+            nursery = (
+                "died-in-nursery"
+                if r.ended_at < r.nursery_exit_at
+                else "survived"
+            )
+        elif r.nursery_exit_at < int(time.time()):
+            nursery = "survived (active)"
+        else:
+            nursery = "in nursery (active)"
+        print(f"{i:3d}  {outcome:12s}  {(r.profile or '-'):16s}  {el:>8s}  "
+              f"{nursery:<17}  {_fmt_ts(r.started_at)}")
         if r.summary:
             # Indent and truncate long summaries to keep the table readable.
             summary = r.summary.splitlines()[0][:100]

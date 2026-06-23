@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -4766,3 +4767,677 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# SPEC-3: task_runs.worker_pid / claim_lock forensic columns
+# ---------------------------------------------------------------------------
+# Drift finding (t_cbf829f4 §2.5): these columns existed in the schema but
+# ``_end_run`` NULLed them on every terminal transition, so 0/20 spec-writer
+# crashed rows had them populated even though the same data lived in
+# ``metadata`` JSON as ``{"pid": 59973, "claimer": "MacBook-Pro.local:43761"}``.
+#
+# The fix has three parts:
+#   1. ``_end_run`` no longer NULLs the columns on close (forensic value).
+#   2. ``_set_worker_pid`` defensively stamps ``task_runs.claim_lock`` from
+#      ``tasks.claim_lock`` so the columns are populated at spawn time even
+#      on edge paths.
+#   3. ``backfill_task_run_pid_lock()`` parses ``metadata`` JSON on legacy
+#      rows and copies ``pid`` / ``claimer`` into the columns; wired into
+#      ``connect()`` so it runs on every startup.
+# These tests pin all three.
+
+
+def _seed_legacy_run_row(conn, task_id, profile, metadata):
+    """Seed a fake legacy run row for backfill tests.
+
+    The schema has many columns after migration; we provide the minimum
+    needed to make the row valid and target ``worker_pid``/``claim_lock``
+    as NULL so the backfill has work to do.
+    """
+    now = int(time.time())
+    conn.execute(
+        """
+        INSERT INTO tasks (
+            id, title, status, assignee, priority,
+            created_at, started_at
+        ) VALUES (?, 'spec3-legacy', 'ready', ?, 0, ?, ?)
+        """,
+        (task_id, profile, now, now),
+    )
+    cur = conn.execute(
+        """
+        INSERT INTO task_runs (
+            task_id, profile, status, outcome,
+            started_at, ended_at, metadata,
+            worker_pid, claim_lock
+        ) VALUES (?, ?, 'crashed', 'crashed', ?, ?, ?, NULL, NULL)
+        """,
+        (
+            task_id,
+            profile,
+            now - 100,
+            now - 50,
+            json.dumps(metadata) if isinstance(metadata, dict) else metadata,
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def test_end_run_preserves_worker_pid_and_claim_lock(kanban_home):
+    """``_end_run`` must NOT NULL the forensic columns on close.
+
+    Regression: the pre-fix behaviour was to write ``claim_lock = NULL,
+    claim_expires = NULL, worker_pid = NULL`` in the same UPDATE as the
+    outcome, leaving every closed run with dead-schema columns. The fix
+    preserves them so post-mortem queries can answer "which pid ran this
+    attempt" without falling back to metadata JSON parsing.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="spec3-preserve", assignee="a")
+        claimer = "host:port"
+        kb.claim_task(conn, t, claimer=claimer)
+        kb._set_worker_pid(conn, t, 4242)
+        run_row = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?", (t,)
+        ).fetchone()
+        run_id = int(run_row["current_run_id"])
+        pre = conn.execute(
+            "SELECT worker_pid, claim_lock FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        assert pre["worker_pid"] == 4242
+        assert pre["claim_lock"] == claimer
+
+        kb.complete_task(conn, t, result="ok", summary="did the thing")
+        post = conn.execute(
+            "SELECT worker_pid, claim_lock, outcome, ended_at "
+            "FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        assert post["worker_pid"] == 4242, (
+            f"worker_pid wiped on close: got {post['worker_pid']}"
+        )
+        assert post["claim_lock"] == claimer, (
+            f"claim_lock wiped on close: got {post['claim_lock']}"
+        )
+        assert post["outcome"] == "completed"
+        assert post["ended_at"] is not None
+
+
+def test_set_worker_pid_defensively_stamps_claim_lock(kanban_home):
+    """``_set_worker_pid`` writes claim_lock from tasks.claim_lock if
+    the run row didn't already carry one (edge-path defensive write).
+
+    The normal path stamps ``task_runs.claim_lock`` at claim time, so
+    this branch never fires in production. The test simulates a legacy
+    row by manually clearing ``task_runs.claim_lock`` BEFORE calling
+    ``_set_worker_pid`` and confirms the defensive write repopulates it
+    from the parent ``tasks.claim_lock``.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="spec3-defensive", assignee="a")
+        kb.claim_task(conn, t, claimer="host:defensive")
+        run_row = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?", (t,)
+        ).fetchone()
+        run_id = int(run_row["current_run_id"])
+        # Simulate a legacy / drifted run row where claim_lock is NULL.
+        conn.execute(
+            "UPDATE task_runs SET claim_lock = NULL WHERE id = ?",
+            (run_id,),
+        )
+        conn.commit()
+        kb._set_worker_pid(conn, t, 9999)
+        row = conn.execute(
+            "SELECT worker_pid, claim_lock FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        assert row["worker_pid"] == 9999
+        assert row["claim_lock"] == "host:defensive"
+
+
+def test_backfill_task_run_pid_lock_parses_metadata(kanban_home):
+    """Backfill reads metadata.pid and metadata.claimer and writes
+    them into the proper columns on legacy rows.
+
+    Seeds a closed run row with ``worker_pid=NULL``, ``claim_lock=NULL``,
+    and a metadata JSON blob containing the redundant keys. After
+    running the backfill, both columns must be populated and a re-run
+    must be a no-op (idempotency).
+    """
+    with kb.connect() as conn:
+        legacy_run_id = _seed_legacy_run_row(
+            conn,
+            "spec3-legacy-task",
+            "a",
+            {"pid": 31337, "claimer": "MacBook-Pro.local:54321"},
+        )
+
+        updated = kb.backfill_task_run_pid_lock(conn)
+        conn.commit()
+        assert updated == 1, f"backfill should update exactly 1 row, got {updated}"
+
+        row = conn.execute(
+            "SELECT worker_pid, claim_lock FROM task_runs WHERE id = ?",
+            (legacy_run_id,),
+        ).fetchone()
+        assert row["worker_pid"] == 31337
+        assert row["claim_lock"] == "MacBook-Pro.local:54321"
+
+        # Idempotent: a re-run updates zero rows.
+        again = kb.backfill_task_run_pid_lock(conn)
+        conn.commit()
+        assert again == 0, f"backfill must be idempotent, got {again}"
+
+
+def test_backfill_task_run_pid_lock_skips_rows_without_metadata_keys(kanban_home):
+    """Rows whose metadata has neither ``pid`` nor ``claimer`` are
+    left untouched (no false positives from empty/malformed JSON).
+    """
+    with kb.connect() as conn:
+        _seed_legacy_run_row(conn, "spec3-skip-task", "a", {"failures": 1})
+        updated = kb.backfill_task_run_pid_lock(conn)
+        conn.commit()
+        assert updated == 0
+
+        row = conn.execute(
+            "SELECT worker_pid, claim_lock FROM task_runs "
+            "WHERE task_id = 'spec3-skip-task'"
+        ).fetchone()
+        assert row["worker_pid"] is None
+        assert row["claim_lock"] is None
+
+
+def test_backfill_task_run_pid_lock_handles_malformed_metadata(kanban_home):
+    """Malformed JSON in ``metadata`` is silently skipped (no crash)."""
+    with kb.connect() as conn:
+        now = int(time.time())
+        conn.execute(
+            """
+            INSERT INTO tasks (
+                id, title, status, assignee, priority,
+                created_at, started_at
+            ) VALUES ('spec3-malformed-task', 'malformed', 'ready', 'a', 0, ?, ?)
+            """,
+            (now, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO task_runs (
+                task_id, profile, status, outcome,
+                started_at, ended_at, metadata,
+                worker_pid, claim_lock
+            ) VALUES ('spec3-malformed-task', 'a', 'crashed', 'crashed',
+                      ?, ?, 'not json', NULL, NULL)
+            """,
+            (now - 100, now - 50),
+        )
+        conn.commit()
+        updated = kb.backfill_task_run_pid_lock(conn)
+        conn.commit()
+        assert updated == 0
+
+
+def test_backfill_task_run_pid_lock_partial_fill(kanban_home):
+    """A row with pid but no claimer in metadata only fills worker_pid."""
+    with kb.connect() as conn:
+        _seed_legacy_run_row(conn, "spec3-partial-task", "a", {"pid": 12345})
+        kb.backfill_task_run_pid_lock(conn)
+        conn.commit()
+        row = conn.execute(
+            "SELECT worker_pid, claim_lock FROM task_runs "
+            "WHERE task_id = 'spec3-partial-task'"
+        ).fetchone()
+        assert row["worker_pid"] == 12345
+        assert row["claim_lock"] is None
+
+
+def test_backfill_task_run_pid_lock_wired_into_connect(kanban_home):
+    """``kb.connect()`` runs the backfill on every lazy-init path.
+
+    Seed a legacy row, then force a re-init via ``_INITIALIZED_PATHS``
+    cleanup so the next ``kb.connect()`` runs the backfill as part of
+    lazy init (no explicit call needed).
+    """
+    home = kanban_home
+    db_path = home / "kanban.db"
+    with kb.connect() as conn:
+        _seed_legacy_run_row(
+            conn,
+            "spec3-init-task",
+            "a",
+            {"pid": 88888, "claimer": "MacBook-Pro.local:11111"},
+        )
+
+    # Force re-init: the next connect() should run the backfill
+    # as part of lazy init without an explicit call.
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect() as conn:
+        row = conn.execute(
+            "SELECT worker_pid, claim_lock FROM task_runs "
+            "WHERE task_id = 'spec3-init-task'"
+        ).fetchone()
+    assert row["worker_pid"] == 88888
+    assert row["claim_lock"] == "MacBook-Pro.local:11111"
+
+
+def test_detect_crashed_workers_metadata_drops_pid_and_claimer(
+    kanban_home, monkeypatch,
+):
+    """The run-row metadata written by ``detect_crashed_workers`` no
+    longer carries ``pid`` or ``claimer`` (those live on the columns);
+    the event-row payload keeps them because event rows are immutable
+    history and don't read back through the columns.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="spec3-meta-drop", assignee="a")
+        kb.claim_task(conn, tid, claimer=f"{host}:drop")
+        # Mirror the real spawn path: _set_worker_pid stamps worker_pid
+        # on BOTH the task and the run row. Without the run-row stamp,
+        # the ``outcome='crashed'`` query below finds no row.
+        kb._set_worker_pid(conn, tid, 55555)
+        conn.execute(
+            "UPDATE tasks SET started_at=? WHERE id=?",
+            (int(time.time()) - 600, tid),
+        )
+        conn.commit()
+
+        _ = kb.detect_crashed_workers(conn)
+        run_row = conn.execute(
+            """
+            SELECT tr.metadata, tr.worker_pid, tr.claim_lock,
+                   (SELECT payload FROM task_events
+                     WHERE task_id = ? AND kind = 'crashed'
+                     ORDER BY id DESC LIMIT 1) AS event_payload
+              FROM task_runs tr
+             WHERE tr.task_id = ? AND tr.outcome = 'crashed'
+             ORDER BY tr.id DESC LIMIT 1
+            """,
+            (tid, tid),
+        ).fetchone()
+
+    # Columns populated (the source of truth).
+    assert run_row["worker_pid"] == 55555
+    assert run_row["claim_lock"] == f"{host}:drop"
+
+    # Run-row metadata no longer carries pid/claimer.
+    meta = json.loads(run_row["metadata"]) if run_row["metadata"] else {}
+    assert "pid" not in meta, f"metadata still has pid: {meta}"
+    assert "claimer" not in meta, f"metadata still has claimer: {meta}"
+
+    # Event payload (immutable history) keeps both.
+    ev = json.loads(run_row["event_payload"]) if run_row["event_payload"] else {}
+    assert ev.get("pid") == 55555
+    assert ev.get("claimer") == f"{host}:drop"
+
+
+# ---------------------------------------------------------------------------
+# Spawn-time nursery window (SPEC-4 / adr-kanban-nursery-window.md)
+#
+# These tests bypass ``kb.create_task`` (which still references the old
+# ``created_at`` column name from before the recent schema rename) and
+# use raw ``INSERT`` statements against the current schema. The
+# nursery-column migration runs in init_db and is observable in
+# PRAGMA table_info; everything else is tested via the public dispatch
+# surface so the test is independent of any internal column renames.
+# ---------------------------------------------------------------------------
+
+
+def _nursery_tasks_table_columns(kanban_home):
+    with kb.connect() as conn:
+        return {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+
+
+def _nursery_run_columns(kanban_home):
+    with kb.connect() as conn:
+        return {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(task_runs)").fetchall()
+        }
+
+
+def test_nursery_exit_at_column_added_by_migration(kanban_home):
+    """task_runs.nursery_exit_at exists after init_db on a fresh DB."""
+    cols = _nursery_run_columns(kanban_home)
+    assert "nursery_exit_at" in cols, (
+        f"task_runs missing nursery_exit_at column; cols={sorted(cols)}"
+    )
+
+
+def _insert_running_task(conn, kanban_home, *, task_id, started_at,
+                        nursery_exit_at, claimer, worker_pid):
+    """Synthesize a task + run in running status with given timings.
+
+    Wires ``current_run_id`` so ``_end_run`` (called from
+    detect_crashed_workers) finds the run to close.
+    """
+    cur = conn.execute(
+        "INSERT INTO task_runs ("
+        "task_id, profile, status, claim_lock, worker_pid, "
+        "started_at, nursery_exit_at, claim_expires"
+        ") VALUES (?, ?, 'running', ?, ?, ?, ?, ?)",
+        (task_id, "worker", claimer, worker_pid,
+         started_at, nursery_exit_at, started_at + 900),
+    )
+    run_id = int(cur.lastrowid)
+    cols = _nursery_tasks_table_columns(kanban_home)
+    insert_cols = [c for c in (
+        "id", "title", "status", "assignee", "started_at",
+        "claim_lock", "claim_expires", "worker_pid", "current_run_id",
+    ) if c in cols]
+    placeholders = ", ".join("?" for _ in insert_cols)
+    values = []
+    for c in insert_cols:
+        if c == "id": values.append(task_id)
+        elif c == "title": values.append("nursery-test")
+        elif c == "status": values.append("running")
+        elif c == "assignee": values.append("worker")
+        elif c == "started_at": values.append(started_at)
+        elif c == "claim_lock": values.append(claimer)
+        elif c == "claim_expires": values.append(started_at + 900)
+        elif c == "worker_pid": values.append(worker_pid)
+        elif c == "current_run_id": values.append(run_id)
+        else: values.append(None)
+    conn.execute(
+        f"INSERT INTO tasks ({', '.join(insert_cols)}) VALUES ({placeholders})",
+        tuple(values),
+    )
+
+
+def test_resolve_nursery_seconds_env_override(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "300")
+    assert _kb._resolve_nursery_seconds() == 300
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "0")
+    assert _kb._resolve_nursery_seconds() == 0
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "")
+    assert _kb._resolve_nursery_seconds() == _kb.DEFAULT_NURSERY_SECONDS
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "garbage")
+    assert _kb._resolve_nursery_seconds() == _kb.DEFAULT_NURSERY_SECONDS
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "-5")
+    assert _kb._resolve_nursery_seconds() == _kb.DEFAULT_NURSERY_SECONDS
+
+
+def test_resolve_early_death_threshold_env_override(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "7")
+    assert _kb._resolve_early_death_threshold() == 7
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "0")
+    assert _kb._resolve_early_death_threshold() == _kb.DEFAULT_EARLY_DEATH_THRESHOLD
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "garbage")
+    assert _kb._resolve_early_death_threshold() == _kb.DEFAULT_EARLY_DEATH_THRESHOLD
+
+
+def test_resolve_early_death_window_seconds_env_override(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "900")
+    assert _kb._resolve_early_death_window_seconds() == 900
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "0")
+    assert _kb._resolve_early_death_window_seconds() == _kb.DEFAULT_EARLY_DEATH_WINDOW_SECONDS
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "garbage")
+    assert _kb._resolve_early_death_window_seconds() == _kb.DEFAULT_EARLY_DEATH_WINDOW_SECONDS
+
+
+def test_early_death_classification_does_not_count_failure(
+    kanban_home, monkeypatch,
+):
+    """A worker dying inside the nursery does NOT increment
+    consecutive_failures. The task returns to ready so it can respawn.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "180")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "100")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "1800")
+
+    with kb.connect() as conn:
+        now = int(time.time())
+        host = _kb._claimer_id().split(":", 1)[0]
+        _insert_running_task(
+            conn, kanban_home,
+            task_id="early-1",
+            started_at=now - 30,
+            nursery_exit_at=now - 30 + 180,
+            claimer=f"{host}:worker1",
+            worker_pid=99001,
+        )
+        conn.commit()
+        crashed = _kb.detect_crashed_workers(conn)
+        assert "early-1" in crashed, f"expected 'early-1' in crashed={crashed}"
+        events = kb.list_events(conn, "early-1")
+        crashed_event = next(e for e in events if e.kind == "crashed")
+        assert crashed_event.payload.get("early_death") is True, (
+            f"expected early_death=True, got {crashed_event.payload}"
+        )
+        assert crashed_event.payload.get("nursery_seconds") == 180
+        task = kb.get_task(conn, "early-1")
+        assert task.status == "ready", f"task {task.status} != ready"
+        assert task.consecutive_failures == 0, (
+            f"consecutive_failures={task.consecutive_failures} (should be 0)"
+        )
+
+
+def test_graduated_death_increments_failure_normally(
+    kanban_home, monkeypatch,
+):
+    """A worker dying AFTER the nursery counts toward the circuit
+    breaker normally.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "180")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "100")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "1800")
+
+    with kb.connect() as conn:
+        now = int(time.time())
+        host = _kb._claimer_id().split(":", 1)[0]
+        _insert_running_task(
+            conn, kanban_home,
+            task_id="grad-1",
+            started_at=now - 600,
+            nursery_exit_at=now - 600 + 180,
+            claimer=f"{host}:worker1",
+            worker_pid=99002,
+        )
+        conn.commit()
+        crashed = _kb.detect_crashed_workers(conn)
+        assert "grad-1" in crashed, f"expected 'grad-1' in crashed={crashed}"
+        events = kb.list_events(conn, "grad-1")
+        crashed_event = next(e for e in events if e.kind == "crashed")
+        assert "early_death" not in crashed_event.payload, (
+            f"graduated death should not have early_death flag: {crashed_event.payload}"
+        )
+        task = kb.get_task(conn, "grad-1")
+        assert task.consecutive_failures == 1, (
+            f"consecutive_failures={task.consecutive_failures} (should be 1)"
+        )
+
+
+def test_nursery_burst_event_fires_at_threshold(
+    kanban_home, monkeypatch,
+):
+    """When the host produces threshold early deaths inside the sliding
+    window, the dispatcher emits a nursery_burst event with count,
+    threshold, and recent run ids.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "180")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "3")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "1800")
+
+    with kb.connect() as conn:
+        now = int(time.time())
+        host = _kb._claimer_id().split(":", 1)[0]
+        for i in range(2):
+            tid = f"seed-early-{i}"
+            _insert_running_task(
+                conn, kanban_home,
+                task_id=tid,
+                started_at=now - 60,
+                nursery_exit_at=now - 60 + 180,
+                claimer=f"{host}:worker1",
+                worker_pid=99100 + i,
+            )
+        conn.commit()
+        _kb.detect_crashed_workers(conn)
+        _insert_running_task(
+            conn, kanban_home,
+            task_id="trigger-1",
+            started_at=now - 30,
+            nursery_exit_at=now - 30 + 180,
+            claimer=f"{host}:worker1",
+            worker_pid=99200,
+        )
+        conn.commit()
+        _kb.detect_crashed_workers(conn)
+        burst_events = [
+            e for e in kb.list_events(conn, "trigger-1")
+            if e.kind == "nursery_burst"
+        ]
+        assert len(burst_events) == 1, (
+            f"expected 1 nursery_burst event on trigger-1, got {len(burst_events)}"
+        )
+        payload = burst_events[0].payload
+        assert payload["host"] == host
+        assert payload["count"] >= payload["threshold"] == 3
+        assert "recent_run_ids" in payload
+        assert len(payload["recent_run_ids"]) >= 3
+        task = kb.get_task(conn, "trigger-1")
+        assert task.status == "blocked", (
+            f"trigger-1 status={task.status} (should be blocked after burst)"
+        )
+        assert task.consecutive_failures == 1
+
+
+def test_nursery_burst_does_not_fire_below_threshold(
+    kanban_home, monkeypatch,
+):
+    """Below the threshold, early deaths do NOT auto-block the task."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "180")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "5")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "1800")
+
+    with kb.connect() as conn:
+        now = int(time.time())
+        host = _kb._claimer_id().split(":", 1)[0]
+        for i in range(2):
+            tid = f"below-{i}"
+            _insert_running_task(
+                conn, kanban_home,
+                task_id=tid,
+                started_at=now - 30,
+                nursery_exit_at=now - 30 + 180,
+                claimer=f"{host}:worker1",
+                worker_pid=99300 + i,
+            )
+        conn.commit()
+        _kb.detect_crashed_workers(conn)
+        for tid in ("below-0", "below-1"):
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", (
+                f"{tid} status={task.status} (should be ready, below threshold)"
+            )
+            burst_events = [
+                e for e in kb.list_events(conn, tid)
+                if e.kind == "nursery_burst"
+            ]
+            assert len(burst_events) == 0, (
+                f"{tid} got nursery_burst below threshold"
+            )
+
+
+def test_count_recent_early_deaths_respects_window(
+    kanban_home, monkeypatch,
+):
+    """Early deaths OUTSIDE the sliding window do NOT count toward
+    the burst threshold.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        now = int(time.time())
+        host = _kb._claimer_id().split(":", 1)[0]
+        for i, age in enumerate([10, 100, 1500, 2000]):
+            conn.execute(
+                "INSERT INTO task_runs ("
+                "task_id, profile, status, claim_lock, worker_pid, "
+                "started_at, nursery_exit_at, ended_at, outcome, error"
+                ") VALUES (?, ?, 'crashed', ?, ?, ?, ?, ?, 'crashed', ?)",
+                (
+                    f"hist-{age}-{i}",
+                    "worker",
+                    f"{host}:w{i}",
+                    99000 + i,
+                    now - age,
+                    (now - age) + 180,
+                    now - age + 30,
+                    f"pid {99000 + i} not alive",
+                ),
+            )
+        conn.commit()
+        count, run_ids = _kb._count_recent_early_deaths(
+            conn, host=host, now=now, window_seconds=200,
+        )
+        assert count == 2, f"expected 2 recent early deaths, got {count}"
+        count, _ = _kb._count_recent_early_deaths(
+            conn, host=host, now=now, window_seconds=50,
+        )
+        assert count == 1, f"expected 1 recent early death, got {count}"
+
+
+def test_run_from_row_handles_null_nursery_exit_at(
+    kanban_home, monkeypatch,
+):
+    """Legacy runs (NULL nursery_exit_at) parse cleanly via Run.from_row
+    and surface the field as None.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        now = int(time.time())
+        host = _kb._claimer_id().split(":", 1)[0]
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, assignee, started_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("legacy-run", "legacy", "done", "worker", now - 100),
+        )
+        conn.execute(
+            "INSERT INTO task_runs ("
+            "task_id, profile, status, claim_lock, worker_pid, "
+            "started_at, ended_at, outcome, nursery_exit_at"
+            ") VALUES (?, ?, 'crashed', ?, ?, ?, ?, 'crashed', NULL)",
+            (
+                "legacy-run", "worker", f"{host}:legacy",
+                99887, now - 100, now - 50,
+            ),
+        )
+        conn.commit()
+        runs = kb.list_runs(conn, "legacy-run")
+        assert len(runs) == 1
+        assert runs[0].nursery_exit_at is None
+        from hermes_cli.kanban_db import Run
+        legacy_row = conn.execute(
+            "SELECT * FROM task_runs WHERE task_id = ?",
+            ("legacy-run",),
+        ).fetchone()
+        run = Run.from_row(legacy_row)
+        assert run.nursery_exit_at is None
+        assert run.task_id == "legacy-run"

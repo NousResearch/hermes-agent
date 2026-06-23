@@ -37,7 +37,7 @@ They look similar; they are not the same primitive.
 |---|---|---|
 | Shape | RPC call (fork → join) | Durable message queue + state machine |
 | Parent | Blocks until child returns | Fire-and-forget after `create` |
-| Child identity | Anonymous subagent | Named profile with persistent memory |
+| Child identity | Anonymous subagent | Named profile; optionally fresh project-local temp profile per run |
 | Resumability | None — failed = failed | Block → unblock → re-run; crash → reclaim |
 | Human in the loop | Not supported | Comment / unblock at any point |
 | Agents per task | One call = one subagent | N agents over task's life (retry, review, follow-up) |
@@ -66,7 +66,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   - `scratch` (default) — fresh tmp dir under `~/.hermes/kanban/workspaces/<id>/` (or `~/.hermes/kanban/boards/<slug>/workspaces/<id>/` on non-default boards). **Deleted when the task completes** — scratch is ephemeral by design, so the dir is wiped the moment the worker (or `hermes kanban complete <id>`) marks the task done. If you want to keep the worker's output, use `worktree:` or `dir:<path>` instead. The first time a scratch workspace is created on an install, the dispatcher logs a warning and emits a `tip_scratch_workspace` event on the task (visible via `hermes kanban show <id>`).
   - `dir:<path>` — an existing shared directory (Obsidian vault, mail ops dir, per-account folder). **Must be an absolute path.** Relative paths like `dir:../tenants/foo/` are rejected at dispatch because they'd resolve against whatever CWD the dispatcher happens to be in, which is ambiguous and a confused-deputy escape vector. The path is otherwise trusted — it's your box, your filesystem, the worker runs with your uid. This is the trusted-local-user threat model; kanban is single-host by design. **Preserved on completion.**
   - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Use `worktree:<path>` to pin the exact target path. Worker-side `git worktree add` creates it, using `--branch` when provided. **Preserved on completion.**
-- **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
+- **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task/profile, the task is blocked until a human intervenes. If `kanban.temp_profiles.enabled` is true, the dispatcher clones the assigned profile's config into a fresh project-local temp `HERMES_HOME` for each worker attempt instead of writing runtime state into the main profile registry.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
 
 ## Boards (multi-project)
@@ -509,6 +509,9 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 | `auto_subscribe_on_create` | `true` | When a worker calls `kanban_create` from inside a session with a persistent delivery channel (messaging gateway or TUI), the originating session is auto-subscribed to the new task's completion/block events. The dispatcher still drives the delivery — this only changes whether the caller's chat/key shows up in the notify-sub table. Set to `false` to require explicit `kanban_notify-subscribe` calls per task. |
+| `temp_profiles.enabled` | `false` | Spawn each worker attempt with a fresh project-local temp `HERMES_HOME` instead of the durable profile home. Useful for orchestrators that assign ad-hoc roles (`mckinsey-style`, one-off scrapers) without polluting `~/.hermes/profiles`. |
+| `temp_profiles.root_dir` | `.hermes/tmp-profiles` | Directory for temp Hermes homes. Relative paths are rooted at the task project/git root, so repo runs keep their worker state under the project folder. |
+| `temp_profiles.cleanup_after_seconds` | `604800` | Best-effort GC age for marked temp-profile roots. Only directories with the kanban temp-profile marker are removed. |
 
 And the two auxiliary LLM slots:
 

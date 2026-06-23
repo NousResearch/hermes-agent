@@ -1677,6 +1677,136 @@ def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypat
     assert not res.spawned
 
 
+def test_dispatch_temp_profiles_allow_unregistered_assignee(kanban_home, monkeypatch):
+    """When project-local temp profiles are enabled, synthetic role names are
+    spawnable without pre-creating durable ~/.hermes/profiles entries."""
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    monkeypatch.setattr(
+        kb,
+        "_temp_profiles_config",
+        lambda: {
+            "enabled": True,
+            "cleanup_after_seconds": 7 * 24 * 60 * 60,
+            "root_dir": ".hermes/tmp-profiles",
+        },
+    )
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="market sizing", assignee="mckinsey-style")
+        res = kb.dispatch_once(conn, dry_run=True)
+    assert res.spawned == [(t, "mckinsey-style", "")]
+    assert t not in res.skipped_nonspawnable
+
+
+def test_default_spawn_uses_project_local_temp_profile(kanban_home, tmp_path, monkeypatch):
+    """Temp-profile mode gives each worker attempt a fresh HERMES_HOME under
+    the task project instead of the main profile registry."""
+    source_home = Path(os.environ["HERMES_HOME"])
+    (source_home / "config.yaml").write_text("model: test-model\n", encoding="utf-8")
+    (source_home / ".env").write_text("DUMMY_ENV=1\n", encoding="utf-8")
+    (source_home / "SOUL.md").write_text("Base soul\n", encoding="utf-8")
+    (source_home / "skills" / "research").mkdir(parents=True)
+    (source_home / "skills" / "research" / "SKILL.md").write_text("---\nname: research\n---\n", encoding="utf-8")
+
+    project = tmp_path / "project"
+    _init_git_repo(project)
+    workspace = project / "work"
+    workspace.mkdir()
+
+    monkeypatch.setattr(
+        kb,
+        "_temp_profiles_config",
+        lambda: {
+            "enabled": True,
+            "cleanup_after_seconds": 7 * 24 * 60 * 60,
+            "root_dir": ".hermes/tmp-profiles",
+        },
+    )
+    monkeypatch.setattr(kb, "_resolve_worker_cli_toolsets", lambda _home: None)
+    monkeypatch.setattr(kb, "_git_toplevel", lambda _path: project)
+
+    captured = []
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="scrape niche source", assignee="Unique Scraper")
+        task = kb.claim_task(conn, task_id)
+        assert task is not None
+        pid = kb._default_spawn(task, str(workspace))
+
+    assert pid == 4242
+    assert captured
+    cmd, kwargs = captured[0]
+    assert "-p" in cmd and "unique-scraper" in cmd
+    hermes_home = Path(kwargs["env"]["HERMES_HOME"])
+    assert hermes_home.parent.name == "profiles"
+    assert hermes_home.name == "unique-scraper"
+    assert project / ".hermes" / "tmp-profiles" in hermes_home.parents
+    assert source_home / "profiles" not in hermes_home.parents
+    assert (hermes_home / "config.yaml").read_text(encoding="utf-8") == "model: test-model\n"
+    assert (hermes_home / ".env").read_text(encoding="utf-8") == "DUMMY_ENV=1\n"
+    assert (hermes_home / "SOUL.md").read_text(encoding="utf-8") == "Base soul\n"
+    assert (hermes_home / "skills" / "research" / "SKILL.md").is_file()
+
+
+def test_cleanup_stale_temp_profiles_only_removes_marked_roots(kanban_home, tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    workspace = project
+    root = project / ".hermes" / "tmp-profiles"
+    stale = root / "stale"
+    fresh = root / "fresh"
+    durable_like = root / "durable-like"
+    stale.mkdir(parents=True)
+    fresh.mkdir(parents=True)
+    durable_like.mkdir(parents=True)
+    (stale / ".hermes-kanban-temp-profile.json").write_text('{"created_at": 100}\n', encoding="utf-8")
+    (fresh / ".hermes-kanban-temp-profile.json").write_text('{"created_at": 195}\n', encoding="utf-8")
+
+    monkeypatch.setattr(
+        kb,
+        "_temp_profiles_config",
+        lambda: {
+            "enabled": True,
+            "cleanup_after_seconds": 50,
+            "root_dir": ".hermes/tmp-profiles",
+        },
+    )
+
+    removed = kb.cleanup_stale_temp_profile_roots(str(workspace), now=200)
+    assert stale in removed
+    assert not stale.exists()
+    assert fresh.exists()
+    assert durable_like.exists()
+
+
+def test_has_spawnable_ready_true_when_temp_profiles_enabled(kanban_home, monkeypatch):
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    monkeypatch.setattr(
+        kb,
+        "_temp_profiles_config",
+        lambda: {
+            "enabled": True,
+            "cleanup_after_seconds": 7 * 24 * 60 * 60,
+            "root_dir": ".hermes/tmp-profiles",
+        },
+    )
+    with kb.connect() as conn:
+        kb.create_task(conn, title="t", assignee="bespoke-role")
+        assert kb.has_spawnable_ready(conn) is True
+
+
 def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):
     """``has_spawnable_ready`` returns False when every ready task is
     assigned to a control-plane lane — used by gateway/CLI dispatchers

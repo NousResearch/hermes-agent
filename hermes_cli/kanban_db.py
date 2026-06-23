@@ -6498,7 +6498,8 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
+    whose assignee maps to a real Hermes profile or project-local temp profiles
+    are enabled.
 
     Used by the gateway- and CLI-embedded dispatchers' health telemetry to
     decide whether ``0 spawned`` is a "stuck" condition (real spawnable
@@ -6517,6 +6518,8 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     ).fetchall()
     if not rows:
         return False
+    if _temp_profiles_enabled():
+        return True
     try:
         from hermes_cli.profiles import profile_exists  # local import: avoids cycle
     except Exception:
@@ -6530,7 +6533,8 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one review+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
+    whose assignee maps to a real Hermes profile or project-local temp profiles
+    are enabled.
 
     Mirror of :func:`has_spawnable_ready` for the review column —
     used by the health telemetry to decide whether the dispatcher
@@ -6543,6 +6547,8 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     ).fetchall()
     if not rows:
         return False
+    if _temp_profiles_enabled():
+        return True
     try:
         from hermes_cli.profiles import profile_exists  # local import: avoids cycle
     except Exception:
@@ -6822,7 +6828,11 @@ def _dispatch_once_locked(
             from hermes_cli.profiles import profile_exists  # local import: avoids cycle
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row_assignee):
+        if (
+            profile_exists is not None
+            and not _temp_profiles_enabled()
+            and not profile_exists(row_assignee)
+        ):
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -6962,7 +6972,11 @@ def _dispatch_once_locked(
             from hermes_cli.profiles import profile_exists
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        if (
+            profile_exists is not None
+            and not _temp_profiles_enabled()
+            and not profile_exists(row["assignee"])
+        ):
             result.skipped_nonspawnable.append(row["id"])
             continue
         if dry_run:
@@ -7249,6 +7263,228 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+def _temp_profiles_config() -> dict[str, Any]:
+    """Return normalized kanban.temp_profiles config."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config().get("kanban") or {}).get("temp_profiles") or {}
+    except Exception:
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    enabled = bool(raw.get("enabled", False))
+    try:
+        cleanup_after = int(raw.get("cleanup_after_seconds", 7 * 24 * 60 * 60))
+    except (TypeError, ValueError):
+        cleanup_after = 7 * 24 * 60 * 60
+    cleanup_after = max(0, cleanup_after)
+    root_dir = str(raw.get("root_dir") or ".hermes/tmp-profiles").strip() or ".hermes/tmp-profiles"
+    return {
+        "enabled": enabled,
+        "cleanup_after_seconds": cleanup_after,
+        "root_dir": root_dir,
+    }
+
+
+def _temp_profiles_enabled() -> bool:
+    return bool(_temp_profiles_config().get("enabled"))
+
+
+def _workspace_project_root(workspace: str) -> Path:
+    """Return the project directory that should own a worker's temp Hermes home."""
+    ws = Path(workspace).expanduser()
+    try:
+        ws = ws.resolve()
+    except OSError:
+        ws = ws.absolute()
+    if ws.is_file():
+        ws = ws.parent
+    if not ws.exists():
+        return ws
+    git_root = _git_toplevel(ws)
+    return git_root or ws
+
+
+def _temp_profiles_root_for_workspace(workspace: str, cfg: Optional[dict[str, Any]] = None) -> Path:
+    cfg = cfg or _temp_profiles_config()
+    root_dir = Path(str(cfg.get("root_dir") or ".hermes/tmp-profiles")).expanduser()
+    if not root_dir.is_absolute():
+        root_dir = _workspace_project_root(workspace) / root_dir
+    return root_dir
+
+
+def _safe_temp_profile_component(value: str, *, fallback: str = "run") -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(value or "").strip()).strip(".-_")
+    return (safe or fallback)[:80]
+
+
+def _temp_worker_profile_name(profile_arg: str) -> str:
+    """Return a valid local profile id for a durable or ad-hoc assignee name."""
+    try:
+        from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+
+        normalized = normalize_profile_name(profile_arg)
+        validate_profile_name(normalized)
+        return normalized
+    except Exception:
+        return _safe_temp_profile_component(profile_arg, fallback="worker").lower()
+
+
+def _copytree_contents(src: Path, dst: Path) -> None:
+    if not src.is_dir():
+        return
+    shutil.copytree(src, dst, dirs_exist_ok=True, ignore=shutil.ignore_patterns(
+        "__pycache__", "*.pyc", ".DS_Store",
+    ))
+
+
+def _profile_clone_source(profile_arg: str) -> Path:
+    """Pick the durable profile/config source for a temp worker profile."""
+    try:
+        from hermes_cli.profiles import resolve_profile_env
+
+        return Path(resolve_profile_env(profile_arg))
+    except Exception:
+        pass
+    try:
+        from hermes_constants import get_hermes_home
+
+        return Path(get_hermes_home())
+    except Exception:
+        return Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+
+
+def cleanup_stale_temp_profile_roots(workspace: str, *, now: Optional[int] = None) -> list[Path]:
+    """Remove project-local temp profile roots older than the configured TTL.
+
+    Best-effort and deliberately scoped to the configured temp root under the
+    task workspace/project. Durable ``~/.hermes/profiles`` entries are never
+    considered by this sweeper.
+    """
+    cfg = _temp_profiles_config()
+    ttl = int(cfg.get("cleanup_after_seconds") or 0)
+    if ttl <= 0:
+        return []
+    root = _temp_profiles_root_for_workspace(workspace, cfg)
+    if not root.is_dir():
+        return []
+    cutoff = int(now if now is not None else time.time()) - ttl
+    removed: list[Path] = []
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        marker = entry / ".hermes-kanban-temp-profile.json"
+        if not marker.is_file():
+            continue
+        try:
+            data = json.loads(marker.read_text(encoding="utf-8") or "{}")
+            created_at = int(data.get("created_at") or entry.stat().st_mtime)
+        except Exception:
+            try:
+                created_at = int(entry.stat().st_mtime)
+            except OSError:
+                continue
+        if created_at > cutoff:
+            continue
+        try:
+            shutil.rmtree(entry)
+            removed.append(entry)
+        except OSError:
+            _log.debug("kanban temp profiles: failed to remove stale root %s", entry, exc_info=True)
+    return removed
+
+
+def ensure_temp_worker_profile(task: Task, workspace: str, profile_arg: str) -> Path:
+    """Create a fresh project-local Hermes profile for one worker attempt.
+
+    Layout:
+        <project>/.hermes/tmp-profiles/<task/run/profile>/<profiles>/<profile>
+
+    The returned path is the profile's HERMES_HOME and is suitable for passing
+    to a child process that still uses ``hermes -p <profile>``. Because the env
+    already points inside ``.../profiles/<profile>``, Hermes resolves ``-p``
+    against the project-local root, not the main ``~/.hermes`` registry.
+    """
+    cfg = _temp_profiles_config()
+    root_parent = _temp_profiles_root_for_workspace(workspace, cfg)
+    cleanup_stale_temp_profile_roots(workspace)
+
+    profile_name = _temp_worker_profile_name(profile_arg)
+    run_part = _safe_temp_profile_component(str(task.current_run_id or "run"), fallback="run")
+    task_part = _safe_temp_profile_component(task.id, fallback="task")
+    profile_part = _safe_temp_profile_component(profile_name, fallback="profile")
+    nonce = secrets.token_hex(4)
+    temp_root = root_parent / f"{task_part}-{run_part}-{profile_part}-{nonce}"
+    profile_home = temp_root / "profiles" / profile_name
+
+    # Minimal profile skeleton matching hermes_cli.profiles._PROFILE_DIRS, plus
+    # cron/plugins/cache dirs commonly created at runtime. Keep this local to
+    # avoid profile-create side effects (aliases, s6 service registration).
+    for rel in (
+        "memories", "sessions", "skills", "skins", "logs", "plans",
+        "workspace", "cron", "plugins", "cache", "audio_cache",
+        "image_cache", "document_cache", "checkpoints", "sandboxes",
+    ):
+        (profile_home / rel).mkdir(parents=True, exist_ok=True)
+
+    source = _profile_clone_source(profile_arg)
+    for filename in ("config.yaml", ".env", "SOUL.md"):
+        src = source / filename
+        if src.is_file():
+            dst = profile_home / filename
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            if filename == ".env":
+                try:
+                    os.chmod(dst, 0o600)
+                except OSError:
+                    pass
+    if not (profile_home / ".env").exists():
+        env_path = profile_home / ".env"
+        env_path.write_text(
+            "# Temporary kanban worker profile secrets.\n"
+            "# Created from dispatcher context; deleted by temp-profile GC.\n",
+            encoding="utf-8",
+        )
+        try:
+            os.chmod(env_path, 0o600)
+        except OSError:
+            pass
+    if not (profile_home / "SOUL.md").exists():
+        try:
+            from hermes_cli.default_soul import DEFAULT_SOUL_MD
+            base_soul = DEFAULT_SOUL_MD
+        except Exception:
+            base_soul = "You are a Hermes Agent worker.\n"
+        (profile_home / "SOUL.md").write_text(base_soul, encoding="utf-8")
+
+    _copytree_contents(source / "skills", profile_home / "skills")
+    _copytree_contents(source / "skins", profile_home / "skins")
+
+    profile_meta = profile_home / "profile.yaml"
+    if not profile_meta.exists():
+        profile_meta.write_text(
+            "description: >-\n"
+            f"  Temporary project-local kanban worker profile for assignee {profile_arg}.\n"
+            "description_auto: false\n",
+            encoding="utf-8",
+        )
+
+    marker = temp_root / ".hermes-kanban-temp-profile.json"
+    marker.write_text(json.dumps({
+        "kind": "hermes-kanban-temp-profile",
+        "created_at": int(time.time()),
+        "task_id": task.id,
+        "run_id": task.current_run_id,
+        "assignee": profile_arg,
+        "workspace": workspace,
+        "source": str(source),
+        "profile_home": str(profile_home),
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return profile_home
+
+
 def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
     """Return the assigned profile's effective CLI toolsets for a worker.
 
@@ -7307,29 +7543,29 @@ def _default_spawn(
 
     from hermes_cli.profiles import normalize_profile_name
 
-    profile_arg = normalize_profile_name(task.assignee)
+    assignee_name = normalize_profile_name(task.assignee)
+    profile_arg = _temp_worker_profile_name(assignee_name) if _temp_profiles_enabled() else assignee_name
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
-    # config.  Without this, `env = dict(os.environ)` copies only the parent's
-    # env, and when the child process starts `hermes -p <name>` the
-    # _apply_profile_override() runs *before* hermes_constants is imported.
-    # If HERMES_HOME is absent from the child's env, get_hermes_home() falls
-    # back to Path.home() / ".hermes" (the DEFAULT profile root), ignoring the
-    # profile-specific config entirely.  Fixes profile-scoped fallback_providers
-    # being invisible to kanban workers.
-    from hermes_cli.profiles import resolve_profile_env
-    try:
-        env["HERMES_HOME"] = resolve_profile_env(profile_arg)
-    except FileNotFoundError:
-        # Profile dir doesn't exist — defer resolution to the CLI's
-        # _apply_profile_override() via HERMES_PROFILE (set below).
-        # This only happens in test fixtures where the isolated
-        # HERMES_HOME never had profiles created.
-        pass
+    # config. With kanban.temp_profiles.enabled, create a fresh project-local
+    # profile for this worker attempt and point the child at that disposable
+    # HERMES_HOME. Otherwise preserve the durable-profile behavior.
+    if _temp_profiles_enabled():
+        env["HERMES_HOME"] = str(ensure_temp_worker_profile(task, workspace, profile_arg))
+    else:
+        from hermes_cli.profiles import resolve_profile_env
+        try:
+            env["HERMES_HOME"] = resolve_profile_env(profile_arg)
+        except FileNotFoundError:
+            # Profile dir doesn't exist — defer resolution to the CLI's
+            # _apply_profile_override() via HERMES_PROFILE (set below).
+            # This only happens in test fixtures where the isolated
+            # HERMES_HOME never had profiles created.
+            pass
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

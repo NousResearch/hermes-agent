@@ -2403,6 +2403,19 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Optional project-local temp profiles for dispatcher-spawned workers.
+        # When enabled, each worker attempt gets a fresh HERMES_HOME under the
+        # task workspace/project (``.hermes/tmp-profiles/...``) instead of
+        # writing sessions, memories, cron, and caches into the main
+        # ``~/.hermes/profiles`` registry. The temp profile clones config,
+        # secrets, SOUL, and skills from the assigned durable profile when it
+        # exists, else from the dispatcher's active profile. Runtime state is
+        # disposable and swept by age on later spawns.
+        "temp_profiles": {
+            "enabled": False,
+            "cleanup_after_seconds": 7 * 24 * 60 * 60,
+            "root_dir": ".hermes/tmp-profiles",
+        },
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

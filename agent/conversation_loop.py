@@ -3978,7 +3978,22 @@ def run_conversation(
                     agent._emit_status(
                         f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
                     )
-                    messages.append({"role": "assistant", "content": final_response})
+                    # Append a short, structured model-facing observation as a
+                    # tool result — NOT the user-facing halt response.  This
+                    # tells the model to change strategy without giving it a
+                    # natural-language assistant response to echo back.
+                    # Tag it so _persist_session can strip it before writing
+                    # to session DB (guardrail content must not be persisted).
+                    messages.append({
+                        "role": "tool",
+                        "content": (
+                            f"TOOL_GUARDRAIL_BLOCKED: repeated identical "
+                            f"{decision.tool_name} call blocked "
+                            f"({decision.code}). Change strategy; do not "
+                            f"retry the same tool call with the same arguments."
+                        ),
+                        "_guardrail_ephemeral": True,  # strip before persist
+                    })
                     # Emit the halt message to the client so it's not
                     # indistinguishable from a crash.  The stream display
                     # was flushed (callback(None)) before tool execution,

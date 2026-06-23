@@ -1516,9 +1516,13 @@ class AIAgent:
         """
         self._drop_trailing_empty_response_scaffolding(messages)
         self._apply_persist_user_message_override(messages)
-        self._session_messages = messages
-        self._save_session_log(messages)
-        self._flush_messages_to_session_db(messages, conversation_history)
+        # Strip ephemeral guardrail messages before persisting — they must not
+        # enter session history / context compressor / future model context.
+        self._session_messages = [
+            m for m in messages if not m.get("_guardrail_ephemeral")
+        ]
+        self._save_session_log(self._session_messages)
+        self._flush_messages_to_session_db(self._session_messages, conversation_history)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.

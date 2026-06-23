@@ -1330,14 +1330,29 @@ function Install-Repository {
                     if ($restoreNow) {
                         Write-Info "Restoring local changes..."
                         git -c windows.appendAtomically=false stash apply $autostashRef
-                        if ($LASTEXITCODE -eq 0) {
+                        $applyExit = $LASTEXITCODE
+                        # A conflicting apply can surface either as a non-zero
+                        # exit OR as unmerged paths while still exiting 0, so we
+                        # check both. Leaving conflict markers
+                        # (`<<<<<<< Updated upstream`) in tracked source files
+                        # makes Hermes unrunnable -- e.g. a poisoned toolsets.py
+                        # raises SyntaxError on import and the gateway never
+                        # starts. On any conflict, reset the working tree to the
+                        # freshly-pulled HEAD so the install stays runnable, and
+                        # KEEP the stash for manual recovery (never silently drop
+                        # the user's work). Mirrors the `hermes update` path's
+                        # _restore_stashed_changes. (#46791)
+                        $unmergedAfterApply = git -c windows.appendAtomically=false diff --name-only --diff-filter=U 2>$null
+                        if ($applyExit -eq 0 -and [string]::IsNullOrWhiteSpace(($unmergedAfterApply -join "`n"))) {
                             git -c windows.appendAtomically=false stash drop $autostashRef 2>$null
                             Write-Warn "Local changes were restored on top of the updated codebase."
                             Write-Warn "Review git diff / git status if Hermes behaves unexpectedly."
                         } else {
-                            Write-Err "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
-                            Write-Info "Resolve manually with: git stash apply $autostashRef"
-                            throw "git stash apply failed after update"
+                            Write-Err "Update pulled new code, but restoring local changes hit conflicts."
+                            Write-Warn "Your stashed changes are preserved -- nothing is lost (ref: $autostashRef)."
+                            git -c windows.appendAtomically=false reset --hard HEAD 2>$null
+                            Write-Info "Working tree reset to clean state so Hermes stays runnable."
+                            Write-Info "Restore your changes later with: git stash apply $autostashRef"
                         }
                     } else {
                         Write-Info "Skipped restoring local changes."

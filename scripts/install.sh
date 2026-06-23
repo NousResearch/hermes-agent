@@ -1182,14 +1182,31 @@ clone_repo() {
 
                 if [ "$restore_now" = "yes" ]; then
                     log_info "Restoring local changes..."
-                    if git stash apply "$autostash_ref"; then
+                    # Capture the exit code without tripping `set -e` (a bare
+                    # failing `git stash apply` would abort the script before we
+                    # can clean up the conflict below).
+                    apply_rc=0
+                    git stash apply "$autostash_ref" || apply_rc=$?
+                    # A conflicting apply can surface either as a non-zero exit
+                    # OR as unmerged paths while still exiting 0, so we check
+                    # both. Leaving conflict markers (`<<<<<<< Updated upstream`)
+                    # in tracked source files makes Hermes unrunnable -- e.g. a
+                    # poisoned toolsets.py raises SyntaxError on import and the
+                    # gateway never starts. On any conflict, reset the working
+                    # tree to the freshly-pulled HEAD so the install stays
+                    # runnable, and KEEP the stash for manual recovery (never
+                    # silently drop the user's work). Mirrors the `hermes update`
+                    # path's _restore_stashed_changes. (#46791)
+                    if [ "$apply_rc" -eq 0 ] && [ -z "$(git diff --name-only --diff-filter=U)" ]; then
                         git stash drop "$autostash_ref" >/dev/null
                         log_warn "Local changes were restored on top of the updated codebase."
                         log_warn "Review git diff / git status if Hermes behaves unexpectedly."
                     else
-                        log_error "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
-                        log_info "Resolve manually with: git stash apply $autostash_ref"
-                        exit 1
+                        log_error "Update pulled new code, but restoring local changes hit conflicts."
+                        log_warn "Your stashed changes are preserved -- nothing is lost (ref: $autostash_ref)."
+                        git reset --hard HEAD >/dev/null 2>&1 || true
+                        log_info "Working tree reset to clean state so Hermes stays runnable."
+                        log_info "Restore your changes later with: git stash apply $autostash_ref"
                     fi
                 else
                     log_info "Skipped restoring local changes."

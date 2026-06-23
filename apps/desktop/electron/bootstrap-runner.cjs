@@ -50,6 +50,31 @@ function hiddenWindowsChildOptions(options = {}) {
 }
 
 const STAMP_COMMIT_RE = /^[0-9a-f]{7,40}$/i
+const FALLBACK_COMMIT_RE = /^0{7,40}$/
+const FALLBACK_BRANCH = 'main'
+
+function isPinnedCommit(commit) {
+  return typeof commit === 'string' && STAMP_COMMIT_RE.test(commit) && !FALLBACK_COMMIT_RE.test(commit)
+}
+
+function installRefForStamp(installStamp) {
+  if (installStamp && isPinnedCommit(installStamp.commit)) {
+    return {
+      ref: installStamp.commit,
+      cacheKey: installStamp.commit,
+      pinned: true
+    }
+  }
+  if (installStamp && typeof installStamp.commit === 'string' && FALLBACK_COMMIT_RE.test(installStamp.commit)) {
+    const ref = installStamp.branch || FALLBACK_BRANCH
+    return {
+      ref,
+      cacheKey: `fallback-${ref.replace(/[^0-9A-Za-z._-]/g, '_')}`,
+      pinned: false
+    }
+  }
+  return null
+}
 
 // Stages flagged needs_user_input=true in the manifest are skipped by the
 // runner (passed -NonInteractive to install.ps1, which the install script
@@ -104,12 +129,13 @@ function cachedScriptPath(hermesHome, commit) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
-function downloadInstallScript(commit, destPath) {
-  // Fetch from GitHub raw at the pinned commit. The raw URL with a SHA
-  // is immutable (unlike a branch ref), so we don't need integrity
-  // verification beyond "did the file we wrote pass a syntax probe."
+function downloadInstallScript(ref, destPath) {
+  // Fetch from GitHub raw at the install ref. Normal production builds pass a
+  // pinned SHA. Non-git fallback builds pass an unpinned branch ref so local
+  // builds can still bootstrap without pretending the all-zero placeholder is
+  // a real GitHub commit.
   const scriptName = installScriptName()
-  const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${commit}/scripts/${scriptName}`
+  const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${ref}/scripts/${scriptName}`
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(destPath), { recursive: true })
     const tmpPath = destPath + '.tmp'
@@ -190,33 +216,38 @@ async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, 
   }
 
   // 2. Packaged path: download from GitHub at the pinned commit (1B's stamp).
-  if (!installStamp || !installStamp.commit || !STAMP_COMMIT_RE.test(installStamp.commit)) {
+  // Non-git fallback builds carry an all-zero commit; treat it as an
+  // unpinned branch ref instead of trying to fetch a non-existent SHA.
+  const installRef = installRefForStamp(installStamp)
+  if (!installRef) {
     throw new Error(
       `Cannot resolve ${installScriptName()}: no SOURCE_REPO_ROOT and no install stamp. ` +
         'This packaged build was produced without a valid build-time stamp.'
     )
   }
 
-  const cached = cachedScriptPath(hermesHome, installStamp.commit)
+  const cached = cachedScriptPath(hermesHome, installRef.cacheKey)
   try {
     await fsp.access(cached, fs.constants.R_OK)
     emit({
       type: 'log',
-      line: `[bootstrap] using cached ${installScriptName()} for ${installStamp.commit.slice(0, 12)}`
+      line: `[bootstrap] using cached ${installScriptName()} for ${installRef.ref.slice(0, 12)}`
     })
-    return { path: cached, source: 'cache', commit: installStamp.commit, kind: installScriptKind() }
+    return { path: cached, source: 'cache', commit: installRef.pinned ? installRef.ref : null, kind: installScriptKind() }
   } catch {
     // not cached; download
   }
 
   emit({
     type: 'log',
-    line: `[bootstrap] fetching ${installScriptName()} for ${installStamp.commit.slice(0, 12)} from GitHub`
+    line:
+      `[bootstrap] fetching ${installScriptName()} for ${installRef.ref.slice(0, 12)} from GitHub` +
+      (installRef.pinned ? '' : ' (fallback, unpinned)')
   })
   try {
-    await _download(installStamp.commit, cached)
+    await _download(installRef.ref, cached)
     emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
-    return { path: cached, source: 'download', commit: installStamp.commit, kind: installScriptKind() }
+    return { path: cached, source: 'download', commit: installRef.pinned ? installRef.ref : null, kind: installScriptKind() }
   } catch (err) {
     // The pinned commit may not be fetchable from GitHub -- most commonly a
     // locally-built desktop app stamped to an unpushed HEAD (see
@@ -234,10 +265,10 @@ async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, 
       try {
         fs.mkdirSync(path.dirname(cached), { recursive: true })
         fs.copyFileSync(installed, cached)
-        return { path: cached, source: 'installed-agent', commit: installStamp.commit, kind: installScriptKind() }
+        return { path: cached, source: 'installed-agent', commit: installRef.pinned ? installRef.ref : null, kind: installScriptKind() }
       } catch {
         // Cache copy failed (read-only FS, etc.) -- use the source path directly.
-        return { path: installed, source: 'installed-agent', commit: installStamp.commit, kind: installScriptKind() }
+        return { path: installed, source: 'installed-agent', commit: installRef.pinned ? installRef.ref : null, kind: installScriptKind() }
       }
     }
     throw err
@@ -446,7 +477,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
 // instead of falling back to install.ps1's default ($Branch = "main").
 function buildPinArgs(installStamp) {
   const args = []
-  if (installStamp && installStamp.commit) {
+  if (installStamp && isPinnedCommit(installStamp.commit)) {
     args.push('-Commit', installStamp.commit)
   }
   if (installStamp && installStamp.branch) {
@@ -460,7 +491,7 @@ function buildPosixPinArgs({ installStamp, activeRoot, hermesHome }) {
   if (installStamp && installStamp.branch) {
     args.push('--branch', installStamp.branch)
   }
-  if (installStamp && installStamp.commit) {
+  if (installStamp && isPinnedCommit(installStamp.commit)) {
     args.push('--commit', installStamp.commit)
   }
   return args
@@ -700,7 +731,7 @@ async function runBootstrap(opts) {
 
     // 4. Write the bootstrap-complete marker.
     const markerPayload = {
-      pinnedCommit: installStamp ? installStamp.commit : null,
+      pinnedCommit: installStamp && isPinnedCommit(installStamp.commit) ? installStamp.commit : null,
       pinnedBranch: installStamp ? installStamp.branch : null
     }
     const marker = typeof writeMarker === 'function' ? writeMarker(markerPayload) : markerPayload
@@ -725,5 +756,9 @@ module.exports = {
   resolveLocalInstallScript,
   resolveInstallScript,
   installedAgentInstallScript,
-  cachedScriptPath
+  cachedScriptPath,
+  buildPinArgs,
+  buildPosixPinArgs,
+  installRefForStamp,
+  isPinnedCommit
 }

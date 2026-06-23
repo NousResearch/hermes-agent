@@ -13,17 +13,17 @@
  *     "branch":        "<branch name>",
  *     "builtAt":       "<ISO 8601 UTC timestamp>",
  *     "dirty":         true|false,
- *     "source":        "ci" | "local"
+ *     "source":        "ci" | "local" | "fallback"
  *   }
  *
  * Source preference order:
  *   1. CI env vars ($GITHUB_SHA / $GITHUB_REF_NAME) -- avoid edge cases with
  *      shallow clones, detached HEADs, etc. in CI.
  *   2. Local `git rev-parse` against the parent repo (../..).
+ *   3. Fallback stamp for local/personal builds from non-git source trees.
  *
- * Dev / out-of-repo builds without git produce an explicit error rather than
- * silently writing an unstamped manifest -- the packaged app refuses to
- * bootstrap without a stamp.
+ * Dev / out-of-repo builds without git produce an explicit fallback stamp
+ * rather than aborting the whole build.
  */
 
 const fs = require("fs")
@@ -80,13 +80,14 @@ function fromLocalGit() {
 function fromFallback() {
   // Non-git builds (ZIP download, bootstrap installer without .git) cannot
   // determine a real commit.  Use a placeholder so local/personal builds
-  // can still complete.  The desktop app treats "0000000" as "unknown"
-  // and skips the commit-pinned bootstrap.
+  // can still complete.  The desktop bootstrap treats the all-zero commit as
+  // "unknown" and falls back to an unpinned branch bootstrap instead of trying
+  // to fetch a non-existent GitHub commit.
   return {
     commit: "0000000000000000000000000000000000000000",
-    branch: null,
+    branch: "main",
     dirty: false,
-    source: "local"
+    source: "fallback"
   }
 }
 
@@ -108,8 +109,9 @@ function main() {
   if (stamp.commit === "0000000000000000000000000000000000000000") {
     console.warn(
       "[write-build-stamp] WARNING: no git commit found (non-git checkout?).\n" +
-        "  Using placeholder commit — the packaged app will skip commit-pinned\n" +
-        "  first-launch bootstrap.  For production builds, run from a git checkout."
+        "  Using placeholder commit — the packaged app will fall back to the\n" +
+        "  default branch for first-launch bootstrap.  For production builds,\n" +
+        "  run from a git checkout."
     )
   }
 

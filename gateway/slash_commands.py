@@ -3537,6 +3537,25 @@ class GatewaySlashCommandsMixin:
             if ctx.compression_count:
                 lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
 
+            # Messaging sessions can feel fresh while reusing a cached prompt
+            # and transcript. Surface those hidden dimensions directly so
+            # Telegram token burn is no longer opaque.
+            try:
+                sys_prompt_chars = len(getattr(agent, "_cached_system_prompt", "") or "")
+                agent_messages = getattr(agent, "messages", None) or []
+                session_id = getattr(agent, "session_id", "") or ""
+                lines.append("")
+                lines.append("🔎 **Session diagnostics**")
+                lines.append(f"Session ID: `{session_id}`" if session_id else "Session ID: unknown")
+                lines.append(f"Cached system prompt: {sys_prompt_chars:,} chars")
+                lines.append(f"Messages in agent context: {len(agent_messages):,}")
+                if sys_prompt_chars >= 100_000:
+                    lines.append("⚠ Cached prompt is large; use /new at a task boundary if usage feels abnormal.")
+                if input_tokens >= 100_000 or cache_read >= 100_000:
+                    lines.append("⚠ This session is already in high-token territory; consider /new after this task.")
+            except Exception:
+                pass
+
             if account_lines:
                 lines.append("")
                 lines.extend(account_lines)

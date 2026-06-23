@@ -55,6 +55,14 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from gateway.turn_usage import (
+    agent_usage_snapshot,
+    budget_status,
+    format_compact_usage,
+    should_show_usage_receipt,
+    turn_usage_from_result,
+    usage_delta,
+)
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -2039,6 +2047,7 @@ def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
 _INTERRUPT_REASON_STOP = "Stop requested"
 _INTERRUPT_REASON_RESET = "Session reset requested"
 _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
+_INTERRUPT_REASON_USAGE_BUDGET = "Telegram usage budget reached"
 _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
@@ -2048,6 +2057,7 @@ _CONTROL_INTERRUPT_MESSAGES = frozenset(
         _INTERRUPT_REASON_STOP.lower(),
         _INTERRUPT_REASON_RESET.lower(),
         _INTERRUPT_REASON_TIMEOUT.lower(),
+        _INTERRUPT_REASON_USAGE_BUDGET.lower(),
         _INTERRUPT_REASON_SSE_DISCONNECT.lower(),
         _INTERRUPT_REASON_GATEWAY_SHUTDOWN.lower(),
         _INTERRUPT_REASON_GATEWAY_RESTART.lower(),
@@ -10289,6 +10299,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _platform_name, source.chat_id or "unknown",
                 _response_time, _api_calls, _resp_len,
             )
+            _usage_receipt_line = ""
+            try:
+                _turn_usage_obj = turn_usage_from_result(agent_result, elapsed_seconds=_response_time)
+                if (
+                    _platform_name == "telegram"
+                    and _usage_receipts_enabled
+                    and should_show_usage_receipt(
+                        _turn_usage_obj,
+                        min_api_calls=_usage_receipt_min_api_calls,
+                        min_tokens=_usage_receipt_min_tokens,
+                        min_seconds=_usage_receipt_min_seconds,
+                    )
+                ):
+                    _usage_receipt_line = format_compact_usage(_turn_usage_obj, prefix="usage")
+                    logger.info(
+                        "turn usage receipt: platform=%s chat=%s %s",
+                        _platform_name, source.chat_id or "unknown", _usage_receipt_line,
+                    )
+            except Exception as _usage_receipt_err:
+                logger.debug("usage receipt build failed: %s", _usage_receipt_err)
 
             # Re-baseline the cached agent's message_count snapshot now that
             # this turn has completed and the agent has flushed its rows to
@@ -10703,6 +10733,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
+            if _usage_receipt_line and response and not _already_sent:
+                response = f"{response}\n\n{_usage_receipt_line}"
+
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
             # sends raw text chunks that include MEDIA: tags — the normal
@@ -10725,17 +10758,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.
                 # still surface the runtime metadata on the final reply.
-                if _footer_line:
+                if _footer_line or _usage_receipt_line:
                     try:
                         _foot_adapter = self.adapters.get(source.platform)
                         if _foot_adapter:
+                            _trail = "\n".join(x for x in (_footer_line, _usage_receipt_line) if x)
                             await _foot_adapter.send(
                                 source.chat_id,
-                                _footer_line,
+                                _trail,
                                 metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
                             )
                     except Exception as _e:
-                        logger.debug("trailing footer send failed: %s", _e)
+                        logger.debug("trailing footer/usage send failed: %s", _e)
                 return None
 
             return response
@@ -15195,6 +15229,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        _usage_receipts_enabled = bool(agent_cfg_local.get("gateway_usage_receipts", True))
+        _usage_receipt_min_api_calls = int(agent_cfg_local.get("gateway_usage_receipt_min_api_calls", 2) or 2)
+        _usage_receipt_min_tokens = int(agent_cfg_local.get("gateway_usage_receipt_min_tokens", 25_000) or 25_000)
+        _usage_receipt_min_seconds = float(agent_cfg_local.get("gateway_usage_receipt_min_seconds", 30) or 30)
+        _usage_warn_api_calls = int(agent_cfg_local.get("gateway_usage_warn_api_calls", 8) or 8)
+        _usage_warn_tokens = int(agent_cfg_local.get("gateway_usage_warn_tokens", 100_000) or 100_000)
+        _usage_hard_api_calls = int(agent_cfg_local.get("gateway_usage_hard_api_calls", 30) or 30)
+        _usage_hard_tokens = int(agent_cfg_local.get("gateway_usage_hard_tokens", 350_000) or 350_000)
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
@@ -15892,6 +15934,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         stream_consumer_holder = [None]  # Mutable container for stream consumer
+        turn_usage_baseline_holder = [None]  # Cumulative counters at turn start
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
@@ -16798,6 +16841,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     _run_message = message
 
+                turn_usage_baseline_holder[0] = agent_usage_snapshot(agent)
                 _api_run_message = _wrap_current_message_with_observed_context(
                     _run_message,
                     observed_group_context,
@@ -16815,6 +16859,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                try:
+                    _turn_usage = usage_delta(
+                        agent_usage_snapshot(agent),
+                        turn_usage_baseline_holder[0],
+                    )
+                    _turn_usage["api_calls"] = int(result.get("api_calls", 0) or 0)
+                    _turn_usage["elapsed_seconds"] = max(0.0, time.time() - _notify_start)
+                    result["turn_usage"] = _turn_usage
+                except Exception:
+                    pass
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
@@ -16939,6 +16993,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "turn_usage": result.get("turn_usage", {}),
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -17040,6 +17095,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "model": _resolved_model,
                 "context_length": _context_length,
                 "session_id": effective_session_id,
+                "turn_usage": result_holder[0].get("turn_usage", {}) if result_holder[0] else {},
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
             }
@@ -17228,6 +17284,73 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _status_enrichment_config = None
             _enrich_long_run_status = None
         _status_enrichment_tasks: set[asyncio.Task] = set()
+        _usage_budget_warn_sent = False
+        _usage_budget_hard_sent = False
+
+        def _current_turn_usage(elapsed_seconds: float):
+            _agent_ref = agent_holder[0]
+            if not _agent_ref or not turn_usage_baseline_holder[0]:
+                return None
+            try:
+                _live = usage_delta(
+                    agent_usage_snapshot(_agent_ref),
+                    turn_usage_baseline_holder[0],
+                )
+                try:
+                    _act = _agent_ref.get_activity_summary()
+                    _live["api_calls"] = int(_act.get("api_call_count", 0) or 0)
+                except Exception:
+                    pass
+                _live["elapsed_seconds"] = max(0.0, elapsed_seconds)
+                return turn_usage_from_result({"turn_usage": _live, "api_calls": _live.get("api_calls", 0)}, elapsed_seconds=elapsed_seconds)
+            except Exception:
+                return None
+
+        async def _maybe_emit_usage_budget_notice(elapsed_seconds: float) -> bool:
+            nonlocal _usage_budget_warn_sent, _usage_budget_hard_sent
+            if platform_key != "telegram":
+                return False
+            _usage = _current_turn_usage(elapsed_seconds)
+            if _usage is None:
+                return False
+            _state = budget_status(
+                _usage,
+                warn_api_calls=_usage_warn_api_calls,
+                warn_tokens=_usage_warn_tokens,
+                hard_api_calls=_usage_hard_api_calls,
+                hard_tokens=_usage_hard_tokens,
+            )
+            if _state is None:
+                return False
+            _budget_adapter = self.adapters.get(source.platform)
+            if not _budget_adapter:
+                return False
+            _line = format_compact_usage(_usage, prefix="usage")
+            if _state == "warn" and not _usage_budget_warn_sent:
+                _usage_budget_warn_sent = True
+                try:
+                    await _budget_adapter.send(
+                        source.chat_id,
+                        f"⚠️ High-usage Telegram turn: {_line}. Continuing unless you send /stop.",
+                        metadata=_non_conversational_metadata(_status_thread_metadata, platform=source.platform),
+                    )
+                except Exception as _usage_warn_err:
+                    logger.debug("Usage-budget warning send failed: %s", _usage_warn_err)
+            if _state == "hard" and not _usage_budget_hard_sent:
+                _usage_budget_hard_sent = True
+                try:
+                    await _budget_adapter.send(
+                        source.chat_id,
+                        f"🛑 Telegram turn budget reached: {_line}. Stopping this turn before it burns more; start a fresh /new if you want to continue.",
+                        metadata=_non_conversational_metadata(_status_thread_metadata, platform=source.platform),
+                    )
+                except Exception as _usage_hard_err:
+                    logger.debug("Usage-budget hard-stop notice send failed: %s", _usage_hard_err)
+                _agent_ref = agent_holder[0]
+                if _agent_ref and hasattr(_agent_ref, "interrupt"):
+                    _agent_ref.interrupt(_INTERRUPT_REASON_USAGE_BUDGET)
+                return True
+            return False
 
         async def _notify_long_running():
             if _NOTIFY_INITIAL_DELAY is None:
@@ -17357,6 +17480,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _action = _a.get("current_tool") or _a.get("last_activity_desc")
                         if _action:
                             _parts.append(str(_action))
+                        _usage = _current_turn_usage(time.time() - _notify_start)
+                        if _usage:
+                            _parts.append(format_compact_usage(_usage, prefix="usage"))
                         if _parts:
                             _status_detail = "; ".join(_parts)
                     except Exception:
@@ -17452,6 +17578,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             _backup_agent.interrupt(_bp_text)
                             _interrupt_detected.set()
+                    if await _maybe_emit_usage_budget_notice(time.time() - _notify_start):
+                        continue
             else:
                 # Poll loop: check the agent's built-in activity tracker
                 # (updated by _touch_activity() on every tool call, API
@@ -17512,6 +17640,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             _backup_agent.interrupt(_bp_text)
                             _interrupt_detected.set()
+                    await _maybe_emit_usage_budget_notice(time.time() - _notify_start)
 
             if _inactivity_timeout:
                 # Build a diagnostic summary from the agent's activity tracker.

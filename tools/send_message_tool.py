@@ -896,11 +896,26 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- QQ Bot: native media attachment via running gateway adapter ---
+    if platform == Platform.QQBOT and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_qqbot_media(
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and qqbot; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -908,7 +923,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and qqbot"
         )
 
     last_result = None
@@ -1644,6 +1659,159 @@ async def _send_qqbot(pconfig, chat_id, message):
             return _error(f"QQBot send failed: channel={resp.status_code} c2c={resp_c2c.status_code} group={resp_group.status_code}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
+
+
+async def _send_qqbot_media(chat_id, message, media_files=None):
+    """Send via QQBot with media attachments using REST API directly.
+
+    Uses the same REST API approach as _send_qqbot, but also uploads
+    media files via chunked upload and sends RichMedia messages.
+    """
+    try:
+        import httpx
+    except ImportError:
+        return _error("QQBot direct send requires httpx. Run: pip install httpx")
+
+    from gateway.config import load_gateway_config, Platform
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.expanduser('~/.hermes/.env'))
+
+    cfg = load_gateway_config()
+    pconfig = cfg.platforms.get(Platform.QQBOT)
+    if not pconfig:
+        return _error("QQBot not configured. Set QQ_APP_ID and QQ_CLIENT_SECRET.")
+
+    extra = pconfig.extra or {}
+    appid = extra.get("app_id") or os.getenv("QQ_APP_ID", "")
+    secret = extra.get("client_secret") or os.getenv("QQ_CLIENT_SECRET", "")
+    if not appid or not secret:
+        return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            # Step 1: Get access token
+            token_resp = await client.post(
+                "https://bots.qq.com/app/getAppAccessToken",
+                json={"appId": str(appid), "clientSecret": str(secret)},
+            )
+            if token_resp.status_code != 200:
+                return _error(f"QQBot token request failed: {token_resp.status_code}")
+            token_data = token_resp.json()
+            access_token = token_data.get("access_token")
+            if not access_token:
+                return _error("QQBot: no access_token in response")
+
+            headers = {
+                "Authorization": f"QQBot {access_token}",
+                "Content-Type": "application/json",
+            }
+
+            from pathlib import Path
+
+            # Determine chat type from chat_id format
+            chat_type = "c2c"
+            endpoint_prefix = f"/v2/users/{chat_id}"
+
+            # Send text first (if any)
+            if message.strip():
+                text_payload = {"content": message[:4000], "msg_type": 0}
+                for url_key, url_tmpl in [
+                    ("c2c", f"/v2/users/{chat_id}/messages"),
+                    ("group", f"/v2/groups/{chat_id}/messages"),
+                ]:
+                    resp = await client.post(
+                        f"https://api.sgroup.qq.com{url_tmpl}",
+                        json=text_payload, headers=headers,
+                    )
+                    if resp.status_code in {200, 201}:
+                        break
+
+            # Send media attachments
+            if media_files:
+                from gateway.platforms.qqbot.chunked_upload import ChunkedUploader
+
+                # Determine chat type from first media send
+                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
+
+                for media_path, is_voice in media_files:
+                    ext = Path(media_path).suffix.lower()
+                    local_path = Path(media_path).expanduser()
+                    if not local_path.exists():
+                        logger.warning("QQBot: media file not found: %s", media_path)
+                        continue
+
+                    # Determine file_type
+                    if ext in _IMAGE_EXTS and not is_voice:
+                        file_type = 1  # MEDIA_TYPE_IMAGE
+                    elif ext in _VIDEO_EXTS:
+                        file_type = 2  # MEDIA_TYPE_VIDEO
+                    elif is_voice:
+                        file_type = 3  # MEDIA_TYPE_VOICE
+                    else:
+                        file_type = 4  # MEDIA_TYPE_FILE
+
+                    # Upload via chunked upload  
+                    async def _api_req(method, path, **kw):
+                        body = kw.get("body", kw.get("json", {}))
+                        resp = await client.post(
+                            f"https://api.sgroup.qq.com{path}",
+                            json=body, headers=headers,
+                        )
+                        return resp.json()
+
+                    uploader = ChunkedUploader(
+                        api_request=_api_req,
+                        http_put=client.put,
+                        log_tag="QQBot",
+                    )
+
+                    complete = await uploader.upload(
+                        chat_type=chat_type,
+                        target_id=chat_id,
+                        file_path=str(local_path),
+                        file_type=file_type,
+                        file_name=local_path.name,
+                    )
+
+                    file_info = complete.get("file_info") or (
+                        complete.get("data", {}) or {}
+                    ).get("file_info")
+                    if not file_info:
+                        logger.warning("QQBot: upload returned no file_info: %s", complete)
+                        continue
+
+                    # Send media message
+                    media_body = {
+                        "msg_type": 7,  # MSG_TYPE_MEDIA
+                        "media": {"file_info": file_info},
+                    }
+                    for url_key, url_tmpl in [
+                        ("c2c", f"/v2/users/{chat_id}/messages"),
+                        ("group", f"/v2/groups/{chat_id}/messages"),
+                    ]:
+                        resp = await client.post(
+                            f"https://api.sgroup.qq.com{url_tmpl}",
+                            json=media_body, headers=headers,
+                        )
+                        if resp.status_code in {200, 201}:
+                            break
+
+            return {"success": True, "platform": "qqbot", "chat_id": chat_id}
+    except Exception as e:
+        return _error(f"QQBot media send failed: {e}")
+
+
+async def _qq_api_call(client, headers, method, path, body):
+    """Helper to call QQ Bot REST API."""
+    if method.upper() == "POST":
+        resp = await client.post(
+            f"https://api.sgroup.qq.com{path}",
+            json=body, headers=headers,
+        )
+        return resp.json()
+    return {}
 
 
 async def _send_yuanbao(chat_id, message, media_files=None):

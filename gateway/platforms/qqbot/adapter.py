@@ -3194,3 +3194,79 @@ class QQAdapter(BasePlatformAdapter):
             return True
         self._seen_messages[msg_id] = now
         return False
+
+
+# -- Active instance registry (class-level singleton) --
+
+_active_instance: Optional["QQAdapter"] = None
+
+
+def get_active_adapter() -> Optional["QQAdapter"]:
+    """Return the currently connected QQAdapter, or None."""
+    global _active_instance
+    return _active_instance
+
+
+def set_active_adapter(adapter: Optional["QQAdapter"]) -> None:
+    """Register (or clear) the active adapter instance."""
+    global _active_instance
+    _active_instance = adapter
+
+
+async def send_qqbot_direct(
+    adapter: "QQAdapter",
+    chat_id: str,
+    message: str,
+    media_files: Optional[List[Tuple[str, bool]]] = None,
+) -> dict:
+    """Send a message + optional media attachments via the running QQAdapter.
+
+    Uses the adapter's WebSocket-connected REST API for text, and its
+    ``send_image_file`` / ``send_document`` methods for media.
+
+    Returns a dict with ``success`` (bool) and optionally ``error`` (str).
+    """
+    from pathlib import Path
+
+    if not media_files:
+        # Plain text — use the adapter's send()
+        result = await adapter.send(chat_id, message)
+        return {
+            "success": result.success if result else False,
+            "error": result.error if result else None,
+        }
+
+    # Send text first, then media attachments
+    if message.strip():
+        await adapter.send(chat_id, message)
+
+    last_error = None
+    _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
+    _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+    for media_path, is_voice in media_files:
+        ext = Path(media_path).suffix.lower()
+        try:
+            if ext in _IMAGE_EXTS and not is_voice:
+                await adapter.send_image_file(
+                    chat_id=chat_id, image_path=media_path,
+                )
+            elif ext in _VIDEO_EXTS:
+                await adapter.send_video(
+                    chat_id=chat_id, video_path=media_path,
+                )
+            elif is_voice:
+                await adapter.send_voice(
+                    chat_id=chat_id, audio_path=media_path,
+                )
+            else:
+                await adapter.send_document(
+                    chat_id=chat_id, file_path=media_path,
+                )
+        except Exception as e:
+            last_error = str(e)
+            logger.warning("[QQBot] Media send failed for %s: %s", media_path, e)
+
+    if last_error:
+        return {"success": False, "error": last_error}
+    return {"success": True}

@@ -19,6 +19,9 @@ from .adapter import (  # noqa: F401
     QQAdapter,
     QQCloseError,
     check_qq_requirements,
+    get_active_adapter,
+    set_active_adapter,
+    send_qqbot_direct,
     _coerce_list,
     _ssrf_redirect_guard,
 )

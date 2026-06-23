@@ -158,6 +158,40 @@ class TestFeishuMessageNormalization(unittest.TestCase):
             normalized.text_content,
             "Build Failed\nService: payments-api\nBranch: main\nView Logs\nRetry\nActions: View Logs, Retry",
         )
+        self.assertIn("raw_payload", normalized.metadata)
+
+    def test_normalize_interactive_card_collects_mail_ids_from_payload(self):
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="interactive",
+            raw_content=json.dumps(
+                {
+                    "card": {
+                        "header": {"title": {"tag": "plain_text", "content": "Mail shared"}},
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "plain_text",
+                                    "content": "mail_message_id: msg_mail_12345678",
+                                },
+                            },
+                            {
+                                "tag": "button",
+                                "url": "https://mail.feishu.cn/thread?thread_id=thr_mail_87654321",
+                            },
+                        ],
+                        "mail_thread_id": "thr_direct_12345678",
+                    }
+                }
+            ),
+        )
+
+        candidates = normalized.metadata["id_candidates"]
+        self.assertIn("msg_mail_12345678", candidates["mail_message_id"])
+        self.assertIn("thr_mail_87654321", candidates["thread_id"])
+        self.assertIn("thr_direct_12345678", candidates["mail_thread_id"])
 
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
@@ -1290,7 +1324,10 @@ class TestAdapterBehavior(unittest.TestCase):
 
         text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
-        self.assertEqual(text, "Approval Request\nRequester: Alice\nApprove\nActions: Approve")
+        self.assertIn("Approval Request\nRequester: Alice\nApprove\nActions: Approve", text)
+        self.assertIn("[Feishu interactive card metadata]", text)
+        self.assertIn("im_message_id: om_interactive", text)
+        self.assertIn("raw_payload_json:", text)
         self.assertEqual(msg_type.value, "text")
         self.assertEqual(media_urls, [])
         self.assertEqual(media_types, [])
@@ -1704,6 +1741,161 @@ class TestAdapterBehavior(unittest.TestCase):
         second = adapter.handle_message.await_args_list[1].args[0]
         self.assertEqual(first.text, "A\nB")
         self.assertEqual(second.text, "C")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_interactive_card_merges_rapid_followup_text(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.session import SessionSource
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+        )
+        card = MessageEvent(
+            text="TALK ACADEMY佣金更改政策\n\n[Feishu interactive card metadata]\nim_message_id: om_card",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="om_card",
+        )
+        card._feishu_interactive_card = True  # type: ignore[attr-defined]
+        followup = MessageEvent(
+            text="录入通知",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="om_followup",
+        )
+
+        async def _run() -> None:
+            await adapter._dispatch_inbound_event(card)
+            self.assertEqual(adapter.handle_message.await_count, 0)
+            self.assertEqual(len(adapter._pending_interactive_cards), 1)
+
+            await adapter._dispatch_inbound_event(followup)
+            self.assertEqual(adapter.handle_message.await_count, 0)
+            self.assertFalse(adapter._pending_interactive_cards)
+
+            key = next(iter(adapter._pending_text_batches))
+            await adapter._flush_text_batch_now(key)
+            await asyncio.sleep(0)
+
+        asyncio.run(_run())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        self.assertEqual(event.message_id, "om_followup")
+        self.assertEqual(event.reply_to_message_id, "om_card")
+        self.assertTrue(event.text.startswith("录入通知\n\nTALK ACADEMY佣金更改政策"))
+        self.assertIn("[Feishu interactive card metadata]", event.text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_interactive_card_merges_reply_followup_text(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.session import SessionSource
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        card_source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+        )
+        reply_source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+            thread_id="om_card",
+        )
+        card = MessageEvent(
+            text="邮件卡片\n\n[Feishu interactive card metadata]\nim_message_id: om_card",
+            message_type=MessageType.TEXT,
+            source=card_source,
+            message_id="om_card",
+        )
+        card._feishu_interactive_card = True  # type: ignore[attr-defined]
+        followup = MessageEvent(
+            text="录入通知",
+            message_type=MessageType.TEXT,
+            source=reply_source,
+            message_id="om_reply",
+            reply_to_message_id="om_card",
+            reply_to_text="邮件卡片",
+        )
+
+        async def _run() -> None:
+            await adapter._dispatch_inbound_event(card)
+            await adapter._dispatch_inbound_event(followup)
+            self.assertFalse(adapter._pending_interactive_cards)
+
+            key = next(iter(adapter._pending_text_batches))
+            await adapter._flush_text_batch_now(key)
+            await asyncio.sleep(0)
+
+        asyncio.run(_run())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        self.assertEqual(event.message_id, "om_reply")
+        self.assertEqual(event.reply_to_message_id, "om_card")
+        self.assertTrue(event.text.startswith("录入通知\n\n邮件卡片"))
+        self.assertIn("[Feishu interactive card metadata]", event.text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_interactive_card_flushes_standalone_after_followup_window(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.session import SessionSource
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+        )
+        card = MessageEvent(
+            text="邮件卡片\n\n[Feishu interactive card metadata]\nim_message_id: om_card",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="om_card",
+        )
+        card._feishu_interactive_card = True  # type: ignore[attr-defined]
+
+        async def _sleep(_delay):
+            return None
+
+        async def _run() -> None:
+            with patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep):
+                await adapter._dispatch_inbound_event(card)
+                pending = list(adapter._pending_interactive_card_tasks.values())
+                self.assertEqual(len(pending), 1)
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        asyncio.run(_run())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        self.assertEqual(event.message_id, "om_card")
+        self.assertEqual(event.text, card.text)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_media_batch_merges_rapid_photo_messages(self):

@@ -196,6 +196,7 @@ _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
 _DEFAULT_TEXT_BATCH_MAX_CHARS = 4000
 _DEFAULT_MEDIA_BATCH_DELAY_SECONDS = 0.8
+_FEISHU_INTERACTIVE_FOLLOWUP_DELAY_SECONDS = 2.5
 _DEFAULT_DEDUP_CACHE_SIZE = 2048
 _DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _DEFAULT_WEBHOOK_PORT = 8765
@@ -241,6 +242,10 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
+_FEISHU_INTERACTIVE_RAW_PAYLOAD_CHAR_LIMIT = 6000
+_FEISHU_INTERACTIVE_ID_VALUE_RE = re.compile(
+    r"(?i)\b((?:mail_)?(?:message|thread)_id)\b[\"'=:\s]+([A-Za-z0-9_+/=.-]{8,})"
+)
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -956,8 +961,109 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
         raw_type=message_type,
         text_content=text_content,
         relation_kind="interactive",
-        metadata={"title": title, "actions": actions},
+        metadata={
+            "title": title,
+            "actions": actions,
+            "id_candidates": _collect_interactive_id_candidates(payload),
+            "raw_payload": _compact_json_for_agent(payload),
+        },
     )
+
+
+def _collect_interactive_id_candidates(payload: Any) -> Dict[str, List[str]]:
+    candidates: Dict[str, List[str]] = {
+        "message_id": [],
+        "thread_id": [],
+        "mail_message_id": [],
+        "mail_thread_id": [],
+    }
+
+    def add(bucket: str, value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        existing = candidates.setdefault(bucket, [])
+        if text not in existing:
+            existing.append(text)
+
+    for node in _walk_nodes(payload):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                normalized_key = str(key or "").strip().lower()
+                if normalized_key in {"message_id", "msg_id"}:
+                    add("message_id", value)
+                elif normalized_key in {"thread_id", "mail_thread_id"}:
+                    add("thread_id", value)
+                    if "mail" in normalized_key:
+                        add("mail_thread_id", value)
+                elif normalized_key in {"mail_message_id", "email_message_id"}:
+                    add("mail_message_id", value)
+                elif isinstance(value, str):
+                    _collect_interactive_id_candidates_from_text(value, candidates)
+        elif isinstance(node, str):
+            _collect_interactive_id_candidates_from_text(node, candidates)
+
+    return {key: values for key, values in candidates.items() if values}
+
+
+def _collect_interactive_id_candidates_from_text(text: str, candidates: Dict[str, List[str]]) -> None:
+    if not text:
+        return
+    for match in _FEISHU_INTERACTIVE_ID_VALUE_RE.finditer(text):
+        key_fragment = match.group(1).lower()
+        value = match.group(2).strip()
+        if not value:
+            continue
+        bucket = "thread_id" if "thread" in key_fragment else "message_id"
+        if "mail" in key_fragment:
+            bucket = f"mail_{bucket}"
+        values = candidates.setdefault(bucket, [])
+        if value not in values:
+            values.append(value)
+
+
+def _compact_json_for_agent(payload: Any) -> str:
+    try:
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        raw = str(payload)
+    if len(raw) <= _FEISHU_INTERACTIVE_RAW_PAYLOAD_CHAR_LIMIT:
+        return raw
+    return f"{raw[:_FEISHU_INTERACTIVE_RAW_PAYLOAD_CHAR_LIMIT]}...[truncated]"
+
+
+def _format_interactive_agent_text(
+    *,
+    visible_text: str,
+    im_message_id: str,
+    raw_content: str,
+    metadata: Dict[str, Any],
+) -> str:
+    lines: List[str] = []
+    visible = visible_text.strip()
+    if visible:
+        lines.append(visible)
+
+    lines.append("")
+    lines.append("[Feishu interactive card metadata]")
+    if im_message_id:
+        lines.append(f"im_message_id: {im_message_id}")
+
+    candidates = metadata.get("id_candidates") if isinstance(metadata, dict) else None
+    if isinstance(candidates, dict) and candidates:
+        for key in sorted(candidates):
+            values = candidates.get(key)
+            if isinstance(values, list) and values:
+                lines.append(f"{key}: {', '.join(str(v) for v in values[:5])}")
+
+    raw_payload = metadata.get("raw_payload") if isinstance(metadata, dict) else ""
+    if not raw_payload and raw_content:
+        raw_payload = _compact_json_for_agent(_load_feishu_payload(raw_content))
+    if raw_payload:
+        lines.append("raw_payload_json:")
+        lines.append(str(raw_payload))
+
+    return "\n".join(lines).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -1464,6 +1570,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self._media_batch_state = FeishuBatchState()
         self._pending_media_batches = self._media_batch_state.events
         self._pending_media_batch_tasks = self._media_batch_state.tasks
+        self._pending_interactive_cards: Dict[str, MessageEvent] = {}
+        self._pending_interactive_card_tasks: Dict[str, asyncio.Task] = {}
+        self._pending_interactive_card_by_message_id: Dict[str, str] = {}
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
@@ -1693,6 +1802,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+        await self._cancel_pending_tasks(self._pending_interactive_card_tasks)
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
@@ -1744,6 +1854,8 @@ class FeishuAdapter(BasePlatformAdapter):
         tasks.clear()
 
     def _reset_batch_buffers(self) -> None:
+        self._pending_interactive_cards.clear()
+        self._pending_interactive_card_by_message_id.clear()
         self._pending_text_batches.clear()
         self._pending_text_batch_counts.clear()
         self._pending_media_batches.clear()
@@ -3105,6 +3217,8 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id: str,
         is_bot: bool = False,
     ) -> None:
+        raw_message_type = str(getattr(message, "message_type", "") or "").strip().lower()
+        is_interactive_card = raw_message_type in {"interactive", "card"}
         text, inbound_type, media_urls, media_types, mentions = await self._extract_message_content(message)
 
         if inbound_type == MessageType.TEXT:
@@ -3174,16 +3288,143 @@ class FeishuAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             timestamp=datetime.now(),
         )
+        if is_interactive_card:
+            normalized._feishu_interactive_card = True  # type: ignore[attr-defined]
         await self._dispatch_inbound_event(normalized)
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
         """Apply Feishu-specific burst protection before entering the base adapter."""
+        if await self._maybe_merge_interactive_followup(event):
+            return
+        if self._is_interactive_card_event(event):
+            await self._enqueue_interactive_card_event(event)
+            return
+        await self._dispatch_inbound_event_now(event)
+
+    async def _dispatch_inbound_event_now(self, event: MessageEvent) -> None:
+        """Dispatch a Feishu event after interactive-card follow-up handling."""
         if event.message_type == MessageType.TEXT and not event.is_command():
             await self._enqueue_text_event(event)
             return
         if self._should_batch_media_event(event):
             await self._enqueue_media_event(event)
             return
+        await self._handle_message_with_guards(event)
+
+    # =========================================================================
+    # Interactive card follow-up coalescing
+    # =========================================================================
+
+    @staticmethod
+    def _is_interactive_card_event(event: MessageEvent) -> bool:
+        return bool(getattr(event, "_feishu_interactive_card", False))
+
+    @staticmethod
+    def _is_interactive_followup_candidate(event: MessageEvent) -> bool:
+        return (
+            event.message_type in {MessageType.TEXT, MessageType.COMMAND}
+            and not FeishuAdapter._is_interactive_card_event(event)
+        )
+
+    @staticmethod
+    def _interactive_followup_key(event: MessageEvent) -> str:
+        source = event.source
+        platform = getattr(getattr(source, "platform", ""), "value", getattr(source, "platform", ""))
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        user_id = str(getattr(source, "user_id_alt", "") or getattr(source, "user_id", "") or "")
+        return f"{platform}:{chat_id}:{user_id}"
+
+    def _pending_interactive_key_for_followup(self, event: MessageEvent) -> Optional[str]:
+        reply_to_message_id = str(event.reply_to_message_id or "")
+        if reply_to_message_id:
+            key = self._pending_interactive_card_by_message_id.get(reply_to_message_id)
+            if key and key in self._pending_interactive_cards:
+                return key
+        key = self._interactive_followup_key(event)
+        return key if key in self._pending_interactive_cards else None
+
+    async def _maybe_merge_interactive_followup(self, event: MessageEvent) -> bool:
+        if not self._is_interactive_followup_candidate(event):
+            return False
+
+        key = self._pending_interactive_key_for_followup(event)
+        if not key:
+            return False
+
+        pending = self._pending_interactive_cards.pop(key, None)
+        if pending is None:
+            return False
+
+        task = self._pending_interactive_card_tasks.pop(key, None)
+        if task and not task.done():
+            task.cancel()
+        if pending.message_id:
+            self._pending_interactive_card_by_message_id.pop(pending.message_id, None)
+
+        event.text = self._merge_interactive_card_followup_text(event.text, pending.text)
+        event.media_urls = [*pending.media_urls, *event.media_urls]
+        event.media_types = [*pending.media_types, *event.media_types]
+        if not event.reply_to_message_id:
+            event.reply_to_message_id = pending.message_id
+            event.reply_to_text = pending.text
+        logger.info(
+            "[Feishu] Merged interactive card %s into follow-up message %s",
+            pending.message_id or "<unknown>",
+            event.message_id or "<unknown>",
+        )
+        await self._dispatch_inbound_event_now(event)
+        return True
+
+    @staticmethod
+    def _merge_interactive_card_followup_text(followup_text: str, card_text: str) -> str:
+        followup = (followup_text or "").strip()
+        card = (card_text or "").strip()
+        if followup and card:
+            return f"{followup}\n\n{card}"
+        return followup or card
+
+    async def _enqueue_interactive_card_event(self, event: MessageEvent) -> None:
+        key = self._interactive_followup_key(event)
+        existing = self._pending_interactive_cards.get(key)
+        if existing is not None:
+            await self._flush_interactive_card_now(key)
+
+        self._pending_interactive_cards[key] = event
+        if event.message_id:
+            self._pending_interactive_card_by_message_id[event.message_id] = key
+        self._schedule_interactive_card_flush(key)
+        logger.info(
+            "[Feishu] Holding interactive card %s for %.1fs to wait for user follow-up",
+            event.message_id or "<unknown>",
+            _FEISHU_INTERACTIVE_FOLLOWUP_DELAY_SECONDS,
+        )
+
+    def _schedule_interactive_card_flush(self, key: str) -> None:
+        self._reschedule_batch_task(
+            self._pending_interactive_card_tasks,
+            key,
+            self._flush_interactive_card,
+        )
+
+    async def _flush_interactive_card(self, key: str) -> None:
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(_FEISHU_INTERACTIVE_FOLLOWUP_DELAY_SECONDS)
+            await self._flush_interactive_card_now(key)
+        finally:
+            if self._pending_interactive_card_tasks.get(key) is current_task:
+                self._pending_interactive_card_tasks.pop(key, None)
+
+    async def _flush_interactive_card_now(self, key: str) -> None:
+        event = self._pending_interactive_cards.pop(key, None)
+        if not event:
+            return
+        if event.message_id:
+            self._pending_interactive_card_by_message_id.pop(event.message_id, None)
+        logger.info(
+            "[Feishu] Flushing standalone interactive card %s after follow-up window",
+            event.message_id or "<unknown>",
+        )
         await self._handle_message_with_guards(event)
 
     # =========================================================================
@@ -3619,6 +3860,13 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
+        if normalized.relation_kind == "interactive":
+            text = _format_interactive_agent_text(
+                visible_text=text,
+                im_message_id=message_id,
+                raw_content=raw_content,
+                metadata=normalized.metadata,
+            )
 
         if (
             inbound_type in {MessageType.DOCUMENT, MessageType.AUDIO, MessageType.VIDEO, MessageType.PHOTO}
@@ -4046,6 +4294,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 msg_type=msg_type,
                 raw_content=raw_content,
                 mentions=parent_mentions,
+                message_id=message_id,
             )
             self._message_text_cache[message_id] = text
             while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
@@ -4061,6 +4310,7 @@ class FeishuAdapter(BasePlatformAdapter):
         msg_type: str,
         raw_content: str,
         mentions: Optional[Sequence[Any]] = None,
+        message_id: str = "",
     ) -> Optional[str]:
         normalized = normalize_feishu_message(
             message_type=msg_type,
@@ -4068,6 +4318,13 @@ class FeishuAdapter(BasePlatformAdapter):
             mentions=mentions,
             bot=self._bot_identity(),
         )
+        if normalized.relation_kind == "interactive":
+            return _format_interactive_agent_text(
+                visible_text=normalized.text_content,
+                im_message_id=message_id,
+                raw_content=raw_content,
+                metadata=normalized.metadata,
+            )
         if normalized.text_content:
             return normalized.text_content
         placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None

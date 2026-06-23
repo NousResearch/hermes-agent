@@ -20,6 +20,7 @@ Pricing shown in UI strings is as-of the initial commit; we accept drift and
 update when it's noticed.
 """
 
+import base64
 import json
 import logging
 import os
@@ -481,12 +482,21 @@ def _get_managed_fal_client(managed_gateway):
         return _managed_fal_client
 
 
-def _submit_fal_request(model: str, arguments: Dict[str, Any]):
-    """Submit a FAL request using direct credentials or the managed queue gateway."""
+_RESOLVE_GATEWAY = object()
+
+
+def _submit_fal_request(model: str, arguments: Dict[str, Any], *, managed_gateway=_RESOLVE_GATEWAY):
+    """Submit a FAL request using direct credentials or the managed queue gateway.
+
+    ``managed_gateway`` lets a caller that already resolved the gateway pass it
+    in, so a single resolution drives both how the request is encoded and where
+    it is sent. Left unset, the gateway is resolved here as before.
+    """
     # Trigger the lazy import on first call. Idempotent.
     _load_fal_client()
     request_headers = {"x-idempotency-key": str(uuid.uuid4())}
-    managed_gateway = _resolve_managed_fal_gateway()
+    if managed_gateway is _RESOLVE_GATEWAY:
+        managed_gateway = _resolve_managed_fal_gateway()
     if managed_gateway is None:
         return fal_client.submit(model, arguments=arguments, headers=request_headers)
 
@@ -666,6 +676,184 @@ def _build_fal_edit_payload(
         k: v for k, v in payload.items()
         if k in edit_supports or k in _required
     }
+
+
+# ---------------------------------------------------------------------------
+# Source-image resolution (for image-to-image / editing)
+# ---------------------------------------------------------------------------
+#
+# Managed-gateway requests inline the source as a base64 ``data:`` URI in the
+# JSON body (it exposes no upload endpoint). Cap the encoded payload so an
+# oversized attachment fails with a clear message instead of an opaque gateway
+# rejection. ~20 MB matches the order of magnitude other inline-base64 paths in
+# the codebase use; it is a standalone limit, not shared state.
+_MAX_INLINE_BASE64_BYTES = 20 * 1024 * 1024
+
+# Enough leading bytes to identify any format ``_sniff_mime_from_bytes`` knows
+# (the longest check inspects offset 12).
+_SNIFF_BYTES = 64
+
+_ACCEPTED_IMAGE_TYPES = "PNG, JPEG, GIF, WEBP, BMP, HEIC"
+
+
+def _require_image_mime(head: bytes, ref: str) -> str:
+    """Return the sniffed image MIME for *head*, or raise if it isn't an image."""
+    from agent.image_routing import _sniff_mime_from_bytes
+
+    mime = _sniff_mime_from_bytes(head)
+    if mime is None:
+        raise ValueError(
+            f"Source image is not a recognised image file: {ref}. "
+            f"image_generate edits accept image sources only "
+            f"({_ACCEPTED_IMAGE_TYPES})."
+        )
+    return mime
+
+
+def _ensure_managed_payload_within_cap(encoded_len: int) -> None:
+    """Reject a managed-mode inline payload past the encoded-size ceiling.
+
+    ``encoded_len`` is the length of the ``data:`` URI actually carried in the
+    gateway request — for a local file this is projected from its size before
+    the bytes are read, so an oversized file is rejected without being buffered.
+    """
+    if encoded_len > _MAX_INLINE_BASE64_BYTES:
+        raise ValueError(
+            f"Source image is too large to send through the managed gateway "
+            f"({encoded_len} bytes encoded, max {_MAX_INLINE_BASE64_BYTES}). "
+            f"Pass a public URL, or set a direct FAL_KEY to upload larger images."
+        )
+
+
+def _projected_data_uri_len(raw_len: int) -> int:
+    """Length a ``data:`` URI would have for *raw_len* source bytes.
+
+    base64 is 4 chars per 3 bytes; ``_SNIFF_BYTES`` of slack covers the
+    ``data:<mime>;base64,`` header.
+    """
+    return 4 * ((raw_len + 2) // 3) + _SNIFF_BYTES
+
+
+def _require_data_uri_is_image(value: str, ref: str) -> None:
+    """Validate a ``data:`` URI declares an image and carries image bytes.
+
+    The declared MIME is checked, and the base64 payload's leading bytes are
+    decoded and sniffed — a label alone isn't trusted, mirroring the magic-byte
+    check applied to local files. Only base64 image data URIs are accepted.
+    """
+    header, _, payload = value.partition(",")
+    if not header.lower().startswith("data:image/"):
+        raise ValueError(
+            f"Source data URI is not an image: {ref}. image_generate edits "
+            f"accept image sources only ({_ACCEPTED_IMAGE_TYPES})."
+        )
+    if ";base64" not in header.lower():
+        raise ValueError(f"Image data URIs must be base64-encoded: {ref}")
+
+    # RFC 2397 permits whitespace (some encoders wrap at 76 cols), so drop
+    # leading whitespace and strip it from a bounded slice before sniffing.
+    compact = "".join(payload.lstrip()[: _SNIFF_BYTES * 2].split())
+    prefix = compact[:_SNIFF_BYTES]
+    prefix = prefix[: len(prefix) - (len(prefix) % 4)]
+    try:
+        head = base64.b64decode(prefix)
+    except Exception as exc:  # noqa: BLE001 — malformed payload, reject clearly
+        raise ValueError(f"Source data URI has malformed base64: {ref}") from exc
+    _require_image_mime(head, ref)
+
+
+def _local_path_from_ref(value: str) -> str:
+    """Map a non-URL reference to a filesystem path, accepting ``file://``.
+
+    Rejects a remote ``file://`` host (``file://server/share/x``) rather than
+    silently dropping it and reading the local ``/share/x``.
+    """
+    if not value.lower().startswith("file://"):
+        return os.path.expanduser(value)
+
+    import urllib.parse
+    import urllib.request
+
+    parsed = urllib.parse.urlparse(value)
+    if parsed.netloc and parsed.netloc.lower() != "localhost":
+        raise ValueError(f"Unsupported remote file:// host: {value}")
+    return urllib.request.url2pathname(parsed.path)
+
+
+def _resolve_fal_source_image(ref: str, *, managed: bool) -> str:
+    """Resolve one source-image reference to a form FAL can ingest.
+
+    FAL edit endpoints fetch ``image_urls`` server-side, so a local path or a
+    ``data:`` URI — which is what a user-attached image looks like once the
+    gateway has downloaded it to disk and surfaced it to the model — can't be
+    passed through verbatim. Each reference is normalised:
+
+      * ``http(s)://`` URIs and image ``data:`` URIs pass through unchanged.
+      * a local file (including ``file://``) is uploaded to FAL storage in
+        direct mode (a hosted URL keeps large images out of the request body);
+        under the managed gateway, which exposes no upload endpoint, it is
+        inlined as a ``data:`` URI carried in the JSON payload. The content
+        type is taken from the file's magic bytes, not its extension.
+
+    ``managed`` selects the backend so the gateway is resolved once per
+    request rather than once per image.
+
+    Raises ``ValueError`` when a reference doesn't resolve to a readable image
+    (a missing path, a non-image file, an oversized managed-mode inline, or a
+    non-image ``data:`` URI), so the caller surfaces an actionable error rather
+    than handing FAL something it will reject. Upload failures propagate for the
+    same reason — a direct-mode user expects their attachment to reach the
+    model, not to be silently swapped for an oversized inline payload.
+    """
+    value = (ref or "").strip()
+    if not value:
+        raise ValueError("Empty source image reference")
+
+    # Only the scheme prefix matters here; avoid lowercasing a large data: URI.
+    low = value[:8].lower()
+    if low.startswith(("http://", "https://")):
+        return value
+    if low.startswith("data:"):
+        _require_data_uri_is_image(value, ref)
+        if managed:
+            _ensure_managed_payload_within_cap(len(value))
+        return value
+
+    path = _local_path_from_ref(value)
+    if not os.path.isfile(path):
+        raise ValueError(
+            f"Source image not found: {ref}. Pass a public URL, a data: URI, "
+            f"or a readable local image file."
+        )
+
+    # Apply the same read denylist the file Read tool uses, so a credential
+    # store or secret-bearing file can't be uploaded to FAL just because its
+    # bytes happen to look like an image.
+    from agent.file_safety import raise_if_read_blocked
+
+    raise_if_read_blocked(path)
+
+    # Direct mode only needs the header to confirm the file is an image — the
+    # uploader streams the rest from disk; managed mode reads the whole file
+    # because it has to inline the bytes.
+    if not managed:
+        with open(path, "rb") as handle:
+            _require_image_mime(handle.read(_SNIFF_BYTES), ref)
+        _load_fal_client()
+        return fal_client.upload_file(path)
+
+    # Reject by size before reading, so an oversized file isn't buffered just
+    # to be turned down.
+    _ensure_managed_payload_within_cap(_projected_data_uri_len(os.path.getsize(path)))
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    mime = _require_image_mime(raw[:_SNIFF_BYTES], ref)
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+def _resolve_fal_source_images(source_images: list, *, managed: bool) -> list:
+    """Resolve every source-image reference for a FAL edit request."""
+    return [_resolve_fal_source_image(ref, managed=managed) for ref in source_images]
 
 
 # ---------------------------------------------------------------------------
@@ -901,7 +1089,10 @@ def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
 
-        if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
+        # Resolve the managed gateway once: it gates both the backend check
+        # below and how source images are encoded (upload vs inline data URI).
+        managed_gateway = _resolve_managed_fal_gateway()
+        if not (fal_key_is_configured() or managed_gateway):
             raise ValueError(_build_no_backend_setup_message())
 
         # If the caller supplied source images but the active model has no
@@ -934,11 +1125,15 @@ def image_generate_tool(
             overrides["output_format"] = output_format
 
         if use_edit:
-            # Clamp reference count to the model's declared cap.
+            # Clamp reference count to the model's declared cap, then resolve
+            # the (kept) sources so we never upload a reference we'll drop.
             max_refs = int(meta.get("max_reference_images") or 1)
             clamped_sources = source_images[:max_refs] if max_refs > 0 else source_images
+            resolved_sources = _resolve_fal_source_images(
+                clamped_sources, managed=managed_gateway is not None,
+            )
             arguments = _build_fal_edit_payload(
-                model_id, prompt, clamped_sources, aspect_lc,
+                model_id, prompt, resolved_sources, aspect_lc,
                 seed=seed, overrides=overrides,
             )
             endpoint = edit_endpoint
@@ -957,7 +1152,9 @@ def image_generate_tool(
                 meta.get("display", model_id), model_id, prompt[:80],
             )
 
-        handler = _submit_fal_request(endpoint, arguments=arguments)
+        handler = _submit_fal_request(
+            endpoint, arguments=arguments, managed_gateway=managed_gateway,
+        )
         result = handler.get()
 
         generation_time = (datetime.datetime.now() - start_time).total_seconds()

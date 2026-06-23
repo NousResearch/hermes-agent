@@ -616,7 +616,44 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return None
 
     custom_providers = get_compatible_custom_providers(config)
+
+    # ── Fallback: inherited providers from parent process ──────────────
+    # Kanban workers run under a profile-scoped HERMES_HOME that may not
+    # define custom_providers.  The dispatcher passes the default
+    # config's custom_providers as HERMES_KANBAN_CUSTOM_PROVIDERS so the
+    # worker can resolve providers defined in the root config.
+    # See: https://github.com/NousResearch/hermes-agent/issues/40645
     if not custom_providers:
+        inherited_raw = os.environ.get("HERMES_KANBAN_CUSTOM_PROVIDERS", "")
+        if inherited_raw:
+            try:
+                import json as _json
+                inherited = _json.loads(inherited_raw)
+                if isinstance(inherited, list):
+                    for entry in inherited:
+                        if not isinstance(entry, dict):
+                            continue
+                        name = str(entry.get("name", "") or "").strip()
+                        provider_key = str(entry.get("provider_key", "") or "").strip()
+                        entry_norm = _normalize_custom_provider_name(name)
+                        if requested_norm in {name.lower(), entry_norm, provider_key.lower(), f"custom:{entry_norm}"}:
+                            base_url = str(entry.get("base_url", "") or "").strip()
+                            if base_url:
+                                result = {"name": name, "base_url": base_url}
+                                api_key = str(entry.get("api_key", "") or "").strip()
+                                key_env = str(entry.get("key_env", "") or "").strip()
+                                if not api_key and key_env:
+                                    api_key = os.getenv(key_env, "").strip()
+                                result["api_key"] = api_key or "no-key-required"
+                                api_mode = _parse_api_mode(entry.get("api_mode"))
+                                if api_mode:
+                                    result["api_mode"] = api_mode
+                                model_name = str(entry.get("model", "") or "").strip()
+                                if model_name:
+                                    result["model"] = model_name
+                                return result
+            except Exception:
+                pass
         return None
 
     for entry in custom_providers:

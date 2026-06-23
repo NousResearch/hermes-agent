@@ -7392,6 +7392,33 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
+    # Inherit custom_providers from the default (root) config so workers
+    # can resolve providers defined there even when the profile config
+    # doesn't include them.  See: https://github.com/NousResearch/hermes-agent/issues/40645
+    try:
+        from hermes_constants import get_default_hermes_root
+        import json as _json
+        _default_config_path = get_default_hermes_root() / "config.yaml"
+        if _default_config_path.exists():
+            import yaml as _yaml
+            with open(_default_config_path, encoding="utf-8") as _f:
+                _default_cfg = _yaml.safe_load(_f) or {}
+            _default_cp = _default_cfg.get("custom_providers")
+            if isinstance(_default_cp, list) and _default_cp:
+                # Also include providers from the newer "providers" dict
+                _all_providers = list(_default_cp)
+                _providers_dict = _default_cfg.get("providers")
+                if isinstance(_providers_dict, dict):
+                    for _pk, _pv in _providers_dict.items():
+                        if isinstance(_pv, dict):
+                            _entry = dict(_pv)
+                            _entry.setdefault("name", _pk)
+                            _entry.setdefault("provider_key", _pk)
+                            _all_providers.append(_entry)
+                env["HERMES_KANBAN_CUSTOM_PROVIDERS"] = _json.dumps(_all_providers)
+    except Exception:
+        pass  # non-fatal: workers fail with a clear error if provider is missing
+
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,

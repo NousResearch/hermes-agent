@@ -2835,3 +2835,50 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+def test_named_custom_provider_env_var_fallback(monkeypatch):
+    """HERMES_KANBAN_CUSTOM_PROVIDERS env var provides inherited providers.
+
+    Kanban workers run under a profile-scoped HERMES_HOME that may not
+    define custom_providers.  The dispatcher passes the default config's
+    custom_providers via this env var so workers can resolve them.
+    See: https://github.com/NousResearch/hermes-agent/issues/40645
+    """
+    import json as _json
+
+    # Clear any existing env var
+    monkeypatch.delenv("HERMES_KANBAN_CUSTOM_PROVIDERS", raising=False)
+
+    # Set up inherited providers via env var
+    inherited = [
+        {
+            "name": "aiapi-completions",
+            "base_url": "https://aiapi.example.com/v1",
+            "api_key": "test-key-123",
+            "model": "gpt-4o",
+        }
+    ]
+    monkeypatch.setenv("HERMES_KANBAN_CUSTOM_PROVIDERS", _json.dumps(inherited))
+
+    # Ensure the profile config doesn't have this provider
+    monkeypatch.setattr(rp, "load_config", lambda: {})
+
+    # Should resolve from env var
+    result = rp._get_named_custom_provider("custom:aiapi-completions")
+    assert result is not None
+    assert result["base_url"] == "https://aiapi.example.com/v1"
+    assert result["api_key"] == "test-key-123"
+    assert result["model"] == "gpt-4o"
+
+    # Should also match by name without custom: prefix
+    result2 = rp._get_named_custom_provider("aiapi-completions")
+    assert result2 is not None
+    assert result2["base_url"] == "https://aiapi.example.com/v1"
+
+    # Should NOT match unrelated providers
+    result3 = rp._get_named_custom_provider("nonexistent-provider")
+    assert result3 is None
+
+    # Cleanup
+    monkeypatch.delenv("HERMES_KANBAN_CUSTOM_PROVIDERS", raising=False)

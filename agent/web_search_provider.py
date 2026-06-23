@@ -113,12 +113,16 @@ class WebSearchProvider(abc.ABC):
         """
         return False
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Execute a web search.
 
         Override when :meth:`supports_search` returns True. The default
         raises NotImplementedError; callers should gate on
         :meth:`supports_search` before calling.
+
+        Accepts ``**kwargs`` for forward-compatible parameter extensions
+        (e.g. ``categories``). Providers that don't support a given
+        parameter simply ignore it.
         """
         raise NotImplementedError(
             f"{self.name} does not support search (override supports_search)"

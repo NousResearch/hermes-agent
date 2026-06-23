@@ -161,7 +161,7 @@ class ParallelWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Execute a Parallel search (sync).
 
         Uses the ``beta.search`` endpoint with the configured mode

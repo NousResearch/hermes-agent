@@ -66,7 +66,7 @@ class TestFirecrawlClientConfig:
     def test_no_config_raises_with_helpful_message(self):
         """Neither key nor URL → ValueError with guidance."""
         with patch("tools.web_tools.Firecrawl"):
-            with patch("tools.web_tools._read_nous_access_token", return_value=None):
+            with patch("tools.web_tools._peek_nous_access_token", return_value=None):
                 from tools.web_tools import _get_firecrawl_client
                 with pytest.raises(ValueError, match="FIRECRAWL_API_KEY"):
                     _get_firecrawl_client()
@@ -158,7 +158,7 @@ class TestFirecrawlClientConfig:
         }, clear=False):
             import tools.web_tools
             importlib.reload(tools.web_tools)
-            assert tools.web_tools._read_nous_access_token() == "nous-token"
+            assert tools.web_tools._peek_nous_access_token() == "nous-token"
 
     def test_check_auxiliary_model_re_resolves_backend_each_call(self):
         """Availability checks should not be pinned to module import state."""
@@ -235,7 +235,7 @@ class TestFirecrawlClientConfig:
         """FIRECRAWL_API_KEY='' with no URL → should raise."""
         with patch.dict(os.environ, {"FIRECRAWL_API_KEY": ""}):
             with patch("tools.web_tools.Firecrawl"):
-                with patch("tools.web_tools._read_nous_access_token", return_value=None):
+                with patch("tools.web_tools._peek_nous_access_token", return_value=None):
                     from tools.web_tools import _get_firecrawl_client
                     with pytest.raises(ValueError):
                         _get_firecrawl_client()
@@ -493,7 +493,7 @@ class TestWebSearchSchema:
             result = entry.handler({"query": "site:example.com docs", "limit": 12})
 
         assert result == '{"success": true}'
-        mock_search.assert_called_once_with("site:example.com docs", limit=12)
+        mock_search.assert_called_once_with("site:example.com docs", limit=12, categories=None)
 
     def test_registered_handler_defaults_limit_to_five(self):
         import tools.web_tools
@@ -503,7 +503,7 @@ class TestWebSearchSchema:
             result = entry.handler({"query": "docs"})
 
         assert result == '{"success": true}'
-        mock_search.assert_called_once_with("docs", limit=5)
+        mock_search.assert_called_once_with("docs", limit=5, categories=None)
 
     def test_web_search_clamps_limit_before_backend_call(self):
         import tools.web_tools
@@ -528,8 +528,115 @@ class TestWebSearchSchema:
              patch.object(tools.web_tools._debug, "save"):
             result = json.loads(tools.web_tools.web_search_tool("docs", limit=500))
 
-        assert result == {"success": True, "data": {"web": []}}
-        fake_search.assert_called_once_with("docs", 100)
+        assert result == {"success": True, "data": {"web": []}, "_metadata": {"backend": "parallel"}}
+        fake_search.assert_called_once_with("docs", 100, categories=None)
+
+    # ── Categories parameter tests ────────────────────────────────────
+
+    def test_schema_exposes_optional_categories(self):
+        """Tool schema should include categories as an optional list parameter."""
+        import tools.web_tools
+
+        props = tools.web_tools.WEB_SEARCH_SCHEMA["parameters"]["properties"]
+        assert "categories" in props
+        cats = props["categories"]
+        assert cats["type"] == "array"
+        assert cats["items"]["type"] == "string"
+        assert cats.get("description", "")
+        assert "categories" not in tools.web_tools.WEB_SEARCH_SCHEMA["parameters"]["required"]
+
+    def test_registered_handler_passes_categories(self):
+        """Registry handler should forward categories from request dict to web_search_tool."""
+        import tools.web_tools
+
+        entry = tools.web_tools.registry.get_entry("web_search")
+        with patch("tools.web_tools.web_search_tool", return_value='{"success": true}') as mock_search:
+            result = entry.handler({"query": "test", "categories": ["news", "science"]})
+
+        assert result == '{"success": true}'
+        mock_search.assert_called_once_with("test", categories=["news", "science"], limit=5)
+
+    def test_registered_handler_defaults_categories_to_none(self):
+        """Omitting categories from request should pass None to web_search_tool."""
+        import tools.web_tools
+
+        entry = tools.web_tools.registry.get_entry("web_search")
+        with patch("tools.web_tools.web_search_tool", return_value='{"success": true}') as mock_search:
+            result = entry.handler({"query": "test"})
+
+        assert result == '{"success": true}'
+        mock_search.assert_called_once_with("test", limit=5, categories=None)
+
+    def test_categories_appended_to_search_params(self):
+        """Provider search() should receive categories when passed to web_search_tool."""
+        import tools.web_tools
+
+        fake_search = MagicMock(return_value={"success": True, "data": {"web": []}})
+        fake_provider = MagicMock(
+            name="SearXNGWebSearchProvider",
+            supports_search=MagicMock(return_value=True),
+        )
+        fake_provider.search = fake_search
+        fake_provider.name = "searxng"
+
+        with patch("tools.web_tools._get_search_backend", return_value="searxng"), \
+             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("stargate", categories=["science"]))
+
+        assert result["_metadata"]["backend"] == "searxng"
+        assert result["_metadata"]["categories_requested"] == ["science"]
+        assert result["_metadata"]["categories_applied"] == ["science"]
+        fake_search.assert_called_once_with("stargate", 5, categories=["science"])
+
+    def test_metadata_omitted_when_no_categories_requested(self):
+        """_metadata should still be present with backend info even without categories."""
+        import tools.web_tools
+
+        fake_search = MagicMock(return_value={"success": True, "data": {"web": []}})
+        fake_provider = MagicMock(
+            name="ParallelWebSearchProvider",
+            supports_search=MagicMock(return_value=True),
+        )
+        fake_provider.search = fake_search
+        fake_provider.name = "parallel"
+
+        with patch("tools.web_tools._get_search_backend", return_value="parallel"), \
+             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("docs"))
+
+        assert "_metadata" in result
+        assert result["_metadata"]["backend"] == "parallel"
+
+    def test_provider_receives_categories_via_kwargs(self):
+        """Non-categories-aware providers should still accept categories through **kwargs."""
+        import tools.web_tools
+
+        fake_search = MagicMock(return_value={"success": True, "data": {"web": []}})
+        fake_provider = MagicMock(
+            name="ParallelWebSearchProvider",
+            supports_search=MagicMock(return_value=True),
+        )
+        fake_provider.search = fake_search
+        fake_provider.name = "parallel"
+
+        with patch("tools.web_tools._get_search_backend", return_value="parallel"), \
+             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool(
+                "docs", categories=["news"])
+            )
+
+        # Parallel doesn't support categories, but shouldn't error — **kwargs catches it
+        assert result["success"] is True
+        fake_search.assert_called_once_with("docs", 5, categories=["news"])
 
 
 class TestWebSearchErrorHandling:
@@ -692,7 +799,7 @@ class TestCheckWebApiKey:
 
     def test_configured_backend_must_match_available_provider(self):
         with patch("tools.web_tools._load_web_config", return_value={"backend": "parallel"}):
-            with patch("tools.web_tools._read_nous_access_token", return_value="nous-token"):
+            with patch("tools.web_tools._peek_nous_access_token", return_value="nous-token"):
                 with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is False

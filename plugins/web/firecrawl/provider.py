@@ -385,12 +385,18 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5, categories: Optional[list[str]] = None, **kwargs: Any) -> Dict[str, Any]:
         """Execute a Firecrawl search.
 
         Sync; matches the legacy ``_get_firecrawl_client().search(...)``
         call directly. Normalizes the response across SDK/direct/gateway
         shapes via :func:`_extract_web_search_results`.
+
+        When ``categories`` is provided, values are split into Firecrawl's
+        two-dimensional API:
+        - ``web``, ``news``, ``images`` → ``sources`` parameter
+        - ``research``, ``github``, ``pdf`` → ``categories`` parameter
+        - Unknown values pass through as ``categories`` for forward compat.
 
         Pre-flight errors (``ValueError`` from configuration check,
         ``ImportError`` from missing SDK) propagate to the dispatcher's
@@ -408,8 +414,24 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         # _get_firecrawl_client() raises ValueError on unconfigured systems —
         # let it propagate so the dispatcher emits the legacy envelope shape.
         client = _get_firecrawl_client()
+
+        # Map categories to Firecrawl's two dimensions
+        firecrawl_sources = {"web", "news", "images"}
+        firecrawl_categories = {"research", "github", "pdf"}
+
+        search_kwargs: Dict[str, Any] = {"query": query, "limit": limit}
+        if categories:
+            sources = [c for c in categories if c in firecrawl_sources]
+            cats = [c for c in categories if c in firecrawl_categories]
+            unknown = [c for c in categories
+                       if c not in firecrawl_sources and c not in firecrawl_categories]
+            if sources:
+                search_kwargs["sources"] = sources
+            if cats or unknown:
+                search_kwargs["categories"] = cats + unknown
+
         try:
-            response = client.search(query=query, limit=limit)
+            response = client.search(**search_kwargs)
             web_results = _extract_web_search_results(response)
             logger.info("Firecrawl: found %d search results", len(web_results))
             return {"success": True, "data": {"web": web_results}}

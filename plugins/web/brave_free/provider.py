@@ -21,13 +21,15 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
 
 _BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+_BRAVE_NEWS_ENDPOINT = "https://api.search.brave.com/res/v1/news/search"
+_BRAVE_IMAGES_ENDPOINT = "https://api.search.brave.com/res/v1/images/search"
 
 
 class BraveFreeWebSearchProvider(WebSearchProvider):
@@ -57,8 +59,12 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return False
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5, categories: Optional[list[str]] = None, **kwargs: Any) -> Dict[str, Any]:
         """Execute a search against the Brave Search API.
+
+        When ``categories`` is provided, the first recognized value is
+        passed as Brave's ``result_filter`` parameter (``web``, ``news``,
+        ``images``, ``video``). Unrecognized values are silently ignored.
 
         Returns ``{"success": True, "data": {"web": [{"title", "url", "description", "position"}]}}``
         on success, or ``{"success": False, "error": str}`` on failure.
@@ -72,10 +78,27 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
         # Brave's `count` is capped at 20.
         count = max(1, min(int(limit), 20))
 
+        brave_categories = {"web", "news", "images", "video"}
+        endpoint = _BRAVE_ENDPOINT
+        params: Dict[str, Any] = {"q": query, "count": count}
+        selected_category = None
+        if categories:
+            for c in categories:
+                if c in brave_categories:
+                    selected_category = c
+                    if c == "images":
+                        endpoint = _BRAVE_IMAGES_ENDPOINT
+                    elif c == "news":
+                        endpoint = _BRAVE_NEWS_ENDPOINT
+                    elif c == "video":
+                        params["result_filter"] = "videos"
+                    # "web" uses default web endpoint with no filter
+                    break
+
         try:
             resp = httpx.get(
-                _BRAVE_ENDPOINT,
-                params={"q": query, "count": count},
+                endpoint,
+                params=params,
                 headers={
                     "X-Subscription-Token": api_key,
                     "Accept": "application/json",
@@ -99,7 +122,20 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
             logger.warning("Brave Search response parse error: %s", exc)
             return {"success": False, "error": "Could not parse Brave Search response as JSON"}
 
-        raw_results = (data.get("web") or {}).get("results", []) or []
+        # Read results from the appropriate container based on category
+        if selected_category in ("images", "news"):
+            # Brave's dedicated news/images endpoints return results at top level
+            raw_results = data.get("results", []) or []
+        else:
+            raw_results = (data.get("web") or {}).get("results", []) or []
+
+        # Fallback: try all containers if nothing found in the primary
+        if not raw_results:
+            for container in ("web", "news", "video"):
+                raw_results = (data.get(container) or {}).get("results", []) or []
+                if raw_results:
+                    break
+
         truncated = raw_results[:limit]
 
         web_results = [

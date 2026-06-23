@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.web_search_provider import WebSearchProvider
 
@@ -146,8 +146,13 @@ class TavilyWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        """Execute a Tavily search."""
+    def search(self, query: str, limit: int = 5, categories: Optional[list[str]] = None, **kwargs: Any) -> Dict[str, Any]:
+        """Execute a Tavily search.
+
+        When ``categories`` is provided, the first recognized value is
+        mapped to Tavily's ``topic`` parameter (``general``, ``news``,
+        ``finance``). Unrecognized values are silently ignored.
+        """
         try:
             from tools.interrupt import is_interrupted
 
@@ -155,15 +160,21 @@ class TavilyWebSearchProvider(WebSearchProvider):
                 return {"success": False, "error": "Interrupted"}
 
             logger.info("Tavily search: '%s' (limit=%d)", query, limit)
-            raw = _tavily_request(
-                "search",
-                {
-                    "query": query,
-                    "max_results": min(limit, 20),
-                    "include_raw_content": False,
-                    "include_images": False,
-                },
-            )
+
+            tavily_topic_map = {"general": "general", "news": "news", "finance": "finance"}
+            params: Dict[str, Any] = {
+                "query": query,
+                "max_results": min(limit, 20),
+                "include_raw_content": False,
+                "include_images": False,
+            }
+            if categories:
+                for c in categories:
+                    if c in tavily_topic_map:
+                        params["topic"] = tavily_topic_map[c]
+                        break
+
+            raw = _tavily_request("search", params)
             return _normalize_tavily_search_results(raw)
         except ValueError as exc:
             return {"success": False, "error": str(exc)}

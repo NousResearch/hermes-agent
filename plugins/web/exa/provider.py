@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.web_search_provider import WebSearchProvider
 
@@ -108,8 +108,12 @@ class ExaWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5, categories: Optional[list[str]] = None, **kwargs: Any) -> Dict[str, Any]:
         """Execute an Exa search.
+
+        When ``categories`` is provided, the first recognized value is
+        passed as Exa's ``category`` parameter (``company``, ``people``,
+        ``news``, ``code``). Unrecognized values are silently ignored.
 
         Returns ``{"success": True, "data": {"web": [{...}, ...]}}`` on
         success, ``{"success": False, "error": str}`` on failure (incl.
@@ -122,11 +126,20 @@ class ExaWebSearchProvider(WebSearchProvider):
                 return {"success": False, "error": "Interrupted"}
 
             logger.info("Exa search: '%s' (limit=%d)", query, limit)
-            response = _get_exa_client().search(
-                query,
-                num_results=limit,
-                contents={"highlights": True},
-            )
+
+            search_kwargs: Dict[str, Any] = {
+                "query": query,
+                "num_results": limit,
+                "contents": {"highlights": True},
+            }
+            exa_categories = {"company", "people", "news", "code"}
+            if categories:
+                for c in categories:
+                    if c in exa_categories:
+                        search_kwargs["category"] = c
+                        break
+
+            response = _get_exa_client().search(**search_kwargs)
 
             web_results = []
             for i, result in enumerate(response.results or []):

@@ -81,6 +81,14 @@ const MAX_KNOWN_SPACES = 2048;
 const MAX_KNOWN_MESSAGES = 1024;
 const MAX_REACTION_HANDLES = 512;
 
+// Upstream liveness probe (see `/probe` handler). A synthetic DM space id +
+// a unique-per-probe bogus message id drive a cheap unary read over the same
+// gRPC channel the inbound stream uses, so we can tell a live channel from a
+// half-open ("zombie") one. `space.get` is purely local in shared/dedicated
+// mode (no chat is created or messaged); only the message read hits the wire.
+const PROBE_SPACE_ID = process.env.PHOTON_PROBE_SPACE_ID || "any;-;+10000000000";
+const PROBE_MSG_PREFIX = "hermes-liveness-probe-";
+
 if (!projectId || !projectSecret || !sharedToken) {
   console.error(
     "photon-sidecar: PHOTON_PROJECT_ID, PHOTON_PROJECT_SECRET and " +
@@ -531,6 +539,40 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.url === "/healthz") {
       return ok(res, {});
+    }
+    if (req.url === "/probe") {
+      // Upstream liveness probe. Drives a cheap unary read over the SAME gRPC
+      // channel the inbound stream uses. On a live channel this round-trips
+      // fast (the server returns "not found" for the synthetic id, which the
+      // SDK surfaces as a thrown error — that's a SUCCESS for our purposes:
+      // the wire is alive). On a half-open zombie socket the call hangs and
+      // the caller's timeout fires, so the adapter can respawn us. It sends
+      // nothing to any user and creates no chat (space.get is local; only the
+      // message read touches the network).
+      if (typeof app?.stop !== "function") {
+        // app failed to construct — definitely not live.
+        return serverError(res);
+      }
+      try {
+        const im = imessage(app);
+        const space = await im.space.get(PROBE_SPACE_ID);
+        const probeId = PROBE_MSG_PREFIX + Date.now() + "-" + Math.random().toString(36).slice(2);
+        try {
+          await space.getMessage(probeId);
+        } catch {
+          // Expected: the synthetic id doesn't exist. Reaching here means the
+          // unary call completed a round-trip — the channel is ALIVE.
+        }
+        return ok(res, { alive: true });
+      } catch (e) {
+        // space.get is local; an error here is unexpected but means we can't
+        // even build a probe — report not-alive so the adapter recycles us.
+        console.error(
+          "photon-sidecar: probe failed: " +
+            (e && e.message ? e.message : String(e))
+        );
+        return serverError(res);
+      }
     }
     if (req.url === "/shutdown") {
       ok(res, {});

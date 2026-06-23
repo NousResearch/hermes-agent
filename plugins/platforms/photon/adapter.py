@@ -119,6 +119,33 @@ def _coerce_port(value: Any, default: int) -> int:
         return default
 
 
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _first_set(*values: Any) -> Any:
+    """Return the first value that is not None.
+
+    Unlike ``a or b``, this preserves an explicit falsy value (e.g. ``0`` or
+    ``""``) so config can intentionally set a zero/empty without it silently
+    falling through to a later source or a default.
+    """
+    for v in values:
+        if v is not None:
+            return v
+    return None
+
+
 def check_requirements() -> bool:
     """Return True when both Python deps and the Node sidecar are available."""
     if not HTTPX_AVAILABLE:
@@ -227,6 +254,42 @@ class PhotonAdapter(BasePlatformAdapter):
         ).lower() not in ("0", "false", "no")
         self._node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node") or "node"
 
+        # Presence watchdog. spectrum-ts only reconnects when its inbound
+        # iterator throws or ends; a half-open ("zombie") gRPC socket makes the
+        # iterator hang forever (no error, no end), so inbound silently dies
+        # until the sidecar is restarted. We periodically drive a cheap upstream
+        # unary read via the sidecar's /probe endpoint; repeated failures mean
+        # the stream is dead -> respawn the sidecar (fresh Spectrum() = fresh
+        # gRPC stream). A successful probe is also a real round-trip that keeps
+        # the channel warm, helping prevent the zombie forming at all.
+        # Behavioural settings -> config.yaml (extra), bridged to env.
+        # Use _first_set (not ``or``) so an explicit 0 is honored — ``0 or X``
+        # would silently fall through to the default and you could never
+        # disable the watchdog with probe_interval_seconds: 0.
+        self._probe_interval = _coerce_float(
+            _first_set(
+                extra.get("probe_interval_seconds"),
+                os.getenv("PHOTON_PROBE_INTERVAL_SECONDS"),
+            ),
+            60.0,
+        )
+        self._probe_timeout = _coerce_float(
+            _first_set(
+                extra.get("probe_timeout_seconds"),
+                os.getenv("PHOTON_PROBE_TIMEOUT_SECONDS"),
+            ),
+            10.0,
+        )
+        self._probe_max_failures = _coerce_int(
+            _first_set(
+                extra.get("probe_max_failures"),
+                os.getenv("PHOTON_PROBE_MAX_FAILURES"),
+            ),
+            3,
+        )
+        # A non-positive interval disables the watchdog entirely (escape hatch).
+        self._probe_enabled = self._probe_interval > 0
+
         # With markdown on, format_message preserves fences and the sidecar's
         # markdown() builder renders them (or degrades them readably).
         self.supports_code_blocks = _markdown_enabled()
@@ -237,6 +300,15 @@ class PhotonAdapter(BasePlatformAdapter):
         self._inbound_task: Optional[asyncio.Task] = None
         self._inbound_running = False
         self._http_client: Optional["httpx.AsyncClient"] = None
+        # Presence-watchdog runtime state.
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._watchdog_running = False
+        self._probe_failures = 0
+        # Monotonic timestamp of the last real upstream activity (inbound
+        # message or a successful probe). The watchdog skips its own probe when
+        # natural traffic already proved the channel live within the interval.
+        self._last_upstream_activity = 0.0
+        self._respawn_lock: Optional[asyncio.Lock] = None
         # Lightweight in-memory dedup. The gRPC stream is at-least-once, so we
         # may see the same messageId more than once (e.g. after a reconnect).
         self._seen_messages: Dict[str, float] = {}
@@ -371,6 +443,16 @@ class PhotonAdapter(BasePlatformAdapter):
             self._inbound_loop()
         )
 
+        # Start the presence watchdog (detects a half-open/zombie gRPC stream
+        # the SDK can't see and respawns the sidecar to recover inbound).
+        self._last_upstream_activity = time.monotonic()
+        if self._probe_enabled and self._autostart_sidecar:
+            self._respawn_lock = asyncio.Lock()
+            self._watchdog_running = True
+            self._watchdog_task = asyncio.get_event_loop().create_task(
+                self._presence_watchdog()
+            )
+
         self._mark_connected()
         logger.info(
             "[photon] connected — sidecar on %s:%d, streaming inbound over gRPC",
@@ -380,6 +462,9 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._inbound_running = False
+        # Stop the watchdog first so it can't trigger a respawn while we tear
+        # the sidecar down.
+        await self._stop_watchdog()
         if self._inbound_task is not None:
             self._inbound_task.cancel()
             try:
@@ -441,6 +526,12 @@ class PhotonAdapter(BasePlatformAdapter):
                 backoff = min(backoff * 2, 30.0)
 
     async def _on_inbound_line(self, line: str) -> None:
+        # Any line on the inbound stream — message OR heartbeat — proves the
+        # upstream gRPC channel is live, so reset the watchdog's failure count
+        # and activity clock. (Heartbeats arrive as blank lines, already
+        # filtered before this method, but a real message is the strongest
+        # liveness signal we have.)
+        self._note_upstream_activity()
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
@@ -913,6 +1004,126 @@ class PhotonAdapter(BasePlatformAdapter):
             if self._sidecar_supervisor_task is not None:
                 self._sidecar_supervisor_task.cancel()
                 self._sidecar_supervisor_task = None
+
+    # -- Presence watchdog -------------------------------------------------
+
+    def _note_upstream_activity(self) -> None:
+        """Record proof the upstream gRPC channel is live, and clear failures.
+
+        Called on every inbound line and after every successful probe.
+        """
+        self._last_upstream_activity = time.monotonic()
+        self._probe_failures = 0
+
+    async def _probe_once(self) -> bool:
+        """Drive one upstream liveness probe via the sidecar's ``/probe``.
+
+        Returns True if the sidecar confirmed a live gRPC round-trip within
+        the timeout, False on timeout/error (a likely zombie stream).
+        """
+        client = self._http_client
+        if client is None:
+            return False
+        url = f"http://{self._sidecar_bind}:{self._sidecar_port}/probe"
+        try:
+            resp = await client.post(
+                url,
+                headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
+                timeout=self._probe_timeout,
+            )
+        except Exception as e:
+            logger.debug("[photon] probe transport error: %s", e)
+            return False
+        return resp.status_code == 200
+
+    async def _respawn_sidecar(self, reason: str) -> None:
+        """Tear down and restart the sidecar to recover a dead gRPC stream.
+
+        A fresh ``Spectrum()`` re-subscribes the inbound stream and
+        re-registers presence with Photon cloud. The inbound loop's existing
+        reconnect logic re-opens the loopback NDJSON stream automatically once
+        the new sidecar's ``/inbound`` is up. Guarded by a lock so overlapping
+        triggers (watchdog + a manual call) can't double-spawn.
+        """
+        lock = self._respawn_lock
+        if lock is None:
+            lock = self._respawn_lock = asyncio.Lock()
+        if lock.locked():
+            logger.info("[photon] respawn already in progress; skipping")
+            return
+        async with lock:
+            logger.warning(
+                "[photon] presence watchdog: %s — respawning sidecar", reason
+            )
+            try:
+                await self._stop_sidecar()
+            except Exception:
+                logger.exception("[photon] error stopping sidecar during respawn")
+            try:
+                await self._start_sidecar()
+            except Exception:
+                logger.exception(
+                    "[photon] failed to respawn sidecar; watchdog will retry"
+                )
+                return
+            # Fresh sidecar -> fresh stream. Reset the activity clock so we give
+            # it a full interval before probing again, and clear failures.
+            self._note_upstream_activity()
+            logger.info("[photon] presence watchdog: sidecar respawned, gRPC stream renewed")
+
+    async def _presence_watchdog(self) -> None:
+        """Periodically confirm the upstream gRPC stream is alive.
+
+        spectrum-ts only recovers when its inbound iterator throws or ends; a
+        half-open ("zombie") socket makes it hang forever with no error, so
+        inbound silently dies. We probe the channel on an interval (skipping
+        the probe when natural inbound traffic already proved liveness within
+        the window). After ``_probe_max_failures`` consecutive failed probes we
+        respawn the sidecar to force a fresh stream.
+        """
+        # Stagger the first probe so a fleet of restarts doesn't synchronize,
+        # and so a freshly-started sidecar isn't probed before it's warm.
+        await asyncio.sleep(self._probe_interval)
+        while self._watchdog_running:
+            try:
+                # Skip our own probe if inbound traffic already proved the
+                # channel live within the last interval (cheaper, and avoids
+                # piling synthetic reads on a busy line).
+                idle = time.monotonic() - self._last_upstream_activity
+                if idle < self._probe_interval:
+                    await asyncio.sleep(self._probe_interval - idle)
+                    continue
+
+                alive = await self._probe_once()
+                if alive:
+                    self._note_upstream_activity()
+                else:
+                    self._probe_failures += 1
+                    logger.warning(
+                        "[photon] presence probe failed (%d/%d)",
+                        self._probe_failures, self._probe_max_failures,
+                    )
+                    if self._probe_failures >= self._probe_max_failures:
+                        await self._respawn_sidecar(
+                            f"{self._probe_failures} consecutive probe failures"
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("[photon] presence watchdog iteration failed")
+            await asyncio.sleep(self._probe_interval)
+
+    async def _stop_watchdog(self) -> None:
+        self._watchdog_running = False
+        if self._watchdog_task is not None:
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+            self._watchdog_task = None
 
     # -- Outbound ----------------------------------------------------------
 

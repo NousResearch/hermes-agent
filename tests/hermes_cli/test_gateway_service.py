@@ -774,14 +774,19 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
-    def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
+    def test_launchd_restart_drains_running_gateway_before_reload(self, tmp_path, monkeypatch):
         calls = []
-        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{gateway_cli.get_launchd_label()}"
 
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
         monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
         monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: True)
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 321,
@@ -797,7 +802,9 @@ class TestLaunchdServiceRecovery:
 
         assert calls == [
             ("term", 321, False),
-            ["launchctl", "kickstart", "-k", target],
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
         ]
 
     def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
@@ -1024,17 +1031,18 @@ class TestLaunchdServiceRecovery:
         assert "Service installed and loaded" not in capsys.readouterr().out
 
     def test_launchd_restart_falls_back_to_detached_on_error_5(self, monkeypatch, capsys):
-        """kickstart -k error 5 (domain unmanageable) should relaunch detached."""
-        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+        """launchctl error 5 (domain unmanageable) should relaunch detached."""
 
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
         monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
         monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: True)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda seconds: None)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
 
         def fake_run(cmd, check=False, **kwargs):
-            if cmd == ["launchctl", "kickstart", "-k", target]:
+            if cmd[:2] == ["launchctl", "bootstrap"]:
                 raise gateway_cli.subprocess.CalledProcessError(
                     5, cmd, stderr="Input/output error"
                 )
@@ -1050,6 +1058,81 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_restart()
 
         assert spawned == [True]
+
+    def test_launchd_restart_retries_bootstrap_error_5_once(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{gateway_cli.get_launchd_label()}"
+
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: True)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+
+        calls = []
+        bootstrap_attempts = {"count": 0}
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["launchctl", "bootstrap"]:
+                bootstrap_attempts["count"] += 1
+                if bootstrap_attempts["count"] == 1:
+                    raise gateway_cli.subprocess.CalledProcessError(
+                        5, cmd, stderr="Input/output error"
+                    )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        assert calls == [
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+        ]
+
+    def test_launchd_restart_rewrites_outdated_plist_before_bootstrap(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{gateway_cli.get_launchd_label()}"
+
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_launchd_plist",
+            lambda: (
+                "<plist>--replace\n<key>HERMES_HOME</key>"
+                "<string>/Users/alice/.hermes</string></plist>"
+            ),
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        assert "--replace" in plist_path.read_text(encoding="utf-8")
+        assert calls == [
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+        ]
 
     def test_launchd_stop_tolerates_domain_unsupported_bootout(self, monkeypatch, capsys):
         """bootout exit 125 (macOS 26) must fall through to PID-based kill, not raise."""
@@ -1609,7 +1692,7 @@ class TestGatewaySystemServiceRouting:
             gateway_cli,
             "launchd_restart",
             lambda: (_ for _ in ()).throw(
-                gateway_cli.subprocess.CalledProcessError(5, ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"])
+                gateway_cli.subprocess.CalledProcessError(5, ["launchctl", "bootstrap", "gui/501", str(plist_path)])
             ),
         )
 
@@ -2179,6 +2262,16 @@ class TestProfileArg:
         assert "<key>LimitLoadToSessionType</key>" in plist
         assert "<string>Aqua</string>" in plist
         assert "<string>Background</string>" in plist
+
+    def test_launchd_plist_raises_file_descriptor_limits(self):
+        """launchd's default open-file limit can be too low for browser-heavy jobs."""
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>SoftResourceLimits</key>" in plist
+        assert "<key>HardResourceLimits</key>" in plist
+        assert "<key>NumberOfFiles</key>" in plist
+        assert "<integer>4096</integer>" in plist
+        assert "<integer>8192</integer>" in plist
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

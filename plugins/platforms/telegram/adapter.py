@@ -84,6 +84,7 @@ from gateway.platforms.base import (
     _TEXT_INJECT_EXTENSIONS,
     utf16_len,
 )
+from gateway.platforms._http_client_limits import platform_httpx_limits
 from plugins.platforms.telegram.telegram_network import (
     TelegramFallbackTransport,
     discover_fallback_ips,
@@ -1381,6 +1382,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None
             is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(exc)
+            is_pool_timeout = self._looks_like_pool_timeout(exc)
+            await self._drain_general_connections_if_pool_exhausted(exc, "rich message send")
             logger.warning(
                 "[%s] sendRichMessage transient failure (no legacy resend): %s",
                 self.name, exc,
@@ -1388,7 +1391,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(
                 success=False,
                 error=str(exc),
-                retryable=(is_connect_timeout or not is_timeout),
+                retryable=(is_connect_timeout or is_pool_timeout or not is_timeout),
             )
 
         message_id = None
@@ -1465,6 +1468,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None
             is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(exc)
+            is_pool_timeout = self._looks_like_pool_timeout(exc)
+            await self._drain_general_connections_if_pool_exhausted(exc, "rich message edit")
             logger.warning(
                 "[%s] rich editMessageText transient failure (no legacy resend): %s",
                 self.name, exc,
@@ -1472,7 +1477,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(
                 success=False,
                 error=str(exc),
-                retryable=(is_connect_timeout or not is_timeout),
+                retryable=(is_connect_timeout or is_pool_timeout or not is_timeout),
             )
         # Telegram won't echo rich content for messages that predate the bot's
         # first rich send, so mirror the fresh-send index here too: a streamed
@@ -1532,54 +1537,73 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, exc,
                 )
             else:
+                await self._drain_general_connections_if_pool_exhausted(exc, "rich draft send")
                 logger.debug(
                     "[%s] sendRichMessageDraft transient failure (%s) — legacy draft this frame",
                     self.name, exc,
                 )
             return False
 
-    async def _drain_polling_connections(self) -> None:
-        """Reset the httpx connection pool used for getUpdates polling.
+    async def _drain_request_connections(self, index: int, label: str) -> None:
+        """Reset one PTB httpx request pool by index.
 
         Network errors (especially through proxies like sing-box) can leave
         httpx connections in a half-closed state that still occupy pool slots.
         After enough reconnect cycles the pool fills up entirely, causing
         ``Pool timeout: All connections in the connection pool are occupied.``
 
-        We reset ONLY ``_request[0]`` (the getUpdates request) — the general
-        request (``_request[1]``) is left untouched so concurrent
-        ``send_message`` / ``edit_message`` calls are never interrupted.
-
         Implementation note: accesses ``Bot._request[0]`` which is the
         get-updates ``BaseRequest`` in the PTB 22.x internal tuple
         ``(get_updates_request, general_request)``.  There is no public
-        accessor for the polling request; review if upgrading to PTB 23+.
+        accessor for these request pools; review if upgrading to PTB 23+.
         """
         if not (self._app and self._app.bot):
             return
         try:
-            # PTB 22.x: _request is a (get_updates, general) tuple;
-            # no public accessor exists for the polling request.
-            polling_req = self._app.bot._request[0]  # noqa: SLF001
+            # PTB 22.x: _request is a (get_updates, general) tuple.
+            request = self._app.bot._request[index]  # noqa: SLF001
         except Exception:
             return
         try:
-            await polling_req.shutdown()
+            await request.shutdown()
         except Exception:
             logger.debug(
-                "[%s] Polling request shutdown failed (non-fatal)",
-                self.name, exc_info=True,
+                "[%s] %s request shutdown failed (non-fatal)",
+                self.name, label,
+                exc_info=True,
             )
         try:
-            await polling_req.initialize()
-            logger.debug(
-                "[%s] Polling request pool drained before reconnect", self.name
-            )
+            await request.initialize()
+            logger.debug("[%s] %s request pool drained", self.name, label)
         except Exception:
             logger.debug(
-                "[%s] Polling request re-initialize failed (non-fatal)",
-                self.name, exc_info=True,
+                "[%s] %s request re-initialize failed (non-fatal)",
+                self.name, label,
+                exc_info=True,
             )
+
+    async def _drain_polling_connections(self) -> None:
+        """Reset the httpx connection pool used for getUpdates polling."""
+        await self._drain_request_connections(0, "Polling")
+
+    async def _drain_general_connections(self) -> None:
+        """Reset the httpx connection pool used for Bot API sends."""
+        await self._drain_request_connections(1, "General")
+
+    async def _drain_general_connections_if_pool_exhausted(
+        self,
+        error: Exception,
+        context: str,
+    ) -> None:
+        """Reset the general Bot API pool after PTB reports pool exhaustion."""
+        if not self._looks_like_pool_timeout(error):
+            return
+        logger.warning(
+            "[%s] Telegram general request pool exhausted during %s; draining stale connections",
+            self.name,
+            context,
+        )
+        await self._drain_general_connections()
 
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
@@ -1639,6 +1663,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Telegram polling resumed after network error (attempt %d)",
                 self.name, attempt,
             )
+            await self._drain_general_connections()
             self._polling_network_error_count = 0
             # start_polling() returning is necessary but not sufficient:
             # PTB's Updater can be left in a state where `running` is True
@@ -2197,12 +2222,28 @@ class TelegramAdapter(BasePlatformAdapter):
                     return default
 
             request_kwargs = {
-                "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
+                "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 64),
                 "pool_timeout": _env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
                 "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
+            connection_pool_size = request_kwargs["connection_pool_size"]
+            max_keepalive_connections = min(
+                _env_int("HERMES_TELEGRAM_HTTP_MAX_KEEPALIVE", 0),
+                connection_pool_size,
+            )
+            httpx_kwargs = {}
+            httpx_limits = platform_httpx_limits()
+            if httpx_limits is not None:
+                platform_keepalive = getattr(httpx_limits, "max_keepalive_connections", None)
+                if platform_keepalive is not None:
+                    max_keepalive_connections = min(max_keepalive_connections, platform_keepalive)
+                httpx_kwargs["limits"] = type(httpx_limits)(
+                    max_connections=connection_pool_size,
+                    max_keepalive_connections=max_keepalive_connections,
+                    keepalive_expiry=getattr(httpx_limits, "keepalive_expiry", None),
+                )
 
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
             fallback_ips = self._fallback_ips()
@@ -2226,21 +2267,38 @@ class TelegramAdapter(BasePlatformAdapter):
                 # polling reconnect + bot API bootstrap/delete_webhook calls.
                 request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                    httpx_kwargs={
+                        **httpx_kwargs,
+                        "transport": TelegramFallbackTransport(fallback_ips),
+                    },
                 )
                 get_updates_request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                    httpx_kwargs={
+                        **httpx_kwargs,
+                        "transport": TelegramFallbackTransport(fallback_ips),
+                    },
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                request = HTTPXRequest(
+                    **request_kwargs,
+                    proxy=proxy_url,
+                    httpx_kwargs=httpx_kwargs,
+                )
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs,
+                    proxy=proxy_url,
+                    httpx_kwargs=httpx_kwargs,
+                )
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-                request = HTTPXRequest(**request_kwargs)
-                get_updates_request = HTTPXRequest(**request_kwargs)
+                request = HTTPXRequest(**request_kwargs, httpx_kwargs=httpx_kwargs)
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs,
+                    httpx_kwargs=httpx_kwargs,
+                )
 
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
@@ -2430,6 +2488,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, topics_err, exc_info=True,
                 )
 
+            await self._drain_general_connections()
             return True
             
         except Exception as e:
@@ -2758,6 +2817,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                             # Other BadRequest errors are permanent — don't retry
                             raise
+                        await self._drain_general_connections()
                         # TimedOut is also a subclass of NetworkError. A
                         # generic timeout may have reached Telegram, so don't
                         # retry; a wrapped ConnectTimeout means no connection
@@ -2812,6 +2872,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception:
                     pass  # Typing failures are non-fatal
 
+            await self._drain_general_connections()
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
@@ -2935,6 +2996,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=content,
                 )
+                await self._drain_general_connections()
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)
@@ -2949,6 +3011,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
+                await self._drain_general_connections_if_pool_exhausted(fmt_err, "formatted message edit")
                 # Fallback: strip MarkdownV2 escapes and retry as clean plain text
                 logger.warning(
                     "[%s] MarkdownV2 edit failed, falling back to plain text: %s",
@@ -2961,6 +3024,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=_plain,
                 )
+            await self._drain_general_connections()
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -2997,8 +3061,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         message_id=int(message_id),
                         text=content,
                     )
+                    await self._drain_general_connections()
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
+                    await self._drain_general_connections_if_pool_exhausted(retry_err, "edit flood-control retry")
                     logger.error(
                         "[%s] Edit retry failed after flood wait: %s",
                         self.name, retry_err,
@@ -3021,8 +3087,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 "temporarily unavailable",
                 "temporary failure",
                 "httpx",
+                "pool timeout",
+                "connection pool",
             )
-            _is_transient = any(m in err_str for m in _transient_markers)
+            is_pool_timeout = self._looks_like_pool_timeout(e)
+            if is_pool_timeout:
+                await self._drain_general_connections_if_pool_exhausted(e, "message edit")
+            _is_transient = is_pool_timeout or any(m in err_str for m in _transient_markers)
             if _is_transient:
                 logger.warning(
                     "[%s] Transient network error editing message %s (will retry): %s",
@@ -3089,6 +3160,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
+                        await self._drain_general_connections_if_pool_exhausted(
+                            fmt_err,
+                            "overflow formatted edit",
+                        )
                         logger.warning(
                             "[%s] Overflow split: MarkdownV2 first-chunk edit "
                             "failed, falling back to plain text: %s",
@@ -3116,7 +3191,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Overflow split: first-chunk edit failed: %s",
                     self.name, e, exc_info=True,
                 )
-                return SendResult(success=False, error=str(e))
+                is_pool_timeout = self._looks_like_pool_timeout(e)
+                if is_pool_timeout:
+                    await self._drain_general_connections_if_pool_exhausted(e, "overflow first-chunk edit")
+                return SendResult(success=False, error=str(e), retryable=is_pool_timeout)
 
         # Step 2 — send each remaining chunk as a continuation message,
         # threaded as a reply to the previous so the user sees them as a
@@ -3160,6 +3238,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     break
                 except Exception as send_err:
+                    await self._drain_general_connections_if_pool_exhausted(
+                        send_err,
+                        "overflow continuation send",
+                    )
                     if "reply message not found" in str(send_err).lower():
                         # Drop the reply anchor and try again.  Private DM
                         # topic fallback needs the anchor and topic id together;
@@ -3181,6 +3263,10 @@ class TelegramAdapter(BasePlatformAdapter):
                             )
                             break
                         except Exception as _retry_err:
+                            await self._drain_general_connections_if_pool_exhausted(
+                                _retry_err,
+                                "overflow continuation no-reply retry",
+                            )
                             logger.warning(
                                 "[%s] Overflow continuation no-reply retry failed: %s",
                                 self.name, _retry_err,
@@ -3236,6 +3322,7 @@ class TelegramAdapter(BasePlatformAdapter):
             "[%s] Overflow split delivered %d chunks; last_id=%s",
             self.name, 1 + len(continuation_ids), last_id,
         )
+        await self._drain_general_connections()
         return SendResult(
             success=True,
             message_id=last_id,
@@ -4710,6 +4797,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            await self._drain_general_connections_if_pool_exhausted(e, "voice/audio send")
             logger.error(
                 "[%s] Failed to send Telegram voice/audio, falling back to base adapter: %s",
                 self.name,
@@ -4842,6 +4930,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, chunk_idx + 1, len(chunks), e,
                     exc_info=True,
                 )
+                await self._drain_general_connections_if_pool_exhausted(e, "media group send")
                 # Fallback: send each photo in this chunk individually
                 await super().send_multiple_images(
                     chat_id, chunk, metadata, human_delay=human_delay,
@@ -4924,6 +5013,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     e,
                     exc_info=True,
                 )
+                await self._drain_general_connections_if_pool_exhausted(e, "local image photo send")
             # Fallback to sending as document (file) — no dimension limit,
             # only 50MB size limit. If even that fails, fall back to the
             # base adapter's text-only "Image: /path" rendering.
@@ -4944,6 +5034,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     doc_err,
                     exc_info=True,
                 )
+                await self._drain_general_connections_if_pool_exhausted(doc_err, "local image document fallback")
                 return await super().send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata)
 
     async def send_document(
@@ -4994,6 +5085,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            await self._drain_general_connections_if_pool_exhausted(e, "document send")
             logger.warning("[%s] Failed to send document: %s", self.name, e, exc_info=True)
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
@@ -5041,6 +5133,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            await self._drain_general_connections_if_pool_exhausted(e, "video send")
             logger.warning("[%s] Failed to send video: %s", self.name, e, exc_info=True)
             return await super().send_video(chat_id, video_path, caption, reply_to, metadata=metadata)
 
@@ -5090,7 +5183,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_id,
                 "URL photo",
             )
-            return SendResult(success=True, message_id=str(msg.message_id))
+            result = SendResult(success=True, message_id=str(msg.message_id))
+            await self._drain_general_connections()
+            return result
         except Exception as e:
             logger.warning(
                 "[%s] URL-based send_photo failed, trying file upload: %s",
@@ -5098,6 +5193,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
+            await self._drain_general_connections_if_pool_exhausted(e, "URL photo send")
             # Fallback: download and upload as file (supports up to 10MB)
             try:
                 import httpx
@@ -5127,7 +5223,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_to_id,
                     "uploaded photo",
                 )
-                return SendResult(success=True, message_id=str(msg.message_id))
+                result = SendResult(success=True, message_id=str(msg.message_id))
+                await self._drain_general_connections()
+                return result
             except Exception as e2:
                 logger.error(
                     "[%s] File upload send_photo also failed: %s",
@@ -5135,6 +5233,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     e2,
                     exc_info=True,
                 )
+                await self._drain_general_connections_if_pool_exhausted(e2, "uploaded photo send")
                 # Final fallback: send URL as text
                 return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
 
@@ -5174,7 +5273,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_id,
                 "animation",
             )
-            return SendResult(success=True, message_id=str(msg.message_id))
+            result = SendResult(success=True, message_id=str(msg.message_id))
+            await self._drain_general_connections()
+            return result
         except Exception as e:
             logger.error(
                 "[%s] Failed to send Telegram animation, falling back to photo: %s",
@@ -5182,6 +5283,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
+            await self._drain_general_connections_if_pool_exhausted(e, "animation send")
             # Fallback: try as a regular photo
             return await self.send_image(chat_id, animation_url, caption, reply_to, metadata=metadata)
 
@@ -5199,7 +5301,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     action="typing",
                     message_thread_id=message_thread_id,
                 )
+                await self._drain_general_connections()
             except Exception as e:
+                await self._drain_general_connections_if_pool_exhausted(e, "typing indicator")
                 # For DM topic lanes, Telegram may reject message_thread_id.
                 # Fall back to sending typing without thread_id so the typing
                 # indicator at least appears in the main DM view.
@@ -5209,6 +5313,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             chat_id=int(chat_id),
                             action="typing",
                         )
+                        await self._drain_general_connections()
                         return
                     except Exception:
                         pass
@@ -5252,6 +5357,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
+            await self._drain_general_connections_if_pool_exhausted(e, "get chat info")
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
 
     def format_message(self, content: str) -> str:
@@ -5912,6 +6018,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
             cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
         except Exception as exc:
+            await self._drain_general_connections_if_pool_exhausted(exc, "observed group media cache")
             logger.warning("[Telegram] Failed to cache observed group media: %s", exc, exc_info=True)
             return
 
@@ -5960,6 +6067,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
             cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
         except Exception as exc:
+            await self._drain_general_connections_if_pool_exhausted(exc, "replied-to media cache")
             logger.warning("[Telegram] Failed to cache replied-to media: %s", exc, exc_info=True)
             return
 
@@ -6438,6 +6546,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
             except Exception as e:
+                await self._drain_general_connections_if_pool_exhausted(e, "photo cache")
                 logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
 
         # Download voice/audio messages to cache for STT transcription
@@ -6456,6 +6565,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_types = ["audio/ogg"]
                 logger.info("[Telegram] Cached user voice at %s", cached_path)
             except Exception as e:
+                await self._drain_general_connections_if_pool_exhausted(e, "voice cache")
                 logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
         elif msg.audio:
             try:
@@ -6472,6 +6582,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_types = ["audio/mp3"]
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
             except Exception as e:
+                await self._drain_general_connections_if_pool_exhausted(e, "audio cache")
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
 
         elif msg.video:
@@ -6489,6 +6600,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
                 logger.info("[Telegram] Cached user video at %s", cached_path)
             except Exception as e:
+                await self._drain_general_connections_if_pool_exhausted(e, "video cache")
                 logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
 
         # Download document files to cache for agent processing
@@ -6621,6 +6733,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         pass
 
             except Exception as e:
+                await self._drain_general_connections_if_pool_exhausted(e, "document cache")
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
 
         media_group_id = getattr(msg, "media_group_id", None)
@@ -6725,6 +6838,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     emoji, set_name,
                 )
         except Exception as e:
+            await self._drain_general_connections_if_pool_exhausted(e, "sticker cache")
             logger.warning("[Telegram] Sticker analysis error: %s", e, exc_info=True)
             event.text = build_sticker_injection(
                 f"a sticker with emoji {emoji}" if emoji else "a sticker",

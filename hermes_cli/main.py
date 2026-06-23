@@ -7127,6 +7127,79 @@ def _format_concurrent_instances_message(
     return "\n".join(lines)
 
 
+def _hermes_exe_is_locked(scripts_dir: Path) -> bool:
+    """Authoritatively test whether ``hermes.exe`` can be replaced (Windows).
+
+    The process-name guard (``_detect_concurrent_hermes_instances``) only
+    catches another running ``hermes.exe``. It misses the common headless
+    holder: a gateway launched as ``pythonw.exe -m hermes_cli.main gateway
+    run`` (Scheduled Task / Startup item / detached child), which loads the
+    package straight from the venv and keeps the shim open but runs under
+    ``pythonw.exe``. ``_pause_windows_gateways_for_update`` tries to stop
+    those, but its force-kill can silently fail (e.g. a session-0 Scheduled
+    Task a non-elevated updater may not terminate).
+
+    Instead of trusting a name match, probe the file itself: rename the live
+    shim in place to a sibling ``.probe`` name and immediately rename it
+    back. Windows lets the *launching* process rename its own running exe,
+    but blocks the rename when *another* process opened the image without
+    ``FILE_SHARE_DELETE`` — exactly the holder set we care about, regardless
+    of process name.
+
+    Returns ``True`` if the shim is held by a foreign process (the rename was
+    refused). Returns ``False`` when the round-trip succeeds, when there is no
+    shim, or off-Windows. Never raises. On the (very unlikely) failure to
+    rename the probe back, defer the put-back to reboot via
+    ``_schedule_replace_on_reboot`` so PATH is never left without a shim.
+    """
+    if not _is_windows():
+        return False
+    shim = scripts_dir / "hermes.exe"
+    if not shim.exists():
+        return False
+    probe = scripts_dir / "hermes.exe.probe"
+    try:
+        shim.rename(probe)
+    except OSError:
+        # Another process holds the image open without FILE_SHARE_DELETE.
+        return True
+    try:
+        probe.rename(shim)
+    except OSError:
+        # Round-trip rename-back failed: keep PATH whole by deferring the
+        # put-back to reboot rather than leaving only a .probe file.
+        _schedule_replace_on_reboot(probe, shim)
+    return False
+
+
+def _format_venv_locked_message(
+    scripts_dir: Path, gateway_pids: list[int]
+) -> str:
+    """Explain that the venv shim is still locked and point at the finisher."""
+    shim = scripts_dir / "hermes.exe"
+    lines = [f"✗ The Hermes venv is still locked — cannot replace {shim}."]
+    lines.append("")
+    lines.append("  Something still has the shim open without FILE_SHARE_DELETE.")
+    lines.append("  The most common cause is a gateway launched as")
+    lines.append("  `pythonw.exe -m hermes_cli.main gateway run` (Scheduled")
+    lines.append("  Task / Startup item / detached child) that the updater")
+    lines.append("  could not stop — a name-based check never sees it.")
+    lines.append("")
+    if gateway_pids:
+        lines.append("  Holding gateway PID(s):")
+        for pid in gateway_pids:
+            lines.append(f"      PID {pid}  pythonw.exe")
+        lines.append("")
+    lines.append("  Aborted before touching git or the venv — your checkout and")
+    lines.append("  install are untouched. Stop the gateway, then re-run:")
+    lines.append("      scripts\\finish-hermes-update.cmd")
+    lines.append("  (it runs `hermes gateway stop` then `hermes update`).")
+    lines.append("")
+    lines.append("  Override with `hermes update --force` if you've already")
+    lines.append("  confirmed nothing will write to the venv.")
+    return "\n".join(lines)
+
+
 def _quarantine_running_hermes_exe(
     scripts_dir: Path, *, max_attempts: int = 4
 ) -> list[tuple[Path, Path]]:
@@ -7324,6 +7397,13 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
         return
     try:
         for stale in scripts_dir.glob("*.exe.old.*"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass  # still locked or in use — try again next run
+        # Also sweep any orphaned writability-probe leftover from a crashed
+        # `_hermes_exe_is_locked` (e.g. a hard kill mid-probe).
+        for stale in scripts_dir.glob("*.exe.probe"):
             try:
                 stale.unlink()
             except OSError:
@@ -8860,6 +8940,28 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _resume_windows_gateways_after_update,
             _windows_gateway_resume,
         )
+
+    # Authoritative venv-lock gate (Windows). The name-based guard above only
+    # catches a running hermes.exe; a gateway under pythonw.exe holds the shim
+    # but is invisible to it, and the gateway-pause may silently fail to stop a
+    # session-0 Scheduled Task. Probe the file itself AFTER the pause (so it
+    # gets first crack at freeing the shim) and BEFORE any git/venv mutation —
+    # if still locked, resume gateways, point at the finisher, and abort with a
+    # pristine checkout/venv. See issue #26670.
+    if _is_windows() and not getattr(args, "force", False):
+        scripts_dir = _venv_scripts_dir()
+        if scripts_dir is not None and _hermes_exe_is_locked(scripts_dir):
+            _resume_windows_gateways_after_update(_windows_gateway_resume)
+            try:
+                from hermes_cli.gateway import find_gateway_pids
+
+                gateway_pids = list(
+                    dict.fromkeys(find_gateway_pids(all_profiles=True))
+                )
+            except Exception:
+                gateway_pids = []
+            print(_format_venv_locked_message(scripts_dir, gateway_pids))
+            sys.exit(2)
 
     # Try git-based update first, fall back to ZIP download on Windows
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)

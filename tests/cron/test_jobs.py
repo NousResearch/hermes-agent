@@ -898,6 +898,232 @@ class TestGetDueJobs:
             recovered_dt = recovered_dt.replace(tzinfo=timezone.utc)
         assert recovered_dt > now
 
+    def test_malformed_active_job_does_not_block_other_due_jobs(self, tmp_cron_dir, monkeypatch):
+        """A single corrupted job record must not prevent unrelated due jobs from firing."""
+        now = datetime(2026, 3, 18, 10, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs([
+            {
+                "id": "bad-next-run",
+                "name": "Corrupted job",
+                "prompt": "...",
+                "schedule": {"kind": "once", "run_at": "not-a-date"},
+                "schedule_display": "broken",
+                "repeat": {"times": 1, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-03-18T09:00:00+00:00",
+                "next_run_at": "not-a-date",
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            },
+            {
+                "id": "valid-due",
+                "name": "Valid due job",
+                "prompt": "...",
+                "schedule": {
+                    "kind": "once",
+                    "run_at": "2026-03-18T09:59:00+00:00",
+                    "display": "once at 2026-03-18 09:59",
+                },
+                "schedule_display": "once at 2026-03-18 09:59",
+                "repeat": {"times": 1, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-03-18T09:00:00+00:00",
+                "next_run_at": "2026-03-18T09:59:00+00:00",
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            },
+        ])
+
+        assert [job["id"] for job in get_due_jobs()] == ["valid-due"]
+
+    def test_malformed_recurring_schedule_does_not_block_other_due_jobs(self, tmp_cron_dir, monkeypatch):
+        """A recurring job with a corrupt cron expr must not abort the whole scan.
+
+        Regression for the stale-recurring recompute path: ``compute_next_run``
+        there ran outside the per-job guard, so a bad cron expr raised straight
+        out of ``get_due_jobs`` and starved every other job — the real shape of
+        #51021's "ticker alive, nothing ever fires, no error logged" symptom.
+        The corrupt job is quarantined (state=error) and the valid job fires.
+        """
+        now = datetime(2026, 3, 18, 10, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs([
+            {
+                "id": "bad-cron-expr",
+                "name": "Corrupt recurring",
+                "prompt": "...",
+                # next_run_at parses fine but is stale (> grace); the cron expr
+                # is garbage, so the stale-recompute raises CroniterBadCronError.
+                "schedule": {"kind": "cron", "expr": "not a cron expr"},
+                "schedule_display": "broken",
+                "repeat": {"times": 0, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-03-18T08:00:00+00:00",
+                "next_run_at": "2026-03-18T08:00:00+00:00",
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            },
+            {
+                "id": "valid-due",
+                "name": "Valid due job",
+                "prompt": "...",
+                "schedule": {
+                    "kind": "once",
+                    "run_at": "2026-03-18T09:59:00+00:00",
+                    "display": "once at 2026-03-18 09:59",
+                },
+                "schedule_display": "once at 2026-03-18 09:59",
+                "repeat": {"times": 1, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-03-18T09:00:00+00:00",
+                "next_run_at": "2026-03-18T09:59:00+00:00",
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            },
+        ])
+
+        assert [job["id"] for job in get_due_jobs()] == ["valid-due"]
+
+        bad = next(j for j in load_jobs() if j["id"] == "bad-cron-expr")
+        assert bad["state"] == "error"
+        assert bad["last_error"]
+
+    def test_corrupt_job_quarantine_is_idempotent(self, tmp_cron_dir, monkeypatch):
+        """A permanently-corrupt job must not rewrite jobs.json on every tick."""
+        import cron.jobs as jobs_mod
+
+        now = datetime(2026, 3, 18, 10, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs([
+            {
+                "id": "bad-cron-expr",
+                "name": "Corrupt recurring",
+                "prompt": "...",
+                "schedule": {"kind": "cron", "expr": "not a cron expr"},
+                "schedule_display": "broken",
+                "repeat": {"times": 0, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-03-18T08:00:00+00:00",
+                "next_run_at": "2026-03-18T08:00:00+00:00",
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            },
+        ])
+
+        # First scan quarantines the job and persists that once.
+        get_due_jobs()
+
+        saves = []
+        real_save = jobs_mod.save_jobs
+        monkeypatch.setattr(
+            jobs_mod, "save_jobs",
+            lambda data, *a, **k: (saves.append(1), real_save(data, *a, **k))[1],
+        )
+
+        # Already quarantined with the same error → no further writes.
+        get_due_jobs()
+        assert saves == []
+
+    def test_malformed_next_run_at_recurring_job_self_heals(self, tmp_cron_dir, monkeypatch):
+        """A recurring job with a corrupt (non-empty) next_run_at recovers by
+        recomputing from its schedule rather than being quarantined — preserves
+        the self-heal behavior of #50377 while the broader guard covers the rest.
+        """
+        now = datetime(2026, 3, 18, 10, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs([{
+            "id": "recurring-bad-ts",
+            "name": "Recurring corrupt ts",
+            "prompt": "...",
+            "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+            "schedule_display": "every 1h",
+            "repeat": {"times": None, "completed": 0},
+            "enabled": True,
+            "state": "scheduled",
+            "paused_at": None,
+            "paused_reason": None,
+            "created_at": "2026-03-18T09:00:00+00:00",
+            "next_run_at": "soon",  # non-empty, unparseable
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "deliver": "local",
+            "origin": None,
+        }])
+
+        assert get_due_jobs() == []  # must not raise; recovered run is in the future
+
+        job = get_job("recurring-bad-ts")
+        assert job["state"] != "error"          # recovered, not quarantined
+        assert job["next_run_at"] not in (None, "soon")
+        from cron.jobs import _ensure_aware
+        assert _ensure_aware(datetime.fromisoformat(job["next_run_at"])) > now
+
+    def test_malformed_next_run_at_with_corrupt_schedule_is_quarantined(self, tmp_cron_dir, monkeypatch):
+        """Corrupt next_run_at AND a corrupt cron expr: recovery itself raises,
+        so the scan-level guard quarantines the job instead of letting the
+        exception escape the tick (the case #50377's unguarded recovery misses).
+        """
+        now = datetime(2026, 3, 18, 10, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs([{
+            "id": "double-bad",
+            "name": "Corrupt ts + expr",
+            "prompt": "...",
+            "schedule": {"kind": "cron", "expr": "not a cron expr"},
+            "schedule_display": "broken",
+            "repeat": {"times": 0, "completed": 0},
+            "enabled": True,
+            "state": "scheduled",
+            "paused_at": None,
+            "paused_reason": None,
+            "created_at": "2026-03-18T09:00:00+00:00",
+            "next_run_at": "soon",
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "deliver": "local",
+            "origin": None,
+        }])
+
+        assert get_due_jobs() == []  # must not raise
+        assert get_job("double-bad")["state"] == "error"
 
     def test_cron_next_run_offset_migration_is_rescheduled_not_fired(self, tmp_cron_dir, monkeypatch):
         current_tz = timezone(timedelta(hours=2))

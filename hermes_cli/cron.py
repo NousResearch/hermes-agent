@@ -187,6 +187,17 @@ def cron_status():
             ))
             print(f"  PID: {', '.join(map(str, pids))}")
             print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
+        elif hb_age is not None and ok_age is None:
+            # Loop is alive, but no clean tick has ever been recorded in this
+            # store. The normal startup window is tiny because the ticker ticks
+            # before its first sleep, so this should not be reported healthy.
+            print(color(
+                "⚠ Gateway and cron ticker are running, but no tick has "
+                "succeeded yet — ticks may be failing.",
+                Colors.YELLOW,
+            ))
+            print(f"  PID: {', '.join(map(str, pids))}")
+            print("  Check the gateway log for 'Cron tick error'.")
         elif hb_age is not None and ok_age is not None and ok_age > STALE_AFTER:
             # Loop is alive (fresh heartbeat) but no tick has SUCCEEDED in a
             # long time → ticks are failing every iteration.

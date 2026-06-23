@@ -494,6 +494,22 @@ def test_cron_status_reports_alive_but_failing(tmp_path, monkeypatch, capsys):
     assert "will fire automatically" not in out
 
 
+def test_cron_status_reports_missing_success_marker(tmp_path, monkeypatch, capsys):
+    """Fresh heartbeat with no successful-tick marker yet is not healthy."""
+    import cron.jobs as jobs
+    from hermes_cli import cron as cron_cli
+
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [4321])
+    monkeypatch.setattr(jobs, "get_ticker_heartbeat_age", lambda: 5.0)
+    monkeypatch.setattr(jobs, "get_ticker_success_age", lambda: None)
+    monkeypatch.setattr("cron.jobs.list_jobs", lambda **k: [])
+
+    cron_cli.cron_status()
+    out = capsys.readouterr().out
+    assert "no tick has succeeded" in out
+    assert "will fire automatically" not in out
+
+
 def test_cron_status_healthy_when_both_fresh(tmp_path, monkeypatch, capsys):
     import cron.jobs as jobs
     from hermes_cli import cron as cron_cli

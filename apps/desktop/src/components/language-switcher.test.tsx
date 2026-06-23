@@ -19,6 +19,15 @@ vi.stubGlobal('ResizeObserver', TestResizeObserver)
 
 Element.prototype.scrollIntoView = function scrollIntoView() {}
 
+function pendingPromise<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
+
 describe('LanguageSwitcher', () => {
   afterEach(() => {
     cleanup()
@@ -49,5 +58,34 @@ describe('LanguageSwitcher', () => {
 
     await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
     expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'ja', skin: 'slate' } })
+  })
+
+  it('shows saving status on the trigger while the locale is being persisted', async () => {
+    const save = pendingPromise<{ ok: boolean }>()
+    const latestConfig: HermesConfigRecord = { display: { language: 'en', skin: 'slate' } }
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue(latestConfig),
+      saveConfig: vi.fn().mockReturnValue(save.promise)
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageSwitcher />
+      </I18nProvider>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Switch language' }).hasAttribute('disabled')).toBe(false)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
+    fireEvent.click(screen.getByRole('option', { name: /日本語/i }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '言語を保存中…' }).hasAttribute('disabled')).toBe(true)
+    })
+
+    save.resolve({ ok: true })
   })
 })

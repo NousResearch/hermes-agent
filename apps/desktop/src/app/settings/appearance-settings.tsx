@@ -133,7 +133,7 @@ function VscodeThemeInstaller() {
 }
 
 export function AppearanceSettings() {
-  const { t, isSavingLocale } = useI18n()
+  const { t } = useI18n()
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const translucency = useStore($translucency)
@@ -166,7 +166,7 @@ export function AppearanceSettings() {
         <div className="mt-2 divide-y divide-(--ui-stroke-tertiary)">
           <ListRow
             action={<LanguageSwitcher />}
-            description={isSavingLocale ? t.language.saving : t.language.description}
+            description={t.language.description}
             title={t.language.label}
           />
 

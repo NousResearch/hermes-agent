@@ -7,7 +7,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTr
 import { useIsMobile } from '@/hooks/use-mobile'
 import { type Locale, LOCALE_META, useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, ChevronDown, Globe } from '@/lib/icons'
+import { Check, ChevronDown, Globe, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 
@@ -35,6 +35,7 @@ export function LanguageSwitcher({ className, collapsed = false, dropUp = false 
   const current = LOCALE_META[locale]
   const allLocales = Object.entries(LOCALE_META) as Array<[Locale, typeof current]>
   const title = t.language.switchTo
+  const triggerTitle = isSavingLocale ? t.language.saving : title
 
   const selectLocale = async (code: Locale) => {
     if (code === locale || isSavingLocale) {
@@ -57,7 +58,8 @@ export function LanguageSwitcher({ className, collapsed = false, dropUp = false 
   const trigger = (
     <Button
       aria-expanded={open}
-      aria-label={title}
+      aria-label={triggerTitle}
+      aria-busy={isSavingLocale || undefined}
       className={cn(
         'min-w-32 justify-between gap-2 border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2.5 text-left text-muted-foreground hover:text-foreground',
         collapsed && 'min-w-0 px-2',
@@ -65,7 +67,7 @@ export function LanguageSwitcher({ className, collapsed = false, dropUp = false 
       )}
       disabled={isSavingLocale}
       size="sm"
-      title={title}
+      title={triggerTitle}
       type="button"
       variant="outline"
     >
@@ -73,7 +75,12 @@ export function LanguageSwitcher({ className, collapsed = false, dropUp = false 
         <Globe className="size-3.5 shrink-0" />
         {!collapsed && <span className="truncate">{current.name}</span>}
       </span>
-      {!collapsed && <ChevronDown className="size-3 shrink-0 opacity-70" />}
+      {!collapsed &&
+        (isSavingLocale ? (
+          <Loader2 className="size-3 shrink-0 animate-spin opacity-70" />
+        ) : (
+          <ChevronDown className="size-3 shrink-0 opacity-70" />
+        ))}
     </Button>
   )
 

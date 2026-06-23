@@ -7,7 +7,8 @@ AI-native cross-session user modeling with multi-pass dialectic reasoning, sessi
 ## Requirements
 
 - `pip install honcho-ai`
-- Honcho API key from [app.honcho.dev](https://app.honcho.dev), or a self-hosted instance
+- A Honcho Cloud account — connect via OAuth sign-in or an API key from
+  [app.honcho.dev](https://app.honcho.dev) — or a self-hosted instance
 
 ## Setup
 
@@ -15,6 +16,11 @@ AI-native cross-session user modeling with multi-pass dialectic reasoning, sessi
 hermes memory setup honcho   # configure Honcho directly (works on a fresh install)
 hermes memory setup          # generic picker, choose Honcho from the list
 ```
+
+For cloud, the wizard asks **OAuth or API key**. OAuth opens a browser
+sign-in and stores the grant itself — nothing to copy; tokens refresh
+automatically. The desktop app offers the same flow as a **Connect** link
+next to the memory-provider dropdown.
 
 Or manually:
 ```bash
@@ -77,6 +83,10 @@ When `dialecticDepthLevels` is not set, each pass uses a proportional level rela
 
 Override with `dialecticDepthLevels`: an explicit array of reasoning level strings per pass.
 
+### Query-Adaptive Reasoning Level
+
+The auto-injected dialectic scales `dialecticReasoningLevel` by query length: +1 level at ≥120 chars, +2 at ≥400, clamped at `reasoningLevelCap` (default `"high"`). Disable with `reasoningHeuristic: false` to pin every auto call to `dialecticReasoningLevel`.
+
 ### Three Orthogonal Dialectic Knobs
 
 | Knob | Controls | Type |
@@ -123,7 +133,8 @@ For every key, resolution order is: **host block > root > env var > default**.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `apiKey` | string | — | API key. Falls back to `HONCHO_API_KEY` env var |
+| `apiKey` | string | — | API key. Falls back to `HONCHO_API_KEY` env var. When connected via OAuth, holds the auto-refreshing access token instead |
+| `oauth` | object | — | OAuth grant (refresh token, expiry, client, token endpoint). Written by the Connect/sign-in flows and rotated automatically — not hand-edited. Optional: an API key alone works without it |
 | `baseUrl` | string | — | Base URL for self-hosted Honcho. Local URLs auto-skip API key auth |
 | `environment` | string | `"production"` | SDK environment mapping |
 | `enabled` | bool | auto | Master toggle. Auto-enables when `apiKey` or `baseUrl` present |
@@ -174,7 +185,7 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `recallMode` | string | `"hybrid"` | `"hybrid"` (auto-inject + tools), `"context"` (auto-inject only, tools hidden), `"tools"` (tools only, no injection). Legacy `"auto"` → `"hybrid"` |
-| `observationMode` | string | `"directional"` | Preset: `"directional"` (all on) or `"unified"` (shared pool). Use `observation` object for granular control |
+| `observationMode` | string | `"directional"` | Preset: `"directional"` (all on) or `"unified"` (user observes self, AI observes others). Use `observation` object for granular control |
 | `observation` | object | — | Per-peer observation config (see Observation section) |
 
 ### Write Behavior
@@ -255,6 +266,8 @@ Host key is derived from the active Hermes profile: `hermes` (default) or `herme
 | `dialecticDynamic` | bool | `true` | When `true`, model can override reasoning level per-call via `honcho_reasoning` tool. When `false`, always uses `dialecticReasoningLevel` |
 | `dialecticMaxChars` | int | `600` | Max chars of dialectic result injected into system prompt |
 | `dialecticMaxInputChars` | int | `10000` | Max chars for dialectic query input to `.chat()`. Honcho cloud limit: 10k |
+| `reasoningHeuristic` | bool | `true` | Query-adaptive: auto-scale the auto-injected dialectic's level up by query length (+1 at ≥120 chars, +2 at ≥400), clamped at `reasoningLevelCap`. `false` pins every auto call to `dialecticReasoningLevel` |
+| `reasoningLevelCap` | string | `"high"` | Ceiling for `reasoningHeuristic` scaling: `"minimal"`, `"low"`, `"medium"`, `"high"`, `"max"` |
 
 ### Token Budgets
 
@@ -270,7 +283,6 @@ Host key is derived from the active Hermes profile: `hermes` (default) or `herme
 | `contextCadence` | int | `1` | Minimum turns between base context refreshes (session summary + representation + card) |
 | `dialecticCadence` | int | `1` | Minimum turns between dialectic `.chat()` firings |
 | `injectionFrequency` | string | `"every-turn"` | `"every-turn"` or `"first-turn"` (inject context on the first user message only, skip from turn 2 onward) |
-| `reasoningLevelCap` | string | — | Hard cap on reasoning level: `"minimal"`, `"low"`, `"medium"`, `"high"` |
 
 ### Observation (Granular)
 
@@ -309,6 +321,11 @@ Presets:
 | `HONCHO_BASE_URL` | `baseUrl` |
 | `HONCHO_ENVIRONMENT` | `environment` |
 | `HERMES_HONCHO_HOST` | Host key override |
+| `HONCHO_OAUTH_DASHBOARD` | OAuth authorize origin (default: cloud dashboard; local-dev `localhost:3000`) |
+| `HONCHO_OAUTH_AUTHORIZE_URL` | Full authorize URL (overrides the dashboard origin) |
+| `HONCHO_OAUTH_TOKEN_URL` | Token endpoint (default: cloud API; local-dev `localhost:8000`) |
+| `HONCHO_OAUTH_CLIENT_ID` | OAuth client (default `hermes-agent`) |
+| `HONCHO_OAUTH_SCOPE` | Requested scope (default `write`) |
 
 ## CLI Commands
 

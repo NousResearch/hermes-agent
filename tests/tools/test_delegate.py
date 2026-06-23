@@ -1148,6 +1148,40 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 
 
 
+    def test_named_custom_provider_with_base_url_keeps_identity_and_resolved_key(self):
+        """delegation.provider should still resolve named custom providers when
+        delegation.base_url is also present (the reporter's #51303 shape).
+        """
+        import hermes_cli.runtime_provider as rp
+
+        full_config = {
+            "providers": {
+                "lms_studio": {
+                    "name": "LMS Studio",
+                    "type": "custom",
+                    "base_url": "http://100.122.60.59:1234/v1",
+                }
+            },
+            "model": {"default": "kimi-k2.5", "provider": "ollama-cloud"},
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "provider": "lms_studio",
+            "model": "llama-3.1-8b-instruct",
+            "base_url": "http://100.122.60.59:1234/v1",
+        }
+
+        with patch.object(rp, "load_config", lambda: full_config), patch.object(
+            rp, "_get_model_config", lambda: full_config["model"]
+        ):
+            creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["provider"], "lms_studio")
+        self.assertEqual(creds["model"], "llama-3.1-8b-instruct")
+        self.assertEqual(creds["base_url"], "http://100.122.60.59:1234/v1")
+        self.assertEqual(creds["api_key"], "no-key-required")
+        self.assertEqual(creds["api_mode"], "chat_completions")
+
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
         cfg = {

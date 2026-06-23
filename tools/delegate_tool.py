@@ -3003,6 +3003,46 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     _provider_lower = (configured_provider or "").strip().lower()
     _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
 
+    if configured_base_url and configured_provider and not _is_native_sdk_provider:
+        # If the user supplied both delegation.provider and delegation.base_url,
+        # do not immediately collapse to bare ``custom``.  Named custom
+        # providers (providers:/custom_providers:) carry identity, API key
+        # policy (including local no-key-required endpoints), api_mode, and
+        # request overrides.  Resolve that runtime first, passing the explicit
+        # base_url as an override so the reporter's #51303 shape keeps
+        # ``provider: lms_studio`` instead of losing it to bare ``custom``.
+        try:
+            from hermes_cli.runtime_provider import (
+                has_named_custom_provider,
+                resolve_runtime_provider,
+            )
+
+            if has_named_custom_provider(configured_provider):
+                runtime = resolve_runtime_provider(
+                    requested=configured_provider,
+                    explicit_api_key=configured_api_key or None,
+                    explicit_base_url=configured_base_url,
+                    target_model=configured_model,
+                )
+                return {
+                    "model": configured_model or runtime.get("model") or None,
+                    "provider": configured_provider
+                    if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM
+                    else runtime.get("provider"),
+                    "base_url": runtime.get("base_url"),
+                    "api_key": runtime.get("api_key"),
+                    "api_mode": runtime.get("api_mode"),
+                    "command": runtime.get("command"),
+                    "args": list(runtime.get("args") or []),
+                }
+        except Exception as exc:
+            logger.debug(
+                "Could not resolve named delegation provider '%s' with explicit base_url '%s': %s",
+                configured_provider,
+                configured_base_url,
+                exc,
+            )
+
     if configured_base_url and not _is_native_sdk_provider:
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance

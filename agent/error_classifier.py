@@ -202,6 +202,9 @@ _MULTIMODAL_TOOL_CONTENT_PATTERNS = [
     "expected string, got array",
     # Alibaba/DashScope variant
     "tool_call.content must be string",
+    # LM Studio / llama.cpp: schema validation rejects list-type tool content
+    # {"error": "Invalid 'messages' in payload. Please check the structure ..."}
+    "invalid 'messages' in payload",
 ]
 
 # Context overflow patterns

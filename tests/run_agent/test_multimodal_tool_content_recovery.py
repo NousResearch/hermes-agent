@@ -263,3 +263,21 @@ class TestRecoveryEndToEndClassification:
         )
         result = classify_api_error(err, provider="alibaba", model="qwen3.5-plus")
         assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
+    def test_lm_studio_variant_classifies(self):
+        """LM Studio / llama.cpp rejects list-type tool content with a
+        generic schema-validation error that must still match the multimodal
+        tool content recovery path."""
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "Error code: 400 - {'error': \"Invalid 'messages' in payload. "
+                "Please check the structure of your 'messages' and try again.\"}"
+            ),
+        )
+        result = classify_api_error(
+            err, provider="custom", model="qwen3.6-27b-mtp"
+        )
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True

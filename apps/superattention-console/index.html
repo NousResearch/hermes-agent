@@ -192,60 +192,121 @@
         </header>
 
         <div class="setup-grid">
-          <form class="glass-card setup-form" id="generatorForm">
+          <form class="glass-card setup-form" id="generatorForm" novalidate>
+            <p class="form-section-title">Brand basics</p>
             <div class="form-block">
               <label class="field-label"><span class="material-symbols-outlined">label</span> Brand Identity</label>
-              <input name="brandName" placeholder="e.g. The Pickle Romance" required />
+              <p class="field-hint">Your registered or customer-facing brand name. <strong>Good:</strong> The Pickle Romance. <strong>Bad:</strong> my pickle biz</p>
+              <input name="brandName" placeholder="e.g. The Pickle Romance" required minlength="2" />
             </div>
             <div class="form-block">
               <label class="field-label"><span class="material-symbols-outlined">inventory_2</span> Category</label>
-              <input name="category" placeholder="e.g. Homemade Indian pickles" required />
+              <p class="field-hint">One line: what category you compete in. <strong>Good:</strong> Homemade Indian pickles</p>
+              <input name="category" placeholder="e.g. Homemade Indian pickles" required minlength="3" />
             </div>
             <div class="form-block">
               <label class="field-label"><span class="material-symbols-outlined">inventory_2</span> Main Product</label>
-              <input name="product" placeholder="e.g. Aam ka Achar" required />
+              <p class="field-hint">The hero SKU for this 30-day sprint—not your full catalog.</p>
+              <input name="product" placeholder="e.g. Aam ka Achar" required minlength="2" />
             </div>
             <div class="form-row">
               <div class="form-block">
-                <label class="field-label">Price</label>
-                <input name="price" placeholder="e.g. Rs. 399" required />
+                <label class="field-label">Price (₹)</label>
+                <p class="field-hint">Selling price per unit. Numbers only—e.g. 399</p>
+                <input name="price" type="number" min="1" step="1" placeholder="399" required />
               </div>
               <div class="form-block">
-                <label class="field-label">Current revenue</label>
-                <input name="currentRevenue" placeholder="e.g. Rs. 10,000" required />
+                <label class="field-label">Current monthly revenue (₹)</label>
+                <p class="field-hint">Honest last-30-day number. Use 0 if pre-revenue.</p>
+                <input name="currentRevenue" type="number" min="0" step="1" placeholder="10000" required />
               </div>
             </div>
             <div class="form-block">
               <label class="field-label">Offer</label>
-              <input name="offer" placeholder="e.g. 700g non-oily jar" required />
+              <p class="field-hint">What the customer gets for the price—size, flavours, delivery included or not.</p>
+              <input name="offer" placeholder="e.g. 700g Aam ka Achar non-oily jar" required minlength="5" />
             </div>
             <div class="form-block">
               <label class="field-label"><span class="material-symbols-outlined">groups</span> Target Audience</label>
-              <textarea name="audience" placeholder="Who buys this and what hesitation do they have?" required></textarea>
+              <p class="field-hint">Who they are · where they live · main hesitation before buying.</p>
+              <textarea name="audience" placeholder="Working mothers in Faridabad, 30-40. They like pickles but avoid oily market brands." required minlength="20"></textarea>
+            </div>
+
+            <p class="form-section-title">Brand story</p>
+            <div class="form-block">
+              <label class="field-label">Why this brand exists</label>
+              <p class="field-hint">Founder mission in 2–3 sentences. What problem are you solving emotionally?</p>
+              <textarea name="brandMission" placeholder="Indian meals have always had a love affair with pickles. We make ghar-ka taste without excess oil." required minlength="20"></textarea>
+            </div>
+            <div class="form-block">
+              <label class="field-label">What makes you different</label>
+              <p class="field-hint">Non-negotiables: non-oily, mishri not sugar, founder delivery, etc.</p>
+              <textarea name="brandDifferentiation" placeholder="Non-oily line, zero-oil chunda, founder delivers in Faridabad" required minlength="10"></textarea>
             </div>
             <div class="form-row">
               <div class="form-block">
-                <label class="field-label"><span class="material-symbols-outlined">target</span> Revenue Goal</label>
-                <input name="revenueGoal" placeholder="e.g. Rs. 50,000 in 30 days" required />
+                <label class="field-label">Brand stage today</label>
+                <select name="brandStage" required>
+                  <option value="">Select stage</option>
+                  <option value="Idea — not selling yet">Idea — not selling yet</option>
+                  <option value="First sales — under 10 orders/month">First sales — under 10 orders/month</option>
+                  <option value="Early traction — under Rs 1 lakh/month">Early traction — under Rs 1 lakh/month</option>
+                  <option value="Scaling — Rs 1 lakh+/month">Scaling — Rs 1 lakh+/month</option>
+                </select>
               </div>
+              <div class="form-block">
+                <label class="field-label">Brand tone</label>
+                <p class="field-hint">Pick 2–4 words that describe your voice.</p>
+                <input name="brandTone" list="toneOptions" placeholder="homemade, nostalgic, trustworthy" required />
+                <datalist id="toneOptions">
+                  <option value="homemade, nostalgic, trustworthy"></option>
+                  <option value="bold, witty, premium"></option>
+                  <option value="playful, family-friendly, local"></option>
+                </datalist>
+              </div>
+            </div>
+            <div class="form-block">
+              <label class="field-label">What didn't work last time (optional)</label>
+              <p class="field-hint">Past campaigns, channels, or offers that failed—so AI doesn't repeat them.</p>
+              <textarea name="pastFailures" placeholder="e.g. Discount posts got views but no WhatsApp orders"></textarea>
+            </div>
+
+            <p class="form-section-title">Campaign goal</p>
+            <div class="form-row">
+              <div class="form-block">
+                <label class="field-label"><span class="material-symbols-outlined">target</span> Revenue goal (₹)</label>
+                <input name="goalAmount" type="number" min="1000" step="500" placeholder="50000" required />
+              </div>
+              <div class="form-block">
+                <label class="field-label">Timeframe (days)</label>
+                <select name="goalDays" required>
+                  <option value="30" selected>30 days</option>
+                  <option value="14">14 days</option>
+                  <option value="60">60 days</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
               <div class="form-block">
                 <label class="field-label">Order channel</label>
-                <input name="orderChannel" placeholder="e.g. WhatsApp + UPI" required />
+                <p class="field-hint">How customers actually pay and confirm orders.</p>
+                <input name="orderChannel" placeholder="e.g. WhatsApp + UPI before delivery" required />
               </div>
-            </div>
-            <div class="form-row">
               <div class="form-block">
                 <label class="field-label">Delivery area</label>
                 <input name="deliveryArea" placeholder="e.g. Faridabad + Delhi NCR" required />
               </div>
-              <div class="form-block">
-                <label class="field-label">Content capacity</label>
-                <input name="contentCapacity" placeholder="e.g. 4 Reels per week" required />
-              </div>
             </div>
             <div class="form-block">
-              <label class="field-label">Brand tone</label>
-              <input name="brandTone" placeholder="e.g. homemade, nostalgic, trustworthy" required />
+              <label class="field-label">Content capacity</label>
+              <p class="field-hint">Be honest—plans fail when founders can't shoot what AI suggests.</p>
+              <select name="contentCapacity" required>
+                <option value="">Select capacity</option>
+                <option value="2 Reels per week">2 Reels per week</option>
+                <option value="4 Reels per week">4 Reels per week</option>
+                <option value="6 Reels per week">6 Reels per week</option>
+                <option value="1 Reel per week + WhatsApp only">1 Reel per week + WhatsApp only</option>
+              </select>
             </div>
 
             <fieldset class="channel-field">
@@ -290,6 +351,16 @@
             <span class="ai-projection" id="campaignProjection">AI Projection: pending</span>
           </div>
         </header>
+
+        <div class="glass-card campaign-history" id="campaignHistoryPanel">
+          <div class="history-header">
+            <h4><span class="material-symbols-outlined text-primary">history</span> Campaign History</h4>
+            <button class="btn-ghost small" id="refreshHistory" type="button">Refresh</button>
+          </div>
+          <div id="campaignHistoryList" class="history-list">
+            <p class="muted">Loading past campaigns…</p>
+          </div>
+        </div>
 
         <div id="commandCenter" class="command-empty">
           <span class="material-symbols-outlined empty-icon">campaign</span>
@@ -350,6 +421,17 @@
               <label>Revenue (₹)<input type="number" name="revenue" value="0" min="0" /></label>
             </div>
             <button class="btn-secondary full" type="button" id="syncMetrics">Sync Metrics</button>
+
+            <div class="glass-card close-campaign-panel" id="closeCampaignPanel">
+              <h4><span class="material-symbols-outlined text-secondary">flag</span> Close Campaign</h4>
+              <p class="muted">Capture learnings so your next plan gets smarter.</p>
+              <label>Best performing hook<textarea name="bestHook" rows="2" placeholder="Which Reel or message got the most replies?"></textarea></label>
+              <label>Top customer objection<textarea name="topObjection" rows="2" placeholder="e.g. Price seems high vs local market"></textarea></label>
+              <label>What to repeat next time<textarea name="repeatNext" rows="2" placeholder="e.g. Founder delivery story in Week 1"></textarea></label>
+              <label>What to stop doing<textarea name="stopDoing" rows="2" placeholder="e.g. Generic discount posts"></textarea></label>
+              <button class="btn-primary full" type="button" id="closeCampaignBtn">Close campaign &amp; save learnings</button>
+              <p class="field-hint" id="closeCampaignStatus"></p>
+            </div>
           </form>
 
           <div class="tracker-main">
@@ -390,6 +472,22 @@
         </div>
       </section>
     </main>
+
+    <div class="experiment-panel hidden" id="experimentPanel" role="dialog" aria-modal="true">
+      <div class="experiment-panel-backdrop" data-close-experiments></div>
+      <div class="glass-card experiment-panel-card">
+        <div class="experiment-panel-header">
+          <div>
+            <span class="label text-primary" id="experimentPanelWeek">Week 1</span>
+            <h3 id="experimentPanelTheme">Experiments</h3>
+          </div>
+          <button class="icon-btn" type="button" data-close-experiments aria-label="Close">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </div>
+        <div id="experimentPanelBody" class="experiment-panel-body"></div>
+      </div>
+    </div>
 
     <script src="./app.js"></script>
   </body>

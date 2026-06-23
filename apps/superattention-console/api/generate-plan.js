@@ -14,7 +14,19 @@ function requireEnv(name) {
   return value;
 }
 
-function buildPrompt(input) {
+function buildPrompt(input, priorLearnings = null) {
+  const learningsBlock = priorLearnings
+    ? `
+Prior closed campaign learnings (use these to improve this plan):
+- Best hook: ${priorLearnings.bestHook || "n/a"}
+- Top objection: ${priorLearnings.topObjection || "n/a"}
+- Repeat next time: ${priorLearnings.repeat || "n/a"}
+- Stop doing: ${priorLearnings.stop || "n/a"}
+- Final revenue: Rs. ${priorLearnings.finalRevenue ?? "n/a"}
+- Final orders: ${priorLearnings.finalOrders ?? "n/a"}
+`
+    : "";
+
   return `
 You are superattention.ai, an AI growth system for early Indian D2C brands.
 
@@ -28,6 +40,12 @@ Brand:
 - Current monthly revenue: ${input.currentRevenue}
 - Revenue goal: ${input.revenueGoal}
 - Brand tone: ${input.brandTone}
+- Brand stage: ${input.brandStage || "not specified"}
+
+Brand story:
+- Why this brand exists: ${input.brandMission || "not specified"}
+- What makes it different: ${input.brandDifferentiation || "not specified"}
+- What did not work last time: ${input.pastFailures || "none shared"}
 
 Product / offer:
 - Product: ${input.product}
@@ -42,7 +60,7 @@ Audience and market:
 
 Channels to use:
 ${input.channels.map((channel) => `- ${channel}`).join("\n")}
-
+${learningsBlock}
 Return ONLY valid JSON. Do not wrap it in markdown. Do not include commentary before or after JSON.
 
 Use this exact structure:
@@ -210,13 +228,51 @@ async function requestAnthropic({ model, maxTokens, prompt }) {
   return { text, stopReason: data.stop_reason };
 }
 
-async function callAnthropic(input) {
+async function fetchLastClosedLearnings(brandName) {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const table = process.env.SUPABASE_CAMPAIGNS_TABLE || "campaigns";
+
+  if (!supabaseUrl || !serviceRoleKey || !brandName) {
+    return null;
+  }
+
+  const quotedBrand = `"${String(brandName).replace(/"/g, '\\"')}"`;
+  const response = await fetch(
+    `${supabaseUrl}/rest/v1/${table}?brand_name=eq.${encodeURIComponent(quotedBrand)}&select=metrics,created_at&order=created_at.desc&limit=10`,
+    {
+      headers: {
+        apikey: serviceRoleKey,
+        authorization: `Bearer ${serviceRoleKey}`,
+      },
+    },
+  );
+
+  const rows = await response.json();
+  if (!response.ok || !Array.isArray(rows)) {
+    return null;
+  }
+
+  const closed = rows.find((row) => row.metrics?.status === "closed");
+  if (!closed?.metrics?.learnings) {
+    return null;
+  }
+
+  const { learnings, tracker } = closed.metrics;
+  return {
+    ...learnings,
+    finalRevenue: tracker?.revenue,
+    finalOrders: tracker?.orders,
+  };
+}
+
+async function callAnthropic(input, priorLearnings) {
   const model = process.env.ANTHROPIC_MODEL || "claude-3-haiku-20240307";
   const requested = Number(process.env.ANTHROPIC_MAX_TOKENS || 8192);
   const maxTokens = model.includes("haiku")
     ? Math.min(requested, 4096)
     : Math.min(requested, 8192);
-  const prompt = buildPrompt(input);
+  const prompt = buildPrompt(input, priorLearnings);
 
   let lastError = null;
 
@@ -279,6 +335,7 @@ async function saveCampaign(input, plan) {
       content_capacity: input.contentCapacity,
       plan_text: JSON.stringify(plan, null, 2),
       input_payload: input,
+      metrics: { status: "live" },
     }),
   });
 
@@ -305,6 +362,9 @@ function validateInput(input) {
     "contentCapacity",
     "brandTone",
     "currentRevenue",
+    "brandMission",
+    "brandDifferentiation",
+    "brandStage",
   ];
 
   for (const field of required) {
@@ -315,6 +375,13 @@ function validateInput(input) {
 
   if (!Array.isArray(input.channels) || input.channels.length === 0) {
     return "At least one growth channel is required";
+  }
+
+  const optionalStory = ["brandMission", "brandDifferentiation", "brandStage", "pastFailures"];
+  for (const field of optionalStory) {
+    if (input[field] != null && typeof input[field] !== "string") {
+      return `${field} must be a string`;
+    }
   }
 
   return null;
@@ -333,12 +400,14 @@ module.exports = async function handler(req, res) {
       return json(res, 400, { error: validationError });
     }
 
-    const plan = await callAnthropic(input);
+    const priorLearnings = await fetchLastClosedLearnings(input.brandName);
+    const plan = await callAnthropic(input, priorLearnings);
     const saveResult = await saveCampaign(input, plan);
 
     return json(res, 200, {
       plan,
       saveResult,
+      usedPriorLearnings: Boolean(priorLearnings),
     });
   } catch (error) {
     return json(res, 500, {

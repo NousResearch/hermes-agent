@@ -2,16 +2,23 @@ const sampleBrand = {
   brandName: "The Pickle Romance",
   category: "Homemade Indian pickles",
   product: "Aam ka Achar",
-  price: "Rs. 399",
+  price: "399",
   offer: "700g Aam ka Achar non-oily jar",
   audience:
-    "Working mothers in Faridabad, age 30-40, who like pickles but hesitate because market pickles feel too oily.",
-  currentRevenue: "Rs. 10,000",
-  revenueGoal: "Rs. 50,000 in 30 days",
+    "Working mothers in Faridabad, age 30-40. They like pickles but hesitate because market pickles feel too oily.",
+  currentRevenue: "10000",
+  goalAmount: "50000",
+  goalDays: "30",
   orderChannel: "WhatsApp with UPI before delivery",
   deliveryArea: "Faridabad",
   contentCapacity: "4 Reels per week",
   brandTone: "Homemade, nostalgic, playful, trustworthy",
+  brandMission:
+    "Indian meals have always had a love affair with pickles. We bottle that romance with ghar-ka taste and less oil.",
+  brandDifferentiation:
+    "Non-oily and zero-oil lines. Mishri not refined sugar. Founder delivers in Faridabad.",
+  brandStage: "Early traction — under Rs 1 lakh/month",
+  pastFailures: "Discount posts got views but almost no WhatsApp orders.",
   channels: ["Instagram Reels", "WhatsApp campaign"],
 };
 
@@ -22,8 +29,13 @@ const commandCenter = document.querySelector("#commandCenter");
 const contentBento = document.querySelector("#contentBento");
 const trackerForm = document.querySelector("#trackerForm");
 const insightCard = document.querySelector("#insightCard");
+const campaignHistoryList = document.querySelector("#campaignHistoryList");
+const experimentPanel = document.querySelector("#experimentPanel");
+const experimentPanelBody = document.querySelector("#experimentPanelBody");
 
 let currentPlan = null;
+let currentCampaignId = null;
+let campaignHistory = [];
 let activeView = "dashboard";
 
 function escapeHtml(value = "") {
@@ -35,28 +47,20 @@ function escapeHtml(value = "") {
     .replaceAll("'", "&#039;");
 }
 
-function getFormInput() {
-  const data = new FormData(generatorForm);
-  return {
-    brandName: data.get("brandName")?.toString().trim() || "",
-    category: data.get("category")?.toString().trim() || "",
-    product: data.get("product")?.toString().trim() || "",
-    price: data.get("price")?.toString().trim() || "",
-    offer: data.get("offer")?.toString().trim() || "",
-    audience: data.get("audience")?.toString().trim() || "",
-    currentRevenue: data.get("currentRevenue")?.toString().trim() || "",
-    revenueGoal: data.get("revenueGoal")?.toString().trim() || "",
-    orderChannel: data.get("orderChannel")?.toString().trim() || "",
-    deliveryArea: data.get("deliveryArea")?.toString().trim() || "",
-    contentCapacity: data.get("contentCapacity")?.toString().trim() || "",
-    brandTone: data.get("brandTone")?.toString().trim() || "",
-    channels: data.getAll("channels").map((channel) => channel.toString()),
-  };
+function formatRupee(amount) {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return "";
+  return `Rs. ${n.toLocaleString("en-IN")}`;
+}
+
+function parseNumber(value) {
+  if (value == null) return 0;
+  const cleaned = String(value).replace(/,/g, "").match(/[0-9]+(\.[0-9]+)?/);
+  return cleaned ? Number(cleaned[0]) : 0;
 }
 
 function numberFromCurrency(value) {
-  const match = String(value).match(/(?:rs\.?|₹)\s*([0-9,]+)/i);
-  return match ? Number(match[1].replaceAll(",", "")) : 0;
+  return parseNumber(value);
 }
 
 function compactGoal(value) {
@@ -74,6 +78,106 @@ function unitTarget(goal, price) {
   return Math.ceil(goalNumber / priceNumber);
 }
 
+function buildRevenueGoalString(goalAmount, goalDays) {
+  const amount = parseNumber(goalAmount);
+  const days = parseNumber(goalDays) || 30;
+  if (!amount) return "";
+  return `${formatRupee(amount)} in ${days} days`;
+}
+
+function getFormInput() {
+  const data = new FormData(generatorForm);
+  const goalAmount = data.get("goalAmount")?.toString().trim() || "";
+  const goalDays = data.get("goalDays")?.toString().trim() || "30";
+  const priceRaw = data.get("price")?.toString().trim() || "";
+  const revenueRaw = data.get("currentRevenue")?.toString().trim() || "";
+
+  return {
+    brandName: data.get("brandName")?.toString().trim() || "",
+    category: data.get("category")?.toString().trim() || "",
+    product: data.get("product")?.toString().trim() || "",
+    price: formatRupee(parseNumber(priceRaw)),
+    offer: data.get("offer")?.toString().trim() || "",
+    audience: data.get("audience")?.toString().trim() || "",
+    currentRevenue: formatRupee(parseNumber(revenueRaw)),
+    revenueGoal: buildRevenueGoalString(goalAmount, goalDays),
+    goalAmount,
+    goalDays,
+    orderChannel: data.get("orderChannel")?.toString().trim() || "",
+    deliveryArea: data.get("deliveryArea")?.toString().trim() || "",
+    contentCapacity: data.get("contentCapacity")?.toString().trim() || "",
+    brandTone: data.get("brandTone")?.toString().trim() || "",
+    brandMission: data.get("brandMission")?.toString().trim() || "",
+    brandDifferentiation: data.get("brandDifferentiation")?.toString().trim() || "",
+    brandStage: data.get("brandStage")?.toString().trim() || "",
+    pastFailures: data.get("pastFailures")?.toString().trim() || "",
+    channels: data.getAll("channels").map((channel) => channel.toString()),
+  };
+}
+
+function validateFormInput(input) {
+  const errors = [];
+  if (input.audience.length < 20) {
+    errors.push("Audience: describe who, where, and their hesitation (20+ characters).");
+  }
+  if (input.brandMission.length < 20) {
+    errors.push("Brand story: explain why your brand exists (20+ characters).");
+  }
+  if (input.brandDifferentiation.length < 10) {
+    errors.push("Differentiation: say what makes you different (10+ characters).");
+  }
+  if (!parseNumber(input.goalAmount)) {
+    errors.push("Revenue goal: enter a target amount in rupees.");
+  }
+  if (!parseNumber(input.price)) {
+    errors.push("Price: enter a valid selling price.");
+  }
+  if (!input.channels.length) {
+    errors.push("Select at least one marketing channel.");
+  }
+  return errors;
+}
+
+function applyInputToForm(input) {
+  const map = {
+    brandName: input.brandName,
+    category: input.category,
+    product: input.product,
+    offer: input.offer,
+    audience: input.audience,
+    orderChannel: input.orderChannel,
+    deliveryArea: input.deliveryArea,
+    contentCapacity: input.contentCapacity,
+    brandTone: input.brandTone,
+    brandMission: input.brandMission,
+    brandDifferentiation: input.brandDifferentiation,
+    brandStage: input.brandStage,
+    pastFailures: input.pastFailures || "",
+    goalDays: input.goalDays || "30",
+  };
+
+  for (const [key, value] of Object.entries(map)) {
+    const field = generatorForm.elements.namedItem(key);
+    if (field && value != null) field.value = value;
+  }
+
+  const priceField = generatorForm.elements.namedItem("price");
+  if (priceField) priceField.value = String(parseNumber(input.price) || input.goalAmount || "");
+
+  const revenueField = generatorForm.elements.namedItem("currentRevenue");
+  if (revenueField) revenueField.value = String(parseNumber(input.currentRevenue) || "");
+
+  const goalField = generatorForm.elements.namedItem("goalAmount");
+  if (goalField) {
+    goalField.value = String(parseNumber(input.goalAmount) || parseNumber(input.revenueGoal) || "");
+  }
+
+  const channels = input.channels || [];
+  generatorForm.querySelectorAll('input[name="channels"]').forEach((checkbox) => {
+    checkbox.checked = channels.includes(checkbox.value);
+  });
+}
+
 function getTrackerData() {
   const data = new FormData(trackerForm);
   return {
@@ -84,6 +188,16 @@ function getTrackerData() {
     whatsappClicks: Number(data.get("whatsappClicks")) || 0,
     orders: Number(data.get("orders")) || 0,
     revenue: Number(data.get("revenue")) || 0,
+  };
+}
+
+function getCloseLearnings() {
+  const data = new FormData(trackerForm);
+  return {
+    bestHook: data.get("bestHook")?.toString().trim() || "",
+    topObjection: data.get("topObjection")?.toString().trim() || "",
+    repeat: data.get("repeatNext")?.toString().trim() || "",
+    stop: data.get("stopDoing")?.toString().trim() || "",
   };
 }
 
@@ -112,6 +226,128 @@ function switchView(view) {
   document.querySelectorAll(".nav-link[data-view]").forEach((link) => {
     link.classList.toggle("active", link.dataset.view === view);
   });
+  if (view === "campaign") {
+    void loadCampaignHistory();
+  }
+}
+
+function statusBadge(status) {
+  const normalized = (status || "live").toLowerCase();
+  const cls =
+    normalized === "closed" ? "status-closed" : normalized === "draft" ? "status-draft" : "status-live";
+  return `<span class="history-status ${cls}">${escapeHtml(normalized)}</span>`;
+}
+
+function formatHistoryDate(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+async function loadCampaignHistory() {
+  if (!campaignHistoryList) return;
+  campaignHistoryList.innerHTML = `<p class="muted">Loading past campaigns…</p>`;
+
+  try {
+    const response = await fetch("/api/campaigns");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Failed to load history");
+
+    campaignHistory = data.campaigns || [];
+    if (!data.configured) {
+      campaignHistoryList.innerHTML = `<p class="muted">History unavailable — configure Supabase on Vercel.</p>`;
+      return;
+    }
+
+    if (!campaignHistory.length) {
+      campaignHistoryList.innerHTML = `<p class="muted">No saved campaigns yet. Generate your first plan to start history.</p>`;
+      return;
+    }
+
+    campaignHistoryList.innerHTML = campaignHistory
+      .map(
+        (row) => `
+          <article class="history-row ${row.id === currentCampaignId ? "active-row" : ""}">
+            <div class="history-row-main">
+              <strong>${escapeHtml(row.product)}</strong>
+              <span class="muted">${escapeHtml(row.brand_name)} · ${formatHistoryDate(row.created_at)}</span>
+              <span class="muted">${escapeHtml(row.goal || "")}</span>
+            </div>
+            <div class="history-row-actions">
+              ${statusBadge(row.status)}
+              <button class="btn-ghost small" type="button" data-load-campaign="${escapeHtml(row.id)}">Load</button>
+              <button class="btn-ghost small" type="button" data-duplicate-campaign="${escapeHtml(row.id)}">Duplicate</button>
+            </div>
+          </article>
+        `,
+      )
+      .join("");
+  } catch (error) {
+    campaignHistoryList.innerHTML = `<p class="muted">Could not load history: ${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function parsePlanFromRow(row) {
+  if (!row?.plan_text) return null;
+  try {
+    return JSON.parse(row.plan_text);
+  } catch {
+    return null;
+  }
+}
+
+function loadCampaignFromHistory(id, { duplicate = false } = {}) {
+  const row = campaignHistory.find((item) => item.id === id);
+  if (!row) return;
+
+  const input = row.input_payload || {};
+  applyInputToForm(input);
+
+  if (duplicate) {
+    currentPlan = null;
+    currentCampaignId = null;
+    renderEmptyPlan();
+    updateDraftState();
+    switchView("setup");
+    return;
+  }
+
+  const plan = parsePlanFromRow(row);
+  if (!plan) {
+    alert("This campaign has no readable plan data.");
+    return;
+  }
+
+  currentCampaignId = row.id;
+  renderPlan(plan, getFormInput());
+
+  const metrics = row.metrics?.tracker;
+  if (metrics) {
+    for (const [key, value] of Object.entries(metrics)) {
+      const field = trackerForm.elements.namedItem(key);
+      if (field) field.value = value;
+    }
+  }
+
+  const learnings = row.metrics?.learnings;
+  if (learnings) {
+    const map = {
+      bestHook: learnings.bestHook,
+      topObjection: learnings.topObjection,
+      repeatNext: learnings.repeat,
+      stopDoing: learnings.stop,
+    };
+    for (const [key, value] of Object.entries(map)) {
+      const field = trackerForm.elements.namedItem(key);
+      if (field && value) field.value = value;
+    }
+  }
+
+  switchView("campaign");
+  updateDraftState();
 }
 
 function updateDraftState() {
@@ -121,6 +357,7 @@ function updateDraftState() {
   const units = unitTarget(input.revenueGoal, input.price);
   const progress = goal ? Math.min(100, Math.round((tracker.revenue / goal) * 100)) : 0;
   const primaryChannel = input.channels[0]?.replace(" campaign", "") || "--";
+  const isClosed = campaignHistory.find((c) => c.id === currentCampaignId)?.status === "closed";
 
   document.querySelector("#topBrandName").textContent = input.brandName || "No brand selected";
   document.querySelector("#topGoalChip").textContent = input.revenueGoal
@@ -141,6 +378,8 @@ function updateDraftState() {
 
   document.querySelector("#briefStack").innerHTML = [
     ["Goal", input.revenueGoal],
+    ["Stage", input.brandStage],
+    ["Differentiation", input.brandDifferentiation],
     ["Audience", input.audience],
     ["Order flow", input.orderChannel],
   ]
@@ -176,12 +415,17 @@ function updateDraftState() {
   document.querySelector("#dashboardProductName").textContent = currentPlan
     ? `${input.product} campaign`
     : input.product || "No active campaign";
-  document.querySelector("#dashboardPositioning").textContent = currentPlan?.summary?.positioning ||
+  document.querySelector("#dashboardPositioning").textContent =
+    currentPlan?.summary?.positioning ||
     (input.product
       ? `Configure and generate a 30-day plan for ${input.product}.`
       : "Configure brand setup and generate a plan.");
-  document.querySelector("#dashboardLiveBadge").textContent = currentPlan ? "Active Campaign" : "Draft";
-  document.querySelector("#dashboardStatusPill").textContent = currentPlan ? "LIVE" : "SETUP";
+  document.querySelector("#dashboardLiveBadge").textContent = isClosed
+    ? "Closed"
+    : currentPlan
+      ? "Active Campaign"
+      : "Draft";
+  document.querySelector("#dashboardStatusPill").textContent = isClosed ? "CLOSED" : currentPlan ? "LIVE" : "SETUP";
   document.querySelector("#dashStatGoal").textContent = compactGoal(input.revenueGoal);
   document.querySelector("#dashStatChannel").textContent = primaryChannel;
   document.querySelector("#dashStatRevenue").textContent = `₹${tracker.revenue.toLocaleString("en-IN")}`;
@@ -208,17 +452,19 @@ function updateDraftState() {
 }
 
 function fillSample() {
-  for (const [key, value] of Object.entries(sampleBrand)) {
-    if (key === "channels") continue;
-    const field = generatorForm.elements.namedItem(key);
-    if (field) field.value = value;
-  }
+  applyInputToForm({
+    ...sampleBrand,
+    price: sampleBrand.price,
+    currentRevenue: sampleBrand.currentRevenue,
+    goalAmount: sampleBrand.goalAmount,
+  });
 
   generatorForm.querySelectorAll('input[name="channels"]').forEach((checkbox) => {
     checkbox.checked = sampleBrand.channels.includes(checkbox.value);
   });
 
   currentPlan = null;
+  currentCampaignId = null;
   renderEmptyPlan();
   updateDraftState();
   switchView("setup");
@@ -290,6 +536,43 @@ function renderPlan(plan, input) {
   renderCommandCenter(currentPlan, input);
   renderContentStudio(currentPlan.contentAssets || {}, input);
   updateDraftState();
+  void loadCampaignHistory();
+}
+
+function renderExperimentDetail(exp) {
+  return `
+    <article class="experiment-detail">
+      <div class="experiment-detail-head">
+        <span class="label">${escapeHtml(exp.type || "Experiment")}</span>
+        <strong>${escapeHtml(exp.title || "Untitled")}</strong>
+      </div>
+      <dl>
+        <div><dt>Why</dt><dd>${escapeHtml(exp.why || "—")}</dd></div>
+        <div><dt>Action</dt><dd>${escapeHtml(exp.action || "—")}</dd></div>
+        <div><dt>CTA</dt><dd>${escapeHtml(exp.cta || "—")}</dd></div>
+        <div><dt>Metric</dt><dd>${escapeHtml(exp.metric || "—")}</dd></div>
+        <div><dt>Decision rule</dt><dd>${escapeHtml(exp.decisionRule || "—")}</dd></div>
+      </dl>
+    </article>
+  `;
+}
+
+function openExperimentPanel(weekIndex) {
+  const weeks = currentPlan?.weeklyPlan || [];
+  const week = weeks[weekIndex];
+  if (!week) return;
+
+  document.querySelector("#experimentPanelWeek").textContent = week.week || `Week ${weekIndex + 1}`;
+  document.querySelector("#experimentPanelTheme").textContent = week.theme || "Experiments";
+  experimentPanelBody.innerHTML = (week.experiments || [])
+    .map((exp) => renderExperimentDetail(exp))
+    .join("");
+
+  experimentPanel.classList.remove("hidden");
+}
+
+function closeExperimentPanel() {
+  experimentPanel.classList.add("hidden");
 }
 
 function renderCommandCenter(plan, input) {
@@ -400,7 +683,7 @@ function renderWeekModule(week, index) {
           )
           .join("")}
       </ul>
-      <button class="week-action" type="button">View experiments</button>
+      <button class="week-action" type="button" data-week-index="${index}">View experiments</button>
     </article>
   `;
 }
@@ -540,6 +823,12 @@ function renderLinkedinCard(posts) {
 async function generatePlan(event) {
   event.preventDefault();
   const input = getFormInput();
+  const errors = validateFormInput(input);
+
+  if (errors.length) {
+    alert(errors.join("\n"));
+    return;
+  }
 
   updateDraftState();
   switchView("campaign");
@@ -560,7 +849,17 @@ async function generatePlan(event) {
 
     if (!response.ok) throw new Error(data.error || "Failed to generate plan");
 
+    if (data.saveResult?.campaign?.id) {
+      currentCampaignId = data.saveResult.campaign.id;
+    }
+
     renderPlan(data.plan, input);
+
+    if (data.usedPriorLearnings) {
+      document.querySelector("#campaignProjection").textContent =
+        "AI Projection: informed by last closed campaign";
+    }
+
     switchView("campaign");
   } catch (error) {
     commandCenter.className = "glass-card command-empty error-state";
@@ -570,6 +869,40 @@ async function generatePlan(event) {
       <p>${escapeHtml(error.message)}</p>
       <p>Check Anthropic, Vercel environment variables, and Supabase table setup.</p>
     `;
+  }
+}
+
+async function closeCampaign() {
+  const statusEl = document.querySelector("#closeCampaignStatus");
+  if (!currentCampaignId) {
+    statusEl.textContent = "Generate or load a campaign first before closing.";
+    return;
+  }
+
+  const tracker = getTrackerData();
+  const learnings = getCloseLearnings();
+
+  statusEl.textContent = "Saving learnings…";
+
+  try {
+    const response = await fetch("/api/campaigns", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: currentCampaignId,
+        tracker,
+        learnings,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Failed to close campaign");
+
+    statusEl.textContent = "Campaign closed. Your next plan will use these learnings.";
+    document.querySelector("#dashboardStatusPill").textContent = "CLOSED";
+    await loadCampaignHistory();
+    updateDraftState();
+  } catch (error) {
+    statusEl.textContent = error.message;
   }
 }
 
@@ -602,7 +935,9 @@ function renderChartBars() {
   document.querySelector("#avgOrder").textContent =
     tracker.orders > 0 ? `₹${Math.round(tracker.revenue / tracker.orders).toLocaleString("en-IN")}` : "--";
   document.querySelector("#revenueGrowthChip").textContent =
-    tracker.revenue > 0 ? `+${Math.min(99, Math.round((tracker.revenue / Math.max(goal, 1)) * 100))}% Revenue` : "+0% Revenue";
+    tracker.revenue > 0
+      ? `+${Math.min(99, Math.round((tracker.revenue / Math.max(goal, 1)) * 100))}% Revenue`
+      : "+0% Revenue";
 }
 
 function updateInsights() {
@@ -646,13 +981,47 @@ function updateInsights() {
     </div>
   `;
 
+  const learnings = getCloseLearnings();
+  if (learnings.topObjection) {
+    document.querySelector("#objectionQuote").textContent = `"${learnings.topObjection}"`;
+  }
+
   renderChartBars();
 }
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !experimentPanel.classList.contains("hidden")) {
+    closeExperimentPanel();
+  }
+});
 
 document.addEventListener("click", async (event) => {
   const viewTrigger = event.target.closest("[data-view]");
   if (viewTrigger?.dataset.view) {
     switchView(viewTrigger.dataset.view);
+  }
+
+  const weekBtn = event.target.closest("[data-week-index]");
+  if (weekBtn) {
+    openExperimentPanel(Number(weekBtn.dataset.weekIndex));
+    return;
+  }
+
+  if (event.target.closest("[data-close-experiments]")) {
+    closeExperimentPanel();
+    return;
+  }
+
+  const loadBtn = event.target.closest("[data-load-campaign]");
+  if (loadBtn) {
+    loadCampaignFromHistory(loadBtn.dataset.loadCampaign);
+    return;
+  }
+
+  const dupBtn = event.target.closest("[data-duplicate-campaign]");
+  if (dupBtn) {
+    loadCampaignFromHistory(dupBtn.dataset.duplicateCampaign, { duplicate: true });
+    return;
   }
 
   const copy = event.target.closest("[data-copy-text]");
@@ -676,6 +1045,15 @@ document.querySelector("#optimizeBtn")?.addEventListener("click", () => {
 
 document.querySelector("#syncMetrics")?.addEventListener("click", () => {
   updateDraftState();
+  document.querySelector("#closeCampaignStatus").textContent = "Metrics synced to dashboard.";
+});
+
+document.querySelector("#closeCampaignBtn")?.addEventListener("click", () => {
+  void closeCampaign();
+});
+
+document.querySelector("#refreshHistory")?.addEventListener("click", () => {
+  void loadCampaignHistory();
 });
 
 sidebarNav?.addEventListener("click", (event) => {
@@ -685,13 +1063,19 @@ sidebarNav?.addEventListener("click", (event) => {
 
 loadSample.addEventListener("click", fillSample);
 generatorForm.addEventListener("input", () => {
-  currentPlan = null;
-  renderEmptyPlan();
+  if (!currentCampaignId) {
+    currentPlan = null;
+    renderEmptyPlan();
+  }
   updateDraftState();
 });
 generatorForm.addEventListener("submit", generatePlan);
-trackerForm.addEventListener("input", updateDraftState);
+trackerForm.addEventListener("input", () => {
+  updateDraftState();
+  updateInsights();
+});
 
 renderEmptyPlan();
 updateDraftState();
 setRingProgress(0);
+void loadCampaignHistory();

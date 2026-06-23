@@ -1434,10 +1434,24 @@ def check_feishu_requirements() -> bool:
 # CardKit streaming-card constants
 # ---------------------------------------------------------------------------
 _STREAMING_CARD_ELEMENT_ID = "streaming_md_1"
-_STREAMING_CARD_PRINT_FREQUENCY_MS = 50
-_STREAMING_CARD_PRINT_STEP = 2
-_STREAMING_CARD_PRINT_STRATEGY = "fast"
-_STREAMING_CARD_ELEMENT_LIMIT = 180  # cards have ~200 max; reserve space for footer
+_STREAMING_CARD_PRINT_FREQUENCY_MS = 15   # ms between client-side flushes (plugin v0.11 uses 15)
+_STREAMING_CARD_PRINT_STEP = 1            # tokens per flush batch (plugin v0.11 uses 1)
+_STREAMING_CARD_PRINT_STRATEGY = "fast"   # "fast" = render immediately, "delay" = buffer
+_STREAMING_CARD_ELEMENT_LIMIT = 180       # cards have ~200 max; reserve space for footer
+
+# CardKit transient error codes — these are safe to retry because they
+# represent server-side hiccups, not permanent failures.
+# Source: hermes-lark-streaming plugin v0.11 (Cheerwhy/hermes-lark-streaming)
+_CARDKIT_GATEWAY_TIMEOUT = 2200           # CardKit gateway timeout
+_CARDKIT_INTERNAL_ERROR = 1663            # CardKit internal error
+_CARDKIT_SERVER_INTERNAL_ERROR = 300000   # Feishu server internal error
+_CARDKIT_TRANSIENT_ERROR_CODES = frozenset({
+    _CARDKIT_GATEWAY_TIMEOUT,
+    _CARDKIT_INTERNAL_ERROR,
+    _CARDKIT_SERVER_INTERNAL_ERROR,
+})
+_CARDKIT_RETRY_DELAYS_SEC = (0.15, 0.5, 1.0)  # progressive backoff
+_CARDKIT_FINALIZE_MAX_ATTEMPTS = 3        # retries for stop+update in finalize
 
 
 @dataclass
@@ -2006,6 +2020,44 @@ class FeishuAdapter(BasePlatformAdapter):
         }
         return json.dumps(card, ensure_ascii=False)
 
+    async def _cardkit_api_call(
+        self,
+        operation: str,
+        call,
+    ) -> Any:
+        """Execute a CardKit SDK call with transient error retry.
+
+        Retries on server-side hiccups (gateway timeout, internal errors)
+        with progressive backoff.  Non-transient errors are raised immediately.
+
+        Pattern adapted from hermes-lark-streaming plugin v0.11
+        (Cheerwhy/hermes-lark-streaming ``FeishuClient._checked_call``).
+        """
+        attempts = len(_CARDKIT_RETRY_DELAYS_SEC) + 1
+        last_error: Optional[Exception] = None
+        for attempt in range(attempts):
+            resp = await asyncio.to_thread(call)
+            if self._response_succeeded(resp):
+                return resp
+            code = getattr(resp, "code", 0) or 0
+            if code not in _CARDKIT_TRANSIENT_ERROR_CODES:
+                return resp  # non-transient — return immediately
+            # Transient failure — retry unless this was the last attempt
+            last_error = RuntimeError(
+                f"{operation}: code={code}, msg={getattr(resp, 'msg', '')}"
+            )
+            if attempt >= attempts - 1:
+                break  # exhausted — fall through to raise
+            delay = _CARDKIT_RETRY_DELAYS_SEC[attempt]
+            logger.warning(
+                "[Feishu] CardKit transient error %s (code=%s), "
+                "retrying attempt=%d/%d delay=%.2fs",
+                operation, code, attempt + 2, attempts, delay,
+            )
+            await asyncio.sleep(delay)
+        assert last_error is not None
+        raise last_error
+
     async def send_streaming_card(
         self,
         chat_id: str,
@@ -2056,7 +2108,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             return self._client.cardkit.v1.card.create(request)
 
-        response = await asyncio.to_thread(_create_card)
+        response = await self._cardkit_api_call("cardkit_create", _create_card)
         if not self._response_succeeded(response):
             error_msg = getattr(response, "msg", "card create failed")
             logger.warning("[Feishu] CardKit create failed: %s", error_msg)
@@ -2089,7 +2141,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             return self._client.im.v1.message.create(request)
 
-        msg_response = await asyncio.to_thread(_send_message)
+        msg_response = await self._cardkit_api_call("cardkit_send_message", _send_message)
         if not self._response_succeeded(msg_response):
             error_msg = getattr(msg_response, "msg", "message create failed")
             logger.warning("[Feishu] CardKit message send failed: %s", error_msg)
@@ -2122,7 +2174,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             return self._client.cardkit.v1.card.settings(request)
 
-        stream_response = await asyncio.to_thread(_enable_streaming)
+        stream_response = await self._cardkit_api_call("cardkit_enable_streaming", _enable_streaming)
         if not self._response_succeeded(stream_response):
             logger.warning(
                 "[Feishu] CardKit enable streaming failed (card=%s): %s",
@@ -2152,6 +2204,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         Calls ``cardkit.v1.card_element.content`` with the card_id,
         element_id, updated content, and incremented sequence number.
+        Retries on transient CardKit server errors.
         """
         card_state.sequence += 1
 
@@ -2171,7 +2224,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             return self._client.cardkit.v1.card_element.content(request)
 
-        response = await asyncio.to_thread(_update_element)
+        response = await self._cardkit_api_call("cardkit_stream_element", _update_element)
         if not self._response_succeeded(response):
             logger.warning(
                 "[Feishu] CardKit element content update failed (card=%s seq=%d): %s",
@@ -2183,7 +2236,10 @@ class FeishuAdapter(BasePlatformAdapter):
         self,
         card_state: _FeishuStreamingCard,
     ) -> None:
-        """Disable streaming mode on a card via ``cardkit.v1.card.settings``."""
+        """Disable streaming mode on a card via ``cardkit.v1.card.settings``.
+
+        Retries on transient CardKit server errors.
+        """
         settings = (
             _CardKitSettings.builder()
             .config(
@@ -2208,7 +2264,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             return self._client.cardkit.v1.card.settings(request)
 
-        response = await asyncio.to_thread(_stop)
+        response = await self._cardkit_api_call("cardkit_close_streaming", _stop)
         if not self._response_succeeded(response):
             logger.warning(
                 "[Feishu] CardKit stop streaming failed (card=%s): %s",
@@ -2226,59 +2282,85 @@ class FeishuAdapter(BasePlatformAdapter):
         After disabling streaming mode, builds a final-state card JSON
         (header color green, footer with stats) and calls
         ``cardkit.v1.card.update`` to render the completed layout.
+
+        Retries the entire stop+update sequence up to ``_CARDKIT_FINALIZE_MAX_ATTEMPTS``
+        times with exponential backoff (1s, 2s).  Pattern adapted from
+        hermes-lark-streaming plugin v0.11 ``_do_complete_card_inner``.
         """
-        # Step 1: Stop streaming
-        await self.stop_streaming_card(card_state)
+        for attempt in range(_CARDKIT_FINALIZE_MAX_ATTEMPTS):
+            try:
+                # Step 1: Stop streaming (already has its own transient retry)
+                await self.stop_streaming_card(card_state)
 
-        # Step 2: Build final-state card
-        final_card: Dict[str, Any] = {
-            "schema": "2.0",
-            "header": {
-                "title": {
-                    "tag": "plain_text",
-                    "content": "Hermes",
-                },
-                "template": "green",
-            },
-            "body": {
-                "elements": [
-                    {
-                        "element_id": card_state.element_id,
-                        "tag": "markdown",
-                        "content": content,
-                    }
-                ],
-            },
-        }
+                # Step 2: Build final-state card
+                final_card: Dict[str, Any] = {
+                    "schema": "2.0",
+                    "header": {
+                        "title": {
+                            "tag": "plain_text",
+                            "content": "Hermes",
+                        },
+                        "template": "green",
+                    },
+                    "body": {
+                        "elements": [
+                            {
+                                "element_id": card_state.element_id,
+                                "tag": "markdown",
+                                "content": content,
+                            }
+                        ],
+                    },
+                }
 
-        # Step 3: Update card with final layout
-        def _update_card() -> Any:
-            body = (
-                UpdateCardRequestBody.builder()
-                .card(json.dumps(final_card, ensure_ascii=False))
-                .build()
-            )
-            request = (
-                UpdateCardRequest.builder()
-                .card_id(card_state.card_id)
-                .request_body(body)
-                .build()
-            )
-            return self._client.cardkit.v1.card.update(request)
+                # Step 3: Update card with final layout
+                def _update_card() -> Any:
+                    body = (
+                        UpdateCardRequestBody.builder()
+                        .card(json.dumps(final_card, ensure_ascii=False))
+                        .build()
+                    )
+                    request = (
+                        UpdateCardRequest.builder()
+                        .card_id(card_state.card_id)
+                        .request_body(body)
+                        .build()
+                    )
+                    return self._client.cardkit.v1.card.update(request)
 
-        response = await asyncio.to_thread(_update_card)
-        if not self._response_succeeded(response):
-            logger.warning(
-                "[Feishu] CardKit finalize update failed (card=%s): %s",
-                card_state.card_id,
-                getattr(response, "msg", "unknown"),
-            )
+                response = await self._cardkit_api_call("cardkit_finalize_update", _update_card)
+                if not self._response_succeeded(response):
+                    logger.warning(
+                        "[Feishu] CardKit finalize update failed (card=%s) attempt=%d/%d: %s",
+                        card_state.card_id, attempt + 1, _CARDKIT_FINALIZE_MAX_ATTEMPTS,
+                        getattr(response, "msg", "unknown"),
+                    )
+                    if attempt < _CARDKIT_FINALIZE_MAX_ATTEMPTS - 1:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
 
-        # Step 4: Clean up state
+                # Step 4: Clean up state
+                self._streaming_cards.pop(card_state.message_id, None)
+                logger.info(
+                    "[Feishu] CardKit streaming card finalized: card_id=%s message_id=%s",
+                    card_state.card_id, card_state.message_id,
+                )
+                return  # success
+
+            except Exception as exc:
+                logger.warning(
+                    "[Feishu] CardKit finalize attempt %d failed (card=%s): %s",
+                    attempt + 1, card_state.card_id, exc,
+                )
+                if attempt < _CARDKIT_FINALIZE_MAX_ATTEMPTS - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+
+        # All attempts exhausted — clean up state anyway so we don't leak
         self._streaming_cards.pop(card_state.message_id, None)
-        logger.info(
-            "[Feishu] CardKit streaming card finalized: card_id=%s message_id=%s",
-            card_state.card_id, card_state.message_id,
+        logger.error(
+            "[Feishu] CardKit finalize failed after %d attempts: card_id=%s",
+            _CARDKIT_FINALIZE_MAX_ATTEMPTS, card_state.card_id,
         )
 
     async def send_exec_approval(

@@ -396,3 +396,177 @@ class TestStreamingCardElementLimit(unittest.TestCase):
         from gateway.platforms.feishu import _STREAMING_CARD_ELEMENT_LIMIT
 
         assert _STREAMING_CARD_ELEMENT_LIMIT == 180
+
+    def test_streaming_params_match_plugin_v11(self):
+        """Streaming params should match hermes-lark-streaming plugin v0.11."""
+        from gateway.platforms.feishu import (
+            _STREAMING_CARD_PRINT_FREQUENCY_MS,
+            _STREAMING_CARD_PRINT_STEP,
+            _STREAMING_CARD_PRINT_STRATEGY,
+        )
+
+        assert _STREAMING_CARD_PRINT_FREQUENCY_MS == 15
+        assert _STREAMING_CARD_PRINT_STEP == 1
+        assert _STREAMING_CARD_PRINT_STRATEGY == "fast"
+
+    def test_transient_error_codes_defined(self):
+        """Transient error code constants should be defined for retry logic."""
+        from gateway.platforms.feishu import (
+            _CARDKIT_TRANSIENT_ERROR_CODES,
+            _CARDKIT_GATEWAY_TIMEOUT,
+            _CARDKIT_INTERNAL_ERROR,
+            _CARDKIT_SERVER_INTERNAL_ERROR,
+            _CARDKIT_RETRY_DELAYS_SEC,
+            _CARDKIT_FINALIZE_MAX_ATTEMPTS,
+        )
+
+        # Core transient codes
+        assert _CARDKIT_GATEWAY_TIMEOUT in _CARDKIT_TRANSIENT_ERROR_CODES
+        assert _CARDKIT_INTERNAL_ERROR in _CARDKIT_TRANSIENT_ERROR_CODES
+        assert _CARDKIT_SERVER_INTERNAL_ERROR in _CARDKIT_TRANSIENT_ERROR_CODES
+        # Retry config should be reasonable
+        assert len(_CARDKIT_RETRY_DELAYS_SEC) >= 2
+        assert all(d > 0 for d in _CARDKIT_RETRY_DELAYS_SEC)
+        assert _CARDKIT_FINALIZE_MAX_ATTEMPTS >= 2
+
+
+@patch.dict(os.environ, {}, clear=True)
+class TestCardkitApiCallRetry(unittest.TestCase):
+    """Test _cardkit_api_call transient error retry behavior."""
+
+    def test_retry_on_transient_error_then_succeed(self):
+        """Should retry on transient error code and succeed on next attempt."""
+        from gateway.platforms.feishu import (
+            _CARDKIT_GATEWAY_TIMEOUT,
+            _CARDKIT_RETRY_DELAYS_SEC,
+        )
+
+        adapter = _make_adapter()
+        call_count = 0
+
+        def _failing_then_ok():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SimpleNamespace(
+                    success=lambda: False,
+                    code=_CARDKIT_GATEWAY_TIMEOUT,
+                    msg="gateway timeout",
+                )
+            return SimpleNamespace(success=lambda: True)
+
+        async def _run():
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):  # skip sleep in tests
+                return await adapter._cardkit_api_call("test_op", _failing_then_ok)
+
+        result = asyncio.run(_run())
+        assert result.success()
+        assert call_count == 2  # first failed, second succeeded
+
+    def test_no_retry_on_non_transient_error(self):
+        """Non-transient errors should NOT be retried."""
+        adapter = _make_adapter()
+        call_count = 0
+
+        def _permanent_fail():
+            nonlocal call_count
+            call_count += 1
+            return SimpleNamespace(
+                success=lambda: False,
+                code=99999,  # not a transient code
+                msg="permanent failure",
+            )
+
+        async def _run():
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread):
+                return await adapter._cardkit_api_call("test_op", _permanent_fail)
+
+        result = asyncio.run(_run())
+        assert not result.success()
+        assert call_count == 1  # only called once, no retry
+
+    def test_exhausted_retries_raises(self):
+        """After exhausting all retries, should raise the last transient error."""
+        from gateway.platforms.feishu import _CARDKIT_INTERNAL_ERROR
+
+        adapter = _make_adapter()
+
+        def _always_transient():
+            return SimpleNamespace(
+                success=lambda: False,
+                code=_CARDKIT_INTERNAL_ERROR,
+                msg="internal error",
+            )
+
+        async def _run():
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                with pytest.raises(RuntimeError, match="internal error"):
+                    await adapter._cardkit_api_call("test_op", _always_transient)
+
+        asyncio.run(_run())
+
+    def test_success_first_call_no_retry(self):
+        """Successful first call should not trigger any retry logic."""
+        adapter = _make_adapter()
+        call_count = 0
+
+        def _immediate_success():
+            nonlocal call_count
+            call_count += 1
+            return SimpleNamespace(success=lambda: True)
+
+        async def _run():
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread):
+                return await adapter._cardkit_api_call("test_op", _immediate_success)
+
+        result = asyncio.run(_run())
+        assert result.success()
+        assert call_count == 1
+
+
+@patch.dict(os.environ, {}, clear=True)
+class TestCardkitFinalizeRetry(unittest.TestCase):
+    """Test _cardkit_finalize retry on failure."""
+
+    def test_finalize_retries_then_succeeds(self):
+        """finalize should retry stop+update and eventually succeed."""
+        adapter = _make_adapter()
+        captured = _mock_cardkit_and_im(adapter)
+        attempt_count = 0
+
+        # Make the update fail once then succeed
+        original_update = captured.get
+
+        class _FlakyUpdateAPI:
+            def __init__(self):
+                self.attempts = 0
+
+            def update(self, request):
+                self.attempts += 1
+                if self.attempts == 1:
+                    return SimpleNamespace(
+                        success=lambda: False,
+                        code=2200,  # transient gateway timeout
+                        msg="timeout",
+                    )
+                captured["cardkit_update"] = request
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client.cardkit.v1.card.update = _FlakyUpdateAPI().update
+
+        async def _run():
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct_thread), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                await adapter.send_streaming_card(chat_id="oc_chat", content="")
+                await adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_456",
+                    content="final",
+                    finalize=True,
+                )
+
+        asyncio.run(_run())
+        # State should be cleaned up after successful finalize
+        assert "om_456" not in adapter._streaming_cards

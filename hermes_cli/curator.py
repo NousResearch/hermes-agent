@@ -488,6 +488,87 @@ def _cmd_list_archived(args) -> int:
     return 0
 
 
+def _cmd_usage(args) -> int:
+    """Render a sorted table of per-skill usage stats for every skill on disk.
+
+    Calls ``usage_report()`` which covers ALL provenances (agent, bundled, hub)
+    — not just the curator-managed subset — so users can answer "which skills
+    do I actually use?" across their whole skills directory.
+    """
+    from tools import skill_usage
+
+    sort_key = getattr(args, "sort", "activity_count") or "activity_count"
+    prov_filter = getattr(args, "provenance", None)
+    limit = getattr(args, "limit", None)
+
+    _VALID_SORTS = {"use_count", "view_count", "activity_count", "last_activity_at"}
+    if sort_key not in _VALID_SORTS:
+        print(
+            f"curator usage: unknown --sort '{sort_key}'. "
+            f"Choose from: {', '.join(sorted(_VALID_SORTS))}",
+            file=sys.stderr,
+        )
+        return 2
+
+    rows = skill_usage.usage_report()
+
+    # Filter by provenance when requested
+    if prov_filter:
+        rows = [r for r in rows if r.get("provenance") == prov_filter]
+
+    # Sort: timestamp fields sort descending (most-recent first);
+    # numeric fields sort descending (highest first); ties broken by name.
+    if sort_key == "last_activity_at":
+        rows.sort(
+            key=lambda r: (r.get("last_activity_at") or "", r["name"]),
+            reverse=True,
+        )
+    else:
+        rows.sort(
+            key=lambda r: (-(r.get(sort_key) or 0), r["name"]),
+        )
+
+    # Apply limit
+    if limit is not None and limit > 0:
+        rows = rows[:limit]
+
+    if not rows:
+        prov_note = f" (provenance={prov_filter})" if prov_filter else ""
+        print(f"no skills found{prov_note}")
+        return 0
+
+    # Column widths: name column is dynamic; rest are fixed.
+    name_w = max(len(r["name"]) for r in rows)
+    name_w = max(name_w, 4)  # minimum so header fits
+
+    header = (
+        f"{'NAME':<{name_w}}  "
+        f"{'USE':>5}  "
+        f"{'VIEW':>5}  "
+        f"{'PATCH':>5}  "
+        f"{'ACTIVITY':>8}  "
+        f"{'LAST_SEEN':<16}  "
+        f"PROVENANCE"
+    )
+    sep = "-" * len(header)
+    print(header)
+    print(sep)
+
+    for r in rows:
+        last = _fmt_ts(r.get("last_activity_at"))
+        print(
+            f"{r['name']:<{name_w}}  "
+            f"{r.get('use_count', 0) or 0:>5}  "
+            f"{r.get('view_count', 0) or 0:>5}  "
+            f"{r.get('patch_count', 0) or 0:>5}  "
+            f"{r.get('activity_count', 0) or 0:>8}  "
+            f"{last:<16}  "
+            f"{r.get('provenance', 'agent')}"
+        )
+
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # argparse wiring (called from hermes_cli.main)
 # ---------------------------------------------------------------------------
@@ -546,6 +627,44 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
 
     subs.add_parser("list-archived", help="List archived skills") \
         .set_defaults(func=_cmd_list_archived)
+
+    p_usage = subs.add_parser(
+        "usage",
+        help="Show per-skill usage stats for every skill on disk (all provenances)",
+        description=(
+            "Print a sorted table of use_count, view_count, patch_count, total "
+            "activity, last-seen time, and provenance for every skill found under "
+            "~/.hermes/skills/.  Unlike `hermes curator status` (which only covers "
+            "agent-created skills eligible for lifecycle management), this command "
+            "includes bundled built-ins and hub-installed skills so you can answer "
+            "\"which skills do I actually use?\""
+        ),
+    )
+    p_usage.add_argument(
+        "--sort",
+        default="activity_count",
+        choices=["use_count", "view_count", "activity_count", "last_activity_at"],
+        metavar="FIELD",
+        help=(
+            "Sort column (default: activity_count). "
+            "Choices: use_count, view_count, activity_count, last_activity_at"
+        ),
+    )
+    p_usage.add_argument(
+        "--provenance",
+        choices=["agent", "bundled", "hub"],
+        default=None,
+        metavar="PROV",
+        help="Filter to a single provenance: agent, bundled, or hub",
+    )
+    p_usage.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Show only the top N rows after sorting (default: all)",
+    )
+    p_usage.set_defaults(func=_cmd_usage)
 
     p_archive = subs.add_parser(
         "archive",

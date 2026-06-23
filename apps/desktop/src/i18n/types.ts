@@ -932,6 +932,7 @@ export interface Translations {
       ageDay: string
       ageHour: string
       ageMin: string
+      profileBadge: (name: string) => string
     }
   }
 

@@ -13,6 +13,7 @@ import {
   type GatewayEventPayload,
   reasoningPart,
   renderMediaTags,
+  textPart,
   upsertToolPart
 } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
@@ -1080,6 +1081,32 @@ export function useMessageStream({
           // completions / watch matches here — re-sync the status stack.
           void refreshBackgroundProcesses(sessionId)
         }
+      } else if (event.type === 'review.summary') {
+        // Self-improvement background review saved something to memory/skills
+        // and emitted a persistent summary (Python formats it as
+        // "💾 Self-improvement review: …"). The CLI prints this via
+        // prompt_toolkit and the Ink TUI renders it as a system line; the
+        // desktop has neither, so without this handler the skill/memory
+        // change happens silently. Surface it as a persistent system message
+        // in the transcript so the user is always informed — it must not be a
+        // transient toast that can be missed.
+        const text = coerceGatewayText(payload?.text).trim()
+
+        if (text && sessionId) {
+          flushQueuedDeltas(sessionId)
+          updateSessionState(sessionId, state => ({
+            ...state,
+            messages: [
+              ...state.messages,
+              {
+                id: `review-summary-${Date.now()}`,
+                role: 'system',
+                parts: [textPart(text)],
+                timestamp: Math.floor(Date.now() / 1000)
+              }
+            ]
+          }))
+        }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
@@ -1102,8 +1129,13 @@ export function useMessageStream({
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)
-        } else if (isActiveEvent) {
+        } else {
+          // Toast globally, not just when the failing thread is focused: a
+          // turn-ending error (e.g. out of funds) blocks every thread, so the
+          // inline error alone is too easy to miss. The stable id collapses the
+          // same error from multiple blocked threads into one toast.
           notify({
+            id: `gateway-error:${errorMessage}`,
             kind: 'error',
             title: 'Hermes error',
             message: errorMessage

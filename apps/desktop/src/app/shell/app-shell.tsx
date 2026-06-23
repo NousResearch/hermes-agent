@@ -16,7 +16,7 @@ import {
 } from '@/store/layout'
 import { $paneWidthOverride } from '@/store/panes'
 import { $connection } from '@/store/session'
-import { isNewSessionWindow, isSecondaryWindow } from '@/store/windows'
+import { isSecondaryWindow } from '@/store/windows'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 
@@ -80,7 +80,10 @@ export function AppShell({
   const connection = useStore($connection)
   const viewportFullscreen = useSyncExternalStore(subscribeWindowSize, viewportIsFullscreen, () => false)
   const isFullscreen = Boolean(connection?.isFullscreen) || viewportFullscreen
-  const hideTitlebarControls = isNewSessionWindow()
+  // Every secondary window (new-session scratch, subagent watch, cmd-click
+  // pop-out) is a compact side panel — none of them carry the full titlebar
+  // tool cluster. Gate on isSecondaryWindow, never the narrower new-session flag.
+  const hideTitlebarControls = isSecondaryWindow()
   const titlebarControls = titlebarControlsPosition(connection?.windowButtonPosition, isFullscreen)
   // Width Windows/Linux reserve for the OS-painted min/max/close overlay (zero
   // on macOS, where window controls sit on the left and are reported via

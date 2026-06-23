@@ -7946,3 +7946,207 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         assert session["agent"].model == "claude-sonnet-4.6"
     finally:
         server._sessions.clear()
+
+
+# =====================================================================
+# cron.manage: runtime_cap_seconds wire (per-job wall-clock cap)
+# =====================================================================
+#
+# These tests exercise the gateway RPC boundary, not the underlying tool —
+# the tool itself is unit-tested in tests/tools/test_cronjob_tools.py. We
+# check three contracts:
+#
+#   1. ``cron.manage`` action="add" forwards ``runtime_cap_seconds`` when
+#      present, and works unchanged when omitted.
+#   2. The new ``cron.manage`` action="update" maps to the tool's update
+#      branch and carries ``runtime_cap_seconds`` plus the safely-mutable
+#      fields the underlying tool already supports.
+#   3. Validation errors from the tool layer bubble through the RPC as
+#      ``success=false`` in the result envelope (not as a JSON-RPC error).
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture
+def _gateway_cron_tmpdir(tmp_path, monkeypatch):
+    """Re-point cron storage at a tmpdir for the duration of a test.
+
+    Shape mirrors the autouse fixture in TestUnifiedCronjobTool — same three
+    module attributes need to be redirected so jobs.json doesn't bleed into
+    the user's real cron state.
+    """
+    import cron.jobs as _cj
+
+    monkeypatch.setattr(_cj, "CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr(_cj, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr(_cj, "OUTPUT_DIR", tmp_path / "cron" / "output")
+    (tmp_path / "cron").mkdir(parents=True, exist_ok=True)
+    return tmp_path
+
+
+class TestCronManageRuntimeCapSeconds:
+    def test_add_forwards_runtime_cap_seconds(self, _gateway_cron_tmpdir):
+        """``cron.manage`` add includes ``runtime_cap_seconds`` when supplied."""
+        resp = server.dispatch(
+            {
+                "id": "add-1",
+                "method": "cron.manage",
+                "params": {
+                    "action": "add",
+                    "name": "gw-cap-test",
+                    "schedule": "every 1h",
+                    "prompt": "hi",
+                    "runtime_cap_seconds": 300,
+                },
+            }
+        )
+        assert "error" not in resp, resp
+        assert resp["result"]["success"] is True
+        assert resp["result"]["job"]["runtime_cap_seconds"] == 300
+
+    def test_add_without_runtime_cap_seconds_omits_field(self, _gateway_cron_tmpdir):
+        """Omitted on add → cap absent from the persisted record."""
+        resp = server.dispatch(
+            {
+                "id": "add-2",
+                "method": "cron.manage",
+                "params": {
+                    "action": "add",
+                    "name": "no-cap",
+                    "schedule": "every 1h",
+                    "prompt": "hi",
+                },
+            }
+        )
+        assert "error" not in resp, resp
+        assert resp["result"]["success"] is True
+        assert "runtime_cap_seconds" not in resp["result"]["job"]
+
+    def test_add_bubbles_validation_error_from_tool(self, _gateway_cron_tmpdir):
+        """Tool-layer rejection surfaces as success=false in the RPC result.
+
+        Previously there was no way to test this because runtime_cap_seconds
+        had no validation; this assertion locks in the contract that the
+        gateway does NOT swallow the error and does NOT translate it into a
+        JSON-RPC error envelope (the latter would tell the iOS client the
+        method itself failed when in fact it's user input that's wrong).
+        """
+        resp = server.dispatch(
+            {
+                "id": "add-bad",
+                "method": "cron.manage",
+                "params": {
+                    "action": "add",
+                    "name": "bad-cap",
+                    "schedule": "every 1h",
+                    "prompt": "hi",
+                    "runtime_cap_seconds": -7,
+                },
+            }
+        )
+        assert "error" not in resp, resp
+        assert resp["result"]["success"] is False
+        assert "positive" in resp["result"]["error"]
+
+    def test_update_action_replaces_runtime_cap_seconds(self, _gateway_cron_tmpdir):
+        """New ``update`` action on the gateway round-trips the cap."""
+        add = server.dispatch(
+            {
+                "id": "upd-add",
+                "method": "cron.manage",
+                "params": {
+                    "action": "add",
+                    "name": "upd-cap",
+                    "schedule": "every 1h",
+                    "prompt": "hi",
+                    "runtime_cap_seconds": 120,
+                },
+            }
+        )
+        assert "error" not in add, add
+        job_id = add["result"]["job_id"]
+
+        upd = server.dispatch(
+            {
+                "id": "upd-1",
+                "method": "cron.manage",
+                "params": {
+                    "action": "update",
+                    "name": job_id,
+                    "runtime_cap_seconds": 900,
+                    "prompt": "new prompt",
+                },
+            }
+        )
+        assert "error" not in upd, upd
+        assert upd["result"]["success"] is True
+        assert upd["result"]["job"]["runtime_cap_seconds"] == 900
+        # The other field should also have been applied — confirms the
+        # update payload isn't being narrowed to just the cap.
+        assert "new prompt" in upd["result"]["job"]["prompt_preview"]
+
+    def test_update_with_zero_clears_cap_via_gateway(self, _gateway_cron_tmpdir):
+        """``runtime_cap_seconds=0`` on update through the gateway clears it."""
+        add = server.dispatch(
+            {
+                "id": "clr-add",
+                "method": "cron.manage",
+                "params": {
+                    "action": "add",
+                    "name": "clr-cap",
+                    "schedule": "every 1h",
+                    "prompt": "hi",
+                    "runtime_cap_seconds": 60,
+                },
+            }
+        )
+        job_id = add["result"]["job_id"]
+
+        upd = server.dispatch(
+            {
+                "id": "clr-upd",
+                "method": "cron.manage",
+                "params": {
+                    "action": "update",
+                    "name": job_id,
+                    "runtime_cap_seconds": 0,
+                },
+            }
+        )
+        assert upd["result"]["success"] is True
+        assert "runtime_cap_seconds" not in upd["result"]["job"]
+
+    def test_list_round_trips_runtime_cap_seconds(self, _gateway_cron_tmpdir):
+        """``cron.manage`` list exposes the cap — UI clients' read path."""
+        server.dispatch(
+            {
+                "id": "list-add",
+                "method": "cron.manage",
+                "params": {
+                    "action": "add",
+                    "name": "list-cap",
+                    "schedule": "every 1h",
+                    "prompt": "hi",
+                    "runtime_cap_seconds": 240,
+                },
+            }
+        )
+        lst = server.dispatch(
+            {"id": "list-1", "method": "cron.manage", "params": {"action": "list"}}
+        )
+        assert "error" not in lst, lst
+        jobs = lst["result"]["jobs"]
+        assert len(jobs) == 1
+        assert jobs[0]["runtime_cap_seconds"] == 240
+
+    def test_unknown_cron_action_still_4016(self, _gateway_cron_tmpdir):
+        """Adding ``update`` must NOT have stolen the unknown-action path."""
+        resp = server.dispatch(
+            {
+                "id": "unk",
+                "method": "cron.manage",
+                "params": {"action": "totally-bogus"},
+            }
+        )
+        assert resp.get("error", {}).get("code") == 4016
+

@@ -20,6 +20,8 @@ POSIX-only: Windows has its own grandchild lifecycle (no shared session,
 
 from __future__ import annotations
 
+import argparse
+import importlib.util
 import json
 import os
 import subprocess
@@ -36,6 +38,16 @@ import pytest
 # so concurrent invocations of the suite don't clobber each other.
 _HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-isolation-probe"
 _HANDOFF_DIR.mkdir(exist_ok=True)
+
+_RUNNER_PATH = Path(__file__).resolve().parent.parent / "scripts" / "run_tests_parallel.py"
+
+
+def _load_runner_module():
+    spec = importlib.util.spec_from_file_location("run_tests_parallel", _RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _handoff_path_for(nonce: str) -> Path:
@@ -63,6 +75,38 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def test_split_runner_and_pytest_args_supports_separatorless_pytest_flags() -> None:
+    module = _load_runner_module()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-j", "--jobs", type=int, default=1)
+    parser.add_argument("--paths", default="tests")
+    parser.add_argument("paths_positional", nargs="*")
+
+    args, passthrough = module._split_runner_and_pytest_args(
+        parser,
+        ["tests/test_run_tests_parallel.py", "-q", "-k", "split_runner"],
+    )
+
+    assert args.paths_positional == ["tests/test_run_tests_parallel.py"]
+    assert passthrough == ["-q", "-k", "split_runner"]
+
+
+def test_split_runner_and_pytest_args_preserves_explicit_separator() -> None:
+    module = _load_runner_module()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-j", "--jobs", type=int, default=1)
+    parser.add_argument("--paths", default="tests")
+    parser.add_argument("paths_positional", nargs="*")
+
+    args, passthrough = module._split_runner_and_pytest_args(
+        parser,
+        ["tests/test_run_tests_parallel.py", "--", "-q", "--tb=long"],
+    )
+
+    assert args.paths_positional == ["tests/test_run_tests_parallel.py"]
+    assert passthrough == ["-q", "--tb=long"]
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only probe")
 @pytest.mark.live_system_guard_bypass
 def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
@@ -75,7 +119,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
     4. Assert the runner exited cleanly AND the grandchild is dead.
     """
     repo_root = Path(__file__).resolve().parent.parent
-    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    runner = _RUNNER_PATH
     assert runner.exists(), f"runner missing at {runner}"
 
     # Probe lives in a temp dir, NOT under tests/, so the regular suite

@@ -1727,8 +1727,8 @@ class TestCallLlmPaymentFallback:
         exc.status_code = 429
         return exc
 
-    def test_non_payment_error_not_caught(self, monkeypatch):
-        """Non-payment/non-connection errors (500) should NOT trigger fallback."""
+    def test_500_server_error_triggers_fallback(self, monkeypatch):
+        """5xx server errors (500) should trigger fallback to next provider."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
 
         primary_client = MagicMock()
@@ -1736,15 +1736,23 @@ class TestCallLlmPaymentFallback:
         server_err.status_code = 500
         primary_client.chat.completions.create.side_effect = server_err
 
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="fallback response"))
+        ])
+
         with patch("agent.auxiliary_client._get_cached_client",
                     return_value=(primary_client, "google/gemini-3-flash-preview")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
-                    return_value=("auto", "google/gemini-3-flash-preview", None, None, None)):
-            with pytest.raises(Exception, match="Internal Server Error"):
-                call_llm(
-                    task="compression",
-                    messages=[{"role": "user", "content": "hello"}],
-                )
+                    return_value=("auto", "google/gemini-3-flash-preview", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fallback_client, "fallback-model", "openrouter")):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+        # Fallback client should have been used
+        assert fallback_client.chat.completions.create.called
 
     def test_429_rate_limit_triggers_fallback(self, monkeypatch):
         """429 rate-limit errors should trigger fallback to next provider."""

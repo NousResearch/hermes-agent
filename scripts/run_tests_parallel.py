@@ -593,6 +593,33 @@ def _slice_files(
     return target
 
 
+def _split_runner_and_pytest_args(
+    parser: argparse.ArgumentParser,
+    argv: List[str],
+) -> tuple[argparse.Namespace, List[str]]:
+    """Split runner args from pytest passthrough args.
+
+    Preferred form is the documented ``--`` separator:
+
+        scripts/run_tests.sh tests/foo.py -- -q -k thing
+
+    For convenience and backward compatibility with docs/examples that omit
+    the separator, we also accept:
+
+        scripts/run_tests.sh tests/foo.py -q -k thing
+
+    In that implicit form, anything argparse does not recognize as a runner
+    option is treated as pytest passthrough instead of a hard CLI error.
+    """
+    if "--" in argv:
+        sep = argv.index("--")
+        our_args, pytest_passthrough = argv[:sep], argv[sep + 1 :]
+        return parser.parse_args(our_args), pytest_passthrough
+
+    args, pytest_passthrough = parser.parse_known_args(argv)
+    return args, pytest_passthrough
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -648,17 +675,10 @@ def main() -> int:
             "separator is passed through to each per-file pytest invocation."
         ),
     )
-    # Manually split argv on '--' so positional paths and pytest passthrough
-    # args don't fight over each other. argparse's nargs="*" positional is
-    # greedy and will swallow everything after '--' including the pytest
-    # flags, defeating the convention.
+    # Split argv on '--' when present, but also tolerate the common shorthand
+    # where pytest flags are supplied without the separator.
     argv = sys.argv[1:]
-    if "--" in argv:
-        sep = argv.index("--")
-        our_args, pytest_passthrough = argv[:sep], argv[sep + 1 :]
-    else:
-        our_args, pytest_passthrough = argv, []
-    args = parser.parse_args(our_args)
+    args, pytest_passthrough = _split_runner_and_pytest_args(parser, argv)
 
     # Parse --slice (or HERMES_TEST_SLICE) early so we can exit on bad input
     # before doing any expensive discovery.

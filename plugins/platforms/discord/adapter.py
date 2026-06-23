@@ -4250,10 +4250,14 @@ class DiscordAdapter(BasePlatformAdapter):
     def _discord_history_backfill_limit(self) -> int:
         """Return the max number of messages to scan backwards for context.
 
-        In practice the scan usually stops much earlier — at the bot's own
-        last message in the channel (the natural partition point).  This
-        limit is a safety cap for cold starts and long gaps where no prior
-        bot message exists in recent history.
+        In the default (partition) mode, the scan usually stops much earlier —
+        at the bot's own last message in the channel (the natural partition
+        point).  This limit is a safety cap for cold starts and long gaps
+        where no prior bot message exists in recent history.
+
+        When ``full_thread`` mode is enabled, the scan walks the entire
+        thread up to this limit without stopping at the partition point, so
+        the agent sees the full conversation surrounding the trigger.
         """
         configured = self.config.extra.get("history_backfill_limit")
         if configured is not None:
@@ -4267,6 +4271,31 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             return 50
 
+    def _discord_history_full_thread(self) -> bool:
+        """Return whether the bot should fetch the full thread instead of
+        stopping at the most recent self-message partition point.
+
+        Default: ``False`` (preserves existing behaviour — only the messages
+        since the bot's last reply are surfaced, matching the conversation
+        transcript window).
+
+        When enabled, the scan walks the entire thread (up to
+        ``history_backfill_limit``) without stopping at the partition point.
+        Useful when the user wants the bot to see the full thread context —
+        e.g. when resuming a long-running investigation in a thread where
+        the bot has replied multiple times.
+
+        Trade-off: the bot sees more context, but messages that are already
+        in the session transcript are duplicated in the prompt.  Token cost
+        scales linearly with the active window.
+        """
+        configured = self.config.extra.get("history_full_thread")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("DISCORD_HISTORY_FULL_THREAD", "false").lower() in {"true", "1", "yes", "on"}
+
     async def _fetch_channel_context(
         self,
         channel: Any,
@@ -4278,6 +4307,13 @@ class DiscordAdapter(BasePlatformAdapter):
         Scans backwards from *before* and collects messages until it hits
         a message sent by this bot (the natural partition point between
         bot turns) or reaches ``history_backfill_limit``.
+
+        When ``history_full_thread`` is enabled, the partition-stop on the
+        bot's own messages is skipped: the scan walks the entire thread up
+        to ``history_backfill_limit`` so the agent sees the full thread
+        context.  This is useful for resuming a long thread where the bot
+        has already replied multiple times — without this mode, only the
+        messages since the most recent bot reply are surfaced.
 
         When ``reply_target`` is provided (the user replied to a specific
         message), a second backward scan is run ending at that target so the
@@ -4297,6 +4333,7 @@ class DiscordAdapter(BasePlatformAdapter):
         limit = self._discord_history_backfill_limit()
         if limit <= 0:
             return ""
+        full_thread = self._discord_history_full_thread()
 
         # Determine which bot messages to include in context
         allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
@@ -4388,7 +4425,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 # partition point.  Everything before this is already in the
                 # session transcript.  (Redundant when _after_obj is set, but
                 # needed for cold start.)
-                if msg.author == self._client.user:
+                # Skip this stop when full_thread mode is enabled — the user
+                # wants the entire thread context, even messages preceding
+                # prior bot replies.
+                if not full_thread and msg.author == self._client.user:
                     break
                 line = _keep(msg)
                 if line is None:

@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -77,6 +78,30 @@ class ProfileGatewayProcess:
     profile: str
     path: Path
     pid: int
+
+
+def _write_planned_restart_notification_marker(*, via_service: bool, detached: bool) -> None:
+    """Tell the next gateway startup to notify home channels after restart.
+
+    The in-gateway SIGUSR1 restart path writes this marker during graceful
+    shutdown.  CLI-managed launchd restarts can fall back to SIGTERM/kickstart,
+    which bypasses the gateway's restart state; write the same marker here so
+    macOS restart behavior matches systemd/manual planned restarts.
+    """
+    try:
+        from utils import atomic_json_write
+
+        atomic_json_write(
+            get_hermes_home() / ".restart_pending.json",
+            {
+                "requested_at": time.time(),
+                "via_service": bool(via_service),
+                "detached": bool(detached),
+            },
+            indent=None,
+        )
+    except Exception as exc:
+        logger.debug("Failed to write planned restart notification marker: %s", exc)
 
 
 def _get_service_pids() -> set:
@@ -3796,6 +3821,7 @@ def launchd_restart():
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
             return
+        _write_planned_restart_notification_marker(via_service=True, detached=False)
         if pid is not None:
             try:
                 terminate_pid(pid, force=False)

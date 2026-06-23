@@ -615,9 +615,40 @@ def _check_gateway_running(profile_dir: Path) -> bool:
     """Check if a gateway is running for a given profile directory."""
     try:
         from gateway.status import get_running_pid
-        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
+
+        if get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None:
+            return True
+    except Exception:
+        pass
+    return _gateway_runtime_snapshot_running_for_profile(profile_dir)
+
+
+def _gateway_runtime_snapshot_running_for_profile(profile_dir: Path) -> bool:
+    """Return supervisor/process liveness for ``profile_dir``.
+
+    ``profile list`` historically trusted only ``<profile>/gateway.pid``.  On
+    supervised installs (launchd/systemd/s6), the service can be alive even when
+    that compatibility PID file is absent; ``hermes status --all`` already uses
+    the richer runtime snapshot.  Reuse that path under a context-local
+    HERMES_HOME override so every profile is checked against its own service
+    label/process filter without mutating global environment state.
+    """
+    try:
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from hermes_cli.gateway import get_gateway_runtime_snapshot
     except Exception:
         return False
+
+    token = set_hermes_home_override(profile_dir)
+    try:
+        return bool(get_gateway_runtime_snapshot().running)
+    except Exception:
+        return False
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _count_skills(profile_dir: Path) -> int:

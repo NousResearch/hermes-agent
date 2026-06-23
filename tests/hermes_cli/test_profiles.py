@@ -1414,7 +1414,11 @@ class TestEdgeCases:
         assert result == expected
 
     def test_list_profiles_default_info_fields(self, profile_env):
-        profiles = list_profiles()
+        with patch(
+            "hermes_cli.profiles._gateway_runtime_snapshot_running_for_profile",
+            return_value=False,
+        ):
+            profiles = list_profiles()
         default = [p for p in profiles if p.name == "default"][0]
         assert default.is_default is True
         assert default.gateway_running is False
@@ -1426,25 +1430,50 @@ class TestEdgeCases:
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
 
-        with patch("gateway.status.get_running_pid", return_value=99999) as mock_get_running_pid:
+        with patch("gateway.status.get_running_pid", return_value=99999) as mock_get_running_pid, patch(
+            "hermes_cli.profiles._gateway_runtime_snapshot_running_for_profile",
+            return_value=False,
+        ) as mock_snapshot:
             assert _check_gateway_running(default_home) is True
         mock_get_running_pid.assert_called_once_with(
             default_home / "gateway.pid",
             cleanup_stale=False,
         )
+        mock_snapshot.assert_not_called()
 
-    def test_gateway_running_check_plain_pid(self, profile_env):
-        """Shared PID validator returning None means the profile is not running."""
+    def test_gateway_running_check_falls_back_to_runtime_snapshot(self, profile_env):
+        """No PID file can still be running when launchd/systemd supervises it."""
         from hermes_cli.profiles import _check_gateway_running
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
 
-        with patch("gateway.status.get_running_pid", return_value=None) as mock_get_running_pid:
+        with patch("gateway.status.get_running_pid", return_value=None) as mock_get_running_pid, patch(
+            "hermes_cli.profiles._gateway_runtime_snapshot_running_for_profile",
+            return_value=True,
+        ) as mock_snapshot:
+            assert _check_gateway_running(default_home) is True
+        mock_get_running_pid.assert_called_once_with(
+            default_home / "gateway.pid",
+            cleanup_stale=False,
+        )
+        mock_snapshot.assert_called_once_with(default_home)
+
+    def test_gateway_running_check_plain_pid(self, profile_env):
+        """No PID file and no runtime snapshot means the profile is not running."""
+        from hermes_cli.profiles import _check_gateway_running
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+
+        with patch("gateway.status.get_running_pid", return_value=None) as mock_get_running_pid, patch(
+            "hermes_cli.profiles._gateway_runtime_snapshot_running_for_profile",
+            return_value=False,
+        ) as mock_snapshot:
             assert _check_gateway_running(default_home) is False
         mock_get_running_pid.assert_called_once_with(
             default_home / "gateway.pid",
             cleanup_stale=False,
         )
+        mock_snapshot.assert_called_once_with(default_home)
 
     def test_profile_name_boundary_single_char(self):
         """Single alphanumeric character is valid."""

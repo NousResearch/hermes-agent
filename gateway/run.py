@@ -4852,17 +4852,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @staticmethod
     def _load_reasoning_config() -> dict | None:
-        """Load reasoning effort from config.yaml.
+        """Load reasoning effort from config.yaml, respecting per-model overrides.
 
         Reads agent.reasoning_effort from config.yaml. Valid: "none",
         "minimal", "low", "medium", "high", "xhigh", "max", "ultra". Returns None to use
         default (medium).
+
+        Per-model overrides (agent.reasoning_overrides) take precedence
+        over the global value when the current model matches a key
+        (spelling-tolerant). Closes #21256.
         """
-        from hermes_constants import parse_reasoning_effort
+        from hermes_constants import parse_reasoning_effort, resolve_per_model_reasoning_effort
         cfg = _load_gateway_runtime_config()
-        # Keep the raw value — coercing with ``or ""`` turns a YAML boolean
-        # False (``reasoning_effort: false``/``off``/``no``) into "", silently
-        # re-enabling thinking for users who explicitly disabled it.
+        # Per-model override first
+        model_cfg = cfg.get("model") or {}
+        model = str(
+            (model_cfg.get("default", "") if isinstance(model_cfg, dict) else "")
+            or (model_cfg.get("model", "") if isinstance(model_cfg, dict) else "")
+            or ""
+        ).strip()
+        overrides = (cfg.get("agent") or {}).get("reasoning_overrides", {}) or {}
+        per_model = resolve_per_model_reasoning_effort(model, overrides)
+        if per_model is not None:
+            return per_model
+        # Global fallback — keep the raw value; coercing with ``or ""`` turns
+        # a YAML boolean False (``reasoning_effort: false``/``off``/``no``)
+        # into "", silently re-enabling thinking for users who explicitly
+        # disabled it.
         effort = cfg_get(cfg, "agent", "reasoning_effort", default="")
         result = parse_reasoning_effort(effort)
         if effort and str(effort).strip() and result is None:

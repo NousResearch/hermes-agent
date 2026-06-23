@@ -23,6 +23,7 @@ class ResponsesApiTransport(ProviderTransport):
     # response are stamped with the endpoint that minted them. Plain class
     # attribute default; mutated on the instance, not the class.
     _last_issuer_kind: Optional[str] = None
+    _last_service_tier_diagnostic: Optional[Dict[str, Any]] = None
 
     @property
     def api_mode(self) -> str:
@@ -113,6 +114,7 @@ class ResponsesApiTransport(ProviderTransport):
         # dropped before the API rejects them.
         issuer_kind = self._resolve_issuer_kind(params)
         self._last_issuer_kind = issuer_kind
+        self._last_service_tier_diagnostic = None
 
         # Resolve reasoning effort
         reasoning_effort = "medium"
@@ -329,6 +331,33 @@ class ResponsesApiTransport(ProviderTransport):
             merged_extra_body.setdefault("prompt_cache_key", session_id)
             kwargs["extra_body"] = merged_extra_body
 
+        if is_codex_backend:
+            extra_headers = kwargs.get("extra_headers")
+            request_id = None
+            if isinstance(extra_headers, dict):
+                request_id = extra_headers.get("x-client-request-id") or extra_headers.get("session_id")
+            requested_service_tier = kwargs.get("service_tier")
+            self._last_service_tier_diagnostic = {
+                "model": model,
+                "issuer_kind": issuer_kind,
+                "requested_service_tier": requested_service_tier,
+                "session_id": session_id,
+                "request_id": request_id,
+            }
+            if requested_service_tier:
+                try:
+                    from agent.codex_service_tier_log import record_codex_service_tier_request
+
+                    record_codex_service_tier_request(
+                        model=model,
+                        issuer_kind=issuer_kind,
+                        requested_service_tier=requested_service_tier,
+                        session_id=session_id,
+                        request_id=request_id,
+                    )
+                except Exception:
+                    pass
+
         return kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
@@ -344,6 +373,28 @@ class ResponsesApiTransport(ProviderTransport):
         issuer_kind = kwargs.get("issuer_kind") or self._last_issuer_kind
         # _normalize_codex_response returns (SimpleNamespace, finish_reason_str)
         msg, finish_reason = _normalize_codex_response(response, issuer_kind=issuer_kind)
+
+        diag = self._last_service_tier_diagnostic
+        if diag:
+            try:
+                from agent.codex_service_tier_log import record_codex_service_tier_response
+
+                def _response_field(name: str) -> Any:
+                    if isinstance(response, dict):
+                        return response.get(name)
+                    return getattr(response, name, None)
+
+                record_codex_service_tier_response(
+                    model=diag.get("model") or _response_field("model"),
+                    issuer_kind=diag.get("issuer_kind") or issuer_kind,
+                    requested_service_tier=diag.get("requested_service_tier"),
+                    effective_service_tier=_response_field("service_tier"),
+                    session_id=diag.get("session_id"),
+                    response_id=_response_field("id"),
+                    status=_response_field("status"),
+                )
+            except Exception:
+                pass
 
         tool_calls = None
         if msg and msg.tool_calls:

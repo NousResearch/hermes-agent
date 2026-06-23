@@ -12,6 +12,7 @@ Usage examples::
     hermes logs gateway -n 100    # last 100 lines of gateway.log
     hermes logs gui -f            # follow gui.log (dashboard/pty/ws)
     hermes logs desktop -f        # follow desktop.log (Electron app boot/backend)
+    hermes logs codex-tier -n 20  # requested/effective Codex service_tier JSONL
     hermes logs --level WARNING    # only WARNING+ lines
     hermes logs --session abc123   # filter by session ID substring
     hermes logs --component tools  # only tool-related lines
@@ -35,6 +36,7 @@ LOG_FILES = {
     "gateway": "gateway.log",
     "gui": "gui.log",
     "desktop": "desktop.log",
+    "codex-tier": "codex-service-tier.jsonl",
 }
 
 # Log line timestamp regex — matches "2026-04-05 22:35:00,123" or
@@ -154,7 +156,8 @@ def tail_log(
     Parameters
     ----------
     log_name
-        Which log to read: ``"agent"``, ``"errors"``, ``"gateway"``, ``"gui"``.
+        Which log to read: ``"agent"``, ``"errors"``, ``"gateway"``, ``"gui"``,
+        ``"desktop"``, or ``"codex-tier"``.
     num_lines
         Number of recent lines to show (before follow starts).
     follow
@@ -369,7 +372,7 @@ def list_logs() -> None:
     print(f"Log files in {display_hermes_home()}/logs/:\n")
     found = False
     for entry in sorted(log_dir.iterdir()):
-        if entry.is_file() and entry.suffix == ".log":
+        if entry.is_file() and entry.name in set(LOG_FILES.values()):
             size = entry.stat().st_size
             mtime = datetime.fromtimestamp(entry.stat().st_mtime)
             if size < 1024:

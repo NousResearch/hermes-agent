@@ -191,3 +191,106 @@ class TestNormalizeCustomProviderEntry:
         result = _normalize_custom_provider_entry(entry)
         assert result is not None
         assert "models" not in result
+
+    # -- id field + list-of-dicts coverage (issue #19857) -------------------
+
+    def test_id_field_accepted_as_provider_name(self):
+        """``id`` is a documented alias for ``name`` — entry should normalize."""
+        entry = {
+            "id": "manifest",
+            "base_url": "http://127.0.0.1:38238/v1",
+            "api_key": "sk-test",
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["name"] == "manifest"
+
+    def test_name_wins_over_id_when_both_present(self):
+        """When both ``name`` and ``id`` exist, ``name`` takes precedence."""
+        entry = {
+            "name": "primary",
+            "id": "secondary",
+            "base_url": "https://api.example.com/v1",
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["name"] == "primary"
+
+    def test_id_key_not_flagged_as_unknown(self, caplog):
+        """``id`` is now a known key — no 'unknown config keys' warning."""
+        import logging
+        entry = {
+            "id": "acme",
+            "base_url": "https://api.example.com/v1",
+        }
+        with caplog.at_level(logging.WARNING):
+            _normalize_custom_provider_entry(entry, provider_key="acme")
+        assert not any("unknown config keys" in r.message for r in caplog.records)
+
+    def test_models_list_of_dicts_with_id_field(self):
+        """List-of-dicts using ``id`` is preserved with per-model attrs."""
+        entry = {
+            "name": "acme",
+            "base_url": "https://api.example.com/v1",
+            "models": [
+                {"id": "gpt-4", "context_length": 128000},
+                {"id": "gpt-4o", "context_length": 200000},
+            ],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {
+            "gpt-4": {"context_length": 128000},
+            "gpt-4o": {"context_length": 200000},
+        }
+
+    def test_models_list_of_dicts_with_name_or_model_key(self):
+        """``name`` and ``model`` are accepted as fallback id sources."""
+        entry = {
+            "name": "acme",
+            "base_url": "https://api.example.com/v1",
+            "models": [
+                {"name": "alpha", "context_length": 8000},
+                {"model": "beta"},
+                {"id": "gamma", "context_length": 16000},
+            ],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {
+            "alpha": {"context_length": 8000},
+            "beta": {},
+            "gamma": {"context_length": 16000},
+        }
+
+    def test_models_list_of_dicts_mixed_with_strings(self):
+        """Mixed list of strings and dicts is preserved end-to-end."""
+        entry = {
+            "name": "acme",
+            "base_url": "https://api.example.com/v1",
+            "models": [
+                "plain-id",
+                {"id": "dict-id", "context_length": 32000},
+            ],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {
+            "plain-id": {},
+            "dict-id": {"context_length": 32000},
+        }
+
+    def test_models_list_of_dicts_without_identifier_skipped(self):
+        """Dict entries with no id/name/model key are silently dropped."""
+        entry = {
+            "name": "acme",
+            "base_url": "https://api.example.com/v1",
+            "models": [
+                {"context_length": 1000},          # no identifier
+                {"id": "", "context_length": 2000},  # blank identifier
+                {"id": "ok"},
+            ],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {"ok": {}}

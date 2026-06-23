@@ -326,6 +326,22 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
 
+        # IMAP encryption mode: "tls" (implicit TLS via IMAP4_SSL, default for
+        # port 993) or "starttls" (STARTTLS via IMAP4 + starttls(), default for
+        # port 143).  Read from env var, then extra dict, then auto-detect by
+        # port number.
+        raw_enc = (
+            os.getenv("EMAIL_IMAP_ENCRYPTION", "").strip().lower()
+            or extra.get("imap_encryption", "").strip().lower()
+        )
+        if raw_enc in ("starttls", "start-tls", "start_tls"):
+            self._imap_encryption = "starttls"
+        elif raw_enc in ("tls", "ssl", "implicit"):
+            self._imap_encryption = "tls"
+        else:
+            # Auto-detect: port 143 → STARTTLS, everything else → implicit TLS
+            self._imap_encryption = "starttls" if self._imap_port == 143 else "tls"
+
         # Skip attachments — configured via config.yaml:
         #   platforms:
         #     email:
@@ -361,6 +377,25 @@ class EmailAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
+
+    def _connect_imap(self) -> imaplib.IMAP4:
+        """Create an IMAP connection using the configured encryption mode.
+
+        When *starttls* is configured (or auto-detected for port 143), connects
+        via plain ``IMAP4`` and upgrades with ``starttls()``.  Otherwise uses
+        ``IMAP4_SSL`` for implicit TLS (port 993 default).
+
+        This mirrors ``_connect_smtp()`` which selects ``SMTP_SSL`` vs
+        ``SMTP`` + ``starttls()`` based on port.
+        """
+        ctx = ssl.create_default_context()
+        if self._imap_encryption == "starttls":
+            imap = imaplib.IMAP4(self._imap_host, self._imap_port, timeout=30)
+            imap.starttls(ssl_context=ctx)
+            return imap
+        return imaplib.IMAP4_SSL(
+            self._imap_host, self._imap_port, timeout=30, ssl_context=ctx,
+        )
 
     def _connect_smtp(self) -> smtplib.SMTP:
         """Create an SMTP connection, selecting the correct protocol for the port.
@@ -438,7 +473,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         try:
             # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            imap = self._connect_imap()
             imap.login(self._address, self._password)
             _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
@@ -507,7 +542,7 @@ class EmailAdapter(BasePlatformAdapter):
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
         try:
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            imap = self._connect_imap()
             try:
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)

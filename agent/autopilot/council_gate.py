@@ -349,19 +349,31 @@ def _aux_pick(question: str, options: list[str], *, context: str = "", council_m
         return options[0] if options else ""
 
 
-def choose_answer(
+@dataclass
+class ClarifyDecision:
+    """Result of the clarify human-surrogate, with enough context for the ADR."""
+
+    answer: str = ""
+    options: list[str] = field(default_factory=list)
+    rationale: str = ""
+    source: str = "aux"          # council | aux | fallback
+
+
+def choose_answer_detailed(
     question: str,
     options: Optional[list[str]] = None,
     *,
     council_model: str = "",
     max_tokens: int = 1200,
-) -> str:
-    """Most-recommended answer to a clarify question — the human-surrogate.
+) -> ClarifyDecision:
+    """Most-recommended answer to a clarify question, plus the decision context.
 
     Multi-option questions go through the Council's adversarial ``decision`` so
     the pick is anti-sycophantic; open-ended questions get the Council's safest
     recommended path. Falls back to a single independent reviewer pass, then to
-    the first option, so a clarify call in autopilot always resolves.
+    the first option, so a clarify call in autopilot always resolves. Returns the
+    chosen answer alongside the options it weighed, a one-line rationale, and
+    which reviewer produced it — the autopilot ADR records all of it.
     """
     opts = [str(o).strip() for o in (options or []) if str(o).strip()]
 
@@ -379,18 +391,38 @@ def choose_answer(
                 str(arb.get(k, "") or "")
                 for k in ("safest_reversible_path", "what_evidence_supports", "most_likely_wrong_point")
             )
+            rationale = str(arb.get("safest_reversible_path", "") or "").strip()
             if opts:
                 direct = _match_option(notes, opts)
                 if direct:
-                    return direct
-                return _aux_pick(question, opts, context=notes, council_model=council_model)
-            ans = str(arb.get("safest_reversible_path", "") or "").strip()
+                    return ClarifyDecision(answer=direct, options=opts, rationale=rationale, source="council")
+                picked = _aux_pick(question, opts, context=notes, council_model=council_model)
+                return ClarifyDecision(answer=picked, options=opts, rationale=rationale, source="council")
+            ans = rationale
             if ans:
-                return ans
+                return ClarifyDecision(answer=ans, options=opts, rationale=rationale, source="council")
         except Exception as exc:  # noqa: BLE001
             logger.warning("autopilot: council choose_answer failed (%s); aux fallback", exc)
 
-    return _aux_pick(question, opts, council_model=council_model)
+    picked = _aux_pick(question, opts, council_model=council_model)
+    return ClarifyDecision(answer=picked, options=opts, rationale="", source="aux")
+
+
+def choose_answer(
+    question: str,
+    options: Optional[list[str]] = None,
+    *,
+    council_model: str = "",
+    max_tokens: int = 1200,
+) -> str:
+    """Most-recommended answer to a clarify question — the human-surrogate.
+
+    Thin string wrapper over :func:`choose_answer_detailed` so existing callers
+    that only need the answer text are unaffected.
+    """
+    return choose_answer_detailed(
+        question, options, council_model=council_model, max_tokens=max_tokens
+    ).answer
 
 
 def _extract_json(text: str) -> Optional[dict[str, Any]]:

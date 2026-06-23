@@ -204,7 +204,8 @@ def test_judge_exception_delivers(monkeypatch):
 def test_clarify_autoanswer_uses_council(monkeypatch):
     from agent.autopilot import council_gate
     a = make_agent()
-    monkeypatch.setattr(council_gate, "choose_answer", lambda q, c=None, **k: "Option B")
+    monkeypatch.setattr(council_gate, "choose_answer_detailed",
+                        lambda q, c=None, **k: council_gate.ClarifyDecision(answer="Option B", options=list(c or []), source="council"))
     cb = driver.make_clarify_autoanswer(a)
     assert cb("Which option?", ["Option A", "Option B"]) == "Option B"
 
@@ -216,7 +217,7 @@ def test_clarify_autoanswer_falls_back_on_error(monkeypatch):
     def boom(*args, **kw):
         raise RuntimeError("council down")
 
-    monkeypatch.setattr(council_gate, "choose_answer", boom)
+    monkeypatch.setattr(council_gate, "choose_answer_detailed", boom)
     seen = {}
 
     def fb(q, c):
@@ -231,7 +232,8 @@ def test_clarify_autoanswer_falls_back_on_error(monkeypatch):
 def test_clarify_autoanswer_default_when_empty(monkeypatch):
     from agent.autopilot import council_gate
     a = make_agent()
-    monkeypatch.setattr(council_gate, "choose_answer", lambda q, c=None, **k: "")
+    monkeypatch.setattr(council_gate, "choose_answer_detailed",
+                        lambda q, c=None, **k: council_gate.ClarifyDecision(answer="", options=list(c or []), source="aux"))
     cb = driver.make_clarify_autoanswer(a)  # no fallback
     assert "default" in cb("q", None).lower()
 
@@ -460,3 +462,67 @@ def test_giveup_strengthens_directive_when_incomplete(monkeypatch):
 def test_build_directive_is_non_dismissible():
     d = driver._build_directive(CompletionVerdict(complete=False, directive="do X", verdict="deny"))
     assert "NOT a notification" in d and "do X" in d
+
+
+# --------------------------------------------------------------------------- #
+# ADR decision-log wiring (maybe_continue + clarify)                            #
+# --------------------------------------------------------------------------- #
+def test_adr_written_at_completion(monkeypatch, tmp_path):
+    from agent.autopilot import council_gate
+    target = tmp_path / "adr.md"
+    a = make_agent(_autopilot_adr=True, _autopilot_adr_path=str(target), _autopilot_goal="fix lint")
+    # Council says complete.
+    monkeypatch.setattr(driver, "judge_completion",
+                        lambda *args, **kw: council_gate.CompletionVerdict(
+                            complete=True, verdict="allow", confidence=0.9, source="council",
+                            summary="council verdict=allow", raw={"arbiter": {}}))
+    out = driver.maybe_continue(a, [{"role": "user", "content": "go"}], "done", "fix lint")
+    assert out is None                       # complete -> stop
+    assert target.exists()
+    body = target.read_text()
+    assert "— completion" in body
+    assert "stop — goal verified complete" in body
+
+
+def test_adr_written_at_continue_with_gap(monkeypatch, tmp_path):
+    from agent.autopilot import council_gate
+    target = tmp_path / "adr.md"
+    a = make_agent(_autopilot_adr=True, _autopilot_adr_path=str(target), _autopilot_goal="ship it")
+    monkeypatch.setattr(driver, "judge_completion",
+                        lambda *args, **kw: council_gate.CompletionVerdict(
+                            complete=False, verdict="deny", confidence=0.6, directive="run the tests",
+                            source="council", summary="council verdict=deny",
+                            raw={"arbiter": {"most_likely_wrong_point": "no tests run",
+                                             "required_checks": ["run pytest"]}}))
+    out = driver.maybe_continue(a, [{"role": "user", "content": "go"}], "I think it's done", "ship it")
+    assert out is not None                   # not complete -> continue directive
+    body = target.read_text()
+    assert "— continue" in body
+    assert "no tests run" in body
+    assert "run pytest" in body
+
+
+def test_adr_not_written_when_disabled(monkeypatch, tmp_path):
+    from agent.autopilot import council_gate
+    target = tmp_path / "adr.md"
+    a = make_agent(_autopilot_adr=False, _autopilot_adr_path=str(target), _autopilot_goal="x")
+    monkeypatch.setattr(driver, "judge_completion",
+                        lambda *args, **kw: council_gate.CompletionVerdict(
+                            complete=True, verdict="allow", source="council", summary="ok", raw={}))
+    driver.maybe_continue(a, [{"role": "user", "content": "go"}], "done", "x")
+    assert not target.exists()               # ADR off -> no file
+
+
+def test_adr_written_at_clarify(monkeypatch, tmp_path):
+    from agent.autopilot import council_gate
+    target = tmp_path / "adr.md"
+    a = make_agent(_autopilot_adr=True, _autopilot_adr_path=str(target))
+    monkeypatch.setattr(council_gate, "choose_answer_detailed",
+                        lambda q, c=None, **k: council_gate.ClarifyDecision(
+                            answer="SQLite", options=list(c or []), rationale="stdlib", source="council"))
+    cb = driver.make_clarify_autoanswer(a)
+    assert cb("Which DB?", ["Postgres", "SQLite"]) == "SQLite"
+    body = target.read_text()
+    assert "— clarify" in body
+    assert "chosen path: SQLite" in body
+    assert "Postgres" in body                # full option set recorded

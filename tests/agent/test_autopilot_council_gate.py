@@ -197,3 +197,38 @@ def test_choose_answer_aux_fallback_no_council(monkeypatch):
     monkeypatch.setattr(cg, "_aux_call",
                         lambda msgs, *, model, max_tokens, timeout: '{"choice": "Postgres"}')
     assert cg.choose_answer("Which DB?", ["Postgres", "SQLite"]) == "Postgres"
+
+
+# --------------------------------------------------------------------------- #
+# choose_answer_detailed — options-surfacing for the ADR                       #
+# --------------------------------------------------------------------------- #
+
+
+def test_choose_answer_detailed_council_surfaces_options(monkeypatch):
+    monkeypatch.setattr(cg, "ensure_council_importable", lambda *a, **k: True)
+    monkeypatch.setattr(cg, "_council_decision",
+                        lambda options, ctx: {"arbiter": {"safest_reversible_path": "Choose Postgres for durability."}})
+    d = cg.choose_answer_detailed("Which DB?", ["Postgres", "SQLite"])
+    assert d.answer == "Postgres"
+    assert d.options == ["Postgres", "SQLite"]   # full option set captured for the ADR
+    assert d.source == "council"
+    assert "Postgres" in d.rationale
+
+
+def test_choose_answer_detailed_aux_fallback_reports_source(monkeypatch):
+    monkeypatch.setattr(cg, "ensure_council_importable", lambda *a, **k: False)
+    monkeypatch.setattr(cg, "_aux_call",
+                        lambda msgs, *, model, max_tokens, timeout: '{"choice": "SQLite", "rationale": "simpler"}')
+    d = cg.choose_answer_detailed("Which DB?", ["Postgres", "SQLite"])
+    assert d.answer == "SQLite"
+    assert d.options == ["Postgres", "SQLite"]
+    assert d.source == "aux"                     # fallback lane is labeled for the ADR
+
+
+def test_choose_answer_string_wrapper_matches_detailed(monkeypatch):
+    monkeypatch.setattr(cg, "ensure_council_importable", lambda *a, **k: False)
+    monkeypatch.setattr(cg, "_aux_call",
+                        lambda msgs, *, model, max_tokens, timeout: '{"choice": "Postgres"}')
+    # The legacy string API returns exactly the detailed answer.
+    assert cg.choose_answer("Which DB?", ["Postgres", "SQLite"]) == \
+        cg.choose_answer_detailed("Which DB?", ["Postgres", "SQLite"]).answer

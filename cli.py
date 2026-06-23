@@ -3548,6 +3548,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             os.environ.setdefault("AUTOPILOT_NO_PROGRESS_K", str(_ap_cfg.get("no_progress_k")))
         if _ap_cfg.get("council_model"):
             os.environ.setdefault("AUTOPILOT_COUNCIL_MODEL", str(_ap_cfg.get("council_model")))
+        if _ap_cfg.get("adr"):
+            os.environ.setdefault("HERMES_AUTOPILOT_ADR", "1")
+        if _ap_cfg.get("adr_path"):
+            os.environ.setdefault("AUTOPILOT_ADR_PATH", str(_ap_cfg.get("adr_path")))
         self._tool_callbacks_installed = False
         self._tirith_security_checked = False
         self._app = None  # prompt_toolkit Application (set in run())

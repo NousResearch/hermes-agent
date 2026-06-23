@@ -328,3 +328,51 @@ describe('StatusRule idle-since read-out', () => {
     expect(findComponentByName(element, 'IdleSince')).toBeNull()
   })
 })
+
+describe('StatusRule autopilot AUTO badge', () => {
+  it('renders the AUTO indicator when autopilot is on', () => {
+    const element = StatusRule({
+      autopilot: true,
+      bgCount: 0,
+      busy: false,
+      cols: 160,
+      cwdLabel: '~/repo',
+      liveSessionCount: 1,
+      model: 'opus-4.8',
+      onSessionCountClick: vi.fn(),
+      sessionStartedAt: null,
+      showCost: false,
+      status: 'ready',
+      statusColor: DEFAULT_THEME.color.ok,
+      t: DEFAULT_THEME,
+      turnStartedAt: null,
+      usage: { total: 0 },
+      voiceLabel: ''
+    })
+
+    expect(textContent(element)).toContain('AUTO')
+  })
+
+  it('omits the AUTO indicator when autopilot is off', () => {
+    const element = StatusRule({
+      autopilot: false,
+      bgCount: 0,
+      busy: false,
+      cols: 160,
+      cwdLabel: '~/repo',
+      liveSessionCount: 1,
+      model: 'opus-4.8',
+      onSessionCountClick: vi.fn(),
+      sessionStartedAt: null,
+      showCost: false,
+      status: 'ready',
+      statusColor: DEFAULT_THEME.color.ok,
+      t: DEFAULT_THEME,
+      turnStartedAt: null,
+      usage: { total: 0 },
+      voiceLabel: ''
+    })
+
+    expect(textContent(element)).not.toContain('AUTO')
+  })
+})

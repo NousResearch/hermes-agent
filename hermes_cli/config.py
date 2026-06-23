@@ -1994,6 +1994,12 @@ DEFAULT_CONFIG = {
         "no_progress_k": 3,        # stop after this many continuations with no progress
         "council_model": "",       # "" = use the main model via the Council hermes lane
         "verify_on_complete": "low_confidence",  # low_confidence | always
+        # Decision log (ADR): when on, every autopilot judgment (completion,
+        # continue, clarify) is appended to a human-readable markdown file so you
+        # can review, after an unattended run, what was sent for verification,
+        # what the reviewer returned, and which path was taken. Off by default.
+        "adr": False,
+        "adr_path": "",            # "" = <workspace>/.hermes/autopilot/adr/AUTOPILOT-<session>-<date>.md
     },
 
     # Skills — external skill directories for sharing skills across tools/agents.

@@ -24,6 +24,7 @@ import os
 import sys
 from typing import Any, Optional
 
+from agent.autopilot import adr
 from agent.autopilot.council_gate import CompletionVerdict, judge_completion
 
 logger = logging.getLogger(__name__)
@@ -292,6 +293,56 @@ def keep_budget_ahead(agent: Any, headroom: int = 50) -> None:
         pass
 
 
+def _adr_record_verdict(
+    agent: Any,
+    *,
+    kind: str,
+    goal: str,
+    work_summary: str,
+    final_response: str,
+    verdict: "CompletionVerdict",
+) -> None:
+    """Write a completion/continue decision to the autopilot ADR (best-effort).
+
+    Pulls the structured gap + required-checks out of the Council arbiter when
+    present (``verdict.raw['arbiter']``); for the auxiliary/fallback lane the
+    composed ``verdict.directive`` carries the same information in prose.
+    """
+    try:
+        if not adr.adr_enabled(agent):
+            return
+        arb = {}
+        if isinstance(getattr(verdict, "raw", None), dict):
+            arb = verdict.raw.get("arbiter", {}) or {}
+        gap = str(arb.get("most_likely_wrong_point", "") or "").strip()
+        checks = arb.get("required_checks") or []
+        if isinstance(checks, (list, tuple)):
+            required = "; ".join(str(c).strip() for c in checks if str(c).strip())
+        else:
+            required = str(checks or "").strip()
+        if not required:
+            required = str(arb.get("fastest_uncertainty_reducing_check", "") or "").strip()
+        sent = (
+            f"GOAL:\n{goal}\n\nCANDIDATE RESULT:\n{final_response}\n\n"
+            f"WORK CONTEXT:\n{work_summary}"
+        )
+        adr.record_decision(
+            agent,
+            kind=kind,
+            goal=goal,
+            sent_for_verification=sent,
+            verdict=verdict.verdict or ("allow" if verdict.complete else "deny"),
+            confidence=getattr(verdict, "confidence", 0.0) or 0.0,
+            gap=gap or (verdict.directive if not verdict.complete else ""),
+            required_checks=required,
+            chosen=("stop — goal verified complete" if verdict.complete else "continue — re-inject next-step directive"),
+            rationale=verdict.summary,
+            source=verdict.source or "unknown",
+        )
+    except Exception as exc:  # noqa: BLE001 — ADR must never break the gate
+        logger.debug("autopilot: ADR verdict record failed (%s)", exc)
+
+
 def maybe_continue(
     agent: Any,
     messages: list[dict[str, Any]],
@@ -339,6 +390,8 @@ def maybe_continue(
         return None
 
     if verdict.complete:
+        _adr_record_verdict(agent, kind="completion", goal=goal,
+                            work_summary=work_summary, final_response=final_response, verdict=verdict)
         _emit(agent, f"✅ Autopilot: goal verified complete ({verdict.summary}).")
         logger.info("autopilot: COMPLETE after %d continuation(s) — %s",
                     getattr(agent, "_autopilot_continuations", 0), verdict.summary)
@@ -368,6 +421,8 @@ def maybe_continue(
     # --- continue: extend budget so the standard cap never ends the run ------
     agent._autopilot_continuations = getattr(agent, "_autopilot_continuations", 0) + 1
     _extend_budget(agent)
+    _adr_record_verdict(agent, kind="continue", goal=goal,
+                        work_summary=work_summary, final_response=final_response, verdict=verdict)
     if giveup:
         _emit(
             agent,
@@ -441,10 +496,23 @@ def make_clarify_autoanswer(agent: Any, fallback: Any = None):
 
     def _callback(question, choices=None):
         try:
-            from agent.autopilot.council_gate import choose_answer
+            from agent.autopilot.council_gate import choose_answer_detailed
 
-            answer = choose_answer(question, choices, council_model=_council_model(agent))
+            decision = choose_answer_detailed(question, choices, council_model=_council_model(agent))
+            answer = decision.answer
             if answer:
+                try:
+                    adr.record_decision(
+                        agent,
+                        kind="clarify",
+                        goal=str(question),
+                        options=decision.options,
+                        chosen=answer,
+                        rationale=decision.rationale,
+                        source=decision.source,
+                    )
+                except Exception as adr_exc:  # noqa: BLE001 — ADR never breaks clarify
+                    logger.debug("autopilot: ADR clarify record failed (%s)", adr_exc)
                 _emit(agent, f"🤖 Autopilot answered clarify: {str(answer)[:80]}")
                 logger.info("autopilot: auto-answered clarify %r -> %r", str(question)[:80], str(answer)[:80])
                 return answer

@@ -1609,6 +1609,23 @@ class AIAgent:
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
+                # Belt-and-suspenders: synthetic empty-response / thinking-
+                # prefill scaffolding is transport-internal and must never reach
+                # the session DB. ``_drop_trailing_empty_response_scaffolding``
+                # only cleans the tail; a synthetic message sitting *before*
+                # real content (e.g. after a short-circuit turn that ran the
+                # in-place strip, or a mid-list nudge) would otherwise be
+                # flushed and replayed next turn, retriggering alternation
+                # repair. Skip it here regardless of position.
+                if any(
+                    msg.get(flag)
+                    for flag in (
+                        "_empty_recovery_synthetic",
+                        "_empty_terminal_sentinel",
+                        "_thinking_prefill",
+                    )
+                ):
+                    continue
                 msg_id = id(msg)
                 if msg_id in flushed_ids:
                     continue

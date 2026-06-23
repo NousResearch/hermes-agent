@@ -2470,7 +2470,7 @@ def _is_payment_error(exc: Exception) -> bool:
     # but sometimes wrap them in 429 or other codes.
     # Daily quota exhaustion from Bedrock, Vertex AI, and similar providers
     # uses different language but is semantically identical to credit exhaustion.
-    if status in {402, 404, 429, None}:
+    if status in {402, 404, 429, 502, 503, 504, None}:
         if any(kw in err_lower for kw in (
             "credits", "insufficient funds",
             "can only afford", "billing",
@@ -2485,6 +2485,9 @@ def _is_payment_error(exc: Exception) -> bool:
             "tokens per day", "daily quota",
             "resource exhausted",  # Vertex AI / gRPC quota errors
             "weekly usage limit", "weekly limit",  # OpenCode Go weekly subscription cap
+            # Proxy / gateway upstream errors that indicate service
+            # unavailability rather than transient rate limiting.
+            "unavailable",
         )):
             return True
     return False

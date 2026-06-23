@@ -110,7 +110,7 @@ class TestMcpRegistrationE2E:
         }
 
     @pytest.mark.asyncio
-    async def test_sse_server_preserves_transport_marker(self, acp_agent, mock_manager):
+    async def test_sse_server_preserves_transport_marker(self, acp_agent):
         """An SSE MCP server must register with transport=sse, not as plain HTTP.
 
         McpServerHttp and McpServerSse share the url/headers shape, so without an

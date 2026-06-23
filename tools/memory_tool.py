@@ -57,8 +57,7 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
-_CORE_PREFIX = "[core]"
-_CORE_PREFIX_LEN = len(_CORE_PREFIX)
+_CORE_PREFIX_LEN = 6  # len("[core]")
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +204,8 @@ class MemoryStore:
                 # as a core entry — prevents extended entries from leaking
                 # via the backward-compat "all go in" fallback.
                 core_prefix = ""
-                if entry.lower().startswith(_CORE_PREFIX):
-                    core_prefix = entry[:entry.lower().find(_CORE_PREFIX) + _CORE_PREFIX_LEN] + " "
+                if entry.lower().startswith("[core]"):
+                    core_prefix = entry[:entry.lower().find("[core]") + _CORE_PREFIX_LEN] + " "
                 sanitized.append(
                     f"{core_prefix}[BLOCKED: {filename} entry contained threat pattern(s): "
                     f"{', '.join(findings)}. Removed from system prompt; "
@@ -663,7 +662,7 @@ class MemoryStore:
                 # Filter out entries that become empty after stripping (bare [core]).
                 stripped = []
                 for e in core_entries:
-                    idx = e.lower().find(_CORE_PREFIX)
+                    idx = e.lower().find("[core]")
                     stripped_entry = e[idx + _CORE_PREFIX_LEN:].strip()
                     if stripped_entry:
                         stripped.append(stripped_entry)

@@ -70,11 +70,7 @@ def _is_mcp_catalog(p: str) -> bool:
 def classify(files: list[str]) -> dict[str, bool]:
     """Map changed paths to ``{lane: should_run}``."""
     files = [f.strip() for f in files if f.strip()]
-    if not files or any(f.startswith(".github/") for f in files):
-        return dict.fromkeys(
-            ("python", "docker_meta", "frontend", "site", "scan", "deps", "mcp_catalog"), True
-        )
-    return {
+    ret = {
         "python": any(not _py_irrelevant(f) for f in files),
         "docker_meta":  any(f.startswith(_DOCKER_META) for f in files),
         "frontend": any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files),
@@ -83,6 +79,17 @@ def classify(files: list[str]) -> dict[str, bool]:
         "deps": any(f == "pyproject.toml" for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
     }
+    if not files or any(f.startswith(".github/") for f in files):
+        ret["python"] = True
+        ret["docker_meta"] = True
+        ret["frontend"] = True
+        ret["site"] = True
+        ret["scan"] = True
+        ret["deps"] = True
+
+        # explicitly skip mcp catalog here. it's not needed unless those files are modified.
+    return ret
+
 
 
 def main() -> int:

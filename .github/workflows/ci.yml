@@ -18,8 +18,8 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write  # needed by lint (PR comment) + supply-chain (PR comment)
-  actions: read          # needed by osv-scanner (SARIF upload)
+  pull-requests: write # needed by lint (PR comment) + supply-chain (PR comment)
+  actions: read # needed by osv-scanner (SARIF upload)
   security-events: write # needed by osv-scanner (SARIF upload)
 
 concurrency:
@@ -96,7 +96,7 @@ jobs:
 
   supply-chain:
     needs: detect
-    if: needs.detect.outputs.scan == 'true' || needs.detect.outputs.deps == 'true' || needs.detect.outputs.mcp_catalog == 'true'
+    if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.scan == 'true' || needs.detect.outputs.deps == 'true' || needs.detect.outputs.mcp_catalog == 'true')
     uses: ./.github/workflows/supply-chain-audit.yml
     with:
       event_name: ${{ needs.detect.outputs.event_name }}

@@ -18,8 +18,8 @@ from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 from utils import atomic_replace
 
-VALID_MODES = frozenset({"off", "ask_first", "auto_draft", "learn", "teach"})
-START_MODES = VALID_MODES - {"off"}
+VALID_MODES = frozenset({"off", "learn"})
+START_MODES = frozenset({"learn"})
 VALID_STATES = frozenset({"stopped", "running", "paused"})
 
 _STATE_FILE = "state.json"
@@ -154,7 +154,7 @@ def start(*, mode: str = "learn") -> Dict[str, Any]:
     """Start Learn in ``mode``."""
     mode = (mode or "").strip().lower()
     if mode not in START_MODES:
-        raise ValueError(f"mode must be one of: {', '.join(sorted(START_MODES))}")
+        raise ValueError("mode must be 'learn'; other Learn modes are planned but not implemented in this MVP")
     home = get_hermes_home().resolve()
     with _lock:
         state = _load_state(home)

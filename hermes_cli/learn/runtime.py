@@ -8,7 +8,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
-from . import analyzer, sampler, state
+from . import sampler, state
 
 _runtime_lock = threading.Lock()
 _runtimes: dict[str, tuple[threading.Event, threading.Thread]] = {}
@@ -20,7 +20,6 @@ def _worker(home: Path, stop_event: threading.Event, interval_seconds: float) ->
         if current.get("mode") == "off" or current.get("state") != "running":
             break
         sampler.sample_once(home=home)
-        analyzer.create_usage_suggestions(home=home)
         stop_event.wait(interval_seconds)
 
 

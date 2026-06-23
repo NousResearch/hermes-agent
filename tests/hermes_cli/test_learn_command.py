@@ -42,3 +42,17 @@ def test_learn_command_review_creates_usage_suggestions(tmp_path, monkeypatch):
 
     assert "Created 1 Learn suggestion" in output
     assert "Run /suggestions to review" in output
+
+
+def test_learn_command_rejects_future_modes_until_implemented(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-a"))
+
+    from hermes_cli.learn import commands, runtime
+
+    starts = []
+    monkeypatch.setattr(runtime, "ensure_running", lambda: starts.append("start"))
+
+    output = commands.handle_learn_command("start teach")
+
+    assert "Learn start failed" in output
+    assert starts == []

@@ -66,11 +66,8 @@ const STATE_LABELS: Record<LearnStatus['state'], string> = {
 }
 
 const MODE_LABELS: Record<LearnStatus['mode'], string> = {
-  ask_first: 'Ask first',
-  auto_draft: 'Auto-draft',
   learn: 'Learn mode',
-  off: 'Off',
-  teach: 'Teach me this workflow'
+  off: 'Off'
 }
 
 function parseList(value: string): string[] {
@@ -100,7 +97,7 @@ function InfoCard({
   )
 }
 
-export function LearnPanel() {
+export function LearnPanel({ onStatusChange }: { onStatusChange?: (status: LearnStatus) => void }) {
   const [status, setStatus] = useState<LearnStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [busyAction, setBusyAction] = useState<string | null>(null)
@@ -112,13 +109,15 @@ export function LearnPanel() {
     setLoading(true)
 
     try {
-      setStatus(await getLearnStatus())
+      const next = await getLearnStatus()
+      setStatus(next)
+      onStatusChange?.(next)
     } catch (error) {
       notifyError(error, 'Could not load Learn status')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [onStatusChange])
 
   useEffect(() => {
     void refresh()
@@ -150,6 +149,7 @@ export function LearnPanel() {
     try {
       const next = await action()
       setStatus(next)
+      onStatusChange?.(next)
       notify({ kind: 'success', message: successMessage })
     } catch (error) {
       notifyError(error, `Could not ${actionName.toLowerCase()} Learn`)
@@ -197,6 +197,7 @@ export function LearnPanel() {
     try {
       const next = await updateLearnConfig(config)
       setStatus(next)
+      onStatusChange?.(next)
       notify({ kind: 'success', message: 'Learn controls saved' })
     } catch (error) {
       notifyError(error, 'Could not save Learn controls')
@@ -224,8 +225,8 @@ export function LearnPanel() {
             <Pill tone={statusTone}>{statusLabel}</Pill>
           </div>
           <p className="mt-1 max-w-2xl text-[0.72rem] leading-relaxed text-muted-foreground">
-            Learn converts approved signals into reviewable memory, skill, and automation proposals. It never enables a
-            learned workflow without explicit approval.
+            Learn converts approved signals into reviewable workflow opportunities and automation suggestions. It never
+            enables a learned workflow without explicit approval.
           </p>
         </div>
         <Button
@@ -322,7 +323,7 @@ export function LearnPanel() {
 
       <div className="grid gap-2 md:grid-cols-2">
         <InfoCard icon={Sparkles} title="Purpose">
-          Wrap existing Hermes primitives behind one review surface for high-value, low-risk workflow opportunities.
+          Wrap approved local metadata behind one review surface for high-value, low-risk workflow opportunities.
         </InfoCard>
         <InfoCard icon={Lock} title="Safety invariant">
           Learn does not automate from observation. It only prepares proposals for explicit review.

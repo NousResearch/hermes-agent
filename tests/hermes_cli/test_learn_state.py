@@ -71,19 +71,33 @@ def test_invalid_mode_is_rejected(tmp_path, monkeypatch):
         raise AssertionError("invalid mode should raise ValueError")
 
 
+def test_future_modes_are_not_startable_in_mvp(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-a"))
+
+    from hermes_cli.learn import state
+
+    for mode in ("ask_first", "auto_draft", "teach"):
+        try:
+            state.start(mode=mode)
+        except ValueError as exc:
+            assert "learn" in str(exc)
+        else:
+            raise AssertionError(f"{mode} should not start before it has distinct behavior")
+
+
 def test_delete_data_clears_events_but_keeps_selected_mode(tmp_path, monkeypatch):
     home = tmp_path / "profile-a"
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     from hermes_cli.learn import state
 
-    state.start(mode="ask_first")
+    state.start(mode="learn")
     events_file = home / "learn" / "events.jsonl"
     events_file.write_text('{"kind":"app","title":"redacted"}\n', encoding="utf-8")
 
     deleted = state.delete_data()
 
-    assert deleted["mode"] == "ask_first"
+    assert deleted["mode"] == "learn"
     assert deleted["state"] == "stopped"
     assert deleted["collected_event_count"] == 0
     assert deleted["data_deleted_at"]
@@ -107,4 +121,3 @@ def test_status_counts_events_without_reading_payloads(tmp_path, monkeypatch):
 
     assert status["collected_event_count"] == 2
     assert "Secret quarterly plan" not in json.dumps(status)
-

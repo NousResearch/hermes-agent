@@ -18,7 +18,7 @@ import type {
   HermesConfig,
   HermesConfigRecord,
   LearnConfigUpdate,
-  LearnMode,
+  LearnStartMode,
   LearnStatus,
   LearnSuggestionsResponse,
   LogsResponse,
@@ -508,7 +508,7 @@ export function getLearnStatus(): Promise<LearnStatus> {
   })
 }
 
-export function startLearn(mode: LearnMode = 'learn'): Promise<LearnStatus> {
+export function startLearn(mode: LearnStartMode = 'learn'): Promise<LearnStatus> {
   return window.hermesDesktop.api<LearnStatus>({
     ...profileScoped(),
     path: '/api/learn/start',

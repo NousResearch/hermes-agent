@@ -7,11 +7,11 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
-import { getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
+import { getLearnStatus, getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
+import type { LearnStatus, SkillInfo, ToolsetInfo } from '@/types/hermes'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -121,6 +121,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   const [query, setQuery] = useState('')
   const [skills, setSkills] = useState<SkillInfo[] | null>(null)
   const [toolsets, setToolsets] = useState<ToolsetInfo[] | null>(null)
+  const [learnStatus, setLearnStatus] = useState<LearnStatus | null>(null)
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [savingSkill, setSavingSkill] = useState<string | null>(null)
@@ -131,9 +132,14 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     setRefreshing(true)
 
     try {
-      const [nextSkills, nextToolsets] = await Promise.all([getSkills(), getToolsets()])
+      const [nextSkills, nextToolsets, nextLearnStatus] = await Promise.all([
+        getSkills(),
+        getToolsets(),
+        getLearnStatus().catch(() => null)
+      ])
       setSkills(nextSkills)
       setToolsets(nextToolsets)
+      setLearnStatus(nextLearnStatus)
     } catch (err) {
       notifyError(err, t.skills.skillsLoadFailed)
     } finally {
@@ -338,9 +344,11 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                       <LearnSurfaceRow
                         expanded={expandedToolset === LEARN_SURFACE_ID}
                         key={row.key}
+                        onStatusChange={setLearnStatus}
                         onToggle={() =>
                           setExpandedToolset(current => (current === LEARN_SURFACE_ID ? null : LEARN_SURFACE_ID))
                         }
+                        status={learnStatus}
                       />
                     )
                   }
@@ -406,14 +414,39 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   )
 }
 
-function LearnSurfaceRow({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
+function learnSurfaceStatusLabel(status: LearnStatus | null): string {
+  if (!status) {
+    return 'Preview'
+  }
+  if (status.running) {
+    return 'Running'
+  }
+  if (status.paused) {
+    return 'Paused'
+  }
+  return status.mode === 'learn' ? 'Stopped' : 'Off'
+}
+
+function LearnSurfaceRow({
+  expanded,
+  onStatusChange,
+  onToggle,
+  status
+}: {
+  expanded: boolean
+  onStatusChange: (status: LearnStatus) => void
+  onToggle: () => void
+  status: LearnStatus | null
+}) {
+  const statusLabel = learnSurfaceStatusLabel(status)
+
   return (
     <div className="px-0 py-2.5">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="truncate text-sm font-medium">Learn</div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Identify repeat workflows and draft skills or automations for approval.
+            Identify repeat workflows and draft automation suggestions for approval.
           </p>
         </div>
         <button
@@ -423,10 +456,10 @@ function LearnSurfaceRow({ expanded, onToggle }: { expanded: boolean; onToggle: 
           onClick={onToggle}
           type="button"
         >
-          <StatusPill active={false}>Preview</StatusPill>
+          <StatusPill active={status?.running ?? false}>{statusLabel}</StatusPill>
         </button>
       </div>
-      {expanded && <LearnPanel />}
+      {expanded && <LearnPanel onStatusChange={onStatusChange} />}
     </div>
   )
 }

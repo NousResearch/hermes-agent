@@ -156,6 +156,16 @@ describe('SkillsView toolset management', () => {
     expect(screen.getByText('Stopped')).toBeTruthy()
   })
 
+  it('shows the live Learn status in the toolsets list', async () => {
+    getToolsets.mockResolvedValue([])
+    getLearnStatus.mockResolvedValue(learnStatus({ mode: 'learn', state: 'running', enabled: true, running: true }))
+
+    await renderSkills()
+
+    expect(await screen.findByText('Running')).toBeTruthy()
+    expect(screen.queryByText('Preview')).toBeNull()
+  })
+
   it('sorts the Learn surface alphabetically with toolset rows', async () => {
     getToolsets.mockResolvedValue([
       toolset({ name: 'browser', label: 'Browser Automation' }),
@@ -189,7 +199,7 @@ describe('SkillsView toolset management', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Start Learn' }))
 
     await waitFor(() => expect(startLearn).toHaveBeenCalledWith('learn'))
-    expect(await screen.findByText('Running')).toBeTruthy()
+    await waitFor(() => expect(screen.getAllByText('Running').length).toBeGreaterThanOrEqual(2))
   })
 
   it('pauses, resumes, stops, and deletes Learn data from the panel', async () => {

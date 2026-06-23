@@ -126,3 +126,16 @@ def test_learn_start_rejects_unknown_mode(tmp_path, monkeypatch):
 
     assert response.status_code == 400
     assert "mode" in response.json()["detail"]
+
+
+def test_learn_start_rejects_future_modes_until_implemented(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-a"))
+
+    client = _client()
+    try:
+        response = client.post("/api/learn/start", json={"mode": "teach"})
+    finally:
+        client.close()
+
+    assert response.status_code == 400
+    assert "learn" in response.json()["detail"]

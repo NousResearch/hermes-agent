@@ -21,7 +21,7 @@ The same controls are available from the CLI and slash command surfaces:
 
 ```text
 hermes learn status
-hermes learn start [ask_first|auto_draft|learn|teach]
+hermes learn start [learn]
 hermes learn pause
 hermes learn resume
 hermes learn stop
@@ -62,3 +62,7 @@ read/prepare jobs such as follow-up summaries, development summaries, research
 packets, and checklist reviews. These are added as pending cron suggestions.
 The user must accept a suggestion through `/suggestions` or the suggestions
 command before Hermes creates a cron job.
+
+Ask-first memory drafting, auto-draft skill creation, and explicit Teach Mode
+workflow capture are product directions for later iterations. This MVP ships
+only opt-in metadata collection plus approval-gated automation suggestions.

@@ -106,7 +106,7 @@ def handle_learn_command(args: str = "", *, surface: str = "cli") -> str:
     return (
         "Usage:\n"
         "  learn status\n"
-        "  learn start [ask_first|auto_draft|learn|teach]\n"
+        "  learn start [learn]\n"
         "  learn pause|resume|stop\n"
         "  learn review\n"
         "  learn delete-data\n"
@@ -134,7 +134,7 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
 
     sub.add_parser("status", help="Show Learn status").set_defaults(func=_print_command)
     p_start = sub.add_parser("start", help="Start Learn")
-    p_start.add_argument("mode", nargs="?", default="learn", choices=["ask_first", "auto_draft", "learn", "teach"])
+    p_start.add_argument("mode", nargs="?", default="learn", choices=["learn"])
     p_start.set_defaults(func=_print_command)
     sub.add_parser("pause", help="Pause Learn").set_defaults(func=_print_command)
     sub.add_parser("resume", help="Resume Learn").set_defaults(func=_print_command)

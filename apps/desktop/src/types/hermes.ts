@@ -549,7 +549,8 @@ export interface SkillInfo {
   name: string
 }
 
-export type LearnMode = 'off' | 'ask_first' | 'auto_draft' | 'learn' | 'teach'
+export type LearnMode = 'off' | 'learn'
+export type LearnStartMode = 'learn'
 
 export type LearnState = 'paused' | 'running' | 'stopped'
 

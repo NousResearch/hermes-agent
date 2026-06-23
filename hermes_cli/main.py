@@ -1437,35 +1437,19 @@ def _termux_workspace_install_context(
 
 
 def _tui_need_npm_install(root: Path) -> bool:
-    """True when @hermes/ink is missing or node_modules is behind package-lock.json.
+    """True when @hermes/ink is missing, or the TUI hasn't been built yet.
 
     Prebuilt bundle mode: when ``dist/entry.js`` exists and there is no
-    ``package-lock.json`` (nix install layout only ships ``dist/`` +
-    ``package.json``), skip reinstall entirely — the bundle is self-contained
-    and there is nothing to install.
+    ``package-lock.json`` (nix install layout), skip reinstall entirely.
 
-    With npm workspaces the single ``package-lock.json`` and the hoisted
-    ``node_modules/`` live at the workspace root (the parent of the
-    ``ui-tui/`` directory).  The lockfile / ink / marker checks use that
-    workspace root; only the prebuilt-bundle sentinel stays relative to
-    *root* (``ui-tui/dist/entry.js``).
+    Workspace mode: when ``dist/entry.js`` exists and ``@hermes/ink`` is
+    installed, assume deps are satisfied. The root lockfile in a monorepo
+    contains entries for ALL workspaces (apps/*, web) that were never
+    installed via ``--workspace ui-tui``, so a full lockfile content
+    comparison would spuriously trigger reinstall every time.
 
-    Compares ``package-lock.json`` against ``node_modules/.package-lock.json``
-    (npm's hidden lockfile) by **content**, not mtime: git checkouts and npm
-    rewrites can bump the root lockfile's timestamp even when installed deps
-    already match, which used to trigger a spurious "Installing TUI
-    dependencies" on every launch.
-
-    For each entry in the root lock's ``packages`` map:
-      - missing from hidden lock → reinstall (unless the entry is marked
-        ``optional`` or ``peer``, which npm may intentionally skip per platform)
-      - present but with differing fields (excluding npm-written runtime
-        annotations like ``ideallyInert``) → reinstall
-
-    Extra entries that exist only in the hidden lock are ignored — stale
-    transitives left over from a removed dependency don't break runtime and
-    we'd rather not force a reinstall for them. Falls back to mtime
-    comparison if either lockfile is unparseable.
+    Non-workspace fallback: compares ``package-lock.json`` against
+    ``node_modules/.package-lock.json`` by content (not mtime).
     """
     # Prebuilt self-contained bundle (nix / packaged release): no lockfile
     # shipped, dist/entry.js is the single runtime artefact.
@@ -1479,15 +1463,22 @@ def _tui_need_npm_install(root: Path) -> bool:
     ink = ws_root / "node_modules" / "@hermes" / "ink" / "package.json"
     if not ink.is_file():
         return True
+    # For workspace-based installs (`--workspace ui-tui`), the root
+    # package-lock.json contains entries for ALL workspaces (apps/*, web,
+    # etc.) that are never installed. Full content comparison against the
+    # hidden lockfile would always find missing entries and trigger a
+    # spurious install. Instead just check whether the TUI is already
+    # built and its core dependency is present.
+    if entry.is_file() and ink.is_file():
+        return False
+
     if not lock.is_file():
         return False
     marker = ws_root / "node_modules" / ".package-lock.json"
     if not marker.is_file():
         return True
 
-    # Compare lockfile contents, not mtimes: git checkouts and npm rewrites
-    # can bump the root lockfile timestamp even when installed deps already
-    # match. Fall back to mtime when either file is unparseable.
+    # Fallback content comparison for non-workspace layouts.
     try:
         wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
         installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}

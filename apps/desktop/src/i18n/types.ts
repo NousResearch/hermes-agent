@@ -1248,9 +1248,14 @@ export interface Translations {
       agents: string
       closeAgents: string
       openAgents: string
-      subagents: (count: number) => string
-      failed: (count: number) => string
-      running: (count: number) => string
+      sessionsLabel: string
+      sessionsActive: (count: number) => string
+      sessionsActiveTitle: string
+      agentsActive: (count: number) => string
+      tasks: string
+      tasksTitle: string
+      tasksRunning: (count: number) => string
+      tasksFailed: (count: number) => string
       cron: string
       openCron: string
       turnRunning: string

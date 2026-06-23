@@ -10,6 +10,7 @@ import {
   $messages,
   clearSessionUnread,
   noteSessionActivity,
+  noteSessionBusy,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
@@ -261,6 +262,12 @@ export function useSessionStateCache({
       const previous = ensureSessionState(sessionId, storedSessionId)
       const next = updater({ ...previous, messages: previous.messages })
       sessionStateByRuntimeIdRef.current.set(sessionId, next)
+
+      // Keep the store-level busy mirror current so the subagent reaper
+      // (subagents.ts) can read it without importing this hook layer.
+      if (next.storedSessionId) {
+        noteSessionBusy(next.storedSessionId, next.busy)
+      }
 
       if (previous.storedSessionId !== next.storedSessionId || !next.busy) {
         setSessionWorking(previous.storedSessionId, false)

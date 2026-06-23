@@ -159,7 +159,7 @@ export function useStatusbarItems({
     [gatewayLogLines, gatewayState, inferenceStatus, openCommandCenterSection, statusSnapshot]
   )
 
-  const { bgFailed, bgRunning, subagentsRunning } = useMemo(() => {
+  const { bgFailed, bgTasksRunning, sessionsActive, subagentsRunning } = useMemo(() => {
     const actions = Object.values(desktopActionTasks)
     const running = actions.filter(t => t.status.running).length
     const failed = actions.filter(t => !t.status.running && (t.status.exit_code ?? 0) !== 0).length
@@ -173,7 +173,14 @@ export function useStatusbarItems({
 
     return {
       bgFailed: failed + previewFailed,
-      bgRunning: workingSessionIds.length + running + previewRunning,
+      // Sessions with in-progress work (parent turn running OR subagents
+      // running — the working flag stays true during async delegation, see
+      // setSessionWorking's subagent guard in session.ts).
+      sessionsActive: workingSessionIds.length,
+      // Background terminal/process tasks + preview restarts — NOT sessions,
+      // NOT agents. Surfaced in their own statusbar item so the counts stop
+      // conflating three orthogonal concepts into one number.
+      bgTasksRunning: running + previewRunning,
       subagentsRunning
     }
   }, [desktopActionTasks, previewServerRestartStatus, subagentsBySession, workingSessionIds])
@@ -319,22 +326,25 @@ export function useStatusbarItems({
         variant: 'menu'
       },
       {
-        className: cn(
-          agentsOpen && 'bg-accent/55 text-foreground',
-          bgFailed > 0 && 'text-destructive hover:text-destructive'
-        ),
-        detail:
-          subagentsRunning > 0
-            ? copy.subagents(subagentsRunning)
-            : bgFailed > 0
-              ? copy.failed(bgFailed)
-              : bgRunning > 0
-                ? copy.running(bgRunning)
-                : undefined,
+        className: cn(agentsOpen && 'bg-accent/55 text-foreground'),
+        detail: sessionsActive > 0 ? copy.sessionsActive(sessionsActive) : undefined,
         icon:
-          bgFailed > 0 ? (
-            <AlertCircle className="size-3" />
-          ) : bgRunning > 0 || subagentsRunning > 0 ? (
+          sessionsActive > 0 ? (
+            <Loader2 className="size-3 animate-spin" />
+          ) : (
+            <Activity className="size-3" />
+          ),
+        id: 'sessions-active',
+        label: copy.sessionsLabel,
+        onSelect: openAgents,
+        title: copy.sessionsActiveTitle,
+        variant: 'action'
+      },
+      {
+        className: cn(agentsOpen && 'bg-accent/55 text-foreground'),
+        detail: subagentsRunning > 0 ? copy.agentsActive(subagentsRunning) : undefined,
+        icon:
+          subagentsRunning > 0 ? (
             <Loader2 className="size-3 animate-spin" />
           ) : (
             <Sparkles className="size-3" />
@@ -343,6 +353,28 @@ export function useStatusbarItems({
         label: copy.agents,
         onSelect: openAgents,
         title: agentsOpen ? copy.closeAgents : copy.openAgents,
+        variant: 'action'
+      },
+      {
+        className: cn(bgFailed > 0 && 'text-destructive hover:text-destructive'),
+        detail:
+          bgFailed > 0
+            ? copy.tasksFailed(bgFailed)
+            : bgTasksRunning > 0
+              ? copy.tasksRunning(bgTasksRunning)
+              : undefined,
+        icon:
+          bgFailed > 0 ? (
+            <AlertCircle className="size-3" />
+          ) : bgTasksRunning > 0 ? (
+            <Loader2 className="size-3 animate-spin" />
+          ) : (
+            <Terminal className="size-3" />
+          ),
+        id: 'background-tasks',
+        label: copy.tasks,
+        onSelect: () => setTerminalTakeover(!$terminalTakeover.get()),
+        title: copy.tasksTitle,
         variant: 'action'
       },
       {
@@ -357,7 +389,7 @@ export function useStatusbarItems({
     [
       agentsOpen,
       bgFailed,
-      bgRunning,
+      bgTasksRunning,
       commandCenterOpen,
       copy,
       gatewayMenuContent,
@@ -367,6 +399,7 @@ export function useStatusbarItems({
       inferenceReady,
       inferenceStatus?.reason,
       openAgents,
+      sessionsActive,
       subagentsRunning,
       toggleCommandCenter
     ]

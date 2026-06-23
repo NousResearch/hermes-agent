@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import { noteSessionActivity, registerSubagentActivityPredicate } from './session'
+import { isSessionBusy, noteSessionActivity, registerSubagentActivityPredicate, setSessionWorking } from './session'
 
 export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
 export type SubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool'
@@ -248,6 +248,20 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
   // of the delegation instead of going dim after the 8-min silence timeout.
   if (next.status === 'running' || next.status === 'queued') {
     noteSessionActivity(sid)
+  }
+
+  // Terminal reaper: when the LAST active subagent for a session reaches a
+  // terminal status AND the parent's own turn has already ended (busy=false),
+  // the working flag is no longer held up by subagents (the guard in
+  // setSessionWorking would otherwise keep it true forever). Clear it now so
+  // the row settles promptly instead of waiting for the 8-min watchdog. This
+  // closes the gap created by guarding the premature running:false clear: the
+  // flag stays true while subagents run (correct), then reaps the instant the
+  // final child finishes and the parent is idle. A parent still streaming its
+  // own reply (busy=true) after subagents finish is left alone — its own
+  // running:false will clear the flag when its turn truly ends.
+  if (TERMINAL.has(next.status) && activeSubagentCount(nextList) === 0 && !isSessionBusy(sid)) {
+    setSessionWorking(sid, false)
   }
 }
 

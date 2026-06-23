@@ -203,6 +203,31 @@ export const $messagingTruncated = atom<boolean>(false)
 export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
+// Mirror of each session's `busy` flag (ClientSessionState.busy), kept current
+// by updateSessionState on every state tick. The subagent reaper reads this so
+// it can tell "the parent's own turn has ended (busy=false) and all subagents
+// are done → clear the working flag" from "the parent is still streaming its
+// own reply after subagents finished → leave the working flag alone", without
+// importing the React-state-cache layer (which would create a cycle).
+const sessionBusyById = new Map<string, boolean>()
+
+/** Read-only accessor used by the subagent reaper. True when the session's own
+ *  parent turn is actively streaming (busy), independent of subagent state. */
+export function isSessionBusy(sessionId: string | null | undefined): boolean {
+  return Boolean(sessionId && sessionBusyById.get(sessionId))
+}
+
+/** Called by updateSessionState on every tick so the reaper has fresh busy data. */
+export function noteSessionBusy(sessionId: string | null | undefined, busy: boolean) {
+  if (!sessionId) {
+    return
+  }
+  sessionBusyById.set(sessionId, busy)
+  // Clear on idle so the map can't grow unbounded across a long session.
+  if (!busy) {
+    sessionBusyById.delete(sessionId)
+  }
+}
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export const $messages = atom<ChatMessage[]>([])
@@ -441,10 +466,26 @@ export function getRecentlySettledSessionIds(now: number = Date.now()): string[]
 }
 
 /** Call when a streaming event for a session lands. Refreshes the watchdog
- *  so the session keeps its "working" status as long as data keeps coming. */
+ *  so the session keeps its "working" status as long as data keeps coming.
+ *
+ *  If a subagent progress event arrives for a session that is NOT currently in
+ *  the working set, that event is itself proof the parent's turn is still
+ *  active — a premature running:false (async delegation) will have stripped
+ *  the flag even though children are still running. Re-assert working=true so
+ *  the watchdog re-arms and the row resuscitates, instead of silently dropping
+ *  the heartbeat (the old early-return created a catch-22 where nothing could
+ *  ever put the session back into the working set mid-delegation). */
 export function noteSessionActivity(sessionId: string | null | undefined) {
-  if (!sessionId || !$workingSessionIds.get().includes(sessionId)) {
+  if (!sessionId) {
     return
+  }
+
+  if (!$workingSessionIds.get().includes(sessionId)) {
+    if (sessionHasActiveSubagents?.(sessionId)) {
+      setSessionWorking(sessionId, true)
+    } else {
+      return
+    }
   }
 
   armSessionWatchdog(sessionId)
@@ -531,6 +572,19 @@ export function isSessionUnread(sessionId: string): boolean {
 
 export function setSessionWorking(sessionId: string | null | undefined, working: boolean) {
   if (!sessionId) {
+    return
+  }
+
+  // A session that still has running/queued subagents is genuinely in progress,
+  // even if its own parent turn has yielded (async delegation: the parent's
+  // running:false patch arrives the instant delegate_task(background=true)
+  // returns a handle, while the children keep working for minutes). Without
+  // this guard, the working flag is stripped on that patch and — because
+  // noteSessionActivity early-returns for sessions no longer in the working
+  // set — nothing can put it back, so the row goes dim and stays dim for the
+  // whole delegation. This mirrors the watchdog's fire-time check below; the
+  // predicate is only consulted on the immediate-clear path here.
+  if (!working && sessionHasActiveSubagents?.(sessionId)) {
     return
   }
 

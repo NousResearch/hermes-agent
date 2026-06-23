@@ -69,6 +69,7 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
+_CHANNEL_CONTEXT_FILE_MAX_CHARS = 20_000
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -2407,8 +2408,8 @@ def _load_gateway_runtime_config() -> dict:
 
     Runtime helpers should honor the same env-template expansion documented for
     ``config.yaml`` while still respecting tests that monkeypatch
-    ``gateway.run._hermes_home``. Build on ``_load_gateway_config()`` rather
-    than calling the canonical loader directly so both behaviors stay aligned.
+    ``gateway.run._hermes_home``. Build on ``_load_gateway_config()``
+    rather than calling the canonical loader directly so both behaviors stay aligned.
 
     Expansion failures are intentionally NOT swallowed — silently returning
     the unexpanded dict would mask the very bug this helper exists to fix.
@@ -2420,6 +2421,32 @@ def _load_gateway_runtime_config() -> dict:
 
     expanded = _expand_env_vars(cfg)
     return expanded if isinstance(expanded, dict) else {}
+
+
+def _load_channel_context_file_snapshot(path: str) -> Optional[str]:
+    """Read a configured channel context file for session-start snapshotting."""
+    raw_path = str(path or "").strip()
+    if not raw_path:
+        return None
+    try:
+        expanded = os.path.expandvars(os.path.expanduser(raw_path))
+        context_path = Path(expanded)
+        if not context_path.is_absolute():
+            context_path = (_hermes_home / context_path).resolve()
+        content = context_path.read_text(encoding="utf-8").strip()
+    except Exception as exc:
+        logger.warning("Failed to read channel_context_files entry %r: %s", raw_path, exc)
+        return None
+    if not content:
+        return None
+    truncated = False
+    if len(content) > _CHANNEL_CONTEXT_FILE_MAX_CHARS:
+        content = content[:_CHANNEL_CONTEXT_FILE_MAX_CHARS].rstrip()
+        truncated = True
+    header = f"[Initial channel context loaded from {context_path}]"
+    if truncated:
+        header += f"\n[Context truncated to {_CHANNEL_CONTEXT_FILE_MAX_CHARS} characters.]"
+    return f"{header}\n{content}"
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
@@ -9420,6 +9447,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         reply_to_is_own_message=event.reply_to_is_own_message,
                         auto_skill=event.auto_skill,
                         channel_prompt=event.channel_prompt,
+                        channel_context_file=event.channel_context_file,
                         internal=event.internal,
                         timestamp=event.timestamp,
                     )
@@ -11138,6 +11166,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # was_auto_reset is already consumed in the cleanup block above
             # (single source of truth); only the reset reason needs clearing here.
             session_entry.auto_reset_reason = None
+
+        initial_context_prompt = getattr(session_entry, "initial_context_prompt", None)
+        if _is_new_session and not initial_context_prompt:
+            context_file = getattr(event, "channel_context_file", None)
+            if context_file:
+                initial_context_prompt = _load_channel_context_file_snapshot(context_file)
+                if initial_context_prompt:
+                    session_entry.initial_context_prompt = initial_context_prompt
+                    try:
+                        await self.async_session_store._save()
+                    except Exception:
+                        logger.debug("Failed to persist initial channel context snapshot", exc_info=True)
+        if initial_context_prompt:
+            context_prompt = (context_prompt + "\n\n" + initial_context_prompt).strip()
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.

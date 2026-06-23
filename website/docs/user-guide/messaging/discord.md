@@ -324,6 +324,7 @@ discord:
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
   channel_prompts: {}             # Per-channel ephemeral system prompts
+  channel_context_files: {}       # Per-channel context files snapshotted at session start
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -450,6 +451,27 @@ Behavior:
 - Exact thread/channel ID matches win.
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
+
+#### `discord.channel_context_files`
+
+**Type:** mapping — **Default:** `{}`
+
+Per-channel context files that are read once when a new Hermes session starts, then snapshotted onto that session. This is useful for parent channels that spawn many threads and need each new thread to inherit a compact handoff note, project state, or local context file without re-reading it every turn.
+
+```yaml
+discord:
+  channel_context_files:
+    "1234567890": "/Users/alice/notes/agent-state/discord-research.md"
+```
+
+Behavior:
+- Exact thread/channel ID matches win.
+- If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
+- The file is read only when the session starts. Later edits to the file affect new sessions, not already-open sessions.
+- Relative paths resolve from `~/.hermes`; `~` and environment variables are expanded.
+- Very large files are truncated before injection, so keep these files compact.
+
+Use `channel_prompts` for live instructions that should update immediately. Use `channel_context_files` for stable initial context that should not drift during a thread.
 
 #### `discord.history_backfill`
 

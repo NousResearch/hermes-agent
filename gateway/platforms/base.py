@@ -1790,6 +1790,11 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
 
+    # Optional file path resolved from per-channel config. The gateway reads
+    # this once when a session starts, snapshots the content onto the session,
+    # and reuses that snapshot for later turns.
+    channel_context_file: Optional[str] = None
+
     # Channel context recovered by history backfill (e.g. messages between
     # bot turns that were missed due to require_mention).  Kept separate
     # from ``text`` so the sender-prefix logic in run.py can operate on the
@@ -2207,6 +2212,35 @@ def resolve_channel_prompt(
         prompt = str(prompt).strip()
         if prompt:
             return prompt
+    return None
+
+
+def resolve_channel_context_file(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> str | None:
+    """Resolve a per-channel context file path from platform config.
+
+    Looks up ``channel_context_files`` in the adapter's ``config.extra`` dict.
+    Prefers an exact match on *channel_id*; falls back to *parent_id* so forum
+    threads / child channels can inherit their parent channel state. The file is
+    read by the gateway only when a new session starts and its content is
+    snapshotted onto that session.
+    """
+    files = config_extra.get("channel_context_files") or {}
+    if not isinstance(files, dict):
+        return None
+
+    for key in (channel_id, parent_id):
+        if not key:
+            continue
+        path = files.get(key)
+        if path is None:
+            continue
+        path = str(path).strip()
+        if path:
+            return path
     return None
 
 

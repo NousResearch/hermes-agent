@@ -670,6 +670,12 @@ class SessionEntry:
     
     # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
+
+    # Optional per-session context snapshotted from a configured channel file
+    # when the session is first created. This lets new Discord/Slack threads
+    # inherit parent-channel state once without drifting if the source file
+    # changes later.
+    initial_context_prompt: Optional[str] = None
     
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
@@ -733,6 +739,7 @@ class SessionEntry:
             "cache_write_tokens": self.cache_write_tokens,
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
+            "initial_context_prompt": self.initial_context_prompt,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "expiry_finalized": self.expiry_finalized,
@@ -812,6 +819,7 @@ class SessionEntry:
             cache_write_tokens=data.get("cache_write_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
+            initial_context_prompt=data.get("initial_context_prompt"),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             expiry_finalized=data.get("expiry_finalized", data.get("memory_flushed", False)),

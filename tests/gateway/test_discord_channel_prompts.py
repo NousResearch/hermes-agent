@@ -3,6 +3,7 @@
 import sys
 import threading
 import types
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -130,6 +131,11 @@ class TestResolveChannelPrompts:
         adapter.config.extra = {"channel_prompts": {"200": "Forum prompt"}}
         assert adapter._resolve_channel_prompt("999", parent_id="200") == "Forum prompt"
 
+    def test_context_file_match_by_parent_id(self):
+        adapter = _make_adapter()
+        adapter.config.extra = {"channel_context_files": {"200": "/tmp/channel-state.md"}}
+        assert adapter._resolve_channel_context_file("999", parent_id="200") == "/tmp/channel-state.md"
+
     def test_exact_channel_overrides_parent(self):
         adapter = _make_adapter()
         adapter.config.extra = {
@@ -142,7 +148,10 @@ class TestResolveChannelPrompts:
 
     def test_build_message_event_sets_channel_prompt(self):
         adapter = _make_adapter()
-        adapter.config.extra = {"channel_prompts": {"321": "Command prompt"}}
+        adapter.config.extra = {
+            "channel_prompts": {"321": "Command prompt"},
+            "channel_context_files": {"321": "/tmp/context.md"},
+        }
         adapter.build_source = MagicMock(return_value=SimpleNamespace())
 
         interaction = SimpleNamespace(
@@ -155,11 +164,15 @@ class TestResolveChannelPrompts:
         event = adapter._build_slash_event(interaction, "/retry")
 
         assert event.channel_prompt == "Command prompt"
+        assert event.channel_context_file == "/tmp/context.md"
 
     @pytest.mark.asyncio
     async def test_dispatch_thread_session_inherits_parent_channel_prompt(self):
         adapter = _make_adapter()
-        adapter.config.extra = {"channel_prompts": {"200": "Parent prompt"}}
+        adapter.config.extra = {
+            "channel_prompts": {"200": "Parent prompt"},
+            "channel_context_files": {"200": "/tmp/parent-context.md"},
+        }
         adapter.build_source = MagicMock(return_value=SimpleNamespace())
         adapter._get_effective_topic = MagicMock(return_value=None)
         adapter.handle_message = AsyncMock()
@@ -174,6 +187,60 @@ class TestResolveChannelPrompts:
 
         dispatched_event = adapter.handle_message.await_args.args[0]
         assert dispatched_event.channel_prompt == "Parent prompt"
+        assert dispatched_event.channel_context_file == "/tmp/parent-context.md"
+
+    @pytest.mark.asyncio
+    async def test_regular_thread_message_sets_parent_channel_context_file(self):
+        _ensure_discord_mock()
+        discord_mod = sys.modules["discord"]
+        adapter = _make_adapter()
+        adapter.config.extra = {
+            "channel_prompts": {"200": "Parent prompt"},
+            "channel_context_files": {"200": "/tmp/parent-context.md"},
+        }
+        adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+
+        class _ThreadTracker:
+            def __contains__(self, item):
+                return False
+
+            def mark(self, item):
+                self.marked = item
+
+        adapter._threads = _ThreadTracker()
+        adapter._voice_text_channels = {}
+        adapter._text_batch_delay_seconds = 0
+        adapter._discord_require_mention = MagicMock(return_value=False)
+        adapter._discord_free_response_channels = MagicMock(return_value=set())
+        adapter._discord_history_backfill = MagicMock(return_value=False)
+        adapter._discord_allow_any_attachment = MagicMock(return_value=False)
+        adapter._get_parent_channel_id = MagicMock(return_value="200")
+        adapter._format_thread_chat_name = MagicMock(return_value="guild / #parent / thread")
+        adapter._get_effective_topic = MagicMock(return_value=None)
+        adapter.build_source = MagicMock(return_value=SimpleNamespace())
+        adapter.handle_message = AsyncMock()
+
+        channel = discord_mod.Thread()
+        channel.id = 999
+        channel.parent_id = 200
+        author = SimpleNamespace(id=1, display_name="Brenner", bot=False)
+        message = SimpleNamespace(
+            id=123,
+            channel=channel,
+            content="hello",
+            mentions=[],
+            attachments=[],
+            author=author,
+            guild=SimpleNamespace(id=42, name="Wetlands"),
+            created_at=datetime.now(),
+            reference=None,
+        )
+
+        await adapter._handle_message(message)
+
+        dispatched_event = adapter.handle_message.await_args.args[0]
+        assert dispatched_event.channel_prompt == "Parent prompt"
+        assert dispatched_event.channel_context_file == "/tmp/parent-context.md"
 
     def test_blank_prompts_are_ignored(self):
         adapter = _make_adapter()
@@ -256,3 +323,27 @@ async def test_run_agent_appends_channel_prompt_to_ephemeral_system_prompt(monke
     assert _CapturingAgent.last_init["ephemeral_system_prompt"] == (
         "Context prompt\n\nChannel prompt\n\nGlobal prompt"
     )
+
+
+def test_channel_context_file_snapshot_reads_file(monkeypatch, tmp_path):
+    context_file = tmp_path / "channel-state.md"
+    context_file.write_text("# State\n\n- Keep this context", encoding="utf-8")
+
+    snapshot = gateway_run._load_channel_context_file_snapshot(str(context_file))
+
+    assert snapshot is not None
+    assert "Initial channel context loaded from" in snapshot
+    assert "# State" in snapshot
+    assert "Keep this context" in snapshot
+
+
+def test_channel_context_file_snapshot_resolves_relative_to_hermes_home(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "context.md").write_text("relative context", encoding="utf-8")
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+    snapshot = gateway_run._load_channel_context_file_snapshot("context.md")
+
+    assert snapshot is not None
+    assert "relative context" in snapshot

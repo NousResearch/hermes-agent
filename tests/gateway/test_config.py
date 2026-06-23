@@ -638,6 +638,25 @@ class TestLoadGatewayConfig:
 
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
 
+    def test_bridges_channel_context_files_with_string_keys(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  channel_context_files:\n"
+            "    123456789012345678: /tmp/channel-state.md\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra["channel_context_files"] == {
+            "123456789012345678": "/tmp/channel-state.md"
+        }
+
     def test_thread_require_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
         """Explicit env var should win over config.yaml (env > yaml precedence)."""
         hermes_home = tmp_path / ".hermes"

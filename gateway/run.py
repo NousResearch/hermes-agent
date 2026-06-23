@@ -5508,6 +5508,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 register_relay_adapter,
                 relay_url,
                 self_provision_relay,
+                send_relay_policy,
             )
 
             # Boot-time relay self-provision: resolve the agent's NAS token ->
@@ -5519,6 +5520,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if register_relay_adapter():
                 logger.info("relay adapter registered (connector at %s)", relay_url())
+                # Declare this gateway's relevance policy (mention-gating /
+                # free-response / allow-bots) to the connector so the SAME
+                # behavior governs relay delivery (Phase 6 Unit ζ). Runs after
+                # the secret is resolved; never raises, never blocks boot.
+                send_relay_policy()
         except Exception:
             logger.warning(
                 "relay adapter registration failed at gateway startup", exc_info=True,

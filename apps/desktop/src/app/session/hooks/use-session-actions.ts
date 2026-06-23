@@ -706,7 +706,10 @@ export function useSessionActions({
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
-          ...(watchWindow ? { lazy: true } : {}),
+          // Resume should paint history and bind a runtime id, not block on a
+          // full AIAgent build. The gateway upgrades lazy sessions on the first
+          // prompt/RPC that actually needs the agent.
+          lazy: true,
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
         // The rejection is consumed by the `await` below; this guard only

@@ -3874,6 +3874,37 @@ def test_image_attach_appends_local_image(monkeypatch):
     assert len(server._sessions["sid"]["attached_images"]) == 1
 
 
+def test_image_attach_does_not_wait_for_lazy_agent_build(monkeypatch):
+    fake_cli = types.ModuleType("cli")
+    fake_cli._IMAGE_EXTENSIONS = {".png"}
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: Path("/tmp/cat.png")
+
+    never_ready = threading.Event()
+    server._sessions["sid"] = _session(agent_ready=never_ready)
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    def fail_if_build_started(*_args, **_kwargs):
+        raise AssertionError("image.attach should not start/wait for agent build")
+
+    monkeypatch.setattr(server, "_start_agent_build", fail_if_build_started)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "image.attach",
+                "params": {"session_id": "sid", "path": "/tmp/cat.png"},
+            }
+        )
+
+        assert resp["result"]["attached"] is True
+        assert len(server._sessions["sid"]["attached_images"]) == 1
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
     screenshot = Path("/tmp/Screenshot 2026-04-21 at 1.04.43 PM.png")
     fake_cli = types.ModuleType("cli")

@@ -7051,7 +7051,10 @@ def _(rid, params: dict) -> dict:
 
 @method("image.attach")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    # Staging a local image only mutates the queued attachment list. Do not start
+    # or wait for lazy agent construction here; prompt.submit will build the
+    # agent when it actually needs to consume the queued attachment.
+    session, err = _sess_nowait(params, rid)
     if err:
         return err
     raw = str(params.get("path", "") or "").strip()

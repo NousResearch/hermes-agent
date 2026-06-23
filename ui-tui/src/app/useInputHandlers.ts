@@ -16,7 +16,7 @@ import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionW
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
-import type { InputHandlerActions, InputHandlerContext, InputHandlerResult } from './interfaces.js'
+import type { InputHandlerActions, InputHandlerContext, InputHandlerResult, ComposerMode } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -98,7 +98,7 @@ export function applyVoiceRecordResponse(
 }
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
-  const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
+  const { actions, composer, composerMode, gateway, setComposerMode, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
 
   const overlay = useStore($overlayState)
@@ -507,6 +507,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isCtrl(key, ch, 'x')) {
       return patchOverlayState({ sessions: true })
+    }
+
+    // Tab cycles composer mode (Plan / Code / Ask) when input is empty.
+    if (key.tab && !cState.input && !cState.inputBuf.length) {
+      const modes: ComposerMode[] = ['code', 'plan', 'ask']
+      const idx = modes.indexOf(composerMode)
+      setComposerMode(modes[(idx + 1) % modes.length])
+
+      return
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {

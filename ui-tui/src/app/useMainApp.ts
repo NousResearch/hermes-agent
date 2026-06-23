@@ -28,6 +28,7 @@ import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
+import type { ComposerMode } from './interfaces.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
@@ -171,6 +172,7 @@ export function useMainApp(gw: GatewayClient) {
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [voiceRecordKey, setVoiceRecordKey] = useState<ParsedVoiceRecordKey>(DEFAULT_VOICE_RECORD_KEY)
+  const [composerMode, setComposerMode] = useState<ComposerMode>('code')
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
   const [lastTurnEndedAt, setLastTurnEndedAt] = useState<null | number>(null)
@@ -674,6 +676,7 @@ export function useMainApp(gw: GatewayClient) {
   const { dispatchSubmission, send, sendQueued, submit } = useSubmission({
     appendMessage,
     composerActions,
+    composerMode,
     composerRefs,
     composerState,
     gw,
@@ -718,7 +721,9 @@ export function useMainApp(gw: GatewayClient) {
       sys
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
+    composerMode,
     gateway,
+    setComposerMode,
     terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
     voice: {
       enabled: voiceEnabled,
@@ -1067,6 +1072,7 @@ export function useMainApp(gw: GatewayClient) {
       cols,
       compIdx: composerState.compIdx,
       completions: composerState.completions,
+      composerMode,
       empty,
       handleTextPaste: composerActions.handleTextPaste,
       input: composerState.input,
@@ -1078,7 +1084,7 @@ export function useMainApp(gw: GatewayClient) {
       updateInput: composerActions.setInput,
       voiceRecordKey
     }),
-    [cols, composerActions, composerState, empty, pagerPageSize, submit, voiceRecordKey]
+    [cols, composerActions, composerMode, composerState, empty, pagerPageSize, submit, voiceRecordKey]
   )
 
   // Pass current progress through unfrozen — streaming update throttling

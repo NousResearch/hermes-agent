@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { Fragment, memo, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
-import type { AppLayoutProps } from '../app/interfaces.js'
+import type { AppLayoutProps, ComposerMode } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
@@ -253,6 +253,15 @@ const ComposerPane = memo(function ComposerPane({
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
+
+      {composer.composerMode !== 'code' && (
+        <Box marginLeft={promptWidth + 1} marginBottom={1}>
+          <Text bold color={composer.composerMode === 'plan' ? '#58a6ff' : '#d29922'}>
+            {composer.composerMode === 'plan' ? '● Plan' : '○ Ask'}
+          </Text>
+          <Text color={ui.theme.color.muted}>  Tab to toggle</Text>
+        </Box>
+      )}
 
       <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
         <FloatingOverlays

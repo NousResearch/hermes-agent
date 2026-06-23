@@ -15,7 +15,7 @@ import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js
 import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
 import type { Msg } from '../types.js'
 
-import type { ComposerActions, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
+import type { ComposerActions, ComposerMode, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -42,6 +42,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
   const {
     appendMessage,
     composerActions,
+    composerMode,
     composerRefs,
     composerState,
     gw,
@@ -88,6 +89,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (text: string, showUserMessage = true) => {
       const expand = expandSnips(composerState.pasteSnips)
 
+      const modePrefix = composerMode === 'plan' ? '/plan ' : composerMode === 'ask' ? '[ask] ' : ''
+
       const startSubmit = (displayText: string, submitText: string, showUserMessage = true) => {
         const sid = getUiState().sid
 
@@ -132,7 +135,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
         .then(r => {
           if (!r?.matched) {
-            return startSubmit(text, expand(text), showUserMessage)
+            return startSubmit(text, modePrefix + expand(text), showUserMessage)
           }
 
           if (r.is_image) {
@@ -141,9 +144,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
             turnController.pushActivity(`detected file: ${r.name}`)
           }
 
-          startSubmit(r.text || text, expand(r.text || text), showUserMessage)
+          startSubmit(r.text || text, modePrefix + expand(r.text || text), showUserMessage)
         })
-        .catch(() => startSubmit(text, expand(text), showUserMessage))
+        .catch(() => startSubmit(text, modePrefix + expand(text), showUserMessage))
     },
     [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
   )
@@ -412,6 +415,7 @@ export interface UseSubmissionOptions {
   composerActions: ComposerActions
   composerRefs: ComposerRefs
   composerState: ComposerState
+  composerMode: ComposerMode
   gw: GatewayClient
   maybeGoodVibes: (text: string) => void
   setLastUserMsg: (value: string) => void

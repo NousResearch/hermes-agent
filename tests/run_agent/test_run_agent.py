@@ -2493,6 +2493,35 @@ class TestConcurrentToolExecution:
         assert messages[1]["tool_call_id"] == "c2"
         assert "success" in messages[1]["content"]
 
+    def test_concurrent_submit_shutdown_error_returns_tool_errors(self, agent):
+        """Submit-time interpreter shutdown should not escape the outer loop."""
+
+        class ShutdownExecutor:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, *args, **kwargs):
+                raise RuntimeError("cannot schedule new futures after interpreter shutdown")
+
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q": "alpha"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q": "beta"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        with patch("agent.tool_executor.concurrent.futures.ThreadPoolExecutor", ShutdownExecutor):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert len(messages) == 2
+        assert messages[0]["tool_call_id"] == "c1"
+        assert messages[1]["tool_call_id"] == "c2"
+        assert all("Python interpreter is shutting down" in m["content"] for m in messages)
+
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")

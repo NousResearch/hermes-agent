@@ -8,9 +8,12 @@ import pytest
 import agent.runtime_cwd as rt
 from agent.runtime_cwd import (
     clear_session_cwd,
+    clear_session_worktree_map,
+    map_session_path_to_worktree,
     resolve_agent_cwd,
     resolve_context_cwd,
     set_session_cwd,
+    set_session_worktree_map,
 )
 
 
@@ -127,3 +130,39 @@ class TestSessionCwdOverride:
             assert resolve_agent_cwd() == tmp_path
         finally:
             rt._SESSION_CWD.reset(token)
+
+
+class TestSessionWorktreeMap:
+    def test_absolute_path_inside_repo_maps_to_session_worktree(self, tmp_path):
+        repo = tmp_path / "repo"
+        worktree = tmp_path / "repo" / ".worktrees" / "session"
+        (repo / "src").mkdir(parents=True)
+        worktree.mkdir(parents=True)
+
+        token = set_session_worktree_map({str(repo): str(worktree)})
+        try:
+            assert map_session_path_to_worktree(str(repo / "src" / "app.py")) == worktree / "src" / "app.py"
+            assert map_session_path_to_worktree(str(repo)) == worktree
+        finally:
+            rt._SESSION_WORKTREE_MAP.reset(token)
+
+    def test_existing_worktree_path_is_not_remapped(self, tmp_path):
+        repo = tmp_path / "repo"
+        worktree = tmp_path / "repo" / ".worktrees" / "session"
+        (worktree / "src").mkdir(parents=True)
+
+        token = set_session_worktree_map({str(repo): str(worktree)})
+        try:
+            path = worktree / "src" / "app.py"
+            assert map_session_path_to_worktree(str(path)) == path
+        finally:
+            rt._SESSION_WORKTREE_MAP.reset(token)
+
+    def test_relative_path_is_not_mapped(self, tmp_path):
+        repo = tmp_path / "repo"
+        worktree = tmp_path / "repo" / ".worktrees" / "session"
+        token = set_session_worktree_map({str(repo): str(worktree)})
+        try:
+            assert map_session_path_to_worktree("src/app.py") == Path("src/app.py")
+        finally:
+            clear_session_worktree_map()

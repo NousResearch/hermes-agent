@@ -18,6 +18,7 @@ from typing import Any
 _UNSET: Any = object()
 
 _SESSION_CWD: ContextVar = ContextVar("HERMES_SESSION_CWD", default=_UNSET)
+_SESSION_WORKTREE_MAP: ContextVar = ContextVar("HERMES_SESSION_WORKTREE_MAP", default=_UNSET)
 
 
 def set_session_cwd(cwd: str | None) -> Token:
@@ -27,6 +28,64 @@ def set_session_cwd(cwd: str | None) -> Token:
 
 def clear_session_cwd() -> None:
     _SESSION_CWD.set("")
+
+
+def set_session_worktree_map(mapping: dict[str, str] | None) -> Token:
+    """Pin repo-root → session-worktree routing for the current context."""
+    normalized: dict[str, str] = {}
+    for root, worktree in (mapping or {}).items():
+        try:
+            root_path = Path(str(root)).expanduser().resolve()
+            worktree_path = Path(str(worktree)).expanduser().resolve()
+        except Exception:
+            continue
+        if str(root_path) and str(worktree_path):
+            normalized[str(root_path)] = str(worktree_path)
+    return _SESSION_WORKTREE_MAP.set(normalized)
+
+
+def clear_session_worktree_map() -> None:
+    _SESSION_WORKTREE_MAP.set({})
+
+
+def _session_worktree_map() -> dict[str, str]:
+    value = _SESSION_WORKTREE_MAP.get()
+    if value is _UNSET or not isinstance(value, dict):
+        return {}
+    return {str(k): str(v) for k, v in value.items() if str(k) and str(v)}
+
+
+def map_session_path_to_worktree(path: str | Path) -> Path:
+    """Route absolute repo paths into this session's auto-worktree.
+
+    Gateway sessions can start outside a configured repo and later pass an
+    absolute ``workdir`` or file path inside that repo.  When a repo→worktree
+    map is active, translate ``<repo>/sub/path`` to
+    ``<session-worktree>/sub/path`` so late moves stay isolated.  Relative paths
+    are left untouched and resolved by the caller against the active cwd.
+    """
+    raw = Path(path).expanduser()
+    if not raw.is_absolute():
+        return raw
+    try:
+        resolved = raw.resolve()
+    except Exception:
+        resolved = raw
+
+    for root_s, worktree_s in _session_worktree_map().items():
+        root = Path(root_s)
+        worktree = Path(worktree_s)
+        try:
+            resolved.relative_to(worktree)
+            return resolved
+        except ValueError:
+            pass
+        try:
+            rel = resolved.relative_to(root)
+        except ValueError:
+            continue
+        return (worktree / rel).resolve()
+    return resolved
 
 
 def _session_cwd_override() -> str:

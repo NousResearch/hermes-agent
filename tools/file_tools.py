@@ -264,7 +264,12 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """
     p = Path(_expand_tilde(filepath))
     if p.is_absolute():
-        return p.resolve()
+        try:
+            from agent.runtime_cwd import map_session_path_to_worktree
+
+            return map_session_path_to_worktree(p)
+        except Exception:
+            return p.resolve()
     return (_resolve_base_dir(task_id) / p).resolve()
 
 

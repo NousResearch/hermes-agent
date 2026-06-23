@@ -1831,13 +1831,20 @@ def _resolve_command_cwd(
     ``workdir=`` must still override everything.
     """
     if workdir:
-        return workdir
+        candidate = workdir
+    else:
+        live_cwd = getattr(env, "cwd", None)
+        if isinstance(live_cwd, str) and live_cwd.strip():
+            candidate = live_cwd
+        else:
+            candidate = default_cwd
 
-    live_cwd = getattr(env, "cwd", None)
-    if isinstance(live_cwd, str) and live_cwd.strip():
-        return live_cwd
+    try:
+        from agent.runtime_cwd import map_session_path_to_worktree
 
-    return default_cwd
+        return str(map_session_path_to_worktree(candidate))
+    except Exception:
+        return candidate
 
 
 def terminal_tool(

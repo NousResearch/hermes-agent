@@ -1114,6 +1114,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     target=target,
                     content=next_args.get("content"),
                     old_text=next_args.get("old_text"),
+                    query=next_args.get("query"),
                     operations=operations,
                     store=agent._memory_store,
                 )

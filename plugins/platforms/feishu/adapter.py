@@ -3240,9 +3240,26 @@ class FeishuAdapter(BasePlatformAdapter):
                 inbound_type = MessageType.COMMAND
 
         # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
+        # Exception: in thread/topic context a bare @mention is a valid ping — the user
+        # is addressing the bot inside a 话题 thread where explicit text may be absent.
+        # Dropping it silently prevents the bot from ever responding in threads when
+        # users open with just "@Bot" (a common UX pattern on Feishu).
         if inbound_type == MessageType.TEXT and not text and not media_urls:
-            logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
-            return
+            _thread_context = (
+                getattr(message, "thread_id", None)
+                or getattr(message, "root_id", None)
+            )
+            _has_self_mention = any(m.is_self for m in mentions)
+            if _thread_context and _has_self_mention:
+                # Synthesise a minimal ping text so the agent can respond in the thread.
+                text = "[Mentioned]"
+                logger.debug(
+                    "[Feishu] Thread mention-only message id=%s — synthesising ping text",
+                    message_id,
+                )
+            else:
+                logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
+                return
 
         if inbound_type != MessageType.COMMAND:
             hint = _build_mention_hint(mentions)

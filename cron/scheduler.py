@@ -2008,6 +2008,52 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
+        # Auto-discover model from local inference server when no explicit model
+        # is pinned.  This handles the common case where a user swaps the loaded
+        # model in llama.cpp / vLLM / Ollama without updating config.yaml.
+        _resolved_base_url = str(runtime.get("base_url") or "").strip()
+        if not job.get("model") and _resolved_base_url:
+            try:
+                import urllib.request as _urlreq
+                import json as _json
+                _models_url = _resolved_base_url.rstrip("/") + "/v1/models"
+                _req = _urlreq.Request(_models_url, headers={"User-Agent": "hermes-cron"})
+                with _urlreq.urlopen(_req, timeout=5) as _resp:
+                    _models_data = _json.loads(_resp.read())
+                    _available = _models_data.get("data", [])
+                    if _available and isinstance(_available, list):
+                        _discovered = _available[0].get("id", "")
+                        if _discovered:
+                            logger.info(
+                                "Job '%s': auto-discovered model '%s' from %s",
+                                job_id, _discovered, _models_url,
+                            )
+                            model = _discovered
+            except Exception as _disc_err:
+                logger.debug(
+                    "Job '%s': could not auto-discover models from %s: %s",
+                    job_id,
+                    _resolved_base_url.rstrip("/") + "/v1/models",
+                    _disc_err,
+                )
+
+        # Probe server reachability for local inference backends to produce a
+        # clear error instead of the generic "Connection error" from the SDK.
+        if _resolved_base_url and any(
+            h in _resolved_base_url for h in ("localhost", "127.0.0.1", "[::1]")
+        ):
+            try:
+                import urllib.request as _urlreq
+                _health_url = _resolved_base_url.rstrip("/") + "/v1/models"
+                _req = _urlreq.Request(_health_url, headers={"User-Agent": "hermes-cron"})
+                with _urlreq.urlopen(_req, timeout=5):
+                    pass
+            except Exception as _health_err:
+                raise RuntimeError(
+                    f"Local inference server not reachable at {_resolved_base_url}. "
+                    f"Is llama.cpp / Ollama / vLLM running?  Original error: {_health_err}"
+                ) from _health_err
+
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()

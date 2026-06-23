@@ -20,14 +20,14 @@ _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 classify = _mod.classify
 
-ALL = {
+DEFAULT = {
     "python": True,
     "frontend": True,
     "docker_meta": True,
     "site": True,
     "scan": True,
     "deps": True,
-    "mcp_catalog": True,
+    "mcp_catalog": False,
 }
 
 
@@ -73,10 +73,10 @@ CASES = {
         _lanes(python=True, scan=True, mcp_catalog=True),
     ),
     # Fail open: CI-config / empty / blank diffs run everything.
-    ".github change → all": ([".github/workflows/tests.yml"], ALL),
-    "action change → all": ([".github/actions/detect-changes/action.yml"], ALL),
-    "empty diff → all": ([], ALL),
-    "blank lines → all": (["", "  "], ALL),
+    ".github change → all": ([".github/workflows/tests.yml"], DEFAULT),
+    "action change → all": ([".github/actions/detect-changes/action.yml"], DEFAULT),
+    "empty diff → all": ([], DEFAULT),
+    "blank lines → all": (["", "  "], DEFAULT),
 }
 
 

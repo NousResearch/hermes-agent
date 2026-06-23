@@ -256,7 +256,7 @@ const ComposerPane = memo(function ComposerPane({
 
       {composer.composerMode !== 'code' && (
         <Box marginLeft={promptWidth + 1} marginBottom={1}>
-          <Text bold color={composer.composerMode === 'plan' ? '#58a6ff' : '#d29922'}>
+          <Text bold color={composer.composerMode === 'plan' ? '#d29922' : '#3fb950'}>
             {composer.composerMode === 'plan' ? '● Plan' : '○ Ask'}
           </Text>
           <Text color={ui.theme.color.muted}>  Tab to toggle</Text>

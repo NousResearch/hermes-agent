@@ -11,6 +11,7 @@ handler are thin wrappers that parse args and delegate.
 """
 
 import json
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -19,6 +20,8 @@ from typing import Any, Dict, List, Optional
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+
+logger = logging.getLogger(__name__)
 
 # Lazy imports to avoid circular dependencies and slow startup.
 # tools.skills_hub and tools.skills_guard are imported inside functions.
@@ -883,12 +886,21 @@ def inspect_skill(identifier: str) -> Optional[dict]:
 
 def do_list(source_filter: str = "all",
             enabled_only: bool = False,
+            show_provenance: bool = False,
             console: Optional[Console] = None) -> None:
-    """List installed skills, distinguishing hub, builtin, and local skills.
+    """List installed skills, distinguishing hub, builtin, local-edit, and local.
 
     Args:
-        source_filter: ``all`` | ``hub`` | ``builtin`` | ``local``.
+        source_filter: ``all`` | ``hub`` | ``builtin`` | ``local-edit`` | ``local``.
         enabled_only: If True, hide disabled skills from the output.
+        show_provenance: If True, render a Provenance column showing the
+            install-origin path for each skill.
+
+    Source and Trust are persisted at install / sync time in a per-profile
+    ``.provenance`` registry (see ``tools/skills_provenance.py``). When a
+    record is missing — e.g. for skills installed before this registry
+    existed — we back-fill it on the fly using a path-based heuristic and
+    warn the user once per invocation.
 
     Enabled/disabled state is resolved against the currently active profile's
     config — ``hermes -p <profile> skills list`` reads that profile's
@@ -896,6 +908,11 @@ def do_list(source_filter: str = "all",
     start.  No explicit profile flag needed here.
     """
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
+    from tools.skills_provenance import (
+        PROVENANCE_BUILTIN, PROVENANCE_HUB, PROVENANCE_LOCAL, PROVENANCE_LOCAL_EDIT,
+        VALID_PROVENANCE, _read_provenance_file, classify_with_hub_lock,
+        record, trust_for,
+    )
     from tools.skills_sync import _read_manifest, _discover_bundled_skills, _get_bundled_dir
     from tools.skills_tool import _find_all_skills
     from agent.skill_utils import get_disabled_skill_names
@@ -905,6 +922,7 @@ def do_list(source_filter: str = "all",
     lock = HubLockFile()
     hub_installed = {e["name"]: e for e in lock.list_installed()}
     builtin_names = set(_read_manifest())
+    provenance_registry = _read_provenance_file()
 
     # Defense-in-depth: also consult the bundled source tree directly so a
     # skill that ships with Hermes is never mislabeled `local` just because
@@ -941,31 +959,69 @@ def do_list(source_filter: str = "all",
     table.add_column("Category", style="dim")
     table.add_column("Source", style="dim")
     table.add_column("Trust", style="dim")
+    if show_provenance:
+        table.add_column("Provenance", style="dim")
     table.add_column("Status", style="dim")
 
-    hub_count = 0
-    builtin_count = 0
-    local_count = 0
+    counts = {p: 0 for p in VALID_PROVENANCE}
     enabled_count = 0
     disabled_count = 0
+    backfilled_names: List[str] = []
+    registry_dirty = False
 
     for skill in sorted(all_skills, key=lambda s: (s.get("category") or "", s["name"])):
         name = skill["name"]
         category = skill.get("category", "")
+        install_path = skill.get("install_path")
         hub_entry = hub_installed.get(name)
 
-        if hub_entry:
-            source_type = "hub"
-            source_display = hub_entry.get("source", "hub")
-            trust = hub_entry.get("trust_level", "community")
-        elif name in builtin_names:
-            source_type = "builtin"
-            source_display = "builtin"
-            trust = "builtin"
+        # 1. Persisted provenance wins.
+        persisted = provenance_registry.get(name)
+        if persisted and persisted.get("provenance") in VALID_PROVENANCE:
+            provenance = persisted["provenance"]
+            origin_path = persisted.get("origin_path", "")
+            # Hub entries override the registry because they're the
+            # authoritative installer-side record. Re-record so the
+            # registry stays in sync.
+            if hub_entry and provenance != PROVENANCE_HUB:
+                provenance = PROVENANCE_HUB
+                origin_path = hub_entry.get("install_path", "") or origin_path
+                registry_dirty = True
         else:
-            source_type = "local"
-            source_display = "local"
-            trust = "local"
+            # 2. Backfill from path + hub lock + bundled manifest. Hub wins
+            #    unconditionally; otherwise use the heuristic.
+            provenance, origin_path = classify_with_hub_lock(
+                name, install_path, hub_entry
+            )
+            # The bundled manifest (or defense-in-depth bundled source-tree
+            # lookup) already knows about this skill — emit a warning and
+            # write through so subsequent invocations are silent.
+            if (
+                provenance != PROVENANCE_HUB
+                and name in builtin_names
+                and provenance != PROVENANCE_BUILTIN
+            ):
+                # Manifest says builtin but heuristic disagrees — trust the
+                # manifest and persist builtin provenance.
+                provenance = PROVENANCE_BUILTIN
+            backfilled_names.append(name)
+            registry_dirty = True
+
+        # Derive Source / Trust from provenance so the two fields stay
+        # consistent (one assignment per axis).
+        source_type = provenance
+        if provenance == PROVENANCE_HUB and hub_entry is not None:
+            # Show the hub-specific source label (e.g. "github", "official")
+            # in the Source column — "hub" is the *provenance* category, but
+            # operators expect to see the upstream registry in the UI.
+            source_display = hub_entry.get("source", "hub")
+            trust = hub_entry.get("trust_level", trust_for(provenance))
+        elif provenance == PROVENANCE_HUB:
+            source_display = "hub"
+            trust = trust_for(provenance)
+        else:
+            source_display = provenance
+            trust = trust_for(provenance)
 
         if source_filter != "all" and source_filter != source_type:
             continue
@@ -974,12 +1030,7 @@ def do_list(source_filter: str = "all",
         if enabled_only and not is_enabled:
             continue
 
-        if source_type == "hub":
-            hub_count += 1
-        elif source_type == "builtin":
-            builtin_count += 1
-        else:
-            local_count += 1
+        counts[provenance] = counts.get(provenance, 0) + 1
 
         if is_enabled:
             enabled_count += 1
@@ -990,16 +1041,60 @@ def do_list(source_filter: str = "all",
 
         trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow", "local": "dim"}.get(trust, "dim")
         trust_label = "official" if source_display == "official" else trust
-        table.add_row(name, category, source_display, f"[{trust_style}]{trust_label}[/]", status_cell)
+        row = [name, category, source_display, f"[{trust_style}]{trust_label}[/]"]
+        if show_provenance:
+            row.append(origin_path or "")
+        row.append(status_cell)
+        table.add_row(*row)
+
+    # Persist any back-filled provenance so the next invocation is silent.
+    # Local-only skills stay unrecorded — they don't add useful provenance
+    # information, and avoiding the write keeps the registry small for
+    # profiles that host many user-authored skills.
+    if registry_dirty:
+        try:
+            current = _read_provenance_file()
+            for skill in all_skills:
+                name = skill["name"]
+                if name in current:
+                    continue
+                install_path = skill.get("install_path")
+                hub_entry = hub_installed.get(name)
+                prov, origin = classify_with_hub_lock(name, install_path, hub_entry)
+                if name in builtin_names and prov != PROVENANCE_BUILTIN:
+                    prov = PROVENANCE_BUILTIN
+                if prov == PROVENANCE_HUB:
+                    origin = (hub_entry or {}).get("install_path", "") or origin
+                if prov != PROVENANCE_LOCAL:
+                    record(name, prov, origin)
+        except Exception as exc:  # pragma: no cover — registry is best-effort
+            logger.debug("Failed to persist back-filled provenance: %s", exc, exc_info=True)
 
     c.print(table)
-    summary = f"[dim]{hub_count} hub-installed, {builtin_count} builtin, {local_count} local"
+    hub_count = counts.get(PROVENANCE_HUB, 0)
+    builtin_count = counts.get(PROVENANCE_BUILTIN, 0)
+    local_edit_count = counts.get(PROVENANCE_LOCAL_EDIT, 0)
+    local_count = counts.get(PROVENANCE_LOCAL, 0)
+    summary = (
+        f"[dim]{hub_count} hub-installed, {builtin_count} builtin, "
+        f"{local_edit_count} local-edit, {local_count} local"
+    )
     if enabled_only:
         summary += f" — {enabled_count} enabled shown"
     else:
         summary += f" — {enabled_count} enabled, {disabled_count} disabled"
     summary += "[/]\n"
     c.print(summary)
+
+    if backfilled_names:
+        # Single warning at the end so the table itself stays scannable.
+        sample = ", ".join(backfilled_names[:5])
+        more = f" (and {len(backfilled_names) - 5} more)" if len(backfilled_names) > 5 else ""
+        c.print(
+            f"[yellow]Note:[/] back-filled provenance for "
+            f"{len(backfilled_names)} skill(s) using path-based heuristic — "
+            f"{sample}{more}. Run `hermes update` to refresh the registry.\n"
+        )
 
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
@@ -1700,6 +1795,7 @@ def skills_command(args) -> None:
         do_list(
             source_filter=args.source,
             enabled_only=getattr(args, "enabled_only", False),
+            show_provenance=getattr(args, "provenance", False),
         )
     elif action == "check":
         do_check(name=getattr(args, "name", None))

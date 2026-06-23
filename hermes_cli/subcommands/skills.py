@@ -98,13 +98,23 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
 
     skills_list = skills_subparsers.add_parser("list", help="List installed skills")
     skills_list.add_argument(
-        "--source", default="all", choices=["all", "hub", "builtin", "local"]
+        "--source",
+        default="all",
+        choices=["all", "hub", "builtin", "local-edit", "local"],
+        help="Filter by Source / provenance category",
     )
     skills_list.add_argument(
         "--enabled-only",
         action="store_true",
         help="Hide disabled skills. Use with -p <profile> to see exactly "
         "which skills will load for that profile.",
+    )
+    skills_list.add_argument(
+        "--provenance",
+        action="store_true",
+        help="Show the Provenance column — the install-origin path each "
+        "skill was seeded from (e.g. ~/.hermes/skills/apple/macos-computer-use "
+        "for a builtin, the upstream registry path for a hub install).",
     )
 
     skills_check = skills_subparsers.add_parser(

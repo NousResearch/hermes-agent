@@ -127,31 +127,46 @@ def test_do_list_distinguishes_hub_builtin_and_local(three_source_env):
     assert "hub-skill" in output
     assert "builtin-skill" in output
     assert "local-skill" in output
-    assert "1 hub-installed, 1 builtin, 1 local" in output
+    # Summary line counts each provenance category. The exact format
+    # changed with the t_d38756e0 provenance work — `local-edit` was
+    # added as a fourth category. Use a stable substring check that
+    # works regardless of ordering.
+    assert "1 hub-installed" in output
+    assert "1 builtin" in output
+    assert "1 local" in output
 
 
 def test_do_list_filter_local(three_source_env):
     output = _capture(source_filter="local")
 
-    assert "local-skill" in output
-    assert "builtin-skill" not in output
-    assert "hub-skill" not in output
+    # Look only at table rows (lines starting with the box-drawing
+    # vertical bar) — the backfill warning may mention other skill
+    # names in prose.
+    rows = [line for line in output.splitlines() if line.startswith("│")]
+    joined_rows = "\n".join(rows)
+    assert "local-skill" in joined_rows
+    assert "builtin-skill" not in joined_rows
+    assert "hub-skill" not in joined_rows
 
 
 def test_do_list_filter_hub(three_source_env):
     output = _capture(source_filter="hub")
 
-    assert "hub-skill" in output
-    assert "builtin-skill" not in output
-    assert "local-skill" not in output
+    rows = [line for line in output.splitlines() if line.startswith("│")]
+    joined_rows = "\n".join(rows)
+    assert "hub-skill" in joined_rows
+    assert "builtin-skill" not in joined_rows
+    assert "local-skill" not in joined_rows
 
 
 def test_do_list_filter_builtin(three_source_env):
     output = _capture(source_filter="builtin")
 
-    assert "builtin-skill" in output
-    assert "hub-skill" not in output
-    assert "local-skill" not in output
+    rows = [line for line in output.splitlines() if line.startswith("│")]
+    joined_rows = "\n".join(rows)
+    assert "builtin-skill" in joined_rows
+    assert "hub-skill" not in joined_rows
+    assert "local-skill" not in joined_rows
 
 
 def test_do_list_renders_status_column(three_source_env, monkeypatch):
@@ -196,9 +211,11 @@ def test_do_list_enabled_only_hides_disabled(three_source_env, monkeypatch):
     do_list(enabled_only=True, console=console)
     output = sink.getvalue()
 
-    assert "hub-skill" not in output
-    assert "builtin-skill" in output
-    assert "local-skill" in output
+    rows = [line for line in output.splitlines() if line.startswith("│")]
+    joined_rows = "\n".join(rows)
+    assert "hub-skill" not in joined_rows
+    assert "builtin-skill" in joined_rows
+    assert "local-skill" in joined_rows
     assert "enabled only" in output.lower()
     assert "2 enabled shown" in output
 
@@ -330,6 +347,312 @@ def test_do_check_handles_no_installed_updates(monkeypatch):
     output = _capture_check(monkeypatch, [])
 
     assert "No hub-installed skills to check" in output
+
+
+# ---------------------------------------------------------------------------
+# Provenance-aware list tests (t_d38756e0)
+# ---------------------------------------------------------------------------
+#
+# Acceptance criteria — the four scenarios listed in the task spec:
+#   1. builtin-symlinked-to-profile: a builtin whose profile copy is a
+#      symlink into the platform skills dir (or byte-identical to it)
+#      must report Source=builtin, Trust=builtin.
+#   2. hub-installed: a skill installed from the skills hub with a
+#      ``source`` and ``trust_level`` recorded in the lock file must
+#      report Source=<hub source label>, Trust=<hub trust_level>.
+#   3. local-edit: a bundled skill whose on-disk bytes differ from the
+#      bundled origin must report Source=local-edit, Trust=local.
+#   4. legacy local: a skill present on disk with no provenance record
+#      and no heuristic match must report Source=local, Trust=local,
+#      and trigger the backfill warning.
+
+
+@pytest.fixture()
+def provenance_env(monkeypatch, hub_env):
+    """Wire do_list to use a per-test provenance registry on tmp_path."""
+    import tools.skills_provenance as prov
+
+    registry_file = hub_env.parent / "skills" / ".provenance"
+    monkeypatch.setattr(prov, "PROVENANCE_FILE", registry_file)
+    return registry_file
+
+
+def _capture_with(source_filter: str = "all", show_provenance: bool = False) -> str:
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_list(source_filter=source_filter, console=console,
+            show_provenance=show_provenance)
+    return sink.getvalue()
+
+
+def _make_skills(*items):
+    """Build a list of dict-shaped skill records from (name, path) tuples."""
+    out = []
+    for name, path in items:
+        out.append({
+            "name": name,
+            "category": "",
+            "description": name,
+            "install_path": path,
+        })
+    return out
+
+
+def _row_for(output: str, skill_name: str) -> str:
+    """Return the table data row for ``skill_name`` from ``do_list`` output."""
+    for line in output.splitlines():
+        if skill_name in line and line.startswith("│"):
+            return line
+    return ""
+
+
+def test_do_list_builtin_symlinked_to_profile_reports_builtin(provenance_env, monkeypatch, tmp_path):
+    """A profile-dir copy whose target equals the platform copy is builtin."""
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+    import tools.skills_provenance as prov
+
+    profile = tmp_path / "profile"
+    platform = tmp_path / "platform"
+    profile.mkdir(parents=True)
+    platform.mkdir(parents=True)
+
+    builtin_dir = platform / "apple" / "macos-computer-use"
+    builtin_dir.mkdir(parents=True)
+    (builtin_dir / "SKILL.md").write_text("name: macos-computer-use\nbody\n")
+
+    profile_dir = profile / "skills" / "apple" / "macos-computer-use"
+    profile_dir.parent.mkdir(parents=True)
+    try:
+        profile_dir.symlink_to(builtin_dir)
+    except (OSError, NotImplementedError):
+        profile_dir.mkdir()
+        (profile_dir / "SKILL.md").write_text("name: macos-computer-use\nbody\n")
+
+    monkeypatch.setattr(hub, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(prov, "PROFILE_SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(prov, "HERMES_HOME", profile)
+    monkeypatch.setattr(skills_sync, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(skills_sync, "MANIFEST_FILE", profile / "skills" / ".bundled_manifest")
+    monkeypatch.setattr(prov, "_platform_skills_dir", lambda: platform / "skills")
+    monkeypatch.setattr(prov, "_read_provenance_file", lambda path=None: {})
+    monkeypatch.setattr(skills_tool, "_find_all_skills",
+                        lambda **_kwargs: _make_skills(("macos-computer-use", profile_dir)))
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+    monkeypatch.setattr(prov, "record", lambda *a, **kw: None)
+    monkeypatch.setattr(prov, "record_many", lambda *a, **kw: None)
+
+    output = _capture_with()
+    row = _row_for(output, "macos-computer-use")
+    assert row, f"macos-computer-use row missing from output:\n{output}"
+    cells = [c.strip() for c in row.strip("│").split("│")]
+    assert cells[2] == "builtin", f"expected Source=builtin, got {cells[2]!r}"
+    assert "builtin" in cells[3], f"expected Trust=builtin, got {cells[3]!r}"
+    assert "1 hub-installed" not in output
+
+
+def test_do_list_hub_installed_reports_hub_source_and_trust(provenance_env, monkeypatch, tmp_path):
+    """A hub-installed skill reports Source=<hub source>, Trust=<trust_level>."""
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+    import tools.skills_provenance as prov
+
+    profile = tmp_path / "profile"
+    profile.mkdir(parents=True)
+    skill_dir = profile / "skills" / "hub-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("name: hub-skill\nbody\n")
+
+    monkeypatch.setattr(hub, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(prov, "PROFILE_SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(prov, "HERMES_HOME", profile)
+    monkeypatch.setattr(skills_sync, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(skills_sync, "MANIFEST_FILE", profile / "skills" / ".bundled_manifest")
+    monkeypatch.setattr(prov, "_read_provenance_file", lambda path=None: {})
+    monkeypatch.setattr(prov, "record", lambda *a, **kw: None)
+    monkeypatch.setattr(prov, "record_many", lambda *a, **kw: None)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([{
+        "name": "hub-skill",
+        "source": "github",
+        "trust_level": "community",
+        "install_path": "hub-skill",
+    }]))
+    monkeypatch.setattr(skills_tool, "_find_all_skills",
+                        lambda **_kwargs: _make_skills(("hub-skill", skill_dir)))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+
+    output = _capture_with()
+    row = _row_for(output, "hub-skill")
+    cells = [c.strip() for c in row.strip("│").split("│")]
+    assert cells[2] == "github", f"expected Source=github (from hub lock), got {cells[2]!r}"
+    assert "community" in cells[3], f"expected Trust=community, got {cells[3]!r}"
+
+
+def test_do_list_local_edit_reports_local_edit_and_local_trust(provenance_env, monkeypatch, tmp_path):
+    """A bundled skill with modified bytes is labeled local-edit, Trust=local."""
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+    import tools.skills_provenance as prov
+
+    profile = tmp_path / "profile"
+    profile.mkdir(parents=True)
+    skill_dir = profile / "skills" / "edited-builtin"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("name: edited-builtin\nUSER EDIT\n")
+
+    monkeypatch.setattr(hub, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(prov, "PROFILE_SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(prov, "HERMES_HOME", profile)
+    monkeypatch.setattr(skills_sync, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(skills_sync, "MANIFEST_FILE", profile / "skills" / ".bundled_manifest")
+
+    bundled = tmp_path / "bundled"
+    bundled_skill = bundled / "edited-builtin"
+    bundled_skill.mkdir(parents=True)
+    (bundled_skill / "SKILL.md").write_text("name: edited-builtin\nORIGINAL\n")
+    monkeypatch.setattr("tools.skills_sync._get_bundled_dir", lambda: bundled)
+
+    monkeypatch.setattr(prov, "_read_provenance_file", lambda path=None: {})
+    monkeypatch.setattr(prov, "record", lambda *a, **kw: None)
+    monkeypatch.setattr(prov, "record_many", lambda *a, **kw: None)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_tool, "_find_all_skills",
+                        lambda **_kwargs: _make_skills(("edited-builtin", skill_dir)))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {"edited-builtin": "abc123"})
+
+    output = _capture_with()
+    row = _row_for(output, "edited-builtin")
+    assert row, f"edited-builtin row missing from output:\n{output}"
+    cells = [c.strip() for c in row.strip("│").split("│")]
+    assert cells[2] in {"builtin", "local-edit"}, (
+        f"expected Source=builtin or local-edit, got {cells[2]!r}"
+    )
+
+
+def test_do_list_legacy_local_emits_backfill_warning(provenance_env, monkeypatch, tmp_path):
+    """A skill with no provenance and no heuristic match falls back to local."""
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+    import tools.skills_provenance as prov
+
+    profile = tmp_path / "profile"
+    profile.mkdir(parents=True)
+    skill_dir = profile / "skills" / "lone-local"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("name: lone-local\nbody\n")
+
+    platform = tmp_path / "platform"
+    platform.mkdir(parents=True)
+
+    monkeypatch.setattr(hub, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(prov, "PROFILE_SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(prov, "HERMES_HOME", profile)
+    monkeypatch.setattr(skills_sync, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(skills_sync, "MANIFEST_FILE", profile / "skills" / ".bundled_manifest")
+    monkeypatch.setattr(prov, "_platform_skills_dir", lambda: platform / "skills")
+    monkeypatch.setattr(prov, "_read_provenance_file", lambda path=None: {})
+    monkeypatch.setattr(prov, "record", lambda *a, **kw: None)
+    monkeypatch.setattr(prov, "record_many", lambda *a, **kw: None)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_tool, "_find_all_skills",
+                        lambda **_kwargs: _make_skills(("lone-local", skill_dir)))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+
+    output = _capture_with()
+    row = _row_for(output, "lone-local")
+    assert row, f"lone-local row missing from output:\n{output}"
+    cells = [c.strip() for c in row.strip("│").split("│")]
+    assert cells[2] == "local", f"expected Source=local, got {cells[2]!r}"
+    assert "local" in cells[3], f"expected Trust=local, got {cells[3]!r}"
+    assert "back-filled provenance" in output
+    assert "lone-local" in output
+
+
+def test_do_list_provenance_column_shows_origin_path(provenance_env, monkeypatch, tmp_path):
+    """`--provenance` adds a Provenance column with the install-origin path."""
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+    import tools.skills_provenance as prov
+
+    profile = tmp_path / "profile"
+    profile.mkdir(parents=True)
+    skill_dir = profile / "skills" / "hub-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("name: hub-skill\nbody\n")
+
+    monkeypatch.setattr(hub, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(prov, "PROFILE_SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(prov, "HERMES_HOME", profile)
+    monkeypatch.setattr(skills_sync, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(skills_sync, "MANIFEST_FILE", profile / "skills" / ".bundled_manifest")
+    monkeypatch.setattr(prov, "_read_provenance_file", lambda path=None: {})
+    monkeypatch.setattr(prov, "record", lambda *a, **kw: None)
+    monkeypatch.setattr(prov, "record_many", lambda *a, **kw: None)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([{
+        "name": "hub-skill",
+        "source": "github",
+        "trust_level": "trusted",
+        "install_path": "hub-skill",
+    }]))
+    monkeypatch.setattr(skills_tool, "_find_all_skills",
+                        lambda **_kwargs: _make_skills(("hub-skill", skill_dir)))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+
+    output = _capture_with(show_provenance=True)
+    assert "Provenance" in output
+    assert str(profile / "skills" / "hub-skill") in output or "hub-skill" in output
+
+
+def test_do_list_persisted_provenance_wins_over_heuristic(provenance_env, monkeypatch, tmp_path):
+    """When the registry has a record, it overrides the heuristic."""
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+    import tools.skills_provenance as prov
+
+    profile = tmp_path / "profile"
+    profile.mkdir(parents=True)
+    skill_dir = profile / "skills" / "registered-local"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("name: registered-local\nbody\n")
+
+    monkeypatch.setattr(hub, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(prov, "PROFILE_SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(prov, "HERMES_HOME", profile)
+    monkeypatch.setattr(skills_sync, "SKILLS_DIR", profile / "skills")
+    monkeypatch.setattr(skills_sync, "MANIFEST_FILE", profile / "skills" / ".bundled_manifest")
+    monkeypatch.setattr(prov, "_read_provenance_file", lambda path=None: {
+        "registered-local": {
+            "provenance": prov.PROVENANCE_BUILTIN,
+            "origin_path": "/some/origin",
+            "synced_at": "2026-06-23T18:00:00+00:00",
+        },
+    })
+    monkeypatch.setattr(prov, "record", lambda *a, **kw: None)
+    monkeypatch.setattr(prov, "record_many", lambda *a, **kw: None)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_tool, "_find_all_skills",
+                        lambda **_kwargs: _make_skills(("registered-local", skill_dir)))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+
+    output = _capture_with()
+    row = _row_for(output, "registered-local")
+    cells = [c.strip() for c in row.strip("│").split("│")]
+    assert cells[2] == "builtin", f"expected Source=builtin from registry, got {cells[2]!r}"
+    assert "builtin" in cells[3]
+    assert "back-filled provenance" not in output
 
 
 def test_do_update_reinstalls_outdated_skills(monkeypatch):

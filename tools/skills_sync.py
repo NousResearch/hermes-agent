@@ -650,6 +650,39 @@ def sync_skills(quiet: bool = False) -> dict:
     _write_manifest(manifest)
     optional_provenance_backfilled = _backfill_optional_provenance(quiet=quiet)
 
+    # Mirror manifest entries into the per-profile provenance registry so
+    # `hermes skills list` can read provenance from one place. For each
+    # bundled skill that ended up on disk (copy / update / already-present
+    # match), record provenance=builtin pointing at the bundled origin.
+    # Skills the user modified stay in the manifest with their origin hash
+    # but get provenance=local-edit here — the truth is the manifest said
+    # builtin originally but the on-disk bytes no longer match.
+    try:
+        from tools.skills_provenance import (
+            PROVENANCE_BUILTIN, PROVENANCE_LOCAL_EDIT,
+            record_many,
+        )
+        provenance_records = []
+        for skill_name, skill_src in bundled_skills:
+            if skill_name not in manifest:
+                continue
+            dest = _compute_relative_dest(skill_src, bundled_dir)
+            if not dest.exists():
+                continue
+            origin_path = str(skill_src.resolve())
+            if _dir_hash(dest) == manifest.get(skill_name, ""):
+                provenance_records.append(
+                    (skill_name, PROVENANCE_BUILTIN, origin_path)
+                )
+            else:
+                provenance_records.append(
+                    (skill_name, PROVENANCE_LOCAL_EDIT, origin_path)
+                )
+        if provenance_records:
+            record_many(provenance_records)
+    except Exception as exc:  # pragma: no cover — registry is best-effort
+        logger.debug("Could not persist builtin provenance: %s", exc, exc_info=True)
+
     return {
         "copied": copied,
         "updated": updated,

@@ -1357,6 +1357,58 @@ class TestHubLockFile:
         assert entry["content_hash"] == "abc123"
         assert "installed_at" in entry
 
+    def test_record_install_persists_provenance_in_lock(self, tmp_path, monkeypatch):
+        """t_d38756e0: HubLockFile.record_install persists provenance on
+        the lock entry so hub installs survive a list-time lookup."""
+        from tools import skills_provenance as prov
+
+        registry = tmp_path / "skills" / ".provenance"
+        monkeypatch.setattr(prov, "PROVENANCE_FILE", registry)
+        monkeypatch.setattr(prov, "PROFILE_SKILLS_DIR", tmp_path / "skills")
+
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        lock.record_install(
+            name="hub-skill",
+            source="github",
+            identifier="owner/repo/hub-skill",
+            trust_level="community",
+            scan_verdict="pass",
+            skill_hash="abc123",
+            install_path="hub-skill",
+            files=["SKILL.md"],
+            provenance="hub",
+        )
+        entry = lock.get_installed("hub-skill")
+        assert entry["provenance"] == "hub"
+        # Mirror write to .provenance registry.
+        from tools.skills_provenance import _read_provenance_file
+        registry_data = _read_provenance_file(registry)
+        assert "hub-skill" in registry_data
+        assert registry_data["hub-skill"]["provenance"] == "hub"
+        assert registry_data["hub-skill"]["origin_path"].endswith("hub-skill")
+
+    def test_record_install_provenance_defaults_to_hub(self, tmp_path, monkeypatch):
+        """Existing callers that don't pass provenance still work."""
+        from tools import skills_provenance as prov
+
+        registry = tmp_path / "skills" / ".provenance"
+        monkeypatch.setattr(prov, "PROVENANCE_FILE", registry)
+        monkeypatch.setattr(prov, "PROFILE_SKILLS_DIR", tmp_path / "skills")
+
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        lock.record_install(
+            name="legacy-caller",
+            source="github",
+            identifier="x/y/z",
+            trust_level="community",
+            scan_verdict="pass",
+            skill_hash="h",
+            install_path="legacy-caller",
+            files=["SKILL.md"],
+        )
+        entry = lock.get_installed("legacy-caller")
+        assert entry["provenance"] == "hub"  # default
+
     def test_record_uninstall(self, tmp_path):
         lock = HubLockFile(path=tmp_path / "lock.json")
         lock.record_install(

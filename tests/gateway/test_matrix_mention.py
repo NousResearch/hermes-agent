@@ -180,6 +180,16 @@ class TestStripMention:
         result = self.adapter._strip_mention("@hermes:example.org")
         assert result == ""
 
+    def test_newline_before_punctuation_preserved(self):
+        # \n before punctuation must NOT be collapsed (regression: \s+ swallowed newlines)
+        result = self.adapter._strip_mention("@hermes:example.org line one\n: line two")
+        assert result == "line one\n: line two"
+
+    def test_stray_space_before_punct_still_removed(self):
+        # the intended horizontal-space strip after mention removal still works
+        result = self.adapter._strip_mention("@hermes:example.org done ?")
+        assert result == "done?"
+
 
 # ---------------------------------------------------------------------------
 # Outbound mention payloads

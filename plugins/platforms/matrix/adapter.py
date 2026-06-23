@@ -3892,9 +3892,12 @@ class MatrixAdapter(BasePlatformAdapter):
                     flags=re.IGNORECASE,
                 )
 
-        # Normalize spacing after mention removal.
+        # Normalize spacing after mention removal. Use a horizontal-only class
+        # ([ \t]) so the stray space left where a mention sat before punctuation
+        # is removed without collapsing newlines — \s+ here would swallow \n/\r
+        # and silently merge a user's multi-line message into one line.
         body = re.sub(r'[ \t]{2,}', ' ', body)
-        body = re.sub(r'\s+([,.;:!?])', r'\1', body)
+        body = re.sub(r'[ \t]+([,.;:!?])', r'\1', body)
         return body.strip()
 
     async def _get_display_name(self, room_id: str, user_id: str) -> str:

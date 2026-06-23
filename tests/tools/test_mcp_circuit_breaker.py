@@ -250,3 +250,117 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
         )
     finally:
         _cleanup(mcp_tool, "srv")
+
+
+# ---------------------------------------------------------------------------
+# Semantic-error vs transport-error distinction (regression for the
+# "get_page → put_page" trap)
+# ---------------------------------------------------------------------------
+
+
+def _make_call_returning_error(error_text: str):
+    """Build an async call_tool stub that simulates an MCP tool returning
+    a structured error result (``isError=True``). The handler wraps the
+    block text as ``{"error": "<error_text>"}`` for the agent.
+
+    This is how real MCP servers like gbrain signal semantic failures
+    (e.g. "page_not_found") — the tool ran successfully but reported a
+    structured negative result.
+    """
+    async def _call(*a, **kw):
+        result = MagicMock()
+        result.isError = True
+        block = MagicMock()
+        block.text = error_text
+        result.content = [block]
+        result.structuredContent = None
+        return result
+
+    return _call
+
+
+def test_semantic_error_envelope_does_not_bump_breaker(monkeypatch, tmp_path):
+    """A tool that returns a structured semantic-error envelope (e.g.
+    ``{"error": "page_not_found"}``) MUST NOT bump the server-level
+    circuit-breaker counter.
+
+    Regression: prior to this fix, ANY response containing an ``error``
+    key bumped the counter. Common agent flows like ``get_page → if
+    missing, put_page`` would trip the breaker after 3 cache misses and
+    lock the entire server for the cooldown window. The MCP server was
+    healthy the whole time — it just reported a structured negative
+    result for the read probes, which the breaker mis-classified as
+    server failures.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    # gbrain-shape envelope: tool ran, returned a structured "not found"
+    # result via isError=True. The MCP server is healthy.
+    envelope = json.dumps({
+        "error": "page_not_found",
+        "message": "Page not found: people/nonexistent",
+        "suggestion": "Page may be soft-deleted; pass include_deleted=true",
+    })
+
+    _install_stub_server(mcp_tool, "srv", _make_call_returning_error(envelope))
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        handler = _make_tool_handler("srv", "get_page", 10.0)
+
+        # Hit the handler 5x — well above the breaker threshold (3).
+        # The counter MUST stay at zero throughout: every "page_not_found"
+        # is a healthy semantic response, not a server failure.
+        for i in range(5):
+            result = handler({"slug": f"people/probe-{i}"})
+            parsed = json.loads(result)
+            # Confirm we got the envelope back (handler didn't short-circuit).
+            # The handler wraps the tool's error_text inside its own "error"
+            # field, so the gbrain-shape envelope appears as a substring.
+            assert "page_not_found" in parsed.get("error", ""), (
+                f"call {i}: handler should pass through the semantic error, "
+                f"not short-circuit. Got: {parsed}"
+            )
+
+        # The counter MUST be 0 — none of the 5 semantic errors counted.
+        assert mcp_tool._server_error_counts.get("srv", 0) == 0, (
+            "semantic errors must not bump the breaker; got count="
+            f"{mcp_tool._server_error_counts.get('srv', 0)}"
+        )
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
+def test_unknown_error_envelope_still_bumps_breaker(monkeypatch, tmp_path):
+    """Errors NOT matching any known semantic pattern must continue to
+    bump the breaker. Preserves existing behavior for unknown errors —
+    fail closed on anything that might indicate a real server problem.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    # An "unknown" error string that doesn't match any semantic pattern.
+    envelope = "weird_internal_explosion: something nobody expected"
+
+    _install_stub_server(mcp_tool, "srv", _make_call_returning_error(envelope))
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        handler = _make_tool_handler("srv", "tool1", 10.0)
+
+        # Hit the handler 3 times.
+        for _ in range(3):
+            handler({})
+
+        # Counter should have bumped 3x (matching threshold).
+        count = mcp_tool._server_error_counts.get("srv", 0)
+        assert count >= mcp_tool._CIRCUIT_BREAKER_THRESHOLD, (
+            f"unknown-pattern errors must still bump breaker; got count={count}"
+        )
+    finally:
+        _cleanup(mcp_tool, "srv")

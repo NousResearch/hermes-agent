@@ -3220,11 +3220,39 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             result = _call_once()
-            # Check if the MCP tool itself returned an error
+            # Check if the MCP tool itself returned an error.
+            #
+            # IMPORTANT: distinguish tool-level *semantic* errors (the MCP
+            # call succeeded and the tool reported a structured failure mode
+            # like "page_not_found" or "invalid_params") from real
+            # transport/internal errors. The server-level circuit breaker
+            # is meant to detect when the MCP SERVER is broken — not when
+            # a tool returns a perfectly-valid "no such resource" reply.
+            #
+            # Without this distinction, common agent patterns like
+            # "get_page → if missing, put_page" trip the breaker on the
+            # first 3 misses and lock the entire server. See gbrain
+            # voice-note-ingest flow.
             try:
                 parsed = json.loads(result)
                 if "error" in parsed:
-                    _bump_server_error(server_name)
+                    err_str = str(parsed.get("error", "")).lower()
+                    # Known semantic-error patterns: tool ran fine, just
+                    # reported a structured negative result. These do NOT
+                    # indicate server health problems — do not bump.
+                    _SEMANTIC_ERROR_PATTERNS = (
+                        "page_not_found", "not_found", "no such",
+                        "does not exist", "doesn't exist",
+                        "invalid_params", "invalid_input", "invalid_argument",
+                        "validation_error", "validation failed",
+                        "permission_denied", "unauthorized", "forbidden",
+                        "already_exists", "conflict", "duplicate",
+                        "rate_limit", "rate_limited", "too_many_requests",
+                    )
+                    if any(p in err_str for p in _SEMANTIC_ERROR_PATTERNS):
+                        _reset_server_error(server_name)  # tool worked, even if logic said no
+                    else:
+                        _bump_server_error(server_name)  # unknown error → assume real
                 else:
                     _reset_server_error(server_name)  # success — reset
             except (json.JSONDecodeError, TypeError):

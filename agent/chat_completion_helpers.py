@@ -29,6 +29,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.model_metadata import is_local_endpoint
+from agent.system_prompt import build_runtime_clock_prompt
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
@@ -1375,6 +1376,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         effective_system = agent._cached_system_prompt or ""
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        runtime_clock_prompt = build_runtime_clock_prompt()
+        if runtime_clock_prompt:
+            effective_system = (effective_system + "\n\n" + runtime_clock_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
         if agent.prefill_messages:

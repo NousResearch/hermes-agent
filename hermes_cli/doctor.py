@@ -755,6 +755,11 @@ def run_doctor(args):
                     known_providers.add("custom:" + name.lower().replace(" ", "-"))
 
             valid_provider_ids = set(known_providers)
+            valid_provider_ids.update(
+                str(known_provider).strip().lower()
+                for known_provider in known_providers
+                if str(known_provider).strip()
+            )
             provider_ids_to_accept = {provider} if provider else set()
             if _normalize_catalog_provider is not None:
                 for known_provider in known_providers:
@@ -772,6 +777,7 @@ def run_doctor(args):
                 try:
                     runtime_provider = _resolve_auth_provider(provider)
                     provider_ids_to_accept.add(runtime_provider)
+                    provider_ids_to_accept.add(str(runtime_provider).strip().lower())
                 except Exception:
                     runtime_provider = provider
 
@@ -785,12 +791,11 @@ def run_doctor(args):
                 catalog_provider = provider_def.id if provider_def is not None else None
                 if catalog_provider is not None:
                     provider_ids_to_accept.add(catalog_provider)
+                    provider_ids_to_accept.add(str(catalog_provider).strip().lower())
 
             if provider and provider != "auto":
-                if catalog_provider is None or (
-                    known_providers
-                    and not (provider_ids_to_accept & valid_provider_ids)
-                ):
+                provider_known = bool(provider_ids_to_accept & valid_provider_ids)
+                if catalog_provider is None and not provider_known:
                     known_list = ", ".join(sorted(known_providers)) if known_providers else "(unavailable)"
                     _fail_and_issue(
                         f"model.provider '{provider_raw}' is not a recognised provider",

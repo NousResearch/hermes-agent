@@ -445,6 +445,50 @@ def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
     assert "model.provider 'custom' is not a recognised provider" not in out
 
 
+def test_run_doctor_accepts_auth_registry_provider_without_catalog_entry(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: omlx\n"
+        "  default: qwen3-30b-a3b-instruct-2507-4bit\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import providers as providers_mod
+
+    monkeypatch.setitem(auth_mod.PROVIDER_REGISTRY, "oMLX", object())
+    monkeypatch.setattr(auth_mod, "resolve_provider", lambda provider: "oMLX")
+    monkeypatch.setattr(providers_mod, "resolve_provider_full", lambda *a, **kw: None)
+
+    try:
+        monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'omlx' is not a recognised provider" not in out
+    assert "model.provider 'omlx' is unknown" not in out
+
+
 def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

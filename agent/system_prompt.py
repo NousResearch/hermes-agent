@@ -493,6 +493,29 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     return joined
 
 
+def build_runtime_clock_prompt() -> str:
+    """Return a tiny API-call-time clock block.
+
+    The full system prompt is cached for session/prefix-cache stability, so
+    its ``Conversation started`` line intentionally stays date-only. This
+    block is appended at request time and is not persisted to session DB.
+    """
+    from hermes_time import now as _hermes_now
+
+    current = _hermes_now()
+    offset = current.strftime("%z")
+    offset_display = f"UTC{offset[:3]}:{offset[3:]}" if offset else "local timezone"
+    zone_name = current.tzname() or "local time"
+    return (
+        "## Current Date and Time\n"
+        f"Current local date/time: {current.strftime('%A, %B %d, %Y at %I:%M %p')} "
+        f"{zone_name} ({offset_display}); ISO: {current.isoformat(timespec='seconds')}.\n"
+        "Use this timestamp for all relative date phrases. Treat 'today' as this "
+        "date and 'this week' as the current calendar week containing this date; "
+        "do not assume 'this week' means 'weekend' unless the user says weekend."
+    )
+
+
 def invalidate_system_prompt(agent: Any) -> None:
     """Invalidate the cached system prompt, forcing a rebuild on the next turn.
 
@@ -531,6 +554,7 @@ def format_tools_for_system_message(agent: Any) -> str:
 __all__ = [
     "build_system_prompt_parts",
     "build_system_prompt",
+    "build_runtime_clock_prompt",
     "invalidate_system_prompt",
     "format_tools_for_system_message",
 ]

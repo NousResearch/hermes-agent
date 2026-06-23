@@ -56,6 +56,7 @@ from agent.model_metadata import (
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
+from agent.system_prompt import build_runtime_clock_prompt
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
@@ -798,6 +799,9 @@ def run_conversation(
         effective_system = active_system_prompt or ""
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        runtime_clock_prompt = build_runtime_clock_prompt()
+        if runtime_clock_prompt:
+            effective_system = (effective_system + "\n\n" + runtime_clock_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 

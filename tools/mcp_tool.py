@@ -1814,9 +1814,15 @@ class MCPServerTask:
                     # sweep needs the pgid to reach any reparented descendants
                     # (e.g. ``claude mcp serve`` spawned by a stdio wrapper).
                     new_pgids: Dict[int, int] = {}
+                    new_pgid_starts: Dict[int, int] = {}
                     for _pid in new_pids:
                         try:
-                            new_pgids[_pid] = os.getpgid(_pid)
+                            _pgid = os.getpgid(_pid)
+                            new_pgids[_pid] = _pgid
+                            # Record group-leader start time for PID-reuse guard
+                            _st = _read_proc_start_time(_pgid)
+                            if _st is not None:
+                                new_pgid_starts[_pgid] = _st
                         except (AttributeError, ProcessLookupError, OSError):
                             # AttributeError: Windows (os.getpgid is POSIX-only)
                             # ProcessLookupError: child raced and already exited
@@ -1825,6 +1831,7 @@ class MCPServerTask:
                         for _pid in new_pids:
                             _stdio_pids[_pid] = self.name
                         _stdio_pgids.update(new_pgids)
+                        _stdio_pgid_starts.update(new_pgid_starts)
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
@@ -1855,15 +1862,19 @@ class MCPServerTask:
                         pgroup_alive = False
                         pgid = _stdio_pgids.get(pid)
                         if not pid_alive and pgid is not None and _killpg is not None:
-                            # Direct child exited but descendants may still be
-                            # in its pgroup (e.g. ``claude mcp serve`` spawned
-                            # by an MCP wrapper that exited first).  Probe with
-                            # signal 0 — succeeds iff any pgroup member is alive.
-                            try:
-                                _killpg(pgid, 0)
-                                pgroup_alive = True
-                            except (ProcessLookupError, PermissionError, OSError):
+                            # Guard against PID/PGID reuse before probing.
+                            if not _pgid_valid(pgid):
                                 pgroup_alive = False
+                            else:
+                                # Direct child exited but descendants may still be
+                                # in its pgroup (e.g. ``claude mcp serve`` spawned
+                                # by an MCP wrapper that exited first).  Probe with
+                                # signal 0 — succeeds iff any pgroup member is alive.
+                                try:
+                                    _killpg(pgid, 0)
+                                    pgroup_alive = True
+                                except (ProcessLookupError, PermissionError, OSError):
+                                    pgroup_alive = False
                         if pid_alive or pgroup_alive:
                             _orphan_stdio_pids.add(pid)
                         else:
@@ -2834,6 +2845,57 @@ _orphan_stdio_pids: set = set()
 # exited and been removed from the active map.  Empty on Windows
 # (``os.getpgid`` is POSIX-only).
 _stdio_pgids: Dict[int, int] = {}  # pid -> pgid
+
+# Start times (in clock ticks since boot) of the process-group leaders at
+# spawn time.  Used to detect PID/PGID reuse before ``os.killpg`` — if the
+# kernel recycled a PGID onto an unrelated process, the start time will
+# differ and we skip the ``killpg`` to avoid killing a stranger.  Only
+# populated on Linux (``/proc`` is available); empty dict on other platforms.
+_stdio_pgid_starts: Dict[int, int] = {}  # pgid -> start_time_in_ticks
+
+
+def _read_proc_start_time(pid: int) -> Optional[int]:
+    """Read field 22 (starttime in clock ticks) from /proc/<pid>/stat.
+
+    Returns ``None`` when ``/proc`` is unavailable (macOS, Windows) or the
+    process has already exited.  The value is comparable across reads for
+    the same PID - if two reads differ, the PID was recycled.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            # Field 22 is starttime — skip 21 fields (comm may contain spaces,
+            # so split from the right after stripping the trailing ')').
+            data = f.read(512).decode("utf-8", errors="replace")
+            close_paren = data.find(")")
+            if close_paren < 0:
+                return None
+            fields = data[close_paren + 2:].split()
+            if len(fields) >= 20:
+                return int(fields[19])  # field 22 (0-indexed: 21 - 2 for skipped pid+comm)
+    except (FileNotFoundError, PermissionError, ValueError, IndexError, OSError):
+        pass
+    return None
+
+
+def _pgid_valid(pgid: int) -> bool:
+    """Check whether *pgid* still refers to the process we spawned.
+
+    Compares the current start time of the PGID leader against the value
+    recorded at spawn time.  Returns ``True`` if the PGID is still ours (or
+    we cannot determine - i.e. on macOS with no /proc - in which case we
+    degrade to the prior best-effort behaviour).
+    """
+    recorded = _stdio_pgid_starts.get(pgid)
+    if recorded is None:
+        # No start time recorded (non-Linux or spawn-time race) — assume valid
+        # to preserve existing behaviour on macOS / Windows.
+        return True
+    current = _read_proc_start_time(pgid)
+    if current is None:
+        # Process already gone — PGID may be recycled, but killpg will fail
+        # anyway (ProcessLookupError), so let it proceed.
+        return True
+    return current == recorded
 
 
 def _snapshot_child_pids() -> set:
@@ -4648,16 +4710,25 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
         pgid = pgids.get(pid)
         killpg = getattr(os, "killpg", None)
         if pgid is not None and killpg is not None:
-            try:
-                killpg(pgid, sig)
-                return
-            except (ProcessLookupError, PermissionError, OSError) as exc:
-                # Pgroup gone (all members exited) or refused — fall back to
-                # the per-pid path so we still try the direct child if alive.
+            # Guard against PID/PGID reuse: if the kernel recycled the PGID
+            # onto an unrelated process, skip killpg to avoid killing a stranger.
+            if not _pgid_valid(pgid):
                 logger.debug(
-                    "killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
-                    pgid, sig, server_name, exc,
+                    "Skipping killpg(%d, %d) for MCP server '%s': "
+                    "PGID start-time mismatch (recycled PID?)",
+                    pgid, sig, server_name,
                 )
+            else:
+                try:
+                    killpg(pgid, sig)
+                    return
+                except (ProcessLookupError, PermissionError, OSError) as exc:
+                    # Pgroup gone (all members exited) or refused — fall back to
+                    # the per-pid path so we still try the direct child if alive.
+                    logger.debug(
+                        "killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
+                        pgid, sig, server_name, exc,
+                    )
         try:
             os.kill(pid, sig)
         except (ProcessLookupError, PermissionError, OSError):
@@ -4684,6 +4755,12 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
             "Force-killed MCP process %d (%s) after SIGTERM timeout",
             pid, server_name,
         )
+
+    # Now that _pgid_valid() has finished consulting _stdio_pgid_starts,
+    # safe to drop the PGID start-time entries.  Deferred from the lock
+    # block above because _pgid_valid reads the dict during signal phase.
+    for pid in pgids:
+        _stdio_pgid_starts.pop(pgids[pid], None)
 
 
 def _stop_mcp_loop_if_idle() -> bool:

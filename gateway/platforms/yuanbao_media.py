@@ -141,6 +141,14 @@ def _parse_png_size(buf: bytes) -> Optional[dict[str, int]]:
     return {"width": w, "height": h}
 
 
+# SOF（Start Of Frame）标记，宽高位于 +5/+7。
+# 故意排除 0xC4(DHT)、0xC8(JPG)、0xCC(DAC)——它们落在 0xC0–0xCF 区间
+# 但不是帧头，仍需按带长度前缀的普通段处理。
+_JPEG_SOF_MARKERS = frozenset(
+    {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+)
+
+
 def _parse_jpeg_size(buf: bytes) -> Optional[dict[str, int]]:
     if len(buf) < 4 or buf[0] != 0xFF or buf[1] != 0xD8:
         return None
@@ -150,7 +158,12 @@ def _parse_jpeg_size(buf: bytes) -> Optional[dict[str, int]]:
             i += 1
             continue
         marker = buf[i + 1]
-        if marker in {0xC0, 0xC2}:
+        # 跳过填充字节：标记前可能有额外的 0xFF 填充（ITU-T T.81 §B.1.1.2），
+        # 逐字节前移直到真正的标记码，避免把填充误读为段长度前缀导致扫描错位。
+        if marker == 0xFF:
+            i += 1
+            continue
+        if marker in _JPEG_SOF_MARKERS:
             h = struct.unpack(">H", buf[i + 5: i + 7])[0]
             w = struct.unpack(">H", buf[i + 7: i + 9])[0]
             return {"width": w, "height": h}

@@ -46,6 +46,7 @@ from gateway.platforms.base import (
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_VIDEO_TYPES,
+    _TEXT_INJECT_EXTENSIONS,
     is_host_excluded_by_no_proxy,
     resolve_proxy_url,
     safe_url_for_log,
@@ -302,6 +303,100 @@ def _resolve_slack_proxy_url() -> Optional[str]:
     return proxy_url
 
 
+# Map Slack audio mimetypes to the file extension that matches the actual
+# container bytes.  Critically, Slack's in-app "record a clip" voice messages
+# arrive as MP4/AAC containers (``audio/mp4``, filename ``audio_message*.mp4``),
+# NOT Ogg — so the extension we cache them under must be one a downstream STT
+# backend (OpenAI Whisper / gpt-4o-transcribe) will accept for that container.
+# OpenAI sniffs the container from the FILENAME extension, so a wrong extension
+# (e.g. caching MP4 bytes as ``.ogg``) makes transcription fail outright.
+# Mirrors the proven map in gateway/platforms/bluebubbles.py.
+_SLACK_AUDIO_MIME_TO_EXT = {
+    "audio/ogg": ".ogg",
+    "audio/opus": ".ogg",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/webm": ".webm",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/m4a": ".m4a",
+    "audio/aac": ".m4a",
+    "audio/flac": ".flac",
+    "audio/x-flac": ".flac",
+}
+
+# Extensions OpenAI/Whisper-family STT backends accept (kept in sync with
+# tools/transcription_tools.SUPPORTED_FORMATS).
+_SLACK_STT_SUPPORTED_EXTS = frozenset(
+    {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
+)
+
+# Cached-extension → reported ``audio/*`` mimetype. Used when re-routing a
+# ``video/mp4``-mislabeled voice clip onto the audio path so the reported
+# media_type stays coherent with the bytes we actually cached (the gateway's
+# STT gate keys on the ``audio/`` prefix + the cached filename extension, but a
+# matching mimetype avoids surprising any consumer that inspects it). Anything
+# unmapped falls back to ``audio/mp4`` — Slack voice clips are MP4/AAC.
+_SLACK_EXT_TO_AUDIO_MIME = {
+    ".mp4": "audio/mp4",
+    ".m4a": "audio/mp4",
+    ".mp3": "audio/mpeg",
+    ".mpeg": "audio/mpeg",
+    ".mpga": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".webm": "audio/webm",
+    ".ogg": "audio/ogg",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+}
+
+
+def _resolve_slack_audio_ext(file_obj: Dict[str, Any], mimetype: str) -> str:
+    """Pick the cache extension that matches an inbound Slack audio file's bytes.
+
+    Resolution order (mirrors the video branch + bluebubbles.py):
+
+    1. The real extension from the uploaded filename, when it's a format a
+       Whisper-family STT backend accepts (so ``audio_message.mp4`` →
+       ``.mp4``, ``clip.m4a`` → ``.m4a``).
+    2. A mimetype → extension lookup (so ``audio/mp4`` → ``.m4a``).
+    3. ``.m4a`` as a last resort — never ``.ogg``, which was the original bug:
+       MP4/AAC voice messages cached as ``.ogg`` are rejected by OpenAI because
+       the bytes don't match the container the extension claims.
+    """
+    name = (file_obj.get("name") or "").strip()
+    _, name_ext = os.path.splitext(name)
+    name_ext = name_ext.lower()
+    if name_ext in _SLACK_STT_SUPPORTED_EXTS:
+        return name_ext
+
+    mime_key = (mimetype or "").split(";", 1)[0].strip().lower()
+    if mime_key in _SLACK_AUDIO_MIME_TO_EXT:
+        return _SLACK_AUDIO_MIME_TO_EXT[mime_key]
+
+    return ".m4a"
+
+
+def _is_slack_voice_clip(file_obj: Dict[str, Any]) -> bool:
+    """Return True when a Slack file is an audio-only voice clip.
+
+    Slack's in-app voice recordings are audio-only MP4 containers, but Slack
+    sometimes reports them with a ``video/mp4`` mimetype, which would otherwise
+    route them to video understanding instead of speech-to-text. Detect them by
+    Slack's stable markers — the ``slack_audio`` subtype and the
+    ``audio_message*`` filename pattern — so genuine videos are left untouched.
+    """
+    subtype = (file_obj.get("subtype") or "").strip().lower()
+    if subtype == "slack_audio":
+        # slack_audio is always audio-only. (slack_video clips carry a real
+        # video track, so they are deliberately NOT matched here.)
+        return True
+    name = (file_obj.get("name") or "").strip().lower()
+    return name.startswith("audio_message")
+
+
 class SlackAdapter(BasePlatformAdapter):
     """
     Slack bot adapter using Socket Mode.
@@ -320,6 +415,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Slack blocks typed native slash commands inside threads ("/approve is
     # not supported in threads. Sorry!").  The adapter rewrites a leading
     # "!" to "/" for known commands (see _handle_slack_message), so "!" is
@@ -2483,7 +2579,10 @@ class SlackAdapter(BasePlatformAdapter):
         #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         routing_text = original_text or ""
-        is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
+        is_mentioned = bool(
+            (bot_uid and f"<@{bot_uid}>" in routing_text)
+            or self._slack_message_matches_mention_patterns(routing_text)
+        )
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
@@ -2632,9 +2731,7 @@ class SlackAdapter(BasePlatformAdapter):
                         )
             elif mimetype.startswith("audio/") and url:
                 try:
-                    ext = "." + mimetype.split("/")[-1].split(";")[0]
-                    if ext not in {".ogg", ".mp3", ".wav", ".webm", ".m4a"}:
-                        ext = ".ogg"
+                    ext = _resolve_slack_audio_ext(f, mimetype)
                     cached = await self._download_slack_file(
                         url, ext, audio=True, team_id=team_id
                     )
@@ -2648,6 +2745,41 @@ class SlackAdapter(BasePlatformAdapter):
                     else:
                         logger.warning(
                             "[Slack] Failed to cache audio from %s: %s",
+                            url,
+                            e,
+                            exc_info=True,
+                        )
+            elif mimetype.startswith("video/") and url and _is_slack_voice_clip(f):
+                # Slack in-app voice clips are audio-only MP4 containers that
+                # Slack sometimes mislabels with a ``video/mp4`` mimetype.
+                # Cache them as audio and report an ``audio/*`` type so the
+                # gateway routes them to speech-to-text instead of video
+                # understanding. Without this, voice messages recorded in Slack
+                # never get transcribed.
+                try:
+                    ext = _resolve_slack_audio_ext(f, mimetype)
+                    cached = await self._download_slack_file(
+                        url, ext, audio=True, team_id=team_id
+                    )
+                    media_urls.append(cached)
+                    # Report a coherent audio mimetype matching the cached
+                    # extension so downstream STT routing recognizes it.
+                    media_types.append(
+                        _SLACK_EXT_TO_AUDIO_MIME.get(ext, "audio/mp4")
+                    )
+                    logger.debug(
+                        "[Slack] Cached voice clip (mislabeled %s) as audio: %s",
+                        mimetype,
+                        cached,
+                    )
+                except Exception as e:  # pragma: no cover - defensive logging
+                    detail = self._describe_slack_download_failure(e, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning(
+                            "[Slack] Failed to cache voice clip from %s: %s",
                             url,
                             e,
                             exc_info=True,
@@ -2698,8 +2830,12 @@ class SlackAdapter(BasePlatformAdapter):
                         }
                         ext = mime_to_ext.get(mimetype, "")
 
-                    if ext not in SUPPORTED_DOCUMENT_TYPES:
-                        continue  # Skip unsupported file types silently
+                    # Any file type is accepted — authorization to message the
+                    # agent is the gate, not the file extension. Known types keep
+                    # their precise MIME; unknown types fall back to the source
+                    # mimetype or octet-stream so the agent reaches for terminal
+                    # tools.
+                    in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
 
                     # Check file size (Slack limit: 20 MB for bots)
                     file_size = f.get("size", 0)
@@ -2715,36 +2851,28 @@ class SlackAdapter(BasePlatformAdapter):
                         url, team_id=team_id
                     )
                     cached_path = cache_document_from_bytes(
-                        raw_bytes, original_filename or f"document{ext}"
+                        raw_bytes, original_filename or f"document{ext or '.bin'}"
                     )
-                    doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                    if in_allowlist:
+                        doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                    else:
+                        doc_mime = mimetype or "application/octet-stream"
                     media_urls.append(cached_path)
                     media_types.append(doc_mime)
-                    logger.debug("[Slack] Cached user document: %s", cached_path)
+                    logger.debug("[Slack] Cached user document: %s (%s)", cached_path, doc_mime)
 
                     # Inject small text-ish files directly into the prompt so
-                    # snippets like JSON/YAML/configs are actually visible to the agent.
+                    # snippets like JSON/YAML/configs are actually visible to the
+                    # agent. Gate on a text-like extension/MIME — NOT a blind
+                    # UTF-8 decode, since binary formats (PDF/zip/docx) can have
+                    # decodable ASCII headers. Binary files are surfaced as a
+                    # cached path only (run.py emits a path-pointing note).
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
-                    TEXT_INJECT_EXTENSIONS = {
-                        ".md",
-                        ".txt",
-                        ".csv",
-                        ".log",
-                        ".json",
-                        ".xml",
-                        ".yaml",
-                        ".yml",
-                        ".toml",
-                        ".ini",
-                        ".cfg",
-                    }
-                    if (
-                        ext in TEXT_INJECT_EXTENSIONS
-                        and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES
-                    ):
+                    _is_text = ext in _TEXT_INJECT_EXTENSIONS or (mimetype or "").startswith("text/")
+                    if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                         try:
                             text_content = raw_bytes.decode("utf-8")
-                            display_name = original_filename or f"document{ext}"
+                            display_name = original_filename or f"document{ext or '.txt'}"
                             display_name = re.sub(r"[^\w.\- ]", "_", display_name)
                             injection = f"[Content of {display_name}]:\n{text_content}"
                             if text:
@@ -3813,6 +3941,60 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, str) and raw.strip():
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
+
+    def _slack_mention_patterns(self) -> List["re.Pattern"]:
+        """Compile optional regex wake-word patterns for channel triggers.
+
+        Parity with the other adapters (Telegram, DingTalk, Mattermost,
+        WhatsApp, BlueBubbles, Photon): when ``require_mention`` is on, a
+        channel message matching one of these patterns triggers the bot even
+        without a literal ``<@BOTUID>`` mention. Reads ``slack.mention_patterns``
+        (a list or single string) or ``SLACK_MENTION_PATTERNS`` (a JSON list, or
+        newline/comma-separated values). Compiled patterns are cached on the
+        instance. Previously this documented field was silently dropped.
+        """
+        cached = getattr(self, "_compiled_mention_patterns", None)
+        if cached is not None:
+            return cached
+
+        patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
+        if patterns is None:
+            raw = os.getenv("SLACK_MENTION_PATTERNS", "").strip()
+            if raw:
+                try:
+                    import json as _json
+                    patterns = _json.loads(raw)
+                except Exception:
+                    patterns = [p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()]
+
+        if isinstance(patterns, str):
+            patterns = [patterns]
+
+        compiled: List["re.Pattern"] = []
+        if isinstance(patterns, list):
+            for pat in patterns:
+                if not isinstance(pat, str) or not pat.strip():
+                    continue
+                try:
+                    compiled.append(re.compile(pat, re.IGNORECASE))
+                except re.error as exc:
+                    logger.warning("[Slack] Invalid mention pattern %r: %s", pat, exc)
+        elif patterns is not None:
+            logger.warning(
+                "[Slack] mention_patterns must be a list or string; got %s",
+                type(patterns).__name__,
+            )
+
+        if compiled:
+            logger.info("[Slack] Loaded %d mention pattern(s)", len(compiled))
+        self._compiled_mention_patterns = compiled
+        return compiled
+
+    def _slack_message_matches_mention_patterns(self, text: str) -> bool:
+        """Return True when ``text`` matches a configured wake-word pattern."""
+        if not text:
+            return False
+        return any(pattern.search(text) for pattern in self._slack_mention_patterns())
 
 
 # ──────────────────────────────────────────────────────────────────────────

@@ -166,6 +166,16 @@ model:
 #
 # worktree: true    # Always create a worktree when in a git repo
 # worktree: false   # Default — only create when -w flag is passed
+#
+# By default a new worktree branches from the freshly-fetched remote tip
+# (the current branch's upstream, else the remote's default branch) so it
+# starts current with the project instead of from the local clone's
+# (possibly stale) HEAD. Set worktree_sync: false to branch from local HEAD
+# instead — useful when offline or when you deliberately want the clone's
+# exact current state as the base.
+#
+# worktree_sync: true   # Default — branch from the fetched remote tip
+# worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
 # Terminal Tool Configuration
@@ -730,7 +740,7 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
-#       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default true, set false to force legacy MarkdownV2
+#       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

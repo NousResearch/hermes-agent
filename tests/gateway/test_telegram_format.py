@@ -213,6 +213,39 @@ async def test_legacy_send_keeps_chunk_indicators_outside_fenced_code_lines(adap
             assert not re.match(r"^```\s+\(\d+/\d+\)$", line), text
 
 
+@pytest.mark.asyncio
+async def test_final_send_does_not_retrigger_typing(adapter):
+    """The final reply (metadata['notify']) must NOT re-arm Telegram's typing
+    timer. The gateway has already torn down the refresh loop by then, so a
+    re-trigger here would leave the '...typing' bubble lingering after the
+    answer (Telegram has no stop-typing API). See #48678."""
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_messages_enabled = False
+
+    result = await adapter.send("12345", "All done.", metadata={"notify": True})
+
+    assert result.success is True
+    adapter._bot.send_chat_action.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_intermediate_send_still_retriggers_typing(adapter):
+    """Intermediate/progress sends (no notify marker) keep re-triggering typing
+    so the '...typing' bubble survives across progress messages while the agent
+    is still working."""
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_messages_enabled = False
+
+    result = await adapter.send("12345", "Checking:", metadata={"expect_edits": True})
+
+    assert result.success is True
+    adapter._bot.send_chat_action.assert_awaited()
+
+
 # =========================================================================
 # format_message - bold and italic
 # =========================================================================

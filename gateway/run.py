@@ -10926,14 +10926,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
 
         chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
+        voice_key = self._voice_key(event.source.platform, chat_id)
+        voice_mode = self._voice_mode.get(voice_key)
         is_voice_input = (event.message_type == MessageType.VOICE)
+
+        adapter = self.adapters.get(event.source.platform)
+        adapter_auto_tts = False
+        if adapter and hasattr(adapter, "_should_auto_tts_for_chat"):
+            try:
+                adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))
+            except Exception:
+                adapter_auto_tts = False
 
         should = (
             (voice_mode == "all")
             or (voice_mode == "voice_only" and is_voice_input)
+            # ``voice.auto_tts`` is synced into the adapter on gateway startup.
+            # Treat it as "voice accompanies text replies" unless a chat was
+            # explicitly turned off. The base adapter's own auto-TTS path only
+            # covers voice-input replies, so final text replies need the runner
+            # path here.
+            or (voice_mode != "off" and adapter_auto_tts)
         )
         if not should:
+            logger.debug(
+                "Auto voice reply skipped: mode=%s adapter_auto_tts=%s chat=%s platform=%s",
+                voice_mode, adapter_auto_tts, chat_id, event.source.platform.value,
+            )
             return False
 
         # Dedup: agent already called TTS tool

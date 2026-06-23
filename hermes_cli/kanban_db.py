@@ -58,14 +58,15 @@ worktrees so that research / ops / digital-twin workloads work alongside
 coding workloads.  See ``docs/hermes-kanban-v1-spec.pdf`` for the full
 design specification.
 
-Concurrency strategy: WAL mode + ``BEGIN IMMEDIATE`` for write
+Concurrency strategy: rollback journaling by default (override with
+``HERMES_KANBAN_JOURNAL=wal`` when desired) + ``BEGIN IMMEDIATE`` for write
 transactions + compare-and-swap (CAS) updates on ``tasks.status`` and
-``tasks.claim_lock``.  SQLite serializes writers via its WAL lock, so at
-most one claimer can win any given task.  Losers observe zero affected
-rows and move on -- no retry loops, no distributed-lock machinery.
-The CAS coordination is **per-board** — each board is a separate DB,
-so multi-board installs get the same atomicity guarantees without any
-new locking.
+``tasks.claim_lock``.  SQLite serializes writers behind the write
+transaction, so at most one claimer can win any given task.  Losers
+observe zero affected rows and move on -- no retry loops, no
+distributed-lock machinery.  The CAS coordination is **per-board** —
+each board is a separate DB, so multi-board installs get the same
+atomicity guarantees without any new locking.
 """
 
 from __future__ import annotations
@@ -1648,15 +1649,32 @@ def connect(
                 # sidecar files for a fresh database. Keep it in the same process-local
                 # critical section as schema initialization so concurrent gateway
                 # startup threads do not race before _INITIALIZED_PATHS is populated.
-                # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
-                # falls back to DELETE with one WARNING so kanban stays usable there.
-                # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-                from hermes_state import apply_wal_with_fallback
-                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                #
+                # Some deployments intentionally force rollback journaling for kanban
+                # because several user services share the same DB and the watchdog
+                # checks for DELETE mode. Respect HERMES_KANBAN_JOURNAL before running
+                # the WAL helper; otherwise every kanban connection silently flips the
+                # DB back to WAL and the watchdog oscillates DELETE -> WAL -> DELETE.
+                journal_policy = os.getenv("HERMES_KANBAN_JOURNAL", "delete").strip().lower()
+                if journal_policy in {"delete", "persist", "truncate"}:
+                    result = conn.execute(
+                        f"PRAGMA journal_mode={journal_policy.upper()}"
+                    ).fetchone()
+                    actual = result[0].lower() if result else ""
+                    if actual != journal_policy:
+                        raise RuntimeError(
+                            f"Kanban DB journal_mode requested {journal_policy}, got {actual}"
+                        )
+                else:
+                    # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
+                    # falls back to DELETE with one WARNING so kanban stays usable there.
+                    # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
+                    from hermes_state import apply_wal_with_fallback
+                    apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                    conn.execute("PRAGMA wal_autocheckpoint=100")
                 # FULL (was NORMAL): fsync before each checkpoint to narrow the
                 # crash window that can leave a b-tree page header torn.
                 conn.execute("PRAGMA synchronous=FULL")
-                conn.execute("PRAGMA wal_autocheckpoint=100")
                 conn.execute("PRAGMA foreign_keys=ON")
                 # Zero freed pages so a later torn write cannot expose stale
                 # cell content; persisted in the DB header for new DBs.

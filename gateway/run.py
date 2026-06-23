@@ -622,6 +622,34 @@ def _float_env(name: str, default: float) -> float:
         return float(default)
 
 
+def _format_long_running_notification(
+    *,
+    elapsed_seconds: float,
+    status_detail: str = "",
+    initial: bool = False,
+) -> str:
+    """Build a concise user-facing notice for long gateway turns.
+
+    Messaging users cannot see the gateway executor thread, so the first notice
+    must explicitly say the turn is still running and that terminal recovery is
+    not needed. Later updates stay shorter and edit the same bubble when the
+    adapter supports it.
+    """
+    elapsed = max(0.0, float(elapsed_seconds or 0.0))
+    elapsed_mins = int(elapsed // 60)
+    elapsed_text = "<1 min" if elapsed_mins < 1 else f"{elapsed_mins} min"
+    detail = str(status_detail or "").strip()
+    detail_text = f" Status: {detail}." if detail else ""
+    if initial:
+        return (
+            "⏳ Long-running task: still working in this chat "
+            f"for {elapsed_text}. Background status updates will stay here; "
+            "no terminal check needed. Send /stop to cancel."
+            f"{detail_text}"
+        )
+    return f"⏳ Still working: {elapsed_text}.{detail_text}"
+
+
 def _is_fresh_gateway_interruption(
     value: Any,
     *,
@@ -1604,6 +1632,10 @@ if _config_path.exists():
                 os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
             if "gateway_notify_interval" in _agent_cfg:
                 os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
+            if "gateway_background_notice_after" in _agent_cfg:
+                os.environ["HERMES_AGENT_BACKGROUND_NOTICE_AFTER"] = str(
+                    _agent_cfg["gateway_background_notice_after"]
+                )
             if "restart_drain_timeout" in _agent_cfg:
                 os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
             if "gateway_auto_continue_freshness" in _agent_cfg:
@@ -17156,13 +17188,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
 
-        # Periodic "still working" notifications for long-running tasks.
-        # Fires every N seconds so the user knows the agent hasn't died.
-        # Config: agent.gateway_notify_interval in config.yaml, or
-        # HERMES_AGENT_NOTIFY_INTERVAL env var.  Default 180s (3 min).
-        # 0 = disable notifications.
+        # Periodic long-turn notifications for messaging users.
+        # First notice is early and explicit so a live Telegram turn does not
+        # look like a dead chat; later notices edit the same bubble when the
+        # adapter supports it. Config:
+        # - agent.gateway_background_notice_after / HERMES_AGENT_BACKGROUND_NOTICE_AFTER
+        #   default 30s; <=0 falls back to the repeat interval.
+        # - agent.gateway_notify_interval / HERMES_AGENT_NOTIFY_INTERVAL
+        #   default 180s; <=0 disables all long-turn notifications.
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
+        _NOTIFY_INITIAL_RAW = _float_env("HERMES_AGENT_BACKGROUND_NOTICE_AFTER", 30)
+        _NOTIFY_INITIAL_DELAY = (
+            _NOTIFY_INITIAL_RAW
+            if _NOTIFY_INITIAL_RAW > 0
+            else _NOTIFY_INTERVAL
+        )
+        if _NOTIFY_INTERVAL is None:
+            _NOTIFY_INITIAL_DELAY = None
         if not bool(
             resolve_display_setting(
                 user_config,
@@ -17172,28 +17215,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         ):
             _NOTIFY_INTERVAL = None
+            _NOTIFY_INITIAL_DELAY = None
         _notify_start = time.time()
 
         async def _notify_long_running():
-            if _NOTIFY_INTERVAL is None:
-                return  # Notifications disabled (gateway_notify_interval: 0)
+            if _NOTIFY_INITIAL_DELAY is None:
+                return  # Notifications disabled
             _notify_adapter = self.adapters.get(source.platform)
             if not _notify_adapter:
                 return
             # Track the heartbeat message id so we can edit-in-place on
             # platforms that support it (Telegram, Discord, Slack, etc.)
-            # instead of spamming a new "Still working" bubble every
-            # interval. Falls back to send-new when edit fails or isn't
-            # supported by the adapter.
+            # instead of spamming a new status bubble every interval. Falls
+            # back to send-new when edit fails or isn't supported by the
+            # adapter.
             _heartbeat_msg_id: Optional[str] = None
+            _first_notice = True
             while True:
-                await asyncio.sleep(_NOTIFY_INTERVAL)
+                _sleep_for = _NOTIFY_INITIAL_DELAY if _first_notice else _NOTIFY_INTERVAL
+                if _sleep_for is None:
+                    break
+                await asyncio.sleep(_sleep_for)
                 # Stop heartbeating once this run no longer owns the session
-                # slot or the executor has finished — otherwise a stale
-                # "running: delegate_task" bubble can outlive the run that
-                # spawned it (#12029). _executor_task is a closure var bound
-                # just after this task is scheduled; tolerate the brief window
-                # before then (the first wake is _NOTIFY_INTERVAL away anyway).
+                # slot or the executor has finished; otherwise a stale status
+                # bubble can outlive the run that spawned it (#12029).
                 try:
                     _exec_ref = _executor_task
                 except NameError:
@@ -17202,7 +17247,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key, agent_holder[0], _exec_ref
                 ):
                     break
-                _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available. Default
                 # heartbeat is terse: elapsed + current tool. Verbose
                 # iteration counter is gated on busy_ack_detail so users
@@ -17229,10 +17273,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if _action:
                             _parts.append(str(_action))
                         if _parts:
-                            _status_detail = " — " + ", ".join(_parts)
+                            _status_detail = "; ".join(_parts)
                     except Exception:
                         pass
-                _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
+                _heartbeat_text = _format_long_running_notification(
+                    elapsed_seconds=time.time() - _notify_start,
+                    status_detail=_status_detail,
+                    initial=_first_notice,
+                )
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:
@@ -17243,7 +17291,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _heartbeat_text,
                             )
                         except Exception as _ee:
-                            logger.debug("Heartbeat edit failed: %s", _ee)
+                            logger.debug("Long-running status edit failed: %s", _ee)
                             _notify_res = None
                     if not (_notify_res and getattr(_notify_res, "success", False)):
                         _notify_res = await _notify_adapter.send(
@@ -17257,6 +17305,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _heartbeat_msg_id = str(_notify_res.message_id)
                             if _cleanup_progress:
                                 _cleanup_msg_ids.append(_heartbeat_msg_id)
+                    _first_notice = False
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 

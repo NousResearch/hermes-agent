@@ -136,6 +136,36 @@ def test_quiet_suppresses_stdout(fake_tool, capsys):
     assert out.out == ""
 
 
+def test_live_session_quiet_suppresses_stdout(monkeypatch, capsys):
+    import sys as _sys
+    import types as _types
+
+    fake_mod = _types.ModuleType("hermes_cli.session_ipc")
+    setattr(fake_mod, "send_message_to_session", lambda **_kw: {
+        "sent": True,
+        "session": "sid",
+        "message_id": "m1",
+        "status": "queued",
+    })
+    monkeypatch.setitem(_sys.modules, "hermes_cli.session_ipc", fake_mod)
+
+    args = _parse(["--current", "--quiet", "shh"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 0
+    out = capsys.readouterr()
+    assert out.out == ""
+
+
+def test_live_session_rejects_platform_target_mix(capsys):
+    args = _parse(["--to", "telegram", "--current", "ambiguous"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "cannot be combined" in err
+
+
 # ---------------------------------------------------------------------------
 # Error paths
 # ---------------------------------------------------------------------------

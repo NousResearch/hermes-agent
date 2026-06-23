@@ -3771,6 +3771,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
         self._active_session_lease = None
+        self._session_ipc_server = None
 
         # Voice mode state (also reinitialized inside run() for interactive TUI).
         self._voice_lock = threading.Lock()
@@ -5459,7 +5460,72 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             except Exception:
                 pass
 
+    def _handle_session_ipc_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Accept a user message from ``hermes send`` and route it like TUI input."""
+        content = str(payload.get("content") or "")
+        message_id = uuid.uuid4().hex
+        if not content.strip():
+            return {"sent": False, "message_id": message_id, "error": "Message content is empty"}
+        mode = str(payload.get("mode") or "auto").strip().lower()
+        if mode not in {"auto", "queue", "steer", "interrupt", "reject"}:
+            return {"sent": False, "message_id": message_id, "error": f"Unsupported mode: {mode}"}
+        busy = bool(getattr(self, "_agent_running", False))
+        status = "delivered"
 
+        if busy and mode == "reject":
+            return {
+                "sent": False,
+                "session": self.session_id,
+                "message_id": message_id,
+                "status": "busy",
+                "error": "Session is busy",
+            }
+
+        effective_mode = self.busy_input_mode if busy and mode == "auto" else mode
+        if not busy:
+            effective_mode = "queue"
+        if busy and effective_mode == "reject":
+            return {
+                "sent": False,
+                "session": self.session_id,
+                "message_id": message_id,
+                "status": "busy",
+                "error": "Session is busy",
+            }
+
+        if busy and effective_mode == "steer":
+            accepted = False
+            try:
+                # AIAgent.steer() is internally locked; the IPC handler runs on
+                # a socket worker thread while the turn runs on process_loop.
+                if self.agent is not None and hasattr(self.agent, "steer"):
+                    accepted = bool(self.agent.steer(content))
+            except Exception as exc:
+                logger.debug("IPC steer failed; falling back to queue: %s", exc)
+            if accepted:
+                status = "steered"
+            else:
+                self._pending_input.put(content)
+                status = "queued"
+        elif busy and effective_mode == "interrupt":
+            self._interrupt_queue.put(content)
+            status = "interrupt_queued"
+        else:
+            self._pending_input.put(content)
+            status = "queued" if busy else "delivered"
+
+        app = getattr(self, "_app", None)
+        if app is not None:
+            try:
+                app.invalidate()
+            except Exception:
+                pass
+        return {
+            "sent": True,
+            "session": self.session_id,
+            "message_id": message_id,
+            "status": status,
+        }
 
     def _install_tool_callbacks(self) -> None:
         """Install tool callbacks that need the live prompt UI."""
@@ -12129,6 +12195,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Run the interactive CLI loop with persistent input at bottom."""
         if not self._claim_active_session("cli"):
             return
+        if (self.config.get("session_ipc") or {}).get("enabled", True):
+            try:
+                from hermes_cli.session_ipc import SessionIPCServer
+
+                self._session_ipc_server = SessionIPCServer(
+                    self.session_id,
+                    self._handle_session_ipc_message,
+                    surface="cli",
+                )
+                self._session_ipc_server.start()
+            except Exception as exc:
+                logger.warning("Session IPC unavailable for this run: %s", exc)
 
         # Detect light/dark terminal mode now (before pt grabs the tty).
         # Caches the result so subsequent _hex_to_ansi / style calls
@@ -14585,6 +14663,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     )
                 except Exception:
                     pass
+            _ipc_server = getattr(self, '_session_ipc_server', None)
+            if _ipc_server is not None:
+                try:
+                    _ipc_server.stop()
+                except Exception:
+                    logger.debug("Could not stop session IPC server", exc_info=True)
+                self._session_ipc_server = None
             _run_cleanup()
             self._print_exit_summary()
             self._release_active_session()

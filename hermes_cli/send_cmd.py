@@ -311,6 +311,50 @@ def cmd_send(args: argparse.Namespace) -> None:
         exit_code = _list_targets(platform_filter, json_mode=getattr(args, "json", False))
         sys.exit(exit_code)
 
+    live_session = getattr(args, "session", None)
+    use_current = bool(getattr(args, "current", False))
+    if live_session or use_current:
+        if getattr(args, "to", None):
+            print(
+                "hermes send: --to cannot be combined with --session or --current",
+                file=sys.stderr,
+            )
+            sys.exit(_USAGE_EXIT)
+        message = _read_message_body(
+            getattr(args, "message", None),
+            getattr(args, "file", None),
+        )
+        if message is None or not message.strip():
+            print(
+                "hermes send: no message provided. Pass text as a positional "
+                "argument, use --file PATH, or pipe data via stdin.",
+                file=sys.stderr,
+            )
+            sys.exit(_USAGE_EXIT)
+        subject = getattr(args, "subject", None)
+        if subject:
+            message = f"{subject}\n\n{message.lstrip()}"
+        from hermes_cli.session_ipc import send_message_to_session
+
+        result = send_message_to_session(
+            session=live_session,
+            current=use_current,
+            message=message,
+            mode=getattr(args, "mode", "auto"),
+        )
+        if getattr(args, "json", False):
+            print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        elif not getattr(args, "quiet", False):
+            if result.get("sent"):
+                print("sent: true")
+                print(f"session: {result.get('session')}")
+                print(f"message_id: {result.get('message_id')}")
+                print(f"status: {result.get('status')}")
+            else:
+                print("sent: false")
+                print(f"error: {result.get('error')}", file=sys.stderr)
+        sys.exit(_SUCCESS_EXIT if result.get("sent") else _FAILURE_EXIT)
+
     target = _resolve_target(getattr(args, "to", None))
     if not target:
         print(
@@ -385,6 +429,8 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
         epilog=(
             "Examples:\n"
             "  hermes send --to telegram \"deploy finished\"\n"
+            "  hermes send --current \"continue with the queued review\"\n"
+            "  hermes send --session 20260622_153814_f1c0de --mode queue \"run this next\"\n"
             "  echo \"RAM 92%\" | hermes send --to telegram:-1001234567890\n"
             "  hermes send --to discord:#ops --file /tmp/report.md\n"
             "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"
@@ -407,8 +453,27 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
             "'platform:chat_id', 'platform:chat_id:thread_id', or "
             "'platform:#channel-name'. Examples: telegram, "
             "telegram:-1001234567890:17585, discord:#ops, slack:C0123ABCD, "
-            "signal:+15551234567."
+            "signal:+15551234567. Required unless --session/--current is used."
         ),
+    )
+    live_target = parser.add_mutually_exclusive_group()
+    live_target.add_argument(
+        "--session",
+        metavar="SESSION_ID",
+        default=None,
+        help="Send to a running interactive Hermes session by ID or unique prefix.",
+    )
+    live_target.add_argument(
+        "--current",
+        action="store_true",
+        default=False,
+        help="Send to the most recently started running interactive Hermes session.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["auto", "queue", "steer", "interrupt", "reject"],
+        default="auto",
+        help="Busy-session behavior for --session/--current (default: auto, follows the running session's configured busy behavior).",
     )
 
     parser.add_argument(

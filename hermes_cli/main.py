@@ -12372,6 +12372,9 @@ def main():
 
             seen_plugin_commands = set()
             for cmd_info in discover_plugin_cli_commands():
+                if cmd_info["name"] in getattr(subparsers, "choices", {}):
+                    seen_plugin_commands.add(cmd_info["name"])
+                    continue
                 plugin_parser = subparsers.add_parser(
                     cmd_info["name"],
                     help=cmd_info["help"],
@@ -12386,6 +12389,8 @@ def main():
             discover_plugins()
             for cmd_info in get_plugin_manager()._cli_commands.values():
                 if cmd_info["name"] in seen_plugin_commands:
+                    continue
+                if cmd_info["name"] in getattr(subparsers, "choices", {}):
                     continue
                 plugin_parser = subparsers.add_parser(
                     cmd_info["name"],
@@ -12653,6 +12658,12 @@ def main():
         "--limit", type=int, default=20, help="Max sessions to show"
     )
 
+    sessions_subparsers.add_parser(
+        "running",
+        aliases=["live"],
+        help="List live interactive sessions that can receive hermes send messages",
+    )
+
     sessions_export = sessions_subparsers.add_parser(
         "export", help="Export sessions to a JSONL file"
     )
@@ -12796,7 +12807,27 @@ def main():
         _source = getattr(args, "source", None)
         _exclude = None if _source else ["tool"]
 
-        if action == "list":
+        if action in {"running", "live"}:
+            from hermes_cli.session_ipc import list_live_sessions
+
+            sessions = list_live_sessions()
+            if not sessions:
+                print("No running sessions found.")
+                db.close()
+                return
+            print(f"{'Session':<28} {'Surface':<8} {'PID':<8} Socket")
+            print("─" * 90)
+            for entry in sessions:
+                print(
+                    f"{str(entry.get('session_id', '')):<28} "
+                    f"{str(entry.get('surface', '')):<8} "
+                    f"{str(entry.get('pid', '')):<8} "
+                    f"{entry.get('socket_path', '')}"
+                )
+            db.close()
+            return
+
+        elif action == "list":
             sessions = db.list_sessions_rich(
                 source=args.source, exclude_sources=_exclude, limit=args.limit
             )

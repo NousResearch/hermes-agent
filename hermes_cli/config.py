@@ -889,6 +889,10 @@ DEFAULT_CONFIG = {
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
+    # Local-only IPC receive channel for `hermes send --session/--current`.
+    # The socket is same-user (0600) and non-networked; set enabled false to
+    # opt out of live session injection.
+    "session_ipc": {"enabled": True},
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

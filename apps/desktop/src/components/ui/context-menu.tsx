@@ -113,16 +113,31 @@ function ContextMenuSubTrigger({
   )
 }
 
-function ContextMenuSubContent({ className, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.SubContent>) {
+function ContextMenuSubContent({
+  className,
+  collisionPadding = 8,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.SubContent>) {
   return (
-    <ContextMenuPrimitive.SubContent
-      className={cn(
-        'z-50 min-w-36 origin-(--radix-context-menu-content-transform-origin) overflow-hidden rounded-lg border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_96%,transparent)] p-1 text-[length:var(--conversation-text-font-size)] text-popover-foreground shadow-md backdrop-blur-md data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
-        className
-      )}
-      data-slot="context-menu-sub-content"
-      {...props}
-    />
+    // Portal the submenu out of the parent Content so it escapes that Content's
+    // `overflow-x-hidden` clip. Without this, a submenu opening from a menu near
+    // the window edge (e.g. the sidebar's "Move to folder") gets visually cut
+    // off at the parent's right edge. Radix Popper still anchors it to the
+    // SubTrigger and handles collision/flip, so portaling is safe. Mirrors the
+    // DropdownMenuSubContent fix.
+    <ContextMenuPrimitive.Portal>
+      <ContextMenuPrimitive.SubContent
+        className={cn(
+          'z-50 min-w-36 origin-(--radix-context-menu-content-transform-origin) overflow-hidden rounded-lg border border-(--ui-stroke-secondary) bg-[color-mix(in_srgb,var(--ui-bg-elevated)_96%,transparent)] p-1 text-[length:var(--conversation-text-font-size)] text-popover-foreground shadow-md backdrop-blur-md data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+          className
+        )}
+        // Flip to the other side / shift when near a viewport edge so the
+        // submenu never gets clipped.
+        collisionPadding={collisionPadding}
+        data-slot="context-menu-sub-content"
+        {...props}
+      />
+    </ContextMenuPrimitive.Portal>
   )
 }
 

@@ -25,8 +25,8 @@ from hermes_cli import kanban_db as kb
 # ---------------------------------------------------------------------------
 
 
-def _load_plugin_router():
-    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+def _load_plugin_module():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py."""
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
@@ -38,7 +38,12 @@ def _load_plugin_router():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod
+
+
+def _load_plugin_router():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+    return _load_plugin_module().router
 
 
 @pytest.fixture
@@ -77,6 +82,28 @@ def test_board_empty(client):
     assert data["tenants"] == []
     assert data["assignees"] == []
     assert data["latest_event_id"] == 0
+
+
+def test_dashboard_bundle_status_metadata_matches_backend_columns():
+    """The dashboard JS should not drift from backend-provided columns."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+    plugin = _load_plugin_module()
+
+    assert "const COLUMN_ORDER" not in js, (
+        "dashboard order should come from plugin_api.BOARD_COLUMNS, not a "
+        "parallel frontend constant"
+    )
+
+    for status in plugin.BOARD_COLUMNS:
+        assert js.count(f'{status}: "') >= 2, (
+            f"missing fallback label/help for {status}"
+        )
+        assert f'{status}: "hermes-kanban-dot-{status}"' in js, (
+            f"missing dot style mapping for {status}"
+        )
 
 
 # ---------------------------------------------------------------------------

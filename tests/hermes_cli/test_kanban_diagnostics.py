@@ -265,6 +265,18 @@ def test_repeated_crashes_breaks_on_recent_success():
     assert kd.compute_task_diagnostics(task, [], runs) == []
 
 
+def test_repeated_crashes_breaks_on_later_non_crash_terminal_outcome():
+    """Older crashes stop being active once a later run parks the task cleanly."""
+
+    task = _task(status="blocked", assignee="researcher")
+    runs = [
+        _run(outcome="crashed", run_id=1, error="pid 8177 not alive"),
+        _run(outcome="crashed", run_id=2, error="pid 8237 not alive"),
+        _run(outcome="blocked", run_id=3, error=None),
+    ]
+    assert kd.compute_task_diagnostics(task, [], runs) == []
+
+
 def test_repeated_crashes_escalates_on_many_crashes():
     task = _task(status="ready", assignee="x")
     runs = [_run(outcome="crashed", run_id=i) for i in range(1, 6)]  # 5 in a row

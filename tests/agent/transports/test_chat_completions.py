@@ -581,6 +581,55 @@ class TestChatCompletionsKimi:
         # Mirror Kimi CLI: omit reasoning_effort entirely when thinking off
         assert "reasoning_effort" not in kw
 
+    # ── NVIDIA NIM reasoning_effort (#19883) ──────────────────────────
+    # NIM uses the same top-level reasoning_effort field as Kimi/TokenHub,
+    # but it was never wired up.  These tests mirror the Kimi suite.
+
+    def test_nvidia_nim_reasoning_effort_top_level(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-ai/deepseek-v4-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_nvidia_nim=True,
+            reasoning_config={"effort": "high"},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        # NIM gates <think> on a top-level reasoning_effort field — see
+        # docs.api.nvidia.com/nim/reference/ and issue #19883.
+        assert kw["reasoning_effort"] == "high"
+
+    def test_nvidia_nim_reasoning_effort_defaults_to_high(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-ai/deepseek-v4-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_nvidia_nim=True,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        # No reasoning_config → use NIM's documented default of "high".
+        assert kw["reasoning_effort"] == "high"
+
+    def test_nvidia_nim_reasoning_effort_omitted_when_thinking_disabled(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-ai/deepseek-v4-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_nvidia_nim=True,
+            reasoning_config={"enabled": False},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        # Opt-out: omit reasoning_effort entirely when thinking is disabled.
+        assert "reasoning_effort" not in kw
+
+    def test_nvidia_nim_reasoning_effort_only_low_medium_high(self, transport):
+        # NIM rejects efforts outside {low, medium, high}; we silently fall
+        # back to the default rather than forwarding an invalid value.
+        kw = transport.build_kwargs(
+            model="deepseek-ai/deepseek-v4-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_nvidia_nim=True,
+            reasoning_config={"effort": "max"},  # not in NIM's vocabulary
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["reasoning_effort"] == "high"
+
     def test_kimi_thinking_enabled_extra_body(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("kimi-coding")

@@ -365,6 +365,30 @@ class ChatCompletionsTransport(ProviderTransport):
                         _tokenhub_effort = _e
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
+        # NVIDIA NIM (integrate.api.nvidia.com): top-level reasoning_effort.
+        # NIM hosts several reasoning-capable model families (DeepSeek V4 Pro/
+        # Flash, Kimi K2 Thinking, GPT-OSS 120B, Qwen3-thinking, Nemotron-3)
+        # that gate their <think> chain on this exact field.  Without it, NIM
+        # silently returns reasoning_content=null even when the user has
+        # agent.reasoning_effort set in their config.  Verified against the
+        # public NIM reference at docs.api.nvidia.com — accepts "low" |
+        # "medium" | "high".  Default "high" matches NIM's documented default
+        # and Hermes' general posture (favour quality unless told otherwise).
+        # Fixes #19883.
+        if is_nvidia_nim:
+            _nim_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if not _nim_thinking_off:
+                _nim_effort = "high"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _e = (reasoning_config.get("effort") or "").strip().lower()
+                    if _e in {"low", "medium", "high"}:
+                        _nim_effort = _e
+                api_kwargs["reasoning_effort"] = _nim_effort
+
         # LM Studio: top-level reasoning_effort. Only emit when the model
         # declares reasoning support via /api/v1/models capabilities (gated
         # upstream by params["supports_reasoning"]). resolve_lmstudio_effort

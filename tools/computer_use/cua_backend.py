@@ -803,7 +803,7 @@ class _CuaDriverSession:
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
         self._require_started()
         try:
-            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+            result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         except Exception as e:
             if not self._is_closed_session_error(e):
                 raise
@@ -814,6 +814,24 @@ class _CuaDriverSession:
             with self._lock:
                 self._restart_session_locked()
             return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+
+        # Detect stale session: if the call returned no data at all (no text, no
+        # images, no structured content, no error), the stdio transport may have
+        # silently degraded.  Reconnect and retry once — same budget as the
+        # closed-session path above.
+        if (result.get("data") is None
+                and not result.get("images")
+                and result.get("structuredContent") is None
+                and not result.get("isError")):
+            logger.warning(
+                "cua-driver %s returned empty result (possible stale session); "
+                "reconnecting and retrying", name,
+            )
+            with self._lock:
+                self._restart_session_locked()
+            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+
+        return result
 
 
 def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:

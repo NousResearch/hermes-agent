@@ -1449,6 +1449,73 @@ class TestCuaDriverSessionReconnect:
         assert bridge.calls[1][0] == ("call", "list_apps", {})
         assert len(bridge.calls) == 2
 
+    def test_call_tool_reconnects_on_stale_empty_result(self):
+        """When the MCP session returns a completely empty result (no data, no
+        images, no structured content, no error), the stdio transport may have
+        silently degraded.  The session should reconnect and retry once."""
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                # 1st call -> empty result; retried call -> normal result.
+                self.effects = [
+                    {"data": None, "images": [], "structuredContent": None, "isError": False},
+                    {"data": "ok", "images": [], "structuredContent": None, "isError": False},
+                ]
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                return self.effects.pop(0)
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        result = session.call_tool("list_windows", {"on_screen_only": True})
+        assert result == {"data": "ok", "images": [], "structuredContent": None, "isError": False}
+        # Reconnect sequence: empty result -> stop -> start -> retried call.
+        assert session._reconnect_log == ["stop", "start"]
+        assert len(bridge.calls) == 2
+
+    def test_call_tool_does_not_reconnect_on_nonempty_result(self):
+        """Results with any content (text, images, structured, or error) must
+        NOT trigger a reconnect — only completely empty results do."""
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                return {"data": "some text", "images": [], "structuredContent": None, "isError": False}
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        result = session.call_tool("list_windows", {})
+        assert result["data"] == "some text"
+        # No reconnect — the result had content.
+        assert session._reconnect_log == []
+        assert len(bridge.calls) == 1
+
+    def test_call_tool_does_not_reconnect_when_is_error(self):
+        """Error responses must NOT trigger a stale-session reconnect."""
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                return {"data": None, "images": [], "structuredContent": None, "isError": True}
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        result = session.call_tool("get_window_state", {"pid": 123})
+        assert result["isError"] is True
+        assert session._reconnect_log == []
+        assert len(bridge.calls) == 1
+
     def test_call_tool_does_not_retry_on_unrelated_error(self):
         """Non-transport errors must propagate without a reconnect attempt."""
         class FakeBridge:

@@ -15,6 +15,8 @@ import zipfile
 from pathlib import Path
 
 import defusedxml.minidom
+from defusedxml.ElementTree import parse as _safe_parse
+from defusedxml.common import DefusedXmlException
 
 WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -128,9 +130,9 @@ def get_tracked_change_authors(doc_xml_path: Path) -> dict[str, int]:
         return {}
 
     try:
-        tree = ET.parse(doc_xml_path)
+        tree = _safe_parse(doc_xml_path)
         root = tree.getroot()
-    except ET.ParseError:
+    except (ET.ParseError, DefusedXmlException):
         return {}
 
     namespaces = {"w": WORD_NS}
@@ -152,7 +154,7 @@ def _get_authors_from_docx(docx_path: Path) -> dict[str, int]:
             if "word/document.xml" not in zf.namelist():
                 return {}
             with zf.open("word/document.xml") as f:
-                tree = ET.parse(f)
+                tree = _safe_parse(f)
                 root = tree.getroot()
 
                 namespaces = {"w": WORD_NS}
@@ -165,7 +167,7 @@ def _get_authors_from_docx(docx_path: Path) -> dict[str, int]:
                         if author:
                             authors[author] = authors.get(author, 0) + 1
                 return authors
-    except (zipfile.BadZipFile, ET.ParseError):
+    except (zipfile.BadZipFile, ET.ParseError, DefusedXmlException):
         return {}
 
 

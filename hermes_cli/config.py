@@ -4551,6 +4551,52 @@ def clear_model_endpoint_credentials(
     return model_cfg
 
 
+def persist_model_switch_config(
+    *,
+    new_model: str,
+    target_provider: str,
+    base_url: str = "",
+    api_mode: str = "",
+) -> Dict[str, Any]:
+    """Persist the complete provider tuple for a successful /model switch.
+
+    A model switch is not just ``model.default``: providers such as DeepSeek,
+    OpenRouter, and user-defined OpenAI-compatible endpoints also require the
+    matching provider/base_url/api_mode tuple. Writing the tuple in one
+    load-modify-save prevents stale endpoint values from surviving separate
+    config writes.
+    """
+    cfg = load_config() or {}
+    raw_model = cfg.get("model")
+    if isinstance(raw_model, dict):
+        model_cfg = raw_model
+    elif isinstance(raw_model, str) and raw_model.strip():
+        model_cfg = {"default": raw_model.strip()}
+        cfg["model"] = model_cfg
+    else:
+        model_cfg = {}
+        cfg["model"] = model_cfg
+
+    model_cfg["default"] = new_model
+    model_cfg["provider"] = target_provider
+
+    if str(target_provider or "").strip().lower() != "custom":
+        clear_model_endpoint_credentials(model_cfg, clear_api_mode=True)
+
+    if base_url:
+        model_cfg["base_url"] = base_url
+    else:
+        model_cfg.pop("base_url", None)
+
+    if api_mode:
+        model_cfg["api_mode"] = api_mode
+    else:
+        model_cfg.pop("api_mode", None)
+
+    save_config(cfg)
+    return cfg
+
+
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """
     Check which config fields are missing or outdated (recursive).

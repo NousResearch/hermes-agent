@@ -663,6 +663,14 @@ def _resolve_alias_fallback(
     providers are supplied (backwards compat for non-interactive callers).
     """
     providers = authenticated_providers or ("openrouter", "nous")
+    preferred: list[str] = []
+    fallback: list[str] = []
+    for provider in providers:
+        if provider in {"github-copilot", "openai-codex", "openrouter", "nous"}:
+            fallback.append(provider)
+        else:
+            preferred.append(provider)
+    providers = tuple(preferred + fallback)
     for provider in providers:
         result = resolve_alias(raw_input, provider)
         if result is not None:

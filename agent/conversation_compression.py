@@ -961,6 +961,21 @@ def compress_context(
                 # refresh the stored system prompt and reset the flush cursor so the
                 # next turn re-bases its append diff.
                 agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+                if hasattr(agent._session_db, "update_plugin_prompt_state"):
+                    try:
+                        from agent.system_prompt import serialize_plugin_prompt_state
+
+                        agent._session_db.update_plugin_prompt_state(
+                            agent.session_id,
+                            serialize_plugin_prompt_state(agent),
+                        )
+                    except Exception as plugin_state_error:
+                        logger.warning(
+                            "Compression persisted the system prompt but not its "
+                            "plugin snapshot for session %s: %s",
+                            agent.session_id,
+                            plugin_state_error,
+                        )
                 agent._last_flushed_db_idx = 0
             except Exception as e:
                 # If the rotation rolled back to the parent (orphan-avoidance

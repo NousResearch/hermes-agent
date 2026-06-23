@@ -158,3 +158,43 @@ def test_cmd_list_json_output_includes_entrypoint_source(monkeypatch, capsys):
             "source": "entrypoint",
         }
     ]
+
+
+def test_cmd_show_json_lists_prompt_sections_for_audit(monkeypatch, capsys):
+    from hermes_cli import plugins as plugins_module
+
+    loaded = SimpleNamespace(
+        manifest=SimpleNamespace(name="fixture", version="1.0", source="user"),
+        enabled=True,
+        hooks_registered=["build_environment_hints"],
+        middleware_registered=[],
+        commands_registered=[],
+    )
+    manager = SimpleNamespace(
+        _plugins={"fixture": loaded},
+        list_system_prompt_sections=lambda plugin: [
+            {
+                "id": "fixture.rules",
+                "plugin": plugin,
+                "position": "after_memory",
+                "max_chars": 4000,
+                "content_type": "callable",
+            }
+        ],
+    )
+    monkeypatch.setattr(plugins_module, "discover_plugins", lambda: None)
+    monkeypatch.setattr(plugins_module, "get_plugin_manager", lambda: manager)
+
+    plugins_cmd.cmd_show("fixture", json_output=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["hooks"] == ["build_environment_hints"]
+    assert payload["system_prompt_sections"] == [
+        {
+            "id": "fixture.rules",
+            "plugin": "fixture",
+            "position": "after_memory",
+            "max_chars": 4000,
+            "content_type": "callable",
+        }
+    ]

@@ -1161,6 +1161,79 @@ def cmd_list(args: Any | None = None) -> None:
     console.print("[dim]Plugins are opt-in by default — only 'enabled' plugins load.[/dim]")
 
 
+def cmd_show(name: str, *, json_output: bool = False) -> None:
+    """Show active runtime registrations for one plugin."""
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+    discover_plugins()
+    manager = get_plugin_manager()
+    matched_key = None
+    loaded = None
+    for key, candidate in manager._plugins.items():
+        if name in {key, candidate.manifest.name}:
+            matched_key = key
+            loaded = candidate
+            break
+
+    if loaded is None or matched_key is None:
+        message = (
+            f"Plugin '{name}' is not active. Enable it before inspecting "
+            "runtime prompt registrations."
+        )
+        if json_output:
+            print(json.dumps({"error": message}, indent=2))
+        else:
+            from rich.console import Console
+
+            Console().print(f"[red]{message}[/red]")
+        return
+
+    payload = {
+        "name": loaded.manifest.name,
+        "key": matched_key,
+        "version": loaded.manifest.version,
+        "source": loaded.manifest.source,
+        "enabled": loaded.enabled,
+        "hooks": list(loaded.hooks_registered),
+        "middleware": list(loaded.middleware_registered),
+        "commands": list(loaded.commands_registered),
+        "system_prompt_sections": manager.list_system_prompt_sections(matched_key),
+    }
+    if json_output:
+        print(json.dumps(payload, indent=2))
+        return
+
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    console.print(f"[bold]{payload['name']}[/bold] ({payload['key']})")
+    console.print(
+        f"status: {'enabled' if payload['enabled'] else 'disabled'}  "
+        f"source: {payload['source']}  version: {payload['version'] or '-'}"
+    )
+    console.print(
+        "hooks: " + (", ".join(payload["hooks"]) if payload["hooks"] else "none")
+    )
+    sections = payload["system_prompt_sections"]
+    if not sections:
+        console.print("system prompt sections: none")
+        return
+    table = Table(title="System prompt sections")
+    table.add_column("ID")
+    table.add_column("Position")
+    table.add_column("Max chars", justify="right")
+    table.add_column("Content")
+    for section in sections:
+        table.add_row(
+            section["id"],
+            section["position"],
+            str(section["max_chars"]),
+            section["content_type"],
+        )
+    console.print(table)
+
+
 # ---------------------------------------------------------------------------
 # Provider plugin discovery helpers
 # ---------------------------------------------------------------------------
@@ -2008,6 +2081,8 @@ def plugins_command(args) -> None:
         cmd_disable(args.name)
     elif action in {"list", "ls"}:
         cmd_list(args)
+    elif action == "show":
+        cmd_show(args.name, json_output=getattr(args, "json", False))
     elif action is None:
         cmd_toggle()
     else:

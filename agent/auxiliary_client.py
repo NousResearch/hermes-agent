@@ -1129,6 +1129,103 @@ class _AnthropicChatShim:
         self.completions = adapter
 
 
+# ── Bedrock Converse auxiliary adapter ────────────────────────────────────────
+# Used when bearer-token auth is active (AWS_BEARER_TOKEN_BEDROCK).  The
+# AnthropicBedrock SDK only supports SigV4 — it cannot use bearer tokens.
+# This adapter calls boto3's converse() API directly, which inherits bearer
+# support from the boto3 credential chain.
+
+
+class _BedrockConverseCompletionsAdapter:
+    """OpenAI-client-compatible adapter for Bedrock Converse API (boto3)."""
+
+    def __init__(self, boto3_client: Any, model: str, region: str):
+        self._client = boto3_client
+        self._model = model
+        self._region = region
+
+    def create(self, **kwargs) -> Any:
+        from agent.bedrock_adapter import (
+            build_converse_kwargs,
+            normalize_converse_response,
+        )
+
+        messages = kwargs.get("messages", [])
+        model = kwargs.get("model", self._model)
+        tools = kwargs.get("tools")
+        max_tokens = (
+            kwargs.get("max_tokens")
+            or kwargs.get("max_completion_tokens")
+            or 4096
+        )
+        temperature = kwargs.get("temperature")
+
+        converse_kwargs = build_converse_kwargs(
+            model=model,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        # Remove sentinel keys that are only for the main agent dispatch
+        converse_kwargs.pop("__bedrock_converse__", None)
+        converse_kwargs.pop("__bedrock_region__", None)
+
+        response = self._client.converse(**converse_kwargs)
+        return normalize_converse_response(response)
+
+
+class _BedrockConverseChatShim:
+    def __init__(self, adapter: _BedrockConverseCompletionsAdapter):
+        self.completions = adapter
+
+
+class BedrockConverseAuxiliaryClient:
+    """OpenAI-client-compatible wrapper for Bedrock Converse API.
+
+    Used for auxiliary tasks (compression, title-gen) when bearer-token
+    auth is active — the AnthropicBedrock SDK doesn't support bearer tokens.
+    """
+
+    def __init__(self, boto3_client: Any, model: str, region: str):
+        self._real_client = boto3_client
+        adapter = _BedrockConverseCompletionsAdapter(boto3_client, model, region)
+        self.chat = _BedrockConverseChatShim(adapter)
+        self.api_key = "aws-sdk-bearer"
+        self.base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
+
+    def close(self):
+        pass  # boto3 clients don't need explicit close
+
+
+class _AsyncBedrockConverseCompletionsAdapter:
+    def __init__(self, sync_adapter: _BedrockConverseCompletionsAdapter):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncBedrockConverseChatShim:
+    def __init__(self, adapter: _AsyncBedrockConverseCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncBedrockConverseAuxiliaryClient:
+    def __init__(self, sync_wrapper: "BedrockConverseAuxiliaryClient"):
+        self._real_client = sync_wrapper._real_client
+        adapter = _AsyncBedrockConverseCompletionsAdapter(
+            sync_wrapper.chat.completions
+        )
+        self.chat = _AsyncBedrockConverseChatShim(adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
+
+    def close(self):
+        pass
+
+
 class AnthropicAuxiliaryClient:
     """OpenAI-client-compatible wrapper over a native Anthropic client."""
 
@@ -4149,11 +4246,17 @@ def resolve_provider_client(
         return None, None
 
     elif pconfig.auth_type == "aws_sdk":
-        # AWS SDK providers (Bedrock) — use the Anthropic Bedrock client via
-        # boto3's credential chain (IAM roles, SSO, env vars, instance metadata).
+        # AWS SDK providers (Bedrock).
+        # When bearer-token auth is active (AWS_BEARER_TOKEN_BEDROCK), the
+        # AnthropicBedrock SDK cannot be used (it only supports SigV4).  Route
+        # through boto3's converse() API instead, which inherits bearer support
+        # from the credential chain.
         try:
-            from agent.bedrock_adapter import has_aws_credentials, resolve_bedrock_region
-            from agent.anthropic_adapter import build_anthropic_bedrock_client
+            from agent.bedrock_adapter import (
+                has_aws_credentials,
+                resolve_bedrock_region,
+                resolve_aws_auth_env_var,
+            )
         except ImportError:
             logger.warning("resolve_provider_client: bedrock requested but "
                            "boto3 or anthropic SDK not installed")
@@ -4167,7 +4270,27 @@ def resolve_provider_client(
         region = resolve_bedrock_region()
         default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
         final_model = _normalize_resolved_model(model or default_model, provider)
+
+        auth_source = resolve_aws_auth_env_var()
+        if auth_source == "AWS_BEARER_TOKEN_BEDROCK":
+            # Bearer token — use boto3 Converse API directly
+            try:
+                from agent.bedrock_adapter import _get_bedrock_runtime_client
+                boto3_client = _get_bedrock_runtime_client(region)
+            except Exception as exc:
+                logger.warning("resolve_provider_client: cannot create Bedrock "
+                               "Converse client for bearer auth: %s", exc)
+                return None, None
+            client = BedrockConverseAuxiliaryClient(boto3_client, final_model or default_model, region)
+            logger.debug("resolve_provider_client: bedrock-converse/bearer (%s, %s)",
+                         final_model, region)
+            if async_mode:
+                return AsyncBedrockConverseAuxiliaryClient(client), final_model
+            return client, final_model
+
+        # Standard IAM/SSO — use the Anthropic Bedrock SDK (SigV4)
         try:
+            from agent.anthropic_adapter import build_anthropic_bedrock_client
             real_client = build_anthropic_bedrock_client(region)
         except ImportError as exc:
             logger.warning("resolve_provider_client: cannot create Bedrock "

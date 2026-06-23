@@ -44,6 +44,7 @@ class TestMem0V3Tools:
 
     def _make_provider(self, monkeypatch, backend):
         provider = Mem0MemoryProvider()
+        provider._create_backend = lambda: None  # type: ignore[method-assign]
         provider.initialize("test-session")
         provider._user_id = "u123"
         provider._agent_id = "hermes"
@@ -138,6 +139,7 @@ class TestMem0UpdateDelete:
 
     def _make_provider(self, monkeypatch, backend):
         provider = Mem0MemoryProvider()
+        provider._create_backend = lambda: None  # type: ignore[method-assign]
         provider.initialize("test-session")
         provider._user_id = "u123"
         provider._agent_id = "hermes"
@@ -187,6 +189,7 @@ class TestMem0ErrorHandling:
 
     def _make_provider(self, monkeypatch, backend):
         provider = Mem0MemoryProvider()
+        provider._create_backend = lambda: None  # type: ignore[method-assign]
         provider.initialize("test-session")
         provider._user_id = "u123"
         provider._agent_id = "hermes"
@@ -254,6 +257,7 @@ class TestMem0V3Internal:
 
     def _make_provider(self, monkeypatch, backend):
         provider = Mem0MemoryProvider()
+        provider._create_backend = lambda: None  # type: ignore[method-assign]
         provider.initialize("test-session")
         provider._user_id = "u123"
         provider._agent_id = "hermes"
@@ -331,6 +335,7 @@ class TestMem0ModeSwitch:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("MEM0_API_KEY", "test-key")
         provider = Mem0MemoryProvider()
+        provider._create_backend = lambda: None  # type: ignore[method-assign]
         provider.initialize("test")
         assert provider._mode == "platform"
 
@@ -341,6 +346,7 @@ class TestMem0ModeSwitch:
         config_path.write_text('{"user_id": "old-user"}')
         monkeypatch.setenv("MEM0_API_KEY", "test-key")
         provider = Mem0MemoryProvider()
+        provider._create_backend = lambda: None  # type: ignore[method-assign]
         provider.initialize("test")
         assert provider._mode == "platform"
         assert provider._user_id == "old-user"
@@ -348,18 +354,49 @@ class TestMem0ModeSwitch:
     def test_is_available_platform_needs_key(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "plugins.memory.mem0._ensure_mem0_dependency",
+            lambda: (_ for _ in ()).throw(AssertionError("SDK check should not run without config")),
+        )
         provider = Mem0MemoryProvider()
         assert provider.is_available() is False
 
+    def test_is_available_platform_needs_sdk(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.setattr("plugins.memory.mem0._ensure_mem0_dependency", lambda: False)
+        provider = Mem0MemoryProvider()
+        assert provider.is_available() is False
+
+    def test_is_available_platform_with_key_and_sdk(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.setattr("plugins.memory.mem0._ensure_mem0_dependency", lambda: True)
+        provider = Mem0MemoryProvider()
+        assert provider.is_available() is True
+
     def test_is_available_oss_needs_vector(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("plugins.memory.mem0._ensure_mem0_dependency", lambda: True)
         config_path = tmp_path / "mem0.json"
         config_path.write_text('{"mode": "oss", "oss": {"vector_store": {"provider": "qdrant"}}}')
         provider = Mem0MemoryProvider()
         assert provider.is_available() is True
 
+    def test_is_available_oss_needs_sdk(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("plugins.memory.mem0._ensure_mem0_dependency", lambda: False)
+        config_path = tmp_path / "mem0.json"
+        config_path.write_text('{"mode": "oss", "oss": {"vector_store": {"provider": "qdrant"}}}')
+        provider = Mem0MemoryProvider()
+        assert provider.is_available() is False
+
     def test_is_available_oss_no_vector(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "plugins.memory.mem0._ensure_mem0_dependency",
+            lambda: (_ for _ in ()).throw(AssertionError("SDK check should not run without config")),
+        )
         config_path = tmp_path / "mem0.json"
         config_path.write_text('{"mode": "oss", "oss": {}}')
         provider = Mem0MemoryProvider()

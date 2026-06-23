@@ -100,6 +100,12 @@ class TestAllowlist:
         assert cmd.startswith("uv pip install")
         assert "honcho-ai" in cmd
 
+    def test_mem0_feature_install_command(self):
+        cmd = ld.feature_install_command("memory.mem0")
+        assert cmd is not None
+        assert cmd.startswith("uv pip install")
+        assert "mem0ai" in cmd
+
     def test_feature_install_command_unknown(self):
         assert ld.feature_install_command("not.real") is None
 

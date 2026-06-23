@@ -102,6 +102,33 @@ def _load_config() -> dict:
     return config
 
 
+def _ensure_mem0_dependency() -> bool:
+    """Return True when the mem0ai SDK is importable.
+
+    Mem0 is an optional memory backend, so lean installs may have a configured
+    MEM0_API_KEY but no ``mem0ai`` package in the active venv. Use Hermes'
+    lazy-deps path to repair that state before reporting availability or
+    constructing the backend.
+    """
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("memory.mem0", prompt=False)
+    except ImportError:
+        # Older/source-tree installs without lazy_deps still get the raw import
+        # check below, which keeps the error mode deterministic.
+        pass
+    except Exception as exc:
+        logger.debug("Mem0 dependency unavailable: %s", exc)
+        return False
+
+    try:
+        import mem0  # noqa: F401
+        return True
+    except Exception as exc:
+        logger.debug("Mem0 SDK import failed: %s", exc)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas
 # ---------------------------------------------------------------------------
@@ -216,8 +243,10 @@ class Mem0MemoryProvider(MemoryProvider):
         cfg = _load_config()
         mode = cfg.get("mode", "platform")
         if mode == "oss":
-            return bool(cfg.get("oss", {}).get("vector_store"))
-        return bool(cfg.get("api_key"))
+            configured = bool(cfg.get("oss", {}).get("vector_store"))
+        else:
+            configured = bool(cfg.get("api_key"))
+        return configured and _ensure_mem0_dependency()
 
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/mem0.json."""
@@ -251,6 +280,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def _create_backend(self):
         try:
+            if not _ensure_mem0_dependency():
+                raise ImportError("mem0ai is not installed")
             if self._mode == "oss":
                 from ._backend import OSSBackend
                 return OSSBackend(self._config.get("oss", {}))

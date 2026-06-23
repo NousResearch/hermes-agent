@@ -880,19 +880,25 @@ def switch_model(
                         ),
                     )
             else:
-                # --- Step c: On aggregator, convert vendor:model to vendor/model ---
+                # --- Step c: Normalize provider:model to provider/model ---
                 # Only convert when there's no slash — a slash means the name
                 # is already in vendor/model format and the colon is a variant
                 # tag (:free, :extended, :fast) that must be preserved.
                 colon_pos = raw_input.find(":")
-                if colon_pos > 0 and "/" not in raw_input and is_aggregator(current_provider):
+                if colon_pos > 0 and "/" not in raw_input:
                     left = raw_input[:colon_pos].strip().lower()
                     right = raw_input[colon_pos + 1:].strip()
-                    if left and right:
-                        # Colons become slashes for aggregator slugs
+                    provider_like = resolve_provider_full(
+                        left,
+                        user_providers,
+                        custom_providers,
+                    )
+                    if provider_like is not None and right:
+                        # Convert only when the left side resolves like a provider.
+                        # This preserves model suffixes like :free, :extended, :fast.
                         new_model = f"{left}/{right}"
                         logger.debug(
-                            "Converted vendor:model '%s' to aggregator slug '%s'",
+                            "Normalized provider:model '%s' to '%s'",
                             raw_input, new_model,
                         )
 

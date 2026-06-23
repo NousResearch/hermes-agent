@@ -1260,6 +1260,23 @@ class CLICommandsMixin:
             output = f"Suggestions command failed: {e}"
         self._console_print(output)
 
+    def _handle_learn_command(self, cmd: str):
+        """Handle /learn via the shared Learn command handler."""
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(shlex.quote(t) for t in tokens)
+        try:
+            from hermes_cli.learn.commands import handle_learn_command
+
+            output = handle_learn_command(args)
+        except Exception as e:
+            output = f"Learn command failed: {e}"
+        self._console_print(output)
+
     def _handle_blueprint_command(self, cmd: str):
         """Handle /blueprint — set up an automation from a blueprint template.
 

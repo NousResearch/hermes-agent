@@ -17,6 +17,10 @@ import type {
   EnvVarInfo,
   HermesConfig,
   HermesConfigRecord,
+  LearnConfigUpdate,
+  LearnMode,
+  LearnStatus,
+  LearnSuggestionsResponse,
   LogsResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
@@ -76,6 +80,11 @@ export type {
   GatewayReadyPayload,
   HermesConfig,
   HermesConfigRecord,
+  LearnConfigUpdate,
+  LearnMode,
+  LearnState,
+  LearnStatus,
+  LearnSuggestionsResponse,
   LogsResponse,
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
@@ -489,6 +498,71 @@ export function toggleSkill(name: string, enabled: boolean): Promise<{ ok: boole
     path: '/api/skills/toggle',
     method: 'PUT',
     body: { name, enabled }
+  })
+}
+
+export function getLearnStatus(): Promise<LearnStatus> {
+  return window.hermesDesktop.api<LearnStatus>({
+    ...profileScoped(),
+    path: '/api/learn/status'
+  })
+}
+
+export function startLearn(mode: LearnMode = 'learn'): Promise<LearnStatus> {
+  return window.hermesDesktop.api<LearnStatus>({
+    ...profileScoped(),
+    path: '/api/learn/start',
+    method: 'POST',
+    body: { mode }
+  })
+}
+
+export function pauseLearn(): Promise<LearnStatus> {
+  return window.hermesDesktop.api<LearnStatus>({
+    ...profileScoped(),
+    path: '/api/learn/pause',
+    method: 'POST'
+  })
+}
+
+export function resumeLearn(): Promise<LearnStatus> {
+  return window.hermesDesktop.api<LearnStatus>({
+    ...profileScoped(),
+    path: '/api/learn/resume',
+    method: 'POST'
+  })
+}
+
+export function stopLearn(): Promise<LearnStatus> {
+  return window.hermesDesktop.api<LearnStatus>({
+    ...profileScoped(),
+    path: '/api/learn/stop',
+    method: 'POST'
+  })
+}
+
+export function reviewLearnSuggestions(): Promise<LearnSuggestionsResponse> {
+  return window.hermesDesktop.api<LearnSuggestionsResponse>({
+    ...profileScoped(),
+    path: '/api/learn/suggestions',
+    method: 'POST'
+  })
+}
+
+export function updateLearnConfig(config: LearnConfigUpdate): Promise<LearnStatus> {
+  return window.hermesDesktop.api<LearnStatus>({
+    ...profileScoped(),
+    path: '/api/learn/config',
+    method: 'PUT',
+    body: config
+  })
+}
+
+export function deleteLearnData(): Promise<LearnStatus> {
+  return window.hermesDesktop.api<LearnStatus>({
+    ...profileScoped(),
+    path: '/api/learn/data',
+    method: 'DELETE'
   })
 }
 

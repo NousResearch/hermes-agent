@@ -11527,7 +11527,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
+        "gui", "desktop", "kanban", "learn", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
@@ -12419,6 +12419,25 @@ def main():
         _register_curator_cli(curator_parser)
     except Exception as _exc:
         logging.getLogger(__name__).debug("curator CLI wiring failed: %s", _exc)
+
+    # =========================================================================
+    # learn command - workflow discovery and approval-gated suggestions
+    # =========================================================================
+    learn_parser = subparsers.add_parser(
+        "learn",
+        help="Learn repeat workflows and draft automations for approval",
+        description=(
+            "Learn is an explicit opt-in workflow discovery surface. It stores "
+            "profile-local metadata only and creates pending suggestions; it "
+            "never schedules or runs learned automations without approval."
+        ),
+    )
+    try:
+        from hermes_cli.learn.commands import register_cli as _register_learn_cli
+
+        _register_learn_cli(learn_parser)
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("learn CLI wiring failed: %s", _exc)
 
     # =========================================================================
     # memory command  (parser built in hermes_cli/subcommands/memory.py)

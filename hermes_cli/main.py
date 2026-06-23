@@ -8351,13 +8351,14 @@ def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
     try:
         from datetime import timezone
 
-        from gateway.status import _get_process_start_time
+        from gateway.status import _get_process_start_time, _safe_stopper_argv
         from utils import atomic_json_write
 
         record = {
             "target_pid": pid,
             "target_start_time": _get_process_start_time(pid),
             "stopper_pid": os.getpid(),
+            "stopper_argv": _safe_stopper_argv(),
             "written_at": datetime.now(timezone.utc).isoformat(),
         }
         atomic_json_write(

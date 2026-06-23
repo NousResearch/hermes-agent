@@ -17187,6 +17187,30 @@ def _run_planned_stop_watcher(
                 if not planned_stop_marker_targets_self():
                     stop_event.wait(poll_interval)
                     continue
+                # Name who asked us to stop *before* firing. The marker records
+                # the stopper's PID and argv at write time, so this survives the
+                # stopper exiting — unlike the shutdown forensics' parent lookup,
+                # which logs '(unknown)' once the stopper is gone. This is the
+                # key line for diagnosing "the gateway keeps dying" on Windows.
+                try:
+                    from gateway.status import describe_planned_stop_marker
+                    _stopper = describe_planned_stop_marker()
+                except Exception:
+                    _stopper = None
+                logger.warning(
+                    "Planned-stop marker targets this gateway (pid=%s); "
+                    "initiating clean shutdown. Stopper: %s",
+                    os.getpid(),
+                    _stopper or "unknown",
+                )
+                try:
+                    import traceback as _tb
+                    logger.debug(
+                        "Planned-stop watcher fire stack:\n%s",
+                        "".join(_tb.format_stack()),
+                    )
+                except Exception:
+                    pass
                 # Drive the same path as a real signal handler.
                 # Pass signal=None — the handler tolerates that and consumes
                 # the marker via consume_planned_stop_marker_for_self,
@@ -17531,11 +17555,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # external kill unless the CLI marks it first. SIGINT comes from an
         # interactive Ctrl+C and is likewise an intentional foreground stop.
         planned_stop = False
+        planned_stop_who = None
         if received_signal == signal.SIGINT:
             planned_stop = True
         elif not planned_takeover:
             try:
-                from gateway.status import consume_planned_stop_marker_for_self
+                from gateway.status import (
+                    consume_planned_stop_marker_for_self,
+                    describe_planned_stop_marker,
+                )
+                # Capture who wrote the marker BEFORE the consume unlinks it,
+                # so the "exiting cleanly" line names the exact stopper command.
+                planned_stop_who = describe_planned_stop_marker()
                 planned_stop = consume_planned_stop_marker_for_self()
             except Exception as e:
                 logger.debug("Planned stop marker check failed: %s", e)
@@ -17564,8 +17595,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
         elif planned_stop:
             logger.info(
-                "Received %s as a planned gateway stop — exiting cleanly",
+                "Received %s as a planned gateway stop — exiting cleanly%s",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",
+                f" (stopper: {planned_stop_who})" if planned_stop_who else "",
             )
         else:
             _signal_initiated_shutdown = True

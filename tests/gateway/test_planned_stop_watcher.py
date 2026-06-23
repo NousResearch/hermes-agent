@@ -391,3 +391,54 @@ def test_planned_stop_marker_targets_self_drops_malformed(tmp_path, monkeypatch)
     monkeypatch.setattr(status_mod, "_get_planned_stop_marker_path", lambda: marker)
 
     assert status_mod.planned_stop_marker_targets_self() is False
+
+
+def test_watcher_does_not_fire_for_pid_reuse_marker_predating_boot(
+    tmp_path, monkeypatch
+):
+    """A marker naming our PID but written before we booted must not fire.
+
+    This is the Windows PID-reuse scenario the task targets: a previous gateway
+    was stopped (marker written for its PID with start_time unavailable), it
+    exited, Windows recycled its PID for THIS gateway, and the marker is still
+    within its 60s TTL. The boot-time guard rejects it because it predates our
+    start, and the probe self-heals by unlinking it.
+    """
+    marker = tmp_path / ".gateway-planned-stop.json"
+    # Same PID, no start_time (the psutil-unavailable fallback), fresh enough
+    # to survive the TTL but written before we "booted".
+    record = {
+        "target_pid": os.getpid(),
+        "target_start_time": None,
+        "stopper_pid": 4242,
+        "stopper_argv": ["hermes", "gateway", "stop"],
+        "written_at": status_mod._utc_now_iso(),
+    }
+    marker.write_text(json.dumps(record), encoding="utf-8")
+
+    monkeypatch.setattr(status_mod, "_get_planned_stop_marker_path", lambda: marker)
+    monkeypatch.setattr(status_mod, "_get_process_start_time", lambda pid: None)
+    # Pretend this process started 100s AFTER the marker was written.
+    now = time.time()
+    monkeypatch.setattr(status_mod, "_get_process_create_epoch", lambda pid: now + 100)
+
+    runner = _FakeRunner(running=True, draining=False)
+    loop = _make_loop_capturing_calls()
+    shutdown_handler = MagicMock(name="shutdown_signal_handler")
+    stop_event = threading.Event()
+
+    watcher = threading.Thread(
+        target=_run_planned_stop_watcher,
+        args=(stop_event, runner, loop, shutdown_handler),
+        kwargs={"poll_interval": 0.05},
+        daemon=True,
+    )
+    watcher.start()
+    time.sleep(0.3)
+    stop_event.set()
+    watcher.join(timeout=2.0)
+
+    assert not watcher.is_alive()
+    assert loop._captured == [], "Watcher fired on a PID-reuse marker predating boot"
+    shutdown_handler.assert_not_called()
+    assert not marker.exists(), "Stale PID-reuse marker should be self-healed"

@@ -141,7 +141,7 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
                     except json.JSONDecodeError:
                         # This shouldn't happen since we validate and retry during conversation,
                         # but if it does, log warning and use empty dict
-                        logger.warning(f"Unexpected invalid JSON in trajectory conversion: {tool_call['function']['arguments'][:100]}")
+                        logger.warning("Unexpected invalid JSON in trajectory conversion: %s", tool_call['function']['arguments'][:100])
                         arguments = {}
                     
                     tool_call_json = {
@@ -775,7 +775,7 @@ def recover_with_credential_pool(
             return False, has_retried_429
         refreshed = pool.try_refresh_current()
         if refreshed is not None:
-            _ra().logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")
+            _ra().logger.info("Credential auth failure — refreshed pool entry %s", getattr(refreshed, 'id', '?'))
             agent._swap_credential(refreshed)
             return True, has_retried_429
         # Refresh failed — rotate to next credential instead of giving up.
@@ -1243,7 +1243,7 @@ def dump_api_request_debug(
         return dump_file
     except Exception as dump_error:
         if agent.verbose_logging:
-            logger.warning(f"Failed to dump API request debug payload: {dump_error}")
+            logger.warning("Failed to dump API request debug payload: %s", dump_error)
         return None
 
 

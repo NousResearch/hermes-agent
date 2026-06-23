@@ -5693,6 +5693,33 @@ class TestFallbackAnthropicProvider:
         assert agent.api_mode == "chat_completions"
         assert agent.client is mock_client
 
+    def test_fallback_to_kimi_coding_uses_anthropic_messages(self, agent):
+        """Kimi Code /coding endpoint speaks Anthropic Messages, not chat.completions."""
+        agent._fallback_activated = False
+        agent._fallback_model = {
+            "provider": "kimi-coding",
+            "model": "kimi-for-coding",
+        }
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.kimi.com/coding/v1"
+        mock_client.api_key = "sk-kimi-test"
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=None),
+        ):
+            mock_build.return_value = MagicMock()
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.api_mode == "anthropic_messages"
+        assert agent._anthropic_client is not None
+        assert agent.client is None
+
 
 def test_aiagent_uses_copilot_acp_client():
     with (

@@ -5,6 +5,7 @@ from cli import (
     HermesCLI,
     _collect_query_images,
     _format_image_attachment_badges,
+    _normalize_image_args,
     _termux_example_image_path,
 )
 
@@ -61,6 +62,25 @@ class TestCollectQueryImages:
 
         assert message == "describe this"
         assert images == [img]
+
+    def test_collect_query_images_accepts_repeated_image_args(self, tmp_path):
+        img1 = _make_image(tmp_path / "diagram-one.png")
+        img2 = _make_image(tmp_path / "diagram-two.png")
+
+        message, images = _collect_query_images("compare these", [str(img1), str(img2)])
+
+        assert message == "compare these"
+        assert images == [img1, img2]
+
+    def test_collect_query_images_flattens_fire_tuple_values(self, tmp_path):
+        img1 = _make_image(tmp_path / "fire-one.png")
+        img2 = _make_image(tmp_path / "fire-two.png")
+
+        assert _normalize_image_args((str(img1), [str(img2)])) == [str(img1), str(img2)]
+        message, images = _collect_query_images("compare these", (str(img1), [str(img2)]))
+
+        assert message == "compare these"
+        assert images == [img1, img2]
 
     def test_collect_query_images_extracts_leading_path(self, tmp_path):
         img = _make_image(tmp_path / "camera.png")

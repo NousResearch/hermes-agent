@@ -1196,6 +1196,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         ):
             fb_api_mode = "bedrock_converse"
 
+        # Mirror runtime_provider: Kimi Code (api.kimi.com/coding) and other
+        # /anthropic gateways need anthropic_messages, not chat_completions.
+        if fb_api_mode == "chat_completions":
+            from hermes_cli.runtime_provider import _detect_api_mode_for_url
+
+            _url_detected = _detect_api_mode_for_url(fb_base_url)
+            if _url_detected:
+                fb_api_mode = _url_detected
+
         old_model = agent.model
 
         # Clear the per-config context_length override so the fallback

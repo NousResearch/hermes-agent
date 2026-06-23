@@ -3046,7 +3046,24 @@ def _estimate_tui_input_height(
     return min(max(visual_lines, 1), max(1, int(max_height or 1)))
 
 
-def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
+def _normalize_image_args(image_arg) -> list[str]:
+    """Return image CLI arguments as a flat list.
+
+    Python Fire and argparse can pass a scalar string, a list/tuple from repeated
+    --image flags, or occasionally nested tuple/list values. Keep single-image
+    behavior while preserving every repeated flag for Mission Control.
+    """
+    if image_arg is None or image_arg == "":
+        return []
+    if isinstance(image_arg, (list, tuple)):
+        values: list[str] = []
+        for item in image_arg:
+            values.extend(_normalize_image_args(item))
+        return values
+    return [str(image_arg)]
+
+
+def _collect_query_images(query: str | None, image_arg=None) -> tuple[str, list[Path]]:
     """Collect local image attachments for single-query CLI flows."""
     message = query or ""
     images: list[Path] = []
@@ -3057,10 +3074,10 @@ def _collect_query_images(query: str | None, image_arg: str | None = None) -> tu
             images.append(dropped["path"])
             message = dropped["remainder"] or f"[User attached image: {dropped['path'].name}]"
 
-    if image_arg:
-        explicit_path = _resolve_attachment_path(image_arg)
+    for raw_image_arg in _normalize_image_args(image_arg):
+        explicit_path = _resolve_attachment_path(raw_image_arg)
         if explicit_path is None:
-            raise ValueError(f"Image file not found: {image_arg}")
+            raise ValueError(f"Image file not found: {raw_image_arg}")
         if explicit_path.suffix.lower() not in _IMAGE_EXTENSIONS:
             raise ValueError(f"Not a supported image file: {explicit_path}")
         images.append(explicit_path)
@@ -14696,7 +14713,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
 def main(
     query: str = None,
     q: str = None,
-    image: str = None,
+    image: str | list[str] | tuple[str, ...] | None = None,
     toolsets: str = None,
     skills: str | list[str] | tuple[str, ...] = None,
     model: str = None,

@@ -257,7 +257,10 @@ def build_top_level_parser():
         "-q", "--query", help="Single query (non-interactive mode)"
     )
     chat_parser.add_argument(
-        "--image", help="Optional local image path to attach to a single query"
+        "--image",
+        action="append",
+        default=argparse.SUPPRESS,
+        help="Optional local image path to attach to a single query (repeat for multiple images)",
     )
     _inherited_flag(
         chat_parser,

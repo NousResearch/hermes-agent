@@ -340,6 +340,55 @@ categories:
       - "get the user's call"
       - "let the user decide since"
 
+  # Fabricated user action — the model INVENTS a choice, instruction, selection, or
+  # specification by the user that never happened, then uses the fabricated decision
+  # as the reason to stop or wait. This is the worst class: a fabricated artifact
+  # where the artifact is the USER. Under autopilot there is no live clarify
+  # interaction, so any "you chose / the user selected / per your instruction" about
+  # a fresh mid-run decision is a fabrication by construction. (Genuine quoting of
+  # the ORIGINAL goal text is fine — those are not fresh mid-run choices and read as
+  # "the goal says / per the contract", which this does not match.)
+  fabricated_user_action:
+    note: >-
+      You attributed a choice, selection, instruction, or specification to the user that
+      did not happen. Under autopilot there is no live interaction to choose anything, so
+      claiming "you chose X" or "the user selected Y" mid-run is fabrication — inventing
+      the user's decision to justify stopping. State only what the goal contract actually
+      says; never invent a user action. If you need a decision, make the defensible default
+      and record it; do not manufacture one and attribute it to the user.
+    patterns:
+      - "you chose"
+      - "you selected"
+      - "you picked"
+      - "you opted"
+      - "you specified"
+      - "you indicated you"
+      - "you decided"
+      - "you've chosen"
+      - "you have chosen"
+      - "you asked me to wait"
+      - "you told me to"
+      - "the user chose"
+      - "the user selected"
+      - "the user picked"
+      - "the user opted"
+      - "the user specified"
+      - "the user decided"
+      - "the user has chosen"
+      - "the user indicated"
+      - "the user elected to"
+      - "per your selection"
+      - "per your choice"
+      - "as you selected"
+      - "as you chose"
+      - "as you specified"
+      - "based on your choice"
+      - "based on your selection"
+      - "following your choice"
+      - "your chosen option"
+      - "the option you chose"
+      - "the choice you made"
+
   # Defeatism dressed as analysis — declaring a wall "fundamental" instead of
   # naming the specific cause + fix.
   fundamental_limitation:

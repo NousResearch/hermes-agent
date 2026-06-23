@@ -75,7 +75,7 @@ _SYNC_TRACE_ENV = "HERMES_OPENVIKING_SYNC_TRACE"
 _DEFAULT_RECALL_LIMIT = 6
 _DEFAULT_RECALL_SCORE_THRESHOLD = 0.15
 _DEFAULT_RECALL_MAX_INJECTED_CHARS = 4000
-_DEFAULT_RECALL_TIMEOUT_SECONDS = 8.0
+_DEFAULT_RECALL_TIMEOUT_SECONDS = 5.0
 _DEFAULT_RECALL_REQUEST_TIMEOUT_SECONDS = 4.0
 _DEFAULT_RECALL_FULL_READ_LIMIT = 3
 _RECALL_QUERY_MIN_CHARS = 5
@@ -2217,6 +2217,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     {**base_payload, "session_id": session_id},
                     timeout=timeout,
                 )
+            except TimeoutError:
+                raise
             except Exception as e:
                 logger.debug(
                     "OpenViking session-aware prefetch failed, "

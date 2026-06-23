@@ -1,6 +1,7 @@
 import json
 import os
 import stat
+import time
 import zipfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -3041,6 +3042,26 @@ def test_prefetch_falls_back_to_find_when_session_search_fails(monkeypatch):
         assert "mode" not in payload
         assert "target_uri" not in payload
     assert "non-session fallback" in result
+
+
+def test_prefetch_budget_exhaustion_skips_find_fallback_log(caplog):
+    class StubClient:
+        def post(self, path, payload=None, **kwargs):
+            raise AssertionError("local budget exhaustion should not issue HTTP calls")
+
+    with caplog.at_level("DEBUG", logger=openviking_module.__name__):
+        with pytest.raises(TimeoutError):
+            OpenVikingMemoryProvider._post_prefetch_search(
+                StubClient(),
+                "anything",
+                "sid-123",
+                limit=24,
+                context_type="memory",
+                deadline=time.monotonic() - 1.0,
+                request_timeout=4.0,
+            )
+
+    assert "falling back to search/find" not in caplog.text
 
 
 def test_prefetch_reads_l2_content_and_ignores_skills_by_default(monkeypatch):

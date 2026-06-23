@@ -34,6 +34,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1552,6 +1553,53 @@ _AUDIO_EXT_BY_MIME = {
     "audio/mp4": ".m4a",
     "audio/aac": ".m4a",
 }
+_APPLE_IMAGE_MIME_TYPES = {"image/heic", "image/heif"}
+_APPLE_IMAGE_SUFFIXES = {".heic", ".heif"}
+
+
+def _convert_apple_image_to_jpeg(raw: bytes, name: str, mime: str) -> Optional[bytes]:
+    """Convert iPhone HEIC/HEIF attachment bytes to JPEG when possible.
+
+    OpenAI/Anthropic-style vision endpoints generally reject HEIC, even though
+    iMessage sends iPhone screenshots/photos that way.  On macOS, `sips` is
+    available by default and can transcode these bytes before the gateway hands
+    the media path to the model.  If conversion is unavailable or fails, return
+    None so callers can fall back to document caching instead of losing data.
+    """
+
+    suffix = Path(name).suffix.lower() if name else ""
+    if (
+        (mime or "").lower() not in _APPLE_IMAGE_MIME_TYPES
+        and suffix not in _APPLE_IMAGE_SUFFIXES
+    ):
+        return None
+    sips = shutil.which("sips")
+    if not sips:
+        return None
+    in_suffix = suffix if suffix in _APPLE_IMAGE_SUFFIXES else ".heic"
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-photon-img-") as tmp:
+            src = Path(tmp) / f"source{in_suffix}"
+            dst = Path(tmp) / "converted.jpg"
+            src.write_bytes(raw)
+            proc = subprocess.run(  # noqa: S603 - executable resolved with shutil.which
+                [sips, "-s", "format", "jpeg", str(src), "--out", str(dst)],
+                capture_output=True,
+                text=True,
+                timeout=15.0,
+                check=False,
+            )
+            if proc.returncode != 0 or not dst.exists():
+                logger.warning(
+                    "[photon] failed to convert inbound Apple image %s with sips: %s",
+                    name,
+                    (proc.stderr or proc.stdout or "unknown error").strip(),
+                )
+                return None
+            return dst.read_bytes()
+    except Exception as exc:
+        logger.warning("[photon] failed to convert inbound Apple image %s: %s", name, exc)
+        return None
 
 
 def _cache_inbound_attachment(
@@ -1590,12 +1638,16 @@ def _cache_inbound_attachment(
     suffix = Path(name).suffix if name else ""
     try:
         if mime.startswith("image/"):
-            ext = suffix or _IMAGE_EXT_BY_MIME.get(mime, ".jpg")
+            converted = _convert_apple_image_to_jpeg(raw, name, mime)
+            if converted:
+                return cache_image_from_bytes(converted, ".jpg")
+            ext = _IMAGE_EXT_BY_MIME.get(mime) or suffix or ".jpg"
             try:
                 return cache_image_from_bytes(raw, ext)
             except ValueError:
-                # Bytes don't look like a supported image (e.g. HEIC magic) —
-                # still deliver them as a document rather than dropping them.
+                # Bytes don't look like a supported model image (e.g. HEIC
+                # magic without a local converter) — still deliver them as a
+                # document rather than dropping them.
                 return cache_document_from_bytes(raw, name)
         if force_audio or mime.startswith("audio/"):
             ext = suffix or _AUDIO_EXT_BY_MIME.get(

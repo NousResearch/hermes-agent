@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import types
 from pathlib import Path
 
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms import base as platform_base
 from plugins.platforms.photon import adapter as photon
 
 
@@ -165,6 +167,28 @@ def test_photon_sidecar_returns_sanitized_error_classifications():
     assert 'code: "upstream_transient"' in source
     assert "e && e.stack ? e.stack" in source  # logs keep detail server-side
     assert "...classifySidecarError(error)" in source  # API returns only classification
+
+
+def test_photon_heic_attachment_converts_to_model_supported_jpeg(monkeypatch, tmp_path):
+    """iPhone HEIC screenshots should not be forwarded to vision as HEIC."""
+
+    monkeypatch.setattr(
+        photon,
+        "_convert_apple_image_to_jpeg",
+        lambda *_args: b"\xff\xd8\xffjpeg",
+    )
+    monkeypatch.setattr(platform_base, "IMAGE_CACHE_DIR", tmp_path)
+    cached = photon._cache_inbound_attachment(
+        {"data": base64.b64encode(b"heic-bytes").decode("ascii")},
+        "IMG_9886.heic",
+        "image/heic",
+    )
+
+    assert cached is not None
+    path = Path(cached)
+    assert path.suffix == ".jpg"
+    assert path.read_bytes().startswith(b"\xff\xd8\xff")
+    assert path.parent == tmp_path
 
 
 async def _noop_sleep():

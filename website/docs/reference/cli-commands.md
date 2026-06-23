@@ -1037,6 +1037,8 @@ hermes skills install https://sharethis.chat/SKILL.md                     # Dire
 hermes skills install https://example.com/SKILL.md --name my-skill        # Override name when frontmatter has none
 hermes skills check
 hermes skills update
+hermes skills git-check              # Check full Git skill repos under skills/
+hermes skills git-check --apply      # Fast-forward clean Git skill repos only
 hermes skills config
 hermes skills reset google-workspace
 hermes skills reset google-workspace --restore --yes
@@ -1052,6 +1054,7 @@ Notes:
 - `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
 - `--source browse-sh` searches [browse.sh](https://browse.sh)'s catalog of 200+ site-specific browser-automation skills. Identifiers look like `browse-sh/airbnb.com/search-listings-ddgioa`.
 - Passing an `http(s)://…/*.md` URL installs a single-file SKILL.md directly. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
+- `hermes skills update` refreshes hub-installed skills; `hermes skills git-check --apply` refreshes full Git repositories placed under the active `skills/` directory and only performs clean fast-forward updates.
 
 ## `hermes bundles`
 

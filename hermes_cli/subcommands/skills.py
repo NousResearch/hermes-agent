@@ -123,6 +123,15 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Specific skill to update (default: all outdated skills)",
     )
 
+    skills_git_check = skills_subparsers.add_parser(
+        "git-check", help="Check Git-backed skill repositories for fast-forward updates"
+    )
+    skills_git_check.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply available fast-forward updates after checking",
+    )
+
     skills_audit = skills_subparsers.add_parser(
         "audit", help="Re-scan installed hub skills"
     )

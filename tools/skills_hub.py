@@ -34,7 +34,7 @@ import httpx
 import yaml
 
 from tools.skills_guard import (
-    ScanResult, content_hash, TRUSTED_REPOS,
+    ScanResult, content_hash, strip_hermes_upstream_block, TRUSTED_REPOS,
 )
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
@@ -3297,6 +3297,49 @@ def ensure_hub_dirs() -> None:
         TAPS_FILE.write_text('{"taps": []}\n')
 
 
+def _upstream_source_url(bundle: SkillBundle) -> str:
+    metadata = getattr(bundle, "metadata", {}) or {}
+    for key in ("repo_url", "detail_url", "index_url", "endpoint", "url"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return bundle.identifier
+
+
+def _build_upstream_provenance_block(bundle: SkillBundle, installed_version: str) -> str:
+    """Build a small provenance block for the installed SKILL.md."""
+    payload = {
+        "managed_by": "hermes skills",
+        "source": bundle.source,
+        "identifier": bundle.identifier,
+        "source_url": _upstream_source_url(bundle),
+        "installed_version": installed_version,
+        "installed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    lines = ["<!-- hermes-upstream"]
+    for key, value in payload.items():
+        if value:
+            lines.append(f"{key}: {value}")
+    lines.append("-->")
+    return "\n".join(lines) + "\n"
+
+
+def _write_upstream_provenance(skill_md: Path, bundle: SkillBundle) -> None:
+    """Append/update Hermes-managed upstream metadata in an installed SKILL.md."""
+    try:
+        original = skill_md.read_bytes()
+    except OSError:
+        return
+
+    clean = strip_hermes_upstream_block(original).rstrip() + b"\n"
+    installed_version = f"sha256:{hashlib.sha256(clean).hexdigest()[:16]}"
+    block = _build_upstream_provenance_block(bundle, installed_version).encode("utf-8")
+    try:
+        skill_md.write_bytes(clean + b"\n" + block)
+    except OSError:
+        return
+
+
 def quarantine_bundle(bundle: SkillBundle) -> Path:
     """Write a skill bundle to the quarantine directory for scanning."""
     ensure_hub_dirs()
@@ -3384,6 +3427,8 @@ def install_from_quarantine(
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
 
+    _write_upstream_provenance(install_dir / "SKILL.md", bundle)
+
     # Record in lock file
     lock = HubLockFile()
     lock.record_install(
@@ -3447,9 +3492,12 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
         h.update(b"\x00")
         content = bundle.files[rel_path]
         if isinstance(content, bytes):
-            h.update(content)
+            data = content
         else:
-            h.update(content.encode("utf-8"))
+            data = content.encode("utf-8")
+        if rel_path == "SKILL.md":
+            data = strip_hermes_upstream_block(data)
+        h.update(data)
     return f"sha256:{h.hexdigest()[:16]}"
 
 
@@ -3512,6 +3560,127 @@ def check_for_skill_updates(
             "current_hash": current_hash,
             "latest_hash": latest_hash,
             "bundle": bundle,
+        })
+
+    return results
+
+
+def _run_git(repo: Path, *args: str) -> Tuple[int, str]:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=60,
+    )
+    return proc.returncode, proc.stdout.strip()
+
+
+def discover_git_skill_repos(skills_dir: Path = SKILLS_DIR) -> List[Path]:
+    """Find Git repositories under the skills directory that contain skills."""
+    if not skills_dir.exists():
+        return []
+
+    repos: List[Path] = []
+    for dotgit in skills_dir.rglob(".git"):
+        repo = dotgit.parent
+        try:
+            rel = repo.relative_to(skills_dir)
+        except ValueError:
+            continue
+        if rel.parts and rel.parts[0] == ".hub":
+            continue
+        try:
+            if any(p.name == "SKILL.md" for p in repo.rglob("SKILL.md")):
+                repos.append(repo)
+        except OSError:
+            continue
+    return sorted(set(repos))
+
+
+def check_git_skill_repo_updates(*, apply: bool = False, skills_dir: Path = SKILLS_DIR) -> List[dict]:
+    """Check or fast-forward Git-backed skill repositories below skills/."""
+    results: List[dict] = []
+    for repo in discover_git_skill_repos(skills_dir):
+        rel = repo.relative_to(skills_dir).as_posix()
+        _, remote = _run_git(repo, "remote", "get-url", "origin")
+        _, branch = _run_git(repo, "branch", "--show-current")
+        _, before = _run_git(repo, "rev-parse", "HEAD")
+
+        rc, dirty = _run_git(repo, "status", "--porcelain")
+        if rc != 0:
+            results.append({"path": rel, "status": "error", "detail": dirty})
+            continue
+        if dirty:
+            results.append({
+                "path": rel,
+                "remote": remote,
+                "branch": branch,
+                "installed_version": before,
+                "status": "blocked_dirty",
+                "detail": dirty.splitlines()[0],
+            })
+            continue
+
+        rc, fetch_out = _run_git(repo, "fetch", "origin", "--prune")
+        if rc != 0:
+            results.append({"path": rel, "remote": remote, "branch": branch, "status": "fetch_failed", "detail": fetch_out})
+            continue
+
+        rc, upstream = _run_git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+        if rc != 0 or not upstream:
+            upstream = f"origin/{branch}" if branch else "origin/main"
+
+        rc, remote_sha = _run_git(repo, "rev-parse", upstream)
+        if rc != 0:
+            results.append({"path": rel, "remote": remote, "branch": branch, "status": "upstream_missing", "detail": upstream})
+            continue
+
+        if before == remote_sha:
+            results.append({
+                "path": rel,
+                "remote": remote,
+                "branch": branch,
+                "installed_version": before,
+                "remote_version": remote_sha,
+                "status": "up_to_date",
+            })
+            continue
+
+        rc, _ = _run_git(repo, "merge-base", "--is-ancestor", before, remote_sha)
+        if rc != 0:
+            results.append({
+                "path": rel,
+                "remote": remote,
+                "branch": branch,
+                "installed_version": before,
+                "remote_version": remote_sha,
+                "status": "blocked_non_fast_forward",
+            })
+            continue
+
+        if not apply:
+            results.append({
+                "path": rel,
+                "remote": remote,
+                "branch": branch,
+                "installed_version": before,
+                "remote_version": remote_sha,
+                "status": "update_available",
+            })
+            continue
+
+        rc, merge_out = _run_git(repo, "merge", "--ff-only", upstream)
+        _, after = _run_git(repo, "rev-parse", "HEAD")
+        results.append({
+            "path": rel,
+            "remote": remote,
+            "branch": branch,
+            "installed_version": before,
+            "remote_version": remote_sha,
+            "updated_version": after,
+            "status": "updated" if rc == 0 else "update_failed",
+            "detail": merge_out if rc != 0 else "",
         })
 
     return results

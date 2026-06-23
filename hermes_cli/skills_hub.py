@@ -602,6 +602,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     extra_metadata = dict(getattr(meta, "extra", {}) or {})
     extra_metadata.update(getattr(bundle, "metadata", {}) or {})
+    bundle.metadata = extra_metadata
 
     # Quarantine the bundle
     try:
@@ -1359,6 +1360,34 @@ def do_repair_official(name: str, restore: bool = False,
             pass
 
 
+def do_check_git(apply: bool = False, console: Optional[Console] = None) -> None:
+    """Check or update Git-backed skill repositories."""
+    from tools.skills_hub import check_git_skill_repo_updates
+
+    c = console or _console
+    results = check_git_skill_repo_updates(apply=apply)
+    if not results:
+        c.print("[dim]No Git-backed skill repositories found.[/]\n")
+        return
+
+    table = Table(title="Git-backed Skill Repositories")
+    table.add_column("Path", style="bold cyan")
+    table.add_column("Branch", style="dim")
+    table.add_column("Status", style="dim")
+    table.add_column("Remote", style="dim", overflow="fold")
+    for entry in results:
+        table.add_row(
+            entry.get("path", ""),
+            entry.get("branch", ""),
+            entry.get("status", ""),
+            entry.get("remote", ""),
+        )
+    c.print(table)
+    changed = sum(1 for entry in results if entry.get("status") in {"update_available", "updated"})
+    mode = "updated" if apply else "available"
+    c.print(f"[dim]{changed} Git update(s) {mode} across {len(results)} repo(s)[/]\n")
+
+
 def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:
     """Manage taps (custom GitHub repo sources)."""
     from tools.skills_hub import TapsManager
@@ -1683,6 +1712,8 @@ def skills_command(args) -> None:
         do_check(name=getattr(args, "name", None))
     elif action == "update":
         do_update(name=getattr(args, "name", None))
+    elif action == "git-check":
+        do_check_git(apply=getattr(args, "apply", False))
     elif action == "audit":
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
@@ -1869,6 +1900,9 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         name = args[0] if args else None
         do_update(name=name, console=c)
 
+    elif action == "git-check":
+        do_check_git(apply="--apply" in args, console=c)
+
     elif action == "audit":
         name = args[0] if args and not args[0].startswith("--") else None
         deep = "--deep" in args
@@ -1961,6 +1995,7 @@ def _print_skills_help(console: Console) -> None:
         "       List installed skills; --enabled-only filters to the active profile's live set\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
+        "  [cyan]git-check[/] [--apply]         Check/update Git-backed skill repositories\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]list-modified[/]               List bundled skills you've edited (kept by update)\n"

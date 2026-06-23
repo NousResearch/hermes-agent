@@ -466,6 +466,8 @@ hermes skills install https://example.com/SKILL.md --name my-skill # Override na
 hermes skills list --source hub                   # List hub-installed skills
 hermes skills check                               # Check installed hub skills for upstream updates
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
+hermes skills git-check                           # Check full Git skill repos for fast-forward updates
+hermes skills git-check --apply                   # Apply safe fast-forward updates to Git skill repos
 hermes skills audit                               # Re-scan all hub skills for security
 hermes skills uninstall k8s                       # Remove a hub skill
 hermes skills reset google-workspace              # Un-stick a bundled skill from "user-modified" (see below)
@@ -684,6 +686,45 @@ hermes skills update react   # Update one specific installed hub skill
 ```
 
 This uses the stored source identifier plus the current upstream bundle content hash to detect drift.
+
+#### Git-backed skill repositories
+
+`hermes skills check` and `hermes skills update` manage **hub-installed skills**: single skills installed through the Skills Hub, direct `SKILL.md` URLs, well-known endpoints, or GitHub path identifiers.
+
+Some users also keep a whole Git repository inside their skills directory. That pattern is useful for multi-skill packs, private team skill repos, or upstreams that evolve as a complete repo:
+
+```bash
+cd ~/.hermes/skills
+git clone https://github.com/heygen-com/hyperframes.git hyperframes-skills
+
+# Or inside a profile:
+cd ~/.hermes/profiles/mirage/skills
+git clone https://github.com/heygen-com/hyperframes.git hyperframes-skills
+```
+
+For these full Git repositories, use:
+
+```bash
+hermes skills git-check          # Fetch remotes and report Git skill repo updates
+hermes skills git-check --apply  # Apply only clean fast-forward updates
+```
+
+Hermes discovers Git-backed skills by scanning for `.git` directories under the active `skills/` directory that contain at least one `SKILL.md`.
+
+Safety behavior:
+
+- clean and already current → `up_to_date`
+- clean and behind upstream → `update_available`, or `updated` with `--apply`
+- local edits present → `blocked_dirty`
+- no upstream branch → `upstream_missing`
+- fetch failure → `fetch_failed`
+- local branch diverged from upstream → `blocked_non_fast_forward`
+
+`--apply` only runs a `git merge --ff-only` after a successful fetch. It does not reset, rebase, overwrite local changes, resolve conflicts, or delete files.
+
+This makes GitHub-sourced skill packs easy to keep fresh without teaching users to `cd` into every skill repo and run `git pull` manually.
+
+Use `hermes skills update` for hub-installed skills and `hermes skills git-check --apply` for full Git repositories placed directly in your skills directory.
 
 :::tip GitHub rate limits
 Skills hub operations use the GitHub API, which has a rate limit of 60 requests/hour for unauthenticated users. If you see rate-limit errors during install or search, set `GITHUB_TOKEN` in your `.env` file to increase the limit to 5,000 requests/hour. The error message includes an actionable hint when this happens.

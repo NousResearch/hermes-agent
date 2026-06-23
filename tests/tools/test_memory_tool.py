@@ -786,3 +786,24 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+    def test_already_blocked_core_entry_passes_through(self, tmp_path, monkeypatch):
+        """A [core] [BLOCKED: ...] entry from a prior session is left alone,
+        not double-wrapped by scan_for_threats. The [core] prefix is
+        recognized so tiering still works.
+        """
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        existing_block = "[core] [BLOCKED: MEMORY.md entry contained threat pattern(s): ssh_backdoor. Removed from system prompt; use memory(action=remove) to delete the original.]"
+        (tmp_path / "MEMORY.md").write_text(
+            f"{existing_block}\n§\nClean fact.\n", encoding="utf-8"
+        )
+        s = MemoryStore()
+        s.load_from_disk()
+        snapshot = s._system_prompt_snapshot["memory"]
+        # Block marker appears exactly once, not double-wrapped
+        assert snapshot.count("[BLOCKED:") == 1
+        # Snapshot is not empty — the blocked core entry is present
+        assert snapshot is not None
+        assert len(snapshot) > 0
+        # Clean fact is extended — excluded because core tiering is active
+        assert "Clean fact" not in snapshot

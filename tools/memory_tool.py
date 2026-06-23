@@ -57,7 +57,7 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
-CORE_PREFIX = "[core]"
+_CORE_PREFIX_LEN = 6  # len("[core]")
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +191,7 @@ class MemoryStore:
 
         sanitized: List[str] = []
         for entry in entries:
-            if not entry or entry.startswith("[BLOCKED:"):
+            if not entry or "[BLOCKED:" in entry:
                 sanitized.append(entry)
                 continue
             findings = scan_for_threats(entry, scope="strict")
@@ -205,7 +205,7 @@ class MemoryStore:
                 # via the backward-compat "all go in" fallback.
                 core_prefix = ""
                 if entry.lower().startswith("[core]"):
-                    core_prefix = entry[:entry.lower().find("[core]") + 6] + " "
+                    core_prefix = entry[:entry.lower().find("[core]") + _CORE_PREFIX_LEN] + " "
                 sanitized.append(
                     f"{core_prefix}[BLOCKED: {filename} entry contained threat pattern(s): "
                     f"{', '.join(findings)}. Removed from system prompt; "
@@ -662,7 +662,7 @@ class MemoryStore:
                 stripped = []
                 for e in core_entries:
                     idx = e.lower().find("[core]")
-                    stripped.append(e[idx + 6:].strip())
+                    stripped.append(e[idx + _CORE_PREFIX_LEN:].strip())
                 entries = stripped
 
         limit = self._char_limit(target)

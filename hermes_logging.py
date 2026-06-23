@@ -32,9 +32,38 @@ import logging
 import os
 import sys
 import threading
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional, Sequence
+
+# On Windows, stdlib ``RotatingFileHandler`` calls ``os.rename()`` in
+# ``doRollover()`` and fails with ``PermissionError [WinError 32]`` whenever
+# another process holds an append-mode handle on ``agent.log`` — which is
+# essentially always in Hermes (TUI, gateway, ``hy_memory`` server, MCP
+# servers, and on-demand CLI commands all log from separate processes),
+# pinning ``agent.log`` at the 5 MiB threshold and spamming stderr with
+# a traceback on every emit. ``concurrent-log-handler`` wraps the rename in a
+# cross-process file lock (via ``portalocker``: pywin32 on Windows) so only
+# one process rotates at a time and the others wait their turn.
+#
+# This swap is Windows-ONLY and deliberately so:
+#   * The bug (WinError 32 on rename-while-open) is specific to Windows file
+#     locking semantics — POSIX renames an open file fine, so stdlib already
+#     works correctly on Linux/macOS.
+#   * On POSIX, managed-mode (NixOS) relies on the exact ``_open()`` /
+#     ``doRollover()`` lifecycle of stdlib ``RotatingFileHandler`` (the
+#     ``_ManagedRotatingFileHandler`` subclass chmods 0660 after each). CLH
+#     opens lazily and rotates differently, which breaks the group-writable
+#     guarantee and the eager file-creation those paths depend on.
+# Aliasing keeps every existing ``RotatingFileHandler`` reference in this
+# module (class declaration, ``isinstance`` checks, docstring) working
+# unchanged. See #44873.
+if sys.platform == "win32":
+    from concurrent_log_handler import (  # noqa: E402
+        ConcurrentRotatingFileHandler as RotatingFileHandler,
+    )
+else:
+    from logging.handlers import RotatingFileHandler  # noqa: E402
+
 
 from hermes_constants import get_config_path, get_hermes_home
 
@@ -181,7 +210,11 @@ class _ComponentFilter(logging.Filter):
 # Logger name prefixes that belong to each component.
 # Used by _ComponentFilter and exposed for ``hermes logs --component``.
 COMPONENT_PREFIXES = {
-    "gateway": ("gateway", "hermes_plugins"),
+    # ``plugins.platforms`` covers messaging-platform adapters that migrated
+    # out of ``gateway/platforms/`` into bundled plugins (#41112) — they are
+    # still gateway components and their logs belong in gateway.log / match
+    # ``hermes logs --component gateway``.
+    "gateway": ("gateway", "hermes_plugins", "plugins.platforms"),
     "agent": ("agent", "run_agent", "model_tools", "batch_runner"),
     "tools": ("tools",),
     "cli": ("hermes_cli", "cli"),
@@ -524,6 +557,13 @@ def _read_logging_config():
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
+            # Managed scope: an administrator can pin logging.* too. Overlay via
+            # the shared helper (fail-open) since this reads config.yaml directly.
+            try:
+                from hermes_cli import managed_scope
+                cfg = managed_scope.apply_managed_overlay(cfg)
+            except Exception:
+                pass
             log_cfg = cfg.get("logging", {})
             if isinstance(log_cfg, dict):
                 return (

@@ -439,6 +439,50 @@ class TestPluginDiscovery:
 
         assert "ep_plugin" in mgr._plugins
 
+    def test_force_rediscover_clears_all_plugin_registries(self, monkeypatch):
+        """force=True must clear every plugin-populated registry.
+
+        Regression: ``_plugin_platform_names`` was populated by
+        ``register_platform`` but omitted from the ``discover_and_load(force=True)``
+        clear block, so a platform plugin disabled between force-rediscovers
+        left a stale entry behind forever (the set diverged from the real
+        platform_registry / _plugins truth). This asserts the clear block
+        empties the full set of per-plugin registries so no future addition
+        silently leaks across a force pass either.
+        """
+        mgr = PluginManager()
+
+        # Seed every registry that a plugin's register() can populate, then
+        # mark discovery done so force=True takes the clear path (we stub the
+        # inner sweep so the test doesn't depend on any on-disk plugins).
+        mgr._plugins["p"] = MagicMock()
+        mgr._hooks["pre_tool_call"] = [lambda **_: None]
+        mgr._middleware["llm_request"] = [lambda **_: None]
+        mgr._plugin_tool_names.add("some_tool")
+        mgr._plugin_platform_names.add("irc")
+        mgr._cli_commands["c"] = {"plugin": "p"}
+        mgr._plugin_commands["cmd"] = {"plugin": "p"}
+        mgr._plugin_skills["p:skill"] = {}
+        mgr._aux_tasks["task"] = {"plugin": "p"}
+        mgr._slack_action_handlers.append(("aid", lambda **_: None, "p"))
+        mgr._discovered = True
+
+        monkeypatch.setattr(PluginManager, "_discover_and_load_inner", lambda self_inner: None)
+        mgr.discover_and_load(force=True)
+
+        assert mgr._plugins == {}
+        assert mgr._hooks == {}
+        assert mgr._middleware == {}
+        assert mgr._plugin_tool_names == set()
+        assert mgr._plugin_platform_names == set(), (
+            "_plugin_platform_names was not cleared on force-rediscover"
+        )
+        assert mgr._cli_commands == {}
+        assert mgr._plugin_commands == {}
+        assert mgr._plugin_skills == {}
+        assert mgr._aux_tasks == {}
+        assert mgr._slack_action_handlers == []
+
 
 # ── TestPluginLoading ──────────────────────────────────────────────────────
 
@@ -1159,6 +1203,36 @@ class TestPluginManagerList:
             assert "tools" in p
             assert "hooks" in p
 
+    def test_shared_hook_name_credited_to_every_plugin(self, tmp_path, monkeypatch):
+        """Two plugins registering the SAME hook name are each credited.
+
+        Regression: hook/middleware/tool attribution diffed names against all
+        already-loaded plugins, so when a later plugin registered a hook name
+        an earlier plugin had already used, the shared name was attributed to
+        the first plugin only and the later plugin reported 0 hooks in
+        `hermes plugins list`. Attribution now counts what each plugin's own
+        register() added (per-registration delta), so both get credit.
+        """
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "first_hooker",
+            register_body='ctx.register_hook("post_tool_call", lambda **kw: None)',
+        )
+        _make_plugin_dir(
+            plugins_dir, "second_hooker",
+            register_body='ctx.register_hook("post_tool_call", lambda **kw: None)',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        by_name = {p["name"]: p for p in mgr.list_plugins()}
+        assert by_name["first_hooker"]["hooks"] == 1
+        assert by_name["second_hooker"]["hooks"] == 1, (
+            "second plugin sharing a hook name was not credited with its hook"
+        )
+
 
 
 class TestPreLlmCallTargetRouting:
@@ -1793,3 +1867,71 @@ class TestPluginDebugLogging:
             plugins_mod._PLUGINS_DEBUG = original_debug
             plugins_mod.logger.setLevel(original_level)
             plugins_mod.logger.handlers = original_handlers
+
+
+class TestPluginContextProfileName:
+    """ctx.profile_name resolves from HERMES_HOME in every context."""
+
+    def _ctx(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        return PluginContext(manifest, mgr)
+
+    def test_default_profile(self, tmp_path, monkeypatch):
+        """HERMES_HOME at the root resolves to 'default'."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        assert self._ctx().profile_name == "default"
+
+    def test_named_profile(self, tmp_path, monkeypatch):
+        """HERMES_HOME under profiles/<name> resolves to that name."""
+        prof = tmp_path / ".hermes" / "profiles" / "coder"
+        prof.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(prof))
+        assert self._ctx().profile_name == "coder"
+
+    def test_works_without_cli_ref(self, tmp_path, monkeypatch):
+        """profile_name does not depend on _cli_ref (None in worker sessions)."""
+        prof = tmp_path / ".hermes" / "profiles" / "worker1"
+        prof.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(prof))
+        ctx = self._ctx()
+        assert ctx._manager._cli_ref is None
+        assert ctx.profile_name == "worker1"
+
+
+class TestDispatchToolWithoutCliRef:
+    """ctx.dispatch_tool works in worker/hook contexts (no _cli_ref).
+
+    This pins the contract the plugin docs rely on: a plugin can drive
+    tools from a hook callback even when running in the gateway or a
+    kanban-spawned worker session, where _cli_ref is None.
+    """
+
+    def test_dispatch_tool_invokes_handler_without_cli_ref(self):
+        from tools.registry import registry
+
+        mgr = PluginManager()
+        assert mgr._cli_ref is None  # worker/hook context
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+
+        calls = []
+        registry.register(
+            name="_test_dispatch_probe",
+            toolset="debugging",
+            schema={"name": "_test_dispatch_probe", "description": "probe",
+                    "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: calls.append((args, kw)) or '{"ok": true}',
+        )
+        try:
+            result = ctx.dispatch_tool("_test_dispatch_probe", {"x": 1})
+            assert result == '{"ok": true}'
+            assert calls and calls[0][0] == {"x": 1}
+            # parent_agent is not forced when there's no CLI agent to resolve.
+            assert calls[0][1].get("parent_agent") is None
+        finally:
+            registry.deregister("_test_dispatch_probe")

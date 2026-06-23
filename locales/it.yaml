@@ -269,6 +269,10 @@ Future messages in this room will use that transcript until `/reset` or another 
     title:                 "**Titolo:** {title}"
     created:               "**Creata:** {timestamp}"
     last_activity:         "**Ultima attività:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Token:** {tokens}"
     agent_running:         "**Agente in esecuzione:** {state}"
     state_yes:             "Sì ⚡"
@@ -333,6 +337,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "Contesto stimato: ~{count} token"
     detailed_after_first:     "_(L'uso dettagliato sarà disponibile dopo la prima risposta dell'agente)_"
     no_data:                  "Nessun dato di utilizzo disponibile per questa sessione."
+
+  credits:
+    not_logged_in:            "Non hai effettuato l'accesso a Nous Portal. Accedi per vedere il saldo dei crediti e ricaricare."
 
   verbose:
     not_enabled:           "Il comando `/verbose` non è abilitato per le piattaforme di messaggistica.\n\nAbilitalo in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"

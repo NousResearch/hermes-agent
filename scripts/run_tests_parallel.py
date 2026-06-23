@@ -65,17 +65,14 @@ _DEFAULT_ROOTS = ["tests"]
 #                        rebuild). The full pytest-shard runner can't
 #                        host these because the session-scoped
 #                        ``built_image`` fixture would do a 3-7min
-#                        ``docker build`` inside a 180s per-test
-#                        pytest-timeout cap (set by tests/docker/conftest.py),
+#                        ``docker build``,
 #                        so the build is guaranteed to die in fixture
 #                        setup. The dedicated job sidesteps both costs.
 _SKIP_PARTS = {"integration", "e2e", "docker"}
 
-# Per-file wall-clock cap. Generous default — pytest-timeout still
-# enforces per-test caps inside each subprocess; this is just an outer
-# safety net so a single hung file can't stall the whole suite. Override
+# Per-file wall-clock cap. Override
 # via --file-timeout or HERMES_TEST_FILE_TIMEOUT.
-_DEFAULT_FILE_TIMEOUT_SECONDS = 600.0  # 10 minutes
+_DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at commit time was ~100s in CI and adding some leeway
 
 # Duration cache: maps relative file paths to last-observed subprocess
 # wall-clock seconds. Used by ``--slice`` to distribute files across
@@ -246,27 +243,49 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
         pass
 
 
-def _spawn_pytest_once(
-    cmd: List[str],
+def _run_one_file(
+    file: Path,
+    pytest_args: List[str],
     repo_root: Path,
     file_timeout: float,
-    *,
-    timeout_note: str = "per-file timeout",
-) -> Tuple[int, str]:
-    """Run one ``pytest`` subprocess to completion and return ``(rc, output)``.
+) -> Tuple[Path, int, str, dict[str, int], float]:
+    """Run ``python -m pytest <file> <pytest_args>`` in a fresh subprocess.
 
-    Spawns the child in its own process group / session so a hung file and
-    its grandchildren (uvicorn servers, async runtimes, etc.) can be SIGKILL'd
-    as a tree on timeout rather than orphaning onto PID 1. Shared by the
-    primary per-file run and the exit-4 retry loop so the lifecycle/cleanup
-    logic lives in exactly one place.
+    Returns (file, returncode, captured_combined_output, summary_counts, subprocess_wall_seconds).
+
+    ``summary_counts`` is the result of ``_parse_pytest_summary(output)`` —
+
+    pytest exit codes (https://docs.pytest.org/en/stable/reference/exit-codes.html):
+        0 = all tests passed
+        1 = some tests failed
+        2 = test execution interrupted
+        3 = internal error
+        4 = pytest CLI usage error
+        5 = no tests collected
+
+    We treat exit 5 as a pass: it just means every test in the file was
+    skipped or filtered by a marker (e.g. ``-m 'not integration'`` skips
+    files where every test is marked integration). That's intentional and
+    not a failure mode.
+
+    On per-file timeout (``file_timeout`` seconds) or any other exception
+    during ``communicate()``, we kill the whole process group / process
+    tree so grandchildren (uvicorn servers, async runtimes, etc.) do not
+    orphan onto PID 1. This outer timeout exists only to
+    bound a pathologically slow or hung file as a whole.
     """
+    cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
+    
+    subproc_start = time.monotonic()
+    # launch the pytest process
     proc = subprocess.Popen(
         cmd,
         cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        # skipping writing bytecode because we're running a bunch of parallel python processes on the same code
+        env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
         # POSIX: place the child at the head of its own process group so
         # _kill_tree can SIGKILL the group atomically.
         # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
@@ -296,7 +315,7 @@ def _spawn_pytest_once(
             output = "(file timeout exceeded; output unavailable)"
         rc = 124  # de facto convention for "killed by timeout".
         output = (
-            f"({timeout_note}: {file_timeout:.0f}s exceeded; "
+            f"({file_timeout:.0f}s exceeded; "
             f"process tree SIGKILL'd)\n{output}"
         )
     except BaseException:
@@ -309,123 +328,7 @@ def _spawn_pytest_once(
         # case it left grandchildren behind; already-dead is a no-op.
         _kill_tree(proc, pgid=pgid)
 
-    return rc, output
-
-
-# How many times to re-run a file that exits 4 ("file or directory not found")
-# while the file demonstrably exists on disk. On loaded shared CI runners the
-# planner can enumerate a file (tests counted via --collect-only) but the
-# per-file subprocess fail to stat it moments later — and a SINGLE immediate
-# retry can land in the same brief high-load window and fail again. We retry a
-# few times with a short backoff so transient I/O pressure has time to settle.
-_EXIT4_RETRY_ATTEMPTS = 3
-_EXIT4_RETRY_BACKOFF_SECONDS = 0.5
-
-
-def _file_present(file: Path, *, attempts: int = 3, delay: float = 0.2) -> bool:
-    """Return True if ``file`` exists, re-checking a few times.
-
-    ``Path.exists()`` itself issues a ``stat`` that can transiently fail under
-    the same load that makes pytest report "file or directory not found", so a
-    single negative check is not authoritative. Only conclude the file is
-    genuinely missing if it's absent across several spaced checks.
-    """
-    for i in range(attempts):
-        if file.exists():
-            return True
-        if i < attempts - 1:
-            time.sleep(delay)
-    return False
-
-
-def _run_one_file(
-    file: Path,
-    pytest_args: List[str],
-    repo_root: Path,
-    file_timeout: float,
-) -> Tuple[Path, int, str, dict[str, int], float]:
-    """Run ``python -m pytest <file> <pytest_args>`` in a fresh subprocess.
-
-    Returns (file, returncode, captured_combined_output, summary_counts, subprocess_wall_seconds).
-
-    ``summary_counts`` is the result of ``_parse_pytest_summary(output)`` —
-
-    pytest exit codes (https://docs.pytest.org/en/stable/reference/exit-codes.html):
-        0 = all tests passed
-        1 = some tests failed
-        2 = test execution interrupted
-        3 = internal error
-        4 = pytest CLI usage error
-        5 = no tests collected
-
-    We treat exit 5 as a pass: it just means every test in the file was
-    skipped or filtered by a marker (e.g. ``-m 'not integration'`` skips
-    files where every test is marked integration). That's intentional and
-    not a failure mode.
-
-    On per-file timeout (``file_timeout`` seconds) or any other exception
-    during ``communicate()``, we kill the whole process group / process
-    tree so grandchildren (uvicorn servers, async runtimes, etc.) do not
-    orphan onto PID 1. The pytest-timeout plugin enforces per-test
-    timeouts inside the subprocess; this outer timeout exists only to
-    bound a pathologically slow or hung file as a whole.
-    """
-    cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
-    subproc_start = time.monotonic()
-    rc, output = _spawn_pytest_once(cmd, repo_root, file_timeout)
-
-    # pytest exit 4 = "file or directory not found" at exec time. On loaded
-    # shared CI runners we have seen the planner enumerate a file (its tests
-    # counted via --collect-only) but the per-file subprocess fail to stat it
-    # moments later — a transient the deterministic LPT slicer otherwise
-    # reproduces on every rerun (same file set → same shard). Re-run the file a
-    # few times with a short backoff so the I/O pressure has time to settle,
-    # but ONLY while the file demonstrably exists on disk. A single immediate
-    # retry (the old behaviour) could land in the same brief high-load window
-    # and fail again; a single Path.exists() check could itself be a flaky stat
-    # under that load, so we re-check existence across spaced attempts.
-    # We do NOT widen the exit-5 rule: exit 4 on a file that genuinely does not
-    # exist must still fail.
-    attempt = 0
-    while rc == 4 and attempt < _EXIT4_RETRY_ATTEMPTS and _file_present(file):
-        attempt += 1
-        time.sleep(_EXIT4_RETRY_BACKOFF_SECONDS * attempt)
-        rc, output = _spawn_pytest_once(
-            cmd, repo_root, file_timeout,
-            timeout_note=f"per-file timeout on exit-4 retry {attempt}",
-        )
-
-    if rc == 4:
-        # Exit-4 survived the retries (or the file was judged absent).
-        # Capture filesystem forensics so a CI-only "file not found" can
-        # be diagnosed from the log instead of guessed at: does the file
-        # exist NOW, what does the parent dir hold, and is the git tree
-        # clean?  (June 2026: a PR-added test file repeatedly hit exit 4
-        # on one CI shard while passing locally — these lines exist so
-        # the next occurrence is attributable.)
-        forensics = [f"--- exit-4 forensics for {file} ---"]
-        try:
-            forensics.append(f"exists={file.exists()} retries_used={attempt}")
-            parent = file.parent
-            if parent.exists():
-                names = sorted(p.name for p in parent.iterdir())
-                sibling_hint = [n for n in names if file.stem[:12] in n]
-                forensics.append(
-                    f"parent={parent} entries={len(names)} "
-                    f"similar={sibling_hint[:5]}"
-                )
-            else:
-                forensics.append(f"parent={parent} MISSING")
-            git_st = subprocess.run(
-                ["git", "status", "--porcelain"],
-                cwd=repo_root, capture_output=True, text=True, timeout=10,
-            )
-            dirty = git_st.stdout.strip().splitlines()
-            forensics.append(f"git_dirty_entries={len(dirty)}")
-            forensics.extend(f"  {line}" for line in dirty[:10])
-        except Exception as exc:  # noqa: BLE001 — forensics must never mask rc=4
-            forensics.append(f"(forensics error: {exc})")
-        output = output + "\n" + "\n".join(forensics)
+        output +=  "\n"
 
     if rc == 5:
         # No tests collected — every test in the file was filtered out.
@@ -721,7 +624,7 @@ def main() -> int:
         help=(
             "Per-file wall-clock cap in seconds. On timeout, the pytest "
             "subprocess and its full process tree are SIGKILL'd. "
-            "Default: 600 (10 min), env: HERMES_TEST_FILE_TIMEOUT."
+            f"Default: {_DEFAULT_FILE_TIMEOUT_SECONDS}s ({round(_DEFAULT_FILE_TIMEOUT_SECONDS/60)} min), env: HERMES_TEST_FILE_TIMEOUT."
         ),
     )
     parser.add_argument(

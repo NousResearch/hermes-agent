@@ -1121,7 +1121,15 @@ async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
     )
 
     assert [call["content"] for call in adapter.sent] == ["done"]
-    assert events[:2] == ["typing-stopped", "callback-start"]
+    # Invariant: typing must stop before the (hung) post-delivery callback
+    # starts.  Don't pin the exact stop_typing call count — the shared
+    # cleanup path may make more than one bounded stop attempt.
+    assert "typing-stopped" in events
+    assert "callback-start" in events
+    assert events.index("typing-stopped") < events.index("callback-start")
+    assert events[: events.index("callback-start")] == (
+        ["typing-stopped"] * events.index("callback-start")
+    )
     assert any(call["metadata"] == {"stopped": True} for call in adapter.typing)
 
 

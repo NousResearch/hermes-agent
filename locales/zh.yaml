@@ -269,6 +269,10 @@ Future messages in this room will use that transcript until `/reset` or another 
     title:                 "**标题：** {title}"
     created:               "**创建时间：** {timestamp}"
     last_activity:         "**最近活动：** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Token 数：** {tokens}"
     agent_running:         "**代理运行中：** {state}"
     state_yes:             "是 ⚡"
@@ -333,6 +337,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "估计上下文：~{count} 个令牌"
     detailed_after_first:     "_（首次代理响应后可查看详细使用情况）_"
     no_data:                  "此会话暂无使用数据。"
+
+  credits:
+    not_logged_in:            "未登录 Nous Portal。登录后即可查看额度余额并充值。"
 
   verbose:
     not_enabled:           "`/verbose` 命令未在消息平台启用。\n\n请在 `config.yaml` 中启用：\n```yaml\ndisplay:\n  tool_progress_command: true\n```"

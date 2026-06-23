@@ -14,6 +14,7 @@ import {
 } from 'react'
 
 import { hermesDirectiveFormatter, type SlashChipKind } from '@/components/assistant-ui/directive-text'
+import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
@@ -40,16 +41,30 @@ import {
   resetBrowseState
 } from '@/store/composer-input-history'
 import {
+  $composerPopoutPosition,
+  $composerPoppedOut,
+  POPOUT_WIDTH_REM,
+  readPopoutBounds,
+  setComposerPoppedOut,
+  setComposerPopoutPosition
+} from '@/store/composer-popout'
+import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
+  MAX_AUTO_DRAIN_ATTEMPTS,
+  migrateQueuedPrompts,
   promoteQueuedPrompt,
   type QueuedPromptEntry,
   removeQueuedPrompt,
-  shouldAutoDrainOnSettle,
+  shouldAutoDrain,
   updateQueuedPrompt
 } from '@/store/composer-queue'
+import { $statusItemsBySession } from '@/store/composer-status'
+import { $previewStatusBySession } from '@/store/preview-status'
+import { notify } from '@/store/notifications'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
+import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes'
 
 import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '../hooks/use-composer-actions'
@@ -68,6 +83,7 @@ import {
 } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
+import { useComposerPopoutGestures } from './hooks/use-popout-drag'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useVoiceConversation } from './hooks/use-voice-conversation'
 import { useVoiceRecorder } from './hooks/use-voice-recorder'
@@ -80,12 +96,17 @@ import {
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
+  deleteChipBeforeCaret,
+  deleteSelectionInEditor,
+  insertPlainTextAtCaret,
+  normalizeComposerEditorDom,
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
   RICH_INPUT_SLOT,
   slashChipElement
 } from './rich-editor'
+import { ComposerStatusStack } from './status-stack'
 import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
@@ -128,6 +149,12 @@ function slashChipKindForItem(item: Unstable_TriggerItem): SlashChipKind {
   return 'command'
 }
 
+/** A `/` query is at its arg stage once it's past the command name. */
+const slashArgStage = (query: string) => query.includes(' ')
+
+/** The `/command` token of a slash query (`personality x` → `/personality`). */
+const slashCommandToken = (query: string) => `/${query.split(/\s+/, 1)[0]?.toLowerCase() ?? ''}`
+
 interface QueueEditState {
   attachments: ComposerAttachment[]
   draft: string
@@ -168,8 +195,16 @@ export function ChatBar({
   const draft = useAuiState(s => s.composer.text)
   const attachments = useStore($composerAttachments)
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
+  const statusItemsBySession = useStore($statusItemsBySession)
+  const previewStatusBySession = useStore($previewStatusBySession)
   const scrolledUp = useStore($threadScrolledUp)
-  const sessionMessages = useStore($messages)
+  // Pop-out is a shared, persisted state — but secondary windows (the Ctrl+Shift+N
+  // tiny window, subagent watch windows) always start docked and can't pop out:
+  // a floating composer makes no sense in a single-session side window, and it
+  // would otherwise write the shared atom and yank the main window's composer out.
+  const popoutAllowed = !isSecondaryWindow()
+  const poppedOut = useStore($composerPoppedOut) && popoutAllowed
+  const popoutPosition = useStore($composerPopoutPosition)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
 
   const queuedPrompts = useMemo(
@@ -177,15 +212,59 @@ export function ChatBar({
     [activeQueueSessionKey, queuedPromptsBySession]
   )
 
+  // Status items (subagents, background processes) are keyed by the RUNTIME
+  // session id — gateway events and process.list both speak that id. Only the
+  // queue uses the stored-session fallback key (prompts can queue pre-resume).
+  const statusSessionId = sessionId ?? null
+
+  const statusStackVisible = useMemo(
+    () =>
+      queuedPrompts.length > 0 ||
+      (statusSessionId
+        ? (statusItemsBySession[statusSessionId]?.length ?? 0) > 0 ||
+          (previewStatusBySession[statusSessionId]?.length ?? 0) > 0
+        : false),
+    [previewStatusBySession, queuedPrompts.length, statusItemsBySession, statusSessionId]
+  )
+
   const composerRef = useRef<HTMLFormElement | null>(null)
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
+
+  const handleComposerPopOut = useCallback(() => {
+    triggerHaptic('open')
+    setComposerPoppedOut(true)
+  }, [])
+
+  const handleComposerDock = useCallback(() => {
+    triggerHaptic('success')
+    setComposerPoppedOut(false)
+  }, [])
+
+  // Double-click the grab area toggles dock/float. Undocking restores the last
+  // position (the persisted atom is never cleared on dock).
+  const handleComposerToggle = useCallback(() => {
+    poppedOut ? handleComposerDock() : handleComposerPopOut()
+  }, [handleComposerDock, handleComposerPopOut, poppedOut])
+
+  const { dockProximity, dragging, onPointerDown: onComposerGesturePointerDown } =
+    useComposerPopoutGestures({
+      composerRef,
+      onDock: handleComposerDock,
+      onPopOut: handleComposerPopOut,
+      poppedOut,
+      position: popoutPosition
+    })
+
   const draftRef = useRef(draft)
-  const previousBusyRef = useRef(busy)
   const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
   const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
   activeQueueSessionKeyRef.current = activeQueueSessionKey
+  const prevQueueKeyRef = useRef(activeQueueSessionKey)
   const drainingQueueRef = useRef(false)
+  // Per-entry auto-drain failure counts; bounds retries so a persistent 404
+  // can't spin-loop. Cleared on success; reset naturally on remount/reconnect.
+  const drainFailuresRef = useRef(new Map<string, number>())
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
   const [urlOpen, setUrlOpen] = useState(false)
@@ -226,6 +305,8 @@ export function ChatBar({
   const gatewayState = useStore($gatewayState)
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
+  const reconnecting = gatewayState === 'closed' || gatewayState === 'error'
+  const inputDisabled = disabled && !reconnecting
 
   // Resting placeholder: a starter for brand-new sessions, a continuation for
   // existing ones. Picked once and only re-rolled when we genuinely move to a
@@ -256,11 +337,13 @@ export function ChatBar({
     setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
   }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
 
-  // When the bar is disabled it's because the gateway isn't open. Distinguish a
-  // cold start ("Starting Hermes...") from a dropped connection we're trying to
-  // restore (e.g. after the Mac slept) so the stuck state reads as recoverable.
+  // When the transport is disabled it's because the gateway isn't open.
+  // Distinguish a cold start ("Starting Hermes...") from a dropped connection
+  // we're trying to restore. During reconnect, keep the textbox editable so a
+  // flaky network doesn't block drafting; only submit/backend actions stay
+  // disabled until the gateway is open again.
   const placeholder = disabled
-    ? gatewayState === 'closed' || gatewayState === 'error'
+    ? reconnecting
       ? t.composer.placeholderReconnecting
       : t.composer.placeholderStarting
     : restingPlaceholder
@@ -302,13 +385,13 @@ export function ChatBar({
   )
 
   useEffect(() => {
-    if (!disabled) {
+    if (!inputDisabled) {
       focusInput()
     }
-  }, [disabled, focusInput, focusKey, focusRequestId])
+  }, [focusInput, focusKey, focusRequestId, inputDisabled])
 
   useEffect(() => {
-    if (disabled) {
+    if (inputDisabled) {
       return undefined
     }
 
@@ -328,7 +411,7 @@ export function ChatBar({
       offFocus()
       offInsert()
     }
-  }, [appendExternalText, disabled])
+  }, [appendExternalText, inputDisabled])
 
   // Keep draftRef in sync with the assistant-ui composer state for callers
   // that read the latest text outside the React render cycle. We don't push
@@ -372,7 +455,10 @@ export function ChatBar({
       return
     }
 
-    if (draft.includes('\n')) {
+    // Only a non-trailing newline forces an immediate expand. A trailing newline
+    // (or phantom \n from contenteditable junk) is left to the ResizeObserver,
+    // which expands only when the editor's real height actually grows.
+    if (draft.trimEnd().includes('\n')) {
       setExpanded(true)
     }
   }, [draft, expanded])
@@ -392,6 +478,20 @@ export function ChatBar({
     const composer = composerRef.current
 
     if (!composer) {
+      return
+    }
+
+    // Floating composer is out of the thread's flow — it must not reserve any
+    // bottom clearance. Zero the measured vars so the thread reclaims the space.
+    // (Read globals here so the callback stays stable; mirror the popoutAllowed
+    // gate since secondary windows are forced docked.)
+    if ($composerPoppedOut.get() && !isSecondaryWindow()) {
+      const root = document.documentElement
+      lastBucketedHeightRef.current = 0
+      lastBucketedSurfaceHeightRef.current = 0
+      root.style.setProperty('--composer-measured-height', '0px')
+      root.style.setProperty('--composer-surface-measured-height', '0px')
+
       return
     }
 
@@ -440,6 +540,42 @@ export function ChatBar({
   }, [])
 
   useResizeObserver(syncComposerMetrics, composerRef, composerSurfaceRef, editorRef)
+
+  // Toggling pop-out changes whether the composer reserves thread clearance.
+  // The ResizeObserver may not fire (the box can keep the same box size), so
+  // re-sync explicitly: docked republishes the measured height, floating zeroes
+  // it so the thread reclaims the bottom space.
+  useEffect(() => {
+    syncComposerMetrics()
+  }, [poppedOut, syncComposerMetrics])
+
+  // Keep the floating box on-screen: re-clamp (with the real measured size +
+  // thread bounds) when it pops out and on every window resize — so a position
+  // persisted on a bigger/other monitor, a shrunk window, or now-wider sidebar
+  // can never strand it. The rAF pass re-clamps after layout settles (sidebar
+  // widths, fonts), so anyone loading in out of bounds is pulled back + saved
+  // even if the first measure was premature.
+  useEffect(() => {
+    if (!poppedOut) {
+      return undefined
+    }
+
+    const reclamp = (persist: boolean) => {
+      const el = composerRef.current
+      const size = el ? { height: el.offsetHeight, width: el.offsetWidth } : undefined
+      setComposerPopoutPosition($composerPopoutPosition.get(), { area: readPopoutBounds(el), persist, size })
+    }
+
+    reclamp(true)
+    const raf = requestAnimationFrame(() => reclamp(true))
+    const onResize = () => reclamp(false)
+    window.addEventListener('resize', onResize)
+
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [poppedOut])
 
   useEffect(() => {
     return () => {
@@ -507,48 +643,6 @@ export function ChatBar({
     })
   }, [])
 
-  const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
-    const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
-
-    if (imageBlobs.length > 0) {
-      event.preventDefault()
-
-      if (onAttachImageBlob) {
-        triggerHaptic('selection')
-
-        for (const blob of imageBlobs) {
-          void onAttachImageBlob(blob)
-        }
-      }
-
-      return
-    }
-
-    // Trim surrounding whitespace so a copy that dragged along leading/trailing
-    // blank lines (common when selecting from terminals, code blocks, web pages)
-    // doesn't dump multiline padding into the composer. Internal newlines are
-    // preserved — only the edges are cleaned up.
-    const pastedText = event.clipboardData.getData('text').trim()
-
-    if (!pastedText) {
-      event.preventDefault()
-
-      return
-    }
-
-    if (DATA_IMAGE_URL_RE.test(pastedText)) {
-      event.preventDefault()
-
-      return
-    }
-
-    event.preventDefault()
-    document.execCommand('insertText', false, pastedText)
-    const nextDraft = composerPlainText(event.currentTarget)
-    draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
-  }
-
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
   const [triggerItems, setTriggerItems] = useState<readonly Unstable_TriggerItem[]>([])
@@ -585,7 +679,15 @@ export function ChatBar({
     }
 
     const before = textBeforeCaret(editor)
-    const detected = detectTrigger(before ?? composerPlainText(editor))
+    const found = detectTrigger(before ?? composerPlainText(editor))
+
+    // The arg-stage popover is only useful for commands with an options screen.
+    // For a no-arg command it would dead-end on "No matches", so drop it — the
+    // directive is already complete.
+    const detected =
+      found?.kind === '/' && slashArgStage(found.query) && !desktopSlashCommandTakesArgs(slashCommandToken(found.query))
+        ? null
+        : found
 
     setTrigger(detected)
 
@@ -602,9 +704,7 @@ export function ChatBar({
   // (which drives `hasComposerPayload` → the send button). Shared by the input
   // and compositionend paths so committed IME text reaches state through either.
   const flushEditorToDraft = (editor: HTMLDivElement) => {
-    if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
-      editor.replaceChildren()
-    }
+    normalizeComposerEditorDom(editor)
 
     const nextDraft = composerPlainText(editor)
 
@@ -627,6 +727,46 @@ export function ChatBar({
     flushEditorToDraft(event.currentTarget)
   }
 
+  const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
+
+    if (imageBlobs.length > 0) {
+      event.preventDefault()
+
+      if (onAttachImageBlob) {
+        triggerHaptic('selection')
+
+        for (const blob of imageBlobs) {
+          void onAttachImageBlob(blob)
+        }
+      }
+
+      return
+    }
+
+    // Trim surrounding whitespace so a copy that dragged along leading/trailing
+    // blank lines (common when selecting from terminals, code blocks, web pages)
+    // doesn't dump multiline padding into the composer. Internal newlines are
+    // preserved — only the edges are cleaned up.
+    const pastedText = event.clipboardData.getData('text').trim()
+
+    if (!pastedText) {
+      event.preventDefault()
+
+      return
+    }
+
+    if (DATA_IMAGE_URL_RE.test(pastedText)) {
+      event.preventDefault()
+
+      return
+    }
+
+    event.preventDefault()
+    insertPlainTextAtCaret(event.currentTarget, pastedText)
+    flushEditorToDraft(event.currentTarget)
+  }
+
   const triggerAdapter: Unstable_TriggerAdapter | null =
     trigger?.kind === '@' ? at.adapter : trigger?.kind === '/' ? slash.adapter : null
 
@@ -642,6 +782,12 @@ export function ChatBar({
 
   const triggerLoading = trigger?.kind === '@' ? at.loading : trigger?.kind === '/' ? slash.loading : false
 
+  // Suppress the "No matches" empty state once a slash command is past its name:
+  // a no-arg command has nothing to offer, and a fully-typed arg commits on
+  // Space/Tab — neither should dead-end on a popover.
+  const argStageEmpty =
+    trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !triggerItems.length
+
   const closeTrigger = () => {
     setTrigger(null)
     setTriggerItems([])
@@ -651,6 +797,25 @@ export function ChatBar({
   useEffect(() => {
     setTriggerActive(idx => Math.min(idx, Math.max(0, triggerItems.length - 1)))
   }, [triggerItems.length])
+
+  // Commit the literally-typed `/command arg` as a directive chip — used when
+  // the completion list is empty because the arg is already fully typed (the
+  // backend completer drops exact matches). Reuses the chip path via a
+  // synthetic item whose serialized form is the verbatim text.
+  const commitTypedSlashDirective = () => {
+    if (trigger?.kind !== '/') {
+      return
+    }
+
+    const text = `/${trigger.query.trimEnd()}`
+
+    replaceTriggerWithChip({
+      id: text,
+      type: 'slash',
+      label: text.slice(1),
+      metadata: { command: slashCommandToken(trigger.query), display: text, meta: '', group: '', action: '', rawText: text }
+    })
+  }
 
   const replaceTriggerWithChip = (item: Unstable_TriggerItem) => {
     const editor = editorRef.current
@@ -688,8 +853,7 @@ export function ChatBar({
     // already an arg pick (`/personality alice`), so it commits normally.
     const command = (item.metadata as { command?: string } | undefined)?.command ?? ''
 
-    const expandsToArgs =
-      trigger.kind === '/' && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
+    const expandsToArgs = trigger.kind === '/' && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
 
     const text = starter || serialized.endsWith(' ') ? serialized : `${serialized} `
     const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)
@@ -771,6 +935,34 @@ export function ChatBar({
       return
     }
 
+    // Plain Backspace right after a directive chip: remove the chip + its
+    // auto-inserted trailing space as one unit, so deleting a directive never
+    // leaves an orphaned space. (Modified backspaces stay native.)
+    if (
+      event.key === 'Backspace' &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      deleteChipBeforeCaret(event.currentTarget)
+    ) {
+      event.preventDefault()
+      flushEditorToDraft(event.currentTarget)
+
+      return
+    }
+
+    // Non-collapsed Backspace/Delete: native selection-delete is ~O(n²) on large
+    // drafts (Ctrl+A → Delete froze ~1.3s). Collapsed carets fall through.
+    if (
+      (event.key === 'Backspace' || event.key === 'Delete') &&
+      deleteSelectionInEditor(event.currentTarget)
+    ) {
+      event.preventDefault()
+      flushEditorToDraft(event.currentTarget)
+
+      return
+    }
+
     // Cmd/Ctrl+Shift+K drains the next queued message. Plain Cmd/Ctrl+K is
     // reserved for the global command palette.
     if ((event.metaKey || event.ctrlKey) && !event.altKey && event.shiftKey && event.key.toLowerCase() === 'k') {
@@ -800,7 +992,15 @@ export function ChatBar({
         return
       }
 
-      if (event.key === 'Enter' || event.key === 'Tab') {
+      // Enter / Tab / Space all accept the highlighted item: a no-arg command
+      // commits its directive chip, an arg-taking command expands to its
+      // options step, and an arg option commits the full `/cmd arg` chip. Space
+      // is slash-only (an `@` mention takes a literal space) and gated to a
+      // non-empty query so a bare `/ ` still types a space.
+      const acceptOnSpace = event.key === ' ' && trigger.kind === '/' && Boolean(trigger.query.trim())
+      const accept = event.key === 'Enter' || event.key === 'Tab' || acceptOnSpace
+
+      if (accept) {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
         const item = triggerItems[triggerActive]
@@ -819,6 +1019,24 @@ export function ChatBar({
 
         return
       }
+    }
+
+    // Arg stage with nothing left to suggest — a fully-typed arg the backend
+    // completer no longer echoes (it drops the exact match), e.g.
+    // `/personality creative`. Space/Tab still commit what's typed as a single
+    // directive chip; Enter falls through to submit (send it as-is).
+    if (
+      trigger?.kind === '/' &&
+      !triggerItems.length &&
+      (event.key === ' ' || event.key === 'Tab') &&
+      slashArgStage(trigger.query) &&
+      trigger.query.trim()
+    ) {
+      event.preventDefault()
+      triggerKeyConsumedRef.current = true
+      commitTypedSlashDirective()
+
+      return
     }
 
     // ArrowUp/ArrowDown navigate, in priority order: the queue (edit entries in
@@ -853,7 +1071,9 @@ export function ChatBar({
       event.preventDefault()
       triggerKeyConsumedRef.current = true
 
-      const history = deriveUserHistory(sessionMessages, chatMessageText)
+      // $messages is read imperatively (not subscribed) so the composer
+      // doesn't re-render on every streaming delta flush.
+      const history = deriveUserHistory($messages.get(), chatMessageText)
       const entry = browseBackward(sessionId, currentDraft, history)
 
       if (entry !== null) {
@@ -878,7 +1098,7 @@ export function ChatBar({
         event.preventDefault()
         triggerKeyConsumedRef.current = true
 
-        const history = deriveUserHistory(sessionMessages, chatMessageText)
+        const history = deriveUserHistory($messages.get(), chatMessageText)
         const result = browseForward(sessionId, history)
 
         if (result !== null) {
@@ -913,6 +1133,10 @@ export function ChatBar({
       // sends the live editor text.
       const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
       const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
+
+      if (disabled) {
+        return
+      }
 
       if (!busy && !hasLivePayload && queuedPrompts.length > 0) {
         void drainNextQueued()
@@ -1113,11 +1337,8 @@ export function ChatBar({
     }
   }
 
-  const stashAt = (
-    scope: string | null,
-    text = draftRef.current,
-    attachments = $composerAttachments.get()
-  ) => stashSessionDraft(scope, text, attachments)
+  const stashAt = (scope: string | null, text = draftRef.current, attachments = $composerAttachments.get()) =>
+    stashSessionDraft(scope, text, attachments)
 
   // Per-thread draft swap — the composer's only session coupling. Lifecycle
   // never clears composer state; this effect alone stashes on leave, restores
@@ -1315,6 +1536,7 @@ export function ChatBar({
           return false
         }
 
+        drainFailuresRef.current.delete(entry.id)
         removeQueuedPrompt(activeQueueSessionKey, entry.id)
         resetBrowseState(sessionId)
 
@@ -1326,15 +1548,16 @@ export function ChatBar({
     [activeQueueSessionKey, onSubmit, queuedPrompts, sessionId]
   )
 
-  const drainNextQueued = useCallback(
-    () =>
-      runDrain(entries => {
-        const skip = queueEdit?.entryId
+  const pickDrainHead = useCallback(
+    (entries: QueuedPromptEntry[]) => {
+      const skip = queueEditRef.current?.entryId
 
-        return skip ? entries.find(e => e.id !== skip) : entries[0]
-      }),
-    [queueEdit, runDrain]
+      return skip ? entries.find(e => e.id !== skip) : entries[0]
+    },
+    [] // reads the edit id off a ref so the lock-holder always sees the latest
   )
+
+  const drainNextQueued = useCallback(() => runDrain(pickDrainHead), [pickDrainHead, runDrain])
 
   const sendQueuedNow = useCallback(
     (id: string) => {
@@ -1353,30 +1576,76 @@ export function ChatBar({
         return true
       }
 
+      // A manual send clears the auto-drain backoff so a stuck entry the user
+      // taps gets a fresh attempt (and re-enables auto-retry on success).
+      drainFailuresRef.current.delete(id)
+
       return runDrain(entries => entries.find(e => e.id === id))
     },
     [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
   )
 
-  // Auto-drain on busy → false (turn settled). Queued turns always flow once
-  // the session is idle again — whether the turn finished naturally or the
-  // user interrupted it. Interrupting to reach a queued message is the whole
-  // point of the queue, so we never suppress the drain. To cancel queued
-  // turns, the user deletes them from the panel.
-  useEffect(() => {
-    const wasBusy = previousBusyRef.current
-    previousBusyRef.current = busy
-
-    if (
-      shouldAutoDrainOnSettle({
-        isBusy: busy,
-        queueLength: queuedPrompts.length,
-        wasBusy
-      })
-    ) {
-      void drainNextQueued()
+  // Edge-independent auto-drain: send the head whenever the session is idle and
+  // the queue is non-empty, bounding retries so a thrown/rejected onSubmit (e.g.
+  // a stale-session 404) can't strand the entry permanently nor spin-loop. The
+  // drain lock serializes sends; a remount/reconnect resets the failure counts.
+  const autoDrainNext = useCallback(() => {
+    if (busy || drainingQueueRef.current || !activeQueueSessionKey) {
+      return
     }
-  }, [busy, drainNextQueued, queuedPrompts.length])
+
+    const entry = pickDrainHead(queuedPrompts)
+
+    if (!entry || (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
+      return
+    }
+
+    const onFail = () => {
+      const fails = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
+      drainFailuresRef.current.set(entry.id, fails)
+
+      if (fails >= MAX_AUTO_DRAIN_ATTEMPTS) {
+        notify({
+          id: 'composer-queue-stuck',
+          kind: 'error',
+          title: t.composer.queueStuckTitle,
+          message: t.composer.queueStuckBody
+        })
+      }
+    }
+
+    void runDrain(() => entry)
+      .then(sent => {
+        if (!sent) {
+          onFail()
+        }
+      })
+      .catch(onFail)
+  }, [activeQueueSessionKey, busy, pickDrainHead, queuedPrompts, runDrain, t])
+
+  // Re-key on a runtime session-id change. A stable stored id (queueSessionKey)
+  // never churns, so a change there is a real session switch and must NOT
+  // migrate; only the runtime-derived key (queueSessionKey falsy → key is
+  // sessionId) churns on a backend bounce/resume of the same conversation.
+  useEffect(() => {
+    const prev = prevQueueKeyRef.current
+    prevQueueKeyRef.current = activeQueueSessionKey
+
+    if (queueSessionKey || !prev || !activeQueueSessionKey || prev === activeQueueSessionKey) {
+      return
+    }
+
+    migrateQueuedPrompts(prev, activeQueueSessionKey)
+  }, [activeQueueSessionKey, queueSessionKey])
+
+  // Queued turns flow whenever the session is idle — on the busy→false settle
+  // edge, on mount/reconnect, and after a re-key — so a swallowed edge can't
+  // strand them. To cancel queued turns, the user deletes them from the panel.
+  useEffect(() => {
+    if (shouldAutoDrain({ isBusy: busy, queueLength: queuedPrompts.length })) {
+      autoDrainNext()
+    }
+  }, [autoDrainNext, busy, queuedPrompts.length])
 
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.
@@ -1411,6 +1680,10 @@ export function ChatBar({
   }
 
   const submitDraft = () => {
+    if (disabled) {
+      return
+    }
+
     // Source the text from the DOM editor, not React state. The AUI composer
     // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
     // render, so on fast typing or IME composition the final keystroke(s) may
@@ -1566,6 +1839,7 @@ export function ChatBar({
       busyAction={busyAction}
       canSteer={canSteer}
       canSubmit={canSubmit}
+      compactModelPill={poppedOut}
       conversation={{
         active: voiceConversationActive,
         level: conversation.level,
@@ -1591,17 +1865,18 @@ export function ChatBar({
   const input = (
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
+        aria-disabled={inputDisabled ? true : undefined}
         aria-label={t.composer.message}
         autoCapitalize="off"
         autoCorrect="off"
         className={cn(
-          'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
+          'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) cursor-text overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
           '**:data-ref-text:cursor-default',
           stacked && 'pl-3',
           stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1'
         )}
-        contentEditable={!disabled}
+        contentEditable={!inputDisabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBlur={() => window.setTimeout(closeTrigger, 80)}
@@ -1664,16 +1939,42 @@ export function ChatBar({
 
   return (
     <>
+      {dragging && poppedOut && (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed inset-x-0 bottom-0 z-20 h-32"
+          style={{
+            // A bottom-centered radial glow — soft on every side by construction,
+            // so it reads as the dock target without any hard band edges. Its
+            // intensity tracks how close the composer is to the dock (1 = peak).
+            background:
+              'radial-gradient(64% 130% at 50% 100%, color-mix(in srgb, var(--color-primary) 26%, transparent) 0%, transparent 70%)',
+            // Scaled by --dock-glow-scale (lower in light mode — see styles.css).
+            opacity: `calc(${0.1 + dockProximity * 0.57} * var(--dock-glow-scale, 1))`
+          }}
+        />
+      )}
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
         <ComposerPrimitive.Root
-          className="group/composer absolute bottom-0 left-1/2 z-30 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 rounded-2xl pt-2 pb-[var(--composer-shell-pad-block-end)]"
+          className={cn(
+            'group/composer z-30 overflow-visible rounded-2xl',
+            poppedOut
+              ? // Floating: the composer (with its own border) floats with an even
+                // 5px transparent grab margin around it — drag that to move it.
+                'fixed w-[var(--composer-popout-width)] max-w-[calc(100vw-1.5rem)] bg-transparent p-[5px]'
+              : 'absolute bottom-0 left-1/2 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 pt-2 pb-[var(--composer-shell-pad-block-end)]',
+            dragging && 'cursor-grabbing select-none touch-none'
+          )}
           data-drag-active={dragActive ? '' : undefined}
+          data-popped-out={poppedOut ? '' : undefined}
           data-slot="composer-root"
+          data-status-stack={statusStackVisible ? '' : undefined}
           data-thread-scrolled-up={scrolledUp ? '' : undefined}
           onDragEnter={handleDragEnter}
           onDragLeave={handleDragLeave}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
+          onPointerDown={popoutAllowed ? onComposerGesturePointerDown : undefined}
           onSubmit={e => {
             e.preventDefault()
 
@@ -1684,9 +1985,19 @@ export function ChatBar({
             submitDraft()
           }}
           ref={composerRef}
+          style={
+            poppedOut
+              ? {
+                  bottom: `${popoutPosition.bottom}px`,
+                  right: `${popoutPosition.right}px`,
+                  // A compact one-sentence width when floating.
+                  ['--composer-popout-width' as string]: `${POPOUT_WIDTH_REM}rem`
+                }
+              : undefined
+          }
         >
           {showHelpHint && <HelpHint />}
-          {trigger && (
+          {trigger && !argStageEmpty && (
             <ComposerTriggerPopover
               activeIndex={triggerActive}
               items={triggerItems}
@@ -1696,37 +2007,55 @@ export function ChatBar({
               onPick={replaceTriggerWithChip}
             />
           )}
-          {activeQueueSessionKey && queuedPrompts.length > 0 && (
-            // Out of flow so the queue never inflates the composer's measured
-            // height (that drives thread bottom padding → chat resizes on
-            // queue). Overlaps -mb-2 onto the surface's top border for a shared
-            // edge; capped + scrollable. Overlays the chat instead of pushing it.
-            <div className="absolute inset-x-0 bottom-full z-6 -mb-2 max-h-[40vh] overflow-y-auto">
-              <QueuePanel
-                busy={busy}
-                editingId={queueEdit?.entryId ?? null}
-                entries={queuedPrompts}
-                onDelete={id => {
-                  if (removeQueuedPrompt(activeQueueSessionKey, id) && queueEdit?.entryId === id) {
-                    exitQueuedEdit('cancel')
-                  }
-                }}
-                onEdit={beginQueuedEdit}
-                onSendNow={id => void sendQueuedNow(id)}
-              />
-            </div>
-          )}
-          <div
-            className="pointer-events-none absolute inset-0 rounded-[inherit]"
-            style={{ background: COMPOSER_FADE_BACKGROUND }}
+          {/* Session-scoped status stack (todos, subagents, background tasks,
+              queue). Out of flow so it never inflates the composer's measured
+              height; it overlays the chat instead of pushing it, and publishes
+              its own --status-stack-measured-height so the thread's clearance
+              accounts for it. Collapses to nothing when every status is empty. */}
+          <ComposerStatusStack
+            queue={
+              activeQueueSessionKey && queuedPrompts.length > 0 ? (
+                <QueuePanel
+                  busy={busy}
+                  editingId={queueEdit?.entryId ?? null}
+                  entries={queuedPrompts}
+                  onDelete={id => {
+                    if (removeQueuedPrompt(activeQueueSessionKey, id) && queueEdit?.entryId === id) {
+                      exitQueuedEdit('cancel')
+                    }
+                  }}
+                  onEdit={beginQueuedEdit}
+                  onSendNow={id => void sendQueuedNow(id)}
+                />
+              ) : null
+            }
+            sessionId={statusSessionId}
           />
+          {!poppedOut && (
+            <div
+              className="pointer-events-none absolute inset-0 rounded-[inherit]"
+              style={{ background: COMPOSER_FADE_BACKGROUND }}
+            />
+          )}
+          {/* Drag region: covers the transparent grab margin around the surface.
+              The surface sits on top (z-4) so only the exposed ring receives this
+              element's hover/cursor — grab cursor + a diagonal hatch (/////)
+              appear when you hover the draggable margin, never over the input.
+              The hatch pattern + opacity ladder live in styles.css. */}
+          {popoutAllowed && (
+            <div
+              aria-hidden
+              className={cn('pointer-events-auto absolute inset-0', dragging ? 'cursor-grabbing' : 'cursor-grab')}
+              data-dragging={dragging ? '' : undefined}
+              data-slot="composer-drag-region"
+              onDoubleClick={handleComposerToggle}
+            />
+          )}
           <div className="relative w-full rounded-[inherit]">
             <div
               className={cn(
-                'relative z-4 isolate rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] transition-[border-color] duration-200 ease-out',
+                'group/composer-surface relative z-4 isolate rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] transition-[border-color] duration-200 ease-out focus-within:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)]',
                 COMPOSER_DROP_FADE_CLASS,
-                'group-focus-within/composer:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)]',
-                'group-has-data-[state=open]/composer:border-t-transparent',
                 dragActive && COMPOSER_DROP_ACTIVE_CLASS
               )}
               data-slot="composer-surface"
@@ -1736,20 +2065,14 @@ export function ChatBar({
                 aria-hidden
                 className={cn(
                   'pointer-events-none absolute inset-0 -z-10 rounded-[inherit]',
-                  'bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)]',
-                  'backdrop-blur-[0.75rem] backdrop-saturate-[1.12]',
-                  '[-webkit-backdrop-filter:blur(0.75rem)_saturate(1.12)]',
-                  'transition-[background-color] duration-150 ease-out',
-                  'group-data-[thread-scrolled-up]/composer:bg-[color-mix(in_srgb,var(--dt-card)_48%,transparent)]',
-                  'group-focus-within/composer:bg-[color-mix(in_srgb,var(--dt-card)_85%,transparent)]'
+                  composerFill,
+                  composerSurfaceGlass
                 )}
               />
               <div
                 className={cn(
                   'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
-                  scrolledUp
-                    ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer:opacity-100'
-                    : 'opacity-100'
+                  scrolledUp ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer-surface:opacity-100' : 'opacity-100'
                 )}
                 data-slot="composer-fade"
               >
@@ -1788,7 +2111,7 @@ export function ChatBar({
                       : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
                   )}
                 >
-                  <div className="flex items-center [grid-area:menu]">{contextMenu}</div>
+                  <div className="flex translate-y-[3px] items-start self-start [grid-area:menu]">{contextMenu}</div>
                   <div className="min-w-0 [grid-area:input]">{input}</div>
                   <div className="flex items-center justify-end [grid-area:controls]">{controls}</div>
                 </div>
@@ -1824,12 +2147,8 @@ export function ChatBarFallback() {
           aria-hidden
           className={cn(
             'pointer-events-none absolute inset-0 -z-10 rounded-[inherit]',
-            'bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)]',
-            'backdrop-blur-[0.75rem] backdrop-saturate-[1.12]',
-            '[-webkit-backdrop-filter:blur(0.75rem)_saturate(1.12)]',
-            'transition-[background-color] duration-150 ease-out',
-            'group-data-[thread-scrolled-up]/composer:bg-[color-mix(in_srgb,var(--dt-card)_48%,transparent)]',
-            'group-focus-within/composer:bg-[color-mix(in_srgb,var(--dt-card)_85%,transparent)]'
+            composerFill,
+            composerSurfaceGlass
           )}
         />
       </div>

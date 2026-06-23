@@ -1,4 +1,4 @@
-import { Box, Text, useInput } from '@hermes/ink'
+import { Box, Text, useInput, wrapAnsi } from '@hermes/ink'
 import { useState } from 'react'
 
 import { isMac } from '../lib/platform.js'
@@ -66,7 +66,7 @@ export function approvalAction(
   return { kind: 'noop' }
 }
 
-export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
+export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptProps) {
   const [sel, setSel] = useState(0)
   const opts = req.allowPermanent === false ? APPROVAL_OPTS_NO_ALWAYS : APPROVAL_OPTS
 
@@ -80,7 +80,11 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
     }
   })
 
-  const rawLines = req.command.split('\n')
+  // Wrap long single-line commands to the panel width instead of clipping the
+  // tail (mirrors the CLI approval panel fix — the full command must be
+  // reviewable before approving). Border + paddingX + inner padding ≈ 8 cols.
+  const innerWidth = Math.max(20, cols - 8)
+  const rawLines = req.command.split('\n').flatMap(line => wrapAnsi(line, innerWidth, { hard: true, trim: false }).split('\n'))
   const shown = rawLines.slice(0, CMD_PREVIEW_LINES)
   const overflow = rawLines.length - shown.length
 
@@ -264,6 +268,7 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
 }
 
 interface ApprovalPromptProps {
+  cols?: number
   onChoice: (s: string) => void
   req: ApprovalReq
   t: Theme

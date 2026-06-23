@@ -2847,6 +2847,72 @@ class TestMessageRouting:
         adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_allow_bots_mentions_ignores_bot_user_without_current_mention(
+        self, adapter
+    ):
+        """Bot users need a fresh @mention even in an already-mentioned thread.
+
+        Slack peer-agent posts can arrive as normal-looking message events with
+        only a bot user id, no bot_id/subtype=bot_message.  Those must still obey
+        allow_bots=mentions; otherwise status/error/ack posts from one agent can
+        retrigger another agent through old thread state.
+        """
+        adapter.config.extra["allow_bots"] = "mentions"
+        adapter._mentioned_threads.add("123.000")
+        adapter._app.client.users_info = AsyncMock(
+            return_value={
+                "user": {
+                    "is_bot": True,
+                    "profile": {"display_name": "AIDx Engineer"},
+                }
+            }
+        )
+        event = {
+            "text": ":warning: Codex response remained incomplete after 3 continuation attempts",
+            "user": "U_PEER_BOT",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allow_bots_mentions_processes_bot_user_with_current_mention(
+        self, adapter
+    ):
+        """Explicit peer-agent @mentions still route when allow_bots=mentions."""
+        adapter.config.extra["allow_bots"] = "mentions"
+        adapter._fetch_thread_context = AsyncMock(return_value="")
+        adapter._fetch_thread_parent_text = AsyncMock(return_value=None)
+        adapter._app.client.users_info = AsyncMock(
+            return_value={
+                "user": {
+                    "is_bot": True,
+                    "profile": {"display_name": "AIDx Engineer"},
+                }
+            }
+        )
+        event = {
+            "text": "<@U_BOT> please answer exactly BOT_OK",
+            "user": "U_PEER_BOT",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "123.789",
+            "thread_ts": "123.000",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_called_once()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "please answer exactly BOT_OK"
+        assert msg_event.source.user_name == "AIDx Engineer"
+
+    @pytest.mark.asyncio
     async def test_message_edits_ignored(self, adapter):
         """Message edits should be ignored."""
         event = {
@@ -3958,6 +4024,8 @@ class TestThreadReplyHandling:
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
+        a._fetch_thread_parent_text = AsyncMock(return_value=None)
+        a._fetch_thread_context = AsyncMock(return_value="")
         a.handle_message = AsyncMock()
         a.set_session_store(mock_session_store)
         return a
@@ -4342,6 +4410,8 @@ class TestAssistantThreadLifecycle:
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
+        a._fetch_thread_parent_text = AsyncMock(return_value=None)
+        a._fetch_thread_context = AsyncMock(return_value="")
         a.handle_message = AsyncMock()
         a.set_session_store(mock_session_store)
         return a

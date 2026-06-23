@@ -191,6 +191,7 @@ _FEISHU_DOC_UPLOAD_TYPES = {
 _MAX_TEXT_INJECT_BYTES = 100 * 1024
 _FEISHU_CONNECT_ATTEMPTS = 3
 _FEISHU_SEND_ATTEMPTS = 3
+_FEISHU_SEND_TIMEOUT_SECONDS = float(os.getenv("FEISHU_SEND_TIMEOUT_SECONDS", "30"))
 _FEISHU_APP_LOCK_SCOPE = "feishu-app-id"
 _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
@@ -4420,7 +4421,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
-            return await asyncio.to_thread(self._client.im.v1.message.reply, request)
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._client.im.v1.message.reply, request),
+                timeout=_FEISHU_SEND_TIMEOUT_SECONDS,
+            )
 
         # For topic/thread messages that fell back from reply→create, use
         # thread_id as receive_id so the message lands in the topic instead of
@@ -4450,7 +4454,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 uuid_value=str(uuid.uuid4()),
             )
             request = self._build_create_message_request(receive_id_type, body)
-        return await asyncio.to_thread(self._client.im.v1.message.create, request)
+        return await asyncio.wait_for(
+            asyncio.to_thread(self._client.im.v1.message.create, request),
+            timeout=_FEISHU_SEND_TIMEOUT_SECONDS,
+        )
 
     @staticmethod
     def _response_succeeded(response: Any) -> bool:

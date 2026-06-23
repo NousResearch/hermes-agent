@@ -148,7 +148,7 @@ _SKILL_REVIEW_PROMPT = (
 )
 
 _COMBINED_REVIEW_PROMPT = (
-    "Review the conversation above and update two things:\n\n"
+    "Review the conversation above and propose two governed updates only:\n\n"
     "**Memory**: who the user is. Did the user reveal persona, "
     "desires, preferences, personal details, or expectations about "
     "how you should behave? Save facts about the user and durable "

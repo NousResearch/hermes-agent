@@ -297,13 +297,14 @@ def run_codex_app_server_turn(
     # Background review fork — same cadence + signature as the default
     # path (line ~15449). Only fires when a trigger actually tripped AND
     # we have a real final response.
+    bg_thread = None
     if (
         turn.final_text
         and not turn.interrupted
         and (should_review_memory or should_review_skills)
     ):
         try:
-            agent._spawn_background_review(
+            bg_thread = agent._spawn_background_review(
                 messages_snapshot=list(messages),
                 review_memory=should_review_memory,
                 review_skills=should_review_skills,
@@ -311,8 +312,22 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    finalization_barrier = None
+    try:
+        if bg_thread is not None:
+            bg_thread.join(30.0)
+        from agent.finalization_barrier import run_finalization_barrier
+        finalization_barrier = run_finalization_barrier(
+            protected_paths=getattr(agent, "_protected_finalization_paths", []),
+            authorized_changed_paths=getattr(agent, "_authorized_finalization_changed_paths", []),
+            before_hashes=getattr(agent, "_protected_finalization_before_hashes", None),
+        )
+    except Exception as exc:
+        finalization_barrier = {"gate": "red", "error": str(exc)}
+
     return {
         "final_response": turn.final_text,
+        "finalization_barrier": finalization_barrier,
         "messages": messages,
         "api_calls": api_calls,
         "completed": not turn.interrupted and turn.error is None,

@@ -691,6 +691,17 @@ def memory_tool(
     if action == "remove" and not old_text:
         return tool_error("old_text is required for 'remove' action.", success=False)
 
+    # Background-review memory writes are governed candidates only. This check
+    # precedes the legacy approval gate so disabling write_approval cannot
+    # restore direct canonical profile/memory mutation from a daemon thread.
+    try:
+        from agent.self_modification_quarantine import quarantine_memory_mutation
+        q = quarantine_memory_mutation(action, target, content, old_text)
+        if not q.allowed:
+            return q.response
+    except Exception as exc:
+        return tool_error(f"Memory governance quarantine failed closed: {exc}", success=False)
+
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
     gate_result = _apply_write_gate(action, target, content, old_text)

@@ -563,8 +563,8 @@ class TestSkillManageDispatcher:
         rec = usage.get("test-skill") or {}
         assert rec.get("created_by") in {None, "", False}
 
-    def test_create_from_background_review_marks_agent_created(self, tmp_path):
-        """Background-review fork creates ARE marked as agent-created."""
+    def test_create_from_background_review_is_quarantined_as_proposal(self, tmp_path):
+        """Background-review fork creates proposals, not direct skills."""
         from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
         token = set_current_write_origin(BACKGROUND_REVIEW)
         try:
@@ -579,7 +579,9 @@ class TestSkillManageDispatcher:
             reset_current_write_origin(token)
         result = json.loads(raw)
         assert result["success"] is True
-        assert usage["review-sediment"]["created_by"] == "agent"
+        assert result["quarantined"] is True
+        assert result["execute_approved"] is False
+        assert "review-sediment" not in usage
 
     def test_delete_via_dispatcher_threads_absorbed_into(self, tmp_path):
         # Dispatcher must plumb absorbed_into through to _delete_skill so the

@@ -939,9 +939,11 @@ _skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
 
 
 def _apply_skill_write_gate(action, name, **payload_kwargs):
-    """Evaluate the skill write gate. Returns a JSON tool-result string when the
-    write should NOT proceed (blocked or staged), or None to perform the real
-    write. Bypassed during approved-pending replay.
+    """Evaluate skill mutation policy.
+
+    Background review is quarantined before the normal write-approval gate so
+    a disabled/stale prompt cannot bypass the boundary by directly calling
+    skill_manage. Approved foreground replay still uses _skill_gate_bypass.
     """
     if action not in {"create", "edit", "patch", "delete", "write_file", "remove_file"}:
         return None
@@ -949,9 +951,17 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         return None
 
     try:
+        from agent.self_modification_quarantine import quarantine_skill_mutation
+        q = quarantine_skill_mutation(action, name, payload_kwargs)
+        if not q.allowed:
+            return q.response
+    except Exception as exc:
+        return tool_error(f"Self-modification quarantine failed closed: {exc}", success=False)
+
+    try:
         from tools import write_approval as wa
     except Exception:
-        return None  # fail open
+        return None  # fail open for legacy foreground gate only
 
     decision = wa.evaluate_gate(wa.SKILLS)
     if decision.allow:

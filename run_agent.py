@@ -1446,6 +1446,7 @@ class AIAgent:
         )
         t = threading.Thread(target=target, daemon=True, name="bg-review")
         t.start()
+        return t
 
     def _build_memory_write_metadata(
         self,

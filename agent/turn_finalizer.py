@@ -388,17 +388,31 @@ def finalize_turn(
         messages=messages,
     )
 
-    # Background memory/skill review — runs AFTER the response is delivered
-    # so it never competes with the user's task for model attention.
+    # Background memory/skill review now runs behind the finalization barrier.
+    # It may propose only, must finish or time out before the user-visible final
+    # response is returned, and any protected-path mutation invalidates the gate.
+    _bg_thread = None
     if final_response and not interrupted and (_should_review_memory or _should_review_skills):
         try:
-            agent._spawn_background_review(
+            _bg_thread = agent._spawn_background_review(
                 messages_snapshot=list(messages),
                 review_memory=_should_review_memory,
                 review_skills=_should_review_skills,
             )
         except Exception:
-            pass  # Background review is best-effort
+            pass  # Barrier still runs below.
+
+    try:
+        if _bg_thread is not None:
+            _bg_thread.join(30.0)
+        from agent.finalization_barrier import run_finalization_barrier
+        result["finalization_barrier"] = run_finalization_barrier(
+            protected_paths=getattr(agent, "_protected_finalization_paths", []),
+            authorized_changed_paths=getattr(agent, "_authorized_finalization_changed_paths", []),
+            before_hashes=getattr(agent, "_protected_finalization_before_hashes", None),
+        )
+    except Exception as exc:
+        result["finalization_barrier"] = {"gate": "red", "error": str(exc)}
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in

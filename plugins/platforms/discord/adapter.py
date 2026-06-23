@@ -788,6 +788,14 @@ class DiscordAdapter(BasePlatformAdapter):
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
+        # Content dedup: catches the same user message delivered in multiple
+        # Discord contexts (channel vs thread) with different snowflake IDs.
+        # Happens when auto-threading routes a message to a thread key while
+        # a second event for the same content arrives on the channel key within
+        # the same ~435 ms window.  5-second TTL is conservative but short
+        # enough that a user intentionally repeating the exact same text right
+        # after is not silently dropped.
+        self._content_dedup = MessageDeduplicator(max_size=500, ttl_seconds=5)
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -1002,6 +1010,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Dedup: Discord RESUME replays events after reconnects (#4777)
                 if adapter_self._dedup.is_duplicate(str(message.id)):
                     return
+
+                # Content dedup: same text from the same user within 5 s on
+                # a different channel/thread context (different snowflake ID)
+                # is treated as a duplicate delivery.  Only applied when there
+                # is actual text content — image-only or attachment-only
+                # messages are never suppressed here.
+                if message.content:
+                    _ck = f"u:{message.author.id}:{message.content[:500]}"
+                    if adapter_self._content_dedup.is_duplicate(_ck):
+                        return
 
                 # Always ignore our own messages
                 if message.author == self._client.user:

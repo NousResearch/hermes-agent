@@ -2517,6 +2517,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # Cross-adapter message dedup keyed by platform.  Outlives individual
+        # adapter instances so a new adapter created during fatal-error reconnect
+        # cannot replay a message that the old adapter already began processing
+        # (the per-adapter _dedup resets on each new adapter instance, opening a
+        # window where Discord RESUME delivers the same message_id a second time).
+        self._platform_dedup: Dict[Any, Any] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -7288,6 +7294,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
+
+        # Cross-adapter dedup: reject messages already seen by a previous
+        # adapter instance for this platform.  Runs before session-key
+        # derivation and authorization so it fails fast.  Internal/synthetic
+        # events have no message_id (None) and are unconditionally passed.
+        _gw_msg_id = getattr(event, "message_id", None)
+        if _gw_msg_id and not is_internal:
+            _gw_platform = getattr(source, "platform", None)
+            if _gw_platform is not None:
+                _gw_dedup = self._platform_dedup.get(_gw_platform)
+                if _gw_dedup is None:
+                    from gateway.platforms.helpers import MessageDeduplicator
+                    _gw_dedup = MessageDeduplicator()
+                    self._platform_dedup[_gw_platform] = _gw_dedup
+                if _gw_dedup.is_duplicate(str(_gw_msg_id)):
+                    logger.debug(
+                        "cross-adapter dedup: dropping already-seen %s message_id=%s",
+                        getattr(_gw_platform, "value", _gw_platform), _gw_msg_id,
+                    )
+                    return None
 
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:

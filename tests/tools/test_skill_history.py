@@ -95,3 +95,27 @@ def test_foreground_patch_does_not_create_autonomous_history(tmp_path, monkeypat
     assert patched["success"] is True
     assert "history_snapshot" not in patched
     assert list_skill_history("my-skill") == []
+
+
+def test_invalid_skill_name_does_not_write_history_outside_root(tmp_path, monkeypatch):
+    from tools.skill_history import snapshot_autonomous_edit
+
+    _configure_skill_dirs(tmp_path, monkeypatch)
+
+    snapshot_id = snapshot_autonomous_edit(
+        name="../../escape",
+        action="patch",
+        skill_dir=None,
+    )
+
+    assert snapshot_id is None
+    assert not (tmp_path / "home" / "escape").exists()
+
+
+def test_known_root_check_normalizes_dotdot_paths(tmp_path, monkeypatch):
+    from tools.skill_history import _is_under_known_skills_root
+
+    skills_dir = _configure_skill_dirs(tmp_path, monkeypatch)
+
+    assert _is_under_known_skills_root(skills_dir / "my-skill")
+    assert not _is_under_known_skills_root(skills_dir / ".." / "outside")

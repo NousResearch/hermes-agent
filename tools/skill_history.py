@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,7 @@ from hermes_constants import get_hermes_home
 
 _HISTORY_DIR = ".skill_history"
 _FILES_DIR = "files"
+_VALID_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
 def snapshot_autonomous_edit(
@@ -251,7 +253,7 @@ def _is_under_known_skills_root(path: Path) -> bool:
     try:
         from agent.skill_utils import get_all_skills_dirs
 
-        resolved = path.resolve() if path.exists() else path.absolute()
+        resolved = path.resolve(strict=False)
         for root in get_all_skills_dirs():
             try:
                 resolved.relative_to(root.resolve())
@@ -285,4 +287,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _normalize_skill_name(name: str) -> str:
-    return str(name or "").strip()
+    skill_name = str(name or "").strip()
+    if not _VALID_SKILL_NAME_RE.match(skill_name):
+        return ""
+    return skill_name

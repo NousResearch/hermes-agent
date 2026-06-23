@@ -214,7 +214,7 @@ def _resolve_mcp_server_config(config: dict) -> dict:
 
 
 def _probe_single_server(
-    name: str, config: dict, connect_timeout: float = 30
+    name: str, config: dict, connect_timeout: Optional[float] = None
 ) -> List[Tuple[str, str]]:
     """Temporarily connect to one MCP server, list its tools, disconnect.
 
@@ -233,6 +233,17 @@ def _probe_single_server(
     )
 
     config = _resolve_mcp_server_config(config)
+
+    # Honor the per-server ``connect_timeout`` config key (documented in the
+    # MCP config reference) when the caller does not override it. Without this,
+    # OAuth ``login`` and discovery probes were pinned to the 30s default
+    # (+10s = 40s wall clock) regardless of config — too short for remote MCP
+    # servers with slow cold-start OAuth (e.g. relay-fronted endpoints).
+    if connect_timeout is None:
+        try:
+            connect_timeout = float(config.get("connect_timeout") or 30)
+        except (TypeError, ValueError):
+            connect_timeout = 30
 
     _ensure_mcp_loop()
 

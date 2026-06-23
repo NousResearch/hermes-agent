@@ -114,6 +114,27 @@ class TestDenylistShellEscapeBypass:
         ('"$(echo rm)" -rf /', "double-quoted command-sub command word"),
         ("sudo \"${VAR:-rm}\" -rf /", "double-quoted indirection after wrapper"),
         ("ls; \"${VAR:-rm}\" -rf /", "double-quoted indirection after separator"),
+        # Round 5: command/builtin wrapper bypass
+        ('command "${VAR:-rm}" -rf /', "command wrapper with param-expansion"),
+        ('builtin "${VAR:-rm}" -rf /', "builtin wrapper with param-expansion"),
+        # Round 5: positional-arg wrappers
+        ('timeout 5 "${VAR:-rm}"', "timeout positional-arg wrapper"),
+        ('flock /lock "${VAR:-rm}"', "flock positional-arg wrapper"),
+        ('nsenter -t 123 -m "${VAR:-rm}"', "nsenter positional-arg wrapper"),
+        # Round 5: glued shell operators (P0)
+        ('echo hi|"${VAR:-rm}" -rf /', "glued pipe operator"),
+        ('echo hi&&"${VAR:-rm}" -rf /', "glued && operator"),
+        # Structural: plain $var indirection (no expansion operator)
+        ('"$rm" -rf /', "plain $var in command position"),
+        ('echo hi|"$rm" -rf /', "plain $var after glued pipe"),
+        # Round 6: sudo/doas flag-value bypass — the value of -u was treated
+        # as the command word, so the real indirection after it was missed.
+        ('sudo -u root "$evil"', "sudo -u root flag-value indirection"),
+        ('sudo -u root "${VAR:-rm}"', "sudo -u root param-expansion"),
+        ('sudo -u root "$rm"', "sudo -u root plain var"),
+        ('sudo -u root $(echo rm)', "sudo -u root command sub"),
+        ('doas -u root "${VAR:-rm}"', "doas -u root flag-value indirection"),
+        ('sudo -g root "${VAR:-rm}"', "sudo -g root flag-value indirection"),
     ]
 
     # Benign commands that must NOT be flagged.
@@ -161,6 +182,21 @@ class TestDenylistShellEscapeBypass:
         "cat <<'EOF'\nshutdown now\nEOF",
         "cat <<'EOF'\nsudo -S\nEOF",
         "cat <<'EOF'\nrm -rf /\nEOF",
+        # Round 5: wrapper + benign arg-position indirection
+        "sudo echo \"${VAR:-default}\"",
+        "command echo \"${VAR:-default}\"",
+        "doas echo \"${VAR:-default}\"",
+        "sudo cat \"${FILE:-/etc/hosts}\"",
+        # Round 5: glued operators with benign content
+        "echo hi|echo hello",
+        "echo hi&&echo hello",
+        # Round 6: sudo -u root with a benign command must not be flagged
+        "sudo -u root cat /etc/hosts",
+        'sudo -u root cat "${FILE:-/etc/hosts}"',
+        "sudo -u root echo hello",
+        'sudo -u root echo "${VAR:-default}"',
+        "sudo --user=root cat /etc/hosts",
+        "doas -u root cat /etc/hosts",
     ]
 
     def test_escaped_rm_is_still_detected(self):

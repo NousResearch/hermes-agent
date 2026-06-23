@@ -85,6 +85,27 @@ _HARDLINE_BLOCK = [
     "exec shutdown",
     "nohup reboot",
     "setsid poweroff",
+    # Round 6: wrapper-prefix hardline bypass — positional wrappers,
+    # simple-wrapper flags, and sudo flag-values evaded _CMDPOS.
+    "timeout 5 shutdown",
+    "nice -n 10 shutdown",
+    "sudo -u root shutdown",
+    "stdbuf -oL shutdown",
+    "strace -f reboot",
+    "chroot /mnt shutdown",
+    "jexec 1 shutdown",
+    "flock /lock shutdown",
+    "nsenter -t 1 -m shutdown",
+    "doas -u root shutdown",
+    "exec sudo -u root shutdown",
+    "nohup sudo shutdown",
+    "env FOO=bar sudo -u root shutdown",
+    # Round 7: newline-separated wrapper-prefix hardline bypass
+    "echo hi\ntimeout 5 shutdown",
+    "echo hi\nnice -n 10 shutdown",
+    "echo hi\nsudo -u root shutdown",
+    "echo hi\nchroot /mnt shutdown",
+    "echo hi\nexec sudo -u root shutdown",
 ]
 
 
@@ -133,6 +154,24 @@ _HARDLINE_ALLOW = [
     "npm run build",
     "sudo apt update",
     "curl https://example.com | head",
+    # Round 6: wrapper + benign command with keyword in arg position
+    "sudo -u root cat /etc/hosts",
+    "sudo cat shutdown.txt",
+    "sudo echo reboot",
+    "sudo -u root echo reboot",
+    "timeout 5 echo hi",
+    "stdbuf -oL echo hi",
+    "strace -f echo hi",
+    "chroot /mnt echo hi",
+    "nice -n 10 echo hi",
+    "exec echo shutdown",
+    "nohup echo reboot",
+    # Round 7: newline-separated benign — heredoc body must NOT be flagged
+    "cat <<'EOF'\nshutdown now\nEOF",
+    "cat <<EOF\nshutdown now\nEOF",
+    # Round 7: newline-separated benign — keyword in arg position
+    "echo hi\necho shutdown",
+    "echo hi\necho reboot",
 ]
 
 

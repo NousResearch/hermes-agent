@@ -59,6 +59,88 @@ _HEREDOC_BODY_RE = re.compile(
     re.DOTALL,
 )
 
+# =========================================================================
+# Shell wrapper taxonomy — single source of truth for all detection paths
+# =========================================================================
+# Every check (hardline, dangerous, suspicious, sudo-stdin) must consume
+# the same wrapper list.  _CMDPOS and _SUDO_STDIN_RE are built from these
+# sets so the regex fallback path never falls behind the shlex primary path.
+
+_SHELL_SEPARATORS = frozenset({";", "&", "&&", "||", "|", "|&"})
+
+# Wrappers where the command word is the first non-flag, non-assignment token.
+# sudo echo hello  →  command word = echo, stop.
+_SIMPLE_WRAPPERS = frozenset({
+    "sudo", "env", "exec", "nohup", "setsid", "time",
+    "command", "builtin",
+    "doas", "pkexec", "run0",
+    "unshare", "capsh", "setpriv",
+    "arch",
+    "stdbuf", "strace", "ltrace", "valgrind", "firejail",
+    "xargs",
+})
+
+# Wrappers that take positional arguments before the command word.
+# timeout 5 CMD, nice -n 10 CMD, flock /lock CMD, nsenter -t PID CMD.
+# We cannot statically know the arity, so we collect *all* non-flag tokens
+# after the wrapper — wrapper positionals AND the command word.  This is
+# conservative (may flag benign arg-position indirection on the real
+# command), but the security benefit of catching ``timeout 5 "${VAR:-rm}"``
+# outweighs the false-positive cost on unusual combinations like
+# ``timeout 5 echo "${VAR:-default}"``.
+_POSITIONAL_WRAPPERS = frozenset({
+    "nice", "ionice", "chrt", "taskset", "numactl",
+    "timeout", "flock",
+    "bwrap", "nsenter",
+    "perf",
+    "chroot", "jexec",
+})
+
+_WRAPPERS = _SIMPLE_WRAPPERS | _POSITIONAL_WRAPPERS
+
+# Flags (sudo family) that consume the following token as a value rather than
+# the command word.  Used by _command_position_words to skip the value of
+# ``sudo -u root`` / ``doas -u root`` so the real command word is extracted.
+# ``--user=root`` (with embedded ``=``) is self-contained and needs no entry.
+_WRAPPER_VALUE_FLAGS = frozenset({
+    "-u", "--user", "-g", "--group", "-C", "--close-from",
+    "-D", "--chdir", "-R", "--chroot", "-P", "--prompt",
+    "-r", "--role", "-t", "--type", "-U", "--other-user",
+})
+
+# Build the _CMDPOS wrapper fragment from _SIMPLE_WRAPPERS and
+# _POSITIONAL_WRAPPERS so the regex fallback path never falls behind
+# the shlex primary path.  sudo and env get special treatment (sudo
+# takes flags, env takes VAR=VAL pairs).  Hardline keywords are
+# embedded in the fragment so a sudo flag-value is never swallowed
+# as a value (negative lookahead).  The outer ``(?:...)*`` makes the
+# fragment repeatable — wrapper chaining (``exec sudo -u root shutdown``)
+# is handled by the same alternation as single wrappers.
+#
+# ReDoS-safe by construction: every alternation branch begins with a
+# literal wrapper keyword before any ``\s+`` quantifier, so branches
+# share no common prefix and the engine cannot try the same input span
+# against multiple branches.
+_HARDLINE_KW = r'shutdown|reboot|halt|poweroff|init|systemctl|telinit'
+_CMDPOS_WRAPPER_FRAGMENT = (
+    r'(?:'
+        # sudo: flags, optionally flag+non-keyword-value
+        r'sudo\s+(?:'
+            r'-[^\s]+\s+(?!(?:' + _HARDLINE_KW + r')\b)\S+\s+'
+            r'|-[^\s]+\s+'
+        r')*'
+        # env VAR=VAL pairs
+        r'|env\s+(?:\w+=\S*\s+)*'
+        # simple wrappers + their flags
+        r'|(?:' + '|'.join(
+            w for w in sorted(_SIMPLE_WRAPPERS)
+            if w not in ("sudo", "env")
+        ) + r')\s+(?:-[^\s]+\s+)*'
+        # positional wrappers + bounded positional run
+        r'|(?:' + '|'.join(sorted(_POSITIONAL_WRAPPERS)) + r')\s+(?:\S+\s+){0,8}'
+    r')*'
+)
+
 # Per-thread/per-task gateway session identity.
 # Gateway runs agent turns concurrently in executor threads, so reading a
 # process-global env var for session identity is racy. Keep env fallback for
@@ -282,9 +364,7 @@ _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 _CMDPOS = (
     r'(?:^|[;&|\n`]|\$\()'         # start position
     r'\s*'                          # optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
-    r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
+    + _CMDPOS_WRAPPER_FRAGMENT +
     r'\s*'
 )
 
@@ -336,7 +416,7 @@ HARDLINE_PATTERNS_COMPILED = [
 # reason for the agent to pipe passwords to sudo -S when no password
 # has been configured.
 _SUDO_STDIN_RE = re.compile(
-    r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b',
+    _CMDPOS + r'sudo\s+-S\b',
     re.IGNORECASE)
 
 
@@ -360,12 +440,94 @@ def _check_sudo_stdin_guard(command: str) -> tuple[bool, str | None]:
     return (False, None)
 
 
+# Hardline keywords that are single command-position words.
+_HARDEX_KW_SINGLE = frozenset({"shutdown", "reboot", "halt", "poweroff"})
+
+
+def _shlex_hardline_match(command: str) -> str | None:
+    """Wrapper-aware hardline keyword check via shlex command-position extraction.
+
+    Catches wrapper-prefix forms the _CMDPOS regex fragment cannot model
+    uniformly: positional wrappers (``timeout 5 shutdown``, ``chroot /mnt
+    shutdown``), simple-wrapper flags (``stdbuf -oL shutdown``, ``strace -f
+    reboot``), sudo flag-values (``sudo -u root shutdown``), and arbitrary
+    wrapper chaining (``exec sudo -u root shutdown``).  Returns a hardline
+    description when a command-position word is a hardline keyword, else None.
+    Returns None (no match) on unbalanced quotes — the caller falls back to
+    the _CMDPOS regex path.  Over-matches positional-wrapper arguments the
+    same way _command_position_words already does (see the comment on
+    _POSITIONAL_WRAPPERS); this is the accepted cost of catching
+    ``timeout 5 shutdown``.
+    """
+    try:
+        tokens = shlex.split(_space_shell_operators(_normalize_command_boundaries(command)))
+    except ValueError:
+        return None
+    expect_cmd = True
+    after_simple = False
+    after_positional = False
+    skip_value = False
+    for idx, tok in enumerate(tokens):
+        if tok in _SHELL_SEPARATORS:
+            expect_cmd = True
+            after_simple = False
+            after_positional = False
+            skip_value = False
+            continue
+        if tok.endswith(";") and tok[:-1] not in _SHELL_SEPARATORS:
+            expect_cmd = True
+            after_simple = False
+            after_positional = False
+            skip_value = False
+            continue
+        if expect_cmd:
+            if skip_value:
+                skip_value = False
+                continue
+            if tok in _SIMPLE_WRAPPERS:
+                after_simple = True
+                continue
+            if tok in _POSITIONAL_WRAPPERS:
+                after_positional = True
+                continue
+            if tok.startswith("-"):
+                if tok in _WRAPPER_VALUE_FLAGS:
+                    skip_value = True
+                continue
+            if re.match(r"^\w+=", tok):
+                continue
+            wl = tok.lower()
+            nxt = tokens[idx + 1].lower() if idx + 1 < len(tokens) else None
+            if wl in _HARDEX_KW_SINGLE:
+                return "system shutdown/reboot"
+            if wl == "init" and nxt in ("0", "6"):
+                return "init 0/6 (shutdown/reboot)"
+            if wl == "telinit" and nxt in ("0", "6"):
+                return "telinit 0/6 (shutdown/reboot)"
+            if wl == "systemctl" and nxt in ("poweroff", "reboot", "halt", "kexec"):
+                return "systemctl poweroff/reboot"
+            if after_positional:
+                continue
+            if after_simple:
+                expect_cmd = False
+                continue
+            expect_cmd = False
+    return None
+
+
 def detect_hardline_command(command: str) -> tuple[bool, str | None]:
     """Check if a command matches the unconditional hardline blocklist.
 
     Returns:
         (is_hardline, description) or (False, None)
     """
+    # Shlex command-position path: catches wrapper-prefix keywords
+    # (timeout/nice/sudo -u/stdbuf/chroot/...) that the _CMDPOS regex
+    # fragment cannot model uniformly.  Runs before the regex so wrapper
+    # chaining and positional wrappers are handled by one consistent path.
+    desc = _shlex_hardline_match(command)
+    if desc is not None:
+        return (True, desc)
     candidates, _ = _detection_candidates(command)
     for candidate in candidates:
         for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
@@ -833,6 +995,87 @@ def _resolve_inline_vars(command: str) -> str:
     return '; '.join(resolved_parts) if resolved_parts else command
 
 
+def _space_shell_operators(command: str) -> str:
+    """Insert spaces around shell control operators outside quotes.
+
+    shlex.split() only splits on whitespace, so ``echo hi|rm`` becomes
+    ``['echo', 'hi|rm']`` — the ``|`` is glued to ``hi`` and the real
+    command word ``rm`` is never extracted.  This function inserts spaces
+    around ``|``, ``&&``, ``||``, ``>``, ``<``, ``;&`` outside quotes so
+    shlex can split them correctly.  Operators inside quotes are left
+    alone — ``echo '; $(pwd)'`` must not split on the quoted ``;``.
+    """
+    result: list[str] = []
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(command):
+        c = command[i]
+        if c == "'" and not in_double:
+            in_single = not in_single
+            result.append(c)
+            i += 1
+            continue
+        if c == '"' and not in_single:
+            in_double = not in_double
+            result.append(c)
+            i += 1
+            continue
+        if not in_single and not in_double:
+            if command[i:i+2] in ("&&", "||", "|&", ";&"):
+                result.append(f" {command[i:i+2]} ")
+                i += 2
+                continue
+            # << and >> are redirection, not separators — leave intact
+            if command[i:i+2] in ("<<", ">>"):
+                result.append(command[i:i+2])
+                i += 2
+                continue
+            if c in ("|", ";", "&", ">", "<"):
+                result.append(f" {c} ")
+                i += 1
+                continue
+        result.append(c)
+        i += 1
+    return "".join(result)
+
+
+def _normalize_command_boundaries(command: str) -> str:
+    """Strip heredoc bodies, then convert unquoted newlines to ``;``.
+
+    Heredoc stripping must happen FIRST so body content (stdin data) is
+    removed before newline-to-separator conversion.  Applied to all three
+    shlex consumers so they share identical boundary normalization —
+    the asymmetry between ``_shlex_hardline_match`` (no heredoc strip)
+    and ``_detection_candidates`` (heredoc strip) was the Round 7 root
+    cause.
+    """
+    base = _HEREDOC_BODY_RE.sub(r"\1", command)
+    result: list[str] = []
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(base):
+        c = base[i]
+        if c == "'" and not in_double:
+            in_single = not in_single
+            result.append(c)
+            i += 1
+            continue
+        if c == '"' and not in_single:
+            in_double = not in_double
+            result.append(c)
+            i += 1
+            continue
+        if not in_single and not in_double and c == "\n":
+            result.append(" ; ")
+            i += 1
+            continue
+        result.append(c)
+        i += 1
+    return "".join(result)
+
+
 def _detection_candidates(command: str) -> tuple[list[str], bool]:
     """Return normalised forms of a command to match the denylist against.
 
@@ -851,10 +1094,14 @@ def _detection_candidates(command: str) -> tuple[list[str], bool]:
     resolved (deeply nested substitutions, parameter expansion operators).
     """
     base = _normalize_command_for_detection(command).lower()
-    # Strip heredoc bodies from the raw base — heredoc content is stdin
-    # data, not commands. Without this, cat <<'EOF'\nshutdown now\nEOF
-    # would be hardline-blocked because \nshutdown matches _CMDPOS.
-    base = _HEREDOC_BODY_RE.sub(r'\1', base)
+    # Strip heredoc bodies and convert unquoted newlines to ``;`` so
+    # the regex path and shlex path share identical boundary normalization.
+    base = _normalize_command_boundaries(base)
+    # Pre-space shell operators so shlex.split() can separate glued
+    # operators (echo hi|rm → echo hi | rm).  Applied here so the
+    # hardline/dangerous regex paths and the shlex dequote steps all
+    # use the same operator splitting as the suspicious-indirection path.
+    base = _space_shell_operators(base)
     candidates: list[str] = [base]
     has_unresolvable = False
 
@@ -928,23 +1175,21 @@ def _detection_candidates(command: str) -> tuple[list[str], bool]:
     return candidates, has_unresolvable
 
 
-_SHELL_SEPARATORS = frozenset({";", "&", "&&", "||", "|", "|&"})
-_WRAPPERS = frozenset({
-    "sudo", "env", "exec", "nohup", "setsid", "time",
-    "nice", "ionice", "chroot", "unshare",
-})
+
 
 
 
 def _has_homoglyph(word: str) -> bool:
-    """Return True if the word contains non-Latin homoglyph characters.
+    """Return True if the word contains characters outside the safe ASCII set.
 
-    Cyrillic г (U+0433) looks like Latin r, Greek ο (U+03BF) looks like o.
+    Command-position words have no legitimate reason to contain non-ASCII
+    characters.  An allow-list of [A-Za-z0-9._/+-] stops the homoglyph
+    sub-game permanently — no need to enumerate every confusable Unicode
+    block (Cyrillic, Greek, fullwidth Latin, Cherokee, Coptic, Math
+    Alphanumerics, Armenian, ...).
     """
     for c in word:
-        cp = ord(c)
-        if (0x0400 <= cp <= 0x04FF or 0x0500 <= cp <= 0x052F or
-                0x0370 <= cp <= 0x03FF or 0x1F00 <= cp <= 0x1FFF):
+        if not (c.isascii() and (c.isalnum() or c in "._/+-")):
             return True
     return False
 
@@ -954,33 +1199,72 @@ def _command_position_words(command: str) -> list[str] | None:
 
     Uses shlex to tokenise with quote-context awareness — separators and
     expansions inside double quotes stay inert, which a regex cannot
-    distinguish.  Leading wrapper commands (sudo, env, exec, ...) and
-    their flags / VAR=VAL prefixes are skipped.
+    distinguish.  Shell operators (``|``, ``&&``, ``||``, ``>``, ``<``)
+    are pre-spaced outside quotes so shlex splits them correctly.
+
+    Leading wrapper commands (sudo, env, exec, ...) and their flags /
+    VAR=VAL prefixes are skipped.  After a recognised wrapper, *every*
+    subsequent non-flag non-assignment token is collected — wrapper
+    positional arguments (``timeout 5``, ``flock /lock``, ``nice -n 10``)
+    are checked alongside the real command word so indirection in any of
+    them is caught.
 
     Returns None if the command cannot be tokenised (unbalanced quotes);
     the caller then falls back to the regex path.
     """
     try:
-        tokens = shlex.split(command)
+        tokens = shlex.split(_space_shell_operators(_normalize_command_boundaries(command)))
     except ValueError:
         return None
 
     words: list[str] = []
     expect_cmd = True
+    after_simple = False
+    after_positional = False
+    skip_value = False  # set after a _WRAPPER_VALUE_FLAGS flag; next tok is its value
     for tok in tokens:
         if tok in _SHELL_SEPARATORS:
             expect_cmd = True
+            after_simple = False
+            after_positional = False
+            skip_value = False
             continue
-        # Handle 'cmd1;' — semicolon glued to end of a word
         if tok.endswith(";") and tok[:-1] not in _SHELL_SEPARATORS:
             expect_cmd = True
+            after_simple = False
+            after_positional = False
+            skip_value = False
             continue
         if expect_cmd:
-            if (tok in _WRAPPERS
-                    or tok.startswith("-")
-                    or re.match(r"^\w+=", tok)):
+            if skip_value:
+                # This token is the value of the preceding flag (e.g. ``root``
+                # in ``sudo -u root``), not the command word — discard it.
+                skip_value = False
+                continue
+            if tok in _SIMPLE_WRAPPERS:
+                after_simple = True
+                continue
+            if tok in _POSITIONAL_WRAPPERS:
+                after_positional = True
+                continue
+            if tok.startswith("-"):
+                # A value-bearing flag consumes its next token as a value.
+                if tok in _WRAPPER_VALUE_FLAGS:
+                    skip_value = True
+                continue
+            if re.match(r"^\w+=", tok):
                 continue
             words.append(tok)
+            if after_positional:
+                # Keep collecting — we don't know how many positionals
+                # this wrapper takes.  The real command word is somewhere
+                # in the collected set.
+                continue
+            if after_simple:
+                # This is the command word after a simple wrapper — stop.
+                expect_cmd = False
+                continue
+            # No wrapper — this is the command word, stop.
             expect_cmd = False
     return words
 
@@ -1022,6 +1306,12 @@ def _has_suspicious_indirection(command: str) -> bool:
             # Check 4: Non-Latin homoglyph in the command word.
             if _has_homoglyph(w):
                 return True
+            # Check 5: Any $ in a command-position word is unresolvable
+            # indirection — plain $VAR, ${VAR}, $0, $? — even without
+            # an expansion operator.  ``echo hi|"$rm" -rf /`` with
+            # rm=rm at runtime hides the command name from the denylist.
+            if "$" in w:
+                return True
         return False
 
     # Fallback: unbalanced quotes — shlex can't parse.  Strip only single
@@ -1034,6 +1324,8 @@ def _has_suspicious_indirection(command: str) -> bool:
     if re.search(_CMDPOS + r'"?(\$\(|`)', stripped):
         return True
     if re.search(_CMDPOS + r'"?!(?:\w|!)', stripped):
+        return True
+    if re.search(_CMDPOS + r'"?\$', stripped):
         return True
     for m in re.finditer(_CMDPOS + r'"?(\w+)', stripped):
         if _has_homoglyph(m.group(1)):

@@ -28,12 +28,13 @@ def jittered_backoff(
     Args:
         attempt: 1-based retry attempt number.
         base_delay: Base delay in seconds for attempt 1.
-        max_delay: Maximum delay cap in seconds.
+        max_delay: Maximum delay cap in seconds.  The returned value is
+            guaranteed not to exceed this.
         jitter_ratio: Fraction of computed delay to use as random jitter
             range.  0.5 means jitter is uniform in [0, 0.5 * delay].
 
     Returns:
-        Delay in seconds: min(base * 2^(attempt-1), max_delay) + jitter.
+        Delay in seconds, capped at ``max_delay``.
 
     The jitter decorrelates concurrent retries so multiple sessions
     hitting the same provider don't all retry at the same instant.
@@ -54,4 +55,7 @@ def jittered_backoff(
     rng = random.Random(seed)
     jitter = rng.uniform(0, jitter_ratio * delay)
 
-    return delay + jitter
+    # Cap the total so max_delay is a hard upper bound, not just a
+    # pre-jitter cap.  Without this, a jitter_ratio of 0.5 on a
+    # max_delay-capped base can return up to 1.5 * max_delay.
+    return min(delay + jitter, max_delay)

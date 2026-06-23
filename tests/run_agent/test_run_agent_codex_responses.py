@@ -2392,6 +2392,80 @@ def test_run_conversation_codex_disables_reasoning_replay_after_invalid_encrypte
     assert agent._codex_reasoning_replay_enabled is False
 
 
+def test_run_conversation_codex_disables_reasoning_replay_after_unsupported_content_type(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    request_payloads = []
+
+    class _UnsupportedContentTypeError(Exception):
+        def __init__(self):
+            super().__init__("HTTP 400: Error code: 400 - {'detail': 'Unsupported content type'}")
+            self.status_code = 400
+            self.body = {"detail": "Unsupported content type"}
+
+    responses = [_UnsupportedContentTypeError(), _codex_message_response("Recovered without replay.")]
+
+    def _fake_api_call(api_kwargs):
+        request_payloads.append(api_kwargs)
+        current = responses.pop(0)
+        if isinstance(current, Exception):
+            raise current
+        return current
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "finish_reason": "incomplete",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_001", "encrypted_content": "enc_bad", "summary": []},
+            ],
+        }
+    ]
+
+    result = agent.run_conversation("continue", conversation_history=history)
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered without replay."
+    assert len(request_payloads) == 2
+    assert any(item.get("type") == "reasoning" for item in request_payloads[0]["input"])
+    assert not any(item.get("type") == "reasoning" for item in request_payloads[1]["input"])
+    assert request_payloads[0].get("include") == ["reasoning.encrypted_content"]
+    assert request_payloads[1].get("include") == []
+    assert result["messages"][0].get("codex_reasoning_items") is None
+    assert agent._codex_reasoning_replay_enabled is False
+
+
+def test_run_conversation_codex_unsupported_content_type_without_replay_state_is_not_reclassified(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    request_payloads = []
+
+    class _UnsupportedContentTypeError(Exception):
+        def __init__(self):
+            super().__init__("HTTP 400: Error code: 400 - {'detail': 'Unsupported content type'}")
+            self.status_code = 400
+            self.body = {"detail": "Unsupported content type"}
+
+    def _fake_api_call(api_kwargs):
+        request_payloads.append(api_kwargs)
+        raise _UnsupportedContentTypeError()
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation(
+        "continue",
+        conversation_history=[{"role": "assistant", "content": "No replay state here."}],
+    )
+
+    assert result["completed"] is False
+    assert len(request_payloads) == 1
+    assert agent._codex_reasoning_replay_enabled is True
+    assert result["messages"][0].get("codex_reasoning_items") is None
+
+
 def test_run_conversation_codex_invalid_encrypted_content_without_replay_state_does_not_disable_replay(monkeypatch):
     agent = _build_agent(monkeypatch)
     agent.provider = "custom"

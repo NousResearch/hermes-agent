@@ -27,6 +27,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from agent.chat_completion_helpers import _is_openai_codex_backend
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -2533,18 +2534,37 @@ def run_conversation(
                 # ``codex_reasoning_items``; without replay state, the
                 # error is unrelated to our cache so the normal retry path
                 # handles it (the provider is rejecting something else).
+                # OpenAI's ChatGPT Codex backend can also surface stale
+                # encrypted reasoning replay as a generic HTTP 400
+                # ``Unsupported content type`` detail instead of the
+                # structured ``invalid_encrypted_content`` code.  Treat that
+                # wording as replay recovery only when we are on the Codex
+                # Responses backend and there is actual cached reasoning replay
+                # state to strip; otherwise leave generic content-shape bugs as
+                # normal non-retryable format errors.
+                _has_codex_reasoning_replay_state = any(
+                    isinstance(_m, dict)
+                    and _m.get("role") == "assistant"
+                    and isinstance(_m.get("codex_reasoning_items"), list)
+                    and _m.get("codex_reasoning_items")
+                    for _m in messages
+                )
+                _codex_unsupported_content_type_replay_error = (
+                    status_code == 400
+                    and classified.reason == FailoverReason.format_error
+                    and agent.api_mode == "codex_responses"
+                    and _is_openai_codex_backend(agent)
+                    and "unsupported content type" in f"{api_error} {_err_body}".lower()
+                )
                 if (
-                    classified.reason == FailoverReason.invalid_encrypted_content
+                    (
+                        classified.reason == FailoverReason.invalid_encrypted_content
+                        or _codex_unsupported_content_type_replay_error
+                    )
                     and not _retry.invalid_encrypted_content_retry_attempted
                     and agent.api_mode == "codex_responses"
                     and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
-                    and any(
-                        isinstance(_m, dict)
-                        and _m.get("role") == "assistant"
-                        and isinstance(_m.get("codex_reasoning_items"), list)
-                        and _m.get("codex_reasoning_items")
-                        for _m in messages
-                    )
+                    and _has_codex_reasoning_replay_state
                 ):
                     _retry.invalid_encrypted_content_retry_attempted = True
                     replay_stats = agent._disable_codex_reasoning_replay(messages)
@@ -2555,10 +2575,11 @@ def run_conversation(
                         force=True,
                     )
                     logger.warning(
-                        "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
+                        "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages (reason=%s)",
                         agent.log_prefix,
                         replay_stats["items"],
                         replay_stats["messages"],
+                        classified.reason.value,
                     )
                     continue
 

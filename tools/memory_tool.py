@@ -121,6 +121,11 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
+    # Supported memory targets. Unknown targets are rejected at every public
+    # mutation boundary so an LLM/tool cannot accidentally route a user entry
+    # into MEMORY.md or invent a new target that silently aliases to it.
+    VALID_TARGETS = {"memory", "user"}
+
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
@@ -243,10 +248,26 @@ class MemoryStore:
 
     @staticmethod
     def _path_for(target: str) -> Path:
+        """Return the on-disk path for a supported memory target."""
+        if target not in MemoryStore.VALID_TARGETS:
+            raise ValueError(f"Unsupported memory target {target!r}. Valid targets: {sorted(MemoryStore.VALID_TARGETS)}")
         mem_dir = get_memory_dir()
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
+
+    def _validate_target(self, target: str) -> Optional[Dict[str, Any]]:
+        """Return a structured error dict if target is not supported, else None."""
+        if target not in self.VALID_TARGETS:
+            return {
+                "success": False,
+                "error": (
+                    f"Unsupported memory target {target!r}. "
+                    f"Valid targets are: {', '.join(sorted(self.VALID_TARGETS))}."
+                ),
+                "target": target,
+            }
+        return None
 
     def _reload_target(self, target: str) -> Optional[str]:
         """Re-read entries from disk into in-memory state.
@@ -295,6 +316,10 @@ class MemoryStore:
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
+        target_error = self._validate_target(target)
+        if target_error:
+            return target_error
+
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -347,6 +372,10 @@ class MemoryStore:
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
+        target_error = self._validate_target(target)
+        if target_error:
+            return target_error
+
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -412,6 +441,10 @@ class MemoryStore:
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
+        target_error = self._validate_target(target)
+        if target_error:
+            return target_error
+
         old_text = old_text.strip()
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}

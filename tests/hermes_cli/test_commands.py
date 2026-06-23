@@ -1154,6 +1154,61 @@ class TestTelegramMenuCommands:
         ):
             assert name in names
 
+    def test_profile_config_pins_skill_commands_into_capped_menu(self, tmp_path, monkeypatch):
+        """Profile-local pins promote skill slash commands before Telegram's cap."""
+        from unittest.mock import patch
+
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n"
+            "  telegram_pinned_commands:\n"
+            "    '0': daily-briefing\n"
+            "    '1': preflight-check\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        fake_skills_dir = tmp_path / "skills"
+        fake_skills_dir.mkdir()
+        fake_cmds = {
+            "/daily-briefing": {
+                "name": "daily-briefing",
+                "description": "Daily briefing",
+                "skill_md_path": f"{fake_skills_dir}/daily-briefing/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/daily-briefing",
+            },
+            "/preflight-check": {
+                "name": "preflight-check",
+                "description": "Preflight check",
+                "skill_md_path": f"{fake_skills_dir}/preflight-check/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/preflight-check",
+            },
+        }
+
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", fake_skills_dir),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            menu, _hidden = telegram_menu_commands(max_commands=30)
+
+        names = [name for name, _desc in menu]
+        assert names[:2] == ["daily_briefing", "preflight_check"]
+        assert len(names) == 30
+
+    def test_profile_config_hides_commands_from_telegram_menu(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n"
+            "  telegram_hidden_commands:\n"
+            "    - restart\n"
+            "    - /status\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        menu, _hidden = telegram_menu_commands(max_commands=30)
+        names = [name for name, _desc in menu]
+
+        assert "restart" not in names
+        assert "status" not in names
+        assert "help" in names
+
     def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
         """Telegram menu generation should discover plugin slash commands on first access."""
         from unittest.mock import patch

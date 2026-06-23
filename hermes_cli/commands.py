@@ -426,6 +426,66 @@ def _resolve_config_gates() -> set[str]:
     return result
 
 
+def _normalize_command_config_list(raw: Any) -> list[str]:
+    """Normalize command-name lists from config.
+
+    ``hermes config set gateway.telegram_pinned_commands.0 foo`` can produce
+    a numeric-string-keyed mapping instead of a YAML list. Accept both shapes
+    so profile-local menu pinning works regardless of which config path wrote
+    the value.
+    """
+    values: list[Any]
+    if raw is None:
+        values = []
+    elif isinstance(raw, (list, tuple, set)):
+        values = list(raw)
+    elif isinstance(raw, Mapping):
+        def _sort_key(item: tuple[Any, Any]) -> tuple[int, Any]:
+            key, _value = item
+            try:
+                return (0, int(str(key)))
+            except Exception:
+                return (1, str(key))
+
+        values = [value for _key, value in sorted(raw.items(), key=_sort_key)]
+    elif isinstance(raw, str):
+        values = [raw]
+    else:
+        values = []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        name = value.strip().lower().lstrip("/")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        normalized.append(name)
+    return normalized
+
+
+def _resolve_telegram_menu_config() -> tuple[list[str], set[str]]:
+    """Return profile-local Telegram menu pins and hidden command names.
+
+    The registry remains framework-global. Profiles can promote or hide visible
+    Telegram BotCommand menu entries using ``gateway`` config keys, without
+    leaking one profile's preferred slash commands into another.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+    except Exception:
+        cfg = {}
+    gateway = cfg.get("gateway") if isinstance(cfg, dict) else None
+    if not isinstance(gateway, dict):
+        gateway = {}
+    pinned = _normalize_command_config_list(gateway.get("telegram_pinned_commands"))
+    hidden = set(_normalize_command_config_list(gateway.get("telegram_hidden_commands")))
+    return pinned, hidden
+
+
 def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = None) -> bool:
     """Check if *cmd* should appear in gateway surfaces (help, menus, mappings).
 
@@ -809,22 +869,58 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
         (menu_commands, hidden_count) where hidden_count is the number of
         commands omitted due to the cap.
     """
-    core_commands = _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
+    pinned_raw, hidden_raw = _resolve_telegram_menu_config()
+    pinned_names = [_sanitize_telegram_name(name) for name in pinned_raw]
+    pinned_names = [name for name in pinned_names if name]
+    hidden_names = {_sanitize_telegram_name(name) for name in hidden_raw}
+    hidden_names.discard("")
+
+    core_commands = [
+        command for command in _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
+        if command[0] not in hidden_names
+    ]
     reserved_names = {n for n, _ in core_commands}
     all_commands = list(core_commands)
-    hidden_core_count = max(0, len(all_commands) - max_commands)
 
-    remaining_slots = max(0, max_commands - len(all_commands))
     entries, hidden_count = _collect_gateway_skill_entries(
         platform="telegram",
-        max_slots=remaining_slots,
+        # Collect all candidates first, then apply profile-local pinning and
+        # the platform cap. Otherwise a pinned skill can be trimmed before it
+        # gets a chance to move into Telegram's visible menu.
+        max_slots=10_000,
         reserved_names=reserved_names,
         desc_limit=40,
         sanitize_name=_sanitize_telegram_name,
     )
     # Drop the cmd_key — Telegram only needs (name, desc) pairs.
     all_commands.extend((n, d) for n, d, _k in entries)
-    return all_commands[:max_commands], hidden_count + hidden_core_count
+    all_commands = [command for command in all_commands if command[0] not in hidden_names]
+
+    # De-duplicate while preserving order, then promote profile-local pins.
+    deduped: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for command in all_commands:
+        if command[0] in seen:
+            continue
+        seen.add(command[0])
+        deduped.append(command)
+
+    by_name = {name: (name, desc) for name, desc in deduped}
+    ordered: list[tuple[str, str]] = []
+    ordered_names: set[str] = set()
+    for name in pinned_names:
+        if name in hidden_names or name not in by_name or name in ordered_names:
+            continue
+        ordered.append(by_name[name])
+        ordered_names.add(name)
+    for command in deduped:
+        if command[0] in ordered_names:
+            continue
+        ordered.append(command)
+        ordered_names.add(command[0])
+
+    cap_hidden_count = max(0, len(ordered) - max_commands)
+    return ordered[:max_commands], hidden_count + cap_hidden_count
 
 
 def discord_skill_commands(

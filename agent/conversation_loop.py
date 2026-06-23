@@ -769,6 +769,54 @@ def _apply_context_engine_selection(
     return api_messages
 
 
+def _notify_context_engine_turn_complete(
+    agent: Any,
+    messages: List[Dict[str, Any]],
+    *,
+    usage: Optional[Dict[str, Any]] = None,
+    logger: Any,
+    **meta: Any,
+) -> None:
+    """Notify the active context engine that a user turn has finished.
+
+    Calls the optional ``ContextEngine.on_turn_complete()`` observation hook
+    once per turn, after the assistant/tool loop has produced the finalized
+    transcript. The complement to ``select_context()`` (pre-request selection):
+    this lets an engine ingest / index / summarize the completed turn.
+
+    Fail-open: a missing or no-op hook, or any exception, is swallowed.
+    ``messages`` is passed as a shallow copy so the engine cannot mutate the
+    persisted transcript.
+    """
+    engine = getattr(agent, "context_compressor", None)
+    hook = getattr(engine, "on_turn_complete", None)
+    if engine is None or not callable(hook):
+        return
+
+    # Skip the no-op base implementation so non-implementing engines (incl.
+    # the built-in compressor) pay nothing per turn. Lazy import avoids any
+    # import cycle with agent.context_engine.
+    try:
+        from agent.context_engine import ContextEngine as _CE
+        if getattr(hook, "__func__", None) is _CE.on_turn_complete:
+            return
+    except Exception:
+        pass
+
+    try:
+        hook(
+            [dict(m) if isinstance(m, dict) else m for m in messages],
+            usage=usage,
+            **meta,
+        )
+    except Exception:
+        logger.warning(
+            "Context engine on_turn_complete hook failed (session=%s)",
+            getattr(agent, "session_id", None) or "-",
+            exc_info=True,
+        )
+
+
 def run_conversation(
     agent,
     user_message: Any,

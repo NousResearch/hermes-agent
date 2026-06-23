@@ -19,7 +19,10 @@ from typing import Any, Dict, List
 from unittest.mock import MagicMock
 
 from agent.context_engine import ContextEngine
-from agent.conversation_loop import _apply_context_engine_selection
+from agent.conversation_loop import (
+    _apply_context_engine_selection,
+    _notify_context_engine_turn_complete,
+)
 
 
 class _MinimalEngine(ContextEngine):
@@ -187,3 +190,63 @@ def test_persisted_history_not_mutated():
         agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
     )
     assert HISTORY == history_snapshot
+
+
+# -- on_turn_complete (post-turn observation) ------------------------------
+
+def test_default_on_turn_complete_is_noop():
+    """The base on_turn_complete returns None and does nothing."""
+    assert _MinimalEngine().on_turn_complete(HISTORY, usage=None) is None
+
+
+def test_on_turn_complete_called_with_snapshot_and_meta():
+    """Host forwards a transcript copy + metadata; base no-op is skipped."""
+    captured = {}
+
+    class _Engine(_MinimalEngine):
+        def on_turn_complete(self, messages, usage=None, **kwargs):
+            captured["messages"] = messages
+            captured["usage"] = usage
+            captured["kwargs"] = kwargs
+
+    agent = _agent_with(_Engine())
+    _notify_context_engine_turn_complete(
+        agent, HISTORY, usage={"total_tokens": 12}, logger=MagicMock(),
+        turn_id="t1", api_call_count=1,
+    )
+    assert captured["messages"] == HISTORY
+    assert captured["messages"] is not HISTORY  # shallow copy
+    assert captured["usage"] == {"total_tokens": 12}
+    assert captured["kwargs"]["turn_id"] == "t1"
+    assert captured["kwargs"]["api_call_count"] == 1
+
+
+def test_on_turn_complete_base_noop_is_skipped():
+    """An engine that only inherits the base no-op is handled safely.
+
+    The helper short-circuits the base implementation (so non-implementing
+    engines pay nothing), and in any case must not raise.
+    """
+    agent = _agent_with(_MinimalEngine())  # inherits base on_turn_complete
+    _notify_context_engine_turn_complete(agent, HISTORY, logger=MagicMock())
+
+
+def test_on_turn_complete_fails_open():
+    """A raising observation hook is swallowed and logged."""
+
+    class _Engine(_MinimalEngine):
+        def on_turn_complete(self, messages, usage=None, **kwargs):
+            raise RuntimeError("indexing backend down")
+
+    logger = MagicMock()
+    agent = _agent_with(_Engine())
+    _notify_context_engine_turn_complete(agent, HISTORY, logger=logger)
+    assert logger.warning.called
+
+
+def test_on_turn_complete_missing_engine_is_safe():
+    agent = MagicMock()
+    agent.session_id = "s"
+    agent.context_compressor = None
+    # No engine -> silent return, no raise.
+    _notify_context_engine_turn_complete(agent, HISTORY, logger=MagicMock())

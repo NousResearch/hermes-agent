@@ -525,6 +525,27 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
 
+    # Context engine observation hook: notify the active engine that this
+    # turn has finished, with the finalized transcript. Complements the
+    # per-request select_context() hook (selection before the request;
+    # observation after the turn). No-op default, fail-open.
+    try:
+        from agent.conversation_loop import _notify_context_engine_turn_complete
+        _notify_context_engine_turn_complete(
+            agent,
+            messages,
+            usage=None,
+            logger=logger,
+            turn_id=turn_id,
+            task_id=effective_task_id,
+            api_call_count=api_call_count,
+            interrupted=interrupted,
+            failed=failed,
+            turn_exit_reason=_turn_exit_reason,
+        )
+    except Exception as exc:
+        logger.warning("on_turn_complete notification failed: %s", exc)
+
     # Extract reasoning from the CURRENT turn only.  Walk backwards
     # but stop at the user message that started this turn — anything
     # earlier is from a prior turn and must not leak into the reasoning

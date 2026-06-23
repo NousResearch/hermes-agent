@@ -79,6 +79,28 @@ describe('virtual height estimates', () => {
     ).toBe(estimatedMsgHeight(toolsOnly, 80, { compact: false, details: false }))
   })
 
+  it('treats historical thinking blocks as collapsed unless explicitly expanded', () => {
+    const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'line 1\nline 2\nline 3' }
+
+    expect(
+      estimatedMsgHeight(msg, 80, {
+        compact: false,
+        details: true,
+        thinkingExpanded: false,
+        thinkingVisible: true,
+        toolsVisible: false
+      })
+    ).toBeLessThan(
+      estimatedMsgHeight(msg, 80, {
+        compact: false,
+        details: true,
+        thinkingExpanded: true,
+        thinkingVisible: true,
+        toolsVisible: false
+      })
+    )
+  })
+
   it('reserves two extra rows for the inter-turn separator on non-first user messages', () => {
     const msg: Msg = { role: 'user', text: 'follow-up question' }
     const base = estimatedMsgHeight(msg, 80, { compact: false, details: false })

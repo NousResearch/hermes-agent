@@ -691,6 +691,7 @@ export const ToolTrail = memo(function ToolTrail({
   commandOverride = false,
   detailsMode = 'collapsed',
   outcome = '',
+  preferExpandedThinking = false,
   reasoningActive = false,
   reasoning = '',
   reasoningTokens,
@@ -707,6 +708,7 @@ export const ToolTrail = memo(function ToolTrail({
   commandOverride?: boolean
   detailsMode?: DetailsMode
   outcome?: string
+  preferExpandedThinking?: boolean
   reasoningActive?: boolean
   reasoning?: string
   reasoningTokens?: number
@@ -729,6 +731,9 @@ export const ToolTrail = memo(function ToolTrail({
     [commandOverride, detailsMode, sections]
   )
 
+  const thinkingDefaultExpanded =
+    visible.thinking === 'expanded' && (preferExpandedThinking || commandOverride || sections?.thinking === 'expanded')
+
   const [now, setNow] = useState(() => Date.now())
   // Local toggles own the open state once mounted.  Init from the resolved
   // section visibility so default-expanded sections (thinking/tools) render
@@ -737,7 +742,7 @@ export const ToolTrail = memo(function ToolTrail({
   // `visible.X === 'expanded'` at render time — that locks the panel open
   // and silently breaks manual chevron clicks for default-expanded
   // sections (regression caught after #14968).
-  const [openThinking, setOpenThinking] = useState(visible.thinking === 'expanded')
+  const [openThinking, setOpenThinking] = useState(thinkingDefaultExpanded)
   const [openTools, setOpenTools] = useState(visible.tools === 'expanded')
   const [openSubagents, setOpenSubagents] = useState(visible.subagents === 'expanded')
   const [deepSubagents, setDeepSubagents] = useState(visible.subagents === 'expanded')
@@ -754,11 +759,11 @@ export const ToolTrail = memo(function ToolTrail({
   }, [openTools, tools.length, visible.tools])
 
   useEffect(() => {
-    setOpenThinking(visible.thinking === 'expanded')
+    setOpenThinking(thinkingDefaultExpanded)
     setOpenTools(visible.tools === 'expanded')
     setOpenSubagents(visible.subagents === 'expanded')
     setOpenMeta(visible.activity === 'expanded')
-  }, [visible])
+  }, [thinkingDefaultExpanded, visible])
 
   const cot = useMemo(() => thinkingPreview(reasoning, 'full', THINKING_COT_MAX), [reasoning])
 

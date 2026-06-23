@@ -1,6 +1,7 @@
+import { PassThrough } from 'stream'
+
 import { renderSync } from '@hermes/ink'
 import React from 'react'
-import { PassThrough } from 'stream'
 import { describe, expect, it } from 'vitest'
 
 import { MessageLine } from '../components/messageLine.js'
@@ -68,6 +69,81 @@ describe('MessageLine', () => {
       .find(line => line.includes('Okay'))
 
     expect(renderedLine).toContain('Ψ > Okay')
+  })
+
+  it('keeps historical thinking blocks collapsed by default', () => {
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+    let output = ''
+
+    Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const instance = renderSync(
+      React.createElement(MessageLine, {
+        cols: 80,
+        msg: { kind: 'trail', role: 'system', text: '', thinking: 'step one\nstep two' },
+        t: DEFAULT_THEME
+      }),
+      {
+        patchConsole: false,
+        stderr: stderr as NodeJS.WriteStream,
+        stdin: stdin as NodeJS.ReadStream,
+        stdout: stdout as NodeJS.WriteStream
+      }
+    )
+
+    instance.unmount()
+    instance.cleanup()
+
+    const rendered = stripAnsi(output)
+
+    expect(rendered).toContain('Thinking')
+    expect(rendered).not.toContain('step one')
+    expect(rendered).not.toContain('step two')
+  })
+
+  it('keeps live thinking blocks expanded while streaming', () => {
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const stderr = new PassThrough()
+    let output = ''
+
+    Object.assign(stdout, { columns: 80, isTTY: false, rows: 24 })
+    Object.assign(stdin, { isTTY: false })
+    Object.assign(stderr, { isTTY: false })
+    stdout.on('data', chunk => {
+      output += chunk.toString()
+    })
+
+    const instance = renderSync(
+      React.createElement(MessageLine, {
+        cols: 80,
+        liveDetails: true,
+        msg: { kind: 'trail', role: 'system', text: '', thinking: 'step one\nstep two' },
+        t: DEFAULT_THEME
+      }),
+      {
+        patchConsole: false,
+        stderr: stderr as NodeJS.WriteStream,
+        stdin: stdin as NodeJS.ReadStream,
+        stdout: stdout as NodeJS.WriteStream
+      }
+    )
+
+    instance.unmount()
+    instance.cleanup()
+
+    const rendered = stripAnsi(output)
+
+    expect(rendered).toContain('Thinking')
+    expect(rendered).toContain('step one')
+    expect(rendered).toContain('step two')
   })
 })
 

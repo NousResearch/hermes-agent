@@ -7,6 +7,7 @@ path (including the ``run_agent`` prologue that used to crash on list content)
 executes against a real aiohttp app.
 """
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -133,6 +134,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     return app
 
 
@@ -306,3 +309,94 @@ class TestResponsesMultimodalHTTP:
             assert resp.status == 400
             body = await resp.json()
         assert body["error"]["code"] == "unsupported_content_type"
+
+
+class _CapturingAgent:
+    session_prompt_tokens = 0
+    session_completion_tokens = 0
+    session_total_tokens = 0
+
+    def __init__(self):
+        self.captured = None
+
+    def run_conversation(self, **kwargs):
+        self.captured = kwargs
+        return {"final_response": "ok", "messages": [], "api_calls": 1}
+
+
+async def _wait_for_capture(agent: _CapturingAgent):
+    for _ in range(50):
+        if agent.captured is not None:
+            return agent.captured
+        await asyncio.sleep(0.01)
+    raise AssertionError("API run did not reach fake agent")
+
+
+class TestRunsSessionHistoryHTTP:
+    @pytest.mark.asyncio
+    async def test_runs_load_server_session_history_for_stable_session_id(self, adapter):
+        app = _create_app(adapter)
+        agent = _CapturingAgent()
+        stored_history = [
+            {"role": "user", "content": "load the skill"},
+            {"role": "assistant", "content": "skill loaded"},
+        ]
+
+        with (
+            patch.object(adapter, "_create_agent", return_value=agent),
+            patch.object(adapter, "_conversation_history_for_session", return_value=stored_history) as load_history,
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "model": "hermes-agent",
+                        "session_id": "workspace-session-1",
+                        "input": "continue from there",
+                    },
+                )
+                assert resp.status == 202, await resp.text()
+                captured = await _wait_for_capture(agent)
+
+        load_history.assert_called_once_with("workspace-session-1")
+        assert captured["user_message"] == "continue from there"
+        assert captured["conversation_history"] == stored_history
+        assert captured["task_id"] == "workspace-session-1"
+
+    @pytest.mark.asyncio
+    async def test_runs_keep_legacy_message_array_history(self, adapter):
+        app = _create_app(adapter)
+        agent = _CapturingAgent()
+
+        with (
+            patch.object(adapter, "_create_agent", return_value=agent),
+            patch.object(adapter, "_conversation_history_for_session", return_value=[{"role": "user", "content": "server"}]) as load_history,
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "model": "hermes-agent",
+                        "session_id": "workspace-session-2",
+                        "input": [
+                            {"role": "user", "content": "client history"},
+                            {"role": "user", "content": "current turn"},
+                        ],
+                    },
+                )
+                assert resp.status == 202, await resp.text()
+                captured = await _wait_for_capture(agent)
+
+        load_history.assert_not_called()
+        assert captured["user_message"] == "current turn"
+        assert captured["conversation_history"] == [{"role": "user", "content": "client history"}]
+
+    @pytest.mark.asyncio
+    async def test_capabilities_advertise_runs_session_history(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200, await resp.text()
+            body = await resp.json()
+
+        assert body["features"]["runs_session_history"] is True

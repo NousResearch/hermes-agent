@@ -1489,6 +1489,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "responses_api": True,
                 "responses_streaming": True,
                 "run_submission": True,
+                "runs_session_history": True,
                 "run_status": True,
                 "run_events_sse": True,
                 "run_stop": True,
@@ -4191,7 +4192,26 @@ class APIServerAdapter(BasePlatformAdapter):
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
-        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
+        def _is_message_array(value: Any) -> bool:
+            return (
+                isinstance(value, list)
+                and len(value) > 0
+                and all(isinstance(item, dict) and "role" in item for item in value)
+            )
+
+        input_is_message_array = _is_message_array(raw_input)
+        if isinstance(raw_input, str):
+            user_message = raw_input
+        elif input_is_message_array:
+            current = next(
+                (msg for msg in reversed(raw_input) if isinstance(msg, dict) and msg.get("role") == "user"),
+                raw_input[-1],
+            )
+            user_message = current.get("content", "") if isinstance(current, dict) else ""
+        else:
+            # Multimodal content parts (e.g. [{type: 'text'}, {type: 'image_url'}])
+            # are the current user message, not a chat-history array.
+            user_message = raw_input
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
@@ -4199,7 +4219,8 @@ class APIServerAdapter(BasePlatformAdapter):
         previous_response_id = body.get("previous_response_id")
 
         # Accept explicit conversation_history from the request body.
-        # Precedence: explicit conversation_history > previous_response_id.
+        # Precedence: explicit conversation_history > previous_response_id >
+        # server-owned session history > legacy multi-message input arrays.
         conversation_history: List[Dict[str, str]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
@@ -4227,10 +4248,23 @@ class APIServerAdapter(BasePlatformAdapter):
                 if instructions is None:
                     instructions = stored.get("instructions")
 
-        # When input is a multi-message array, extract all but the last
-        # message as conversation history (the last becomes user_message).
-        # Only fires when no explicit history was provided.
-        if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
+        run_id = f"run_{uuid.uuid4().hex}"
+        session_id = body.get("session_id") or stored_session_id or run_id
+
+        # Native session continuity for external API clients: if the caller
+        # provides a stable session_id and only the current user input, let the
+        # API server load the canonical Hermes transcript. This
+        # matches Telegram/native gateway semantics and avoids client-side
+        # flattening that loses tool_calls/tool result context (notably
+        # skill_view and helper-script usage).
+        if not conversation_history and session_id and not (input_is_message_array and len(raw_input) > 1):
+            conversation_history = self._conversation_history_for_session(str(session_id))
+
+        # Legacy compatibility: when input is a multi-message array, extract all
+        # but the last message as conversation history (the last becomes the
+        # current user message). Only fires when no explicit/server history was
+        # found.
+        if not conversation_history and input_is_message_array and len(raw_input) > 1:
             for msg in raw_input[:-1]:
                 if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
                     content = msg["content"]
@@ -4242,10 +4276,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
-        run_id = f"run_{uuid.uuid4().hex}"
-        session_id = body.get("session_id") or stored_session_id or run_id
         # Approval queues gate host-side tool execution and must be isolated
-        # per API run.  Client-provided session IDs and memory session keys are
+        # per API run. Client-provided session IDs and memory session keys are
         # conversation/memory scopes, not authorization namespaces: multiple
         # concurrent runs can intentionally share them, and resolving an
         # approval for one run must not unblock another run's dangerous command.

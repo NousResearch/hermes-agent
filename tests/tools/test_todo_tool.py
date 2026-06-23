@@ -175,3 +175,96 @@ class TestTodoStoreBounds:
         items = store.read()
         assert [i["content"] for i in items] == ["write the report", "review PR"]
         assert "[truncated]" not in items[0]["content"]
+
+
+class TestRejectEmptyContent:
+    """Empty or missing content must fail the call instead of substituting
+    '(no description)'. See #44496."""
+
+    def test_write_rejects_empty_content(self):
+        store = TodoStore()
+        try:
+            store.write([{"id": "1", "content": "", "status": "pending"}])
+            assert False, "should have raised ValueError"
+        except ValueError as e:
+            assert "empty or missing content" in str(e)
+
+    def test_write_rejects_missing_content_key(self):
+        store = TodoStore()
+        try:
+            store.write([{"id": "2", "status": "pending"}])
+            assert False, "should have raised ValueError"
+        except ValueError as e:
+            assert "empty or missing content" in str(e)
+
+    def test_write_rejects_whitespace_content(self):
+        store = TodoStore()
+        try:
+            store.write([{"id": "3", "content": "   ", "status": "pending"}])
+            assert False, "should have raised ValueError"
+        except ValueError as e:
+            assert "empty or missing content" in str(e)
+
+    def test_partial_write_does_not_mutate_existing_list(self):
+        """A failed write with mixed valid/invalid items leaves the prior list
+        untouched (acceptance criterion #3 from #44496)."""
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Keep me", "status": "pending"},
+            {"id": "2", "content": "Also keep me", "status": "completed"},
+        ])
+        try:
+            store.write([
+                {"id": "1", "content": "Updated", "status": "pending"},  # valid
+                {"id": "2", "content": "",        "status": "pending"},  # invalid
+            ])
+        except ValueError:
+            pass
+        items = store.read()
+        assert [i["content"] for i in items] == ["Keep me", "Also keep me"]
+        assert [i["status"]  for i in items] == ["pending", "completed"]
+
+    def test_todo_tool_returns_error_on_empty_content(self):
+        result = json.loads(todo_tool(
+            todos=[{"id": "1", "content": "", "status": "pending"}],
+            store=TodoStore(),
+        ))
+        assert "error" in result
+        assert "empty or missing content" in result["error"]
+
+    def test_merge_new_item_rejects_empty_content(self):
+        """Merge mode: new items with empty content are rejected."""
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Existing", "status": "pending"}])
+        try:
+            store.write([{"id": "2", "content": "", "status": "pending"}], merge=True)
+            assert False, "should have raised ValueError"
+        except ValueError as e:
+            assert "empty or missing content" in str(e)
+
+    def test_merge_new_item_rejects_whitespace_content(self):
+        """Merge mode: new items with whitespace-only content are rejected."""
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Existing", "status": "pending"}])
+        try:
+            store.write([{"id": "2", "content": "   ", "status": "pending"}], merge=True)
+            assert False, "should have raised ValueError"
+        except ValueError as e:
+            assert "empty or missing content" in str(e)
+
+    def test_merge_existing_item_keeps_content_on_status_only_update(self):
+        """Merge mode: updating only status (no content key) preserves existing content."""
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Keep this", "status": "pending"}])
+        store.write([{"id": "1", "status": "completed"}], merge=True)
+        items = store.read()
+        assert items[0]["content"] == "Keep this"
+        assert items[0]["status"] == "completed"
+
+    def test_valid_content_still_works(self):
+        """Regression: valid items still pass through normally."""
+        store = TodoStore()
+        items = store.write([
+            {"id": "1", "content": "A real task", "status": "pending"},
+        ])
+        assert items[0]["content"] == "A real task"

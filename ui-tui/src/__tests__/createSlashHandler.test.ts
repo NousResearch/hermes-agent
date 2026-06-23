@@ -421,6 +421,23 @@ describe('createSlashHandler', () => {
     expect(ctx.voice.setVoiceRecordKey).not.toHaveBeenCalled()
   })
 
+  it('/voice wake delegates to the shared slash worker instead of voice.toggle', async () => {
+    const gw = { ...buildGateway().gw, request: vi.fn(() => Promise.resolve({ output: 'Wake-Word Status' })) }
+    const rpc = vi.fn(() => Promise.resolve({ enabled: false, tts: false }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), gw, rpc } })
+
+    expect(createSlashHandler(ctx)('/voice wake status')).toBe(true)
+
+    expect(rpc).not.toHaveBeenCalled()
+    expect(gw.request).toHaveBeenCalledWith('slash.exec', {
+      command: 'voice wake status',
+      session_id: null
+    })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('Wake-Word Status')
+    })
+  })
+
   it('cycles details mode and persists it', async () => {
     const ctx = buildCtx()
 

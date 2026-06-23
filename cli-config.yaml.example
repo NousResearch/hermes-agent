@@ -902,6 +902,42 @@ stt:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
 
 # =============================================================================
+# Voice Mode
+# =============================================================================
+# Local CLI voice controls. Secrets still belong in .env; non-secret tuning
+# belongs here.
+voice:
+  record_key: "ctrl+b"
+  max_recording_seconds: 120
+  auto_tts: false
+  beep_enabled: true
+  silence_threshold: 200
+  silence_duration: 3.0
+  # 0 = derive the "still waiting for model" notice from model/API timeouts.
+  model_wait_notice_seconds: 0
+  wake:
+    provider: "openwakeword"
+    phrase: "Hermes"
+    # Leave empty to resolve/download a known openWakeWord model for the phrase.
+    model_path: ""
+    threshold: 0.5
+    patience_frames: 2
+    vad_threshold: 0.25
+    pre_roll_ms: 1200
+    dialog_timeout_seconds: 45.0
+    max_utterance_seconds: 30.0
+    silence_threshold: 200
+    silence_duration: 3.0
+    frame_samples: 1280
+    training:
+      positive_samples: 50
+      negative_samples: 30
+      ambient_seconds: 60
+      # Optional shell command for custom wake-word training. Hermes provides:
+      # HERMES_WAKE_PHRASE, HERMES_WAKE_DATASET_DIR, HERMES_WAKE_OUTPUT_PATH.
+      command: ""
+
+# =============================================================================
 # Response Pacing (Messaging Platforms)
 # =============================================================================
 # Add human-like delays between message chunks.

@@ -171,6 +171,12 @@ voice:
   beep_enabled: true
   silence_threshold: 200
   silence_duration: 3.0
+  model_wait_notice_seconds: 0
+  wake:
+    provider: "openwakeword"
+    phrase: "Hermes"
+    model_path: ""
+    threshold: 0.5
 
 stt:
   provider: "local"
@@ -233,6 +239,9 @@ Workflow:
 /voice on
 /voice off
 /voice tts
+/voice wake status
+/voice wake on
+/voice wake off
 /voice status
 ```
 
@@ -292,6 +301,34 @@ If `Ctrl+B` conflicts with your terminal or tmux habits:
 voice:
   record_key: "ctrl+space"
 ```
+
+### Wake phrase
+
+Wake-word mode listens locally until your configured phrase is detected, then
+submits the next utterance through the normal voice pipeline. The command is
+available in both the classic CLI and the TUI:
+
+```text
+/voice wake on
+/voice wake off
+/voice wake train --phrase "Hermes"
+```
+
+Tune it in `~/.hermes/config.yaml`:
+
+```yaml
+voice:
+  wake:
+    phrase: "Hermes"
+    threshold: 0.5
+    model_path: ""
+    training:
+      command: ""
+```
+
+Use `voice.wake.model_path` for an existing ONNX model. Use
+`voice.wake.training.command` only when you have a local training command that
+can write `HERMES_WAKE_OUTPUT_PATH`.
 
 ## Use case 2: voice replies in Telegram or Discord
 

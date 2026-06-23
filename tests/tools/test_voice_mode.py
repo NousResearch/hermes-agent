@@ -894,6 +894,7 @@ class TestPlayAudioFile:
             return mock_sd_obj, np
 
         monkeypatch.setattr("tools.voice_mode._import_audio", _fake_import)
+        monkeypatch.setattr("platform.system", lambda: "Linux")
 
         from tools.voice_mode import play_audio_file
 
@@ -902,6 +903,27 @@ class TestPlayAudioFile:
         assert result is True
         mock_sd_obj.play.assert_called_once()
         mock_sd_obj.stop.assert_called_once()
+
+    def test_play_wav_prefers_afplay_on_macos(self, monkeypatch, sample_wav):
+        def _fail_if_called():
+            raise AssertionError("macOS WAV playback should prefer afplay")
+
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = 0
+        mock_proc.returncode = 0
+        mock_popen = MagicMock(return_value=mock_proc)
+
+        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_if_called)
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/afplay" if cmd == "afplay" else None)
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        from tools.voice_mode import play_audio_file
+
+        result = play_audio_file(sample_wav)
+
+        assert result is True
+        mock_popen.assert_called_once_with(["afplay", sample_wav])
 
     def test_returns_false_when_no_player(self, monkeypatch, sample_wav):
         def _fail_import():
@@ -1416,6 +1438,7 @@ class TestConfigurableSilenceParams:
 class TestSubprocessTimeoutKill:
     """Bug: proc.wait(timeout) raised TimeoutExpired but process was not killed."""
 
+    @pytest.mark.live_system_guard_bypass
     def test_timeout_kills_process(self):
         import subprocess
         proc = subprocess.Popen(["sleep", "600"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

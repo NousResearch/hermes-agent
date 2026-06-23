@@ -8,6 +8,7 @@ import type {
   SessionBranchResponse,
   SessionCompressResponse,
   SessionUsageResponse,
+  SlashExecResponse,
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
@@ -254,8 +255,25 @@ export const sessionCommands: SlashCommand[] = [
   {
     help: 'voice mode: [on|off|tts|status]',
     name: 'voice',
-    run: (arg, ctx) => {
+    run: (arg, ctx, cmd) => {
       const normalized = (arg ?? '').trim().toLowerCase()
+
+      if (normalized === 'wake' || normalized.startsWith('wake ')) {
+        ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+          .then(
+            ctx.guarded<SlashExecResponse>(r => {
+              const body = r?.output || '/voice wake: no output'
+              const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+              const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
+
+              long ? ctx.transcript.page(text, 'Voice') : ctx.transcript.sys(text)
+            })
+          )
+          .catch(ctx.guardedErr)
+
+        return
+      }
 
       const action =
         normalized === 'on' || normalized === 'off' || normalized === 'tts' || normalized === 'status'

@@ -1059,6 +1059,28 @@ def play_audio_file(file_path: str) -> bool:
         logger.warning("Audio file not found: %s", file_path)
         return False
 
+    # On macOS, CoreAudio's afplay is more reliable for generated WAV files
+    # than PortAudio/sounddevice on some default output devices.
+    if file_path.endswith(".wav") and platform.system() == "Darwin" and shutil.which("afplay"):
+        try:
+            proc = subprocess.Popen(["afplay", file_path])
+            with _playback_lock:
+                _active_playback = proc
+            proc.wait(timeout=300)
+            with _playback_lock:
+                _active_playback = None
+            return proc.returncode == 0
+        except subprocess.TimeoutExpired:
+            logger.warning("System player afplay timed out, killing process")
+            proc.kill()
+            proc.wait()
+            with _playback_lock:
+                _active_playback = None
+        except Exception as e:
+            logger.debug("System player afplay failed: %s", e)
+            with _playback_lock:
+                _active_playback = None
+
     # Try sounddevice for WAV files
     if file_path.endswith(".wav"):
         try:
@@ -1163,10 +1185,19 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append("STT provider: OK (Groq)")
     elif stt_provider == "openai":
         details_parts.append("STT provider: OK (OpenAI)")
+    elif stt_provider == "whisper_http":
+        details_parts.append("STT provider: OK (Whisper HTTP)")
+    elif stt_provider == "local_command":
+        details_parts.append("STT provider: OK (local command)")
+    elif stt_provider == "mistral":
+        details_parts.append("STT provider: OK (Mistral)")
+    elif stt_provider == "xai":
+        details_parts.append("STT provider: OK (xAI)")
     else:
         details_parts.append(
             "STT provider: MISSING (uv pip install faster-whisper — "
             "`pip install faster-whisper` also works if pip is on PATH, "
+            "set HERMES_LOCAL_STT_COMMAND, configure whisper_http, "
             "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"
         )
 

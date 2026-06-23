@@ -126,6 +126,7 @@ Then use these commands inside the CLI:
 /voice on       Enable voice mode
 /voice off      Disable voice mode
 /voice tts      Toggle TTS output
+/voice wake     Manage wake-word listening
 /voice status   Show current state
 ```
 
@@ -145,6 +146,48 @@ This loop continues until you press **Ctrl+B** during recording (exits continuou
 :::tip
 The record key is configurable via `voice.record_key` in `~/.hermes/config.yaml` (default: `ctrl+b`).
 :::
+
+### Wake-Word Mode
+
+Wake-word mode keeps the local microphone listener passive until it hears your
+configured phrase, then records the next utterance and submits it through the
+same CLI voice pipeline. It is available from the shared `/voice` slash command
+surface in both the classic CLI and the TUI.
+
+```text
+/voice wake on
+/voice wake off
+/voice wake status
+/voice wake train --phrase "Hermes"
+/voice wake train --phrase "Hermes" --model /path/to/model.onnx
+```
+
+If the wake-word runtime is missing, install:
+
+```bash
+python -m pip install openwakeword onnxruntime
+```
+
+Wake-word settings live in `~/.hermes/config.yaml`:
+
+```yaml
+voice:
+  wake:
+    provider: "openwakeword"
+    phrase: "Hermes"
+    model_path: ""
+    threshold: 0.5
+    training:
+      positive_samples: 50
+      negative_samples: 30
+      ambient_seconds: 60
+      command: ""
+```
+
+Set `voice.wake.model_path` if you already have an ONNX model. For custom
+training, set `voice.wake.training.command` to a local command that writes the
+path from `HERMES_WAKE_OUTPUT_PATH`; Hermes also passes `HERMES_WAKE_PHRASE`
+and `HERMES_WAKE_DATASET_DIR` to that subprocess.
 
 ### Silence Detection
 

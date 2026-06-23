@@ -158,7 +158,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[kaomoji|emoji|unicode|ascii]",
                subcommands=("kaomoji", "emoji", "unicode", "ascii")),
     CommandDef("voice", "Toggle voice mode", "Configuration",
-               args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
+               args_hint="[on|off|tts|wake|status]", subcommands=("on", "off", "tts", "wake", "status")),
     CommandDef("busy", "Control what Enter does while Hermes is working", "Configuration",
                cli_only=True, args_hint="[queue|steer|interrupt|status]",
                subcommands=("queue", "steer", "interrupt", "status")),

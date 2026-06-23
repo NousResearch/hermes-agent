@@ -2502,6 +2502,47 @@ def _prepend_note_to_message(message, note: str):
     return message
 
 
+def _resolve_cli_model_wait_notice_seconds(agent: Any) -> float:
+    """Return when the CLI should tell the user a model call is still pending."""
+    config_value = None
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        voice_config = config.get("voice", {}) if isinstance(config, dict) else {}
+        if isinstance(voice_config, dict):
+            config_value = voice_config.get("model_wait_notice_seconds")
+    except Exception:
+        config_value = None
+
+    if config_value is not None:
+        try:
+            parsed = float(config_value)
+            if parsed > 0:
+                return parsed
+        except (TypeError, ValueError):
+            logger.debug(
+                "Invalid voice.model_wait_notice_seconds=%r",
+                config_value,
+            )
+
+    timeout = 45.0
+    try:
+        compute_stream_timeout = getattr(agent, "_compute_stream_stale_timeout", None)
+        if callable(compute_stream_timeout):
+            resolved = float(compute_stream_timeout([]))
+        else:
+            resolve_stale_timeout = getattr(agent, "_resolved_api_call_stale_timeout_base", None)
+            if not callable(resolve_stale_timeout):
+                return timeout
+            resolved, _uses_default = resolve_stale_timeout()
+            resolved = float(resolved)
+        if resolved > 0 and resolved != float("inf"):
+            timeout = min(timeout, resolved)
+    except Exception:
+        pass
+    return max(5.0, timeout)
+
+
 # ---------------------------------------------------------------------------
 # File-drop / local attachment detection — extracted as pure helpers for tests.
 # ---------------------------------------------------------------------------
@@ -3782,6 +3823,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._voice_continuous = False
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
+        self._voice_wake_listener = None
+        self._voice_wake_enabled = False
+        self._voice_wake_state = "stopped"
+        self._voice_wake_last_score = 0.0
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
@@ -4475,6 +4520,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return [("class:voice-status", f" 🎤 {label} ")]
         tts = " | TTS on" if self._voice_tts else ""
         cont = " | Continuous" if self._voice_continuous else ""
+        if getattr(self, "_voice_wake_enabled", False):
+            wake_state = getattr(self, "_voice_wake_state", "wake")
+            return [("class:voice-status", f" 🎤 Wake {wake_state}{tts}  —  {label} override ")]
         return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  {label} to record ")]
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
@@ -10226,6 +10274,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             )
             self._invalidate()
 
+        if not self._voice_mode:
+            return
+        if not function_name or function_name.startswith("_"):
+            return
+        if not self._voice_tool_beeps_enabled():
+            return
+        try:
+            from tools.voice_mode import play_beep
+            threading.Thread(
+                target=play_beep,
+                kwargs={"frequency": 1200, "duration": 0.06, "count": 1},
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
     def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict):
         """Capture local before-state for write-capable tools."""
         try:
@@ -10291,6 +10355,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 "Option 3: Set VOICE_TOOLS_OPENAI_KEY (paid)"
             )
 
+        self._pause_voice_wake_listener("manual")
+
         # Prevent double-start from concurrent threads (atomic check-and-set)
         with self._voice_lock:
             if self._voice_recording:
@@ -10340,14 +10406,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._app.invalidate()
             self._voice_stop_and_transcribe()
 
-        # Audio cue: single beep BEFORE starting stream (avoid CoreAudio conflict)
-        if self._voice_beeps_enabled():
-            try:
-                from tools.voice_mode import play_beep
-                play_beep(frequency=880, count=1)
-            except Exception:
-                pass
-
         try:
             self._voice_recorder.start(on_silence_stop=_on_silence)
         except Exception:
@@ -10394,14 +10452,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return
 
             wav_path = self._voice_recorder.stop()
-
-            # Audio cue: double beep after stream stopped (no CoreAudio conflict)
-            if self._voice_beeps_enabled():
-                try:
-                    from tools.voice_mode import play_beep
-                    play_beep(frequency=660, count=2)
-                except Exception:
-                    pass
 
             if wav_path is None:
                 _cprint(f"{_DIM}No speech detected.{_RST}")
@@ -10464,9 +10514,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._voice_continuous = False
                     self._no_speech_count = 0
                     _cprint(f"{_DIM}No speech detected 3 times, continuous mode stopped.{_RST}")
+                    self._resume_voice_wake_listener()
                     return
             else:
                 self._no_speech_count = 0
+
+            if not submitted and not self._voice_continuous:
+                self._resume_voice_wake_listener()
 
             # If no transcript was submitted but continuous mode is active,
             # restart recording so the user can keep talking.
@@ -10497,6 +10551,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Speak the agent's response aloud using TTS (runs in background thread)."""
         if not self._voice_tts:
             return
+        self._pause_voice_wake_listener("tts")
         self._voice_tts_done.clear()
         try:
             from tools.tts_tool import text_to_speech_tool
@@ -10518,25 +10573,42 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if not tts_text:
                 return
 
-            # Use MP3 output for CLI playback (afplay doesn't handle OGG well).
-            # The TTS tool may auto-convert MP3->OGG, but the original MP3 remains.
+            # Pick a container the configured provider can write/play locally, then
+            # honor the actual file path returned by the TTS tool.
             os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
-            mp3_path = os.path.join(
+            tts_provider = "edge"
+            try:
+                from tools.tts_tool import _get_provider, _load_tts_config
+
+                tts_provider = _get_provider(_load_tts_config())
+            except Exception:
+                pass
+            wav_providers = {"neutts", "kittentts", "gemini"}
+            ext = "wav" if tts_provider in wav_providers else "mp3"
+            audio_path = os.path.join(
                 tempfile.gettempdir(), "hermes_voice",
-                f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3",
+                f"tts_{time.strftime('%Y%m%d_%H%M%S')}.{ext}",
             )
 
-            text_to_speech_tool(text=tts_text, output_path=mp3_path)
+            tts_result_raw = text_to_speech_tool(text=tts_text, output_path=audio_path)
+            play_path = audio_path
+            try:
+                tts_result = json.loads(tts_result_raw)
+                if tts_result.get("success") is False:
+                    logger.warning("Voice TTS generation failed: %s", tts_result.get("error"))
+                    return
+                if tts_result.get("file_path"):
+                    play_path = str(tts_result["file_path"])
+            except Exception:
+                pass
 
-            # Play the MP3 directly (the TTS tool returns OGG path but MP3 still exists)
-            if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
-                play_audio_file(mp3_path)
-                # Clean up
+            if os.path.isfile(play_path) and os.path.getsize(play_path) > 0:
+                play_audio_file(play_path)
                 try:
-                    os.unlink(mp3_path)
-                    ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-                    if os.path.isfile(ogg_path):
-                        os.unlink(ogg_path)
+                    base = audio_path.rsplit(".", 1)[0]
+                    for candidate in {audio_path, play_path, f"{base}.ogg", f"{base}.mp3", f"{base}.wav"}:
+                        if os.path.isfile(candidate):
+                            os.unlink(candidate)
                 except OSError:
                     pass
         except Exception as e:
@@ -10544,7 +10616,271 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"{_DIM}TTS playback failed: {e}{_RST}")
         finally:
             self._voice_tts_done.set()
+            if not getattr(self, "_agent_running", False):
+                self._resume_voice_wake_listener()
 
+    def _handle_voice_command(self, command: str):
+        """Handle /voice [on|off|tts|status|wake ...] command."""
+        parts = command.strip().split(maxsplit=1)
+        subcommand_raw = parts[1].strip() if len(parts) > 1 else ""
+        subcommand = subcommand_raw.lower().strip()
+
+        if subcommand == "on":
+            self._enable_voice_mode()
+        elif subcommand == "off":
+            self._disable_voice_mode()
+        elif subcommand == "tts" or subcommand.startswith("tts "):
+            self._handle_voice_tts_command(subcommand_raw)
+        elif subcommand == "status":
+            self._show_voice_status()
+        elif subcommand == "wake" or subcommand.startswith("wake "):
+            self._handle_voice_wake_command(subcommand_raw)
+        elif subcommand == "":
+            # Toggle
+            if self._voice_mode:
+                self._disable_voice_mode()
+            else:
+                self._enable_voice_mode()
+        else:
+            _cprint(f"Unknown voice subcommand: {subcommand}")
+            _cprint("Usage: /voice [on|off|tts [on|off|status]|status|wake on|off|status|train]")
+
+    def _handle_voice_tts_command(self, command: str):
+        """Handle /voice tts [on|off|status] commands."""
+        import shlex
+
+        try:
+            args = shlex.split(command)
+        except ValueError as exc:
+            _cprint(f"{_DIM}Invalid TTS command: {exc}{_RST}")
+            return
+
+        action = args[1].lower() if len(args) > 1 else "toggle"
+        if action == "toggle":
+            self._toggle_voice_tts()
+        elif action in {"on", "enable", "enabled"}:
+            self._set_voice_tts(True)
+        elif action in {"off", "disable", "disabled"}:
+            self._set_voice_tts(False)
+        elif action == "status":
+            _cprint(f"{_ACCENT}Voice TTS {'ON' if self._voice_tts else 'OFF'}.{_RST}")
+        else:
+            _cprint(f"Unknown voice TTS subcommand: {action}")
+            _cprint("Usage: /voice tts [on|off|status]")
+
+    def _handle_voice_wake_command(self, command: str):
+        """Handle /voice wake [on|off|status|train] commands."""
+        import shlex
+
+        try:
+            args = shlex.split(command)
+        except ValueError as exc:
+            _cprint(f"{_DIM}Invalid wake command: {exc}{_RST}")
+            return
+        action = args[1].lower() if len(args) > 1 else "status"
+
+        if action == "on":
+            if not self._voice_mode:
+                self._enable_voice_mode()
+            if self._voice_mode:
+                self._start_voice_wake_mode()
+        elif action == "off":
+            self._stop_voice_wake_mode()
+        elif action == "status":
+            self._show_voice_wake_status()
+        elif action == "train":
+            self._train_voice_wake_model(args[2:])
+        else:
+            _cprint(f"Unknown wake subcommand: {action}")
+            _cprint('Usage: /voice wake [on|off|status|train --phrase "Hermes"]')
+
+    def _start_voice_wake_mode(self):
+        """Start the continuous wake-word listener."""
+        if getattr(self, "_voice_wake_enabled", False):
+            _cprint(f"{_DIM}Wake-word mode is already enabled.{_RST}")
+            return
+
+        from tools.wake_word import WakeWordListener, check_wake_requirements, load_wake_config, wake_install_hint
+
+        cfg = load_wake_config()
+        reqs = check_wake_requirements(cfg, download_missing=True)
+        if not reqs["available"]:
+            _cprint(f"\n{_ACCENT}Wake-word mode requirements not met:{_RST}")
+            for line in reqs["details"].split("\n"):
+                _cprint(f"  {_DIM}{line}{_RST}")
+            if reqs.get("missing_packages"):
+                _cprint(f"\n  {_BOLD}Install: {wake_install_hint()}{_RST}")
+            return
+        if reqs.get("resolved_model_path"):
+            cfg.model_path = reqs["resolved_model_path"]
+
+        def _on_status(status: dict):
+            self._voice_wake_state = status.get("state", "unknown")
+            self._voice_wake_last_score = float(status.get("last_score", 0.0) or 0.0)
+            if hasattr(self, "_app") and self._app:
+                self._app.invalidate()
+
+        def _on_error(exc: Exception):
+            _cprint(f"\n{_DIM}Wake-word listener error: {exc}{_RST}")
+            self._stop_voice_wake_mode()
+
+        def _on_transcript(transcript: str):
+            transcript = transcript.strip()
+            if not transcript:
+                return
+            self._attached_images.clear()
+            self._pending_input.put(transcript)
+            self._pause_voice_wake_listener("agent")
+            if hasattr(self, "_app") and self._app:
+                self._app.invalidate()
+
+        listener = WakeWordListener(
+            cfg,
+            on_transcript=_on_transcript,
+            on_status=_on_status,
+            on_error=_on_error,
+        )
+        try:
+            listener.start()
+        except Exception as exc:
+            _cprint(f"\n{_DIM}Wake-word listener failed to start: {exc}{_RST}")
+            return
+
+        with self._voice_lock:
+            self._voice_wake_listener = listener
+            self._voice_wake_enabled = True
+            self._voice_wake_state = "passive"
+            self._voice_wake_last_score = 0.0
+
+        phrase = cfg.phrase or "configured phrase"
+        _cprint(f"\n{_ACCENT}Wake-word mode enabled{_RST}")
+        _cprint(f"  {_DIM}Listening for: {phrase}{_RST}")
+        _cprint(f"  {_DIM}TTS: {'ON' if self._voice_tts else 'OFF'}{_RST}")
+        _cprint(f"  {_DIM}/voice wake off  to stop wake listening{_RST}")
+        _cprint(f"  {_DIM}Ctrl+B remains available as manual override{_RST}")
+
+    def _stop_voice_wake_mode(self):
+        """Stop the wake-word listener and release the audio stream."""
+        listener = None
+        with self._voice_lock:
+            listener = getattr(self, "_voice_wake_listener", None)
+            self._voice_wake_listener = None
+            self._voice_wake_enabled = False
+            self._voice_wake_state = "stopped"
+            self._voice_wake_last_score = 0.0
+        if listener is not None:
+            try:
+                listener.stop()
+            except Exception:
+                logger.debug("Wake-word listener stop failed", exc_info=True)
+        _cprint(f"{_DIM}Wake-word mode disabled.{_RST}")
+
+    def _pause_voice_wake_listener(self, reason: str = ""):
+        """Pause wake listening while manual recording, agent output, or TTS is active."""
+        listener = getattr(self, "_voice_wake_listener", None)
+        if not getattr(self, "_voice_wake_enabled", False) or listener is None:
+            return
+        try:
+            listener.pause(reason)
+            self._voice_wake_state = "paused"
+        except Exception:
+            logger.debug("Wake-word listener pause failed", exc_info=True)
+
+    def _resume_voice_wake_listener(self):
+        """Resume wake listening after manual recording, agent output, or TTS."""
+        listener = getattr(self, "_voice_wake_listener", None)
+        if not getattr(self, "_voice_wake_enabled", False) or listener is None:
+            return
+        if getattr(self, "_voice_recording", False) or getattr(self, "_voice_processing", False):
+            return
+        try:
+            listener.resume()
+            self._voice_wake_state = listener.status().get("state", "passive")
+            self._voice_wake_last_score = float(listener.status().get("last_score", 0.0) or 0.0)
+        except Exception:
+            logger.debug("Wake-word listener resume failed", exc_info=True)
+
+    def _show_voice_wake_status(self):
+        """Show wake-word listener status and requirements."""
+        from tools.wake_word import check_wake_requirements, load_wake_config
+
+        cfg = load_wake_config()
+        reqs = check_wake_requirements(cfg)
+        state = getattr(self, "_voice_wake_state", "stopped")
+        score = getattr(self, "_voice_wake_last_score", 0.0)
+        _cprint(f"\n{_BOLD}Wake-Word Status{_RST}")
+        _cprint(f"  Mode:      {'ON' if getattr(self, '_voice_wake_enabled', False) else 'OFF'}")
+        _cprint(f"  State:     {state}")
+        _cprint(f"  Phrase:    {cfg.phrase}")
+        resolved_model = reqs.get("resolved_model_path") or cfg.model_path
+        if resolved_model and cfg.model_path and resolved_model != cfg.model_path:
+            model_display = f"{resolved_model} (resolved from {cfg.model_path})"
+        else:
+            model_display = resolved_model or "(not set)"
+        _cprint(f"  Model:     {model_display}")
+        _cprint(f"  Threshold: {cfg.threshold:.2f}")
+        _cprint(f"  Endpoint:  silence RMS <= {cfg.silence_threshold} for {cfg.silence_duration:.1f}s")
+        _cprint(f"  Max rec:   {cfg.max_utterance_seconds:.1f}s")
+        _cprint(f"  Last score:{score:.3f}")
+        _cprint(f"\n  {_BOLD}Requirements:{_RST}")
+        for line in reqs["details"].split("\n"):
+            _cprint(f"    {line}")
+
+    def _train_voice_wake_model(self, args: list[str]):
+        """Collect local wake-word samples and save the trained model path."""
+        from tools.wake_word import WakeWordTrainer, load_wake_config, wake_install_hint, write_existing_model_config
+
+        cfg = load_wake_config()
+        phrase = cfg.phrase
+        existing_model = ""
+        threshold = cfg.threshold
+        idx = 0
+        while idx < len(args):
+            token = args[idx]
+            if token == "--phrase" and idx + 1 < len(args):
+                phrase = args[idx + 1]
+                idx += 2
+            elif token == "--model" and idx + 1 < len(args):
+                existing_model = args[idx + 1]
+                idx += 2
+            elif token == "--threshold" and idx + 1 < len(args):
+                try:
+                    threshold = float(args[idx + 1])
+                except ValueError:
+                    _cprint(f"{_DIM}Invalid threshold: {args[idx + 1]}{_RST}")
+                    return
+                idx += 2
+            else:
+                _cprint(f"{_DIM}Unknown wake train option: {token}{_RST}")
+                _cprint('Usage: /voice wake train --phrase "Hermes" [--model /path/model.onnx] [--threshold 0.5]')
+                return
+
+        if existing_model:
+            updates = write_existing_model_config(existing_model, phrase, threshold)
+            if not os.path.isfile(os.path.expanduser(existing_model)):
+                _cprint(f"{_DIM}Wake model not found: {existing_model}{_RST}")
+                return
+            for key, value in updates.items():
+                save_config_value(key, value)
+            _cprint(f"{_ACCENT}Wake-word model configured: {existing_model}{_RST}")
+            return
+
+        cfg.phrase = phrase
+        cfg.threshold = threshold
+        _cprint(f"\n{_ACCENT}Wake-word training: {phrase}{_RST}")
+        _cprint(f"  {_DIM}Collecting local samples; this can take a few minutes.{_RST}")
+        try:
+            result = WakeWordTrainer(cfg).train()
+        except Exception as exc:
+            _cprint(f"\n{_DIM}Wake-word training failed: {exc}{_RST}")
+            _cprint(f"  {_DIM}Install hint: {wake_install_hint(training=True)}{_RST}")
+            return
+
+        for key, value in result.get("config_update", {}).items():
+            save_config_value(key, value)
+        _cprint(f"\n{_ACCENT}Wake-word model saved{_RST}")
+        _cprint(f"  {_DIM}{result['model_path']}{_RST}")
+        _cprint(f"  {_DIM}Run /voice wake on to start listening.{_RST}")
 
     def _voice_beeps_enabled(self) -> bool:
         """Return whether CLI voice mode should play record start/stop beeps."""
@@ -10552,10 +10888,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from hermes_cli.config import load_config
             voice_cfg = load_config().get("voice", {})
             if isinstance(voice_cfg, dict):
-                return bool(voice_cfg.get("beep_enabled", True))
+                return bool(voice_cfg.get("beep_enabled", False))
         except Exception:
             pass
-        return True
+        return False
+
+    def _voice_tool_beeps_enabled(self) -> bool:
+        """Return whether CLI voice mode should play per-tool audio cues."""
+        try:
+            from hermes_cli.config import load_config
+            voice_cfg = load_config().get("voice", {})
+            if isinstance(voice_cfg, dict):
+                return bool(voice_cfg.get("beep_enabled", False)) and bool(
+                    voice_cfg.get("tool_beep_enabled", False)
+                )
+        except Exception:
+            pass
+        return False
 
     def _enable_voice_mode(self):
         """Enable voice mode after checking requirements."""
@@ -10619,6 +10968,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _disable_voice_mode(self):
         """Disable voice mode, cancel any active recording, and stop TTS."""
+        if getattr(self, "_voice_wake_enabled", False):
+            self._stop_voice_wake_mode()
+
         recorder = None
         with self._voice_lock:
             if self._voice_recording and self._voice_recorder:
@@ -10655,16 +11007,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"{_DIM}Enable voice mode first: /voice on{_RST}")
             return
 
-        with self._voice_lock:
-            self._voice_tts = not self._voice_tts
-        status = "enabled" if self._voice_tts else "disabled"
+        self._set_voice_tts(not self._voice_tts)
 
-        if self._voice_tts:
+    def _set_voice_tts(self, enabled: bool):
+        """Set TTS output for voice mode."""
+        if not self._voice_mode:
+            _cprint(f"{_DIM}Enable voice mode first: /voice on{_RST}")
+            return
+
+        with self._voice_lock:
+            changed = self._voice_tts != enabled
+            self._voice_tts = enabled
+        status = "enabled" if enabled else "disabled"
+
+        if enabled:
             from tools.tts_tool import check_tts_requirements
             if not check_tts_requirements():
                 _cprint(f"{_DIM}Warning: No TTS provider available. Install edge-tts or set API keys.{_RST}")
 
-        _cprint(f"{_ACCENT}Voice TTS {status}.{_RST}")
+        if changed:
+            _cprint(f"{_ACCENT}Voice TTS {status}.{_RST}")
+        else:
+            _cprint(f"{_DIM}Voice TTS already {status}.{_RST}")
 
     def _show_voice_status(self):
         """Show current voice mode status."""
@@ -10681,6 +11045,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # #19835, same class as round-13). Reading live config here
         # would drift after a mid-session config edit.
         _cprint(f"  Record key: {self._voice_record_key_label()}")
+        _cprint(f"  Wake:      {'ON' if getattr(self, '_voice_wake_enabled', False) else 'OFF'}")
+        if getattr(self, "_voice_wake_enabled", False):
+            _cprint(f"  Wake state:{getattr(self, '_voice_wake_state', 'unknown')}")
+            _cprint(f"  Wake score:{getattr(self, '_voice_wake_last_score', 0.0):.3f}")
         _cprint(f"\n  {_BOLD}Requirements:{_RST}")
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")
@@ -11311,8 +11679,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._reasoning_shown_this_turn = False
 
             # --- Streaming TTS setup ---
-            # When ElevenLabs is the TTS provider and sounddevice is available,
-            # we stream audio sentence-by-sentence as the agent generates tokens
+            # When the selected TTS provider supports CLI streaming, stream
+            # audio sentence-by-sentence as the agent generates tokens
             # instead of waiting for the full response.
             use_streaming_tts = False
             _streaming_box_opened = False
@@ -11325,14 +11693,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     from tools.tts_tool import (
                         _load_tts_config as _load_tts_cfg,
-                        _get_provider as _get_prov,
+                        _get_provider as _get_tts_provider,
                         _import_elevenlabs,
                         _import_sounddevice,
                         stream_tts_to_speaker,
                     )
                     _tts_cfg = _load_tts_cfg()
-                    if _get_prov(_tts_cfg) == "elevenlabs":
-                        # Verify both ElevenLabs SDK and audio output are available
+                    if _get_tts_provider(_tts_cfg) == "elevenlabs":
                         _import_elevenlabs()
                         _import_sounddevice()
                         use_streaming_tts = True
@@ -11487,6 +11854,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # by the Enter key binding (routed to the clarify response queue),
             # so we skip interrupt processing to avoid stealing that input.
             interrupt_msg = None
+            model_wait_notice_seconds = _resolve_cli_model_wait_notice_seconds(self.agent)
+            model_wait_notice_printed = False
+
+            def maybe_print_model_wait_notice():
+                nonlocal model_wait_notice_printed
+                if model_wait_notice_printed or self._prompt_start_time is None:
+                    return
+                elapsed = time.time() - self._prompt_start_time
+                if elapsed < model_wait_notice_seconds:
+                    return
+                model_wait_notice_printed = True
+                provider_label = getattr(self.agent, "provider", None) or "provider"
+                model_label = getattr(self.agent, "model", None) or "model"
+                _cprint(
+                    f"\n{_DIM}⚠ Still waiting for {provider_label}/{model_label} "
+                    f"after {int(elapsed)}s. If the provider is blocked or "
+                    f"rate-limited, Hermes will fail over once its timeout fires; "
+                    f"press Ctrl+C to interrupt now.{_RST}"
+                )
+
             while agent_thread.is_alive():
                 if hasattr(self, '_interrupt_queue'):
                     try:
@@ -11520,10 +11907,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         # StdoutProxy buffer only flushes on renderer passes
                         # triggered by input events — on macOS this causes
                         # the CLI to appear frozen until the user types. (#1624)
+                        maybe_print_model_wait_notice()
                         self._invalidate(min_interval=0.15)
                 else:
                     # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)
+                    maybe_print_model_wait_notice()
 
             # Wait for the agent thread to finish.  After an interrupt the
             # agent may take a few seconds to clean up (kill subprocess, persist
@@ -12347,6 +12736,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._voice_continuous = False  # Whether to auto-restart after agent responds
         self._voice_tts_done = threading.Event()  # Signals TTS playback finished
         self._voice_tts_done.set()  # Initially "done" (no TTS pending)
+        self._voice_wake_listener = None
+        self._voice_wake_enabled = False
+        self._voice_wake_state = "stopped"
+        self._voice_wake_last_score = 0.0
 
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             self._install_tool_callbacks()
@@ -13127,9 +13520,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 with cli_ref._voice_lock:
                     cli_ref._voice_continuous = True
 
-                # Dispatch to a daemon thread so play_beep(sd.wait),
-                # AudioRecorder.start(lock acquire), and config I/O
-                # never block the prompt_toolkit event loop.
+                # Dispatch to a daemon thread so AudioRecorder.start(lock acquire)
+                # and config I/O never block the prompt_toolkit event loop.
                 def _start_recording():
                     try:
                         cli_ref._voice_start_recording()
@@ -14266,6 +14658,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
                     # Regular chat - run agent
                     self._agent_running = True
+                    self._pause_voice_wake_listener("agent")
                     app.invalidate()  # Refresh status line
 
                     try:
@@ -14305,6 +14698,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                 except Exception as e:
                                     _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
                             threading.Thread(target=_restart_recording, daemon=True).start()
+                        elif getattr(self, "_voice_wake_enabled", False):
+                            def _resume_wake_listener():
+                                try:
+                                    if self._voice_tts:
+                                        self._voice_tts_done.wait(timeout=60)
+                                        time.sleep(0.3)
+                                    self._resume_voice_wake_listener()
+                                    app.invalidate()
+                                except Exception as e:
+                                    _cprint(f"{_DIM}Wake-word resume failed: {e}{_RST}")
+                            threading.Thread(target=_resume_wake_listener, daemon=True).start()
 
                         # Drain process notifications (completions + watch matches)
                         # that arrived while the agent was running.

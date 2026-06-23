@@ -1896,6 +1896,27 @@ DEFAULT_CONFIG = {
         "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
+        "model_wait_notice_seconds": 0,  # 0 = derive from model/API stale-timeout settings
+        "wake": {
+            "provider": "openwakeword",
+            "phrase": "Hermes",
+            "model_path": "",
+            "threshold": 0.5,
+            "patience_frames": 2,
+            "vad_threshold": 0.25,
+            "pre_roll_ms": 1200,
+            "dialog_timeout_seconds": 45.0,
+            "max_utterance_seconds": 30.0,
+            "silence_threshold": 200,
+            "silence_duration": 3.0,
+            "frame_samples": 1280,
+            "training": {
+                "positive_samples": 50,
+                "negative_samples": 30,
+                "ambient_seconds": 60,
+                "command": "",
+            },
+        },
     },
     
     "human_delay": {

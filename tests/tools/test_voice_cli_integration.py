@@ -29,6 +29,10 @@ def _make_voice_cli(**overrides):
     cli._voice_continuous = False
     cli._voice_tts_done = threading.Event()
     cli._voice_tts_done.set()
+    cli._voice_wake_listener = None
+    cli._voice_wake_enabled = False
+    cli._voice_wake_state = "stopped"
+    cli._voice_wake_last_score = 0.0
     cli._pending_input = queue.Queue()
     cli._app = None
     cli._attached_images = []
@@ -121,6 +125,36 @@ class TestMarkdownStripping:
         assert "Answer" in result
         assert "Good luck!" in result
         assert "docs" in result
+
+
+# ============================================================================
+# Model wait notice
+# ============================================================================
+
+class TestModelWaitNotice:
+    def test_uses_config_override(self, monkeypatch):
+        from cli import _resolve_cli_model_wait_notice_seconds
+        import hermes_cli.config as config
+
+        monkeypatch.setattr(
+            config,
+            "load_config",
+            lambda: {"voice": {"model_wait_notice_seconds": 7}},
+        )
+
+        assert _resolve_cli_model_wait_notice_seconds(object()) == 7.0
+
+    def test_uses_stream_stale_timeout_when_available(self, monkeypatch):
+        from cli import _resolve_cli_model_wait_notice_seconds
+        import hermes_cli.config as config
+
+        monkeypatch.setattr(config, "load_config", lambda: {"voice": {}})
+
+        class Agent:
+            def _compute_stream_stale_timeout(self, messages):
+                return 12.0
+
+        assert _resolve_cli_model_wait_notice_seconds(Agent()) == 12.0
 
 
 # ============================================================================
@@ -811,6 +845,7 @@ class TestHandleVoiceCommandReal:
         cli._disable_voice_mode = MagicMock()
         cli._toggle_voice_tts = MagicMock()
         cli._show_voice_status = MagicMock()
+        cli._handle_voice_wake_command = MagicMock()
         return cli
 
     @patch("cli._cprint")
@@ -838,6 +873,12 @@ class TestHandleVoiceCommandReal:
         cli._show_voice_status.assert_called_once()
 
     @patch("cli._cprint")
+    def test_wake_subcommands_call_wake_handler(self, _cp):
+        cli = self._cli()
+        cli._handle_voice_command('/voice wake train --phrase "Гермес"')
+        cli._handle_voice_wake_command.assert_called_once_with('wake train --phrase "Гермес"')
+
+    @patch("cli._cprint")
     def test_toggle_off_when_enabled(self, _cp):
         cli = self._cli()
         cli._voice_mode = True
@@ -860,6 +901,54 @@ class TestHandleVoiceCommandReal:
         # Should print usage via _cprint
         assert any("Unknown" in str(c) or "unknown" in str(c)
                     for c in mock_cp.call_args_list)
+
+
+class TestVoiceWakeCommandReal:
+    """Tests classic CLI wake-word command helpers."""
+
+    @patch("cli._cprint")
+    @patch("tools.wake_word.check_wake_requirements",
+           return_value={"available": False, "details": "Wake model: MISSING"})
+    def test_wake_on_requires_model(self, _req, _cp):
+        cli = _make_voice_cli(_voice_mode=True)
+        cli._start_voice_wake_mode()
+        assert cli._voice_wake_enabled is False
+
+    @patch("cli._cprint")
+    @patch("tools.wake_word.WakeWordListener")
+    @patch("tools.wake_word.check_wake_requirements",
+           return_value={"available": True, "details": "OK"})
+    @patch("tools.wake_word.load_wake_config")
+    def test_wake_on_starts_listener(self, mock_cfg, _req, mock_listener_cls, _cp):
+        mock_cfg.return_value = SimpleNamespace(phrase="Гермес", model_path="/tmp/hermes.onnx", threshold=0.5)
+        listener = MagicMock()
+        mock_listener_cls.return_value = listener
+        cli = _make_voice_cli(_voice_mode=True)
+
+        cli._start_voice_wake_mode()
+
+        listener.start.assert_called_once()
+        assert cli._voice_wake_enabled is True
+
+    @patch("cli._cprint")
+    def test_wake_off_stops_listener(self, _cp):
+        listener = MagicMock()
+        cli = _make_voice_cli(_voice_mode=True, _voice_wake_listener=listener, _voice_wake_enabled=True)
+        cli._stop_voice_wake_mode()
+        listener.stop.assert_called_once()
+        assert cli._voice_wake_enabled is False
+
+    def test_manual_recording_pauses_wake_listener(self):
+        listener = MagicMock()
+        cli = _make_voice_cli(_voice_wake_listener=listener, _voice_wake_enabled=True)
+        cli._pause_voice_wake_listener("manual")
+        listener.pause.assert_called_once_with("manual")
+
+    def test_manual_recording_resumes_wake_listener(self):
+        listener = MagicMock()
+        cli = _make_voice_cli(_voice_wake_listener=listener, _voice_wake_enabled=True)
+        cli._resume_voice_wake_listener()
+        listener.resume.assert_called_once()
 
 
 class TestEnableVoiceModeReal:
@@ -941,12 +1030,33 @@ class TestVoiceBeepConfigReal:
     @patch("hermes_cli.config.load_config", return_value={"voice": {}})
     def test_beeps_enabled_by_default(self, _cfg):
         cli = _make_voice_cli()
-        assert cli._voice_beeps_enabled() is True
+        assert cli._voice_beeps_enabled() is False
 
     @patch("hermes_cli.config.load_config", return_value={"voice": {"beep_enabled": False}})
     def test_beeps_can_be_disabled(self, _cfg):
         cli = _make_voice_cli()
         assert cli._voice_beeps_enabled() is False
+
+    @patch("hermes_cli.config.load_config", return_value={"voice": {}})
+    def test_tool_beeps_disabled_by_default(self, _cfg):
+        cli = _make_voice_cli()
+        assert cli._voice_tool_beeps_enabled() is False
+
+    @patch(
+        "hermes_cli.config.load_config",
+        return_value={"voice": {"beep_enabled": True, "tool_beep_enabled": True}},
+    )
+    def test_tool_beeps_can_be_enabled(self, _cfg):
+        cli = _make_voice_cli()
+        assert cli._voice_tool_beeps_enabled() is True
+
+    @patch(
+        "hermes_cli.config.load_config",
+        return_value={"voice": {"beep_enabled": False, "tool_beep_enabled": True}},
+    )
+    def test_tool_beeps_follow_global_beep_toggle(self, _cfg):
+        cli = _make_voice_cli()
+        assert cli._voice_tool_beeps_enabled() is False
 
     @patch("cli._cprint")
     @patch("cli.threading.Thread")
@@ -973,6 +1083,44 @@ class TestVoiceBeepConfigReal:
         },
     )
     def test_start_recording_skips_beep_when_disabled(
+        self, _cfg, _req, mock_create, mock_beep, mock_thread, _cp
+    ):
+        recorder = MagicMock()
+        recorder.supports_silence_autostop = True
+        mock_create.return_value = recorder
+        mock_thread.return_value = MagicMock(start=MagicMock())
+
+        cli = _make_voice_cli()
+        cli._voice_start_recording()
+
+        recorder.start.assert_called_once()
+        mock_beep.assert_not_called()
+
+    @patch("cli._cprint")
+    @patch("cli.threading.Thread")
+    @patch("tools.voice_mode.play_beep")
+    @patch("tools.voice_mode.create_audio_recorder")
+    @patch(
+        "tools.voice_mode.check_voice_requirements",
+        return_value={
+            "available": True,
+            "audio_available": True,
+            "stt_available": True,
+            "details": "OK",
+            "missing_packages": [],
+        },
+    )
+    @patch(
+        "hermes_cli.config.load_config",
+        return_value={
+            "voice": {
+                "beep_enabled": True,
+                "silence_threshold": 200,
+                "silence_duration": 3.0,
+            }
+        },
+    )
+    def test_start_recording_skips_beep_even_when_config_enabled(
         self, _cfg, _req, mock_create, mock_beep, mock_thread, _cp
     ):
         recorder = MagicMock()
@@ -1131,44 +1279,6 @@ class TestVoiceSpeakResponseReal:
         cli = _make_voice_cli(_voice_tts=True)
         cli._voice_speak_response("Hello world")
         mock_play.assert_called_once()
-
-
-class TestVoiceStopAndTranscribeReal:
-    """Tests _voice_stop_and_transcribe with real CLI instance."""
-
-    @patch("cli._cprint")
-    def test_guard_not_recording(self, _cp):
-        cli = _make_voice_cli(_voice_recording=False)
-        with patch("tools.voice_mode.transcribe_recording") as mock_tr:
-            cli._voice_stop_and_transcribe()
-            mock_tr.assert_not_called()
-
-    @patch("cli._cprint")
-    def test_no_recorder_returns_early(self, _cp):
-        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=None)
-        with patch("tools.voice_mode.transcribe_recording") as mock_tr:
-            cli._voice_stop_and_transcribe()
-            mock_tr.assert_not_called()
-        assert cli._voice_recording is False
-
-    @patch("cli._cprint")
-    @patch("tools.voice_mode.play_beep")
-    def test_no_speech_detected(self, _beep, _cp):
-        recorder = MagicMock()
-        recorder.stop.return_value = None
-        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
-        cli._voice_stop_and_transcribe()
-        assert cli._pending_input.empty()
-
-    @patch("cli._cprint")
-    @patch("hermes_cli.config.load_config", return_value={"voice": {"beep_enabled": False}})
-    @patch("tools.voice_mode.play_beep")
-    def test_no_speech_detected_skips_beep_when_disabled(self, mock_beep, _cfg, _cp):
-        recorder = MagicMock()
-        recorder.stop.return_value = None
-        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
-        cli._voice_stop_and_transcribe()
-        mock_beep.assert_not_called()
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")

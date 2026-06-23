@@ -1,0 +1,15 @@
+name: memory-llm-wiki
+version: 0.1.0
+description: "Split Hermes curated and Ebbinghaus memories into an Obsidian-compatible LLM Wiki."
+author: "Hermes Agent"
+kind: standalone
+provides_tools:
+  - memory_llm_wiki_status
+  - memory_llm_wiki_export
+config:
+  default_subdir:
+    type: string
+    default: Hermes-Memory-Wiki
+  max_entries_per_page:
+    type: integer
+    default: 80

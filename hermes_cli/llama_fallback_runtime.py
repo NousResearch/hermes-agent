@@ -50,6 +50,7 @@ _EXTERNAL_LOCAL_SECRETARY_LAUNCHERS = {"external", "none", "disabled", "ollama"}
 _KV_PROFILES = {
     "f16v_turbo4": ("f16", "turbo4"),
     "f16v_q4_0": ("f16", "q4_0"),
+    "bf16v_q4_0": ("bf16", "q4_0"),
     "turbo4": ("turbo4", "turbo4"),
     "q4_0": ("q4_0", "q4_0"),
 }

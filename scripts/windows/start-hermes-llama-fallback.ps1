@@ -3,9 +3,10 @@ param(
     [string]$GpuProfile = "rtx5060ti",
     [string]$ServerExe = "",
     [string]$ModelPath = "",
+    [string]$HfRepo = "",
     [int]$Port = 8080,
     [int]$ContextSize = 0,
-    [ValidateSet("f16v_turbo4", "f16v_q4_0", "turbo4", "q4_0")]
+    [ValidateSet("f16v_turbo4", "f16v_q4_0", "bf16v_q4_0", "bf16v_turbo3", "triality_vector_v_turbo3", "triality_plus_v_turbo3", "triality_minus_v_turbo3", "turbo4", "q4_0")]
     [string]$KvProfile = "f16v_turbo4",
     [ValidateSet("ngram-mod", "mtp", "none")]
     [string]$SpecType = "ngram-mod",
@@ -64,8 +65,32 @@ function Resolve-KvProfile {
     switch ($Profile) {
         "f16v_turbo4" { return @{ K = "f16"; V = "turbo4" } }
         "f16v_q4_0" { return @{ K = "f16"; V = "q4_0" } }
+        "bf16v_q4_0" { return @{ K = "bf16"; V = "q4_0" } }
+        "bf16v_turbo3" { return @{ K = "bf16"; V = "turbo3" } }
+        "triality_vector_v_turbo3" { return @{ K = "q8_0"; V = "turbo3"; TurboQuantMode = "key_only_block_so8_triality_vector"; TurboQuantCacheTypeK = "triality-vector"; TurboQuantCacheTypeV = "turbo3"; TrialityView = "vector"; LayerAdaptive = "7" } }
+        "triality_plus_v_turbo3" { return @{ K = "q8_0"; V = "turbo3"; TurboQuantMode = "key_only_block_so8_triality_plus"; TurboQuantCacheTypeK = "triality-plus"; TurboQuantCacheTypeV = "turbo3"; TrialityView = "spinor_plus_proxy"; LayerAdaptive = "7" } }
+        "triality_minus_v_turbo3" { return @{ K = "q8_0"; V = "turbo3"; TurboQuantMode = "key_only_block_so8_triality_minus"; TurboQuantCacheTypeK = "triality-minus"; TurboQuantCacheTypeV = "turbo3"; TrialityView = "spinor_minus_proxy"; LayerAdaptive = "7" } }
         "turbo4" { return @{ K = "turbo4"; V = "turbo4" } }
         "q4_0" { return @{ K = "q4_0"; V = "q4_0" } }
+    }
+}
+
+function Resolve-TurboQuantEnv {
+    param([hashtable]$Kv)
+
+    if (-not $Kv.ContainsKey("TurboQuantMode")) {
+        return @{}
+    }
+
+    return @{
+        LLAMA_TURBOQUANT = "1"
+        LLAMA_TURBOQUANT_MODE = $Kv.TurboQuantMode
+        LLAMA_TURBOQUANT_CACHE_TYPE_K = $Kv.TurboQuantCacheTypeK
+        LLAMA_TURBOQUANT_CACHE_TYPE_V = $Kv.TurboQuantCacheTypeV
+        LLAMA_TURBOQUANT_SO8 = "1"
+        LLAMA_TURBOQUANT_TRIALITY = "1"
+        LLAMA_TURBOQUANT_TRIALITY_VIEW = $Kv.TrialityView
+        TURBO_LAYER_ADAPTIVE = $Kv.LayerAdaptive
     }
 }
 
@@ -97,7 +122,7 @@ if (-not (Test-Path -LiteralPath $ServerExe)) {
     throw "llama-server not found: $ServerExe"
 }
 
-if (-not (Test-Path -LiteralPath $ModelPath)) {
+if (-not $HfRepo -and -not (Test-Path -LiteralPath $ModelPath)) {
     throw "fallback model not found: $ModelPath"
 }
 
@@ -118,8 +143,14 @@ $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $stdoutPath = Join-Path $logDir "llama-fallback-$stamp.out.log"
 $stderrPath = Join-Path $logDir "llama-fallback-$stamp.err.log"
 
-$serverArgs = @(
-    "--model", $ModelPath,
+$serverArgs = @()
+if ($HfRepo) {
+    $serverArgs += @("--hf-repo", $HfRepo)
+} else {
+    $serverArgs += @("--model", $ModelPath)
+}
+
+$serverArgs += @(
     "--host", "127.0.0.1",
     "--port", [string]$Port,
     "--ctx-size", [string]$ContextSize,
@@ -152,13 +183,30 @@ elseif ($SpecType -eq "mtp") {
     )
 }
 
-$process = Start-Process `
-    -FilePath $ServerExe `
-    -ArgumentList $serverArgs `
-    -RedirectStandardOutput $stdoutPath `
-    -RedirectStandardError $stderrPath `
-    -WindowStyle Hidden `
-    -PassThru
+$turboQuantEnv = Resolve-TurboQuantEnv -Kv $kv
+$previousEnv = @{}
+foreach ($entry in $turboQuantEnv.GetEnumerator()) {
+    $previousEnv[$entry.Key] = (Get-Item -Path "Env:$($entry.Key)" -ErrorAction SilentlyContinue).Value
+    Set-Item -Path "Env:$($entry.Key)" -Value $entry.Value
+}
+
+try {
+    $process = Start-Process `
+        -FilePath $ServerExe `
+        -ArgumentList $serverArgs `
+        -RedirectStandardOutput $stdoutPath `
+        -RedirectStandardError $stderrPath `
+        -WindowStyle Hidden `
+        -PassThru
+} finally {
+    foreach ($entry in $previousEnv.GetEnumerator()) {
+        if ($null -eq $entry.Value) {
+            Remove-Item -Path "Env:$($entry.Key)" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -Path "Env:$($entry.Key)" -Value $entry.Value
+        }
+    }
+}
 
 $deadline = (Get-Date).AddSeconds($WaitSeconds)
 $modelsUrl = "http://127.0.0.1:$Port/v1/models"
@@ -177,8 +225,19 @@ while ((Get-Date) -lt $deadline) {
         Write-Output "llama.cpp fallback ready on $modelsUrl"
         Write-Output "pid=$($process.Id)"
         Write-Output "gpu_profile=$GpuProfile"
-        Write-Output "model=$ModelPath"
+        if ($HfRepo) {
+            Write-Output "hf_repo=$HfRepo"
+        } else {
+            Write-Output "model=$ModelPath"
+        }
         Write-Output "kv_profile=$KvProfile cache_type_k=$($kv.K) cache_type_v=$($kv.V)"
+        if ($turboQuantEnv.Count -gt 0) {
+            Write-Output "turboquant_mode=$($turboQuantEnv.LLAMA_TURBOQUANT_MODE)"
+            Write-Output "turboquant_cache_type_k=$($turboQuantEnv.LLAMA_TURBOQUANT_CACHE_TYPE_K)"
+            Write-Output "turboquant_cache_type_v=$($turboQuantEnv.LLAMA_TURBOQUANT_CACHE_TYPE_V)"
+            Write-Output "turboquant_triality_view=$($turboQuantEnv.LLAMA_TURBOQUANT_TRIALITY_VIEW)"
+            Write-Output "turbo_layer_adaptive=$($turboQuantEnv.TURBO_LAYER_ADAPTIVE)"
+        }
         Write-Output "spec_type=$SpecType"
         Write-Output "stdout=$stdoutPath"
         Write-Output "stderr=$stderrPath"

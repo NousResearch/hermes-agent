@@ -1036,16 +1036,13 @@ class TestKillProcess:
         try:
             # Post-#21561: liveness probe routes through
             # ``ProcessRegistry._is_host_pid_alive`` (→
-            # ``gateway.status._pid_exists``), and the actual kill on POSIX
-            # routes through ``psutil.Process(pid).terminate()``. Neither
-            # touches ``os.kill`` directly. Mock both seams.  Disable the
-            # SIGKILL-escalation step (grace=0) so it doesn't call
-            # ``psutil.wait_procs`` on the FakeProcess.
-            with patch("gateway.status._pid_exists", return_value=True), \
-                 patch.object(ProcessRegistry, "_daemon_term_grace_seconds",
-                              staticmethod(lambda: 0.0)), \
-                 patch.object(_psutil, "Process", side_effect=lambda pid: FakeProcess(pid)):
-                result = registry.kill_process(s.id)
+            # ``gateway.status._pid_exists``).
+            if sys.platform == "win32":
+                with (
+                    patch("gateway.status._pid_exists", return_value=True),
+                    patch("tools.process_registry.subprocess.run") as taskkill,
+                ):
+                    result = registry.kill_process(s.id)
 
                 assert result["status"] == "killed"
                 taskkill.assert_called_once()
@@ -1061,6 +1058,11 @@ class TestKillProcess:
 
                 with (
                     patch("gateway.status._pid_exists", return_value=True),
+                    patch.object(
+                        ProcessRegistry,
+                        "_daemon_term_grace_seconds",
+                        staticmethod(lambda: 0.0),
+                    ),
                     patch.object(
                         _psutil, "Process", side_effect=lambda pid: FakeProcess(pid)
                     ),

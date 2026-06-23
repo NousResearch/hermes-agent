@@ -104,7 +104,8 @@ class SessionSource:
     chat_name: Optional[str] = None
     chat_type: str = "dm"  # "dm", "group", "channel", "thread"
     user_id: Optional[str] = None
-    user_name: Optional[str] = None
+    user_name: Optional[str] = None  # Display name (e.g. Telegram full_name)
+    user_handle: Optional[str] = None  # Public @handle without "@" (e.g. Telegram username)
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)
@@ -152,6 +153,8 @@ class SessionSource:
             "thread_id": self.thread_id,
             "chat_topic": self.chat_topic,
         }
+        if self.user_handle:
+            d["user_handle"] = self.user_handle
         if self.user_id_alt:
             d["user_id_alt"] = self.user_id_alt
         if self.chat_id_alt:
@@ -175,6 +178,7 @@ class SessionSource:
             chat_type=data.get("chat_type", "dm"),
             user_id=data.get("user_id"),
             user_name=data.get("user_name"),
+            user_handle=data.get("user_handle"),
             thread_id=data.get("thread_id"),
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),

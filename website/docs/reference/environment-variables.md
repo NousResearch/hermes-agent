@@ -239,10 +239,10 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | Variable | Description |
 |----------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (from @BotFather) |
-|| `TELEGRAM_ALLOWED_USERS` | Comma-separated numeric Telegram user IDs allowed to use the bot (applies to DMs, groups, and forums). **Must be numeric IDs (e.g. `469682876`) — not @usernames.** Send `/id` to [@userinfobot](https://t.me/userinfobot) to find yours. Non-numeric values will trigger a warning and be checked against the user's display name as a best-effort fallback. |
+| `TELEGRAM_ALLOWED_USERS` | Comma-separated Telegram user IDs allowed to use the bot (applies to DMs, groups, and forums). **Numeric IDs (e.g. `469682876`) are recommended** — send `/id` to [@userinfobot](https://t.me/userinfobot) to find yours. A non-numeric value is treated as a `@username` and matched case-insensitively against the sender's Telegram username as a best-effort fallback (a warning is logged once, since usernames can change). |
 | `TELEGRAM_GROUP_ALLOWED_USERS` | Comma-separated sender user IDs authorized in groups/forums only (does NOT grant DM access). Chat-ID-shaped values (starting with `-`) are still honored as chat IDs for backward compat with pre-#17686 configs, with a deprecation warning. |
 | `TELEGRAM_GROUP_ALLOWED_CHATS` | Comma-separated group/forum chat IDs; any member is authorized |
-| `TELEGRAM_HOME_CHANNEL` | Default Telegram chat/channel for cron delivery. **Must be a numeric chat ID (e.g. `469682876` for a DM or `-1001234567890` for a group/channel) — not a @username.** Non-numeric values are rejected with a clear warning. Send `/id` to [@userinfobot](https://t.me/userinfobot) to find your chat ID. |
+| `TELEGRAM_HOME_CHANNEL` | Default Telegram chat/channel for cron delivery. **Use a numeric chat ID (e.g. `469682876` for a DM or `-1001234567890` for a group/channel).** A `@username` works only for public channels/supergroups (the Telegram Bot API rejects it for DMs). Non-numeric values are accepted but log a warning. Send `/id` to [@userinfobot](https://t.me/userinfobot) to find your chat ID. |
 | `TELEGRAM_HOME_CHANNEL_NAME` | Display name for the Telegram home channel |
 | `TELEGRAM_CRON_THREAD_ID` | Forum topic ID to receive cron deliveries; overrides `TELEGRAM_HOME_CHANNEL_THREAD_ID` for cron only. Use in topic mode so replies to cron messages open a new session instead of hitting the system lobby (#24409). |
 | `TELEGRAM_WEBHOOK_URL` | Public HTTPS URL for webhook mode (enables webhook instead of polling) |

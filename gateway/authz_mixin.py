@@ -450,6 +450,85 @@ class GatewayAuthorizationMixin:
         ):
             check_ids.add(source.user_name)
 
+        # Telegram: TELEGRAM_ALLOWED_USERS expects numeric user IDs, but the
+        # Telegram UI only ever surfaces @usernames, so operators frequently
+        # put a @username in the allowlist instead. That silently fails
+        # authorization (#13206). Numeric IDs remain the reliable identifier —
+        # warn once when a non-numeric value is present — but as a best-effort
+        # convenience, match it case-insensitively against the sender's real
+        # Telegram @username (source.user_handle), not their display name.
+        if source.platform == Platform.TELEGRAM:
+            # Track which env var each non-numeric value came from so the
+            # warning tells the operator exactly which setting to fix — the
+            # bad value may live in TELEGRAM_ALLOWED_USERS,
+            # TELEGRAM_GROUP_ALLOWED_USERS, or GATEWAY_ALLOWED_USERS.
+            non_numeric_by_var = {}
+            for var_name, raw in (
+                (platform_env_map.get(source.platform, "TELEGRAM_ALLOWED_USERS"), platform_allowlist),
+                (platform_group_user_env_map.get(source.platform, ""), group_user_allowlist),
+                ("GATEWAY_ALLOWED_USERS", global_allowlist),
+            ):
+                if not raw or not var_name:
+                    continue
+                bad = {
+                    v.strip()
+                    for v in raw.split(",")
+                    if v.strip() and not v.strip().lstrip("-").isdigit()
+                }
+                if bad:
+                    non_numeric_by_var.setdefault(var_name, set()).update(bad)
+            non_numeric_allowed = (
+                set().union(*non_numeric_by_var.values()) if non_numeric_by_var else set()
+            )
+            if non_numeric_allowed and not getattr(
+                self, "_warned_non_numeric_telegram_allowed_users", False
+            ):
+                details = "; ".join(
+                    f"{var}={', '.join(sorted(vals))}"
+                    for var, vals in sorted(non_numeric_by_var.items())
+                )
+                logger.warning(
+                    "Non-numeric Telegram allowlist value(s) detected (%s). "
+                    "Telegram allowlists should use numeric user IDs (e.g. "
+                    "'469682876') — send /id to @userinfobot to find yours. "
+                    "Non-numeric values are matched case-insensitively against "
+                    "the sender's @username as a best-effort fallback.",
+                    details,
+                )
+                self._warned_non_numeric_telegram_allowed_users = True
+            if non_numeric_allowed and source.user_handle:
+                handle = source.user_handle.lstrip("@").strip().lower()
+                if handle:
+                    matched = {
+                        aid
+                        for aid in non_numeric_allowed
+                        if aid.lstrip("@").strip().lower() == handle
+                    }
+                    check_ids.update(matched)
+                    # Self-healing onboarding: a username match means we're
+                    # holding the sender's stable numeric ID right now. Surface
+                    # it once per user so the operator can pin it — usernames
+                    # are mutable and reusable (a renamed user gets locked out;
+                    # a freed @handle could be claimed by someone else), so the
+                    # numeric ID is the durable identifier. (#13206)
+                    if matched:
+                        logged = getattr(
+                            self, "_telegram_username_match_logged", None
+                        )
+                        if logged is None:
+                            logged = set()
+                            self._telegram_username_match_logged = logged
+                        if user_id not in logged:
+                            logger.warning(
+                                "Authorized Telegram user @%s via username "
+                                "allowlist fallback. Their numeric ID is %s — "
+                                "add that to TELEGRAM_ALLOWED_USERS to keep "
+                                "access stable across username changes.",
+                                handle,
+                                user_id,
+                            )
+                            logged.add(user_id)
+
         return bool(check_ids & allowed_ids)
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:

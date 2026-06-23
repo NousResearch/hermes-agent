@@ -2284,6 +2284,10 @@ def _persist_model_switch(result) -> None:
         model_cfg["base_url"] = result.base_url
     else:
         model_cfg.pop("base_url", None)
+    if result.api_mode:
+        model_cfg["api_mode"] = result.api_mode
+    else:
+        model_cfg.pop("api_mode", None)
     save_config(cfg)
 
 

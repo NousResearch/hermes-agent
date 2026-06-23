@@ -734,6 +734,7 @@ class DiscordAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
@@ -1590,6 +1591,19 @@ class DiscordAdapter(BasePlatformAdapter):
             mutation_count += 1
             return result
 
+        # Delete obsolete commands FIRST to stay under Discord's 100-command
+        # limit. Discord rejects an upsert that would push the live total over
+        # 100 (error 30032), which silently breaks ALL slash commands. If a new
+        # command is created before the obsolete ones are removed, an app that
+        # is already at the cap momentarily exceeds it and the whole sync fails.
+        # Removing the no-longer-desired commands up front guarantees the live
+        # total never rises above the cap mid-sync.
+        obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
+        for key in obsolete_keys:
+            current = existing_by_key.pop(key)
+            await mutate(http.delete_global_command, app_id, current.id)
+            deleted += 1
+
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:
@@ -1612,10 +1626,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
             await mutate(http.edit_global_command, app_id, current.id, desired)
             updated += 1
-
-        for current in existing_by_key.values():
-            await mutate(http.delete_global_command, app_id, current.id)
-            deleted += 1
 
         return {
             "total": len(desired_payloads),

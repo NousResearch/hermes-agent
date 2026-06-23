@@ -433,17 +433,18 @@ export function ChatView({
 
       <PromptOverlays />
 
-      <div
-        className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
-        {...dropHandlers}
+      <ChatRuntimeBoundary
+        busy={busy}
+        onCancel={onCancel}
+        onEdit={onEdit}
+        onReload={onReload}
+        onThreadMessagesChange={onThreadMessagesChange}
+        suppressMessages={routeSessionMismatch}
       >
-        <ChatRuntimeBoundary
-          busy={busy}
-          onCancel={onCancel}
-          onEdit={onEdit}
-          onReload={onReload}
-          onThreadMessagesChange={onThreadMessagesChange}
-          suppressMessages={routeSessionMismatch}
+        <div
+          className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
+          data-slot="composer-bounds"
+          {...dropHandlers}
         >
           <Thread
             clampToComposer={showChatBar}
@@ -458,54 +459,62 @@ export function ChatView({
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />
-          {showChatBar && (
-            <Suspense fallback={<ChatBarFallback />}>
-              <ChatBar
-                busy={busy}
-                cwd={currentCwd}
-                disabled={!gatewayOpen}
-                focusKey={activeSessionId}
-                gateway={gateway}
-                maxRecordingSeconds={maxVoiceRecordingSeconds}
-                onAddContextRef={onAddContextRef}
-                onAddUrl={onAddUrl}
-                onAttachDroppedItems={onAttachDroppedItems}
-                onAttachImageBlob={onAttachImageBlob}
-                onCancel={onCancel}
-                onPasteClipboardImage={onPasteClipboardImage}
-                onPickFiles={onPickFiles}
-                onPickFolders={onPickFolders}
-                onPickImages={onPickImages}
-                onRemoveAttachment={onRemoveAttachment}
-                onSteer={onSteer}
-                onSubmit={onSubmit}
-                onTranscribeAudio={onTranscribeAudio}
-                queueSessionKey={selectedSessionId}
-                sessionId={activeSessionId}
-                state={chatBarState}
-              />
-            </Suspense>
+          {resumeExhausted && routedSessionId && (
+            <div className="absolute inset-0 z-10 grid place-items-center bg-(--ui-chat-surface-background) px-8 py-10">
+              <ErrorState
+                className="max-w-sm"
+                description={t.desktop.resumeStrandedBody}
+                title={t.desktop.resumeStrandedTitle}
+              >
+                <div className="grid justify-items-center">
+                  <Button onClick={() => onRetryResume(routedSessionId)} size="sm" variant="outline">
+                    {t.desktop.resumeRetry}
+                  </Button>
+                </div>
+              </ErrorState>
+            </div>
           )}
-        </ChatRuntimeBoundary>
-        {resumeExhausted && routedSessionId && (
-          <div className="absolute inset-0 z-10 grid place-items-center bg-(--ui-chat-surface-background) px-8 py-10">
-            <ErrorState
-              className="max-w-sm"
-              description={t.desktop.resumeStrandedBody}
-              title={t.desktop.resumeStrandedTitle}
-            >
-              <div className="grid justify-items-center">
-                <Button onClick={() => onRetryResume(routedSessionId)} size="sm" variant="outline">
-                  {t.desktop.resumeRetry}
-                </Button>
-              </div>
-            </ErrorState>
-          </div>
+          {showChatBar && <ScrollToBottomButton />}
+          <ChatDropOverlay kind={dragKind} />
+          <ChatSwapOverlay profile={gatewaySwapTarget} />
+        </div>
+        {/* Composer renders OUTSIDE the contain:[layout paint] wrapper above:
+            that wrapper is a containing block for — and clips — position:fixed
+            descendants, so the popped-out (fixed) composer would anchor to the
+            chat column (which shifts/resizes with the sidebars) and get clipped
+            off-screen instead of floating against the viewport. As a sibling it
+            anchors to the outer relative container instead: docked is absolute
+            (identical placement), floating resolves against the viewport. Both
+            states stay mounted here, so dock⇄float never remounts the editor. */}
+        {showChatBar && (
+          <Suspense fallback={<ChatBarFallback />}>
+            <ChatBar
+              busy={busy}
+              cwd={currentCwd}
+              disabled={!gatewayOpen}
+              focusKey={activeSessionId}
+              gateway={gateway}
+              maxRecordingSeconds={maxVoiceRecordingSeconds}
+              onAddContextRef={onAddContextRef}
+              onAddUrl={onAddUrl}
+              onAttachDroppedItems={onAttachDroppedItems}
+              onAttachImageBlob={onAttachImageBlob}
+              onCancel={onCancel}
+              onPasteClipboardImage={onPasteClipboardImage}
+              onPickFiles={onPickFiles}
+              onPickFolders={onPickFolders}
+              onPickImages={onPickImages}
+              onRemoveAttachment={onRemoveAttachment}
+              onSteer={onSteer}
+              onSubmit={onSubmit}
+              onTranscribeAudio={onTranscribeAudio}
+              queueSessionKey={selectedSessionId}
+              sessionId={activeSessionId}
+              state={chatBarState}
+            />
+          </Suspense>
         )}
-        {showChatBar && <ScrollToBottomButton />}
-        <ChatDropOverlay kind={dragKind} />
-        <ChatSwapOverlay profile={gatewaySwapTarget} />
-      </div>
+      </ChatRuntimeBoundary>
     </div>
   )
 }

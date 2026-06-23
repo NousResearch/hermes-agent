@@ -33,9 +33,12 @@ Toggle: ``hermes config set context.headroom.enabled true|false``
 
 from __future__ import annotations
 
+from collections import OrderedDict
+
 import logging
 import re
 import hashlib
+import json
 import threading
 import time
 from typing import Optional
@@ -93,10 +96,17 @@ def _get_crusher():
 
 # ---------------------------------------------------------------------------
 # Compression cache — stores originals for future retrieval
+# Uses OrderedDict for LRU eviction (most recently retrieved stays)
 # ---------------------------------------------------------------------------
-_cache: dict[str, str] = {}
+_cache: OrderedDict[str, str] = OrderedDict()
 _cache_lock = threading.Lock()
-_CACHE_MAX = 50  # max cached originals per process (FIFO eviction)
+_CACHE_MAX_DEFAULT = 5000  # fallback when config doesn't specify
+
+
+def _cache_max(cfg: dict | None = None) -> int:
+    """Get cache size from config, with sensible default."""
+    c = cfg or _config()
+    return c.get("cache_max", _CACHE_MAX_DEFAULT)
 
 
 def compress_tool_result(
@@ -118,6 +128,11 @@ def compress_tool_result(
     """
     cfg = config or _config()
     if not cfg.get("enabled", False):
+        return None
+
+    # Never compress headroom_retrieve output — would create recursive
+    # compression and burn cache slots for already-compressed markers.
+    if tool_name == "headroom_retrieve":
         return None
 
     # Env-var escape hatch for CI / debugging
@@ -316,36 +331,86 @@ def _build_output(
     ).hexdigest()[:12]
 
     with _cache_lock:
-        # FIFO eviction (dict preserves insertion order in Python 3.7+)
-        if len(_cache) >= _CACHE_MAX:
-            oldest_key = next(iter(_cache))
-            del _cache[oldest_key]
-        _cache[h] = original
+        # LRU eviction: move to end on access, evict from front
+        max_size = _cache_max()
+        if h in _cache:
+            # Already cached — move to end (most recently used)
+            _cache.move_to_end(h)
+        else:
+            if len(_cache) >= max_size:
+                _cache.popitem(last=False)  # evict oldest (least recently used)
+            _cache[h] = original
 
-    out = (
-        f"[COMPRESSED by headroom ({strategy}): {reduction:.0f}% saved, "
-        f"{len(original):,}→{len(compressed):,} chars]\n"
-        f"{compressed}\n"
-        f"[Full output cached: hash={h}]"
+    # Build output with the compressed content.
+    # For SmartCrusher, the compressed output is a CCR marker (no readable content),
+    # so we also include a preview of the original's first lines.
+    # For heuristic compression, the compressed output already IS a readable summary.
+    parts = [compressed]
+
+    # SmartCrusher produces CCR markers in some fields — add a preview only
+    # when the compressed output has lost the actual content (e.g. terminal
+    # tool {"output":"<<ccr:...>>"}, read_file {"content":"<<ccr:...>>"}).
+    # For tool outputs where SmartCrusher already preserved representative
+    # data (search_files arrays with file paths), skipping the preview avoids
+    # duplicate rendering.
+    if strategy == "smartcrusher":
+        raw_preview = None
+        try:
+            comp_parsed = json.loads(compressed)
+            if isinstance(comp_parsed, dict):
+                # Find any string field that was replaced with a CCR marker.
+                # Those are the fields where the original content was lost.
+                for key, val in comp_parsed.items():
+                    if isinstance(val, str) and "<<ccr:" in val:
+                        orig_parsed = json.loads(original)
+                        if isinstance(orig_parsed, dict):
+                            raw_preview = orig_parsed.get(key, "")
+                            break
+            elif isinstance(comp_parsed, str):
+                raw_preview = original
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        if raw_preview is not None and raw_preview:
+            content_lines = raw_preview.split("\n")
+            preview = "\n".join(content_lines[:15])
+            if len(content_lines) > 15:
+                preview += f"\n... ({len(content_lines) - 15} more lines)"
+            parts.append(preview)
+
+    parts.append(f"[Full output cached: hash={h}]")
+
+    # Build the header LAST so the savings figure reflects the actual total
+    # delivered size (compressed JSON + preview + markers), not just the
+    # SmartCrusher payload.
+    out_parts = "\n".join(parts)
+    actual_reduction = (1 - len(out_parts) / len(original)) * 100
+    header = (
+        f"[COMPRESSED by headroom ({strategy}): {actual_reduction:.0f}% saved, "
+        f"{len(original):,}→{len(out_parts):,} chars]"
     )
+    out = f"{header}\n{out_parts}"
 
     logger.debug(
         "Headroom: compressed %s→%s chars (%.0f%% saved, strategy=%s, hash=%s)",
-        len(original), len(compressed), reduction, strategy, h,
+        len(original), len(out_parts), actual_reduction, strategy, h,
     )
     return out
 
 
 def retrieve_cached(h: str) -> Optional[str]:
-    """Retrieve an original tool result from the compression cache."""
+    """Retrieve an original tool result from the compression cache.
+    Promotes the item to most-recently-used to prevent eviction."""
     with _cache_lock:
+        if h in _cache:
+            _cache.move_to_end(h)  # promote to MRU
         return _cache.get(h)
 
 
 def cache_stats() -> dict:
     """Return cache statistics."""
     with _cache_lock:
-        return {"cached_items": len(_cache), "max_cache_size": _CACHE_MAX}
+        return {"cached_items": len(_cache), "max_cache_size": _cache_max()}
 
 
 def clear_cache():

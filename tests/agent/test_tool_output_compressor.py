@@ -349,15 +349,16 @@ def test_cache_populated_after_compression():
 def test_cache_fifo_eviction():
     """_build_output evicts oldest entry (FIFO) when cache is full."""
     comp.clear_cache()
+    max_size = comp._CACHE_MAX_DEFAULT
     # Pre-fill cache to max
     with comp._cache_lock:
-        for i in range(50):
-            comp._cache[f"h{i:03d}"] = f"original {i}"
+        for i in range(max_size):
+            comp._cache[f"h{i:05d}"] = f"original {i}"
 
-    # Now _build_output should evict h000 (FIFO)
+    # Now _build_output should evict the oldest entry (FIFO)
+    oldest_key = f"h00000"
     out = comp._build_output("new original", "compressed", 50.0, "test")
-    assert "h000" not in comp._cache
-    # New hash should be present in the output
+    assert oldest_key not in comp._cache
     assert "hash=" in out
 
 
@@ -446,9 +447,34 @@ def test_output_format():
     out = comp._build_output("original" * 100, "compressed", 50.0, "smartcrusher")
     assert "COMPRESSED by headroom" in out
     assert "smartcrusher" in out
-    assert "50% saved" in out
+    # actual reduction is computed from final output size, not the passed argument
+    assert "% saved" in out
     assert "hash=" in out
-    assert "compressed" in out
+
+
+def test_output_format_with_ccr_preview():
+    """Preview is added when compressed output contains a CCR marker."""
+    import json
+    # Simulate terminal tool: original has "output" key with multiline text,
+    # compressed has the output replaced with a CCR token.
+    original = json.dumps({"output": "\n".join(f"line {i}" for i in range(20)), "exit_code": 0})
+    compressed = json.dumps({"output": "<<ccr:abc123,string,1KB>>", "exit_code": 0})
+    out = comp._build_output(original, compressed, 50.0, "smartcrusher")
+    assert "COMPRESSED by headroom" in out
+    assert "line 0" in out  # preview contains first lines of original
+    assert "(5 more lines)" in out  # ellipsis for truncated lines
+    assert "hash=" in out
+
+
+def test_output_format_no_duplicate_preview():
+    """No preview added when compressed output has no CCR markers (search_files)."""
+    import json
+    original = json.dumps({"total_count": 50, "files": [f"/path/f{i}.py" for i in range(50)]})
+    compressed = json.dumps({"total_count": 50, "files": [f"/path/f{i}.py" for i in range(16)]})
+    out = comp._build_output(original, compressed, 50.0, "smartcrusher")
+    # Should NOT have a preview — no CCR markers in compressed output
+    assert out.count("f0.py") == 1  # only in the compressed JSON, not duplicated
+    assert "hash=" in out
 
 
 def test_md5_usedforsecurity_false():
@@ -465,3 +491,103 @@ def test_md5_usedforsecurity_false():
     with patch.object(hashlib, "md5", side_effect=wrapped):
         comp._build_output("original" * 10, "compressed", 50.0, "smartcrusher")
     assert seen_kwargs.get("usedforsecurity") is False
+
+
+def test_headroom_retrieve_excluded_from_compression():
+    """headroom_retrieve output is never compressed (prevents recursive compression)."""
+    import json
+    # Even large retrieve output passes through
+    result = comp.compress_tool_result(
+        "headroom_retrieve",
+        json.dumps({"content": "x" * 10000, "found": True}),
+        config={"enabled": True, "min_chars": 0},
+    )
+    assert result is None
+
+
+def test_lru_promotion_on_retrieval():
+    """Retrieving a cached item moves it to most-recently-used (stays longer)."""
+    comp.clear_cache()
+    max_size = comp._CACHE_MAX_DEFAULT
+    # Fill cache
+    with comp._cache_lock:
+        for i in range(max_size):
+            comp._cache[f"h{i:05d}"] = f"original {i}"
+
+    # Retrieve oldest item — should promote to end (most recently used)
+    comp.retrieve_cached("h00000")
+
+    # Insert one more item (triggers eviction of LRU)
+    out = comp._build_output("new", "compressed", 50.0, "test")
+    # h00000 was promoted, so it should NOT be evicted
+    assert "h00000" in comp._cache
+    # h00001 should be evicted (it's the actual LRU now)
+    assert "h00001" not in comp._cache
+
+
+# ---------------------------------------------------------------------------
+# Integration: simulates multi-turn agent workflow
+# ---------------------------------------------------------------------------
+
+def test_multi_turn_cache_survives_retrieval():
+    """Simulate: turn 1 compresses tool output, turn 2 retrieves it.
+
+    This is the actual failure mode the agent hits — hashes from previous
+    turns are evicted before retrieval.
+    """
+    comp.clear_cache()
+    comp._config_cache = None
+
+    config = {
+        "enabled": True,
+        "min_chars": 0,
+        "min_reduction_pct": 10,
+    }
+
+    # Mock crusher that actually compresses (was_modified=True)
+    mock_crusher = MagicMock()
+    for _ in range(100):
+        mock_cr = MagicMock()
+        mock_cr.was_modified = True
+        mock_cr.compressed = "compressed_placeholder"
+        mock_crusher.crush.return_value = mock_cr
+
+    with patch.object(comp, "_get_crusher", return_value=mock_crusher):
+        # Turn 1: multiple large tool outputs with UNIQUE content
+        for i in range(100):
+            text = f"tool_{i}: " + f"\n".join([f"  {j}|/src/file_{i:03d}_{j:03d}.py: def handler_{i}_{j}(): pass" for j in range(200)])
+            result = comp.compress_tool_result(f"tool_{i}", text, config=config)
+            assert result is not None, f"tool_{i} should have been compressed"
+
+        # Cache should be populated
+        stats = comp.cache_stats()
+        assert stats["cached_items"] == 100
+        assert stats["max_cache_size"] == 5000  # default
+
+        # Turn 2: retrieve the first hash from turn 1
+        first_hash = None
+        with comp._cache_lock:
+            first_hash = next(iter(comp._cache.keys()))
+        original = comp.retrieve_cached(first_hash)
+        assert original is not None, "First hash should still be in cache"
+
+
+def test_headroom_retrieve_not_recursively_compressed():
+    """Ensure headroom_retrieve output doesn't get compressed itself.
+
+    If it does, each retrieval burns a new cache slot with a compressed
+    marker, accelerating eviction of useful content.
+    """
+    mock_cr = MagicMock()
+    mock_cr.was_modified = False
+    mock_crusher = MagicMock()
+    mock_crusher.crush.return_value = mock_cr
+
+    # Large headroom_retrieve output — should pass through, NOT compress
+    with patch.object(comp, "_get_crusher", return_value=mock_crusher):
+        result = comp.compress_tool_result(
+            "headroom_retrieve",
+            '{"found":true,"content":"' + "x" * 10000 + '"}',
+            config={"enabled": True, "min_chars": 0, "min_reduction_pct": 10},
+        )
+        assert result is None, "headroom_retrieve output should never be compressed"

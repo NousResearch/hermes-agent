@@ -491,6 +491,12 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.final_sentinel import (
+    FINAL_MESSAGE_SENTINEL,
+    FinalSentinelLifecycleSnapshot,
+    should_send_final_sentinel,
+    strip_trailing_final_sentinel,
+)
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
@@ -2187,6 +2193,8 @@ class BasePlatformAdapter(ABC):
         # registered by a fresher run for the same session.
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
+        self._final_sentinel_running_agent_checker: Optional[Callable[[str], bool]] = None
+        self._final_sentinel_gateway_active_run_checker: Optional[Callable[[str], bool]] = None
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
@@ -3661,6 +3669,78 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks.pop(session_key, None)
         return entry if callable(entry) else None
 
+    def _has_pending_gateway_approval(self, session_key: str) -> bool:
+        """Best-effort approval-pending check for final sentinel gating."""
+        if not session_key:
+            return False
+        try:
+            from tools.approval import has_blocking_approval
+            return bool(has_blocking_approval(session_key))
+        except Exception:
+            # If approval state cannot be inspected, do not treat it as idle.
+            return True
+
+    def _has_pending_text_debounce(self, session_key: str) -> bool:
+        """Return True when a queued/debounced text follow-up may still flush."""
+        try:
+            state = self._text_debounce_store().get(session_key)
+        except Exception:
+            return True
+        if state is None:
+            return False
+        task = getattr(state, "task", None)
+        task_pending = bool(task is not None and not task.done())
+        return task_pending or getattr(state, "event", None) is not None
+
+    def _known_running_agent_active(self, session_key: str) -> bool:
+        """Call the runner-provided active-agent checker if present."""
+        checker = self._final_sentinel_running_agent_checker
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker(session_key))
+        except Exception:
+            # Unknown active-agent state is not safe enough for COMPLETE.
+            return True
+
+    def _known_gateway_active_run(self, session_key: str) -> bool:
+        """Call the runner-provided gateway-active-run checker if present."""
+        checker = self._final_sentinel_gateway_active_run_checker
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker(session_key))
+        except Exception:
+            # Unknown gateway-run state is not safe enough for COMPLETE.
+            return True
+
+    def _final_sentinel_lifecycle_snapshot(
+        self,
+        session_key: str,
+        *,
+        drain_task_spawned: bool = False,
+        post_delivery_callback_pending: bool = False,
+        final_report_pending: bool = False,
+    ) -> FinalSentinelLifecycleSnapshot:
+        """Build the true-idle snapshot used before emitting COMPLETE."""
+        task = self._session_tasks.get(session_key)
+        active_task = bool(task is not None and not task.done())
+        return FinalSentinelLifecycleSnapshot(
+            active_session=session_key in self._active_sessions,
+            active_session_task=active_task,
+            pending_message=(
+                session_key in self._pending_messages
+                or self._has_pending_text_debounce(session_key)
+            ),
+            drain_task_spawned=drain_task_spawned,
+            post_delivery_callback_pending=post_delivery_callback_pending,
+            approval_pending=self._has_pending_gateway_approval(session_key),
+            running_agent_active=self._known_running_agent_active(session_key),
+            background_review_pending=post_delivery_callback_pending,
+            final_report_pending=final_report_pending,
+            gateway_active_run=self._known_gateway_active_run(session_key),
+        )
+
     # ── Processing lifecycle hooks ──────────────────────────────────────────
     # Subclasses override these to react to message processing events
     # (e.g. Discord adds 👀/✅/❌ reactions).
@@ -4450,6 +4530,15 @@ class BasePlatformAdapter(ABC):
         # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
         delivery_succeeded = False
+        is_ephemeral_response = False
+        suppressed_or_stale_response = False
+        drain_task_spawned = False
+        post_delivery_callback_unresolved = False
+        final_report_pending = True
+        _final_thread_metadata = _thread_metadata_for_source(
+            event.source,
+            _reply_anchor_for_event(event),
+        )
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -4521,6 +4610,7 @@ class BasePlatformAdapter(ABC):
                     self.name,
                     session_key,
                 )
+                suppressed_or_stale_response = True
                 response = None
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
@@ -4545,7 +4635,9 @@ class BasePlatformAdapter(ABC):
                 # _strip_media_directives shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag
                 # with an unknown extension is intentionally left in the body for
                 # extract_local_files below to pick up rather than silently dropped (#34517).
-                text_content = _strip_media_directives(text_content).strip()
+                text_content = strip_trailing_final_sentinel(
+                    _strip_media_directives(text_content).strip()
+                )
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
@@ -4824,6 +4916,7 @@ class BasePlatformAdapter(ABC):
                 drain_task = asyncio.create_task(
                     self._process_message_background(pending_event, session_key)
                 )
+                drain_task_spawned = True
                 # Hand ownership of the session to the drain task so
                 # stale-lock detection keeps working while it runs.
                 self._session_tasks[session_key] = drain_task
@@ -4898,7 +4991,7 @@ class BasePlatformAdapter(ABC):
                             timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
                         )
                 except (asyncio.TimeoutError, Exception):
-                    pass
+                    post_delivery_callback_unresolved = True
             # Some adapters keep platform-level typing tasks.  If callback
             # work or a late refresh recreated one, make one final bounded stop
             # before releasing the session guard.
@@ -4945,6 +5038,7 @@ class BasePlatformAdapter(ABC):
                     drain_task = asyncio.create_task(
                         self._process_message_background(late_pending, session_key)
                     )
+                    drain_task_spawned = True
                     # Hand ownership of the session to the drain task so stale-lock
                     # detection keeps working while it runs.
                     self._session_tasks[session_key] = drain_task
@@ -4978,6 +5072,35 @@ class BasePlatformAdapter(ABC):
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     del self._session_tasks[session_key]
                     self._release_session_guard(session_key, guard=interrupt_event)
+
+            final_report_pending = False
+            lifecycle = self._final_sentinel_lifecycle_snapshot(
+                session_key,
+                drain_task_spawned=drain_task_spawned,
+                post_delivery_callback_pending=post_delivery_callback_unresolved,
+                final_report_pending=final_report_pending,
+            )
+            if should_send_final_sentinel(
+                platform=self.platform,
+                message_type=event.message_type,
+                response_delivered=delivery_succeeded,
+                is_ephemeral_response=is_ephemeral_response,
+                failed=not delivery_succeeded and delivery_attempted,
+                suppressed_or_stale=suppressed_or_stale_response,
+                lifecycle=lifecycle,
+            ):
+                try:
+                    await self._send_with_retry(
+                        chat_id=event.source.chat_id,
+                        content=FINAL_MESSAGE_SENTINEL,
+                        metadata=_final_thread_metadata,
+                    )
+                except Exception as _sentinel_err:
+                    logger.debug(
+                        "[%s] final sentinel send failed: %s",
+                        self.name,
+                        _sentinel_err,
+                    )
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.

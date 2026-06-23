@@ -57,8 +57,8 @@ _HERMES_CORE_TOOLS = [
     # move, so they live in the `project` toolset and are enabled solely by the
     # GUI gateway (tui_gateway/server.py::_load_enabled_toolsets) — keeping them
     # off every CLI/messaging/cron schema (narrow waist).
-    # Session history search
-    "session_search",
+    # Session history search + running summary
+    "session_search", "session_summary",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -218,8 +218,8 @@ TOOLSETS = {
     },
     
     "session_search": {
-        "description": "Search and recall past conversations with summarization",
-        "tools": ["session_search"],
+        "description": "Search past conversations and maintain running session summaries",
+        "tools": ["session_search", "session_summary"],
         "includes": []
     },
 

@@ -7605,6 +7605,16 @@ class CronJobUpdate(BaseModel):
     updates: dict
 
 
+class LearnStart(BaseModel):
+    mode: str = "learn"
+
+
+class LearnConfig(BaseModel):
+    allowlist: Optional[List[str]] = None
+    denylist: Optional[List[str]] = None
+    retention_days: Optional[int] = None
+
+
 _CRON_PROFILE_LOCK = threading.RLock()
 
 
@@ -7864,6 +7874,101 @@ async def delete_cron_job(job_id: str, profile: Optional[str] = None):
     if not removed:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Learn mode endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/learn/status")
+async def get_learn_status(profile: Optional[str] = None):
+    from hermes_cli.learn import state as learn_state
+
+    with _config_profile_scope(profile):
+        return learn_state.get_status()
+
+
+@app.post("/api/learn/start")
+async def start_learn(body: LearnStart, profile: Optional[str] = None):
+    from hermes_cli.learn import runtime as learn_runtime
+    from hermes_cli.learn import state as learn_state
+
+    with _config_profile_scope(profile):
+        try:
+            result = learn_state.start(mode=body.mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        learn_runtime.ensure_running()
+        return result
+
+
+@app.post("/api/learn/pause")
+async def pause_learn(profile: Optional[str] = None):
+    from hermes_cli.learn import runtime as learn_runtime
+    from hermes_cli.learn import state as learn_state
+
+    with _config_profile_scope(profile):
+        result = learn_state.pause()
+        learn_runtime.stop_runtime()
+        return result
+
+
+@app.post("/api/learn/resume")
+async def resume_learn(profile: Optional[str] = None):
+    from hermes_cli.learn import runtime as learn_runtime
+    from hermes_cli.learn import state as learn_state
+
+    with _config_profile_scope(profile):
+        result = learn_state.resume()
+        learn_runtime.ensure_running()
+        return result
+
+
+@app.post("/api/learn/stop")
+async def stop_learn(profile: Optional[str] = None):
+    from hermes_cli.learn import runtime as learn_runtime
+    from hermes_cli.learn import state as learn_state
+
+    with _config_profile_scope(profile):
+        result = learn_state.stop()
+        learn_runtime.stop_runtime()
+        return result
+
+
+@app.post("/api/learn/suggestions")
+async def review_learn_suggestions(profile: Optional[str] = None):
+    from hermes_cli.learn import analyzer as learn_analyzer
+
+    with _config_profile_scope(profile):
+        suggestions = learn_analyzer.create_usage_suggestions()
+        return {"created_count": len(suggestions), "suggestions": suggestions}
+
+
+@app.put("/api/learn/config")
+async def update_learn_config(body: LearnConfig, profile: Optional[str] = None):
+    from hermes_cli.learn import state as learn_state
+
+    with _config_profile_scope(profile):
+        try:
+            return learn_state.update_config(
+                allowlist=body.allowlist,
+                denylist=body.denylist,
+                retention_days=body.retention_days,
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/learn/data")
+async def delete_learn_data(profile: Optional[str] = None):
+    from hermes_cli.learn import runtime as learn_runtime
+    from hermes_cli.learn import state as learn_state
+
+    with _config_profile_scope(profile):
+        result = learn_state.delete_data()
+        learn_runtime.stop_runtime()
+        return result
 
 
 def _fire_cron_job_for_profile(profile: str, job_id: str) -> bool:

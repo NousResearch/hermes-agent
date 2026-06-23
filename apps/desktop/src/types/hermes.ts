@@ -549,6 +549,42 @@ export interface SkillInfo {
   name: string
 }
 
+export type LearnMode = 'off' | 'learn'
+export type LearnStartMode = 'learn'
+
+export type LearnState = 'paused' | 'running' | 'stopped'
+
+export interface LearnStatus {
+  allowlist: string[]
+  collected_event_count: number
+  data_deleted_at: string | null
+  denylist: string[]
+  enabled: boolean
+  hermes_home: string
+  mode: LearnMode
+  paused: boolean
+  paused_at: string | null
+  resumed_at: string | null
+  retention_days: number
+  running: boolean
+  started_at: string | null
+  state: LearnState
+  stopped_at: string | null
+  storage_path: string
+  updated_at: string | null
+}
+
+export interface LearnConfigUpdate {
+  allowlist?: string[]
+  denylist?: string[]
+  retention_days?: number
+}
+
+export interface LearnSuggestionsResponse {
+  created_count: number
+  suggestions: Record<string, unknown>[]
+}
+
 export interface ToolsetInfo {
   configured: boolean
   description: string

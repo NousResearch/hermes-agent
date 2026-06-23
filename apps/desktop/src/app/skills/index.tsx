@@ -7,11 +7,11 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
-import { getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
+import { getLearnStatus, getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
+import type { LearnStatus, SkillInfo, ToolsetInfo } from '@/types/hermes'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -19,11 +19,31 @@ import { PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
 import { ComputerUsePanel } from '../settings/computer-use-panel'
 import { asText, includesQuery, prettyName, toolNames, toolsetDisplayLabel } from '../settings/helpers'
+import { LearnPanel } from '../settings/learn-panel'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 const SKILLS_MODES = ['skills', 'toolsets'] as const
 type SkillsMode = (typeof SKILLS_MODES)[number]
+const LEARN_SURFACE_ID = '__learn_surface__'
+type ToolsetRow =
+  | { kind: 'learn'; key: typeof LEARN_SURFACE_ID; label: 'Learn' }
+  | { kind: 'toolset'; key: string; label: string; toolset: ToolsetInfo }
+
+const LEARN_SURFACE_SEARCH_TEXT = [
+  'learn',
+  'workflow',
+  'workflows',
+  'automation',
+  'automations',
+  'memory',
+  'memories',
+  'skills',
+  'cron',
+  'suggestions',
+  'teach',
+  'approval'
+].join(' ')
 
 function categoryFor(skill: SkillInfo): string {
   return asText(skill.category) || 'general'
@@ -69,6 +89,27 @@ function filteredToolsets(toolsets: ToolsetInfo[], query: string): ToolsetInfo[]
     .sort((a, b) => toolsetDisplayLabel(a).localeCompare(toolsetDisplayLabel(b)))
 }
 
+function learnSurfaceMatches(query: string): boolean {
+  const q = query.trim().toLowerCase()
+
+  return !q || LEARN_SURFACE_SEARCH_TEXT.includes(q)
+}
+
+function filteredToolsetRows(toolsets: ToolsetInfo[], query: string): ToolsetRow[] {
+  const rows: ToolsetRow[] = filteredToolsets(toolsets, query).map(toolset => ({
+    kind: 'toolset',
+    key: toolset.name,
+    label: toolsetDisplayLabel(toolset),
+    toolset
+  }))
+
+  if (learnSurfaceMatches(query)) {
+    rows.push({ kind: 'learn', key: LEARN_SURFACE_ID, label: 'Learn' })
+  }
+
+  return rows.sort((a, b) => a.label.localeCompare(b.label))
+}
+
 interface SkillsViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
@@ -80,6 +121,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   const [query, setQuery] = useState('')
   const [skills, setSkills] = useState<SkillInfo[] | null>(null)
   const [toolsets, setToolsets] = useState<ToolsetInfo[] | null>(null)
+  const [learnStatus, setLearnStatus] = useState<LearnStatus | null>(null)
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [savingSkill, setSavingSkill] = useState<string | null>(null)
@@ -90,9 +132,14 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     setRefreshing(true)
 
     try {
-      const [nextSkills, nextToolsets] = await Promise.all([getSkills(), getToolsets()])
+      const [nextSkills, nextToolsets, nextLearnStatus] = await Promise.all([
+        getSkills(),
+        getToolsets(),
+        getLearnStatus().catch(() => null)
+      ])
       setSkills(nextSkills)
       setToolsets(nextToolsets)
+      setLearnStatus(nextLearnStatus)
     } catch (err) {
       notifyError(err, t.skills.skillsLoadFailed)
     } finally {
@@ -134,7 +181,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     [activeCategory, mode, query, skills]
   )
 
-  const visibleToolsets = useMemo(() => (toolsets ? filteredToolsets(toolsets, query) : []), [query, toolsets])
+  const visibleToolsetRows = useMemo(() => (toolsets ? filteredToolsetRows(toolsets, query) : []), [query, toolsets])
 
   const skillGroups = useMemo(() => {
     const groups = new Map<string, SkillInfo[]>()
@@ -281,21 +328,37 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         </div>
       ) : (
         <div className={cn('h-full overflow-y-auto py-3', PAGE_INSET_X)}>
-          {visibleToolsets.length === 0 ? (
+          {visibleToolsetRows.length === 0 ? (
             <EmptyState description={t.skills.noToolsetsDesc} title={t.skills.noToolsetsTitle} />
           ) : (
             <div className="space-y-2">
-              <div className="text-xs text-muted-foreground">
-                {t.skills.toolsetsEnabled(enabledToolsets, toolsets.length)}
-              </div>
+              {toolsets.length > 0 && (
+                <div className="text-xs text-muted-foreground">
+                  {t.skills.toolsetsEnabled(enabledToolsets, toolsets.length)}
+                </div>
+              )}
               <div>
-                {visibleToolsets.map(toolset => {
+                {visibleToolsetRows.map(row => {
+                  if (row.kind === 'learn') {
+                    return (
+                      <LearnSurfaceRow
+                        expanded={expandedToolset === LEARN_SURFACE_ID}
+                        key={row.key}
+                        onStatusChange={setLearnStatus}
+                        onToggle={() =>
+                          setExpandedToolset(current => (current === LEARN_SURFACE_ID ? null : LEARN_SURFACE_ID))
+                        }
+                        status={learnStatus}
+                      />
+                    )
+                  }
+
+                  const { label, toolset } = row
                   const tools = toolNames(toolset)
-                  const label = toolsetDisplayLabel(toolset)
                   const expanded = expandedToolset === toolset.name
 
                   return (
-                    <div className="px-0 py-2.5" key={toolset.name}>
+                    <div className="px-0 py-2.5" key={row.key}>
                       <div className="flex items-center justify-between gap-2">
                         <div className="truncate text-sm font-medium">{label}</div>
                         <div className="flex shrink-0 items-center gap-1.5">
@@ -348,6 +411,56 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         </div>
       )}
     </PageSearchShell>
+  )
+}
+
+function learnSurfaceStatusLabel(status: LearnStatus | null): string {
+  if (!status) {
+    return 'Preview'
+  }
+  if (status.running) {
+    return 'Running'
+  }
+  if (status.paused) {
+    return 'Paused'
+  }
+  return status.mode === 'learn' ? 'Stopped' : 'Off'
+}
+
+function LearnSurfaceRow({
+  expanded,
+  onStatusChange,
+  onToggle,
+  status
+}: {
+  expanded: boolean
+  onStatusChange: (status: LearnStatus) => void
+  onToggle: () => void
+  status: LearnStatus | null
+}) {
+  const statusLabel = learnSurfaceStatusLabel(status)
+
+  return (
+    <div className="px-0 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium">Learn</div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Identify repeat workflows and draft automation suggestions for approval.
+          </p>
+        </div>
+        <button
+          aria-expanded={expanded}
+          aria-label="Configure Learn"
+          className="shrink-0 cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          onClick={onToggle}
+          type="button"
+        >
+          <StatusPill active={status?.running ?? false}>{statusLabel}</StatusPill>
+        </button>
+      </div>
+      {expanded && <LearnPanel onStatusChange={onStatusChange} />}
+    </div>
   )
 }
 

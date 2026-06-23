@@ -413,6 +413,7 @@ export interface DesktopBootstrapState {
   manifest: { type: 'manifest'; stages: DesktopBootstrapStageDescriptor[]; protocolVersion: number | null } | null
   stages: Record<string, DesktopBootstrapStageResult>
   error: string | null
+  cancelled?: boolean
   log: Array<{ ts: number; stage: string | null; line: string; stream?: 'stdout' | 'stderr' }>
   startedAt: number | null
   completedAt: number | null

@@ -910,7 +910,10 @@ class DingTalkAdapter(BasePlatformAdapter):
                 # the card path.
                 if is_final_reply:
                     self._fire_done_reaction(chat_id)
-                return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
+                # Card SDK not available — return the __no_edit__ sentinel so
+                # stream_consumer doesn't try to call edit_message (which would
+                # crash on self._card_sdk.streaming_update_with_options_async).
+                return SendResult(success=True, message_id="__no_edit__")
             body = resp.text
             logger.warning(
                 "[%s] Send failed HTTP %d: %s", self.name, resp.status_code, body[:200]
@@ -929,6 +932,53 @@ class DingTalkAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """DingTalk does not support typing indicators."""
         pass
+
+    # -- Clarify (button-style interaction prompts) --------------------------
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render clarify prompts with button-style formatting for DingTalk.
+
+        DingTalk doesn't have native inline keyboard buttons like Telegram,
+        so we render choices as emoji-pill buttons in markdown — rich enough
+        to feel interactive while still working through the session webhook.
+
+        Multiple choice: emoji-numbered button pills + reply instruction.
+        Open-ended: plain question text (gateway text-intercept resolves it).
+        """
+        from tools.clarify_gateway import mark_awaiting_text
+
+        if choices:
+            # --- Multiple choice: emoji button pills ---
+            lines = [f"❓ **{question}**", ""]
+            for i, choice in enumerate(choices, start=1):
+                emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"][i - 1]
+                lines.append(f"> {emoji}  **{choice}**")
+                if i < len(choices):
+                    lines.append("")  # spacing between options
+            lines.append("")
+            lines.append("---")
+            lines.append("💬 回复 **数字** 或 **选项文本**，也可输入其他答案")
+            text = "\n".join(lines)
+
+            # Enable text-capture so the gateway picks up the reply
+            mark_awaiting_text(clarify_id)
+        else:
+            # --- Open-ended ---
+            text = f"❓ **{question}**\n\n💬 请在下方回复"
+
+        return await self.send(
+            chat_id=chat_id,
+            content=text,
+            metadata=metadata,
+        )
 
     async def send_image(
         self,
@@ -1151,6 +1201,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         """
         if not message_id:
             return SendResult(success=False, error="message_id required")
+        if not self._card_sdk:
+            return SendResult(
+                success=False,
+                error="AI Card not configured — install alibabacloud_dingtalk and set card_template_id in config.yaml",
+            )
         token = await self._get_access_token()
         if not token:
             return SendResult(success=False, error="No access token")

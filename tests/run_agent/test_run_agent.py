@@ -4077,6 +4077,46 @@ class TestRunConversation:
         assert result["final_response"] == "Fresh partial content from this turn"
         assert result["api_calls"] == 1
 
+    def test_oneshot_final_response_not_overwritten_by_short_followup(self, agent):
+        """Fix #28326: when model returns content+tool_call then short follow-up,
+        final_response should include the substantive content, not just the tail."""
+        self._setup_agent(agent)
+        # Simulate 2-step conversation:
+        #   Turn 1: model returns long content + todo tool call
+        #   Turn 2: model returns short follow-up only (no tool calls)
+        _substantive = "这是一份详细的分析报告，包含多个要点和深入见解。" * 10
+        _short_followup = "还需要深挖吗？"
+
+        tc = _mock_tool_call(name="web_search", arguments='{"query":"test"}')
+        resp1 = _mock_response(
+            content=_substantive,
+            tool_calls=[tc],
+            finish_reason="tool_calls",
+        )
+        resp2 = _mock_response(
+            content=_short_followup,
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("分析一下")
+
+        # The final_response should contain the substantive content,
+        # not just the short follow-up
+        assert _substantive in result["final_response"], (
+            f"Expected substantive content in final_response, got: {result['final_response'][:100]}..."
+        )
+        assert _short_followup in result["final_response"], (
+            "Short follow-up should also be preserved"
+        )
+        assert result["api_calls"] == 2
+
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
         agent.provider = "nous"

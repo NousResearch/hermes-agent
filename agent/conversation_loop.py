@@ -4179,6 +4179,30 @@ def run_conversation(
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
                 
+                # If a prior turn delivered substantive content alongside tool
+                # calls (stored in _last_content_with_tools) and the model's
+                # follow-up is a short epilogue ("Anything else?", "还需要深挖吗？"),
+                # prepend the earlier content so the oneshot/chat() caller
+                # receives the full answer instead of just the trailing remark.
+                # Fixes #28326: -z/oneshot final_response overwritten.
+                _prior = getattr(agent, "_last_content_with_tools", None)
+                if (
+                    _prior
+                    and final_response
+                    and len(final_response) < len(_prior) * 0.3
+                    and agent._has_content_after_think_block(_prior)
+                ):
+                    _prior_clean = agent._strip_think_blocks(_prior).strip()
+                    _follow_clean = agent._strip_think_blocks(final_response).strip()
+                    final_response = f"{_prior_clean}\n\n{_follow_clean}"
+                    logger.info(
+                        "Prepended prior-turn content (%d chars) before "
+                        "short follow-up (%d chars) to prevent "
+                        "final_response overwrite",
+                        len(_prior_clean), len(_follow_clean),
+                    )
+                agent._last_content_with_tools = None
+                
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
                 # status messages.  _mute_post_response was set during a

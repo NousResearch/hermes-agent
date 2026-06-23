@@ -272,3 +272,73 @@ class TestSequentialPool:
 
         sched._shutdown_parallel_pool()
         assert sched._sequential_pool is None
+
+
+class TestCronDoubleFireRace:
+    """Race condition: two overlapping ticks can dispatch the same job twice.
+    
+    Issue #51329: A cron job fires twice due to a race between tick dispatch
+    and in-flight guard registration. When two tick() calls overlap within
+    ~1 second, the first tick's job hasn't registered itself in _running_job_ids
+    before the second tick acquires the flock and sees the job as not-yet-running.
+    """
+
+    def test_jobs_registered_in_guard_before_pool_dispatch(self, tmp_path, monkeypatch):
+        """
+        Verify that the in-flight guard (_running_job_ids) correctly prevents
+        double-dispatch of a job that's already running. This test ensures
+        the guard registration happens BEFORE the pool dispatch, fixing #51329.
+        
+        Issue #51329: Without proper registration ordering, overlapping ticks
+        can dispatch the same job twice because the in-flight guard doesn't
+        register the job until it's already dispatched to the pool.
+        """
+        import cron.scheduler as sched
+
+        # Reset module state.
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._running_job_ids.clear()
+
+        job = {
+            "id": "guard-job",
+            "name": "guard-test",
+            "prompt": "test",
+            "schedule": "every 5m",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "local",
+        }
+
+        # Track how many times run_job is called
+        call_count = []
+
+        def mock_run_job(j):
+            """Track every time the job is dispatched."""
+            call_count.append(j["id"])
+            return True, "out", "resp", None
+
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
+        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "run_job", mock_run_job)
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
+        monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
+
+        # First tick: dispatch the job normally
+        n1 = sched.tick(verbose=False, sync=True)
+        assert n1 == 1, f"First tick should dispatch 1 job, got {n1}"
+        assert call_count == ["guard-job"], f"Job should have been dispatched once, got {call_count}"
+
+        # Now manually register the job as still running (simulating the race window)
+        sched._running_job_ids.add("guard-job")
+
+        # Second tick: should see job as already running and skip it
+        call_count.clear()
+        n2 = sched.tick(verbose=False, sync=True)
+        assert n2 == 0, f"Second tick should skip the running job, got {n2}"
+        assert call_count == [], f"Job should not have been dispatched again, got {call_count}"
+
+        # Cleanup
+        sched._running_job_ids.clear()
+        sched._shutdown_parallel_pool()

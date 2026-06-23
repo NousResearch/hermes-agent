@@ -2,7 +2,7 @@
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { createContext, type FC, type PropsWithChildren, type ReactNode, useContext, useMemo } from 'react'
+import { createContext, type FC, type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo } from 'react'
 
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
@@ -10,7 +10,6 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
-import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -25,6 +24,8 @@ import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } f
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { recordPreviewArtifact } from '@/store/preview-status'
+import { $activeSessionId, $currentCwd } from '@/store/session'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
@@ -242,6 +243,22 @@ function ToolEntry({ part }: ToolEntryProps) {
     return buildToolView(p, inlineDiff)
   }, [inlineDiff, isPending, part])
 
+  // Surface a previewable artifact (HTML file / localhost URL) as a compact link
+  // in the composer status stack rather than a bulky inline card. Uses the same
+  // detected target the old inline card did, keyed to the active session the
+  // stack reads from. Idempotent + dedup'd, so re-renders don't churn.
+  const activeSessionId = useStore($activeSessionId)
+  const currentCwd = useStore($currentCwd)
+  const previewTarget = view.previewTarget
+
+  useEffect(() => {
+    if (isPending || !activeSessionId || !previewTarget || !isPreviewableTarget(previewTarget)) {
+      return
+    }
+
+    recordPreviewArtifact(activeSessionId, previewTarget, currentCwd || '')
+  }, [activeSessionId, currentCwd, isPending, previewTarget])
+
   const detailSections = useMemo(() => {
     if (!view.detail) {
       return { body: '', summary: '' }
@@ -291,12 +308,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     Boolean(view.rawResult.trim())
 
   const hasExpandableContent = Boolean(
-    (view.previewTarget && isPreviewableTarget(view.previewTarget)) ||
-    view.imageUrl ||
-    view.inlineDiff ||
-    showDetail ||
-    hasSearchHits ||
-    toolViewMode === 'technical'
+    view.imageUrl || view.inlineDiff || showDetail || hasSearchHits || toolViewMode === 'technical'
   )
 
   const copyAction = useMemo(() => toolCopyPayload(part, view), [part, view])
@@ -424,9 +436,6 @@ function ToolEntry({ part }: ToolEntryProps) {
               stopPropagation
               text={copyAction.text}
             />
-          )}
-          {!embedded && view.previewTarget && isPreviewableTarget(view.previewTarget) && (
-            <PreviewAttachment source="tool-result" target={view.previewTarget} />
           )}
           {view.imageUrl && (
             <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">

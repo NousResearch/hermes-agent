@@ -5975,7 +5975,17 @@ def load_env() -> Dict[str, str]:
         for line in lines:
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
-                key, _, value = line.partition('=')
+                raw_line = line
+                # Strip 'export ' (bash) and 'set ' (cmd) shell prefixes so
+                # .env files written with ``export KEY=VALUE`` syntax are
+                # parsed correctly. Without this, get_env_value("NOTION_API_KEY")
+                # returns None for ``export NOTION_API_KEY=xxx`` because the
+                # key would be "export NOTION_API_KEY".
+                for _sh_prefix in ('export ', 'set '):
+                    if raw_line.lower().startswith(_sh_prefix):
+                        raw_line = raw_line[len(_sh_prefix):]
+                        break
+                key, _, value = raw_line.partition('=')
                 env_vars[key.strip()] = value.strip().strip('"\'')
 
     if cache_key is not None:
@@ -6192,7 +6202,14 @@ def save_env_value(key: str, value: str):
     # Find and update or append
     found = False
     for i, line in enumerate(lines):
-        if line.strip().startswith(f"{key}="):
+        stripped = line.strip()
+        # Match KEY=VALUE, export KEY=VALUE, set KEY=VALUE
+        check = stripped
+        for _p in ('export ', 'set '):
+            if check.lower().startswith(_p):
+                check = check[len(_p):]
+                break
+        if check.startswith(f"{key}="):
             lines[i] = f"{key}={value}\n"
             found = True
             break
@@ -6271,7 +6288,16 @@ def remove_env_value(key: str) -> bool:
         lines = f.readlines()
     lines = _sanitize_env_lines(lines)
 
-    new_lines = [line for line in lines if not line.strip().startswith(f"{key}=")]
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        check = stripped
+        for _p in ('export ', 'set '):
+            if check.lower().startswith(_p):
+                check = check[len(_p):]
+                break
+        if not check.startswith(f"{key}="):
+            new_lines.append(line)
     found = len(new_lines) < len(lines)
 
     if found:

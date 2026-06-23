@@ -66,6 +66,16 @@ _SUBSYSTEMS = (MEMORY, SKILLS)
 # enable flag (e.g. ``memory.memory_enabled: false``).
 CONFIG_KEY = "write_approval"
 
+# Config key (skills only). The background self-improvement review forks the
+# agent and runs in a daemon thread with no user present. Auto-applying its
+# skill writes silently mutates the installed skill library — and on a failed
+# or low-confidence session it hardens a guessed fallback straight into a skill
+# ("越改越坏", hc-376). So background-review skill writes are STAGED for approval
+# by default even when the global ``skills.write_approval`` gate is off. Set
+# ``skills.background_review_autowrite: true`` to restore the pre-hc-376
+# behaviour where the review fork applies skill writes directly.
+BG_REVIEW_AUTOWRITE_KEY = "background_review_autowrite"
+
 
 # ---------------------------------------------------------------------------
 # Config resolution
@@ -84,6 +94,24 @@ def write_approval_enabled(subsystem: str) -> bool:
         from hermes_cli.config import load_config, cfg_get
         cfg = load_config()
         raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=False)
+    except Exception:
+        return False
+    return _normalize_enabled(raw)
+
+
+def background_review_skill_autowrite_enabled() -> bool:
+    """Whether the background self-improvement review may auto-apply skill writes.
+
+    Reads ``skills.background_review_autowrite`` from config.yaml. Defaults to
+    ``False`` (gated): background-review skill writes are staged for approval
+    even when the global ``skills.write_approval`` gate is off (hc-376). Set the
+    flag to ``true`` to restore the pre-hc-376 behaviour where the review fork
+    applies skill writes directly.
+    """
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        cfg = load_config()
+        raw = cfg_get(cfg, SKILLS, BG_REVIEW_AUTOWRITE_KEY, default=False)
     except Exception:
         return False
     return _normalize_enabled(raw)
@@ -262,7 +290,9 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
             are small; skills never take the inline path).
 
     Decision matrix:
-        gate off (default)                    → allow (writes flow freely)
+        gate off, skills + background review  → stage (hc-376; unless
+                                                ``skills.background_review_autowrite``)
+        gate off (default), anything else     → allow (writes flow freely)
         gate on, memory + interactive CLI     → inline approve/deny prompt
         gate on, memory + gateway/script/bg   → stage
         gate on, skills (any origin)          → stage (too big to review inline)
@@ -272,6 +302,22 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     still produced when the user *actively denies* an inline prompt.
     """
     if not write_approval_enabled(subsystem):
+        # hc-376: even with the global gate off, a skill write from the
+        # background self-improvement review (daemon thread, no user present)
+        # must not be auto-applied — a failed/low-confidence session otherwise
+        # hardens a guessed fallback into the installed skill library. Stage it
+        # for approval instead, unless the operator opted back into auto-apply.
+        if (subsystem == SKILLS
+                and is_background()
+                and not background_review_skill_autowrite_enabled()):
+            return GateDecision(
+                stage=True,
+                message=(
+                    "Staged for approval — background self-improvement skill "
+                    "writes are gated (skills.background_review_autowrite is "
+                    "off). Not yet saved — review with /skills pending."
+                ),
+            )
         return GateDecision(allow=True)
 
     background = is_background()

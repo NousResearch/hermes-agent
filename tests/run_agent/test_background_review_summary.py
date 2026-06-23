@@ -58,6 +58,40 @@ def test_includes_genuinely_new_actions():
     assert actions == ["Memory entry created."]
 
 
+def test_staged_skill_write_surfaced_as_staged_not_applied():
+    """hc-376: a staged (not yet applied) background-review skill write must be
+    reported honestly — never as a landed create/patch."""
+    tcid = "call_stage"
+    assistant = {
+        "role": "assistant",
+        "tool_calls": [{
+            "id": tcid,
+            "function": {
+                "name": "skill_manage",
+                "arguments": json.dumps({"action": "patch", "name": "douyin-batch"}),
+            },
+        }],
+    }
+    staged = _tool_msg(tcid, {
+        "success": True,
+        "staged": True,
+        "pending_id": "ab12cd34",
+        "gist": "patch douyin-batch",
+        "message": (
+            "Staged for approval — background self-improvement skill writes "
+            "are gated. Not yet saved — review with /skills pending."
+        ),
+    })
+
+    actions = _summarize([assistant, staged], prior_snapshot=[])
+
+    assert len(actions) == 1
+    assert "staged for approval" in actions[0].lower()
+    assert "douyin-batch" in actions[0]
+    # Must NOT claim the write landed.
+    assert "patched" not in actions[0].lower()
+
+
 def test_falls_back_to_content_equality_when_tool_call_id_missing():
     """If a tool message has no tool_call_id, match prior entries by content."""
     payload = {"success": True, "message": "Cron job 'X' created."}

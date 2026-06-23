@@ -564,11 +564,16 @@ class TestSkillManageDispatcher:
         assert rec.get("created_by") in {None, "", False}
 
     def test_create_from_background_review_marks_agent_created(self, tmp_path):
-        """Background-review fork creates ARE marked as agent-created."""
+        """Background-review fork creates ARE marked as agent-created — when they
+        actually apply. hc-376 stages background-review skill writes for approval
+        by default, so this exercises the autowrite opt-in (the apply path the
+        provenance marker runs on)."""
         from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
         token = set_current_write_origin(BACKGROUND_REVIEW)
         try:
-            with _skill_dir(tmp_path):
+            with _skill_dir(tmp_path), \
+                 patch("tools.write_approval.background_review_skill_autowrite_enabled",
+                       return_value=True):
                 raw = skill_manage(
                     action="create", name="review-sediment", content=VALID_SKILL_CONTENT
                 )

@@ -330,6 +330,24 @@ def summarize_background_review_actions(
         target = data.get("target", "") or detail.get("target", "")
         is_skill = detail.get("tool") == "skill_manage"
 
+        # hc-376: a staged write was NOT applied — it is queued for the user to
+        # approve out-of-band. Surface that honestly instead of reporting it as
+        # a landed create/patch/update (the background self-improvement review
+        # stages skill writes by default, so this is the common path).
+        if data.get("staged"):
+            if is_skill:
+                nm = detail.get("name", "") or data.get("gist", "")
+                actions.append(
+                    f"📋 Skill '{nm}' staged for approval (review with /skills pending)"
+                    if nm else
+                    "📋 Skill change staged for approval (review with /skills pending)"
+                )
+            else:
+                actions.append(
+                    "📋 Memory change staged for approval (review with /memory pending)"
+                )
+            continue
+
         message_lower = message.lower()
         if not verbose:
             if "created" in message_lower:

@@ -581,6 +581,15 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # Gate the background self-improvement review's skill writes.
+  # The review forks the agent in a daemon thread with no user present; by
+  # default its skill writes are STAGED for approval (review with
+  # `/skills pending`) instead of applied, so a failed or low-confidence
+  # session can't silently harden a guessed fallback into your skill library.
+  # Set true to let the review apply skill writes directly (pre-gate behaviour).
+  # Foreground skill writes are unaffected — use `write_approval` to gate those.
+  background_review_autowrite: false
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

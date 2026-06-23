@@ -165,6 +165,111 @@ def test_skill_create_diff_is_full_content(hermes_home):
 
 
 # ---------------------------------------------------------------------------
+# hc-376: background self-improvement review skill writes are gated by default.
+# The review fork runs in a daemon thread with no user present; auto-applying
+# its skill writes silently mutates the installed skill library (on a failed
+# session it hardens a guessed fallback into a skill). They must stage for
+# approval even when the global skills gate is off, unless explicitly opted in.
+# ---------------------------------------------------------------------------
+
+def _set_bg_autowrite(enabled):
+    import hermes_cli.config as cfg
+    c = cfg.load_config()
+    c.setdefault("skills", {})["background_review_autowrite"] = enabled
+    cfg.save_config(c)
+
+
+@pytest.fixture
+def as_background_review():
+    """Bind the skill write-origin ContextVar to the background-review fork,
+    mirroring what AIAgent._spawn_background_review does in production."""
+    from tools.skill_provenance import (
+        set_current_write_origin, reset_current_write_origin,
+    )
+    token = set_current_write_origin("background_review")
+    try:
+        yield
+    finally:
+        reset_current_write_origin(token)
+
+
+def test_bg_autowrite_default_off(hermes_home):
+    from tools import write_approval as wa
+    assert wa.background_review_skill_autowrite_enabled() is False
+
+
+def test_skill_gate_off_background_review_stages(hermes_home, as_background_review):
+    # Gate off (default) + background review → STAGE (the hc-376 fix), not apply.
+    from tools.skill_manager_tool import skill_manage
+    from tools import write_approval as wa
+    r = json.loads(skill_manage("create", "bg-skill", content=_SKILL))
+    assert r.get("staged") is True
+    assert r.get("pending_id")
+    pend = wa.list_pending("skills")
+    assert len(pend) == 1
+    # Origin is recorded as background_review for the audit trail.
+    assert pend[0]["origin"] == "background_review"
+
+
+def test_skill_gate_off_background_review_patch_stages(hermes_home, as_background_review):
+    # The real incident shape: a background review PATCHing an existing skill.
+    # evaluate_gate is action-agnostic, so every mutating action stages alike.
+    from tools.skill_manager_tool import skill_manage
+    from tools import write_approval as wa
+    r = json.loads(skill_manage(
+        "patch", "some-skill", old_string="old guess", new_string="hardened guess"))
+    assert r.get("staged") is True
+    assert wa.pending_count("skills") == 1
+
+
+def test_skill_gate_off_background_review_autowrite_allows(hermes_home, as_background_review):
+    # Revert path: opting into autowrite restores direct apply (pre-hc-376).
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from tools import write_approval as wa
+    _set_bg_autowrite(True)
+    r = json.loads(smt.skill_manage("create", "autowrite-skill", content=_SKILL))
+    assert r.get("success") is True
+    assert r.get("staged") is None
+    assert wa.pending_count("skills") == 0
+
+
+def test_skill_gate_off_foreground_still_allows(hermes_home):
+    # Regression: foreground skill writes are unchanged by hc-376 (no origin set
+    # = foreground default).
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from tools import write_approval as wa
+    r = json.loads(smt.skill_manage("create", "fg-skill", content=_SKILL))
+    assert r.get("success") is True
+    assert wa.pending_count("skills") == 0
+
+
+def test_memory_gate_off_background_review_still_allows(hermes_home, as_background_review):
+    # Scope guard: hc-376 only gates SKILLS. Background-review MEMORY writes keep
+    # the prior behaviour (allow when the memory gate is off).
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+    store = MemoryStore(); store.load_from_disk()
+    r = json.loads(memory_tool("add", "user", "bg memory", store=store))
+    assert r["success"] is True
+    assert r.get("staged") is None
+    assert wa.pending_count("memory") == 0
+
+
+def test_evaluate_gate_skills_background_default_stages(hermes_home, as_background_review):
+    # Direct unit test of the decision: gate off + skills + background → stage,
+    # while memory in the same background context still allows.
+    from tools import write_approval as wa
+    decision = wa.evaluate_gate(wa.SKILLS)
+    assert decision.stage is True
+    assert decision.allow is False
+    assert wa.evaluate_gate(wa.MEMORY).allow is True
+
+
+# ---------------------------------------------------------------------------
 # Pending store CRUD
 # ---------------------------------------------------------------------------
 

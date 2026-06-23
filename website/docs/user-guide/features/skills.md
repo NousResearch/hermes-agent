@@ -403,9 +403,10 @@ The `patch` action is preferred for updates — it's more token-efficient than `
 
 ### Gating agent skill writes (`skills.write_approval`)
 
-By default the agent writes skills freely — including from the [background
-self-improvement review](/user-guide/features/memory#controlling-memory-writes-write_approval)
-that runs after a turn. If you'd rather approve every skill write first
+By default the agent writes skills from foreground turns freely, while writes
+from the [background self-improvement review](/user-guide/features/memory#controlling-memory-writes-write_approval)
+that runs after a turn are staged for approval (see the next section). If you'd
+rather approve **every** skill write first
 (small models that misjudge what they learned, secure environments, or just
 wanting eyes on the self-improvement loop), turn on the write-approval gate:
 
@@ -433,6 +434,25 @@ The review surface works in the interactive CLI and on messaging platforms
 (diff output is truncated for chat bubbles — read the full diff on the CLI or
 in the pending JSON file). Memory writes have the same gate under
 `memory.write_approval` — see [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+
+#### Background-review skill writes are staged by default (`skills.background_review_autowrite`)
+
+The background self-improvement review forks the agent in a daemon thread with
+no user present. Even with the global `write_approval` gate off, letting it
+**apply** skill writes directly means a failed or low-confidence session can
+silently harden a guessed fallback into your skill library. So those writes are
+**staged by default** — review them with `/skills pending` like any other staged
+write:
+
+```yaml
+skills:
+  background_review_autowrite: false   # false = stage for approval (default) | true = apply directly
+```
+
+Set `true` to restore the pre-gate behaviour where the review applies skill
+writes directly. This flag only affects the background review — **foreground**
+skill writes are unaffected (use `write_approval` to gate those), and when
+`write_approval: true` the review's writes stage regardless of this flag.
 
 > The separate `skills.guard_agent_created` setting is a content scanner
 > (dangerous-pattern heuristics), not an approval gate — the two are

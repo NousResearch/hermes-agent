@@ -132,5 +132,8 @@ def test_status_json_exposes_browser_input_execution_capability(monkeypatch):
     assert execution["available"] is False
     assert execution["requires_injected_backend"] is True
     assert execution["native_gui_mutation_allowed"] is False
+    assert execution["local_cdp_backend_supported"] is True
+    assert execution["local_cdp_requires_explicit_transport"] is True
+    assert execution["local_cdp_loopback_only_by_default"] is True
     assert "click" in execution["supported_actions"]
     assert "drag" in execution["supported_actions"]

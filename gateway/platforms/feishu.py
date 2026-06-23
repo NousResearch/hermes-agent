@@ -609,6 +609,35 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     return rows or [[{"tag": "md", "text": content}]]
 
 
+def _build_markdown_card_payload(content: str) -> str:
+    """Build Feishu Interactive Card v2 payload for content containing markdown tables.
+
+    Feishu post-type 'md' elements do not render tables (they show blank).
+    Feishu Interactive Card schema 2.0 'markdown' elements natively support tables,
+    so we wrap table-containing content in a card instead of falling back to
+    plain text.
+
+    Key differences from schema 1.0:
+    - ``\"schema\": \"2.0\"`` is required at the top level
+    - ``elements`` lives under ``body`` (not at the top level)
+    - ``config.width_mode`` replaces ``config.wide_screen_mode``
+
+    Content must escape HTML special characters (``<``, ``>``, ``&``) as HTML
+    entities to prevent Feishu card parser failures.
+    """
+    escaped = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    card = {
+        "schema": "2.0",
+        "config": {"width_mode": "fill"},
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": escaped},
+            ],
+        },
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
 def parse_feishu_post_payload(
     payload: Any,
     *,
@@ -4376,10 +4405,10 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Instead of falling back to plain text, wrap in an Interactive Card
+        # whose 'markdown' element natively supports tables.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            return "interactive", _build_markdown_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

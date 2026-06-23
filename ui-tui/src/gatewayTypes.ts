@@ -73,6 +73,7 @@ export interface ConfigDisplayConfig {
   // validation anyway.
   tui_status_indicator?: string
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
+  timestamps?: boolean
 }
 
 export interface ConfigVoiceConfig {
@@ -517,7 +518,7 @@ export type GatewayEvent =
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.complete' }
   | { payload: { rendered?: string; text?: string }; session_id?: string; type: 'message.delta' }
   | {
-      payload?: { reasoning?: string; rendered?: string; text?: string; usage?: Usage }
+      payload?: { reasoning?: string; rendered?: string; text?: string; timestamp?: number; usage?: Usage }
       session_id?: string
       type: 'message.complete'
     }

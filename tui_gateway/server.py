@@ -3463,7 +3463,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 raw = str(result)
                 status = "complete"
 
-            payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            payload = {"text": raw, "usage": _get_usage(agent), "status": status, "timestamp": int(time.time() * 1000)}
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:

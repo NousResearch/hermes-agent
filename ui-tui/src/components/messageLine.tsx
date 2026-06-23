@@ -16,6 +16,7 @@ import {
   stripAnsi
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
+import { getUiState } from '../app/uiStore.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { Md } from './markdown.js'
@@ -105,6 +106,11 @@ export const MessageLine = memo(function MessageLine({
 
   const { body, glyph, prefix } = ROLE[msg.role](t)
   const gutterWidth = transcriptGutterWidth(msg.role, t.brand.prompt)
+
+  const ts =
+    msg.timestamp && getUiState().showTimestamps
+      ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : null
 
   const showDetails =
     (toolsMode !== 'hidden' && Boolean(msg.tools?.length)) || (thinkingMode !== 'hidden' && Boolean(thinking))
@@ -214,6 +220,14 @@ export const MessageLine = memo(function MessageLine({
             {glyph}{' '}
           </Text>
         </NoSelect>
+
+        {ts && (
+          <NoSelect>
+            <Text dimColor color={t.color.muted}>
+              {ts}
+            </Text>
+          </NoSelect>
+        )}
 
         <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
       </Box>

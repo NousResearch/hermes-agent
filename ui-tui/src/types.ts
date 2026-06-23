@@ -115,6 +115,7 @@ export interface Msg {
   panelData?: PanelData
   role: Role
   text: string
+  timestamp?: number
   thinking?: string
   thinkingTokens?: number
   toolTokens?: number

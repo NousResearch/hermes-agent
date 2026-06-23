@@ -100,7 +100,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         setLastUserMsg(text)
 
         if (showUserMessage) {
-          appendMessage({ role: 'user', text: displayText })
+          appendMessage({ role: 'user', text: displayText, timestamp: Date.now() })
         }
 
         patchUiState({ busy: true, status: 'running…' })

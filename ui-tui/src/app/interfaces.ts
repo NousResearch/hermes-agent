@@ -110,6 +110,7 @@ export interface UiState {
   sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean
+  showTimestamps: boolean
   indicatorStyle: IndicatorStyle
   sid: null | string
   status: string

@@ -11998,6 +11998,9 @@ class HermesCLI:
                     _resp_color = _maybe_remap_for_light_mode("#CD7F32")
                     _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
 
+                if self.show_timestamps:
+                    label = f"{label} {datetime.now().strftime('%H:%M')}"
+
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:

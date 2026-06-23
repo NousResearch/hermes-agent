@@ -708,10 +708,21 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'message.complete': {
-        const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
+        const payload = ev.payload ?? {}
+        const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(payload)
+        const ts = typeof payload.timestamp === 'number' ? payload.timestamp : undefined
 
         if (!wasInterrupted) {
-          const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
+          const msgs: Msg[] = finalMessages.length
+            ? finalMessages
+            : [{ role: 'assistant', text: finalText, ...(ts !== undefined && { timestamp: ts }) }]
+          if (ts !== undefined) {
+            msgs.forEach((m, i) => {
+              if (m.role === 'assistant' && !m.timestamp) {
+                msgs[i] = { ...m, timestamp: ts }
+              }
+            })
+          }
           msgs.forEach(appendMessage)
 
           if (bellOnComplete && stdout?.isTTY) {

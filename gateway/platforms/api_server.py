@@ -670,9 +670,28 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
+def _make_request_fingerprint(
+    body: Dict[str, Any],
+    keys: List[str],
+    extra: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Hash the request inputs that determine the agent's response.
+
+    ``keys`` selects fields from the JSON body. ``extra`` carries semantic
+    context that lives *outside* the body — session-continuity and
+    memory-scope headers — but still changes what the agent produces.
+
+    The idempotency cache reuses a stored response whenever the key and
+    fingerprint match, so anything that alters the response must be folded
+    in here. Otherwise two requests that share an Idempotency-Key and body
+    but differ in session/memory scope (or in explicit conversation history)
+    collide, and the second caller receives the first caller's answer
+    computed under a different context.
+    """
     from hashlib import sha256
-    subset = {k: body.get(k) for k in keys}
+    subset: Dict[str, Any] = {k: body.get(k) for k in keys}
+    if extra:
+        subset["__ctx__"] = extra
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
@@ -2032,7 +2051,19 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            # session_id (from X-Hermes-Session-Id, else derived from the
+            # conversation) selects which history is loaded, and
+            # gateway_session_key (X-Hermes-Session-Key) scopes long-term
+            # memory.  Both change the agent's answer but live in headers,
+            # not the body, so they must be part of the fingerprint.
+            fp = _make_request_fingerprint(
+                body,
+                keys=["model", "messages", "tools", "tool_choice", "stream"],
+                extra={
+                    "session_id": session_id,
+                    "gateway_session_key": gateway_session_key,
+                },
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -3083,9 +3114,28 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            # conversation_history (explicit body history, which takes
+            # precedence over previous_response_id) and truncation both
+            # change the context fed to the agent, and gateway_session_key
+            # scopes long-term memory — none of which the original key set
+            # captured.  session_id is intentionally excluded: for a new
+            # response it is a fresh random UUID, so folding it in would
+            # defeat idempotency for legitimate retries; the chaining that
+            # makes it deterministic is already covered by
+            # previous_response_id / conversation.
             fp = _make_request_fingerprint(
                 body,
-                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                keys=[
+                    "input",
+                    "instructions",
+                    "previous_response_id",
+                    "conversation",
+                    "conversation_history",
+                    "truncation",
+                    "model",
+                    "tools",
+                ],
+                extra={"gateway_session_key": gateway_session_key},
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)

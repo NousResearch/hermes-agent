@@ -30,6 +30,7 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
+    _make_request_fingerprint,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -248,6 +249,182 @@ class TestIdempotencyCache:
 
         gate.set()
         assert await second == "response"
+
+
+# ---------------------------------------------------------------------------
+# _make_request_fingerprint
+# ---------------------------------------------------------------------------
+
+
+class TestRequestFingerprint:
+    """The fingerprint must distinguish requests that produce different
+    responses, and only those.  Body-only differences and header/context
+    differences must each change the hash; identical inputs must not.
+    """
+
+    def test_identical_inputs_match(self):
+        body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+        keys = ["model", "messages"]
+        extra = {"session_id": "s1", "gateway_session_key": None}
+        assert _make_request_fingerprint(body, keys, extra) == \
+            _make_request_fingerprint(body, keys, extra)
+
+    def test_extra_context_changes_fingerprint(self):
+        body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+        keys = ["model", "messages"]
+        fp_a = _make_request_fingerprint(body, keys, {"session_id": "s1"})
+        fp_b = _make_request_fingerprint(body, keys, {"session_id": "s2"})
+        assert fp_a != fp_b
+
+    def test_omitting_extra_is_backward_compatible(self):
+        """Callers that pass no extra get the original body-only hash."""
+        body = {"model": "m", "messages": []}
+        keys = ["model", "messages"]
+        assert _make_request_fingerprint(body, keys) == \
+            _make_request_fingerprint(body, keys, None)
+
+    def test_extra_key_cannot_collide_with_body_field(self):
+        """A body field literally named __ctx__ must not be confused with
+        the namespaced context slot."""
+        keys = ["__ctx__"]
+        fp_body = _make_request_fingerprint({"__ctx__": "x"}, keys)
+        fp_ctx = _make_request_fingerprint({}, keys, {"session_id": "x"})
+        assert fp_body != fp_ctx
+
+
+# ---------------------------------------------------------------------------
+# Idempotency-Key fingerprint scoping (endpoint-level regression)
+# ---------------------------------------------------------------------------
+
+
+class TestIdempotencyRequestContext:
+    """An Idempotency-Key may only short-circuit a request whose full
+    semantic context — not just its JSON body — matches a stored one.
+
+    Regression for the fingerprint omitting session/memory-scope headers
+    (chat) and explicit conversation_history (responses): two requests that
+    shared a key and body but differed in that context collided, so the
+    second caller received the first's answer instead of running the agent.
+    """
+
+    @staticmethod
+    def _ok():
+        return (
+            {"final_response": "ok", "messages": [], "api_calls": 1},
+            {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        )
+
+    @pytest.mark.asyncio
+    async def test_chat_different_session_id_runs_twice(self, auth_adapter):
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = []
+        auth_adapter._session_db = mock_db
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch("gateway.platforms.api_server._idem_cache", _IdempotencyCache()), \
+                 patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = self._ok()
+                r1 = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Idempotency-Key": "k-sid", "X-Hermes-Session-Id": "session-A", "Authorization": "Bearer sk-secret"},
+                    json=body,
+                )
+                r2 = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Idempotency-Key": "k-sid", "X-Hermes-Session-Id": "session-B", "Authorization": "Bearer sk-secret"},
+                    json=body,
+                )
+            assert r1.status == 200 and r2.status == 200
+            assert mock_run.call_count == 2
+            assert {c.kwargs["session_id"] for c in mock_run.call_args_list} == {"session-A", "session-B"}
+
+    @pytest.mark.asyncio
+    async def test_chat_different_session_key_runs_twice(self, auth_adapter):
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch("gateway.platforms.api_server._idem_cache", _IdempotencyCache()), \
+                 patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = self._ok()
+                r1 = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Idempotency-Key": "k-key", "X-Hermes-Session-Key": "scope-A", "Authorization": "Bearer sk-secret"},
+                    json=body,
+                )
+                r2 = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Idempotency-Key": "k-key", "X-Hermes-Session-Key": "scope-B", "Authorization": "Bearer sk-secret"},
+                    json=body,
+                )
+            assert r1.status == 200 and r2.status == 200
+            assert mock_run.call_count == 2
+            assert {c.kwargs["gateway_session_key"] for c in mock_run.call_args_list} == {"scope-A", "scope-B"}
+
+    @pytest.mark.asyncio
+    async def test_chat_same_context_runs_once(self, auth_adapter):
+        """The cache still short-circuits a genuine duplicate (same key, body,
+        and session context) — the fix must not simply disable caching."""
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = []
+        auth_adapter._session_db = mock_db
+        headers = {"Idempotency-Key": "k-dup", "X-Hermes-Session-Id": "session-A", "Authorization": "Bearer sk-secret"}
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch("gateway.platforms.api_server._idem_cache", _IdempotencyCache()), \
+                 patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = self._ok()
+                r1 = await cli.post("/v1/chat/completions", headers=headers, json=body)
+                r2 = await cli.post("/v1/chat/completions", headers=headers, json=body)
+            assert r1.status == 200 and r2.status == 200
+            assert mock_run.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_responses_different_conversation_history_runs_twice(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch("gateway.platforms.api_server._idem_cache", _IdempotencyCache()), \
+                 patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = self._ok()
+                r1 = await cli.post(
+                    "/v1/responses",
+                    headers={"Idempotency-Key": "k-hist", "Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "hermes-agent",
+                        "input": "hello",
+                        "conversation_history": [{"role": "user", "content": "ctx-A"}],
+                    },
+                )
+                r2 = await cli.post(
+                    "/v1/responses",
+                    headers={"Idempotency-Key": "k-hist", "Authorization": "Bearer sk-secret"},
+                    json={
+                        "model": "hermes-agent",
+                        "input": "hello",
+                        "conversation_history": [{"role": "user", "content": "ctx-B"}],
+                    },
+                )
+            assert r1.status == 200 and r2.status == 200
+            assert mock_run.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_responses_same_request_runs_once(self, auth_adapter):
+        """Identical responses requests (no chaining, same body) must still
+        dedupe — proving session_id's random UUID was correctly excluded."""
+        req = {
+            "headers": {"Idempotency-Key": "k-resp-dup", "Authorization": "Bearer sk-secret"},
+            "json": {"model": "hermes-agent", "input": "hello", "store": False},
+        }
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch("gateway.platforms.api_server._idem_cache", _IdempotencyCache()), \
+                 patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = self._ok()
+                r1 = await cli.post("/v1/responses", **req)
+                r2 = await cli.post("/v1/responses", **req)
+            assert r1.status == 200 and r2.status == 200
+            assert mock_run.call_count == 1
 
 
 # ---------------------------------------------------------------------------

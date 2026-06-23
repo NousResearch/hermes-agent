@@ -132,7 +132,7 @@ def build_thinking_prompt(state: ThinkingState) -> str:
     Tu es en thinking OFF. Si la tâche est complexe, tu DOIS répondre en premier avec :
 
     [ESCALATE_THINKING: true]
-    [RAISON: pourquoi c'est complexe]
+    [RAISON: 3 à 5 mots max, bref]
 
     Puis tu peux donner une réponse préliminaire.
 
@@ -235,6 +235,8 @@ def extract_escalation_reason(content: str, state: ThinkingState) -> str:
 
     Looks for [RAISON: ...] lines and returns their text (without the
     brackets). Returns empty string if no reason is found.
+    
+    The reason is truncated to 50 characters to avoid polluting context.
     """
     if not content:
         return ""
@@ -244,11 +246,11 @@ def extract_escalation_reason(content: str, state: ThinkingState) -> str:
             # [RAISON: bla bla]  or  [RAISON: bla bla
             text = stripped[len("[RAISON:"):].rstrip("]").strip()
             if text:
-                return text
+                return text[:50] if len(text) > 50 else text
         elif stripped.startswith("[RAISON :"):
             text = stripped[len("[RAISON :"):].rstrip("]").strip()
             if text:
-                return text
+                return text[:50] if len(text) > 50 else text
     return ""
 
 

@@ -190,6 +190,50 @@ def _suppress_mouse_residue_early() -> None:
 _suppress_mouse_residue_early()
 
 
+# ── Dashboard auto-install policy ───────────────────────────────────────
+# Dashboard startup may trigger dependency installation or a web UI build.
+# In non-interactive contexts this is an explicit maintenance action, so
+# automatic installation is denied by default unless the operator
+# explicitly opts in.
+#
+# Default policy: only auto-install when both stdin and stdout are TTYs
+# (interactive operator) AND the operator has not explicitly disabled it
+# via HERMES_DASHBOARD_AUTO_INSTALL=0. The companion opt-in
+# HERMES_DASHBOARD_AUTO_INSTALL=1 is provided for CI / non-TTY pipelines
+# that *do* want the install to run.
+#
+# This helper is the single source of truth for the dashboard auto-install
+# gate. The gate is enforced at the only dashboard call site
+# (``cmd_dashboard``) by short-circuiting BEFORE invoking the shared
+# ``_build_web_ui`` helper. ``_build_web_ui`` is also called by
+# ``hermes web`` and ``hermes update --desktop``; its signature and
+# behaviour remain unchanged for those callers.
+_DASHBOARD_AUTO_INSTALL_ENV = "HERMES_DASHBOARD_AUTO_INSTALL"
+
+
+def _dashboard_auto_install_allowed() -> bool:
+    """Return True if the dashboard should auto-run ``npm install`` for the web UI.
+
+    The default is "allowed only when both stdin and stdout are TTYs and the
+    operator has not disabled it." The escape hatches are explicit env-var
+    values:
+
+        HERMES_DASHBOARD_AUTO_INSTALL=0  → force deny
+        HERMES_DASHBOARD_AUTO_INSTALL=1  → force allow (e.g. CI)
+
+    An empty/unset value falls through to the TTY test.
+    """
+    val = os.environ.get(_DASHBOARD_AUTO_INSTALL_ENV, "").strip().lower()
+    if val in {"0", "false", "no", "off"}:
+        return False
+    if val in {"1", "true", "yes", "on"}:
+        return True
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
 def _is_termux_startup_environment_fast() -> bool:
     """Tiny Termux check for pre-import startup shortcuts."""
     prefix = os.environ.get("PREFIX", "")
@@ -11366,7 +11410,34 @@ def cmd_dashboard(args):
     _sync_bundled_skills_quietly()
 
     if "HERMES_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
-        if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
+        # Dashboard auto-install policy: in non-TTY / systemd / service
+        # contexts the dashboard must NEVER spawn `npm install` on its
+        # own — TUI / web dependencies are an explicit maintenance
+        # action. The policy is enforced by short-circuiting BEFORE
+        # calling ``_build_web_ui`` (a shared helper used by ``hermes
+        # web`` and ``hermes update --desktop``) so the helper's
+        # signature and behaviour stay unchanged for every other
+        # caller. The single side effect is a fail-closed SystemExit(1)
+        # with an actionable recovery hint.
+        web_dir = PROJECT_ROOT / "web"
+        if (
+            not _dashboard_auto_install_allowed()
+            and (web_dir / "package.json").exists()
+            and _web_ui_build_needed(web_dir)
+        ):
+            print(
+                "✗ Web UI TUI dependencies not installed. The dashboard was "
+                "started in a non-interactive context and cannot run `npm install`."
+            )
+            print("  To install TUI dependencies, run this from the Hermes checkout:")
+            print("    cd web && npm install && npm run build")
+            print("  Then re-run `hermes dashboard` (or pass `--skip-build` to "
+                  "bypass the build step entirely if the dist is already built).")
+            print("  Set HERMES_DASHBOARD_AUTO_INSTALL=1 to allow non-interactive "
+                  "dashboard starts to install TUI dependencies (not recommended "
+                  "on memory-constrained hosts).")
+            sys.exit(1)
+        if not _build_web_ui(web_dir, fatal=True):
             sys.exit(1)
     elif getattr(args, "skip_build", False):
         # --build-mode skip trusts the caller to have pre-built the web UI.

@@ -3316,6 +3316,49 @@ def _launchctl_domain_unsupported(returncode: int) -> bool:
     return returncode in _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES
 
 
+def _launchctl_load_legacy(plist_path: "Path") -> bool:
+    """Try legacy `launchctl load` as a fallback when the modern bootstrap API fails.
+
+    On macOS 26 (Tahoe/Darwin 25.x), `launchctl bootstrap user/<uid>` returns
+    exit 5 even though `launchctl load` still works and provides full launchd
+    management (auto-start at login, KeepAlive respawn). Returns True on success.
+    """
+    try:
+        subprocess.run(
+            ["launchctl", "load", str(plist_path)],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def _run_launchctl(args: list[str], *, timeout: float) -> "subprocess.CompletedProcess":
+    """Run a launchctl subcommand with stderr captured.
+
+    launchctl writes alarming diagnostics to stderr (e.g. "Bootstrap failed: 5:
+    Input/output error", "Could not find service ...") even for conditions we
+    recover from via the legacy-load / detached fallbacks. Capturing keeps the
+    CLI output clean; genuine failures re-surface the captured stderr through
+    `_launchctl_failed` before propagating.
+    """
+    return subprocess.run(
+        args, check=True, capture_output=True, text=True, timeout=timeout
+    )
+
+
+def _launchctl_failed(
+    exc: subprocess.CalledProcessError,
+) -> subprocess.CalledProcessError:
+    """Echo a captured launchctl failure's stderr before the error propagates."""
+    err = (exc.stderr or "").strip()
+    if err:
+        print(err, file=sys.stderr)
+    return exc
+
+
 def _gateway_run_command() -> list[str]:
     """Build the `python -m hermes_cli.main [--profile X] gateway run --replace` argv.
 
@@ -3601,16 +3644,16 @@ def launchd_install(force: bool = False):
     plist_path.write_text(new_plist)
 
     try:
-        subprocess.run(
+        _run_launchctl(
             ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-            check=True,
             timeout=30,
         )
     except subprocess.CalledProcessError as e:
         if not _launchctl_domain_unsupported(e.returncode):
-            raise
-        _launchd_fallback_to_detached(f"launchctl bootstrap exit {e.returncode}")
-        return
+            raise _launchctl_failed(e)
+        if not _launchctl_load_legacy(plist_path):
+            _launchd_fallback_to_detached(f"launchctl bootstrap exit {e.returncode}")
+            return
 
     print()
     print("✓ Service installed and loaded!")
@@ -3651,54 +3694,51 @@ def launchd_start():
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(new_plist, encoding="utf-8")
         try:
-            subprocess.run(
+            _run_launchctl(
                 ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-                check=True,
                 timeout=30,
             )
-            subprocess.run(
+            _run_launchctl(
                 ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
-                check=True,
                 timeout=30,
             )
         except subprocess.CalledProcessError as e:
             if not _launchctl_domain_unsupported(e.returncode):
-                raise
-            _launchd_fallback_to_detached(f"launchctl exit {e.returncode}")
-            return
+                raise _launchctl_failed(e)
+            if not _launchctl_load_legacy(plist_path):
+                _launchd_fallback_to_detached(f"launchctl exit {e.returncode}")
+                return
         print("✓ Service started")
         return
 
     refresh_launchd_plist_if_needed()
     try:
-        subprocess.run(
+        _run_launchctl(
             ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
-            check=True,
             timeout=30,
         )
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
-            raise
+            raise _launchctl_failed(e)
         # Job not loaded in this domain — re-bootstrap the plist and retry.
         print("↻ launchd job was unloaded; reloading service definition")
         try:
-            subprocess.run(
+            _run_launchctl(
                 ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-                check=True,
                 timeout=30,
             )
-            subprocess.run(
+            _run_launchctl(
                 ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
-                check=True,
                 timeout=30,
             )
         except subprocess.CalledProcessError as e2:
             # Even a fresh bootstrap can't manage the domain on this host —
-            # degrade to a detached background process (issue #23387).
+            # try legacy `launchctl load` before degrading to a detached process.
             if not _launchctl_domain_unsupported(e2.returncode):
-                raise
-            _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
-            return
+                raise _launchctl_failed(e2)
+            if not _launchctl_load_legacy(plist_path):
+                _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
+                return
     print("✓ Service started")
 
 
@@ -3807,32 +3847,36 @@ def launchd_restart():
                     print(
                         f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
                     )
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        _run_launchctl(["launchctl", "kickstart", "-k", target], timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
             # Not a "job unloaded" code. If the domain is fundamentally
-            # unmanageable (error 5), degrade to detached; the old process was
-            # already drained/terminated above. Otherwise re-raise.
+            # unmanageable (error 5), try the legacy load path before degrading
+            # to detached; the old process was already drained/terminated above.
             if _launchctl_domain_unsupported(e.returncode):
+                plist_path_k = get_launchd_plist_path()
+                if _launchctl_load_legacy(plist_path_k):
+                    print("✓ Service restarted")
+                    return
                 _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
                 return
-            raise
+            raise _launchctl_failed(e)
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         try:
-            subprocess.run(
+            _run_launchctl(
                 ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-                check=True,
                 timeout=30,
             )
-            subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+            _run_launchctl(["launchctl", "kickstart", target], timeout=30)
         except subprocess.CalledProcessError as e2:
             if not _launchctl_domain_unsupported(e2.returncode):
-                raise
-            _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
-            return
+                raise _launchctl_failed(e2)
+            if not _launchctl_load_legacy(plist_path):
+                _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
+                return
         print("✓ Service restarted")
 
 

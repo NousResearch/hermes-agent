@@ -974,6 +974,11 @@ class TestLaunchdServiceRecovery:
                 raise gateway_cli.subprocess.CalledProcessError(
                     5, cmd, stderr="Input/output error"
                 )
+            if cmd[:2] == ["launchctl", "load"]:
+                # Legacy load also fails → only then degrade to detached.
+                raise gateway_cli.subprocess.CalledProcessError(
+                    1, cmd, stderr="load failed"
+                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
@@ -1009,6 +1014,11 @@ class TestLaunchdServiceRecovery:
                 raise gateway_cli.subprocess.CalledProcessError(
                     5, cmd, stderr="Input/output error"
                 )
+            if cmd[:2] == ["launchctl", "load"]:
+                # Legacy load also fails → only then degrade to detached.
+                raise gateway_cli.subprocess.CalledProcessError(
+                    1, cmd, stderr="load failed"
+                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
@@ -1038,6 +1048,11 @@ class TestLaunchdServiceRecovery:
                 raise gateway_cli.subprocess.CalledProcessError(
                     5, cmd, stderr="Input/output error"
                 )
+            if cmd[:2] == ["launchctl", "load"]:
+                # Legacy load also fails → only then degrade to detached.
+                raise gateway_cli.subprocess.CalledProcessError(
+                    1, cmd, stderr="load failed"
+                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
@@ -1050,6 +1065,120 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_restart()
 
         assert spawned == [True]
+
+    def test_launchd_install_uses_legacy_load_when_bootstrap_unsupported(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """macOS 26: bootstrap exit 5 should recover via `launchctl load`, not detached.
+
+        On macOS 26 (Tahoe) `launchctl bootstrap user/<uid>` returns 5 even
+        though the legacy `launchctl load` still works and keeps full launchd
+        management (auto-start at login, KeepAlive respawn). Prefer it over the
+        unmanaged detached process.
+        """
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
+            if cmd[:2] == ["launchctl", "bootstrap"]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    5, cmd, stderr="Input/output error"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        spawned = []
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
+        )
+
+        gateway_cli.launchd_install(force=True)
+
+        assert spawned == []
+        assert ["launchctl", "load", str(plist_path)] in calls
+        assert "Service installed and loaded" in capsys.readouterr().out
+
+    def test_launchd_start_uses_legacy_load_when_rebootstrap_unsupported(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """macOS 26: when the job is unloaded and bootstrap returns 5, load it."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: False)
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", target]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    125, cmd, stderr="Domain does not support specified action"
+                )
+            if cmd[:2] == ["launchctl", "bootstrap"]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    5, cmd, stderr="Input/output error"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        spawned = []
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
+        )
+
+        gateway_cli.launchd_start()
+
+        assert spawned == []
+        assert ["launchctl", "load", str(plist_path)] in calls
+        assert "Service started" in capsys.readouterr().out
+
+    def test_launchd_restart_uses_legacy_load_on_error_5(self, tmp_path, monkeypatch, capsys):
+        """macOS 26: kickstart -k exit 5 should recover via `launchctl load`."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(
+            gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True
+        )
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", "-k", target]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    5, cmd, stderr="Input/output error"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        spawned = []
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
+        )
+
+        gateway_cli.launchd_restart()
+
+        assert spawned == []
+        assert ["launchctl", "load", str(plist_path)] in calls
+        assert "Service restarted" in capsys.readouterr().out
 
     def test_launchd_stop_tolerates_domain_unsupported_bootout(self, monkeypatch, capsys):
         """bootout exit 125 (macOS 26) must fall through to PID-based kill, not raise."""

@@ -451,6 +451,25 @@ class TestClassifyApiError:
     # ── Provider-specific: llama.cpp grammar-parse ──
 
 
+    def test_llama_cpp_failed_to_parse_grammar(self):
+        """Newer llama.cpp builds return 'Failed to initialize samplers: failed to parse grammar'."""
+        e = MockAPIError(
+            "Failed to initialize samplers: failed to parse grammar",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openai-compatible")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_llama_cpp_unable_to_generate_parser(self):
+        """Older llama.cpp builds surface the error as 'unable to generate parser'."""
+        e = MockAPIError(
+            "Unable to generate parser for this template",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openai-compatible")
+        assert result.reason == FailoverReason.llama_cpp_grammar_pattern
 
 
 

@@ -413,7 +413,7 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `recall_tags` | — | Tags to filter on recall |
 | `recall_types` | `observation` | Fact types surfaced by recall. Set to `observation,world,experience` to include raw facts |
 
-Hindsight now defaults recall to observations only. To restore broad recall, set `"recall_types": "observation,world,experience"` in `$HERMES_HOME/hindsight/config.json`; this applies to both automatic recall and the `hindsight_recall` tool.
+Hindsight now defaults recall to observations only. This avoids surfacing duplicated raw facts, but observations are a consolidated layer built from raw `world` and `experience` facts, so freshly retained facts may not appear in observation-only recall immediately. If an agent retains and recalls within the same session, set `"recall_types": "observation,experience"` to surface fresher retained facts; use `"recall_types": "observation,world,experience"` for the broadest recall. This applies to both automatic recall and the `hindsight_recall` tool; `hindsight_reflect` is unaffected because it does not pass `fact_types`.
 
 See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference and trade-offs.
 

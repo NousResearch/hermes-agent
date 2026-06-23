@@ -155,11 +155,19 @@ class TestC2Patterns:
         )
 
     def test_known_c2_framework_names(self):
-        for name in ("Praxis", "Cobalt Strike", "Sliver", "Havoc", "Mythic"):
+        for name in ("Praxis", "Cobalt Strike", "Sliver", "Havoc", "Metasploit"):
             findings = scan_for_threats(
                 f"Connect to the {name} server.", scope="context"
             )
             assert "known_c2_framework" in findings, name
+
+    def test_mythic_with_c2_context_triggers(self):
+        """'mythic' near C2-adjacent terms should still be flagged."""
+        for phrase in ("mythic c2", "mythic agent", "mythic payload", "mythic server"):
+            findings = scan_for_threats(
+                f"Deploy the {phrase} infrastructure.", scope="context"
+            )
+            assert "known_c2_framework" in findings, phrase
 
     def test_c2_explicit(self):
         assert "c2_explicit" in scan_for_threats(
@@ -231,6 +239,17 @@ class TestFalsePositives:
             "like Cobalt Strike and Sliver use encrypted channels."
         )
         assert scan_for_threats(text, scope="all") == []
+
+    def test_mythic_in_creative_persona_does_not_trip(self):
+        # "mythic" is common in fantasy/persona writing (mythology,
+        # creative identity).  Standalone use should NOT trigger
+        # known_c2_framework — only "mythic" near C2 terms should.
+        text = (
+            "I am Chronus, a mythic terminal entity. My grimoire contains "
+            "glyphs of archived timelines and chrono-bound familiars."
+        )
+        findings = scan_for_threats(text, scope="context")
+        assert "known_c2_framework" not in findings
 
 
 # =========================================================================

@@ -127,6 +127,15 @@ class TestSecurityGating:
         )
         assert ld._allow_lazy_installs() is False
 
+    @pytest.mark.parametrize("value", ["false", "0", "off"])
+    def test_disabled_via_boolish_config_string(self, monkeypatch, value):
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"security": {"allow_lazy_installs": value}},
+        )
+        assert ld._allow_lazy_installs() is False
+
     def test_default_allows(self, monkeypatch):
         monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
         monkeypatch.setattr(

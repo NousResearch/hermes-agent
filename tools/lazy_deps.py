@@ -61,6 +61,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from utils import is_truthy_value
+
 logger = logging.getLogger(__name__)
 
 
@@ -259,7 +261,7 @@ def _allow_lazy_installs() -> bool:
         return True
     sec = cfg.get("security") or {}
     val = sec.get("allow_lazy_installs", True)
-    return bool(val)
+    return is_truthy_value(val, default=True)
 
 
 def _spec_is_safe(spec: str) -> bool:

@@ -653,8 +653,18 @@ class ChatCompletionsTransport(ProviderTransport):
         reasoning_content = getattr(msg, "reasoning_content", None)
         if reasoning_content is None and hasattr(msg, "model_extra"):
             model_extra = getattr(msg, "model_extra", None) or {}
-            if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
-                reasoning_content = model_extra["reasoning_content"]
+            if isinstance(model_extra, dict):
+                # vLLM 0.23+ renamed the OpenAI reasoning field
+                # reasoning_content -> reasoning; accept either key.
+                reasoning_content = (
+                    model_extra.get("reasoning_content")
+                    or model_extra.get("reasoning")
+                )
+
+        # Fall back to the bare `reasoning` field (vLLM >= 0.23, and other
+        # providers that only set `reasoning`) so it is not silently dropped.
+        if reasoning_content is None:
+            reasoning_content = reasoning
 
         provider_data: Dict[str, Any] = {}
         if reasoning_content is not None:

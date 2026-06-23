@@ -113,6 +113,33 @@ def test_active_session_registry_prunes_dead_pids(tmp_path, monkeypatch):
     lease.release()
 
 
+def test_transfer_active_session_reanchors_existing_lease(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="session-old",
+        surface="tui",
+        config={"max_concurrent_sessions": 1},
+        metadata={"live_session_id": "ui-1"},
+    )
+
+    assert message is None
+    assert lease is not None
+    assert active_sessions.transfer_active_session(
+        lease,
+        session_id="session-new",
+        metadata={"live_session_id": "ui-1"},
+    )
+
+    snapshot = active_sessions.active_session_registry_snapshot()
+    assert lease.session_id == "session-new"
+    assert len(snapshot) == 1
+    assert snapshot[0]["session_id"] == "session-new"
+    assert snapshot[0]["metadata"] == {"live_session_id": "ui-1"}
+    lease.release()
+
+
 def test_pid_alive_uses_safe_pid_exists_without_signalling(monkeypatch):
     checked: list[int] = []
 

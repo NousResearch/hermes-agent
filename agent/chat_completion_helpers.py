@@ -352,7 +352,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
         agent._codex_stream_last_event_ts = None
         agent._codex_stream_last_progress_ts = None
 
-    _call_start = time.time()
+    _call_start = time.monotonic()
     agent._touch_activity("waiting for non-streaming API response")
 
     t = threading.Thread(target=_call, daemon=True)
@@ -365,12 +365,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
         # Touch activity every ~30s so the gateway's inactivity
         # monitor knows we're alive while waiting for the response.
         if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
-            _elapsed = time.time() - _call_start
+            _elapsed = time.monotonic() - _call_start
             agent._touch_activity(
                 f"waiting for non-streaming response ({int(_elapsed)}s elapsed)"
             )
 
-        _elapsed = time.time() - _call_start
+        _elapsed = time.monotonic() - _call_start
 
         # TTFB detector: the Codex stream has produced no event at all and
         # we're past the first-byte cutoff → the backend opened the

@@ -2967,7 +2967,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
                 session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
         except Exception:
             pass
-        session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
+        session.setdefault("tool_started_at", {})[tool_call_id] = time.monotonic()
     if _tool_progress_enabled(sid):
         payload = {
             "tool_id": tool_call_id,
@@ -3582,12 +3582,12 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
             _emit("preview.restart.progress", parent, {"task_id": task_id, "level": level, "text": text})
 
     def tool_start(tool_call_id: str, name: str, args: dict) -> None:
-        started_at[tool_call_id] = time.time()
+        started_at[tool_call_id] = time.monotonic()
         ctx = _tool_ctx(name, args)
         progress(f"Running {name}{f': {ctx}' if ctx else ''}")
 
     def tool_complete(tool_call_id: str, name: str, _args: dict, result: str) -> None:
-        duration_s = time.time() - started_at.get(tool_call_id, time.time())
+        duration_s = time.monotonic() - started_at.get(tool_call_id, time.monotonic())
         summary = _tool_summary(name, result, duration_s) or f"Finished {name}{f' in {_fmt_tool_duration(duration_s)}' if duration_s else ''}"
         output = _preview_tool_result_preview(name, result)
         progress(summary + (f"\n{output}" if output else ""))

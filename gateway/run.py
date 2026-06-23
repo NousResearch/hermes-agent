@@ -8840,7 +8840,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
-        _msg_start_time = time.time()
+        _msg_start_time = time.monotonic()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
         _reply_id = getattr(event, "reply_to_message_id", None)
@@ -9645,7 +9645,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "rephrase your question."
                 )
             agent_messages = agent_result.get("messages", [])
-            _response_time = time.time() - _msg_start_time
+            _response_time = time.monotonic() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)
             logger.info(
@@ -14234,7 +14234,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Make the HTTP request with SSE streaming -----------------------
         full_response = ""
-        _start = time.time()
+        _start = time.monotonic()
 
         try:
             _timeout = ClientTimeout(total=0, sock_read=1800)
@@ -14323,7 +14323,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     stream_task.cancel()
 
-        _elapsed = time.time() - _start
+        _elapsed = time.monotonic() - _start
         if not _run_still_current():
             logger.info(
                 "Discarding stale proxy result for %s — generation %d is no longer current",
@@ -16399,7 +16399,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         ):
             _NOTIFY_INTERVAL = None
-        _notify_start = time.time()
+        _notify_start = time.monotonic()
 
         async def _notify_long_running():
             if _NOTIFY_INTERVAL is None:
@@ -16429,7 +16429,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key, agent_holder[0], _exec_ref
                 ):
                     break
-                _elapsed_mins = int((time.time() - _notify_start) // 60)
+                _elapsed_mins = int((time.monotonic() - _notify_start) // 60)
                 # Include agent activity context if available. Default
                 # heartbeat is terse: elapsed + current tool. Verbose
                 # iteration counter is gated on busy_ack_detail so users

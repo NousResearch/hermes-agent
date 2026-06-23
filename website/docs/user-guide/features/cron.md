@@ -298,6 +298,14 @@ cron:
   wrap_response: false
 ```
 
+To keep the human-friendly header and footer but drop the bare `(job_id: …)` line (which can read as debug noise in chat), set `cron.show_job_id` to `false`:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  show_job_id: false
+```
+
 ### Silent suppression
 
 If the agent's final response contains `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.

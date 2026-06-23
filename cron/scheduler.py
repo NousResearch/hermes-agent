@@ -802,20 +802,27 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
+    # in config.yaml for clean output.  The (job_id: ...) line inside the
+    # wrapper can be hidden independently via cron.show_job_id: false (default
+    # true) for users who want to keep the human-friendly header/footer but
+    # find the bare job id reads as debug noise in chat.
     wrap_response = True
+    show_job_id = True
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        cron_cfg = user_cfg.get("cron", {})
+        wrap_response = cron_cfg.get("wrap_response", True)
+        show_job_id = cron_cfg.get("show_job_id", True)
     except Exception:
         pass
 
     if wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
+        job_id_line = f"(job_id: {job_id})\n" if show_job_id else ""
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
+            f"{job_id_line}"
             f"-------------\n\n"
             f"{content}\n\n"
             f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."

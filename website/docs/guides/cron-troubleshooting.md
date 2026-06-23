@@ -97,6 +97,13 @@ cron:
   wrap_response: false
 ```
 
+To keep the wrapper but hide just the `(job_id: …)` line (useful when the job id reads as noise in chat but the header/footer are still wanted), set `cron.show_job_id: false`:
+
+```yaml
+cron:
+  show_job_id: false
+```
+
 ---
 
 ## Skill Loading Failures

@@ -969,6 +969,14 @@ DEFAULT_CONFIG = {
         # compounds over a long conversation.  Costs ~70 tokens in the cached
         # system prompt.  Set False to disable globally.
         "parallel_tool_call_guidance": True,
+        # Auto session summary — after every turn, automatically append a
+        # one-line summary entry to the running session summary file
+        # (~/.hermes/sessions/<id>/running_summary.md).  Mechanical, no
+        # LLM inference — just turn number, tool calls made, and key
+        # outcomes.  Survives context compression so the agent can read
+        # back what happened without loading full transcripts.  Set False
+        # to disable (the agent can still use session_summary manually).
+        "auto_session_summary": True,
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP

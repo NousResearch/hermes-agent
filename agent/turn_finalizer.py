@@ -485,4 +485,49 @@ def finalize_turn(
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
 
+    # Auto session summary — mechanical, no LLM inference.
+    # Appends a one-line summary entry to the running session summary file
+    # after every completed, non-interrupted turn.  Survives context
+    # compression so the agent can read back what happened without loading
+    # full transcripts.  Gated on config key agent.auto_session_summary.
+    if (
+        final_response
+        and not interrupted
+        and getattr(agent, "_auto_session_summary_enabled", lambda: False)()
+    ):
+        try:
+            from tools.session_summary_tool import session_summary as _ss
+
+            # Count tool turns in this turn's messages
+            _tool_names = []
+            for _m in messages:
+                if isinstance(_m, dict) and _m.get("role") == "assistant" and _m.get("tool_calls"):
+                    for _tc in _m["tool_calls"]:
+                        if isinstance(_tc, dict):
+                            _tn = _tc.get("function", {}).get("name")
+                            if _tn:
+                                _tool_names.append(_tn)
+
+            _tool_summary = ""
+            if _tool_names:
+                _unique = list(dict.fromkeys(_tool_names))  # dedup, preserve order
+                _tool_summary = f", {len(_tool_names)} tool calls ({', '.join(_unique[:5])})"
+                if len(_unique) > 5:
+                    _tool_summary += f" +{len(_unique) - 5} more"
+
+            _resp_preview = (final_response or "").strip()[:120]
+            _line = (
+                f"{api_call_count} API calls{_tool_summary}. "
+                f"Exit: {_turn_exit_reason}. "
+                f"Response: {_resp_preview}"
+            )
+
+            _ss(
+                action="append",
+                session_id=agent.session_id,
+                content=_line,
+            )
+        except Exception:
+            pass  # Best-effort — never affect the turn result
+
     return result

@@ -2774,6 +2774,24 @@ class AIAgent:
             pass
         return True  # safe default: explainer on
 
+    def _auto_session_summary_enabled(self) -> bool:
+        """Check whether auto session summary is on.
+
+        Config path: ``agent.auto_session_summary`` (bool, default True).
+        When enabled, every completed non-interrupted turn appends a
+        one-line summary to the running session summary file.  Exposed
+        as a method so tests can patch a single seam.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_config
+            _cfg = _load_config() or {}
+        except Exception:
+            _cfg = {}
+        _agent = _cfg.get("agent") if isinstance(_cfg, dict) else None
+        if isinstance(_agent, dict) and "auto_session_summary" in _agent:
+            return bool(_agent.get("auto_session_summary"))
+        return True  # safe default: auto-summary on
+
     @staticmethod
     def _format_turn_completion_explanation(turn_exit_reason: str) -> str:
         """Render a user-facing explanation for an abnormal turn ending.

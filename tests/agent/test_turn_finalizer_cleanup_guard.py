@@ -182,3 +182,115 @@ def test_text_response_on_last_allowed_call_is_completed():
     )
     assert result["final_response"] == "final report"
     assert result["completed"] is True
+
+
+# ---------------------------------------------------------------------------
+# Auto session summary hook
+# ---------------------------------------------------------------------------
+
+class _StubAgentWithSummary(_StubAgent):
+    """Stub agent with auto_session_summary enabled."""
+
+    def __init__(self, session_id, *, raise_in=()):
+        super().__init__(raise_in=raise_in)
+        self.session_id = session_id
+
+    def _auto_session_summary_enabled(self):
+        return True
+
+
+def test_auto_summary_appends_after_completed_turn(tmp_path, monkeypatch):
+    """After a completed turn, auto-summary appends a timestamped entry."""
+    monkeypatch.setattr("tools.session_summary_tool.get_hermes_home", lambda: tmp_path / "hermes_test")
+
+    session_id = "test-session"
+    agent = _StubAgentWithSummary(session_id)
+
+    result = _run(
+        agent,
+        final_response="All tests pass.",
+        api_call_count=3,
+        turn_exit_reason="text_response(finish_reason=stop)",
+    )
+    assert result["completed"] is True
+
+    summary_path = tmp_path / "hermes_test" / "sessions" / session_id / "running_summary.md"
+    assert summary_path.exists(), f"Expected summary at {summary_path}"
+    text = summary_path.read_text()
+    assert "All tests pass" in text or "3 API calls" in text or "tool" in text.lower()
+
+
+def test_auto_summary_skipped_when_interrupted(tmp_path, monkeypatch):
+    """Auto-summary does NOT append when the turn was interrupted."""
+    monkeypatch.setattr("tools.session_summary_tool.get_hermes_home", lambda: tmp_path / "hermes_test")
+
+    session_id = "test-session"
+    agent = _StubAgentWithSummary(session_id)
+
+    result = finalize_turn(
+        agent,
+        final_response="partial work",
+        api_call_count=2,
+        interrupted=True,
+        failed=False,
+        messages=[{"role": "user", "content": "do a thing"}],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="do a thing",
+        original_user_message="do a thing",
+        _should_review_memory=False,
+        _turn_exit_reason="interrupted_by_user",
+    )
+    assert result["interrupted"] is True
+
+    summary_path = tmp_path / "hermes_test" / "sessions" / session_id / "running_summary.md"
+    # Should NOT exist — interrupted turns don't get auto-summary
+    assert not summary_path.exists(), "Interrupted turn should not create summary"
+
+
+def test_auto_summary_skipped_when_disabled(tmp_path, monkeypatch):
+    """Auto-summary does NOT append when config is disabled."""
+    monkeypatch.setattr("tools.session_summary_tool.get_hermes_home", lambda: tmp_path / "hermes_test")
+
+    session_id = "test-session"
+    agent = _StubAgentWithSummary(session_id)
+    # Override to disable
+    agent._auto_session_summary_enabled = lambda: False  # type: ignore[assignment]
+
+    result = _run(
+        agent,
+        final_response="All tests pass.",
+        api_call_count=3,
+        turn_exit_reason="text_response(finish_reason=stop)",
+    )
+    assert result["completed"] is True
+
+    summary_path = tmp_path / "hermes_test" / "sessions" / session_id / "running_summary.md"
+    assert not summary_path.exists(), "Disabled auto-summary should not create file"
+
+
+def test_auto_summary_failure_does_not_affect_result(tmp_path, monkeypatch):
+    """If the summary write fails, the turn result is still returned cleanly."""
+    monkeypatch.setattr("tools.session_summary_tool.get_hermes_home", lambda: tmp_path / "hermes_test")
+
+    session_id = "test-session"
+    agent = _StubAgentWithSummary(session_id)
+
+    # Make the sessions dir read-only so the write fails
+    sessions_dir = tmp_path / "hermes_test" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    sessions_dir.chmod(0o444)  # read-only
+
+    result = _run(
+        agent,
+        final_response="All tests pass.",
+        api_call_count=3,
+        turn_exit_reason="text_response(finish_reason=stop)",
+    )
+    # Turn still completes normally
+    assert result["completed"] is True
+    assert result["final_response"] == "All tests pass."
+
+    # Restore permissions for cleanup
+    sessions_dir.chmod(0o755)

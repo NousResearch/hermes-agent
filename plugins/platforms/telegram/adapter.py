@@ -7108,13 +7108,19 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
+        """Add an in-progress reaction when message processing begins.
+
+        The Telegram communication convention uses ⚡ once the gateway has
+        accepted the message and actual processing is starting. Telegram
+        reactions replace the previous bot-set reaction, so the completion
+        hook can later swap this to 👌/👎.
+        """
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
+            await self._set_reaction(chat_id, message_id, "⚡")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction.
@@ -7123,10 +7129,10 @@ class TelegramAdapter(BasePlatformAdapter):
         replaces all existing reactions in one call — no remove step needed.
 
         On CANCELLED outcomes (e.g. the user runs ``/stop``, or a session is
-        interrupted mid-flight), we explicitly clear the 👀 in-progress
+        interrupted mid-flight), we explicitly clear the in-progress
         reaction so it doesn't linger on the user's message indefinitely.
-        Without this clear, the only way to remove the 👀 was to wait for
-        another agent run to swap it to 👍/👎 — which never happens if the
+        Without this clear, the only way to remove the reaction was to wait for
+        another agent run to swap it to 👌/👎 — which never happens if the
         cancellation was the last activity in the chat.
         """
         if not self._reactions_enabled():
@@ -7141,7 +7147,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._set_reaction(
                 chat_id,
                 message_id,
-                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
+                "👌" if outcome == ProcessingOutcome.SUCCESS else "👎",
             )
 
 

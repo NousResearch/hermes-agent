@@ -821,6 +821,23 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     assert gateway.find_gateway_pids() == [321]
 
 
+def test_find_gateway_pids_includes_restart_managers_without_systemd(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+
+    def fake_scan(exclude_pids, all_profiles=False, include_restart_managers=False):
+        calls.append((set(exclude_pids), all_profiles, include_restart_managers))
+        return [708] if include_restart_managers else []
+
+    monkeypatch.setattr(gateway, "_scan_gateway_pids", fake_scan)
+
+    assert gateway.find_gateway_pids(all_profiles=True) == [708]
+    assert calls == [(set(), True, True)]
+
+
 def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch):
     monkeypatch.setattr(gateway, "is_windows", lambda: True)
     monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())

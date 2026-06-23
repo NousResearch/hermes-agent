@@ -210,6 +210,59 @@ class ContextEngine(ABC):
         """
         return messages, 0
 
+    # -- Optional: per-turn context selection (distinct from compression) --
+
+    def select_context(
+        self,
+        request_messages: List[Dict[str, Any]],
+        *,
+        conversation_messages: List[Dict[str, Any]] = None,
+        incoming_message: Dict[str, Any] = None,
+        budget_tokens: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Optionally choose/replace the context for THIS request, pre-generation.
+
+        Called every turn after the request message list is assembled and
+        before it is dispatched to the provider — independent of
+        ``should_compress()``. This lets an engine *select* which context
+        enters the prompt (retrieval, topic routing, role/branch switching)
+        rather than *shrink* context that is already there. The two verbs are
+        orthogonal:
+
+          - ``compress()``      : context is too long  -> make it shorter.
+          - ``select_context()``: this turn belongs to a different context
+                                  -> use that one instead.
+
+        Without this hook, engines that need per-turn access to the message
+        list have to force ``should_compress()`` to return ``True`` so that
+        ``compress()`` is invoked every turn purely as a callback — which
+        conflates selection with compression and degrades behaviour when the
+        engine's backend is unavailable. ``select_context()`` removes the need
+        for that workaround.
+
+        The returned list is request-only: it replaces the messages sent to
+        the provider for this single call and MUST NOT be treated as persisted
+        transcript state. The conversation history in the session DB is left
+        untouched, so nothing leaks across turns. Return ``None`` to leave the
+        request unchanged.
+
+        Unlike the ``pre_llm_call`` plugin hook (which appends to the user
+        message and intentionally never rewrites the list, to preserve the
+        cache prefix), ``select_context()`` may *replace* the message list.
+
+        Args:
+            request_messages: The assembled request message list (system
+                prompt + history + any ephemeral prefill), in OpenAI format.
+            conversation_messages: The unmodified persisted conversation
+                history, for reference only (do not mutate).
+            incoming_message: The current turn's user message, if available.
+            budget_tokens: The active model's context length, or 0 if unknown.
+
+        Default returns ``None`` (no-op) — zero impact on the built-in
+        compressor or any existing engine.
+        """
+        return None
+
     # -- Optional: pre-flight check ----------------------------------------
 
     def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:

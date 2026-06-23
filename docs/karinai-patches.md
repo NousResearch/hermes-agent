@@ -20,18 +20,23 @@ Local remotes expected in this clone:
 
 ## Current KarinAI-specific changes
 
-Initial fork setup only:
+Initial fork setup and planning docs only:
 
 - Added this patch log.
 - Added `docs/karinai-runtime-notes.md`.
+- Added `docs/karinai-runtime-contract.md`.
+- Added `docs/karinai-prompt-branding.md`.
 - Added `karinai/README.md`.
 
 No upstream Hermes core files have been changed yet.
 
 ## Upstream sync checklist
 
-1. `git fetch upstream`
-2. Review upstream changes before merging into the KarinAI branch.
-3. Merge or rebase intentionally, resolving conflicts in the smallest possible patches.
-4. Run the upstream Hermes test suite relevant to touched areas.
-5. Update this file if KarinAI patches change.
+1. Confirm the tree is clean or commit/stash local KarinAI work first.
+2. `git fetch upstream main`
+3. Review upstream changes before merging into the KarinAI branch.
+4. Prefer `git merge --no-edit upstream/main` on the public product branch so sync points stay explicit.
+5. Resolve conflicts in the smallest possible patches.
+6. Run targeted tests around API server `/v1/runs`, Docker/runtime startup, tool policy, cron/scheduler behavior, prompt rendering, and any touched files.
+7. Run KarinAI product tests under `tests/karinai/` once they exist.
+8. Update this file only if KarinAI patches change.

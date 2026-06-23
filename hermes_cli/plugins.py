@@ -469,6 +469,10 @@ class PluginContext:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
         The handler signature is ``fn(raw_args: str) -> str | None``.
+        Handlers may additionally declare ``session_id`` / ``session_key``
+        keyword parameters (or ``**kwargs``) to receive the invoking Hermes
+        session key where the dispatch site knows it; legacy handlers that
+        accept only ``raw_args`` are called unchanged.
         It may also be an async callable — the gateway dispatch handles both.
 
         Unlike ``register_cli_command()`` (which creates ``hermes <subcommand>``
@@ -1973,6 +1977,50 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def call_plugin_command_handler(
+    handler: Callable,
+    raw_args: str,
+    *,
+    session_id: str = "",
+    session_key: str = "",
+) -> Any:
+    """Call a plugin slash-command handler, passing session context it accepts.
+
+    The documented handler contract is ``fn(raw_args)``. Session-sensitive
+    handlers may additionally declare ``session_id`` and/or ``session_key``
+    keyword parameters (or ``**kwargs``) to receive the invoking Hermes
+    session key; legacy handlers are called unchanged. Dispatch sites pass
+    the context as explicit kwargs rather than mutating ``HERMES_SESSION_*``
+    environment variables, because gateway handlers can run concurrently and
+    process-global state would let one session's command bind to another's.
+    """
+    context = {"session_id": session_id, "session_key": session_key}
+    kwargs: dict[str, Any] = {}
+    try:
+        parameters = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        parameters = None
+    if parameters is not None:
+        accepts_var_keyword = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        for name, value in context.items():
+            if not value:
+                continue
+            parameter = parameters.get(name)
+            if accepts_var_keyword or (
+                parameter is not None
+                and parameter.kind
+                in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+            ):
+                kwargs[name] = value
+    return handler(raw_args, **kwargs)
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

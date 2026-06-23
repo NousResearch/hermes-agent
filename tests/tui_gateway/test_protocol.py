@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import sys
 import threading
 import time
@@ -1212,6 +1213,95 @@ def test_slash_exec_plugin_handler_error_returns_output(server):
     assert "error" not in resp
     assert resp["result"] == {"output": "Plugin command error: handler boom: hello"}
     assert worker.calls == []
+
+
+def test_slash_exec_plugin_gets_live_tui_session_context(server, monkeypatch):
+    """Session-aware plugin handlers receive the invoking session key as kwargs.
+
+    Stale HERMES_SESSION_* env must neither be consulted nor mutated: the
+    gateway process can carry no (or wrong) session env, and concurrent
+    handlers must not see another session's context.
+    """
+    sid = "rpc-session"
+    server._sessions[sid] = {"session_key": "live-tui-session", "agent": None}
+    monkeypatch.setenv("HERMES_SESSION_KEY", "stale-env-session")
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-env-session")
+
+    received = {}
+
+    def handler(arg, *, session_id="", session_key=""):
+        received.update(arg=arg, session_id=session_id, session_key=session_key)
+        return f"ctx:{session_key}"
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: handler if name == "plugin-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-slash-ctx",
+            "method": "slash.exec",
+            "params": {"command": "plugin-cmd hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "ctx:live-tui-session"}
+    assert received == {
+        "arg": "hello",
+        "session_id": "live-tui-session",
+        "session_key": "live-tui-session",
+    }
+    assert os.environ["HERMES_SESSION_KEY"] == "stale-env-session"
+    assert os.environ["HERMES_SESSION_ID"] == "stale-env-session"
+
+
+def test_command_dispatch_plugin_gets_live_tui_session_context(server):
+    """command.dispatch's plugin fallback passes the live session context too."""
+    sid = "rpc-session"
+    server._sessions[sid] = {"session_key": "live-tui-session", "agent": None}
+
+    received = {}
+
+    def handler(arg, **kwargs):
+        received.update(kwargs)
+        received["arg"] = arg
+        return "dispatched"
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: handler if name == "plugin-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-dispatch-ctx",
+            "method": "command.dispatch",
+            "params": {"name": "plugin-cmd", "arg": "hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"type": "plugin", "output": "dispatched"}
+    assert received == {
+        "arg": "hello",
+        "session_id": "live-tui-session",
+        "session_key": "live-tui-session",
+    }
+
+
+def test_command_dispatch_plugin_legacy_handler_called_unchanged(server):
+    """Legacy fn(raw_args) plugin handlers keep working without session kwargs."""
+    sid = "rpc-session"
+    server._sessions[sid] = {"session_key": "live-tui-session", "agent": None}
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: (lambda arg: f"plugin:{arg}") if name == "plugin-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-dispatch-legacy",
+            "method": "command.dispatch",
+            "params": {"name": "plugin-cmd", "arg": "hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"type": "plugin", "output": "plugin:hello"}
 
 
 @pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])

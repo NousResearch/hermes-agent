@@ -66,9 +66,18 @@ class _NoTrigramConnection(sqlite3.Connection):
 
 @pytest.fixture()
 def db(tmp_path):
-    """Create a SessionDB with a temp database file."""
+    """Create a SessionDB with a temp database file.
+
+    Auto-embed is disabled by default so tests get a clean slate.
+    Tests that need auto-embed (TestAutoEmbedOnAppend, TestOllamaE2E)
+    set ``db.embedding_provider`` explicitly.
+    """
     db_path = tmp_path / "test_state.db"
     session_db = SessionDB(db_path=db_path)
+    # Disable auto-embed — the fixture resolves the real Ollama provider
+    # from config, which would pre-embed every append_message and break
+    # tests that expect zero-vector placeholders.
+    session_db.embedding_provider = None
     yield session_db
     session_db.close()
 
@@ -5052,6 +5061,58 @@ class TestEmbedMessage:
         """embed_message on a nonexistent rowid does nothing (no crash)."""
         db.embed_message(99999, "test", self.provider)  # should not raise
 
+    def test_embed_message_atomic_on_update_failure(self, db):
+        """embed_message rolls back DELETE+INSERT if UPDATE fails.
+
+        Uses a temporary BEFORE UPDATE trigger on the messages table
+        that raises ABORT, simulating a real SQLite-level failure.
+        After the fix wraps operations in an explicit transaction,
+        the DELETE+INSERT into messages_vec must be rolled back.
+        """
+        db.create_session(session_id="s1", source="cli")
+        msg_id = db.append_message("s1", role="user", content="Atomic test")
+
+        # Install a trigger that blocks UPDATE on messages
+        db._conn.execute(
+            "CREATE TEMP TRIGGER test_block_vec_update "
+            "BEFORE UPDATE OF vec_embedded ON messages "
+            "BEGIN "
+            "    SELECT RAISE(ABORT, 'simulated UPDATE failure'); "
+            "END"
+        )
+
+        try:
+            db.embed_message(msg_id, "Atomic test", self.provider)
+        except (sqlite3.OperationalError, sqlite3.IntegrityError):
+            pass  # expected — trigger raised ABORT
+        finally:
+            # Clean up the trigger
+            db._conn.execute("DROP TRIGGER IF EXISTS test_block_vec_update")
+
+        # After the fix: DELETE+INSERT should be rolled back.
+        # The zero-vector placeholder should still be there.
+        import sqlite_vec
+        db._conn.enable_load_extension(True)
+        sqlite_vec.load(db._conn)
+        db._conn.enable_load_extension(False)
+        cursor = db._conn.execute(
+            "SELECT embedding FROM messages_vec WHERE rowid = ?", (msg_id,)
+        )
+        row = cursor.fetchone()
+        assert row is not None, "messages_vec row should still exist"
+        # Should still be zero vector (DELETE+INSERT rolled back)
+        assert row[0] == b'\x00' * 3072, (
+            "DELETE+INSERT should be rolled back when UPDATE fails — "
+            "got non-zero embedding (orphan bug)"
+        )
+        # vec_embedded should still be 0
+        cursor = db._conn.execute(
+            "SELECT vec_embedded FROM messages WHERE id = ?", (msg_id,)
+        )
+        assert cursor.fetchone()[0] == 0, (
+            "vec_embedded should remain 0 when UPDATE fails"
+        )
+
 
 class TestBackfillEmbeddings:
     """Tests for backfill_embeddings — batch embedding of zero-vector rows."""
@@ -5124,6 +5185,36 @@ class TestBackfillEmbeddings:
 
         count = db.backfill_embeddings(self.provider, batch_size=2)
         assert count == 5  # all embedded, just in batches
+
+    def test_backfill_skips_tool_messages(self, db):
+        """backfill_embeddings only embeds user+assistant, not tool messages."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="User message")
+        db.append_message("s1", role="assistant", content="Assistant message")
+        db.append_message("s1", role="tool", content="Tool output",
+                          tool_name="test_tool")
+
+        count = db.backfill_embeddings(self.provider, batch_size=10)
+
+        # Only user+assistant should be embedded
+        assert count == 2, (
+            f"backfill should embed only user+assistant, got {count}"
+        )
+
+        # Verify: tool message should still have vec_embedded=0
+        cursor = db._conn.execute(
+            "SELECT id, role, vec_embedded FROM messages ORDER BY id"
+        )
+        rows = cursor.fetchall()
+        for row in rows:
+            if row[1] == "tool":
+                assert row[2] == 0, (
+                    f"tool message {row[0]} should not be embedded"
+                )
+            else:
+                assert row[2] == 1, (
+                    f"user/assistant message {row[0]} should be embedded"
+                )
 
 
 class TestAutoEmbedOnAppend:

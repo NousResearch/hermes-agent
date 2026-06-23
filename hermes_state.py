@@ -3188,22 +3188,34 @@ class SessionDB:
 
         try:
             with self._lock:
-                # vec0 virtual tables silently ignore UPDATE on the embedding
-                # column.  Use DELETE + INSERT instead.
-                self._conn.execute(
-                    "DELETE FROM messages_vec WHERE rowid = ?",
-                    (msg_id,),
-                )
-                self._conn.execute(
-                    "INSERT INTO messages_vec(rowid, embedding) VALUES (?, ?)",
-                    (msg_id, blob),
-                )
-                self._conn.execute(
-                    "UPDATE messages SET vec_embedded = 1 WHERE id = ?",
-                    (msg_id,),
-                )
-        except sqlite3.OperationalError:
-            logger.debug("embed_message: UPDATE failed for msg %d", msg_id, exc_info=True)
+                # Wrap in an explicit transaction so DELETE+INSERT+UPDATE
+                # are atomic.  Without this, SQLite auto-commits each
+                # statement individually — if the UPDATE fails, the
+                # DELETE+INSERT already committed, producing an orphan
+                # (real embedding with vec_embedded=0).
+                self._conn.execute("BEGIN")
+                try:
+                    # vec0 virtual tables silently ignore UPDATE on the embedding
+                    # column.  Use DELETE + INSERT instead.
+                    self._conn.execute(
+                        "DELETE FROM messages_vec WHERE rowid = ?",
+                        (msg_id,),
+                    )
+                    self._conn.execute(
+                        "INSERT INTO messages_vec(rowid, embedding) VALUES (?, ?)",
+                        (msg_id, blob),
+                    )
+                    self._conn.execute(
+                        "UPDATE messages SET vec_embedded = 1 WHERE id = ?",
+                        (msg_id,),
+                    )
+                except Exception:
+                    self._conn.execute("ROLLBACK")
+                    raise
+                else:
+                    self._conn.commit()
+        except Exception:
+            logger.debug("embed_message: failed for msg %d", msg_id, exc_info=True)
 
     def backfill_embeddings(
         self,
@@ -3233,6 +3245,7 @@ class SessionDB:
                     """SELECT m.id, m.content
                        FROM messages m
                        WHERE m.vec_embedded = 0
+                         AND m.role IN ('user', 'assistant')
                        ORDER BY m.id
                        LIMIT ?""",
                     (batch_size,),

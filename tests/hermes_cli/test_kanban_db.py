@@ -4766,3 +4766,185 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# External / interactive claim hold (stop dispatcher re-dispatching a task a
+# live ccz/ccp session is actively working — the t_0781f106 parallel-work
+# incident). See CLAIM_KIND_EXTERNAL.
+# ---------------------------------------------------------------------------
+
+def test_claim_external_sets_kind_and_null_expiry(kanban_home):
+    """``claim_task(external=True)`` marks the row external and holds it
+    indefinitely (no expiry), so the stale-claim sweep can never see it."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="live session task", assignee="a")
+        task = kb.claim_task(conn, t, external=True)
+        assert task is not None
+        assert task.status == "running"
+        assert task.claim_kind == kb.CLAIM_KIND_EXTERNAL
+        # Indefinite hold: never-expiring claims are invisible to
+        # release_stale_claims (which filters claim_expires IS NOT NULL).
+        assert task.claim_expires is None
+        # The claimed event records the kind for the audit trail.
+        payload = [
+            r for r in conn.execute(
+                "SELECT kind, payload FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        claimed = [p for p in payload if p["kind"] == "claimed"][0]
+        import json
+        assert json.loads(claimed["payload"])["kind"] == kb.CLAIM_KIND_EXTERNAL
+
+
+def test_claim_default_is_worker_kind(kanban_home):
+    """A plain claim (the dispatcher / worker path) stays a worker claim
+    with a finite TTL — unchanged behaviour."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="worker task", assignee="a")
+        task = kb.claim_task(conn, t)
+        assert task is not None
+        assert task.claim_kind == kb.CLAIM_KIND_WORKER
+        assert task.claim_expires is not None
+
+
+def test_external_claim_not_reclaimed_indefinite(kanban_home, monkeypatch):
+    """An external hold (claim_expires NULL) is never reclaimed by the
+    stale-claim sweep, even with no heartbeat and no live worker PID — the
+    core fix for the live-session-vs-dispatcher race."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="live session task", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:ccz", external=True)
+        # No worker_pid, no heartbeat — exactly how a live interactive
+        # session looks. A worker claim in this state would be reclaimed.
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        reclaimed = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+        assert reclaimed == 0
+        task = kb.get_task(conn, t)
+        assert task.status == "running"
+        assert task.claim_kind == kb.CLAIM_KIND_EXTERNAL
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        assert "reclaimed" not in kinds
+
+
+def test_external_claim_guard_holds_even_if_expiry_stamped(
+    kanban_home, monkeypatch,
+):
+    """Defense-in-depth: even if some future code path stamps a (stale)
+    expiry on an external claim, the claim_kind guard in
+    release_stale_claims still refuses to reclaim it."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="live session task", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:ccz", external=True)
+        # Simulate a bug that stamps a stale finite expiry on the external
+        # claim. The kind guard must still protect it.
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 3600, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        reclaimed = kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None)
+        assert reclaimed == 0
+        task = kb.get_task(conn, t)
+        assert task.status == "running"
+        assert task.claim_kind == kb.CLAIM_KIND_EXTERNAL
+
+
+def test_worker_claim_still_reclaimed_when_stale(kanban_home, monkeypatch):
+    """Regression guard: the external hold must NOT change worker-claim
+    reclaim. A stale worker claim with a dead PID is still reclaimed."""
+    import signal
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="worker task", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")  # default = worker
+        kb._set_worker_pid(conn, t, 12345)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 3600, t),
+        )
+        killed: list[int] = []
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        reclaimed = kb.release_stale_claims(
+            conn, signal_fn=lambda _p, sig: killed.append(sig),
+        )
+        assert reclaimed == 1
+        assert kb.get_task(conn, t).status == "ready"
+        assert killed == [signal.SIGTERM]
+
+
+def test_reclaim_clears_external_hold(kanban_home):
+    """Explicit operator ``reclaim`` is the recovery path for a dead
+    external session: it releases the hold and resets claim_kind so the
+    task is cleanly worker-claimable again."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="live session task", assignee="a")
+        kb.claim_task(conn, t, external=True)
+        assert kb.reclaim_task(conn, t, reason="session died") is True
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.claim_kind is None
+        assert task.claim_lock is None
+        assert task.claim_expires is None
+
+
+def test_complete_clears_external_hold(kanban_home):
+    """Completing an external-held task clears the hold marker."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="live session task", assignee="a")
+        kb.claim_task(conn, t, external=True)
+        assert kb.complete_task(conn, t, result="done by hand") is True
+        task = kb.get_task(conn, t)
+        assert task.status == "done"
+        assert task.claim_kind is None
+
+
+def test_block_clears_external_hold(kanban_home):
+    """Blocking an external-held task clears the hold marker."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="live session task", assignee="a")
+        kb.claim_task(conn, t, external=True)
+        assert kb.block_task(conn, t, reason="needs input") is True
+        task = kb.get_task(conn, t)
+        assert task.status == "blocked"
+        assert task.claim_kind is None
+
+
+def test_claim_kind_column_added_to_legacy_db(tmp_path):
+    """``_migrate_add_optional_columns`` must add ``claim_kind`` to a DB
+    created before the column existed (additive, default NULL = worker)."""
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    # Legacy ``tasks`` shape without claim_kind.
+    conn.execute(
+        "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL, "
+        "status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER)"
+    )
+    # ``_migrate_add_optional_columns`` also touches task_events for the
+    # run_id back-fill, so the table must exist (mirrors the legacy-index
+    # migration test above).
+    conn.execute(
+        "CREATE TABLE task_events (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "task_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT, "
+        "created_at INTEGER NOT NULL)"
+    )
+    conn.commit()
+    cols_before = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+    assert "claim_kind" not in cols_before
+    kb._migrate_add_optional_columns(conn)
+    cols_after = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+    assert "claim_kind" in cols_after
+    conn.close()

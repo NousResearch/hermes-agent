@@ -506,7 +506,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_claim.add_argument("task_id")
     p_claim.add_argument("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS,
-                         help="Claim TTL in seconds (default: 900)")
+                         help="Claim TTL in seconds (default: 900). Ignored "
+                              "with --external (external holds never expire).")
+    p_claim.add_argument(
+        "--external", action="store_true",
+        help="Mark this as a live interactive-operator hold: held "
+             "indefinitely and NEVER auto-reclaimed by the dispatcher. Use "
+             "this when an interactive session (e.g. Claude Code in tmux "
+             "ccz/ccp) works a task directly, so the dispatcher won't spawn "
+             "a parallel worker on it. Release it with complete / block / "
+             "reclaim (it will NOT free itself on a TTL).")
 
     # --- comment / complete / block / unblock / archive ---
     p_comment = sub.add_parser("comment", help="Append a comment")
@@ -1798,8 +1807,14 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 
 def _cmd_claim(args: argparse.Namespace) -> int:
+    external = bool(getattr(args, "external", False))
     with kb.connect_closing() as conn:
-        task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
+        task = kb.claim_task(
+            conn, args.task_id,
+            # TTL is meaningless for an external (never-expiring) hold.
+            ttl_seconds=None if external else args.ttl,
+            external=external,
+        )
         if task is None:
             # Report why
             existing = kb.get_task(conn, args.task_id)
@@ -1814,7 +1829,12 @@ def _cmd_claim(args: argparse.Namespace) -> int:
             return 1
         workspace = kb.resolve_workspace(task)
         kb.set_workspace_path(conn, task.id, str(workspace))
-    print(f"Claimed {task.id}")
+    if external:
+        print(f"Claimed {task.id} (external hold — never auto-reclaimed)")
+        print("Release with: hermes kanban complete/block/reclaim "
+              f"{task.id}")
+    else:
+        print(f"Claimed {task.id}")
     print(f"Workspace: {workspace}")
     return 0
 

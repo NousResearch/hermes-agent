@@ -4643,3 +4643,64 @@ class TestListCronJobRuns:
         detail = " ".join(row[-1] for row in plan)
         assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
         assert "idx_sessions_source" in detail, detail
+
+
+class TestGetMessagesModelSwitchChain:
+    """Verify get_messages follows parent chain on model_switch."""
+
+    def test_single_switch_inherits_parent_messages(self, db):
+        db.create_session("chain_a", source="test", model="m-a")
+        db.append_message("chain_a", "user", "hello from A")
+        db.append_message("chain_a", "assistant", "hi back from A")
+
+        db.split_session("chain_a", "chain_b", model="m-b")
+
+        msgs = db.get_messages("chain_b")
+        contents = [m["content"] for m in msgs]
+        assert "hello from A" in contents
+        assert "hi back from A" in contents
+
+    def test_double_switch_inherits_full_chain(self, db):
+        db.create_session("dbl_a", source="test", model="m-a")
+        db.append_message("dbl_a", "user", "msg-a1")
+        db.append_message("dbl_a", "assistant", "msg-a2")
+
+        db.split_session("dbl_a", "dbl_b", model="m-b")
+        db.append_message("dbl_b", "user", "msg-b1")
+        db.append_message("dbl_b", "assistant", "msg-b2")
+
+        db.split_session("dbl_b", "dbl_c", model="m-c")
+
+        msgs = db.get_messages("dbl_c")
+        contents = [m["content"] for m in msgs]
+        assert contents == ["msg-a1", "msg-a2", "msg-b1", "msg-b2"]
+
+    def test_chain_stops_at_non_model_switch(self, db):
+        db.create_session("stop_x", source="test", model="m-x")
+        db.append_message("stop_x", "user", "should-not-appear")
+        db.end_session("stop_x", "compression")
+
+        db.create_session("stop_a", source="test", model="m-a")
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET parent_session_id = ? WHERE id = ?",
+            ("stop_x", "stop_a"),
+        ))
+        db.append_message("stop_a", "user", "msg-a")
+
+        db.split_session("stop_a", "stop_b", model="m-b")
+
+        msgs = db.get_messages("stop_b")
+        contents = [m["content"] for m in msgs]
+        assert "msg-a" in contents
+        assert "should-not-appear" not in contents
+
+    def test_no_duplication_across_chain(self, db):
+        db.create_session("nodup_a", source="test", model="m-a")
+        db.append_message("nodup_a", "user", "unique-msg")
+
+        db.split_session("nodup_a", "nodup_b", model="m-b")
+        db.split_session("nodup_b", "nodup_c", model="m-c")
+
+        msgs = db.get_messages("nodup_c")
+        contents = [m["content"] for m in msgs]
+        assert contents.count("unique-msg") == 1

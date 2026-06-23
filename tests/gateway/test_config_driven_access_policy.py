@@ -223,8 +223,8 @@ def test_own_policy_open_group_not_authorized_without_allowlist(monkeypatch, pla
 @pytest.mark.parametrize(
     "module_path, class_name, dm_helper",
     [
-        ("gateway.platforms.whatsapp", "WhatsAppAdapter", "_is_dm_allowed"),
-        ("gateway.platforms.wecom", "WeComAdapter", "_is_dm_allowed"),
+        ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter", "_is_dm_allowed"),
+        ("plugins.platforms.wecom.adapter", "WeComAdapter", "_is_dm_allowed"),
         ("gateway.platforms.weixin", "WeixinAdapter", "_is_dm_allowed"),
         ("gateway.platforms.qqbot.adapter", "QQAdapter", "_is_dm_allowed"),
     ],

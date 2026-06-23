@@ -337,7 +337,7 @@ class TestPolicyHelpers:
         assert adapter._is_group_allowed("group-2", "user-1") is False
 
     def test_pairing_group_policy_blocks_without_explicit_group_allow_from(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(
             PlatformConfig(enabled=True, extra={"group_policy": "pairing"})
@@ -346,7 +346,7 @@ class TestPolicyHelpers:
         assert adapter._is_group_allowed("group-1", "user-1") is False
 
     def test_pairing_dm_policy_strict_auth_denies_unknown(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True, extra={"dm_policy": "pairing"}))
         assert adapter._is_dm_allowed("user-1") is False

@@ -14734,12 +14734,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
                 # Single-line, capped preview for non-verbose modes.
                 _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
                 _lines = _cmd_full.splitlines()
                 _cmd_short = _lines[0] if _lines else _cmd_full
                 _multiline = len(_lines) > 1
-                if len(_cmd_short) > _cap:
-                    _cmd_short = _cmd_short[:_cap - 3] + "..."
+                # _pl == 0 means no limit (user wants full visibility);
+                # only truncate when a positive cap is configured.
+                if _pl > 0 and len(_cmd_short) > _pl:
+                    _cmd_short = _cmd_short[:_pl - 3] + "..."
                 elif _multiline:
                     _cmd_short = _cmd_short + " ..."
                 _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
@@ -14779,9 +14780,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             elif preview:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
+                # _pl == 0 means no limit; only truncate for positive values.
+                if _pl > 0 and len(preview) > _pl:
+                    preview = preview[:_pl - 3] + "..."
                 msg = f"{emoji} {tool_name}: \"{preview}\""
                 last_was_terminal_block[0] = False
             else:

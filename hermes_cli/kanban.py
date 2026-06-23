@@ -1854,7 +1854,12 @@ def _cmd_claim(args: argparse.Namespace) -> int:
             )
             return 1
         workspace = kb.resolve_workspace(task)
-        kb.set_workspace_path(conn, task.id, str(workspace))
+        # Opt in to resetting the failure counter on manual claim:
+        # operator-driven recovery should clear the breaker, but routine
+        # spawns from the dispatcher must not (see set_workspace_path).
+        kb.set_workspace_path(
+            conn, task.id, str(workspace), reset_failure_counter=True
+        )
     print(f"Claimed {task.id}")
     print(f"Workspace: {workspace}")
     return 0

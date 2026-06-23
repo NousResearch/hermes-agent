@@ -2535,13 +2535,28 @@ def test_cli_show_clamps_negative_elapsed(kanban_home):
 def test_resolve_workspace_rejects_relative_dir_path(kanban_home):
     """dir: workspace_path must be absolute. A relative path like
     '../../../tmp/attacker' would be resolved against the dispatcher's
-    CWD — a confused-deputy escape vector."""
+    CWD — a confused-deputy escape vector.
+
+    Legacy-row pattern (kanban t_da44022e): create_task now refuses
+    non-absolute paths at the API layer (the crash-rate-totum-operator
+    2026-06-23 fix), so to exercise the spawn-time guard in
+    ``resolve_workspace`` we have to plant a relative path via direct
+    SQL UPDATE. The spawn-time check is the defense-in-depth layer
+    that catches rows the create-time guard missed (legacy rows that
+    pre-date the fix, or rows planted by external migration tooling).
+    """
     conn = kb.connect()
     try:
         tid = kb.create_task(
             conn, title="path-trav", assignee="worker",
             workspace_kind="dir",
-            workspace_path="../../../tmp/attacker",
+            workspace_path="/tmp/kanban_legacy_dir_path",
+        )
+        # Plant a relative path via direct UPDATE — simulating a
+        # legacy row from before the create-time guard landed.
+        conn.execute(
+            "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+            ("../../../tmp/attacker", tid),
         )
         task = kb.get_task(conn, tid)
         # Storage is verbatim — that's fine.
@@ -2572,13 +2587,24 @@ def test_resolve_workspace_accepts_absolute_dir_path(kanban_home, tmp_path):
 
 
 def test_resolve_workspace_rejects_relative_worktree_path(kanban_home):
-    """Worktree paths also must be absolute when explicitly set."""
+    """Worktree paths also must be absolute when explicitly set.
+
+    Legacy-row pattern (kanban t_da44022e): same rationale as
+    ``test_resolve_workspace_rejects_relative_dir_path`` -- create_task
+    now guards against non-absolute paths at the API layer, so we
+    plant a relative path via direct SQL UPDATE to exercise the
+    spawn-time guard in ``resolve_workspace``.
+    """
     conn = kb.connect()
     try:
         tid = kb.create_task(
             conn, title="wt", assignee="worker",
             workspace_kind="worktree",
-            workspace_path="../escape",
+            workspace_path="/tmp/kanban_legacy_worktree_path",
+        )
+        conn.execute(
+            "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+            ("../escape", tid),
         )
         with pytest.raises(ValueError, match=r"non-absolute"):
             kb.resolve_workspace(kb.get_task(conn, tid))

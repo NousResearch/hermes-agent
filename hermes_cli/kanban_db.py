@@ -2973,6 +2973,30 @@ def create_task(
         if board_default:
             workspace_path = str(board_default)
 
+    # Create-time absolute-path guard (incident: crash-rate-totum-operator
+    # 2026-06-23, 45.5% crash rate, 100% from one card / one byte-identical
+    # dispatcher rejection: non-absolute workspace_path). The dispatcher
+    # already enforces this at spawn via ``resolve_workspace``, but the
+    # bad row was being created in the first place -- the worker crashed
+    # BEFORE the spawn-time guard could catch it, so the row sat in
+    # ``ready`` indefinitely. Refuse at the create layer so the
+    # failure surfaces as a 400/ValueError instead of a stuck card.
+    #
+    # Applied to every persistent kind (``dir``, ``worktree``) AND to
+    # ``scratch`` with an explicit ``workspace_path`` (legacy scratch
+    # tasks -- see ``resolve_workspace`` for the same threat model).
+    if workspace_path is not None and workspace_kind in {
+        "dir", "worktree", "scratch"
+    }:
+        p = Path(workspace_path).expanduser()
+        if not p.is_absolute():
+            raise ValueError(
+                f"workspace_path {workspace_path!r} is not absolute; "
+                f"workspace paths must be absolute (relative paths are "
+                f"ambiguous against the dispatcher's CWD). Use "
+                f"Path.resolve() or pass the expanded absolute path."
+            )
+
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
         task_id = _new_task_id()
@@ -5806,13 +5830,35 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
 
 
 def set_workspace_path(
-    conn: sqlite3.Connection, task_id: str, path: Path | str
+    conn: sqlite3.Connection,
+    task_id: str,
+    path: Path | str,
+    *,
+    reset_failure_counter: bool = False,
 ) -> None:
+    """Persist the resolved workspace path back to a task row.
+
+    ``reset_failure_counter`` is keyword-only and defaults to ``False``.
+    The dispatcher (``dispatch_once``) calls this on EVERY spawn, so an
+    unconditional reset would defeat the per-task circuit breaker:
+    a permanently-broken task would have its consecutive_failures zeroed
+    out on every spawn instead of tripping ``DEFAULT_FAILURE_LIMIT`` and
+    auto-blocking. The operator's manual ``kanban claim`` flow opts in
+    explicitly because that's a human-driven recovery action, not a
+    normal spawn.
+
+    See incident crash-rate-totum-operator 2026-06-23, kanban t_da44022e.
+    """
     with write_txn(conn):
         conn.execute(
             "UPDATE tasks SET workspace_path = ? WHERE id = ?",
             (str(path), task_id),
         )
+        if reset_failure_counter:
+            conn.execute(
+                "UPDATE tasks SET consecutive_failures = 0 WHERE id = ?",
+                (task_id,),
+            )
 
 
 def set_branch_name(

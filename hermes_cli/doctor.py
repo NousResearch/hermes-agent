@@ -787,10 +787,10 @@ def run_doctor(args):
                     provider_ids_to_accept.add(catalog_provider)
 
             if provider and provider != "auto":
-                if catalog_provider is None or (
-                    known_providers
-                    and not (provider_ids_to_accept & valid_provider_ids)
-                ):
+                # Plugin providers may be present in PROVIDER_REGISTRY / auth aliases
+                # without a provider_catalog entry. Accept them when they resolve via
+                # the registry; only fail when neither catalog nor registry knows the id.
+                if catalog_provider is None and not (provider_ids_to_accept & valid_provider_ids):
                     known_list = ", ".join(sorted(known_providers)) if known_providers else "(unavailable)"
                     _fail_and_issue(
                         f"model.provider '{provider_raw}' is not a recognised provider",

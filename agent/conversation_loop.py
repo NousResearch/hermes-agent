@@ -534,6 +534,17 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
+    # Short-circuit: a ``pre_llm_call`` plugin answered this turn deterministically
+    # (e.g. a /weather fast-path). Return the standard terminal dict with zero
+    # LLM calls — the tool loop never runs.
+    if _ctx.short_circuit_response is not None:
+        return {
+            "final_response": _ctx.short_circuit_response,
+            "messages": messages,
+            "api_calls": 0,
+            "completed": True,
+        }
+
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
     final_response = None

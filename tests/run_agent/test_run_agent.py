@@ -6758,3 +6758,71 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+
+class TestPreLlmCallShortCircuit:
+    """A pre_llm_call ``{final_response}`` must short-circuit run_conversation.
+
+    The loop returns the standard terminal dict with ``api_calls == 0`` and
+    ``completed == True``, never entering the tool-calling loop (no LLM call).
+    The full prologue is mocked via build_turn_context so the test is hermetic.
+    """
+
+    def _short_circuit_ctx(self, reply, messages):
+        from agent.turn_context import TurnContext
+        return TurnContext(
+            user_message="hi",
+            original_user_message="hi",
+            messages=messages,
+            conversation_history=None,
+            active_system_prompt="SYS",
+            effective_task_id="t1",
+            turn_id="turn1",
+            current_turn_user_idx=0,
+            short_circuit_response=reply,
+        )
+
+    def test_short_circuit_returns_zero_api_calls(self):
+        from agent.conversation_loop import run_conversation
+        messages = [{"role": "user", "content": "hi"}]
+        agent = SimpleNamespace(api_mode="chat_completions")
+
+        with patch(
+            "agent.conversation_loop.build_turn_context",
+            return_value=self._short_circuit_ctx("Deterministic answer.", messages),
+        ):
+            result = run_conversation(agent, "hi")
+
+        assert result["final_response"] == "Deterministic answer."
+        assert result["api_calls"] == 0
+        assert result["completed"] is True
+        assert result["messages"] is messages
+
+    def test_no_short_circuit_proceeds_past_early_return(self):
+        """When short_circuit_response is None the early return must NOT fire."""
+        from agent.turn_context import TurnContext
+        from agent.conversation_loop import run_conversation
+
+        messages = [{"role": "user", "content": "hi"}]
+        ctx = TurnContext(
+            user_message="hi",
+            original_user_message="hi",
+            messages=messages,
+            conversation_history=None,
+            active_system_prompt="SYS",
+            effective_task_id="t1",
+            turn_id="turn1",
+            current_turn_user_idx=0,
+            short_circuit_response=None,
+        )
+        # codex path is a separate, cheap early-return we can assert routes there
+        # to prove the short-circuit branch was skipped without running the loop.
+        agent = SimpleNamespace(
+            api_mode="codex_app_server",
+            _run_codex_app_server_turn=lambda **kw: {"final_response": "codex", "api_calls": 1},
+        )
+        with patch("agent.conversation_loop.build_turn_context", return_value=ctx):
+            result = run_conversation(agent, "hi")
+        # Reached the codex branch (api_calls != 0) → short-circuit was skipped.
+        assert result["final_response"] == "codex"
+        assert result["api_calls"] == 1

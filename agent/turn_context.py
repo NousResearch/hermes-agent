@@ -59,6 +59,9 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
+    # Terminal reply supplied by a ``pre_llm_call`` plugin (``{"final_response"}``).
+    # When set, the loop returns it immediately without any LLM call.
+    short_circuit_response: Optional[str] = None
 
 
 def build_turn_context(
@@ -333,13 +336,23 @@ def build_turn_context(
                 if not _compressor.should_compress(_preflight_tokens):
                     break
 
-    # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
+    # Plugin hook: pre_llm_call. Besides ``{"context"}`` (injected into the user
+    # message), a callback may steer the turn before the first LLM call by
+    # returning one of two NEW optional bundles (first non-empty wins):
+    #   {"model","provider","api_key","base_url","api_mode"} -> swap the model
+    #       for this turn (and onward) via switch_model, BEFORE the loop runs.
+    #   {"final_response": str} -> short-circuit: the loop returns this reply
+    #       immediately with zero LLM calls.
+    # If both appear across callbacks, final_response wins and no swap happens.
     plugin_user_context = ""
+    short_circuit_response: Optional[str] = None
+    _model_bundle: Optional[Dict[str, Any]] = None
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
+            session_key=agent.session_id,
             task_id=effective_task_id,
             turn_id=turn_id,
             user_message=original_user_message,
@@ -348,10 +361,19 @@ def build_turn_context(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            agent=agent,
         )
         _ctx_parts: list[str] = []
         for r in _pre_results:
-            if isinstance(r, dict) and r.get("context"):
+            if isinstance(r, dict) and r.get("final_response") is not None:
+                # First short-circuit wins; final_response supersedes any swap.
+                if short_circuit_response is None:
+                    short_circuit_response = str(r["final_response"])
+            elif isinstance(r, dict) and r.get("model") and r.get("provider"):
+                # First complete model bundle wins.
+                if _model_bundle is None:
+                    _model_bundle = r
+            elif isinstance(r, dict) and r.get("context"):
                 _ctx_parts.append(str(r["context"]))
             elif isinstance(r, str) and r.strip():
                 _ctx_parts.append(r)
@@ -359,6 +381,32 @@ def build_turn_context(
             plugin_user_context = "\n\n".join(_ctx_parts)
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
+
+    # Apply a requested model swap unless a short-circuit reply already won
+    # (final_response makes the model moot). Fail-open: any swap error keeps
+    # the profile's model so the turn still runs.
+    if short_circuit_response is None and _model_bundle is not None:
+        try:
+            from agent.agent_runtime_helpers import switch_model as _switch_model
+            _switch_model(
+                agent,
+                _model_bundle["model"],
+                _model_bundle["provider"],
+                api_key=_model_bundle.get("api_key", "") or "",
+                base_url=_model_bundle.get("base_url", "") or "",
+                api_mode=_model_bundle.get("api_mode") or "",
+            )
+            logger.info(
+                "pre_llm_call: model swapped to %s/%s for this turn",
+                _model_bundle.get("provider"),
+                _model_bundle.get("model"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "pre_llm_call model swap failed (keeping %s): %s",
+                agent.model,
+                exc,
+            )
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
@@ -405,4 +453,5 @@ def build_turn_context(
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
+        short_circuit_response=short_circuit_response,
     )

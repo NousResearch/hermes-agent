@@ -24,6 +24,7 @@ def register(ctx):
     ctx.register_hook("post_api_request", on_post_api_request)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
+    ctx.register_hook("execution_receipt", on_execution_receipt)
 ```
 
 Every hook callback receives keyword arguments. Plugins should accept
@@ -184,6 +185,46 @@ Tool hooks describe individual tool calls:
 `post_tool_call` is emitted for blocked and cancelled paths so telemetry
 plugins can close spans cleanly.
 
+### Execution Receipts
+
+Execution receipts are a separate metadata-only evidence stream for plugins
+that need a durable, local record of agent-loop tool outcomes without storing
+raw arguments or raw results.
+
+| Hook | When it fires |
+| --- | --- |
+| `execution_receipt` | After Hermes has built a redacted `tool_complete` receipt for a tool outcome. |
+
+The callback receives one keyword argument:
+
+```python
+def on_execution_receipt(receipt: dict, **kwargs):
+    ...
+```
+
+The v0 receipt envelope includes identifiers (`session_id`, `task_id`,
+`turn_id`, `api_request_id`, `tool_call_id`), `trace_id`, `span_id`,
+`sequence_number`, `tool_name`, `status`, `duration_ms`, redacted `args` and
+`result` metadata, `links`, `evidence_gaps`, and redaction fields. It does not
+include raw terminal output, prompts, file contents, environment variables, raw
+error messages, or full tool arguments/results by default.
+
+Hermes ships an optional local JSONL sink:
+
+```bash
+hermes plugins enable observability/execution_receipts
+```
+
+When enabled, receipts are appended to:
+
+```text
+$HERMES_HOME/execution-receipts/receipts.jsonl
+```
+
+The plugin also registers `/receipts status`, `/receipts tail [N]`, and
+`/receipts gaps`. P1 receipts are best-effort local telemetry only: they do not
+route work, enforce policy, or cryptographically sign records.
+
 ### Approval Lifecycle
 
 Approval hooks describe dangerous-command approval prompts:
@@ -264,6 +305,7 @@ def register(ctx):
     ctx.register_hook("post_api_request", on_post_api_request)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
+    ctx.register_hook("execution_receipt", on_execution_receipt)
 
 
 def on_pre_api_request(**kwargs):
@@ -298,6 +340,15 @@ def on_post_tool_call(**kwargs):
         result=kwargs.get("result"),
         status=kwargs.get("status"),
         duration_ms=kwargs.get("duration_ms"),
+    )
+
+
+def on_execution_receipt(**kwargs):
+    receipt = kwargs.get("receipt") or {}
+    persist_local_receipt_summary(
+        sequence=receipt.get("sequence_number"),
+        tool=receipt.get("tool_name"),
+        status=receipt.get("status"),
     )
 ```
 

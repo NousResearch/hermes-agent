@@ -1,0 +1,6 @@
+name: execution_receipts
+version: "0.1.0"
+description: "Optional local execution receipt JSONL sink for Hermes. Enable with `hermes plugins enable observability/execution_receipts`."
+author: NousResearch
+hooks:
+  - execution_receipt

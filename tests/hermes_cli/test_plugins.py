@@ -85,6 +85,13 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
     return plugin_dir
 
 
+# ── Hook contract ──────────────────────────────────────────────────────────
+
+
+def test_execution_receipt_is_valid_hook():
+    assert "execution_receipt" in VALID_HOOKS
+
+
 # ── TestPluginDiscovery ────────────────────────────────────────────────────
 
 

@@ -224,6 +224,15 @@ def dispatch_async_delegation(
                 ),
             }
         _records[delegation_id] = record
+        roster_snapshot = [dict(r) for r in _records.values()]
+
+    # Bug 4 fix: bridge in-memory _records to on-disk surface (dashboard / MCP).
+    try:
+        from tools import _async_delegation_state as _ads
+        _ads.write_state_snapshot(roster_snapshot)
+        _ads.emit_spawned(record)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("dispatch state writer (single) failed: %s", exc)
 
     executor = _get_executor(max_async_children)
 
@@ -275,6 +284,15 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
         # Snapshot fields needed for the event while holding the lock.
         event_record = dict(record)
         _prune_completed_locked()
+        roster_snapshot = [dict(r) for r in _records.values()]
+
+    # Bug 4: refresh on-disk roster + append lifecycle event for the dashboard.
+    try:
+        from tools import _async_delegation_state as _ads
+        _ads.write_state_snapshot(roster_snapshot)
+        _ads.emit_finalized(event_record, result, status)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_finalize state writer failed: %s", exc)
 
     _push_completion_event(event_record, result, status)
 
@@ -403,6 +421,15 @@ def dispatch_async_delegation_batch(
                 ),
             }
         _records[delegation_id] = record
+        roster_snapshot = [dict(r) for r in _records.values()]
+
+    # Bug 4 fix: bridge in-memory _records to on-disk surface (dashboard / MCP).
+    try:
+        from tools import _async_delegation_state as _ads
+        _ads.write_state_snapshot(roster_snapshot)
+        _ads.emit_spawned(record)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("dispatch state writer (batch) failed: %s", exc)
 
     executor = _get_executor(max_async_children)
 
@@ -461,6 +488,23 @@ def _finalize_batch(
         record["interrupt_fn"] = None
         event_record = dict(record)
         _prune_completed_locked()
+        roster_snapshot = [dict(r) for r in _records.values()]
+
+    # Bug 4: refresh on-disk roster + lifecycle event for batch finalize.
+    try:
+        from tools import _async_delegation_state as _ads
+        _ads.write_state_snapshot(roster_snapshot)
+        # Synthesize a result shape compatible with emit_finalized.
+        synthesized = {
+            "summary": combined.get("summary") or (
+                f"batch: {len(combined.get('results') or [])} task(s)"
+            ),
+            "api_calls": combined.get("api_calls"),
+            "error": combined.get("error"),
+        }
+        _ads.emit_finalized(event_record, synthesized, status)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_finalize_batch state writer failed: %s", exc)
 
     try:
         from tools.process_registry import process_registry

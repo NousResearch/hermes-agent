@@ -1051,7 +1051,10 @@ def _resolve_fs_data_url_max_bytes() -> int:
         raw = read_raw_config()
         val = raw.get("gateway", {}).get("file_upload", {}).get("fs_data_url_max_bytes")
         if val is not None:
-            return int(val)
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
     except Exception:
         pass
     return int(os.environ.get("HERMES_FS_DATA_URL_MAX_BYTES", str(default)))
@@ -1069,7 +1072,10 @@ def _resolve_dashboard_ws_max_size_bytes() -> int:
         raw = read_raw_config()
         val = raw.get("gateway", {}).get("file_upload", {}).get("dashboard_ws_max_size_bytes")
         if val is not None:
-            return int(val)
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
     except Exception:
         pass
     return int(os.environ.get("HERMES_DASHBOARD_WS_MAX_SIZE_BYTES", str(default)))

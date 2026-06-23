@@ -101,7 +101,10 @@ def _resolve_max_request_bytes() -> int:
         raw = read_raw_config()
         val = raw.get("gateway", {}).get("file_upload", {}).get("max_request_bytes")
         if val is not None:
-            return int(val)
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
     except Exception:
         pass
     return int(os.environ.get("API_SERVER_MAX_REQUEST_BYTES", str(default)))

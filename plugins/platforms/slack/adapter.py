@@ -965,6 +965,17 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
 
+            # Register Block Kit action handlers for clarify buttons.
+            # Renders multi-choice clarify prompts as native Block Kit
+            # action buttons instead of a numbered text list (see #503
+            # Phase 1 Slack gap — Discord and Telegram already have this).
+            self._app.action("hermes_clarify_choice")(
+                self._handle_clarify_action
+            )
+            self._app.action("hermes_clarify_other")(
+                self._handle_clarify_action
+            )
+
             # Register plugin-provided Block Kit action handlers.
             #
             # Plugins call ``ctx.register_slack_action_handler(action_id, cb)``
@@ -3024,6 +3035,106 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] send_slash_confirm failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a clarify prompt with Block Kit action buttons.
+
+        Overrides the base adapter's numbered-text-list default.  Renders
+        each choice as a ``hermes_clarify_choice`` button (``primary`` on
+        the first choice) plus an ``hermes_clarify_other`` button that
+        enters text-capture mode for a free-form answer.
+
+        Falls back to the base adapter when *choices* is None/empty
+        (open-ended) or exceeds 4 choices (would produce 5 choice buttons
+        + 1 \"Other\" = 6, which exceeds Slack's 5-button action-row limit).
+        """
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        # Open-ended prompts (no choices) and prompts with too many
+        # choices for Slack's action-row limit are handled by the base
+        # adapter's text-list fallback.
+        if not choices or len(choices) > 4:
+            return await super().send_clarify(
+                chat_id, question, choices, clarify_id, session_key, metadata
+            )
+
+        try:
+            thread_ts = self._resolve_thread_ts(None, metadata)
+
+            # Build one button per choice plus an "Other…" button.
+            # Slack hard-caps button text at 75 chars; plain_text
+            # emoji are supported, markdown is not.
+            elements: List[Dict[str, Any]] = []
+            for i, choice in enumerate(choices):
+                elements.append(
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": str(choice)[:75],
+                        },
+                        "style": "primary" if i == 0 else None,
+                        "action_id": "hermes_clarify_choice",
+                        "value": f"{clarify_id}|{i}",
+                    }
+                )
+
+            elements.append(
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Other (type answer)…",
+                    },
+                    "action_id": "hermes_clarify_other",
+                    "value": clarify_id,
+                }
+            )
+
+            # Budget the question against Slack's 3000-char section-block cap.
+            budget = 3000 - len("❓ *") - len("*") - len("...")
+            q_text = question[:budget] + "..." if len(question) > budget else question
+
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"❓ *{q_text}*",
+                    },
+                },
+                {
+                    "type": "actions",
+                    "elements": elements,
+                },
+            ]
+
+            kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "text": f"❓ {question[:100]}",
+                "blocks": blocks,
+            }
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+
+            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            return SendResult(
+                success=True,
+                message_id=result.get("ts", ""),
+                raw_response=result,
+            )
+        except Exception as e:
+            logger.error("[Slack] send_clarify failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
     def _is_interactive_user_authorized(
         self,
         user_id: str,
@@ -3301,6 +3412,176 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
         # (approval state already consumed by atomic pop above)
+
+    async def _handle_clarify_action(self, ack, body, action) -> None:
+        """Handle a clarify button click from Block Kit.
+
+        Two action IDs are routed here:
+
+        * ``hermes_clarify_choice`` — the user picked a specific option.
+          The button value encodes ``clarify_id|choice_index``.  The
+          choice text is read back from the button label and the clarify
+          is resolved immediately via ``resolve_gateway_clarify``.
+        * ``hermes_clarify_other`` — the user wants to type a free-form
+          answer.  The message is updated to prompt for text and
+          ``mark_awaiting_text`` is called so the gateway text-intercept
+          picks up the next user message.
+        """
+        await ack()
+
+        action_id = action.get("action_id", "")
+        value = action.get("value", "")
+        message = body.get("message", {})
+        msg_ts = message.get("ts", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        user_name = body.get("user", {}).get("name", "unknown")
+        user_id = body.get("user", {}).get("id", "")
+
+        if not self._is_interactive_user_authorized(
+            user_id,
+            channel_id=channel_id,
+            user_name=user_name,
+        ):
+            logger.warning(
+                "[Slack] Unauthorized clarify click by %s (%s) - ignoring",
+                user_name, user_id,
+            )
+            return
+
+        if action_id == "hermes_clarify_other":
+            # Enter text-capture mode — the next user message resolves
+            # this clarify (see _maybe_intercept_clarify_text in
+            # gateway/run.py).
+            clarify_id = value
+            from tools.clarify_gateway import mark_awaiting_text
+
+            mark_awaiting_text(clarify_id)
+
+            # Update the message to prompt for text input.
+            original_text = ""
+            for block in message.get("blocks", []):
+                if block.get("type") == "section":
+                    original_text = block.get("text", {}).get("text", "")
+                    break
+
+            try:
+                await self._get_client(channel_id).chat_update(
+                    channel=channel_id,
+                    ts=msg_ts,
+                    text="Type your answer below…",
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": original_text or "Clarify prompt",
+                            },
+                        },
+                        {
+                            "type": "context",
+                            "elements": [
+                                {
+                                    "type": "mrkdwn",
+                                    "text": (
+                                        f"✏️ Type your answer below — "
+                                        f"{user_name} chose \"Other\""
+                                    ),
+                                },
+                            ],
+                        },
+                    ],
+                )
+            except Exception as e:
+                logger.warning(
+                    "[Slack] Failed to update clarify message (other): %s", e
+                )
+            return
+
+        # -- hermes_clarify_choice: a specific option was picked ---------
+
+        parts = value.split("|", 1)
+        if len(parts) != 2:
+            logger.warning(
+                "[Slack] Invalid clarify button value: %s", value
+            )
+            return
+
+        clarify_id, choice_idx = parts
+        try:
+            _ = int(choice_idx)  # validate — read, not stored; choice text
+            # is recovered from the button label so the resolved value is
+            # the human-readable text, not a numeric index.
+        except ValueError:
+            logger.warning(
+                "[Slack] Invalid clarify choice index: %s", choice_idx
+            )
+            return
+
+        # Read the chosen text from the button label itself so the
+        # resolved response is the human-readable choice, not the index.
+        chosen_text = ""
+        for block in message.get("blocks", []):
+            if block.get("type") == "actions":
+                for elem in block.get("elements", []):
+                    if (
+                        elem.get("action_id") == action_id
+                        and elem.get("value") == value
+                    ):
+                        chosen_text = elem.get("text", {}).get("text", "")
+                        break
+
+        # Update the message to show the selection and remove buttons.
+        original_text = ""
+        for block in message.get("blocks", []):
+            if block.get("type") == "section":
+                original_text = block.get("text", {}).get("text", "")
+                break
+
+        try:
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=f"Selected: {chosen_text}",
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": original_text or "Clarify prompt",
+                        },
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": (
+                                    f"✅ Selected: *{chosen_text}* "
+                                    f"by {user_name}"
+                                ),
+                            },
+                        ],
+                    },
+                ],
+            )
+        except Exception as e:
+            logger.warning(
+                "[Slack] Failed to update clarify message: %s", e
+            )
+
+        # Resolve the clarify — unblocks the agent thread.
+        try:
+            from tools.clarify_gateway import resolve_gateway_clarify
+
+            resolve_gateway_clarify(clarify_id, chosen_text)
+            logger.info(
+                "Slack clarify resolved: %s → %s (user=%s)",
+                clarify_id, chosen_text, user_name,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to resolve clarify from Slack button: %s", exc
+            )
 
     # ----- Thread context fetching -----
 

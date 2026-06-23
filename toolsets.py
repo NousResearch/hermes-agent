@@ -50,7 +50,7 @@ _HERMES_CORE_TOOLS = [
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
-    "todo", "memory",
+    "todo", "memory", "self_evolution",
     # Session history search
     "session_search",
     # Clarifying questions
@@ -206,8 +206,8 @@ TOOLSETS = {
     },
     
     "memory": {
-        "description": "Persistent memory across sessions (personal notes + user profile)",
-        "tools": ["memory"],
+        "description": "Persistent memory across sessions (personal notes, user profile, self-evolution lessons)",
+        "tools": ["memory", "self_evolution"],
         "includes": []
     },
 

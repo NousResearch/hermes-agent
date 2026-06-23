@@ -163,8 +163,14 @@ _MEMORY_REVIEW_PROMPT = (
     "preferences, or personal details worth remembering?\n"
     "2. Has the user expressed expectations about how you should behave, their work "
     "style, or ways they want you to operate?\n\n"
-    "If something stands out, save it using the memory tool. "
-    "If nothing is worth saving, just say 'Nothing to save.' and stop."
+    "If something stands out, save it using the memory tool.\\n\\n"
+    "Before concluding 'Nothing to save.', always check: was there a repeatable "
+    "mistake pattern, correction, failed test, or workflow lesson? Sessions with "
+    "3+ tool calls almost always have at least one. Record it with "
+    "self_evolution(action='record') — include mistake, lesson, trigger, fix, "
+    "tags, and severity — so the agent can recall the lesson before similar work. "
+    "Do not record one-off task progress or transient setup state.\\n\\n"
+    "If genuinely nothing stands out, say 'Nothing to save.' and stop."
 )
 
 _SKILL_REVIEW_PROMPT = (
@@ -266,6 +272,13 @@ _SKILL_REVIEW_PROMPT = (
     "command, config step, env var to set) under an existing setup or "
     "troubleshooting skill — never 'this tool does not work' as a "
     "standalone constraint.\n\n"
+    "Self-evolution ledger: before concluding, check whether the session "
+    "included a verified mistake, user correction, failed test, or repeated "
+    "bad workflow. Sessions with 3+ tool calls almost always have at least "
+    "one. Record it with self_evolution(action='record') — include mistake, "
+    "lesson, trigger, fix, tags, severity, and evidence. Use it for durable "
+    "error patterns; do not use it for one-off task progress or transient "
+    "setup state.\\n\\n"
     "'Nothing to save.' is a real option but should NOT be the "
     "default. If the session ran smoothly with no corrections and "
     "produced no new technique, just say 'Nothing to save.' and stop. "
@@ -352,6 +365,13 @@ _COMBINED_REVIEW_PROMPT = (
     "command, config step, env var to set) under an existing setup or "
     "troubleshooting skill — never 'this tool does not work' as a "
     "standalone constraint.\n\n"
+    "Self-evolution ledger: before concluding, check whether the session "
+    "included a verified mistake, user correction, failed test, or repeated "
+    "bad workflow. Sessions with 3+ tool calls almost always have at least "
+    "one. Record it with self_evolution(action='record') — include mistake, "
+    "lesson, trigger, fix, tags, severity, and evidence. Use it for durable "
+    "error patterns; do not use it for one-off task progress or transient "
+    "setup state.\\n\\n"
     "Act on whichever of the two dimensions has real signal. If "
     "genuinely nothing stands out on either, say 'Nothing to save.' "
     "and stop — but don't reach for that conclusion as a default."
@@ -736,7 +756,7 @@ def _run_review_in_thread(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    "{tool_name}. Only memory/self_evolution/skill tools are allowed."
                 ),
             )
             try:
@@ -750,8 +770,8 @@ def _run_review_in_thread(
                 review_agent.run_conversation(
                     user_message=(
                         prompt
-                        + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
+                        + "\n\nYou can only call memory, self_evolution, "
+                        "and skill management tools. Other tools will be denied "
                         "at runtime — do not attempt them."
                     ),
                     conversation_history=_review_history,

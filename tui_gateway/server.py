@@ -5475,6 +5475,83 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"logged_in": False, "balance_lines": [], "identity_line": None, "topup_url": None, "depleted": False})
 
 
+@method("balance.view")
+def _(rid, params: dict) -> dict:
+    """Fetch balance for the current active provider.
+
+    Returns a ``ProviderBalance``-shaped dict, or an error envelope.
+    The Desktop client uses this via ``requestGateway('balance.view')``.
+    Fail-open: no active provider or no registered balance provider
+    returns ``{"ok": False}`` — the UI hides the balance item.
+    """
+    try:
+        import os
+
+        from agent.balance_provider import BalanceConfig, BalanceProviderRegistry
+        from hermes_cli.config import read_config
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        # 1. Determine active provider slug.
+        provider = resolve_runtime_provider()
+        if not provider or not provider.get("provider"):
+            return _ok(rid, {"ok": False, "error": "no_active_provider"})
+
+        provider_slug = provider["provider"]
+
+        # 2. Read per-provider config from config.yaml.
+        config_data = read_config()
+        providers_cfg = config_data.get("providers", {}) or {}
+        pcfg = providers_cfg.get(provider_slug, {}) or {}
+        balance_cfg_data = pcfg.get("balance", {}) or {}
+
+        # 3. Get defaults from registered provider class.
+        bal_cls = BalanceProviderRegistry.get(provider_slug)
+        if bal_cls:
+            defaults = bal_cls.default_config()
+        else:
+            defaults = BalanceConfig()
+
+        # Merge config.yaml overrides on top of defaults.
+        cfg = BalanceConfig(
+            endpoint=balance_cfg_data.get("endpoint", defaults.endpoint),
+            api_key_env=balance_cfg_data.get("api_key_env", defaults.api_key_env),
+            enabled=balance_cfg_data.get("enabled", defaults.enabled),
+            cache_ttl_seconds=float(
+                balance_cfg_data.get("cache_ttl_seconds", defaults.cache_ttl_seconds)
+            ),
+        )
+
+        if not cfg.enabled:
+            return _ok(rid, {"ok": False, "error": "balance_disabled"})
+
+        # 4. Resolve API key.
+        env_var = (cfg.api_key_env or f"{provider_slug.upper()}_API_KEY").strip()
+        api_key = os.environ.get(env_var) or pcfg.get("api_key", "")
+
+        # 5. Fetch (or return cached).
+        force = bool(params.get("force"))
+        result, was_cached = BalanceProviderRegistry.cached_or_fetch(
+            provider_slug, api_key, cfg, force=force
+        )
+
+        return _ok(rid, {
+            "ok": result.error is None,
+            "balance": {
+                "provider_name": result.provider_name,
+                "label": result.label,
+                "value": result.value,
+                "currency": result.currency,
+                "is_depleted": result.is_depleted,
+                "fetched_at": result.fetched_at,
+            } if result.error is None else None,
+            "error": result.error,
+            "cached": was_cached,
+        })
+    except Exception as exc:
+        logger.debug("balance.view failed", exc_info=True)
+        return _ok(rid, {"ok": False, "error": str(exc)})
+
+
 # ===========================================================================
 # Phase 2b terminal billing RPC methods
 # ===========================================================================

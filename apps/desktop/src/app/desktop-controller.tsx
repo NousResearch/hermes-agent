@@ -125,6 +125,7 @@ import { AppShell } from './shell/app-shell'
 import { useOverlayRouting } from './shell/hooks/use-overlay-routing'
 import { useStatusSnapshot } from './shell/hooks/use-status-snapshot'
 import { useStatusbarItems } from './shell/hooks/use-statusbar-items'
+import { useProviderBalance } from '@/lib/hooks/use-provider-balance'
 import { ModelMenuPanel } from './shell/model-menu-panel'
 import type { StatusbarItem } from './shell/statusbar-controls'
 import type { TitlebarTool } from './shell/titlebar-controls'
@@ -909,18 +910,22 @@ export function DesktopController() {
     startFreshSessionDraft
   })
 
+  const { balance: providerBalance, fetchBalance } = useProviderBalance(requestGateway, gatewayState)
+
   const { leftStatusbarItems, statusbarItems } = useStatusbarItems({
     agentsOpen,
     chatOpen,
     commandCenterOpen,
     extraLeftItems: statusbarItemGroups.flat.left,
     extraRightItems: statusbarItemGroups.flat.right,
+    fetchBalance,
     gatewayLogLines,
     gatewayState,
     inferenceStatus,
     openAgents,
     freshDraftReady,
     openCommandCenterSection,
+    providerBalance,
     requestGateway,
     statusSnapshot,
     toggleCommandCenter

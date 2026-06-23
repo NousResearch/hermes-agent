@@ -765,3 +765,23 @@ export interface ModelAssignmentResponse {
   stale_aux?: StaleAuxAssignment[]
   tasks?: string[]
 }
+
+
+// ── Provider balance (provider-agnostic) ────────────────────────────
+
+
+export interface ProviderBalance {
+  provider_name: string
+  label: string
+  value: number
+  currency: string
+  is_depleted: boolean
+  fetched_at: number  // unix timestamp
+}
+
+export interface BalanceViewResponse {
+  ok: boolean
+  balance: ProviderBalance | null
+  error: string | null
+  cached: boolean
+}

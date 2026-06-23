@@ -3,6 +3,10 @@
 from providers import register_provider
 from providers.base import ProviderProfile
 
+from agent.balance_provider import BalanceProviderRegistry
+
+from .balance import KiloBalanceProvider
+
 kilocode = ProviderProfile(
     name="kilocode",
     aliases=("kilo-code", "kilo", "kilo-gateway"),
@@ -12,3 +16,4 @@ kilocode = ProviderProfile(
 )
 
 register_provider(kilocode)
+BalanceProviderRegistry.register(KiloBalanceProvider)

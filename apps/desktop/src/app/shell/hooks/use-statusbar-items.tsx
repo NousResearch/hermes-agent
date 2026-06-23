@@ -45,7 +45,7 @@ import {
   $updateStatus,
   openUpdateOverlayFor
 } from '@/store/updates'
-import type { StatusResponse } from '@/types/hermes'
+import type { ProviderBalance, StatusResponse } from '@/types/hermes'
 
 import { CRON_ROUTE } from '../../routes'
 import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-controls'
@@ -56,12 +56,14 @@ interface StatusbarItemsOptions {
   commandCenterOpen: boolean
   extraLeftItems: readonly StatusbarItem[]
   extraRightItems: readonly StatusbarItem[]
+  fetchBalance: (force?: boolean) => Promise<void>
   gatewayLogLines: readonly string[]
   gatewayState: string
   inferenceStatus: RuntimeReadinessResult | null
   openAgents: () => void
   openCommandCenterSection: (section: CommandCenterSection) => void
   freshDraftReady: boolean
+  providerBalance: ProviderBalance | null
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
   statusSnapshot: StatusResponse | null
   toggleCommandCenter: () => void
@@ -73,12 +75,14 @@ export function useStatusbarItems({
   commandCenterOpen,
   extraLeftItems,
   extraRightItems,
+  fetchBalance,
   gatewayLogLines,
   gatewayState,
   inferenceStatus,
   openAgents,
   openCommandCenterSection,
   freshDraftReady,
+  providerBalance,
   requestGateway,
   statusSnapshot,
   toggleCommandCenter
@@ -399,6 +403,30 @@ export function useStatusbarItems({
         title: copy.runtimeSessionElapsed,
         variant: 'text'
       },
+      // ── Provider balance (hidden when unavailable) ────────────
+      ...(providerBalance
+        ? [
+            {
+              detail: `${providerBalance.currency === 'USD' ? '$' : ''}${providerBalance.value.toFixed(2)}`,
+              hidden: false,
+              icon: providerBalance.is_depleted ? (
+                <AlertCircle className="size-3 text-destructive" />
+              ) : providerBalance.value < 5 ? (
+                <AlertCircle className="size-3 text-amber-500" />
+              ) : undefined,
+              id: 'provider-balance',
+              label: providerBalance.label,
+              onSelect: () => void fetchBalance(true),
+              title: [
+                `${providerBalance.label}: ${providerBalance.currency === 'USD' ? '$' : ''}${providerBalance.value.toFixed(2)}`,
+                providerBalance.is_depleted ? ' — Depleted' : '',
+                !providerBalance.is_depleted && providerBalance.value < 5 ? ' — Low balance' : '',
+              ].filter(Boolean).join(''),
+              variant: 'action' as const,
+            } as StatusbarItem
+          ]
+        : []),
+      // ── YOLO toggle ─────────────────────────────────────────
       {
         className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
         hidden: !showYoloToggle,
@@ -437,6 +465,8 @@ export function useStatusbarItems({
       turnStartedAt,
       clientVersionItem,
       backendVersionItem,
+      fetchBalance,
+      providerBalance,
       yoloActive
     ]
   )

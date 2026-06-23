@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — recall-sqlite, Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Memori"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -274,6 +274,57 @@ Off-gateway these keys do nothing. `hermes memory setup` only prompts for them w
 
 See the [config reference](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/honcho/README.md) and [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
 
+
+---
+
+### recall-sqlite
+
+Zero-LLM, tiered memory with automatic forgetting. Hybrid retrieval (ANN + keyword JOIN + FTS5) with hot/warm/cold storage tiers. Memories that aren't used naturally fade out — no cron, no config, no LLM at query time.
+
+| | |
+|---|---|
+| **Best for** | Local/edge deployments, offline-first, agents that shouldn't drown in stale context |
+| **Requires** | `pip install recall-sqlite recall-memory-hermes` + LM Studio (for embeddings; keyword+FTS5 fallback works without) |
+| **Data storage** | Local SQLite |
+| **Cost** | Free |
+
+**Tools (4):** `recall` (tiered retrieval), `store_memory` (store with auto-keyword indexing), `memory_stats` (tier distribution), `gc_memory` (evict low-score memories)
+
+**Setup:**
+```bash
+pip install recall-sqlite recall-memory-hermes
+hermes config set memory.provider recall
+```
+
+**Architecture:**
+
+Three-tier automatic storage:
+
+| Tier | Capacity | Retrieval | Compute |
+|:-----|:--------:|:----------|:-------:|
+| **Hot** | ~500 | ANN + keywords + FTS5 (3-path RRF) | ~80ms |
+| **Warm** | ~5K | Keywords + FTS5 (2-path RRF) | 66-99% less ANN work |
+| **Cold** | ∞ | Not indexed, fill-gap fallback | ~Zero |
+
+**Key features:**
+- Automatic promotion/demotion based on access frequency
+- Lazy cold sampling every 20 queries — no cron/UI needed
+- Graceful degradation: keyword+FTS5 fallback when embedding server is offline
+- Schema migration automatic on `pip install --upgrade`
+- MCP server for non-Hermes agents (Claude Code, Codex, Gemini CLI)
+- [Benchmark report](https://github.com/Jnocode/recall-memory/blob/main/BENCHMARK.md) vs all other providers
+
+**Config:**
+
+Set `memory.provider: recall` in `~/.hermes/config.yaml`. No additional config files needed.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `db_path` | auto-detect | Path to recall SQLite database |
+| `fallback_honcho` | `false` | Enable Honcho fallback when recall returns <3 results |
+
+**GitHub:** [github.com/Jnocode/recall-memory](https://github.com/Jnocode/recall-memory)
+**PyPI:** `recall-sqlite` / `recall-memory-hermes`
 
 ---
 
@@ -593,6 +644,7 @@ hermes memory setup
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
+| **recall-sqlite** | Local | Free | 4 | `recall-sqlite` | Tiered storage + automatic forgetting + zero LLM at query |
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud/Self-hosted | Free/Paid | 5 | `mem0ai` | Server-side LLM extraction + OSS mode |

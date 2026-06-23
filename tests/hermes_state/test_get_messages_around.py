@@ -146,3 +146,62 @@ class TestContentHydration:
         assert asst, "expected an assistant message"
         # tool_calls should be a list after hydration, not a string
         assert isinstance(asst[0].get("tool_calls"), list)
+
+
+def test_tool_span_timing_round_trips_through_session_db(db):
+    db.create_session("timing", source="cli")
+
+    db.append_message(
+        "timing",
+        role="tool",
+        content="done",
+        tool_name="terminal",
+        tool_call_id="call_1",
+        timestamp=100.0,
+        ended_at=101.25,
+        duration_ms=1250,
+    )
+
+    raw = db.get_messages("timing")
+    assert raw[0]["timestamp"] == 100.0
+    assert raw[0]["ended_at"] == 101.25
+    assert raw[0]["duration_ms"] == 1250
+
+    replay = db.get_messages_as_conversation("timing")
+    assert replay == [
+        {
+            "role": "tool",
+            "content": "done",
+            "timestamp": 100.0,
+            "ended_at": 101.25,
+            "duration_ms": 1250,
+            "tool_call_id": "call_1",
+            "tool_name": "terminal",
+        }
+    ]
+
+
+def test_replace_messages_preserves_tool_span_timing(db):
+    db.create_session("replace-timing", source="cli")
+
+    db.replace_messages(
+        "replace-timing",
+        [
+            {"role": "user", "content": "run it", "timestamp": 99.0},
+            {
+                "role": "tool",
+                "content": "done",
+                "tool_name": "terminal",
+                "tool_call_id": "call_1",
+                "timestamp": 100.0,
+                "ended_at": 100.5,
+                "duration_ms": 500,
+            },
+        ],
+    )
+
+    rows = db.get_messages("replace-timing")
+    assert rows[0]["ended_at"] is None
+    assert rows[0]["duration_ms"] is None
+    assert rows[1]["ended_at"] == 100.5
+    assert rows[1]["duration_ms"] == 500

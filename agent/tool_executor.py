@@ -469,11 +469,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 logging.debug(f"Tool start callback error: {cb_err}")
 
     # ── Concurrent execution ─────────────────────────────────────────
-    # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
+    # Each slot holds (function_name, function_args, function_result, duration,
+    # error_flag, blocked_flag, middleware_trace, started_at, ended_at)
     results = [None] * num_tools
     for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         if block_result is not None:
-            results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
+            results[i] = (name, args, block_result, 0.0, True, True, middleware_trace, None, None)
 
     # Touch activity before launching workers so the gateway knows
     # we're executing tools (not stuck).
@@ -510,6 +511,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # ContextVars are propagated by propagate_context_to_thread() at the
         # submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
         start = time.time()
+        ended_at = None
         try:
             try:
                 result = agent._invoke_tool(
@@ -536,20 +538,22 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     start_time=start,
                     middleware_trace=list(middleware_trace),
                 )
-                duration = time.time() - start
+                ended_at = time.time()
+                duration = ended_at - start
                 logger.info("tool %s cancelled (%.2fs)", function_name, duration)
-                results[index] = (function_name, function_args, result, duration, True, False, middleware_trace)
+                results[index] = (function_name, function_args, result, duration, True, False, middleware_trace, start, ended_at)
                 return
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
-            duration = time.time() - start
+            ended_at = time.time()
+            duration = ended_at - start
             is_error, _ = _detect_tool_failure(function_name, result)
             if is_error:
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
-            results[index] = (function_name, function_args, result, duration, is_error, False, middleware_trace)
+            results[index] = (function_name, function_args, result, duration, is_error, False, middleware_trace, start, ended_at)
         finally:
             # Tear down worker-tid tracking.  Clear any interrupt bit we may
             # have set so the next task scheduled onto this recycled tid
@@ -647,6 +651,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         r = results[i]
         blocked = False
+        tool_started_at = None
+        tool_ended_at = None
         if r is None:
             # Tool was cancelled (interrupt) or thread didn't return
             if agent._interrupt_requested:
@@ -679,7 +685,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 )
             tool_duration = 0.0
         else:
-            function_name, function_args, function_result, tool_duration, is_error, blocked, middleware_trace = r
+            function_name, function_args, function_result, tool_duration, is_error, blocked, middleware_trace, tool_started_at, tool_ended_at = r
 
             if not blocked:
                 function_result = agent._append_guardrail_observation(
@@ -767,7 +773,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
-        messages.append(make_tool_result_message(name, _tool_content, tc.id))
+        tool_msg = make_tool_result_message(name, _tool_content, tc.id)
+        if tool_started_at is not None and tool_ended_at is not None:
+            tool_msg["timestamp"] = tool_started_at
+            tool_msg["ended_at"] = tool_ended_at
+            tool_msg["duration_ms"] = int(max(0.0, tool_ended_at - tool_started_at) * 1000)
+        messages.append(tool_msg)
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Same as the sequential path: drain between each collected
@@ -951,6 +962,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 pass  # never block tool execution
 
         tool_start_time = time.time()
+        tool_ended_at = None
 
         if _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
@@ -1001,7 +1013,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 execute=_execute,
             )
-            tool_duration = time.time() - tool_start_time
+            tool_ended_at = time.time()
+            tool_duration = tool_ended_at - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
         elif function_name == "session_search":
@@ -1030,7 +1043,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 execute=_execute,
             )
-            tool_duration = time.time() - tool_start_time
+            tool_ended_at = time.time()
+            tool_duration = tool_ended_at - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
         elif function_name == "memory":
@@ -1067,7 +1081,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 execute=_execute,
             )
-            tool_duration = time.time() - tool_start_time
+            tool_ended_at = time.time()
+            tool_duration = tool_ended_at - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
         elif function_name == "clarify":
@@ -1086,7 +1101,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 execute=_execute,
             )
-            tool_duration = time.time() - tool_start_time
+            tool_ended_at = time.time()
+            tool_duration = tool_ended_at - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
         elif function_name == "read_terminal":
@@ -1105,7 +1121,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 execute=_execute,
             )
-            tool_duration = time.time() - tool_start_time
+            tool_ended_at = time.time()
+            tool_duration = tool_ended_at - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_terminal', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
@@ -1140,7 +1157,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _delegate_result = function_result
             finally:
                 agent._delegate_spinner = None
-                tool_duration = time.time() - tool_start_time
+                tool_ended_at = time.time()
+                tool_duration = tool_ended_at - tool_start_time
                 cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
                 if spinner:
                     spinner.stop(cute_msg)
@@ -1172,7 +1190,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result = json.dumps({"error": f"Context engine tool '{function_name}' failed: {tool_error}"})
                 logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
-                tool_duration = time.time() - tool_start_time
+                tool_ended_at = time.time()
+                tool_duration = tool_ended_at - tool_start_time
                 cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_ce_result)
                 if spinner:
                     spinner.stop(cute_msg)
@@ -1205,7 +1224,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
                 logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
-                tool_duration = time.time() - tool_start_time
+                tool_ended_at = time.time()
+                tool_duration = tool_ended_at - tool_start_time
                 cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
                 if spinner:
                     spinner.stop(cute_msg)
@@ -1255,7 +1275,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
-                tool_duration = time.time() - tool_start_time
+                tool_ended_at = time.time()
+                tool_duration = tool_ended_at - tool_start_time
                 cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
                 if spinner:
                     spinner.stop(cute_msg)
@@ -1294,7 +1315,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
-            tool_duration = time.time() - tool_start_time
+            tool_ended_at = time.time()
+            tool_duration = tool_ended_at - tool_start_time
 
         if isinstance(function_result, str):
             result_preview = function_result if agent.verbose_logging else (
@@ -1401,7 +1423,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
-        messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
+        tool_msg = make_tool_result_message(function_name, _tool_content, tool_call.id)
+        if not _execution_blocked and tool_ended_at is not None:
+            tool_msg["timestamp"] = tool_start_time
+            tool_msg["ended_at"] = tool_ended_at
+            tool_msg["duration_ms"] = int(max(0.0, tool_ended_at - tool_start_time) * 1000)
+        messages.append(tool_msg)
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Drain pending steer BETWEEN individual tool calls so the

@@ -566,6 +566,8 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls TEXT,
     tool_name TEXT,
     timestamp REAL NOT NULL,
+    ended_at REAL,
+    duration_ms INTEGER,
     token_count INTEGER,
     finish_reason TEXT,
     reasoning TEXT,
@@ -2505,6 +2507,8 @@ class SessionDB:
         platform_message_id: str = None,
         observed: bool = False,
         timestamp: Any = None,
+        ended_at: Any = None,
+        duration_ms: Any = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -2545,6 +2549,21 @@ class SessionDB:
                     message_timestamp = float(timestamp)
             except (TypeError, ValueError):
                 logger.debug("Ignoring invalid explicit message timestamp: %r", timestamp)
+        message_ended_at = None
+        if ended_at is not None:
+            try:
+                if hasattr(ended_at, "timestamp"):
+                    message_ended_at = float(ended_at.timestamp())
+                else:
+                    message_ended_at = float(ended_at)
+            except (TypeError, ValueError):
+                logger.debug("Ignoring invalid explicit message ended_at: %r", ended_at)
+        message_duration_ms = None
+        if duration_ms is not None:
+            try:
+                message_duration_ms = int(duration_ms)
+            except (TypeError, ValueError):
+                logger.debug("Ignoring invalid explicit message duration_ms: %r", duration_ms)
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -2554,10 +2573,11 @@ class SessionDB:
         def _do(conn):
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, timestamp, ended_at, duration_ms,
+                   token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -2566,6 +2586,8 @@ class SessionDB:
                     tool_calls_json,
                     tool_name,
                     message_timestamp,
+                    message_ended_at,
+                    message_duration_ms,
                     token_count,
                     finish_reason,
                     reasoning,
@@ -2620,6 +2642,22 @@ class SessionDB:
                         message_timestamp = float(ts_value)
                 except (TypeError, ValueError):
                     logger.debug("Ignoring invalid explicit message timestamp: %r", msg.get("timestamp"))
+            message_ended_at = None
+            if msg.get("ended_at") is not None:
+                try:
+                    ended_value = msg.get("ended_at")
+                    if hasattr(ended_value, "timestamp"):
+                        message_ended_at = float(ended_value.timestamp())
+                    else:
+                        message_ended_at = float(ended_value)
+                except (TypeError, ValueError):
+                    logger.debug("Ignoring invalid explicit message ended_at: %r", msg.get("ended_at"))
+            message_duration_ms = None
+            if msg.get("duration_ms") is not None:
+                try:
+                    message_duration_ms = int(msg.get("duration_ms"))
+                except (TypeError, ValueError):
+                    logger.debug("Ignoring invalid explicit message duration_ms: %r", msg.get("duration_ms"))
             reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
             codex_reasoning_items = (
                 msg.get("codex_reasoning_items") if role == "assistant" else None
@@ -2645,10 +2683,11 @@ class SessionDB:
 
             conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, timestamp, ended_at, duration_ms,
+                   token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -2657,6 +2696,8 @@ class SessionDB:
                     tool_calls_json,
                     msg.get("tool_name"),
                     message_timestamp,
+                    message_ended_at,
+                    message_duration_ms,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
                     msg.get("reasoning") if role == "assistant" else None,
@@ -3098,8 +3139,9 @@ class SessionDB:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
+                "timestamp, ended_at, duration_ms, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
+                "codex_reasoning_items, codex_message_items, platform_message_id, observed "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 f"{active_clause} ORDER BY timestamp, id",
                 tuple(session_ids),
@@ -3113,6 +3155,10 @@ class SessionDB:
             msg = {"role": row["role"], "content": content}
             if row["timestamp"]:
                 msg["timestamp"] = row["timestamp"]
+            if row["ended_at"] is not None:
+                msg["ended_at"] = row["ended_at"]
+            if row["duration_ms"] is not None:
+                msg["duration_ms"] = row["duration_ms"]
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:

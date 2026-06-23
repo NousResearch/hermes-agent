@@ -123,6 +123,20 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[0]["timestamp"] == 1781976577.0
 
+    def test_convert_messages_strips_tool_span_timing(self, transport):
+        """Persisted tool span timings are local trace metadata, not wire fields."""
+        msgs = [
+            {"role": "tool", "tool_call_id": "call_1", "name": "terminal",
+             "content": "done", "timestamp": 1781976577.0,
+             "ended_at": 1781976578.25, "duration_ms": 1250},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "timestamp" not in result[0]
+        assert "ended_at" not in result[0]
+        assert "duration_ms" not in result[0]
+        assert result[0]["content"] == "done"
+        assert msgs[0]["ended_at"] == 1781976578.25
+
     def test_convert_messages_no_copy_without_timestamp(self, transport):
         """A timestamp-free message list needs no sanitize pass and is
         returned by identity (preserves the deepcopy-on-demand contract)."""

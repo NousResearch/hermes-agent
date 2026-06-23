@@ -1666,6 +1666,8 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     timestamp=msg.get("timestamp"),
+                    ended_at=msg.get("ended_at"),
+                    duration_ms=msg.get("duration_ms"),
                 )
                 flushed_ids.add(msg_id)
             self._last_flushed_db_idx = len(messages)

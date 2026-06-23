@@ -51,6 +51,43 @@ class TestProviderEnvDetection:
         assert not _has_provider_env_config(content)
 
 
+class TestDoctorEnvFilePermissions:
+    def test_flags_group_or_other_access_bits(self):
+        assert not doctor._env_file_has_broad_permissions(0o600)
+        assert not doctor._env_file_has_broad_permissions(0o400)
+        assert doctor._env_file_has_broad_permissions(0o640)
+        assert doctor._env_file_has_broad_permissions(0o644)
+        assert doctor._env_file_has_broad_permissions(0o777)
+
+    def test_warns_for_broad_env_permissions(self, monkeypatch, tmp_path, capsys):
+        hermes_home = tmp_path / ".hermes"
+        root_env = hermes_home / ".env"
+        profile_env = hermes_home / "profiles" / "coder" / ".env"
+        monkeypatch.setattr(doctor, "_env_file_permission_check_supported", lambda: True)
+        monkeypatch.setattr(
+            doctor,
+            "_iter_env_files_for_permission_check",
+            lambda: [root_env, profile_env],
+        )
+        monkeypatch.setattr(
+            doctor,
+            "_collect_env_permission_warnings",
+            lambda paths: [(root_env, 0o644), (profile_env, 0o640)],
+        )
+
+        issues = []
+        doctor._check_env_file_permissions(issues)
+
+        out = capsys.readouterr().out
+        assert out.count("Insecure .env permissions") == 2
+        assert "644" in out
+        assert "640" in out
+        assert issues == [
+            f"Restrict {doctor._display_path(root_env)}: chmod 600 {root_env}",
+            f"Restrict {doctor._display_path(profile_env)}: chmod 600 {profile_env}",
+        ]
+
+
 class TestDoctorEnvFileEncoding:
     """Regression for #18637 (bug 3): `hermes doctor` crashed on Windows
     Chinese locale (GBK) because `.env` was read with Path.read_text() which

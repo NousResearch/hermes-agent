@@ -5,14 +5,15 @@ Diagnoses issues with Hermes Agent setup.
 """
 
 import os
+import stat
 import sys
 import subprocess
 import shutil
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import get_project_root, get_hermes_home, get_env_path, is_managed
 from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, is_container
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -100,6 +101,83 @@ def _termux_install_all_fallback_notes() -> list[str]:
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
+
+
+def _env_file_has_broad_permissions(mode: int) -> bool:
+    """Return True when group/other users have any access to a secret .env."""
+    return bool(stat.S_IMODE(mode) & 0o077)
+
+
+def _display_path(path: Path) -> str:
+    """Render user paths compactly when they live below the home directory."""
+    try:
+        home_relative = path.expanduser().resolve().relative_to(Path.home().resolve())
+        return f"~/{home_relative.as_posix()}"
+    except (OSError, ValueError):
+        return str(path)
+
+
+def _iter_env_files_for_permission_check() -> list[Path]:
+    """Return the main and profile .env files that may contain API keys."""
+    paths = [HERMES_HOME / ".env"]
+    if HERMES_HOME.parent.name == "profiles":
+        profiles_root = HERMES_HOME.parent
+    else:
+        profiles_root = HERMES_HOME / "profiles"
+    if profiles_root.is_dir():
+        paths.extend(sorted(profiles_root.glob("*/.env")))
+
+    unique_paths: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        try:
+            key = path.resolve()
+        except OSError:
+            key = path.absolute()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_paths.append(path)
+    return unique_paths
+
+
+def _collect_env_permission_warnings(paths: list[Path]) -> list[tuple[Path, int]]:
+    warnings: list[tuple[Path, int]] = []
+    for path in paths:
+        try:
+            if not path.is_file():
+                continue
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            continue
+        if _env_file_has_broad_permissions(mode):
+            warnings.append((path, mode))
+    return warnings
+
+
+def _env_file_permission_check_supported() -> bool:
+    """Match the chmod environments where Hermes expects owner-only .env files."""
+    if os.name == "nt":
+        return False
+    if os.environ.get("HERMES_CONTAINER") or os.environ.get("HERMES_SKIP_CHMOD"):
+        return False
+    if is_managed() or is_container():
+        return False
+    return True
+
+
+def _check_env_file_permissions(issues: list[str]) -> None:
+    if not _env_file_permission_check_supported():
+        return
+
+    warnings = _collect_env_permission_warnings(_iter_env_files_for_permission_check())
+    for path, mode in warnings:
+        display_path = _display_path(path)
+        check_warn(
+            "Insecure .env permissions",
+            f"({display_path} is {mode:03o}; expected 600)",
+        )
+        issues.append(f"Restrict {display_path}: chmod 600 {path}")
 
 
 def _honcho_is_configured_for_doctor() -> bool:
@@ -701,6 +779,8 @@ def run_doctor(args):
             else:
                 check_info("Run 'hermes setup' to create one")
                 issues.append("Run 'hermes setup' to create .env")
+
+    _check_env_file_permissions(issues)
     
     # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
     config_path = HERMES_HOME / 'config.yaml'

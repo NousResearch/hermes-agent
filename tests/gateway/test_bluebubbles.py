@@ -174,6 +174,47 @@ class _FakeBlueBubblesRequest:
         return self._body
 
 
+class TestBlueBubblesWebhookAuth:
+    @pytest.mark.asyncio
+    async def test_webhook_rejects_wrong_password(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest({"type": "new-message"}, password="wrong")
+        )
+        await asyncio.sleep(0)
+
+        assert response.status == 401
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_webhook_fails_closed_when_password_unconfigured(self, monkeypatch):
+        # Fail closed: when the adapter has no password (None/empty), a caller
+        # that also omits the token must be rejected. The old ``token !=
+        # self.password`` compared ``None != None`` -> False and accepted the
+        # request unauthenticated.
+        adapter = _make_adapter(monkeypatch)
+        adapter.password = None
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        req = _FakeBlueBubblesRequest({"type": "new-message"}, password=None)
+        req.query = {}
+        response = await adapter._handle_webhook(req)
+        await asyncio.sleep(0)
+
+        assert response.status == 401
+        assert handled == []
+
+
 class TestBlueBubblesMentionGating:
     @pytest.mark.asyncio
     async def test_group_message_without_mention_is_acknowledged_and_skipped(self, monkeypatch):

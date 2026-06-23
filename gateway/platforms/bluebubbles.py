@@ -9,6 +9,7 @@ downloading from PR #4588 (YuhangLin).
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -864,6 +865,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def _handle_webhook(self, request):
         from aiohttp import web
 
+        # Fail closed: an unconfigured password must reject every request
+        # rather than authenticating callers who omit the token (``token`` is
+        # None/"" in that case, which would otherwise compare equal to an
+        # empty ``self.password``).
+        if not self.password:
+            return web.json_response({"error": "unauthorized"}, status=401)
         token = (
             request.query.get("password")
             or request.query.get("guid")
@@ -871,7 +878,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or request.headers.get("x-guid")
             or request.headers.get("x-bluebubbles-guid")
         )
-        if token != self.password:
+        # Constant-time comparison so a mismatch can't be recovered from
+        # response-timing side channels. ``hmac.compare_digest`` requires both
+        # operands to be str; a missing token is coerced to "".
+        if not hmac.compare_digest(str(token or ""), str(self.password)):
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             raw = await request.read()

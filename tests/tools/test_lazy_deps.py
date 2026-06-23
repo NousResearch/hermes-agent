@@ -404,3 +404,90 @@ class TestRefreshActiveFeatures:
         result = ld.refresh_active_features()
         assert result["a.ok"] == "current"
         assert result["b.fail"].startswith("failed:")
+
+
+# ---------------------------------------------------------------------------
+# ensure_async() — async-aware variant
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureAsync:
+    @pytest.mark.asyncio
+    async def test_already_satisfied_is_noop(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.async_ok", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called"),
+        )
+        await ld.ensure_async("test.async_ok", prompt=False)
+
+    @pytest.mark.asyncio
+    async def test_install_success_path(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.async_install", ("zzzfake>=1",))
+        call_count = {"n": 0}
+
+        def fake_satisfied(spec):
+            call_count["n"] += 1
+            return call_count["n"] > 1
+
+        monkeypatch.setattr(ld, "_is_satisfied", fake_satisfied)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(True, "ok", ""),
+        )
+        await ld.ensure_async("test.async_install", prompt=False)
+
+    @pytest.mark.asyncio
+    async def test_install_failure_raises(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.async_fail", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(False, "", "pip error"),
+        )
+        with pytest.raises(ld.FeatureUnavailable, match="pip install failed"):
+            await ld.ensure_async("test.async_fail", prompt=False)
+
+    @pytest.mark.asyncio
+    async def test_unknown_feature_raises(self, monkeypatch):
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        with pytest.raises(ld.FeatureUnavailable, match="not in LAZY_DEPS"):
+            await ld.ensure_async("not.a.real.feature")
+
+    @pytest.mark.asyncio
+    async def test_disabled_raises(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.async_disabled", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: False)
+        with pytest.raises(ld.FeatureUnavailable, match="lazy installs disabled"):
+            await ld.ensure_async("test.async_disabled", prompt=False)
+
+    @pytest.mark.asyncio
+    async def test_offloads_to_executor(self, monkeypatch):
+        """Verify that _venv_pip_install runs in a thread, not the event loop."""
+        import asyncio
+        import threading
+
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.async_thread", ("zzzfake>=1",))
+        call_count = {"n": 0}
+        install_thread = {"name": None}
+
+        def fake_satisfied(spec):
+            call_count["n"] += 1
+            return call_count["n"] > 1
+
+        def fake_install(specs, **kw):
+            install_thread["name"] = threading.current_thread().name
+            return ld._InstallResult(True, "ok", "")
+
+        monkeypatch.setattr(ld, "_is_satisfied", fake_satisfied)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(ld, "_venv_pip_install", fake_install)
+
+        await ld.ensure_async("test.async_thread", prompt=False)
+        # The install should have run in a worker thread, not MainThread
+        assert install_thread["name"] is not None
+        assert install_thread["name"] != threading.current_thread().name

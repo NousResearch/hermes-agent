@@ -51,6 +51,7 @@ Adding a new backend:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -521,6 +522,70 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
 
     # Verify post-install. importlib.metadata caches per-process, so if we
     # just installed something the cache may not see it without a refresh.
+    try:
+        import importlib.metadata as _md
+        if hasattr(_md, "_cache_clear"):
+            _md._cache_clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    still_missing = feature_missing(feature)
+    if still_missing:
+        raise FeatureUnavailable(
+            feature, still_missing,
+            "install reported success but packages still not importable "
+            "(may require Python restart)"
+        )
+
+    logger.info("Lazy install complete for feature %r", feature)
+
+
+async def ensure_async(feature: str, *, prompt: bool = True) -> None:
+    """Async-aware variant of :func:`ensure`.
+
+    Performs the same validation and install logic but offloads the blocking
+    ``_venv_pip_install`` call to a thread-pool executor via
+    ``loop.run_in_executor`` so the asyncio event loop is never blocked by
+    pip subprocess I/O.
+
+    Use this instead of :func:`ensure` when calling from code that runs on
+    the event loop (e.g. gateway startup, WebSocket handlers).
+    """
+    if feature not in LAZY_DEPS:
+        raise FeatureUnavailable(
+            feature, (), f"feature {feature!r} not in LAZY_DEPS allowlist"
+        )
+
+    missing = feature_missing(feature)
+    if not missing:
+        return
+
+    for spec in missing:
+        if not _spec_is_safe(spec):
+            raise FeatureUnavailable(
+                feature, missing,
+                f"refusing to install unsafe spec {spec!r}"
+            )
+
+    if not _allow_lazy_installs():
+        raise FeatureUnavailable(
+            feature, missing,
+            "lazy installs disabled (security.allow_lazy_installs=false)"
+        )
+
+    logger.info("Lazy-installing (async) %s for feature %r",
+                " ".join(missing), feature)
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, _venv_pip_install, missing)
+    if not result.success:
+        snippet = (result.stderr or result.stdout or "").strip()
+        if snippet:
+            snippet = snippet[-2000:]
+        raise FeatureUnavailable(
+            feature, missing,
+            f"pip install failed: {snippet or 'no error output'}"
+        )
+
     try:
         import importlib.metadata as _md
         if hasattr(_md, "_cache_clear"):

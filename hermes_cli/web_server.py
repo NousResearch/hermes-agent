@@ -11644,15 +11644,22 @@ async def pty_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
+    # Accept the WebSocket before any guard checks so that rejection
+    # close-frames actually reach the client.  In Starlette, calling
+    # ws.close() before ws.accept() sends zero bytes — the TCP
+    # connection hangs silently until the client times out (#51203).
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        await ws.accept()
         await ws.close(code=4403)
         return
 
     if not _ws_auth_ok(ws):
+        await ws.accept()
         await ws.close(code=4401)
         return
 
     if not _ws_request_is_allowed(ws):
+        await ws.accept()
         await ws.close(code=4403)
         return
 

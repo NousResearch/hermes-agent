@@ -80,6 +80,8 @@ _GATEWAY_NOISY_STATUS_RE = re.compile(
     r"|preflight\s+compression"
     r"|codex\s+(?:runtime|compression|context|responses?)\s+notice"
     r"|runtime\s+codex\s+(?:compression|context)\s+notice"
+    r"|codex\s+gpt-5\.5\s+caps\s+context\s+at\s+272k.*auto-compaction\s+was\s+raised\s+to\s+85%"
+    r"|opt\s+back\s+out:\s+hermes\s+config\s+set\s+compression\.codex_gpt55_autoraise\s+false"
     r"|\[context\s+compaction\s+[—-]\s+reference\s+only\]"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
@@ -96,6 +98,8 @@ _DISCORD_INTERNAL_RUNTIME_NOTICE_RE = re.compile(
     r"("
     r"codex\s+(?:runtime|compression|context|responses?)\s+notice"
     r"|runtime\s+codex\s+(?:compression|context)\s+notice"
+    r"|codex\s+gpt-5\.5\s+caps\s+context\s+at\s+272k.*auto-compaction\s+was\s+raised\s+to\s+85%"
+    r"|opt\s+back\s+out:\s+hermes\s+config\s+set\s+compression\.codex_gpt55_autoraise\s+false"
     r"|\[context\s+compaction\s+[—-]\s+reference\s+only\]"
     r")",
     re.IGNORECASE | re.DOTALL,

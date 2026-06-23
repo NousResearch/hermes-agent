@@ -723,6 +723,10 @@ class SlackAdapter(BasePlatformAdapter):
         # tenant's display name.
         self._user_name_cache: Dict[Tuple[str, str], str] = {}
         self._USER_NAME_CACHE_MAX = 5000
+        # (team_id, user_id) → Slack bot identity, same workspace scoping as
+        # the name cache. Used to catch peer-agent posts that arrive as plain
+        # user messages without bot_id/subtype=bot_message markers.
+        self._user_is_bot_cache: Dict[Tuple[str, str], bool] = {}
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
@@ -2440,6 +2444,28 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    def _slack_allow_bots(self) -> str:
+        """Return normalized Slack bot-message policy."""
+        raw = self.config.extra.get("allow_bots", "")
+        if not raw:
+            raw = os.getenv("SLACK_ALLOW_BOTS", "none")
+        value = str(raw).lower().strip()
+        if value not in {"none", "mentions", "all"}:
+            logger.warning("[Slack] Unknown allow_bots=%r; treating as 'none'", raw)
+            return "none"
+        return value
+
+    def _event_declares_bot_sender(self, event: dict) -> bool:
+        """Return True when the Slack event itself identifies a bot sender."""
+        if event.get("bot_id") or event.get("bot_profile"):
+            return True
+        if event.get("subtype") == "bot_message":
+            return True
+        profile = event.get("user_profile")
+        if isinstance(profile, dict) and bool(profile.get("is_bot")):
+            return True
+        return False
+
     def _resolve_thread_ts(
         self,
         reply_to: Optional[str] = None,
@@ -2986,9 +3012,18 @@ class SlackAdapter(BasePlatformAdapter):
                 else self._app.client
             )
             result = await client.users_info(user=user_id)
+            if not isinstance(result, dict):
+                self._user_is_bot_cache[cache_key] = False
+                self._user_name_cache[cache_key] = user_id
+                return user_id
             user = result.get("user", {})
+            profile = user.get("profile", {}) if isinstance(user, dict) else {}
+            self._user_is_bot_cache[cache_key] = bool(
+                user.get("is_bot")
+                or user.get("is_workflow_bot")
+                or (isinstance(profile, dict) and profile.get("bot_id"))
+            )
             # Prefer display_name → real_name → user_id
-            profile = user.get("profile", {})
             name = (
                 profile.get("display_name")
                 or profile.get("real_name")
@@ -3071,6 +3106,60 @@ class SlackAdapter(BasePlatformAdapter):
             f"specifically; a mention of any other participant is not a "
             f"mention of you, even if their name is similar."
         )
+
+    async def _resolve_user_is_bot(
+        self, user_id: str, chat_id: str = "", team_id: str = ""
+    ) -> bool:
+        """Resolve whether a Slack user ID is a bot account, with caching.
+
+        Workspace-scoped like :meth:`_resolve_user_name` — Slack user IDs are
+        team-local, so the cache key includes the team.
+        """
+        if not user_id:
+            return False
+        team_id = str(team_id or self._channel_team.get(chat_id, ""))
+        cache_key = (team_id, str(user_id))
+        if cache_key in self._user_is_bot_cache:
+            return self._user_is_bot_cache[cache_key]
+        if not self._app:
+            self._user_is_bot_cache[cache_key] = False
+            return False
+
+        try:
+            client = (
+                self._get_client(chat_id, team_id=team_id or None)
+                if chat_id
+                else self._app.client
+            )
+            result = await client.users_info(user=user_id)
+            if not isinstance(result, dict):
+                self._user_is_bot_cache[cache_key] = False
+                self._user_name_cache.setdefault(cache_key, user_id)
+                return False
+            user = result.get("user", {})
+            profile = user.get("profile", {}) if isinstance(user, dict) else {}
+            is_bot = bool(
+                user.get("is_bot")
+                or user.get("is_workflow_bot")
+                or (isinstance(profile, dict) and profile.get("bot_id"))
+            )
+            self._user_is_bot_cache[cache_key] = is_bot
+
+            # Populate the name cache from the same users.info response so the
+            # later source construction does not need a second API lookup.
+            name = (
+                profile.get("display_name")
+                or profile.get("real_name")
+                or user.get("real_name")
+                or user.get("name")
+                or user_id
+            )
+            self._user_name_cache[cache_key] = name
+            return is_bot
+        except Exception as e:
+            logger.debug("[Slack] users.info bot check failed for %s: %s", user_id, e)
+            self._user_is_bot_cache[cache_key] = False
+            return False
 
     async def send_image_file(
         self,
@@ -4019,11 +4108,8 @@ class SlackAdapter(BasePlatformAdapter):
         #   "none"     — ignore all bot messages (default, backward-compatible)
         #   "mentions" — accept bot messages only when they @mention us
         #   "all"      — accept all bot messages (except our own)
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
-            allow_bots = self.config.extra.get("allow_bots", "")
-            if not allow_bots:
-                allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
-            allow_bots = str(allow_bots).lower().strip()
+        if self._event_declares_bot_sender(event):
+            allow_bots = self._slack_allow_bots()
             if allow_bots == "none":
                 return
             elif allow_bots == "mentions":
@@ -4258,6 +4344,31 @@ class SlackAdapter(BasePlatformAdapter):
         )
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+
+        # Some Slack bot posts arrive as ordinary-looking message events with a
+        # bot *user* id but without ``bot_id``/``subtype=bot_message``.  This is
+        # the shape produced by peer Hermes agents in Socket Mode on some
+        # workspaces.  If we let those fall through as human users, an old
+        # thread mention or active session will re-trigger the target agent on
+        # every peer status/error/ack message, causing agent-agent loops.  Apply
+        # the same allow_bots policy to resolved bot users, and in
+        # ``allow_bots: mentions`` require the current message text to mention
+        # this bot — thread history, reply parents, and active sessions do not
+        # count as a bot-to-bot summons.
+        if user_id and user_id != bot_uid:
+            sender_is_bot_user = self._event_declares_bot_sender(event)
+            if not sender_is_bot_user:
+                sender_is_bot_user = await self._resolve_user_is_bot(
+                    user_id,
+                    chat_id=channel_id,
+                    team_id=team_id,
+                )
+            if sender_is_bot_user:
+                allow_bots = self._slack_allow_bots()
+                if allow_bots == "none":
+                    return
+                if allow_bots == "mentions" and not is_mentioned:
+                    return
 
         if not is_one_to_one_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)

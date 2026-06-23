@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { Fragment, memo, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
-import type { AppLayoutProps, ComposerMode } from '../app/interfaces.js'
+import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
@@ -255,7 +255,7 @@ const ComposerPane = memo(function ComposerPane({
       <StatusRulePane at="top" composer={composer} status={status} />
 
       {composer.composerMode !== 'code' && (
-        <Box marginLeft={promptWidth + 1} marginBottom={1}>
+        <Box marginBottom={1} marginLeft={promptWidth + 1}>
           <Text bold color={composer.composerMode === 'plan' ? '#d29922' : '#3fb950'}>
             {composer.composerMode === 'plan' ? '● Plan' : '○ Ask'}
           </Text>

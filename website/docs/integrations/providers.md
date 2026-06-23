@@ -102,6 +102,23 @@ Hermes has **two** model commands that serve different purposes:
 
 If you're trying to switch to a provider you haven't set up yet (e.g. you only have OpenRouter configured and want to use Anthropic), you need `hermes model`, not `/model`. Exit your session first (`Ctrl+C` or `/quit`), run `hermes model`, complete the provider setup, then start a new session.
 
+### Discover Local Models
+
+Use `hermes local models` to inspect local runtimes before configuring a profile or provider. The command is read-only: it does not start LM Studio/Ollama, load a model, or edit `config.yaml`.
+
+```bash
+hermes local models
+hermes local models --backend lmstudio
+hermes local models --backend ollama --json
+hermes local models --backend openai-compatible --base-url http://127.0.0.1:1234/v1
+```
+
+Discovery sources:
+
+- LM Studio: `lms ls` (works even when the OpenAI-compatible server is stopped)
+- Ollama: `ollama list`, with a manifest fallback when the daemon is stopped
+- OpenAI-compatible endpoints: `GET /models` from the supplied `--base-url`
+
 
 ### Anthropic (Native)
 

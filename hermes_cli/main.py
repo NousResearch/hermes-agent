@@ -266,6 +266,7 @@ from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
+from hermes_cli.subcommands.local import build_local_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 from hermes_cli.subcommands.postinstall import build_postinstall_parser
@@ -4247,6 +4248,62 @@ def cmd_kanban(args):
     from hermes_cli.kanban import kanban_command
 
     return kanban_command(args)
+
+
+def _print_local_models_table(reports) -> None:
+    any_models = False
+    for report in reports:
+        status = "available" if report.available else "unavailable"
+        print(f"\n[{report.backend}] {status}")
+        if report.source:
+            print(f"  source: {report.source}")
+        if report.error:
+            print(f"  warning: {report.error}")
+        if not report.models:
+            print("  no models found")
+            continue
+        any_models = True
+        for model in report.models:
+            bits = [model.id]
+            extras = []
+            if model.kind and model.kind != "llm":
+                extras.append(model.kind)
+            if model.params:
+                extras.append(model.params)
+            if model.architecture:
+                extras.append(model.architecture)
+            if model.size:
+                extras.append(model.size)
+            if model.device:
+                extras.append(model.device)
+            if extras:
+                bits.append("(" + ", ".join(extras) + ")")
+            print("  - " + " ".join(bits))
+    if not any_models:
+        print("\nNo local models discovered.")
+
+
+def cmd_local(args):
+    """Inspect local model runtimes."""
+    import json
+    from hermes_cli.local_runtime import discover_local_models
+
+    action = getattr(args, "local_action", None)
+    if action in {"models", "ls", "list"}:
+        reports = discover_local_models(
+            backend=getattr(args, "backend", "all"),
+            base_url=getattr(args, "base_url", ""),
+            api_key=getattr(args, "api_key", ""),
+            include_embeddings=bool(getattr(args, "include_embeddings", False)),
+            timeout=float(getattr(args, "timeout", 10.0)),
+        )
+        if getattr(args, "json", False):
+            print(json.dumps([r.to_dict() for r in reports], indent=2, ensure_ascii=False))
+        else:
+            _print_local_models_table(reports)
+        return 0
+    print("Usage: hermes local models [--backend ...]", file=sys.stderr)
+    return 2
 
 
 def cmd_hooks(args):
@@ -11527,7 +11584,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
+        "gui", "desktop", "kanban", "local", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
@@ -12168,6 +12225,11 @@ def main():
     build_gateway_parser(
         subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
     )
+
+    # =========================================================================
+    # local command  (parser built in hermes_cli/subcommands/local.py)
+    # =========================================================================
+    build_local_parser(subparsers, cmd_local=cmd_local)
 
     # =========================================================================
     # lsp command

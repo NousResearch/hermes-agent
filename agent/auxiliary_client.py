@@ -2614,6 +2614,29 @@ def _is_auth_error(exc: Exception) -> bool:
     return False
 
 
+def _is_stale_copilot_credential_error(exc: Exception) -> bool:
+    """Detect a Copilot ``400 model_not_supported`` that is really a STALE TOKEN.
+
+    A long-lived process (e.g. the Council daemon, or any multi-hour agent) caches
+    a Copilot+Claude client whose bearer token was captured at build time. When
+    GitHub rotates the account's Copilot entitlement, the *cached* token's request
+    starts coming back as ``400 model_not_supported`` even though the model name is
+    valid and the same model succeeds on a freshly-resolved token. This is NOT a
+    real "the model doesn't exist" error: it is a credential-staleness symptom that
+    Copilot surfaces with a 400 instead of a clean 401.
+
+    We classify it narrowly so a genuinely wrong model name (a real 400) does not
+    trigger a pointless refresh loop: the status must be 400 AND the body must carry
+    the ``model_not_supported`` marker. Provider scoping (copilot only) is enforced
+    by the caller, and the downstream retry is single-shot, so there is no loop risk.
+    """
+    status = getattr(exc, "status_code", None)
+    err_lower = str(exc).lower()
+    if status != 400 and "error code: 400" not in err_lower:
+        return False
+    return "model_not_supported" in err_lower or "the requested model is not supported" in err_lower
+
+
 def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
     """Detect provider 400s for an unsupported request parameter.
 
@@ -3038,6 +3061,19 @@ def _refresh_provider_credentials(provider: str) -> bool:
 
             creds = resolve_xai_oauth_runtime_credentials(force_refresh=True)
             if not str(creds.get("api_key", "") or "").strip():
+                return False
+            _evict_cached_clients(normalized)
+            return True
+        if normalized == "copilot":
+            # Copilot bearer = the GitHub OAuth/PAT token resolved fresh from the
+            # gh credential store / env / hosts.yml. A long-lived process caches a
+            # client built with a token whose Copilot entitlement later rotated,
+            # so re-resolve the freshest token and evict the cached client; the
+            # next call rebuilds the Copilot+Claude client with the fresh bearer.
+            from hermes_cli.copilot_auth import resolve_copilot_token
+
+            token, _source = resolve_copilot_token()
+            if not str(token or "").strip():
                 return False
             _evict_cached_clients(normalized)
             return True
@@ -5557,7 +5593,19 @@ def call_llm(
                     refreshed_client.chat.completions.create(**kwargs), task)
 
         # ── Auth refresh retry ───────────────────────────────────────
-        if (_is_auth_error(first_err)
+        # Normal auth failures are 401s. Copilot has a quirk: when a long-lived
+        # process holds a cached client whose bearer token's entitlement has
+        # rotated, Copilot returns ``400 model_not_supported`` instead of a clean
+        # 401. Treat that stale-credential 400 as auth-class too, but ONLY for the
+        # copilot provider (so a genuinely wrong model name on another provider is
+        # never mistaken for a refreshable auth error). The retry below is
+        # single-shot, so there is no loop risk.
+        _norm_provider = _normalize_aux_provider(resolved_provider)
+        _is_refreshable_auth = (
+            _is_auth_error(first_err)
+            or (_norm_provider == "copilot" and _is_stale_copilot_credential_error(first_err))
+        )
+        if (_is_refreshable_auth
                 and resolved_provider not in {"auto", "", None}
                 and not client_is_nous):
             if _refresh_provider_credentials(resolved_provider):

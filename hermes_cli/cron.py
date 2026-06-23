@@ -21,11 +21,16 @@ from hermes_cli.colors import Colors, color
 # Deliberately specific — a bare "gateway ... restart" catch-all would block
 # legitimate prompts that merely mention an unrelated gateway (e.g. "summarize
 # the API gateway logs and report restart events").
+#
+# Keep the service-manager patterns scoped to the Hermes gateway service names.
+# Agents often administer remote/non-gateway services over SSH, and blocking any
+# ``systemctl ... *hermes*`` command would reject safe remote operations such as
+# ``ssh host 'systemctl restart hermes-worker.service'`` before SSH can run.
 _GATEWAY_LIFECYCLE_PATTERNS = re.compile(
     r"(?i)"
     r"(hermes\s+gateway\s+(restart|stop|start))"
-    r"|(launchctl\s+(kickstart|unload|load|stop|restart)\s+.*hermes)"
-    r"|(systemctl\s+(-\S+\s+)*(restart|stop|start)\s+.*hermes)"
+    r"|(launchctl\s+(kickstart|unload|load|stop|restart)\s+.*(?:ai\.)?hermes[\w.-]*gateway)"
+    r"|(systemctl\s+(-\S+\s+)*(restart|stop|start)\s+.*(?:ai\.)?hermes[\w.-]*gateway(?:\.service)?\b)"
     r"|(p?kill\s+.*hermes.*gateway)"
 )
 

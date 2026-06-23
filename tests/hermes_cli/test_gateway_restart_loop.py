@@ -62,6 +62,10 @@ class TestGatewayLifecyclePattern:
         "echo 'just a normal cron job'",
         "run the backup script",
         "gateway is running fine",
+        "systemctl restart hermes-worker.service",
+        "systemctl stop hermes-hl-copy2-fanout.service",
+        "ssh root@example.com 'systemctl restart hermes-hl-copy2-fanout.service'",
+        "ssh root@example.com 'systemctl stop hermes-hl-copy2-position-sync.service'",
         # Regression (#30728 follow-up): legit prompts that merely mention an
         # unrelated gateway + a restart must NOT be blocked.
         "Summarize the API gateway logs and report any restart events from last night",
@@ -317,7 +321,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert "Blocked" in result["error"]
 
     def test_safe_systemctl_commands_pass_through(self, monkeypatch):
-        """Non-hermes systemctl commands must not be blocked by this guard."""
+        """Non-gateway systemctl commands must not be blocked by this guard."""
         import tools.terminal_tool as tt
 
         calls = []
@@ -335,6 +339,27 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 0
         assert calls == ["systemctl status nginx"]
+
+    def test_remote_non_gateway_hermes_service_passes_through_inside_gateway(self, monkeypatch):
+        """SSH-administered Hermes services on remote hosts are not this gateway."""
+        import tools.terminal_tool as tt
+
+        calls = []
+
+        class _FakeEnv:
+            env = {}
+            def execute(self, command, **kwargs):
+                calls.append(command)
+                return {"output": "restarted", "returncode": 0}
+
+        command = "ssh root@example.com 'systemctl restart hermes-hl-copy2-fanout.service'"
+        self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=True)
+        monkeypatch.setattr(tt, "_check_all_guards", lambda cmd, env: {"approved": True})
+
+        result = json.loads(tt.terminal_tool(command=command, force=True))
+
+        assert result["exit_code"] == 0
+        assert calls == [command]
 
     def test_guard_inactive_outside_gateway(self, monkeypatch):
         """Without _HERMES_GATEWAY=1 the lifecycle guard must not fire."""

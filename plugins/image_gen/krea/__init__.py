@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -62,6 +63,13 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "Photorealism, raw textured looks (motion blur, grain), expressive styles.",
         "price": "$0.060 (text) / $0.065 (style refs) / $0.070 (moodboards)",
         "path": "large",
+    },
+    "krea-2-medium-turbo": {
+        "display": "Krea 2 Medium Turbo",
+        "speed": "~8-15s",
+        "strengths": "Fastest Krea 2 — medium quality at lower latency / cost.",
+        "price": "$0.015 (text) / $0.0175 (style refs)",
+        "path": "medium-turbo",
     },
 }
 
@@ -116,8 +124,16 @@ def _load_krea_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
-    """Decide which model to use and return ``(model_id, meta)``."""
+def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    """Decide which model to use and return ``(model_id, meta)``.
+
+    Precedence: explicit caller override (e.g. managed-mode routing or a direct
+    ``model`` kwarg) → ``KREA_IMAGE_MODEL`` env → ``image_gen.krea.model`` →
+    ``image_gen.model`` → :data:`DEFAULT_MODEL`.
+    """
+    if isinstance(explicit, str) and explicit.strip() in _MODELS:
+        return explicit.strip(), _MODELS[explicit.strip()]
+
     env_override = os.environ.get("KREA_IMAGE_MODEL")
     if env_override and env_override in _MODELS:
         return env_override, _MODELS[env_override]
@@ -138,6 +154,44 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
         return candidate, _MODELS[candidate]
 
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
+
+
+def _resolve_managed_krea_gateway():
+    """Return managed Krea gateway config when the user is on the managed path.
+
+    Mirrors ``_resolve_managed_fal_gateway`` in ``tools/image_generation_tool.py``:
+    the Nous-hosted Krea gateway wins when it is resolvable AND either no direct
+    ``KREA_API_KEY`` is configured or the user explicitly opted into the gateway
+    for ``image_gen``. Returns ``None`` (direct/BYO path) otherwise, and never
+    raises — plugin discovery and availability scans must stay robust.
+    """
+    try:
+        from tools.managed_tool_gateway import resolve_managed_tool_gateway
+        from tools.tool_backend_helpers import prefers_gateway
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Managed Krea gateway resolution unavailable: %s", exc)
+        return None
+
+    if os.environ.get("KREA_API_KEY") and not prefers_gateway("image_gen"):
+        return None
+
+    try:
+        return resolve_managed_tool_gateway("krea")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Managed Krea gateway resolution failed: %s", exc)
+        return None
+
+
+def _managed_krea_gateway_ready() -> bool:
+    """Cheap, offline-friendly probe for managed Krea availability."""
+    try:
+        from tools.managed_tool_gateway import is_managed_tool_gateway_ready
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        return bool(is_managed_tool_gateway_ready("krea"))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _resolve_creativity(value: Optional[str]) -> str:
@@ -171,7 +225,10 @@ class KreaImageGenProvider(ImageGenProvider):
         return "Krea"
 
     def is_available(self) -> bool:
-        return bool(os.environ.get("KREA_API_KEY"))
+        # Available with a direct Krea key OR via the managed Nous gateway
+        # (Nous Subscription), so portal users with no Krea key can still
+        # reach Krea 2 through the gateway.
+        return bool(os.environ.get("KREA_API_KEY")) or _managed_krea_gateway_ready()
 
     def list_models(self) -> List[Dict[str, Any]]:
         return [
@@ -192,7 +249,7 @@ class KreaImageGenProvider(ImageGenProvider):
         return {
             "name": "Krea",
             "badge": "paid",
-            "tag": "Krea 2 foundation model — Medium ($0.03) + Large ($0.06). Style transfer, moodboards, reference-guided generation.",
+            "tag": "Krea 2 foundation model — Medium ($0.03), Large ($0.06), Medium Turbo ($0.015). Style transfer, moodboards, reference-guided generation. Direct key or managed Nous Subscription gateway.",
             "env_vars": [
                 {
                     "key": "KREA_API_KEY",
@@ -265,21 +322,66 @@ class KreaImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        api_key = os.environ.get("KREA_API_KEY")
-        if not api_key:
-            return error_response(
-                error=(
-                    "KREA_API_KEY not set. Run `hermes tools` → Image "
-                    "Generation → Krea to configure, or get a key at "
-                    "https://www.krea.ai/settings/api-tokens."
-                ),
-                error_type="auth_required",
-                provider="krea",
-                aspect_ratio=aspect,
-            )
+        # Route through the managed Nous gateway (Nous Subscription) when the
+        # user is on the managed path; otherwise use the direct Krea API with a
+        # BYO ``KREA_API_KEY``. The gateway owns the shared Krea credential and
+        # meters/bills per generation, so the caller token is the Nous access
+        # token, not a Krea key.
+        managed = _resolve_managed_krea_gateway()
+        if managed is not None:
+            base_url = managed.gateway_origin.rstrip("/")
+            auth_token = managed.nous_user_token
+        else:
+            base_url = BASE_URL
+            auth_token = os.environ.get("KREA_API_KEY")
+            if not auth_token:
+                return error_response(
+                    error=(
+                        "KREA_API_KEY not set. Run `hermes tools` → Image "
+                        "Generation → Krea to configure, get a key at "
+                        "https://www.krea.ai/settings/api-tokens, or sign in to "
+                        "a Nous account with the managed Krea gateway enabled "
+                        "(`hermes setup`)."
+                    ),
+                    error_type="auth_required",
+                    provider="krea",
+                    aspect_ratio=aspect,
+                )
 
-        model_id, meta = _resolve_model()
+        model_id, meta = _resolve_model(kwargs.get("model"))
         creativity = _resolve_creativity(kwargs.get("creativity"))
+
+        # The managed gateway only prices base text-to-image and URL
+        # ``image_style_references`` tiers. Trained styles (LoRAs) and
+        # moodboards have no managed price and are rejected at the gateway, so
+        # fail fast here with actionable guidance instead of a raw 400.
+        if managed is not None:
+            if isinstance(kwargs.get("styles"), list) and kwargs.get("styles"):
+                return error_response(
+                    error=(
+                        "Managed Krea (Nous Subscription) does not support "
+                        "trained styles (LoRAs). Set KREA_API_KEY to use Krea "
+                        "directly, or omit `styles`."
+                    ),
+                    error_type="unsupported_argument",
+                    provider="krea",
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+            if isinstance(kwargs.get("moodboards"), list) and kwargs.get("moodboards"):
+                return error_response(
+                    error=(
+                        "Managed Krea (Nous Subscription) does not support "
+                        "moodboards. Set KREA_API_KEY to use Krea directly, or "
+                        "omit `moodboards`."
+                    ),
+                    error_type="unsupported_argument",
+                    provider="krea",
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
 
         payload: Dict[str, Any] = {
             "prompt": prompt,
@@ -309,13 +411,19 @@ class KreaImageGenProvider(ImageGenProvider):
             payload["moodboards"] = moodboards[:1]
 
         headers = {
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {auth_token}",
             "Content-Type": "application/json",
             "User-Agent": "Hermes-Agent/1.0 (krea-image-gen)",
         }
+        if managed is not None:
+            # The gateway derives the per-generation billing idempotency
+            # boundary from this header (else it falls back to a body
+            # fingerprint). A fresh key per submit keeps each generation a
+            # distinct billable execution.
+            headers["x-idempotency-key"] = str(uuid.uuid4())
 
         # 1. Submit job.
-        submit_url = f"{BASE_URL}/generate/image/krea/krea-2/{meta['path']}"
+        submit_url = f"{base_url}/generate/image/krea/krea-2/{meta['path']}"
         try:
             response = requests.post(
                 submit_url,
@@ -337,6 +445,32 @@ class KreaImageGenProvider(ImageGenProvider):
             except Exception:  # noqa: BLE001
                 err_msg = resp.text[:300] if resp is not None else str(exc)
             logger.error("Krea submit failed (%d): %s", status, err_msg)
+            # On a managed 4xx, surface actionable remediation mirroring the
+            # FAL managed gateway path: the model may not be enabled/priced on
+            # the Nous Portal, or the gateway's shared Krea key hit its
+            # concurrency cap (429).
+            if managed is not None and 400 <= status < 500:
+                hint = (
+                    "Krea's shared-key concurrency cap was hit — retry shortly."
+                    if status == 429
+                    else (
+                        f"Model '{model_id}' may not be enabled/priced on the "
+                        "Nous Portal's Krea gateway. Set KREA_API_KEY to use "
+                        "Krea directly, or pick a different model via "
+                        "`hermes tools` → Image Generation."
+                    )
+                )
+                return error_response(
+                    error=(
+                        f"Nous Subscription Krea gateway rejected '{model_id}' "
+                        f"(HTTP {status}): {err_msg}. {hint}"
+                    ),
+                    error_type="api_error",
+                    provider="krea",
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
             return error_response(
                 error=f"Krea image generation failed ({status}): {err_msg}",
                 error_type="api_error",
@@ -387,10 +521,12 @@ class KreaImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        # 2. Poll for completion.
-        job_url = f"{BASE_URL}/jobs/{job_id}"
+        # 2. Poll for completion. Status/result polling is bound to the same
+        # principal at the gateway, so the managed path polls the gateway's
+        # ``/jobs/{id}`` with the Nous token (404 on cross-user/unknown jobs).
+        job_url = f"{base_url}/jobs/{job_id}"
         poll_headers = {
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {auth_token}",
             "User-Agent": "Hermes-Agent/1.0 (krea-image-gen)",
         }
         interval = _POLL_INITIAL_INTERVAL

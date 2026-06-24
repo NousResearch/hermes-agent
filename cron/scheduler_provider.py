@@ -14,7 +14,7 @@ delivery.
 
 The built-in InProcessCronScheduler runs the historical 60s daemon-thread
 ticker. Alternative providers (e.g. Chronos, a NAS-mediated managed-cron
-provider for scale-to-zero deployments) live under plugins/cron/<name>/ and are
+provider for scale-to-zero deployments) live under plugins/cron_providers/<name>/ and are
 selected via the `cron.provider` config key (empty = built-in).
 """
 from __future__ import annotations
@@ -134,7 +134,7 @@ def resolve_cron_scheduler() -> "CronScheduler":
         return InProcessCronScheduler()
 
     try:
-        from plugins.cron import load_cron_scheduler
+        from plugins.cron_providers import load_cron_scheduler
         provider = load_cron_scheduler(name)
         if provider is None:
             logger.warning("cron.provider '%s' not found; using built-in ticker", name)

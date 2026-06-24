@@ -234,6 +234,11 @@ def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
 
 app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 
+# Memory-provider OAuth connect routes live in the memory layer, not here.
+from hermes_cli.memory_oauth import router as _memory_oauth_router  # noqa: E402
+
+app.include_router(_memory_oauth_router)
+
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
 # The desktop shell mints the token and injects it via
@@ -1322,13 +1327,35 @@ def _dashboard_local_update_managed_externally() -> bool:
     in-browser local update action. Keep this dashboard capability separate
     from install-method detection: manual git/pip installs inside containers can
     still behave like their actual install method in the CLI.
+
+    However, when the install method is ``git`` (a bind-mounted checkout inside
+    a container — e.g. the hermes-webui image sharing the Hermes source tree),
+    the dashboard's ``hermes update`` button is the correct update path and
+    should not be suppressed. Other containerized install methods remain
+    externally managed unless their apply path is proven safe inside the
+    running container filesystem.
     """
+    if _default_hermes_root_is_opt_data():
+        return True
     try:
         from hermes_constants import is_container
 
-        return is_container()
+        if not is_container():
+            return False
     except Exception:
         return False
+    # We are inside a container, but the install may still be self-managed.
+    # If the install method is git, the dashboard update button works against
+    # the mounted checkout and should be offered. Keep pip blocked inside
+    # containers: its apply path mutates the running container filesystem and
+    # is not the bind-mounted checkout case this gate is meant to recover.
+    try:
+        method = detect_install_method(PROJECT_ROOT)
+        if method == "git":
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def _managed_files_policy(request: Request, *, create_root: bool = True) -> ManagedFilesPolicy:
@@ -6096,6 +6123,7 @@ try:
     from agent.anthropic_adapter import (
         _OAUTH_CLIENT_ID as _ANTHROPIC_OAUTH_CLIENT_ID,
         _OAUTH_TOKEN_URL as _ANTHROPIC_OAUTH_TOKEN_URL,
+        _OAUTH_TOKEN_URLS as _ANTHROPIC_OAUTH_TOKEN_URLS,
         _OAUTH_REDIRECT_URI as _ANTHROPIC_OAUTH_REDIRECT_URI,
         _OAUTH_SCOPES as _ANTHROPIC_OAUTH_SCOPES,
         _generate_pkce as _generate_pkce_pair,
@@ -6284,22 +6312,31 @@ def _submit_anthropic_pkce(
         "redirect_uri": _ANTHROPIC_OAUTH_REDIRECT_URI,
         "code_verifier": sess["verifier"],
     }).encode()
-    req = urllib.request.Request(
-        _ANTHROPIC_OAUTH_TOKEN_URL,
-        data=exchange_data,
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "hermes-dashboard/1.0",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            result = json.loads(resp.read().decode())
-    except Exception as e:
+    # Anthropic migrated the OAuth token endpoint to platform.claude.com;
+    # console.anthropic.com now 404s. Try the new host first, then fall back.
+    result = None
+    last_exc = None
+    for _endpoint in _ANTHROPIC_OAUTH_TOKEN_URLS:
+        req = urllib.request.Request(
+            _endpoint,
+            data=exchange_data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "hermes-dashboard/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                result = json.loads(resp.read().decode())
+            break
+        except Exception as e:
+            last_exc = e
+            continue
+    if result is None:
         with _oauth_sessions_lock:
             sess["status"] = "error"
-            sess["error_message"] = f"Token exchange failed: {e}"
+            sess["error_message"] = f"Token exchange failed: {last_exc}"
         return {"ok": False, "status": "error", "message": sess["error_message"]}
 
     access_token = result.get("access_token", "")
@@ -7889,7 +7926,7 @@ async def cron_fire_webhook(request: Request):
     Returns 202 immediately and runs the job in the background so a long agent
     turn never trips NAS's HTTP timeout.
     """
-    from plugins.cron.chronos.verify import get_fire_verifier
+    from plugins.cron_providers.chronos.verify import get_fire_verifier
 
     auth = request.headers.get("Authorization", "")
     token = auth[7:].strip() if auth.startswith("Bearer ") else ""
@@ -8327,6 +8364,7 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
 
 # Register the mcp-install action log so /api/actions/mcp-install/status works.
 _ACTION_LOG_FILES.setdefault("mcp-install", "action-mcp-install.log")
+_ACTION_LOG_FILES.setdefault("computer-use-grant", "action-computer-use-grant.log")
 
 
 # ---------------------------------------------------------------------------
@@ -10650,6 +10688,63 @@ async def run_toolset_post_setup(
 
 
 # ---------------------------------------------------------------------------
+# Computer Use (cua-driver) — cross-platform readiness + macOS permission grant
+#
+# cua-driver runs on macOS, Windows, and Linux. The desktop card reflects
+# per-OS readiness: on macOS the Accessibility + Screen Recording TCC grants
+# (which attach to cua-driver's OWN identity, com.trycua.driver — not Hermes,
+# so no app entitlement is involved); elsewhere, driver health from
+# `cua-driver doctor`. The grant flow is macOS-only (no TCC toggles to request
+# on Windows/Linux).
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/tools/computer-use/status")
+async def get_computer_use_status(profile: Optional[str] = None):
+    """Cross-platform Computer Use readiness for the desktop card.
+
+    See ``tools.computer_use.permissions.computer_use_status`` for the payload
+    shape. Read-only and fast (shells ``cua-driver doctor`` + macOS
+    ``permissions status``).
+    """
+    from tools.computer_use.permissions import computer_use_status
+
+    with _profile_scope(profile):
+        return computer_use_status()
+
+
+@app.post("/api/tools/computer-use/permissions/grant")
+async def grant_computer_use_permissions(profile: Optional[str] = None):
+    """Spawn ``hermes computer-use permissions grant`` as a background action.
+
+    macOS-only: ``cua-driver permissions grant`` launches CuaDriver via
+    LaunchServices so the TCC dialog is attributed to com.trycua.driver, then
+    waits for approval. The frontend polls ``GET /api/actions/computer-use-
+    grant/status`` and re-reads ``/status`` once it exits. Windows/Linux have
+    no TCC toggles to grant, so this returns 400 there.
+    """
+    if sys.platform != "darwin":
+        raise HTTPException(
+            status_code=400,
+            detail="Computer Use permission grants are a macOS concept.",
+        )
+    try:
+        proc = _spawn_hermes_action(
+            _profile_cli_args(profile)
+            + ["computer-use", "permissions", "grant"],
+            "computer-use-grant",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn computer-use permissions grant")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to request permissions: {exc}"
+        )
+    return {"ok": True, "pid": proc.pid, "name": "computer-use-grant"}
+
+
+# ---------------------------------------------------------------------------
 # Raw YAML config endpoint
 # ---------------------------------------------------------------------------
 
@@ -12182,20 +12277,12 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     return api_field
 
 
-# Plugin sources whose Python backend (dashboard manifest `api` file) must NEVER
-# be auto-imported by the dashboard web server — only bundled plugins may. Shared
-# by the discovery-time scrub and the mount-time refuse guards so a typo in one
-# site cannot silently disable a security gate (GHSA-5qr3-c538-wm9j / #43719).
-_NON_BUNDLED_PLUGIN_SOURCES = frozenset({"user", "project"})
-
-
 def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
-    Checks three plugin sources. Bundled dashboard plugins win name conflicts
-    so non-bundled plugins cannot shadow trusted backend-capable routes:
-    1. Bundled plugins: <repo>/plugins/<name>/dashboard/manifest.json  (memory/, etc.)
-    2. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
+    Checks three plugin sources (same as hermes_cli.plugins):
+    1. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
+    2. Bundled plugins: <repo>/plugins/<name>/dashboard/manifest.json  (memory/, etc.)
     3. Project plugins: ./.hermes/plugins/  (only if HERMES_ENABLE_PROJECT_PLUGINS)
     """
     plugins = []
@@ -12204,9 +12291,9 @@ def _discover_dashboard_plugins() -> list:
     from hermes_cli.plugins import get_bundled_plugins_dir
     bundled_root = get_bundled_plugins_dir()
     search_dirs = [
+        (get_hermes_home() / "plugins", "user"),
         (bundled_root / "memory", "bundled"),
         (bundled_root, "bundled"),
-        (get_hermes_home() / "plugins", "user"),
     ]
     # GHSA-5qr3-c538-wm9j (#29156): the previous ``os.environ.get(...)``
     # check treated *any* non-empty string as truthy, so ``=0``, ``=false``,
@@ -12265,20 +12352,10 @@ def _discover_dashboard_plugins() -> list:
                 raw_api = data.get("api")
                 dashboard_dir = child / "dashboard"
                 safe_api = _safe_plugin_api_relpath(raw_api, dashboard_dir=dashboard_dir)
-                if source in _NON_BUNDLED_PLUGIN_SOURCES and safe_api:
-                    _log.warning(
-                        "Plugin %s: refusing dashboard backend api=%s "
-                        "(only bundled plugins may auto-import Python "
-                        "backend routes; non-bundled plugins may extend "
-                        "the dashboard with static UI assets only)",
-                        name, safe_api,
-                    )
-                    safe_api = None
-                    raw_api = None
                 if raw_api and safe_api is None:
                     _log.warning(
                         "Plugin %s: refusing unsafe api path %r (must be a "
-                        "relative file inside a bundled plugin's dashboard/ "
+                        "relative file inside the plugin's dashboard/ "
                         "directory); backend routes from this plugin will "
                         "not be mounted",
                         name, raw_api,
@@ -12685,36 +12762,23 @@ def _mount_plugin_api_routes():
     a ``router`` (FastAPI APIRouter).  Routes are mounted under
     ``/api/plugins/<name>/``.
 
-    Backend import is restricted to bundled plugins. User and project
-    plugins can extend the dashboard UI via static JS/CSS, but their
-    Python ``api`` files are never auto-imported by the web server.
-    See GHSA-5qr3-c538-wm9j (#29156) and #43719.
+    Backend import is restricted to ``bundled`` and ``user`` sources.
+    Project plugins (``./.hermes/plugins/``) ship with the CWD and are
+    therefore attacker-controlled in any threat model where the user
+    opens a malicious repo; they can extend the dashboard UI via
+    static JS/CSS but their Python ``api`` file is never auto-imported
+    by the web server.  See GHSA-5qr3-c538-wm9j (#29156).
     """
     for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
-        source = plugin.get("source")
-        if source in _NON_BUNDLED_PLUGIN_SOURCES:
-            # Backend Python auto-import is reserved for bundled plugins; user
-            # and project plugins extend the dashboard with static UI assets
-            # only (GHSA-5qr3-c538-wm9j / #43719). Defence-in-depth: discovery
-            # already nulls _api_file for these sources, but re-refusing here —
-            # at the actual importlib call site — keeps the import primitive
-            # contained even if a future caller or a tampered cache entry slips
-            # a non-bundled plugin through with an _api_file set.
-            _reason = {
-                "user": (
-                    "user-installed plugins may not auto-import Python code"
-                ),
-                "project": (
-                    "project plugins may not auto-import Python code; backend "
-                    "auto-import is reserved for bundled plugins"
-                ),
-            }.get(source, "only bundled plugins may auto-import Python code")
+        if plugin.get("source") == "project":
             _log.warning(
-                "Plugin %s: ignoring backend api=%s (%s)",
-                plugin["name"], api_file_name, _reason,
+                "Plugin %s: ignoring backend api=%s (project plugins may "
+                "not auto-import Python code; move the plugin to "
+                "~/.hermes/plugins/ if you trust it)",
+                plugin["name"], api_file_name,
             )
             continue
         dashboard_dir = Path(plugin["_dir"])
@@ -12989,4 +13053,45 @@ def start_server(
             if server.started:
                 await server.shutdown()
 
-    asyncio.run(_serve())
+    # On POSIX, keep the long-standing ``asyncio.run(_serve())`` behavior
+    # unchanged — Python's default loop there is already a SelectorEventLoop
+    # (or uvloop when uvicorn[standard] installs it), which is exactly what
+    # uvicorn serves on. Touching that path would only widen the blast radius
+    # for no benefit.
+    #
+    # On Windows it is broken: ``asyncio.run`` defaults to a ProactorEventLoop,
+    # but uvicorn's socket-serving stack assumes a SelectorEventLoop on win32
+    # (``uvicorn/loops/asyncio.py`` forces it, and ``uvicorn.Server.run`` threads
+    # ``config.get_loop_factory()`` into its runner for exactly this reason).
+    # Driving uvicorn on the proactor loop makes ``server.startup()`` bind a
+    # socket that never accepts — the dashboard / desktop backend prints
+    # "Skipping web UI build" and then hangs forever with the port LISTENING but
+    # no TCP handshake completing (#50641). So *only on Windows* we mirror
+    # uvicorn's own machinery and run on the loop factory it picks.
+    if sys.platform != "win32":
+        asyncio.run(_serve())
+        return
+
+    # Windows-only path. Resolve the runner + loop factory FIRST (and fall back
+    # to a hand-installed Windows selector policy only when uvicorn predates the
+    # loop-factory API, < 0.36). The actual serve call is then OUTSIDE the
+    # try/except so genuine serve-time errors (port in use, KeyboardInterrupt)
+    # propagate normally instead of being swallowed and double-run.
+    try:
+        from uvicorn._compat import asyncio_run as _runner
+
+        _loop_factory = config.get_loop_factory()
+    except Exception:
+        _runner = None
+        _loop_factory = None
+        try:
+            asyncio.set_event_loop_policy(
+                asyncio.WindowsSelectorEventLoopPolicy()  # type: ignore[attr-defined]
+            )
+        except Exception:
+            pass
+
+    if _runner is not None:
+        _runner(_serve(), loop_factory=_loop_factory)
+    else:
+        asyncio.run(_serve())

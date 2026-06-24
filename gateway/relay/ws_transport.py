@@ -54,6 +54,13 @@ WEBSOCKETS_AVAILABLE = websockets is not None
 _HANDSHAKE_TIMEOUT_S = 30.0
 _OUTBOUND_TIMEOUT_S = 30.0
 
+# Phase 7 Unit 7d-B: the application close code the connector sends when it
+# rejects/revokes a gateway's WS upgrade auth (mirrors the connector's
+# `4401` "unauthorized" close — a private-use code, not a standard WS code).
+# A 4401 received AFTER a successful handshake means the per-gateway secret was
+# revoked (opt-out / deprovision), which the transport treats as terminal.
+_RELAY_UNAUTHORIZED_CLOSE_CODE = 4401
+
 
 def _ws_dial_url(url: str) -> str:
     """Normalize a connector URL to the ``ws(s)://…/relay`` dial target.
@@ -190,6 +197,9 @@ class WebSocketRelayTransport:
         outbound_timeout_s: float = _OUTBOUND_TIMEOUT_S,
         gateway_id: Optional[str] = None,
         upgrade_secret: Optional[str] = None,
+        reconnect: bool = False,
+        reconnect_backoff_s: float = 1.0,
+        reconnect_max_backoff_s: float = 30.0,
     ) -> None:
         if not WEBSOCKETS_AVAILABLE:
             raise RuntimeError(
@@ -210,6 +220,19 @@ class WebSocketRelayTransport:
         self._gateway_id = gateway_id
         self._upgrade_secret = upgrade_secret
 
+        # Phase 5 §5.3: a NET-NEW reconnect supervisor. The base transport's
+        # _read_loop just ends on socket close ("reconnection is caller policy");
+        # with reconnect=True the transport re-dials + re-handshakes after an
+        # UNEXPECTED close (not a deliberate disconnect()), so a gateway that went
+        # idle/suspended re-establishes its socket — which makes the connector
+        # drain that instance's buffered-only delivery-leg backlog (onResume) on
+        # the new handshake. Off by default so existing tests + the stub are
+        # unaffected; register_relay_adapter turns it on in production.
+        self._reconnect = reconnect
+        self._reconnect_backoff_s = reconnect_backoff_s
+        self._reconnect_max_backoff_s = reconnect_max_backoff_s
+        self._supervisor: Optional[asyncio.Task[None]] = None
+
         self._ws: Any = None
         self._reader: Optional[asyncio.Task[None]] = None
         self._inbound: Optional[InboundHandler] = None
@@ -217,12 +240,34 @@ class WebSocketRelayTransport:
         self._descriptor_ready: asyncio.Future[CapabilityDescriptor] | None = None
         # requestId -> future awaiting the matching outbound_result.
         self._pending: Dict[str, asyncio.Future[Dict[str, Any]]] = {}
+        # Phase 5 §5.3: future awaiting the connector's going_idle_ack.
+        self._going_idle_ack: asyncio.Future[None] | None = None
         self._closing = False
+        # Phase 7 Unit 7d-B: a 4401 (unauthorized) close AFTER we have already
+        # handshaked successfully at least once means the connector REVOKED this
+        # gateway's per-gateway secret — i.e. the operator opted this instance
+        # OUT of the relay (Unit 7b deprovision). That is TERMINAL: the secret is
+        # gone, so re-dialing just spins against a dead credential forever
+        # (the "retrying 4401" the dashboard showed). We stop reconnecting and
+        # surface it as a clean, non-retryable "disabled" state. A 4401 BEFORE
+        # any successful handshake stays retryable — that's a cold-start /
+        # not-yet-provisioned race, not a revocation.
+        self._handshake_succeeded = False
+        self._auth_revoked = False
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def connect(self) -> bool:
+        await self._dial_and_start()
+        return True
+
+    async def _dial_and_start(self) -> None:
+        """Open the socket, start the reader, send hello. Used by connect() and
+        by the reconnect supervisor on a re-dial."""
         loop = asyncio.get_running_loop()
         self._descriptor_ready = loop.create_future()
+        # A fresh handshake is coming; clear any stale descriptor so handshake()
+        # awaits the new one (matters on a re-dial).
+        self._descriptor = None
         headers = self._upgrade_headers()
         if headers:
             self._ws = await websockets.connect(self._url, additional_headers=headers)  # type: ignore[union-attr]
@@ -231,7 +276,6 @@ class WebSocketRelayTransport:
         self._reader = asyncio.create_task(self._read_loop(), name="relay-ws-reader")
         # Send hello; the descriptor arrives via the reader and resolves handshake().
         await self._send({"type": "hello", "platform": self._platform, "botId": self._bot_id})
-        return True
 
     def _upgrade_headers(self) -> Dict[str, str]:
         """Auth headers for the WS upgrade, or {} when no secret is configured.
@@ -252,6 +296,13 @@ class WebSocketRelayTransport:
 
     async def disconnect(self) -> None:
         self._closing = True
+        if self._supervisor is not None:
+            self._supervisor.cancel()
+            try:
+                await self._supervisor
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+                pass
+            self._supervisor = None
         if self._reader is not None:
             self._reader.cancel()
             try:
@@ -270,6 +321,8 @@ class WebSocketRelayTransport:
             if not fut.done():
                 fut.set_exception(RuntimeError("relay transport closed"))
         self._pending.clear()
+        if self._going_idle_ack is not None and not self._going_idle_ack.done():
+            self._going_idle_ack.set_exception(RuntimeError("relay transport closed"))
 
     async def handshake(self) -> CapabilityDescriptor:
         if self._descriptor is not None:
@@ -277,6 +330,14 @@ class WebSocketRelayTransport:
         if self._descriptor_ready is None:
             raise RuntimeError("handshake() called before connect()")
         return await asyncio.wait_for(self._descriptor_ready, timeout=self._connect_timeout_s)
+
+    @property
+    def auth_revoked(self) -> bool:
+        """True once the connector closed the socket with 4401 AFTER a prior
+        successful handshake — i.e. the per-gateway secret was revoked (the
+        operator opted this instance out of the relay). Terminal: the transport
+        stops reconnecting, and the adapter surfaces a clean "disabled" state."""
+        return self._auth_revoked
 
     def set_inbound_handler(self, handler: InboundHandler) -> None:
         self._inbound = handler
@@ -301,6 +362,44 @@ class WebSocketRelayTransport:
 
     async def send_interrupt(self, session_key: str, reason: Optional[str] = None) -> None:
         await self._send({"type": "interrupt", "session_key": session_key, "reason": reason})
+
+    # ── going-idle / buffered-flip (Phase 5 §5.3) ────────────────────────
+    async def go_idle(self, timeout_s: float = 10.0) -> bool:
+        """Ask the connector to flip this instance's destination to buffered-only.
+
+        Sends ``going_idle`` and awaits the connector's ``going_idle_ack`` — the
+        connector-AUTHORITATIVE confirmation that live delivery has stopped and
+        subsequent inbound buffers durably (Q-5.3c). Returns True on ack, False on
+        timeout / not-connected (the caller proceeds to close anyway — at worst a
+        live event races a closing socket exactly as before §5.3, no regression).
+
+        The gateway stays serving (the read loop keeps handling inbound) until the
+        ack, so an event landing in the flip window is delivered live, not lost.
+        """
+        if self._ws is None:
+            return False
+        loop = asyncio.get_running_loop()
+        self._going_idle_ack = loop.create_future()
+        try:
+            await self._send({"type": "going_idle"})
+            await asyncio.wait_for(self._going_idle_ack, timeout=timeout_s)
+            return True
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001 - ack is best-effort
+            return False
+        finally:
+            self._going_idle_ack = None
+
+    async def _send_inbound_ack(self, buffer_id: str) -> None:
+        """Acknowledge durable receipt of a buffered inbound delivery (§5.3).
+
+        Sent after the adapter has durably taken a buffered inbound event the
+        connector replayed on reconnect; the connector acks the buffer entry only
+        after this, giving drain-without-dup on the delivery leg.
+        """
+        try:
+            await self._send({"type": "inbound_ack", "bufferId": buffer_id})
+        except Exception:  # noqa: BLE001 - a failed ack just redelivers the entry next time
+            logger.debug("relay: inbound_ack send failed for %s", buffer_id)
 
     async def _request_response(
         self, action: Dict[str, Any], frame_type: str = "outbound"
@@ -338,9 +437,76 @@ class WebSocketRelayTransport:
                         await self._handle_frame(line)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - log + let the task end; reconnection is caller policy
-            if not self._closing:
+        except Exception as exc:  # noqa: BLE001 - log + let the task end; reconnection handled below
+            # Phase 7 Unit 7d-B: detect a 4401 (unauthorized) close. After a prior
+            # successful handshake this is a REVOCATION (opt-out / deprovision) —
+            # the per-gateway secret is gone, so reconnecting is futile. Latch a
+            # terminal "auth revoked" state and DON'T re-dial. Before any
+            # successful handshake a 4401 stays retryable (cold-start race).
+            if self._close_code_of(exc) == _RELAY_UNAUTHORIZED_CLOSE_CODE and self._handshake_succeeded:
+                self._auth_revoked = True
+                if not self._closing:
+                    logger.warning(
+                        "relay ws closed 4401 (unauthorized) after a successful handshake — "
+                        "treating as a revoked relay credential (opt-out); not reconnecting"
+                    )
+            elif not self._closing:
                 logger.warning("relay ws read loop ended: %s", exc)
+        # Phase 5 §5.3: the socket closed. If reconnect is enabled and this was
+        # NOT a deliberate disconnect(), kick the reconnect supervisor so the
+        # gateway re-dials + re-handshakes (which triggers the connector's
+        # buffered-flip drain on the new handshake). Self-scheduling: the reader
+        # ends here, the supervisor re-dials and starts a fresh reader.
+        # Phase 7 Unit 7d-B: a revoked credential (terminal 4401) is the one case
+        # we deliberately do NOT reconnect — the secret is dead until the
+        # instance is recreated, so spinning would just reproduce the failure.
+        if (
+            self._reconnect
+            and not self._closing
+            and not self._auth_revoked
+            and (self._supervisor is None or self._supervisor.done())
+        ):
+            self._supervisor = asyncio.create_task(
+                self._reconnect_loop(), name="relay-ws-reconnect"
+            )
+
+    @staticmethod
+    def _close_code_of(exc: BaseException) -> Optional[int]:
+        """Best-effort extraction of a WebSocket close code from a raised
+        exception. websockets' ConnectionClosed* expose the peer's Close frame
+        via `.rcvd`/`.sent` (preferred; `.code` is deprecated in websockets 13+).
+        Returns None when unknown."""
+        for attr in ("rcvd", "sent"):
+            frame = getattr(exc, attr, None)
+            fcode = getattr(frame, "code", None)
+            if isinstance(fcode, int):
+                return fcode
+        code = getattr(exc, "code", None)
+        return code if isinstance(code, int) else None
+
+    async def _reconnect_loop(self) -> None:
+        """Re-dial the connector with capped exponential backoff until reconnected
+        or disconnect() is called. NET-NEW for §5.3: a re-established socket makes
+        the connector replay this instance's buffered-only backlog on the new
+        handshake (the delivery-leg onResume). Never raises out (a re-dial failure
+        just retries); ends when a dial succeeds (its reader takes over) or closing."""
+        backoff = self._reconnect_backoff_s
+        while not self._closing:
+            try:
+                await asyncio.sleep(backoff)
+            except asyncio.CancelledError:
+                raise
+            if self._closing:
+                return
+            try:
+                await self._dial_and_start()
+                logger.info("relay ws reconnected")
+                return  # the fresh reader is running; supervisor's job is done
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - keep retrying on dial failure
+                logger.warning("relay ws reconnect failed: %s", exc)
+                backoff = min(backoff * 2, self._reconnect_max_backoff_s)
 
     async def _handle_frame(self, line: str) -> None:
         try:
@@ -352,12 +518,29 @@ class WebSocketRelayTransport:
         if ftype == "descriptor":
             descriptor = CapabilityDescriptor.from_json(json.dumps(frame.get("descriptor", {})))
             self._descriptor = descriptor
+            # Phase 7 Unit 7d-B: a received descriptor means the WS upgrade auth
+            # passed and the connector accepted us — record that we've handshaked
+            # at least once, so a LATER 4401 close is read as a revocation
+            # (opt-out), not a cold-start race.
+            self._handshake_succeeded = True
             if self._descriptor_ready is not None and not self._descriptor_ready.done():
                 self._descriptor_ready.set_result(descriptor)
         elif ftype == "inbound":
             if self._inbound is not None:
                 event = _event_from_wire(frame.get("event", {}))
                 await self._inbound(event)
+                # Phase 5 §5.3: a buffered delivery (replayed on reconnect) carries
+                # a bufferId; ack it after the handler has durably taken it so the
+                # connector advances its delivery-leg buffer cursor (no dup). A live
+                # delivery has no bufferId — nothing to ack.
+                buffer_id = frame.get("bufferId")
+                if buffer_id:
+                    await self._send_inbound_ack(str(buffer_id))
+        elif ftype == "going_idle_ack":
+            # Phase 5 §5.3: the connector confirmed our destination is now
+            # buffered-only; resolve the waiter go_idle() is blocked on.
+            if self._going_idle_ack is not None and not self._going_idle_ack.done():
+                self._going_idle_ack.set_result(None)
         elif ftype == "outbound_result":
             fut = self._pending.get(frame.get("requestId", ""))
             if fut is not None and not fut.done():

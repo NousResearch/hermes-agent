@@ -1590,6 +1590,19 @@ class DiscordAdapter(BasePlatformAdapter):
             mutation_count += 1
             return result
 
+        # Delete obsolete commands FIRST to stay under Discord's 100-command
+        # limit. Discord rejects an upsert that would push the live total over
+        # 100 (error 30032), which silently breaks ALL slash commands. If a new
+        # command is created before the obsolete ones are removed, an app that
+        # is already at the cap momentarily exceeds it and the whole sync fails.
+        # Removing the no-longer-desired commands up front guarantees the live
+        # total never rises above the cap mid-sync.
+        obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
+        for key in obsolete_keys:
+            current = existing_by_key.pop(key)
+            await mutate(http.delete_global_command, app_id, current.id)
+            deleted += 1
+
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:
@@ -1612,10 +1625,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
             await mutate(http.edit_global_command, app_id, current.id, desired)
             updated += 1
-
-        for current in existing_by_key.values():
-            await mutate(http.delete_global_command, app_id, current.id)
-            deleted += 1
 
         return {
             "total": len(desired_payloads),
@@ -5276,6 +5285,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
+                    # Pre-seed dedup: when _auto_create_thread creates a thread
+                    # via message.create_thread(), Discord fires a second
+                    # MESSAGE_CREATE event for the "thread starter message".
+                    # That starter message carries id == thread.id and may
+                    # arrive with type=default (not type=21/thread_starter_message),
+                    # so the type filter above does not catch it.  Marking the
+                    # thread id in the dedup cache now ensures that duplicate
+                    # event is dropped before it can trigger a second agent run.
+                    # Fixes #51057.
+                    self._dedup.is_duplicate(str(thread.id))
 
         referenced_attachments = []
         reference = getattr(message, "reference", None)
@@ -5690,7 +5709,8 @@ def _component_check_auth(
 
     Mirrors the gateway's external-surface authorization model: component
     button clicks must be explicitly authorized by a Discord user/role
-    allowlist, a global user allowlist, or an explicit allow-all flag.
+    allowlist, a global user allowlist, an explicit allow-all flag, or
+    the pairing store (``hermes pairing approve``).
 
     Behavior:
 
@@ -5700,6 +5720,7 @@ def _component_check_auth(
       - role allowlist set + interaction.user has no resolvable
         ``roles`` attribute (e.g. DM context with a role policy active)
         -> reject (fail closed)
+      - user is approved in the pairing store -> allow
       - otherwise -> reject
     """
     if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
@@ -5721,11 +5742,13 @@ def _component_check_auth(
     if user is None:
         return False
 
+    # Resolve user ID once for both allowlist and pairing checks.
+    try:
+        uid = str(user.id)
+    except AttributeError:
+        uid = ""
+
     if has_users:
-        try:
-            uid = str(user.id)
-        except AttributeError:
-            uid = ""
         if "*" in user_set or (uid and uid in user_set):
             return True
 
@@ -5743,6 +5766,18 @@ def _component_check_auth(
             return False
         if user_role_ids & role_set:
             return True
+
+    # Check pairing store — mirrors ``authz_mixin._check_authorization``
+    # so users approved via ``hermes pairing approve`` can interact with
+    # component buttons even without DISCORD_ALLOWED_USERS set.
+    if uid:
+        try:
+            from gateway.pairing import PairingStore
+            store = PairingStore()
+            if store.is_approved("discord", uid):
+                return True
+        except Exception:
+            pass
 
     return False
 

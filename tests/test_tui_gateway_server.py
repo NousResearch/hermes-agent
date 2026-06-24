@@ -2957,6 +2957,39 @@ def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypa
     assert resp["result"]["provider"] == "bedrock"
 
 
+def test_setup_runtime_check_honors_requested_provider(monkeypatch):
+    """Onboarding must be able to validate the provider the user just connected."""
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+
+    def fake_resolve(requested=None, **kwargs):
+        if requested == "nous":
+            return {
+                "provider": "nous",
+                "api_key": "invoke-jwt",
+                "source": "portal",
+            }
+        return {
+            "provider": "anthropic",
+            "api_key": "",
+            "source": "config",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        fake_resolve,
+    )
+
+    scoped = server.handle_request(
+        {"id": "1", "method": "setup.runtime_check", "params": {"provider": "nous"}}
+    )
+    assert scoped["result"]["ok"] is True
+    assert scoped["result"]["provider"] == "nous"
+
+    default = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+    assert default["result"]["ok"] is False
+    assert default["result"]["provider"] == "anthropic"
+
+
 def test_complete_slash_drops_removed_provider_alias():
     # `/provider` was folded into a single `/model` command, so autocomplete
     # must no longer offer the dead alias...
@@ -3266,7 +3299,7 @@ def test_config_set_model_global_persists(monkeypatch):
         warning_message="",
     )
     seen = {}
-    saved = {}
+    saved_values = {}
 
     def _switch_model(**kwargs):
         seen.update(kwargs)
@@ -3276,7 +3309,9 @@ def test_config_set_model_global_persists(monkeypatch):
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch_model)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
-    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
+    # _persist_model_switch uses targeted save_config_value writes (#48305) so it
+    # preserves sibling model.* keys instead of rewriting the whole block.
+    monkeypatch.setattr("cli.save_config_value", lambda key, value: saved_values.__setitem__(key, value) or True)
 
     resp = server.handle_request(
         {
@@ -3292,9 +3327,9 @@ def test_config_set_model_global_persists(monkeypatch):
 
     assert resp["result"]["value"] == "anthropic/claude-sonnet-4.6"
     assert seen["is_global"] is True
-    assert saved["model"]["default"] == "anthropic/claude-sonnet-4.6"
-    assert saved["model"]["provider"] == "anthropic"
-    assert saved["model"]["base_url"] == "https://api.anthropic.com"
+    assert saved_values["model.default"] == "anthropic/claude-sonnet-4.6"
+    assert saved_values["model.provider"] == "anthropic"
+    assert saved_values["model.base_url"] == "https://api.anthropic.com"
 
 
 def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatch):
@@ -7946,3 +7981,115 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         assert session["agent"].model == "claude-sonnet-4.6"
     finally:
         server._sessions.clear()
+
+
+# ── _get_usage active_subagents (TUI status-bar ⛓ indicator) ──────────────
+# Mirrors the classic CLI status bar: _get_usage embeds a live count of
+# background/async subagents from tools.async_delegation.active_count() so the
+# Ink status bar can render ⛓ N. Source of truth is the same registry the CLI
+# reads; the field rides the existing per-update `usage` payload.
+
+
+class _BareAgent:
+    """Agent stub with no compressor — exercises the active_subagents path
+    independent of the `if comp:` context-percent block."""
+
+    model = "x"
+
+
+def test_get_usage_includes_active_subagents(monkeypatch):
+    import tools.async_delegation as ad_mod
+    monkeypatch.setattr(ad_mod, "active_count", lambda: 4)
+    usage = server._get_usage(_BareAgent())
+    assert usage["active_subagents"] == 4
+
+
+def test_get_usage_active_subagents_zero(monkeypatch):
+    import tools.async_delegation as ad_mod
+    monkeypatch.setattr(ad_mod, "active_count", lambda: 0)
+    usage = server._get_usage(_BareAgent())
+    assert usage["active_subagents"] == 0
+
+
+def test_get_usage_safe_when_active_count_raises(monkeypatch):
+    """A raising active_count() must not break the usage payload."""
+    import tools.async_delegation as ad_mod
+
+    def _boom():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ad_mod, "active_count", _boom)
+    usage = server._get_usage(_BareAgent())
+    # Field omitted, but the rest of the payload is intact.
+    assert "active_subagents" not in usage
+    assert usage["model"] == "x"
+
+
+def test_persist_model_switch_preserves_sibling_model_keys(tmp_path, monkeypatch):
+    """#48305: switching models from the TUI must NOT destroy sibling keys under
+    `model:` (model_slots, model_fallback, etc.). _persist_model_switch now uses
+    targeted save_config_value writes instead of rewriting the whole block."""
+    import types
+    import yaml
+    import cli
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "model:\n"
+        "  default: old-model\n"
+        "  provider: openai\n"
+        "  model_slots:\n"
+        "    fast: gpt-5-mini\n"
+        "  model_fallback:\n"
+        "    - claude-haiku\n"
+        "agent:\n"
+        "  system_prompt: keepme\n"
+    )
+    # save_config_value() resolves the config path from cli._hermes_home, which
+    # is captured at import time — patch it directly (set_hermes_home_override
+    # does NOT affect this snapshot).
+    monkeypatch.setattr(cli, "_hermes_home", tmp_path)
+
+    result = types.SimpleNamespace(
+        new_model="new-model", target_provider="anthropic", base_url=None
+    )
+    server._persist_model_switch(result)
+    saved = yaml.safe_load(cfg_path.read_text())
+
+    # The switched fields updated...
+    assert saved["model"]["default"] == "new-model"
+    assert saved["model"]["provider"] == "anthropic"
+    # ...and the sibling keys SURVIVED (the bug was that they got wiped).
+    assert saved["model"]["model_slots"] == {"fast": "gpt-5-mini"}
+    assert saved["model"]["model_fallback"] == ["claude-haiku"]
+    assert saved["agent"]["system_prompt"] == "keepme"
+
+
+def test_persist_model_switch_clears_stale_base_url(tmp_path, monkeypatch):
+    """#48305: switching from a custom endpoint (which set model.base_url) to a
+    provider with no base_url must CLEAR the stale base_url, not leave it
+    pointing at the old host."""
+    import types
+    import yaml
+    import cli
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "model:\n"
+        "  default: local-model\n"
+        "  provider: custom:mylocal\n"
+        "  base_url: http://localhost:1234/v1\n"
+    )
+    monkeypatch.setattr(cli, "_hermes_home", tmp_path)
+
+    # Switch to a native provider with no base_url.
+    result = types.SimpleNamespace(
+        new_model="claude-haiku", target_provider="anthropic", base_url=None
+    )
+    server._persist_model_switch(result)
+    saved = yaml.safe_load(cfg_path.read_text())
+
+    assert saved["model"]["default"] == "claude-haiku"
+    assert saved["model"]["provider"] == "anthropic"
+    # Stale custom base_url must be cleared (null coalesces to absent on read).
+    assert not saved["model"].get("base_url"), saved["model"].get("base_url")

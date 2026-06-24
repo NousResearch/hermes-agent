@@ -293,5 +293,5 @@ class BrowserbaseBrowserProvider(BrowserProvider):
                     "prompt": "Browserbase project ID",
                 },
             ],
-            "post_setup": "agent_browser",
+            "post_setup": "agent_browser_cli",
         }

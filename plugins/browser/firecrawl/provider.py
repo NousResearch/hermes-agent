@@ -167,5 +167,5 @@ class FirecrawlBrowserProvider(BrowserProvider):
                     "url": "https://firecrawl.dev",
                 },
             ],
-            "post_setup": "agent_browser",
+            "post_setup": "agent_browser_cli",
         }

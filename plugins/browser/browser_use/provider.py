@@ -313,5 +313,5 @@ class BrowserUseBrowserProvider(BrowserProvider):
                     "url": "https://browser-use.com",
                 },
             ],
-            "post_setup": "agent_browser",
+            "post_setup": "agent_browser_cli",
         }

@@ -474,7 +474,7 @@ TOOL_CATEGORIES = {
                 "requires_nous_auth": True,
                 "managed_nous_feature": "browser",
                 "override_env_vars": ["BROWSER_USE_API_KEY"],
-                "post_setup": "agent_browser",
+                "post_setup": "agent_browser_cli",
             },
             {
                 "name": "Camofox",
@@ -898,7 +898,9 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     import shutil
-    if post_setup_key in {"agent_browser", "browserbase"}:
+    # agent_browser_cli is for cloud browser providers: install the shared
+    # npm package/CLI, but skip the local Chromium payload below.
+    if post_setup_key in {"agent_browser", "agent_browser_cli", "browserbase"}:
         node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
         npm_bin = shutil.which("npm")
         npx_bin = shutil.which("npx")

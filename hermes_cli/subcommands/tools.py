@@ -83,13 +83,14 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
             "needs extra dependencies (browser Chromium, Camofox, cua-driver,\n"
             "KittenTTS/Piper, ddgs, Spotify, Langfuse, xAI). Stable,\n"
             "non-interactive target the dashboard spawns to drive backend\n"
-            "setup. Keys: agent_browser, camofox, cua_driver, kittentts,\n"
-            "piper, ddgs, spotify, langfuse, xai_grok."
+            "setup. Keys: agent_browser, agent_browser_cli, camofox,\n"
+            "cua_driver, kittentts, piper, ddgs, spotify, langfuse,\n"
+            "xai_grok."
         ),
     )
     tools_postsetup_p.add_argument(
         "post_setup_key",
         metavar="KEY",
-        help="Post-setup hook key (e.g. agent_browser, camofox, kittentts)",
+        help="Post-setup hook key (e.g. agent_browser, agent_browser_cli, kittentts)",
     )
     tools_parser.set_defaults(func=cmd_tools)

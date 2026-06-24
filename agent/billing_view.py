@@ -38,9 +38,10 @@ def parse_money(value: Any) -> Optional[Decimal]:
         return None
     try:
         # Decimal(str(...)) avoids binary-float artifacts if a float ever sneaks in.
-        return Decimal(str(value).strip())
+        parsed = Decimal(str(value).strip())
     except (InvalidOperation, ValueError, TypeError):
         return None
+    return parsed if parsed.is_finite() else None
 
 
 def format_money(value: Optional[Decimal]) -> str:
@@ -51,6 +52,8 @@ def format_money(value: Optional[Decimal]) -> str:
     ``Decimal("0.01")`` → ``"$0.01"``.
     """
     if value is None:
+        return "—"
+    if not value.is_finite():
         return "—"
     if value == value.to_integral_value():
         # Whole dollars — no decimal point. format(..., "f") avoids 1E+3 for 1000.

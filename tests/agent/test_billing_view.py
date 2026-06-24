@@ -62,7 +62,10 @@ def test_parse_money_valid(raw, expected):
     assert parse_money(raw) == expected
 
 
-@pytest.mark.parametrize("raw", [None, "", "abc", "1.2.3", "$5", {}])
+@pytest.mark.parametrize(
+    "raw",
+    [None, "", "abc", "1.2.3", "$5", {}, "NaN", "Infinity", "-Infinity", float("nan"), float("inf")],
+)
 def test_parse_money_invalid_returns_none(raw):
     assert parse_money(raw) is None
 
@@ -79,6 +82,8 @@ def test_parse_money_never_uses_binary_float():
         (Decimal("100"), "$100"),
         (Decimal("0.01"), "$0.01"),
         (Decimal("1000"), "$1000"),
+        (Decimal("NaN"), "—"),
+        (Decimal("Infinity"), "—"),
         (None, "—"),
     ],
 )

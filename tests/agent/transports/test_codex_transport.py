@@ -810,3 +810,108 @@ class TestPreflightSlashEnumStrip:
         assert params["properties"]["model_id"].get("enum") == [
             "Qwen/Qwen3.5-0.8B", "plain-id"
         ]
+
+
+class TestReasoningCapabilityGating:
+    """Non-reasoning models must not receive ``reasoning`` or
+    ``include: ["reasoning.encrypted_content"]`` parameters.
+
+    OpenAI's Responses API returns HTTP 400 "Encrypted content is not
+    supported with this model" when these are sent for models like
+    gpt-4o-mini or gpt-4.1.  See issue #52023.
+    """
+
+    @pytest.fixture
+    def transport(self):
+        import agent.transports.codex  # noqa: F401
+        from agent.transports import get_transport
+        return get_transport("codex_responses")
+
+    def _build(self, transport, model, **extra):
+        messages = [{"role": "user", "content": "Hi"}]
+        return transport.build_kwargs(model=model, messages=messages, tools=[], **extra)
+
+    def test_non_reasoning_model_omits_reasoning_params(self, transport, monkeypatch):
+        """gpt-4o-mini should NOT get reasoning/include when
+        get_model_capabilities says supports_reasoning=False."""
+        from agent import models_dev
+
+        fake_caps = models_dev.ModelCapabilities(supports_reasoning=False)
+        monkeypatch.setattr(
+            models_dev, "get_model_capabilities",
+            lambda provider, model: fake_caps,
+        )
+        kw = self._build(transport, "gpt-4o-mini", provider="openai")
+        assert "reasoning" not in kw
+        assert kw.get("include") == []
+
+    def test_reasoning_model_keeps_reasoning_params(self, transport, monkeypatch):
+        """gpt-5.4 should still get reasoning/include."""
+        from agent import models_dev
+
+        fake_caps = models_dev.ModelCapabilities(supports_reasoning=True)
+        monkeypatch.setattr(
+            models_dev, "get_model_capabilities",
+            lambda provider, model: fake_caps,
+        )
+        kw = self._build(transport, "gpt-5.4", provider="openai")
+        assert kw.get("reasoning", {}).get("effort") == "medium"
+        assert "reasoning.encrypted_content" in kw.get("include", [])
+
+    def test_explicit_reasoning_config_overrides_capability(self, transport, monkeypatch):
+        """When user explicitly sets reasoning_config, capability check
+        is bypassed so the API rejection is visible to the user."""
+        from agent import models_dev
+
+        fake_caps = models_dev.ModelCapabilities(supports_reasoning=False)
+        monkeypatch.setattr(
+            models_dev, "get_model_capabilities",
+            lambda provider, model: fake_caps,
+        )
+        kw = self._build(
+            transport, "gpt-4o-mini", provider="openai",
+            reasoning_config={"effort": "high"},
+        )
+        # Explicit config bypasses the capability gate
+        assert kw.get("reasoning", {}).get("effort") == "high"
+        assert "reasoning.encrypted_content" in kw.get("include", [])
+
+    def test_no_provider_skips_capability_check(self, transport, monkeypatch):
+        """When provider is not passed, capability check is skipped
+        and reasoning_enabled stays True (fail-open)."""
+        from agent import models_dev
+
+        # If get_model_capabilities were called, it would fail
+        monkeypatch.setattr(
+            models_dev, "get_model_capabilities",
+            lambda provider, model: (_ for _ in ()).throw(RuntimeError("should not be called")),
+        )
+        kw = self._build(transport, "gpt-4o-mini")
+        # No provider → capability check skipped → reasoning stays enabled
+        assert kw.get("reasoning", {}).get("effort") == "medium"
+
+    def test_capability_lookup_failure_is_fail_open(self, transport, monkeypatch):
+        """If get_model_capabilities throws, reasoning_enabled stays
+        True (fail-open)."""
+        from agent import models_dev
+
+        monkeypatch.setattr(
+            models_dev, "get_model_capabilities",
+            lambda provider, model: (_ for _ in ()).throw(RuntimeError("network error")),
+        )
+        kw = self._build(transport, "gpt-4o-mini", provider="openai")
+        # Fail-open: reasoning stays enabled
+        assert kw.get("reasoning", {}).get("effort") == "medium"
+        assert "reasoning.encrypted_content" in kw.get("include", [])
+
+    def test_model_not_in_catalog_defaults_to_reasoning(self, transport, monkeypatch):
+        """When model is not found in models.dev (returns None),
+        reasoning stays enabled (conservative default)."""
+        from agent import models_dev
+
+        monkeypatch.setattr(
+            models_dev, "get_model_capabilities",
+            lambda provider, model: None,
+        )
+        kw = self._build(transport, "custom-model-xyz", provider="openai")
+        assert kw.get("reasoning", {}).get("effort") == "medium"

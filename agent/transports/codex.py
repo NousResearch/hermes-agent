@@ -124,6 +124,24 @@ class ResponsesApiTransport(ProviderTransport):
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
 
+        # Gate reasoning on model capability: non-reasoning models
+        # (e.g. gpt-4o-mini, gpt-4.1) reject the ``reasoning`` and
+        # ``include: ["reasoning.encrypted_content"]`` parameters with
+        # HTTP 400 "Encrypted content is not supported with this model".
+        # Only override when the user did NOT explicitly set
+        # reasoning_config (explicit opt-in should reach the API so the
+        # user sees a clear rejection rather than silent suppression).
+        if reasoning_enabled and not reasoning_config:
+            provider = params.get("provider")
+            if provider:
+                try:
+                    from agent.models_dev import get_model_capabilities
+                    caps = get_model_capabilities(provider, model)
+                    if caps is not None and not caps.supports_reasoning:
+                        reasoning_enabled = False
+                except Exception:
+                    pass  # Fail-open: keep reasoning_enabled=True on lookup errors
+
         _effort_clamp = {"minimal": "low"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 

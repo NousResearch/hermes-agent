@@ -228,6 +228,20 @@ _ensure_telegram_mock()
 _ensure_discord_mock()
 
 
+@pytest.fixture(autouse=True)
+def _disable_telegram_heartbeat_by_default(monkeypatch):
+    """Default the Telegram polling heartbeat OFF for all gateway tests.
+
+    ``TelegramAdapter.connect()`` spawns an always-on
+    ``_polling_heartbeat_loop`` (the silent-wedge fix). Left at its default
+    90s interval, any test that exercises ``connect()`` would leave a live
+    background task spinning against mock objects. Setting the interval to
+    ``"0"`` makes ``connect()`` skip the spawn entirely. Tests that exercise
+    the heartbeat explicitly override this with their own setenv.
+    """
+    monkeypatch.setenv("HERMES_TELEGRAM_HEARTBEAT_INTERVAL", "0")
+
+
 # ---------------------------------------------------------------------------
 # Plugin-adapter anti-pattern guard
 # ---------------------------------------------------------------------------

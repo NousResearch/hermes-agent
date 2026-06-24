@@ -531,6 +531,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._polling_error_task: Optional[asyncio.Task] = None
+        self._polling_heartbeat_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
@@ -1704,6 +1705,81 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             await self._handle_polling_network_error(probe_err)
 
+    async def _polling_heartbeat_loop(self) -> None:
+        """Always-on periodic liveness loop for Telegram long-poll polling.
+
+        Closes the silent-wedge gap behind the reactive recovery paths:
+        ``_polling_error_callback`` only fires on an observed network error,
+        and ``_verify_polling_after_reconnect`` runs exactly once after a
+        reconnect. A network blip that wedges PTB's Updater long-poll WITHOUT
+        firing the error callback (and without a prior reconnect) leaves
+        ``updater.running == True`` but no updates ever arrive — the bot is
+        permanently deaf while the process stays alive (the silent-wedge
+        incident). This loop independently probes ``getMe()`` on an interval
+        and re-enters the reconnect ladder whenever the Updater is stopped or
+        the probe fails, so recovery no longer depends on an error callback
+        ever firing.
+        """
+        while not self.has_fatal_error:
+            try:
+                INTERVAL = float(os.getenv("HERMES_TELEGRAM_HEARTBEAT_INTERVAL", "90"))
+            except ValueError:
+                INTERVAL = 90.0
+            PROBE_TIMEOUT = 10
+
+            try:
+                await asyncio.sleep(INTERVAL)
+            except asyncio.CancelledError:
+                return
+
+            if self.has_fatal_error:
+                return
+
+            # If a reconnect is already in flight, the existing recovery path
+            # (and its post-reconnect probe) owns liveness — don't double-drive
+            # the ladder from here.
+            if self._polling_error_task and not self._polling_error_task.done():
+                continue
+
+            updater = getattr(self._app, "updater", None) if self._app else None
+            if updater is None:
+                # _app/updater may be transiently None mid-reconnect; skip this
+                # tick rather than exiting the loop entirely.
+                continue
+
+            if not updater.running:
+                logger.warning(
+                    "[%s] Polling heartbeat: updater not running — re-entering reconnect ladder",
+                    self.name,
+                )
+                try:
+                    await self._handle_polling_network_error(
+                        RuntimeError("Updater not running (heartbeat)")
+                    )
+                except Exception as _he:
+                    logger.warning(
+                        "[%s] heartbeat recovery raised: %s", self.name, _he
+                    )
+                continue
+
+            try:
+                await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
+                # A successful probe means the send path is healthy again.
+                self._send_path_degraded = False
+            except asyncio.CancelledError:
+                return
+            except Exception as _e:
+                logger.warning(
+                    "[%s] Polling heartbeat probe failed: %s — re-entering reconnect ladder",
+                    self.name, _e,
+                )
+                try:
+                    await self._handle_polling_network_error(_e)
+                except Exception as _he2:
+                    logger.warning(
+                        "[%s] heartbeat recovery raised: %s", self.name, _he2
+                    )
+
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
@@ -2465,6 +2541,30 @@ class TelegramAdapter(BasePlatformAdapter):
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
 
+            # Always-on polling liveness heartbeat (polling mode only). Opt-out
+            # via HERMES_TELEGRAM_HEARTBEAT_INTERVAL<=0. Detects a silently
+            # wedged long-poll that never fires the error callback.
+            try:
+                _hb = float(os.getenv("HERMES_TELEGRAM_HEARTBEAT_INTERVAL", "90"))
+            except ValueError:
+                _hb = 90.0
+            if _hb > 0 and not getattr(self, "_webhook_mode", False) and not self.has_fatal_error:
+                prev_hb = getattr(self, "_polling_heartbeat_task", None)
+                if prev_hb and not prev_hb.done():
+                    prev_hb.cancel()
+                hb = asyncio.ensure_future(self._polling_heartbeat_loop())
+                self._polling_heartbeat_task = hb
+                self._background_tasks.add(hb)
+
+                def _hb_done(t: "asyncio.Task") -> None:
+                    self._background_tasks.discard(t)
+                    if not t.cancelled() and t.exception() is not None:
+                        logger.error(
+                            "[%s] polling heartbeat died: %r", self.name, t.exception()
+                        )
+
+                hb.add_done_callback(_hb_done)
+
             # Surface the gateway as "Online" in the bot's short description
             # (opt-in via extra.status_indicator). Non-fatal.
             try:
@@ -2523,6 +2623,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        # Stop the always-on polling heartbeat before tearing down the app so it
+        # can't re-enter the reconnect ladder against a shutting-down updater.
+        hb = getattr(self, "_polling_heartbeat_task", None)
+        if hb and not hb.done():
+            hb.cancel()
+        self._polling_heartbeat_task = None
+
         # Mark the bot "Offline" in its short description while the bot's HTTP
         # client is still alive (before app shutdown closes it). Opt-in via
         # extra.status_indicator. Non-fatal. This is the clean-shutdown path;

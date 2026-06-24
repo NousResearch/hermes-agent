@@ -473,3 +473,107 @@ async def test_reconnect_schedules_heartbeat_probe_on_success():
             await t
         except (asyncio.CancelledError, Exception):
             pass
+
+
+# ── Always-on polling heartbeat loop ──────────────────────────────────────
+#
+# These cover _polling_heartbeat_loop — the periodic liveness loop that
+# closes the silent-wedge gap behind the reactive recovery paths. Each test
+# self-terminates by tripping a fatal error after the first iteration so the
+# `while not self.has_fatal_error:` loop exits, and runs under a tight
+# wait_for so a regression that fails to terminate fails fast instead of
+# hanging.
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_recovers_wedged_updater(monkeypatch):
+    """updater.running=True but get_me() raises → recovery handler is called.
+
+    Simulates the silently-wedged long-poll: the Updater still reports
+    running, but the underlying httpx pool is dead so getMe() fails.
+    """
+    monkeypatch.setenv("HERMES_TELEGRAM_HEARTBEAT_INTERVAL", "0.01")
+    adapter = _make_adapter()
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    mock_app.bot.get_me = AsyncMock(side_effect=ConnectionError("pool wedged"))
+    adapter._app = mock_app
+
+    async def _recover(_err):
+        # Trip fatal so the heartbeat loop terminates after one iteration.
+        adapter._set_fatal_error("telegram_network_error", "wedged", retryable=True)
+
+    handler = AsyncMock(side_effect=_recover)
+    adapter._handle_polling_network_error = handler
+
+    await asyncio.wait_for(adapter._polling_heartbeat_loop(), timeout=5)
+
+    handler.assert_awaited()
+    assert isinstance(handler.await_args.args[0], ConnectionError)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_recovers_stopped_updater(monkeypatch):
+    """updater.running=False → recovery handler is called, get_me NOT probed."""
+    monkeypatch.setenv("HERMES_TELEGRAM_HEARTBEAT_INTERVAL", "0.01")
+    adapter = _make_adapter()
+
+    mock_updater = MagicMock()
+    mock_updater.running = False
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    mock_app.bot.get_me = AsyncMock()
+    adapter._app = mock_app
+
+    async def _recover(_err):
+        adapter._set_fatal_error("telegram_network_error", "stopped", retryable=True)
+
+    handler = AsyncMock(side_effect=_recover)
+    adapter._handle_polling_network_error = handler
+
+    await asyncio.wait_for(adapter._polling_heartbeat_loop(), timeout=5)
+
+    handler.assert_awaited()
+    mock_app.bot.get_me.assert_not_called()
+    err = handler.await_args.args[0]
+    assert isinstance(err, RuntimeError)
+    assert "not running" in str(err).lower()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_no_recovery_when_healthy(monkeypatch):
+    """get_me() succeeds → recovery handler is NOT called; degraded flag cleared.
+
+    The healthy path can't trip the fatal flag itself, so we self-terminate by
+    having the probe set it on the first successful call.
+    """
+    monkeypatch.setenv("HERMES_TELEGRAM_HEARTBEAT_INTERVAL", "0.01")
+    adapter = _make_adapter()
+    adapter._send_path_degraded = True
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+
+    async def _ok():
+        # Healthy probe; trip fatal so the loop exits after this iteration.
+        adapter._set_fatal_error("telegram_test_stop", "done", retryable=True)
+        return MagicMock()
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    mock_app.bot.get_me = AsyncMock(side_effect=_ok)
+    adapter._app = mock_app
+
+    handler = AsyncMock()
+    adapter._handle_polling_network_error = handler
+
+    await asyncio.wait_for(adapter._polling_heartbeat_loop(), timeout=5)
+
+    handler.assert_not_awaited()
+    # Probe ran (degraded flag cleared) before the self-terminating fatal trip.
+    assert adapter._send_path_degraded is False

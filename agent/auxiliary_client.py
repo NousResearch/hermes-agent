@@ -3689,7 +3689,18 @@ def resolve_provider_client(
                 "Dropping OpenRouter-format model %r for non-OpenRouter "
                 "auxiliary provider (using %r instead)", model, resolved)
             model = None
-        final_model = model or resolved
+        # When the auto chain successfully resolved a real provider+model,
+        # that model's name MUST win over the pre-clobbered ``model`` value
+        # set at lines 3626-3639 above. Without this precedence, an OAuth
+        # main provider (e.g. ``minimax-oauth``) that fails its own auth
+        # path falls through to the user-configured fallback chain (e.g.
+        # ``opencode-go / deepseek-v4-flash``) — but the auxiliary client
+        # then sends the user's main model name (``MiniMax-M3``) to the
+        # fallback endpoint, which doesn't serve it and returns HTTP 401.
+        # The auto chain's resolved model is already validated against the
+        # provider's accepted-model list; the pre-clobbered ``model`` is
+        # not. Prefer ``resolved`` whenever the chain returned one.
+        final_model = resolved or model
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 

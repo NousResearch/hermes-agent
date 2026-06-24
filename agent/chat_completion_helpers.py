@@ -2609,8 +2609,21 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 pass
             # Rebuild the primary client too — its connection pool
             # may hold dead sockets from the same provider outage.
+            #
+            # Branch on api_mode: anthropic_messages (and bedrock_converse)
+            # keep their primary client on ``_anthropic_client``, NOT
+            # ``self.client`` (the OpenAI SDK client). Calling
+            # _replace_primary_openai_client() in those modes rebuilds the
+            # unused OpenAI client — which fails with "OPENAI_API_KEY must be
+            # set" for non-OpenAI providers (e.g. ZAI/GLM via the Anthropic
+            # endpoint) and, worse, leaves the actually-stale ``_anthropic_client``
+            # untouched so the next retry reuses the dead connection and loops.
+            # Rebuild whichever client the active mode actually streams through.
             try:
-                agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+                if agent.api_mode in ("anthropic_messages", "bedrock_converse"):
+                    agent._rebuild_anthropic_client()
+                else:
+                    agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
             except Exception:
                 pass
             # Reset the timer so we don't kill repeatedly while

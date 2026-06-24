@@ -6,6 +6,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -82,9 +83,16 @@ class SSHEnvironment(BaseEnvironment):
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
-        cmd.extend(["-o", f"ControlPath={self.control_socket}"])
-        cmd.extend(["-o", "ControlMaster=auto"])
-        cmd.extend(["-o", "ControlPersist=300"])
+        # On Windows, Git Bash's SSH does not support Unix domain sockets
+        # for ControlMaster (gets "Connection reset by peer" / "getsockname
+        # failed: Not a socket"). Fall back to no ControlMaster - slightly
+        # slower per-command but actually works.
+        if sys.platform == "win32":
+            cmd.extend(["-o", "ControlMaster=no"])
+        else:
+            cmd.extend(["-o", f"ControlPath={self.control_socket}"])
+            cmd.extend(["-o", "ControlMaster=auto"])
+            cmd.extend(["-o", "ControlPersist=300"])
         cmd.extend(["-o", "BatchMode=yes"])
         cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
         cmd.extend(["-o", "ConnectTimeout=10"])

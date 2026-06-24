@@ -2079,6 +2079,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+
+        # Use a stable cache key (without timestamp) so recurring fires share
+        # the prompt-prefix cache.  The session_id remains unique per fire for
+        # session tracking, but the cache routing uses this stable key (#51395).
+        agent.prompt_cache_key = f"cron_{job_id}"
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,

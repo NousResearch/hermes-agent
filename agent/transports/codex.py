@@ -71,7 +71,10 @@ class ResponsesApiTransport(ProviderTransport):
         params:
             instructions: str — system prompt (extracted from messages[0] if not given)
             reasoning_config: dict | None — {effort, enabled}
-            session_id: str | None — used for prompt_cache_key + xAI conv header
+            session_id: str | None — used for xAI conv header; defaults cache key
+            prompt_cache_key: str | None — stable cache routing key; defaults to
+                session_id.  Recurring cron jobs pass cron_<job_id> so the prompt
+                prefix cache stays warm across fires (#51395).
             max_tokens: int | None — max_output_tokens
             timeout: float | None — per-request timeout forwarded to the SDK
             request_overrides: dict | None — extra kwargs merged in
@@ -212,10 +215,14 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["parallel_tool_calls"] = True
 
         session_id = params.get("session_id")
+        # Allow callers to supply a stable cache key that differs from the
+        # per-fire session_id.  Recurring cron jobs pass cron_<job_id> so the
+        # static prefix stays warm across fires (#51395).
+        cache_key = params.get("prompt_cache_key") or session_id
         # xAI Responses takes prompt_cache_key in extra_body (set further
         # down); GitHub Models opts out of cache-key routing entirely.
-        if not is_github_responses and not is_xai_responses and session_id:
-            kwargs["prompt_cache_key"] = session_id
+        if not is_github_responses and not is_xai_responses and cache_key:
+            kwargs["prompt_cache_key"] = cache_key
 
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort
@@ -284,7 +291,10 @@ class ResponsesApiTransport(ProviderTransport):
             # remain high.  Send session_id / x-client-request-id as HTTP
             # headers while keeping ``prompt_cache_key`` in the body for
             # standard OpenAI routing as a belt-and-braces fallback.
-            cache_scope_id = str(session_id or "").strip()
+            # Use the stable cache_key for cache-scope routing headers.
+            # For cron, this is cron_<job_id> (stable across fires);
+            # for interactive sessions, it equals session_id.
+            cache_scope_id = str(cache_key or "").strip()
             if cache_scope_id:
                 existing_extra_headers = kwargs.get("extra_headers")
                 merged_extra_headers: Dict[str, str] = {}
@@ -326,7 +336,7 @@ class ResponsesApiTransport(ProviderTransport):
             merged_extra_body: Dict[str, Any] = {}
             if isinstance(existing_extra_body, dict):
                 merged_extra_body.update(existing_extra_body)
-            merged_extra_body.setdefault("prompt_cache_key", session_id)
+            merged_extra_body.setdefault("prompt_cache_key", cache_key)
             kwargs["extra_body"] = merged_extra_body
 
         return kwargs

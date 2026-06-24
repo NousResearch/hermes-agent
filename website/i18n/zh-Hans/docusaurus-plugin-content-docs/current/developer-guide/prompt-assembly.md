@@ -128,7 +128,7 @@ def load_soul_md() -> Optional[str]:
         return None
     content = soul_path.read_text(encoding="utf-8").strip()
     content = _scan_context_content(content, "SOUL.md")  # Security scan
-    content = _truncate_content(content, "SOUL.md")       # Cap at 20k chars
+    content = _truncate_content(content, "SOUL.md")       # Cap defaults to 20k chars, configurable
     return content
 ```
 

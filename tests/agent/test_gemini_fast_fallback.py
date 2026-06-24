@@ -22,7 +22,7 @@ def _pool(entries: int = 2):
 def test_cloudcode_provider_skips_pool_rotation():
     assert _pool_may_recover_from_rate_limit(
         _pool(entries=3),
-        provider="google-gemini-cli",
+        provider="auto",
         base_url="cloudcode-pa://google",
     ) is False
 

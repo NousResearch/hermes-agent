@@ -5,6 +5,7 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
@@ -126,12 +127,12 @@ interface FilesystemTabProps extends FileTreeBodyProps {
   onRefresh: () => void
 }
 
-// Sidebar palette + hover-reveal: refresh tracks label hover; collapse-all
-// stays visible while any folder is expanded.
+// Sidebar palette + hover-reveal: header actions stay reachable while moving
+// from the project label to the action buttons.
 const HEADER_ACTION_CLASS =
   'text-sidebar-foreground/70 hover:bg-sidebar-accent! hover:text-sidebar-accent-foreground! focus-visible:ring-sidebar-ring'
 
-const HEADER_ACTION_LABEL_REVEAL = `${HEADER_ACTION_CLASS} pointer-events-none opacity-0 transition-opacity focus-visible:pointer-events-auto focus-visible:opacity-100 peer-focus-visible/project-label:pointer-events-auto peer-focus-visible/project-label:opacity-100 peer-hover/project-label:pointer-events-auto peer-hover/project-label:opacity-100`
+const HEADER_ACTION_LABEL_REVEAL = `${HEADER_ACTION_CLASS} pointer-events-none opacity-0 transition-opacity focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100`
 
 function FilesystemTab({
   canCollapse,
@@ -158,7 +159,7 @@ function FilesystemTab({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <RightSidebarSectionHeader>
-        <div className="peer/project-label flex min-w-0 flex-1">
+        <div className="flex min-w-0 flex-1">
           <button
             className="flex w-full min-w-0 items-center rounded-md text-left hover:text-(--ui-text-secondary)"
             onClick={() => void onChangeFolder()}
@@ -167,35 +168,41 @@ function FilesystemTab({
             <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
           </button>
         </div>
-        <Button
-          aria-label={r.refreshTree}
-          className={HEADER_ACTION_LABEL_REVEAL}
-          disabled={!hasCwd || loading}
-          onClick={onRefresh}
-          size="icon-xs"
-          variant="ghost"
-        >
-          <Codicon name="refresh" size="0.8125rem" spinning={loading} />
-        </Button>
-        <Button
-          aria-label={r.openFolder}
-          className={HEADER_ACTION_CLASS}
-          onClick={() => void onChangeFolder()}
-          size="icon-xs"
-          variant="ghost"
-        >
-          <Codicon name="folder-opened" size="0.8125rem" />
-        </Button>
-        <Button
-          aria-label={r.collapseAll}
-          className={cn(HEADER_ACTION_CLASS, !canCollapse && 'pointer-events-none opacity-0')}
-          disabled={!hasCwd || !canCollapse}
-          onClick={onCollapseAll}
-          size="icon-xs"
-          variant="ghost"
-        >
-          <Codicon name="collapse-all" size="0.8125rem" />
-        </Button>
+        <Tip label={r.refreshTree} side="left">
+          <Button
+            aria-label={r.refreshTree}
+            className={HEADER_ACTION_LABEL_REVEAL}
+            disabled={!hasCwd || loading}
+            onClick={onRefresh}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Codicon name="refresh" size="0.8125rem" spinning={loading} />
+          </Button>
+        </Tip>
+        <Tip label={r.openFolder} side="left">
+          <Button
+            aria-label={r.openFolder}
+            className={HEADER_ACTION_CLASS}
+            onClick={() => void onChangeFolder()}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Codicon name="folder-opened" size="0.8125rem" />
+          </Button>
+        </Tip>
+        <Tip label={r.collapseAll} side="left">
+          <Button
+            aria-label={r.collapseAll}
+            className={cn(HEADER_ACTION_CLASS, !canCollapse && 'pointer-events-none opacity-0')}
+            disabled={!hasCwd || !canCollapse}
+            onClick={onCollapseAll}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Codicon name="collapse-all" size="0.8125rem" />
+          </Button>
+        </Tip>
       </RightSidebarSectionHeader>
       <FileTreeBody
         collapseNonce={collapseNonce}
@@ -216,7 +223,7 @@ function FilesystemTab({
 }
 
 export function RightSidebarSectionHeader({ children }: { children: ReactNode }) {
-  return <div className="flex h-7 shrink-0 items-center px-2.5">{children}</div>
+  return <div className="group/project-header flex h-7 shrink-0 items-center px-2.5">{children}</div>
 }
 
 interface FileTreeBodyProps {

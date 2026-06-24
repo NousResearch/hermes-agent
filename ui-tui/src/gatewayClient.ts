@@ -307,6 +307,13 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
+  publishLocalEvent(ev: GatewayEvent) {
+    const frame = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: ev })
+
+    this.mirrorEventToSidecar(frame)
+    this.publish(ev)
+  }
+
   private handleWebSocketFrame(raw: unknown) {
     const text = asWireText(raw)
 
@@ -337,6 +344,9 @@ export class GatewayClient extends EventEmitter {
     const pyPath = env.PYTHONPATH?.trim()
 
     env.PYTHONPATH = pyPath ? `${root}${delimiter}${pyPath}` : root
+    // Tell the gateway child where the Hermes source root is so its import
+    // guard can force it ahead of any same-named package in the launch cwd.
+    env.HERMES_PYTHON_SRC_ROOT = root
     this.startReadyTimer(python, cwd)
     this.proc = spawn(python, ['-m', 'tui_gateway.entry'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
     this.lifecycle(`[lifecycle] spawned gateway child ${describeChild(this.proc)} python=${python} cwd=${cwd}`)

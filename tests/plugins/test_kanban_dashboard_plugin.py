@@ -2252,3 +2252,16 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+def test_dashboard_dependency_chips_open_linked_tasks():
+    """Parent/child dependency chips must navigate to the linked task drawer."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert "function DepChip" in js
+    assert "hermes-kanban-dep-chip-link" in js
+    assert "onOpen: setSelectedTaskId" in js
+    assert "onOpen: props.onOpen" in js
+    assert "hermes-kanban-dep-chip-link" in css

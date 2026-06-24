@@ -5779,6 +5779,66 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
         return None
 
 
+def _dashboard_systemd_unit_for_pid(pid: int) -> str | None:
+    """Return the systemd service unit owning *pid*, when cheaply detectable.
+
+    Operators commonly run ``hermes dashboard`` under a system service with
+    ``Restart=always`` so it survives reboots and updates.  If we kill that PID
+    and also spawn a detached copy from ``/proc/<pid>/cmdline``, the service and
+    the detached process race for the same port.  Detecting the owning unit lets
+    the update path restart the service instead of creating an unmanaged clone.
+    """
+    if sys.platform == "win32":
+        return None
+    try:
+        with open(f"/proc/{pid}/cgroup", "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                # cgroup v2: 0::/system.slice/hermes-dashboard.service
+                # cgroup v1/systemd: 1:name=systemd:/system.slice/foo.service
+                path = line.rstrip("\n").split(":", 2)[-1]
+                if not path.startswith("/system.slice/"):
+                    continue
+                for part in path.split("/"):
+                    if part.endswith(".service"):
+                        return part
+    except OSError:
+        return None
+    return None
+
+
+def _restart_dashboard_systemd_units(units: list[str]) -> bool:
+    """Restart systemd-managed dashboards.  Return True if any restart failed."""
+    unique_units = list(dict.fromkeys(units))
+    if not unique_units:
+        return False
+
+    failed: list[tuple[str, str]] = []
+    restarted: list[str] = []
+    for unit in unique_units:
+        try:
+            result = subprocess.run(
+                ["systemctl", "restart", unit],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if result.returncode == 0:
+                restarted.append(unit)
+            else:
+                failed.append((unit, (result.stderr or result.stdout or "").strip()))
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            failed.append((unit, str(exc)))
+
+    if restarted:
+        print("  Restarted dashboard systemd service(s):")
+        for unit in restarted:
+            print(f"    {unit}")
+    for unit, err_msg in failed:
+        print(f"  ✗ failed to restart dashboard systemd service {unit}: {err_msg}")
+    return bool(failed)
+
+
 def _restart_dashboard_processes(commands: list[list[str]]) -> bool:
     """Best-effort restart of dashboards stopped during ``hermes update``.
 
@@ -6003,8 +6063,13 @@ def _kill_stale_dashboard_processes(
         return
 
     restart_commands_by_pid: dict[int, list[str]] = {}
+    restart_units_by_pid: dict[int, str] = {}
     if restart:
         for pid in pids:
+            unit = _dashboard_systemd_unit_for_pid(pid)
+            if unit:
+                restart_units_by_pid[pid] = unit
+                continue
             cmdline = _dashboard_cmdline_for_pid(pid)
             if cmdline:
                 restart_commands_by_pid[pid] = cmdline
@@ -6079,16 +6144,27 @@ def _kill_stale_dashboard_processes(
         print(f"    ✗ failed to stop PID {pid}: {err_msg}")
 
     if killed:
+        restart_units = [
+            restart_units_by_pid[pid]
+            for pid in killed
+            if pid in restart_units_by_pid
+        ]
         restart_commands = [
             restart_commands_by_pid[pid]
             for pid in killed
             if pid in restart_commands_by_pid
         ]
-        unrecovered_killed = [pid for pid in killed if pid not in restart_commands_by_pid]
+        recovered_pids = set(restart_units_by_pid) | set(restart_commands_by_pid)
+        unrecovered_killed = [pid for pid in killed if pid not in recovered_pids]
         restart_failed = False
+        if restart_units:
+            restart_failed = _restart_dashboard_systemd_units(restart_units) or restart_failed
         if restart_commands:
-            restart_failed = _restart_dashboard_processes(restart_commands)
-        if unrecovered_killed or not restart_commands or restart_failed:
+            restart_failed = _restart_dashboard_processes(restart_commands) or restart_failed
+        if not restart:
+            print("  Restart the dashboard when you're ready:")
+            print("    hermes dashboard --port <port>")
+        elif unrecovered_killed or (not restart_units and not restart_commands) or restart_failed:
             print("  Restart any dashboard not auto-restarted when you're ready:")
             print("    hermes dashboard --port <port>")
 

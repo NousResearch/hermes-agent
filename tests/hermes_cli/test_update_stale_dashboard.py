@@ -16,13 +16,15 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, mock_open
 
 import pytest
 
 from hermes_cli.main import (
+    _dashboard_systemd_unit_for_pid,
     _find_stale_dashboard_pids,
     _kill_stale_dashboard_processes,
+    _restart_dashboard_systemd_units,
     _warn_stale_dashboard_processes,  # back-compat alias
 )
 
@@ -45,16 +47,20 @@ def _refresh_bindings_against_live_module():
     ordering within the worker.  The fix lives in the test module because
     the two pollutants above are load-bearing for their own tests.
     """
+    global _dashboard_systemd_unit_for_pid
     global _find_stale_dashboard_pids
     global _kill_stale_dashboard_processes
+    global _restart_dashboard_systemd_units
     global _warn_stale_dashboard_processes
 
     live = sys.modules.get("hermes_cli.main")
     if live is None:
         live = importlib.import_module("hermes_cli.main")
 
+    _dashboard_systemd_unit_for_pid = live._dashboard_systemd_unit_for_pid
     _find_stale_dashboard_pids = live._find_stale_dashboard_pids
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
+    _restart_dashboard_systemd_units = live._restart_dashboard_systemd_units
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
     yield
 
@@ -284,7 +290,7 @@ class TestKillStaleDashboardPosix:
         assert "Stopping 2 dashboard" in out
         assert "✓ stopped PID 12345" in out
         assert "✓ stopped PID 12346" in out
-        assert "Restart any dashboard not auto-restarted" in out
+        assert "Restart the dashboard" in out
 
     def test_sigkill_fallback_for_survivors(self, capsys):
         """If a process survives SIGTERM + the grace window, SIGKILL is sent."""
@@ -439,6 +445,99 @@ class TestKillStaleDashboardPosix:
         out = capsys.readouterr().out
         assert "Restart any dashboard not auto-restarted" in out
         assert "hermes dashboard --port <port>" in out
+    def test_restart_true_uses_systemd_unit_instead_of_detached_clone(self, capsys):
+        """Systemd-managed dashboards should be restarted as services, not
+        cloned with subprocess.Popen from the recovered argv.
+        """
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[12345]), \
+             patch("hermes_cli.main._dashboard_systemd_unit_for_pid",
+                   return_value="hermes-dashboard.service"), \
+             patch("hermes_cli.main._dashboard_cmdline_for_pid") as mock_cmdline, \
+             patch("hermes_cli.main._restart_dashboard_systemd_units",
+                   return_value=False) as mock_systemd_restart, \
+             patch("hermes_cli.main._restart_dashboard_processes") as mock_process_restart, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart=True)
+
+        mock_cmdline.assert_not_called()
+        mock_process_restart.assert_not_called()
+        mock_systemd_restart.assert_called_once_with(["hermes-dashboard.service"])
+        out = capsys.readouterr().out
+        assert "Restart any dashboard not auto-restarted" not in out
+
+    def test_restart_true_prints_manual_hint_when_systemd_restart_fails(self, capsys):
+        """A failed systemd restart must still leave the operator with a
+        manual fallback hint.
+        """
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[12345]), \
+             patch("hermes_cli.main._dashboard_systemd_unit_for_pid",
+                   return_value="hermes-dashboard.service"), \
+             patch("hermes_cli.main._restart_dashboard_systemd_units",
+                   return_value=True), \
+             patch("hermes_cli.main._restart_dashboard_processes") as mock_process_restart, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(restart=True)
+
+        mock_process_restart.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Restart any dashboard not auto-restarted" in out
+        assert "hermes dashboard --port <port>" in out
+
+
+class TestDashboardSystemdDetection:
+    """Systemd helpers for managed dashboard services."""
+
+    def test_system_slice_service_is_detected_from_cgroup_v2(self):
+        data = "0::/system.slice/hermes-dashboard.service\n"
+        with patch("builtins.open", mock_open(read_data=data)):
+            assert _dashboard_systemd_unit_for_pid(12345) == "hermes-dashboard.service"
+
+    def test_non_system_slice_is_ignored(self):
+        data = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-dashboard.service\n"
+        with patch("builtins.open", mock_open(read_data=data)):
+            assert _dashboard_systemd_unit_for_pid(12345) is None
+
+    def test_restart_systemd_units_deduplicates_units(self, capsys):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            assert _restart_dashboard_systemd_units([
+                "hermes-dashboard.service",
+                "hermes-dashboard.service",
+            ]) is False
+
+        mock_run.assert_called_once_with(
+            ["systemctl", "restart", "hermes-dashboard.service"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert "Restarted dashboard systemd service" in capsys.readouterr().out
+
+    def test_restart_systemd_units_reports_failure(self, capsys):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1, stdout="", stderr="unit failed"
+            )
+            assert _restart_dashboard_systemd_units([
+                "hermes-dashboard.service",
+            ]) is True
+
+        out = capsys.readouterr().out
+        assert "failed to restart dashboard systemd service hermes-dashboard.service" in out
+        assert "unit failed" in out
 
 
 class TestKillStaleDashboardWindows:

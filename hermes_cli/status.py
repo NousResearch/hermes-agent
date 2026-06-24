@@ -1,4 +1,4 @@
-"""
+﻿"""
 Status command for hermes CLI.
 
 Shows the status of all Hermes Agent components.
@@ -6,6 +6,7 @@ Shows the status of all Hermes Agent components.
 
 import os
 import sys
+import json as _json
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 from pathlib import Path
 
@@ -86,13 +87,278 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+def _privacy_status(config: dict) -> dict:
+    privacy = config.get("privacy", {}) if isinstance(config, dict) else {}
+    if not isinstance(privacy, dict):
+        privacy = {}
+    mode = str(privacy.get("mode") or "").strip().lower()
+    local_only = bool(privacy.get("local_only")) or mode in {"local", "local_only", "local-only"}
+    allowed = privacy.get("allowed_providers")
+    disabled = privacy.get("disabled_toolsets")
+    return {
+        "local_only": local_only,
+        "mode": "local_only" if local_only else "standard",
+        "allowed_providers": [
+            str(item) for item in allowed
+        ] if isinstance(allowed, list) else [],
+        "disabled_toolsets": [
+            str(item) for item in disabled
+        ] if isinstance(disabled, list) else [],
+    }
+
+
 from hermes_constants import is_termux as _is_termux
+
+
+_API_KEY_REFS: dict[str, str | tuple[str, ...]] = {
+    "OpenRouter": "OPENROUTER_API_KEY",
+    "OpenAI": "OPENAI_API_KEY",
+    "Anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
+    "Google / Gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+    "DeepSeek": "DEEPSEEK_API_KEY",
+    "xAI / Grok": "XAI_API_KEY",
+    "NVIDIA NIM": "NVIDIA_API_KEY",
+    "Z.AI / GLM": "GLM_API_KEY",
+    "Kimi": "KIMI_API_KEY",
+    "StepFun Step Plan": "STEPFUN_API_KEY",
+    "MiniMax": "MINIMAX_API_KEY",
+    "MiniMax-CN": "MINIMAX_CN_API_KEY",
+    "Firecrawl": "FIRECRAWL_API_KEY",
+    "Tavily": "TAVILY_API_KEY",
+    "Browser Use": "BROWSER_USE_API_KEY",
+    "Browserbase": "BROWSERBASE_API_KEY",
+    "FAL": "FAL_KEY",
+    "ElevenLabs": "ELEVENLABS_API_KEY",
+    "GitHub": "GITHUB_TOKEN",
+}
+
+
+_MESSAGING_PLATFORM_REFS = {
+    "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
+    "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
+    "WhatsApp": ("WHATSAPP_ENABLED", None),
+    "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
+    "Slack": ("SLACK_BOT_TOKEN", None),
+    "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
+    "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
+    "DingTalk": ("DINGTALK_CLIENT_ID", None),
+    "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
+    "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
+    "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None),
+    "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
+    "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
+    "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
+    "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL"),
+}
+
+
+def _resolve_env(env_ref) -> str:
+    """Return first non-empty env var value from a str or tuple of names."""
+    if isinstance(env_ref, tuple):
+        for candidate in env_ref:
+            v = get_env_value(candidate) or ""
+            if v:
+                return v
+        return ""
+    return get_env_value(env_ref) or ""
+
+
+def _env_ref_names(env_ref) -> list[str]:
+    return list(env_ref) if isinstance(env_ref, tuple) else [env_ref]
+
+
+def build_status_report(args) -> dict:
+    """Build machine-readable status without exposing secret values."""
+    deep = bool(getattr(args, "deep", False))
+    env_path = get_env_path()
+    try:
+        config = load_config()
+    except Exception as exc:
+        config = {}
+        config_error = str(exc)
+    else:
+        config_error = None
+
+    report: dict = {
+        "schema_version": 1,
+        "product": "Hermes Agent",
+        "environment": {
+            "project": str(PROJECT_ROOT),
+            "python": sys.version.split()[0],
+            "env_file": {"path": str(env_path), "exists": env_path.exists()},
+            "home": str(get_hermes_home()),
+        },
+        "model": {
+            "configured": _configured_model_label(config),
+            "provider": _effective_provider_label(),
+        },
+        "privacy": _privacy_status(config),
+        "api_keys": [],
+        "auth_providers": {},
+        "terminal": {},
+        "messaging_platforms": [],
+        "gateway": {},
+        "cron": {},
+        "sessions": {},
+        "deep_checks": {},
+    }
+    if config_error:
+        report["config_error"] = config_error
+
+    for name, env_ref in _API_KEY_REFS.items():
+        value = _resolve_env(env_ref)
+        report["api_keys"].append({
+            "name": name,
+            "env_vars": _env_ref_names(env_ref),
+            "configured": bool(value),
+            "redacted": True,
+        })
+
+    try:
+        from hermes_cli.auth import (
+            get_nous_auth_status,
+            get_codex_auth_status,
+            get_qwen_auth_status,
+            get_minimax_oauth_auth_status,
+            get_xai_oauth_auth_status,
+        )
+        auth_statuses = {
+            "nous": get_nous_auth_status() or {},
+            "codex": get_codex_auth_status() or {},
+            "qwen": get_qwen_auth_status() or {},
+            "minimax": get_minimax_oauth_auth_status() or {},
+            "xai": get_xai_oauth_auth_status() or {},
+        }
+    except Exception as exc:
+        auth_statuses = {}
+        report["auth_error"] = str(exc)
+    for provider, status in auth_statuses.items():
+        report["auth_providers"][provider] = {
+            "logged_in": bool(status.get("logged_in")),
+            "error": status.get("error"),
+            "metadata_present": sorted(
+                key for key in status
+                if key not in {"api_key", "access_token", "refresh_token", "token"}
+            ),
+        }
+
+    terminal_cfg = config.get("terminal", {}) if isinstance(config.get("terminal"), dict) else {}
+    terminal_env = os.getenv("TERMINAL_ENV", "") or terminal_cfg.get("backend", "local")
+    report["terminal"] = {
+        "backend": terminal_env,
+        "sudo_enabled": bool(os.getenv("SUDO_PASSWORD", "")),
+    }
+
+    for name, (token_var, home_var) in _MESSAGING_PLATFORM_REFS.items():
+        home_channel = os.getenv(home_var, "") if home_var else ""
+        if not home_channel and home_var == "QQBOT_HOME_CHANNEL":
+            home_channel = os.getenv("QQ_HOME_CHANNEL", "")
+        report["messaging_platforms"].append({
+            "name": name,
+            "token_env": token_var,
+            "configured": bool(os.getenv(token_var, "")),
+            "home_channel_configured": bool(home_channel),
+        })
+
+    try:
+        from gateway.platform_registry import platform_registry
+        for entry in platform_registry.plugin_entries():
+            report["messaging_platforms"].append({
+                "name": entry.label,
+                "plugin": True,
+                "configured": bool(entry.check_fn()),
+            })
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.gateway import get_gateway_runtime_snapshot
+
+        snapshot = get_gateway_runtime_snapshot()
+        report["gateway"] = {
+            "running": bool(snapshot.running),
+            "manager": snapshot.manager,
+            "pids": list(snapshot.gateway_pids),
+            "service_installed": bool(snapshot.service_installed),
+            "service_running": bool(snapshot.service_running),
+            "service_process_mismatch": bool(snapshot.has_process_service_mismatch),
+        }
+    except Exception as exc:
+        report["gateway"] = {
+            "running": None,
+            "manager": "termux/manual" if _is_termux() else "unknown",
+            "error": str(exc),
+        }
+
+    jobs_file = get_hermes_home() / "cron" / "jobs.json"
+    if jobs_file.exists():
+        try:
+            data = _json.loads(jobs_file.read_text(encoding="utf-8"))
+            jobs = data.get("jobs", [])
+            report["cron"] = {
+                "jobs_file": str(jobs_file),
+                "total": len(jobs),
+                "active": len([j for j in jobs if j.get("enabled", True)]),
+            }
+        except Exception as exc:
+            report["cron"] = {"jobs_file": str(jobs_file), "error": str(exc)}
+    else:
+        report["cron"] = {"jobs_file": str(jobs_file), "total": 0, "active": 0}
+
+    sessions_file = get_hermes_home() / "sessions" / "sessions.json"
+    if sessions_file.exists():
+        try:
+            data = _json.loads(sessions_file.read_text(encoding="utf-8"))
+            report["sessions"] = {
+                "sessions_file": str(sessions_file),
+                "active": len(data),
+            }
+        except Exception as exc:
+            report["sessions"] = {"sessions_file": str(sessions_file), "error": str(exc)}
+    else:
+        report["sessions"] = {"sessions_file": str(sessions_file), "active": 0}
+
+    if deep:
+        openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+        if openrouter_key:
+            try:
+                import httpx
+                response = httpx.get(
+                    OPENROUTER_MODELS_URL,
+                    headers={"Authorization": f"Bearer {openrouter_key}"},
+                    timeout=10,
+                )
+                report["deep_checks"]["openrouter"] = {
+                    "reachable": response.status_code == 200,
+                    "status_code": response.status_code,
+                }
+            except Exception as exc:
+                report["deep_checks"]["openrouter"] = {
+                    "reachable": False,
+                    "error": str(exc),
+                }
+        try:
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex(("127.0.0.1", 18789))
+            sock.close()
+            report["deep_checks"]["gateway_port_18789"] = {
+                "in_use": result == 0,
+            }
+        except OSError as exc:
+            report["deep_checks"]["gateway_port_18789"] = {"error": str(exc)}
+
+    return report
 
 
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
     deep = getattr(args, 'deep', False)
+    if getattr(args, "json", False):
+        print(_json.dumps(build_status_report(args), indent=2, sort_keys=True))
+        return
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
@@ -117,6 +383,8 @@ def show_status(args):
 
     print(f"  Model:        {_configured_model_label(config)}")
     print(f"  Provider:     {_effective_provider_label()}")
+    privacy_status = _privacy_status(config)
+    print(f"  Privacy:      {privacy_status['mode']}")
 
     # =========================================================================
     # API Keys
@@ -344,7 +612,7 @@ def show_status(args):
         print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
         message = format_nous_portal_entitlement_message(
             nous_account_info,
-            capability="managed web, image, TTS, STT, browser, and Modal tools",
+            capability="managed web, image, TTS, browser, and Modal tools",
         )
         if message:
             for line in message.splitlines():

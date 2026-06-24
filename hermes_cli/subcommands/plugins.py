@@ -91,4 +91,37 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         "disable", help="Disable a plugin without removing it"
     )
     plugins_disable.add_argument("name", help="Plugin name to disable")
+
+    plugins_validate = plugins_subparsers.add_parser(
+        "validate", help="Validate a plugin extension against schema and rules"
+    )
+    plugins_validate.add_argument(
+        "extension_dir",
+        help="Path to the extension directory to validate",
+    )
+    plugins_validate.add_argument(
+        "cmd",
+        nargs="?",
+        help="Optional command to run from the extension directory",
+    )
+    plugins_validate.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable validation result",
+    )
+
+    plugins_registry_cache = plugins_subparsers.add_parser(
+        "registry-cache", help="Manage plugin registry cache"
+    )
+    plugins_registry_cache.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Rebuild the local cache before printing it",
+    )
+    plugins_registry_cache.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable registry cache JSON",
+    )
+
     plugins_parser.set_defaults(func=cmd_plugins)

@@ -5,7 +5,8 @@ import {
   parseMarkdownIntoBlocks,
   type StreamdownTextComponents,
   StreamdownTextPrimitive,
-  type SyntaxHighlighterProps
+  type SyntaxHighlighterProps,
+  tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import { code } from '@streamdown/code'
 import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
@@ -28,7 +29,6 @@ import {
   mediaStreamUrl
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
-import { tailBoundedRemend } from '@/lib/remend-tail'
 import { cn } from '@/lib/utils'
 
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
@@ -48,8 +48,8 @@ import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } fro
 const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
-// flush) with a tail-bounded repair — see lib/remend-tail.ts. Must stay
-// module-scope so the prop identity is stable across renders.
+// flush) with a tail-bounded repair. Must stay module-scope so the prop
+// identity is stable across renders.
 function preprocessWithTailRepair(text: string): string {
   try {
     return tailBoundedRemend(preprocessMarkdown(text))

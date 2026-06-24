@@ -37,6 +37,10 @@ optional_env:
     description: "Delay between long-poll requests after each response (default: 1)"
     prompt: "Poll interval seconds"
     password: false
+  - name: ZALO_CONNECTION_MODE
+    description: "Connection mode: auto, polling, or webhook (default: auto)."
+    prompt: "Connection mode"
+    password: false
   - name: ZALO_PARSE_MODE
     description: "Text formatting mode for sendMessage: markdown, html, or blank for plain text"
     prompt: "Zalo parse mode"
@@ -56,6 +60,10 @@ optional_env:
   - name: ZALO_WEBHOOK_URL
     description: "Public HTTPS webhook URL configured in Zalo Bot Manager"
     prompt: "Webhook public URL"
+    password: false
+  - name: ZALO_WEBHOOK_PUBLIC_URL
+    description: "Alias for ZALO_WEBHOOK_URL, accepted for compatibility with alternate Zalo setup guides"
+    prompt: "Webhook public URL alias"
     password: false
   - name: ZALO_WEBHOOK_SECRET
     description: "Secret token expected in the X-Bot-Api-Secret-Token webhook header"
@@ -80,6 +88,10 @@ optional_env:
   - name: ZALO_DELETE_WEBHOOK_ON_POLLING_START
     description: "When using long polling, call deleteWebhook on startup to clear a stale Bot Platform webhook (default: false)"
     prompt: "Delete stale webhook before polling? (true/false)"
+    password: false
+  - name: ZALO_DELETE_WEBHOOK_ON_DISCONNECT
+    description: "Call deleteWebhook when the adapter disconnects from webhook mode (default: false)"
+    prompt: "Delete webhook on disconnect? (true/false)"
     password: false
   - name: ZALO_URL_INTAKE_PUBLIC_BASE
     description: "Public HTTPS base URL for the URL intake page"

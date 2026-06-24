@@ -28,7 +28,7 @@ Inbound text, image, voice, sticker, document, and link-preview events are norma
 
 ## Step 2: Choose long polling or webhook mode
 
-For local development, use long polling. Hermes calls `getUpdates` and no public URL is required.
+For local development, use long polling. Hermes calls `getUpdates` and no public URL is required. The default `ZALO_CONNECTION_MODE=auto` uses webhook mode when a webhook URL and secret are present, and polling otherwise. Set `ZALO_CONNECTION_MODE=polling` or `ZALO_CONNECTION_MODE=webhook` when you want to force one mode.
 
 For production, use webhook mode. Expose the local webhook listener through a stable HTTPS URL such as a reverse proxy, Cloudflare Tunnel, or another tunnel with a fixed hostname.
 
@@ -54,6 +54,7 @@ ZALO_ALLOWED_USERS=USER_ID_1,USER_ID_2
 ZALO_DM_ONLY=true
 
 # Long polling defaults
+ZALO_CONNECTION_MODE=auto
 ZALO_POLL_TIMEOUT_SECONDS=25
 ZALO_POLL_INTERVAL_SECONDS=1
 # Optional: clear a stale webhook before polling.
@@ -61,11 +62,14 @@ ZALO_POLL_INTERVAL_SECONDS=1
 
 # Optional webhook mode
 ZALO_WEBHOOK_URL=https://your-public-host.example.com/zalo/webhook
+# Alias accepted for compatibility with earlier Zalo adapter docs:
+# ZALO_WEBHOOK_PUBLIC_URL=https://your-public-host.example.com/zalo/webhook
 ZALO_WEBHOOK_SECRET=generate-a-long-random-secret-8-to-256-chars
 ZALO_WEBHOOK_HOST=127.0.0.1
 ZALO_WEBHOOK_PORT=18787
 ZALO_WEBHOOK_PATH=/zalo/webhook
 # ZALO_WEBHOOK_AUTO_REGISTER=true
+# ZALO_DELETE_WEBHOOK_ON_DISCONNECT=false
 
 # Optional cron / notification target
 ZALO_HOME_CHANNEL=USER_OR_CHAT_ID
@@ -101,6 +105,10 @@ ZALO_URL_INTAKE_PENDING_FILE=/var/lib/hermes/zalo-url-intake/pending.json
 ```
 
 When Zalo delivers an unsupported/no-content event, the adapter can include an instruction for the agent to send the user to the intake page. The next inbound Zalo message from the same chat includes the submitted URL in the session context.
+
+## Relationship to other Zalo work
+
+This adapter uses the official Zalo Bot Platform API and is packaged as a bundled platform plugin. It is different from Zalo personal-account bridges such as zca-js/HZCA-style automation, which use unofficial personal-account sessions and carry different account-policy risk. It is also intentionally narrower than older core-adapter proposals: the plugin path keeps Zalo self-contained while still getting gateway setup, allowlists, cron delivery, status, config UI entries, and system-prompt hints through the platform registry.
 
 ## Troubleshooting
 

@@ -49,13 +49,15 @@ class TestConfig:
         monkeypatch.setenv("ZALO_ALLOW_ALL_USERS", "false")
         monkeypatch.setenv("ZALO_DM_ONLY", "true")
         monkeypatch.setenv("ZALO_SUPPRESS_NOISY_STATUS", "false")
-        monkeypatch.setenv("ZALO_WEBHOOK_URL", "https://bot.example.test/zalo")
+        monkeypatch.setenv("ZALO_CONNECTION_MODE", "webhook")
+        monkeypatch.setenv("ZALO_WEBHOOK_PUBLIC_URL", "https://bot.example.test/zalo")
         monkeypatch.setenv("ZALO_WEBHOOK_SECRET", "secret")
         monkeypatch.setenv("ZALO_WEBHOOK_PATH", "zalo-hook")
         monkeypatch.setenv("ZALO_WEBHOOK_HOST", "0.0.0.0")
         monkeypatch.setenv("ZALO_WEBHOOK_PORT", "18080")
         monkeypatch.setenv("ZALO_WEBHOOK_AUTO_REGISTER", "yes")
         monkeypatch.setenv("ZALO_DELETE_WEBHOOK_ON_POLLING_START", "true")
+        monkeypatch.setenv("ZALO_DELETE_WEBHOOK_ON_DISCONNECT", "true")
 
         seeded = _env_enablement()
 
@@ -66,6 +68,7 @@ class TestConfig:
             "allow_all_users": False,
             "dm_only": True,
             "suppress_noisy_status": False,
+            "connection_mode": "webhook",
             "webhook_url": "https://bot.example.test/zalo",
             "webhook_secret": "secret",
             "webhook_path": "zalo-hook",
@@ -73,6 +76,7 @@ class TestConfig:
             "webhook_port": 18080,
             "webhook_auto_register": True,
             "delete_webhook_on_polling_start": True,
+            "delete_webhook_on_disconnect": True,
         }
 
     def test_adapter_defaults_to_official_api_base(self, monkeypatch):
@@ -81,6 +85,18 @@ class TestConfig:
         adapter = ZaloAdapter(PlatformConfig(enabled=True, extra={"bot_token": "token"}))
 
         assert adapter.api_base == ZALO_API_BASE
+
+    def test_connection_mode_polling_overrides_webhook_alias(self, monkeypatch):
+        monkeypatch.setenv("ZALO_CONNECTION_MODE", "polling")
+        monkeypatch.setenv("ZALO_WEBHOOK_PUBLIC_URL", "https://bot.example.test/zalo")
+        monkeypatch.setenv("ZALO_WEBHOOK_SECRET", "12345678")
+
+        adapter = ZaloAdapter(PlatformConfig(enabled=True, extra={"bot_token": "token"}))
+
+        assert adapter.connection_mode == "polling"
+        assert adapter.webhook_url == "https://bot.example.test/zalo"
+        assert adapter._webhook_enabled is False
+        assert adapter._webhook_config_incomplete is False
 
 
 class TestStatusFiltering:
@@ -141,6 +157,59 @@ class TestHttp:
         assert exc_info.value.retryable is True
         assert "rate limited" in exc_info.value.description
 
+    def test_poll_backoff_has_capped_jitter(self, monkeypatch):
+        adapter = ZaloAdapter(PlatformConfig(enabled=True, extra={"bot_token": "token"}))
+        monkeypatch.setattr(_zalo.random, "random", lambda: 1.0)
+
+        assert adapter._poll_backoff_sleep(0) == pytest.approx(1.25)
+        assert adapter._poll_backoff_sleep(1) == pytest.approx(2.5)
+        assert adapter._poll_backoff_sleep(99) == pytest.approx(37.5)
+
+    @pytest.mark.asyncio
+    async def test_send_image_uses_native_send_photo(self):
+        adapter = ZaloAdapter(PlatformConfig(enabled=True, extra={"bot_token": "token"}))
+        calls = []
+
+        async def fake_api(method, payload):
+            calls.append((method, payload))
+            return {"ok": True, "result": {"message_id": "photo-1"}}
+
+        adapter._api = fake_api
+
+        result = await adapter.send_image("chat-1", "https://cdn.example/image.jpg", "caption")
+
+        assert result.success is True
+        assert result.message_id == "photo-1"
+        assert calls == [
+            (
+                "sendPhoto",
+                {
+                    "chat_id": "chat-1",
+                    "photo": "https://cdn.example/image.jpg",
+                    "caption": "caption",
+                },
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_send_animation_uses_native_send_sticker(self):
+        adapter = ZaloAdapter(PlatformConfig(enabled=True, extra={"bot_token": "token"}))
+        calls = []
+
+        async def fake_api(method, payload):
+            calls.append((method, payload))
+            return {"ok": True, "result": {"message_id": "sticker-1"}}
+
+        adapter._api = fake_api
+
+        result = await adapter.send_animation("chat-1", "zalo-sticker-id")
+
+        assert result.success is True
+        assert result.message_id == "sticker-1"
+        assert calls == [
+            ("sendSticker", {"chat_id": "chat-1", "sticker": "zalo-sticker-id"})
+        ]
+
 
 class TestWebhookPollingMode:
     class _FakeClient:
@@ -184,6 +253,25 @@ class TestWebhookPollingMode:
 
         methods = [method for method, _payload in fake_client.calls]
         assert methods[:2] == ["getMe", "deleteWebhook"]
+
+    @pytest.mark.asyncio
+    async def test_disconnect_can_delete_webhook_when_opted_in(self):
+        fake_client = self._FakeClient()
+        adapter = ZaloAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "bot_token": "token",
+                    "delete_webhook_on_disconnect": True,
+                },
+            )
+        )
+        adapter._client = fake_client
+
+        await adapter.disconnect()
+
+        methods = [method for method, _payload in fake_client.calls]
+        assert methods == ["deleteWebhook"]
 
     @pytest.mark.asyncio
     async def test_partial_webhook_config_fails_closed(self, monkeypatch):

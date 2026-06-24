@@ -15,6 +15,7 @@ import hmac
 import json
 import logging
 import os
+import random
 import re
 from collections import deque
 from dataclasses import dataclass
@@ -44,6 +45,8 @@ ZALO_API_BASE = "https://bot-api.zaloplatforms.com"
 ZALO_MAX_MESSAGE_LENGTH = 2000
 DEFAULT_POLL_TIMEOUT_SECONDS = 25
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
+POLL_BACKOFF_SECONDS = (1.0, 2.0, 5.0, 10.0, 30.0)
+MAX_BACKOFF_JITTER_RATIO = 0.25
 DEFAULT_PARSE_MODE = "markdown"
 DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 DEFAULT_WEBHOOK_PORT = 18787
@@ -492,7 +495,21 @@ class ZaloAdapter(BasePlatformAdapter):
         except (TypeError, ValueError):
             self.poll_interval_seconds = DEFAULT_POLL_INTERVAL_SECONDS
 
-        self.webhook_url = str(os.getenv("ZALO_WEBHOOK_URL") or extra.get("webhook_url") or "").strip()
+        self.connection_mode = str(
+            os.getenv("ZALO_CONNECTION_MODE")
+            or extra.get("connection_mode")
+            or "auto"
+        ).strip().lower()
+        if self.connection_mode not in {"auto", "polling", "webhook"}:
+            logger.warning("Zalo: unsupported connection_mode=%r; using auto", self.connection_mode)
+            self.connection_mode = "auto"
+        self.webhook_url = str(
+            os.getenv("ZALO_WEBHOOK_URL")
+            or os.getenv("ZALO_WEBHOOK_PUBLIC_URL")
+            or extra.get("webhook_url")
+            or extra.get("webhook_public_url")
+            or ""
+        ).strip()
         self.webhook_secret = str(
             os.getenv("ZALO_WEBHOOK_SECRET") or extra.get("webhook_secret") or ""
         ).strip()
@@ -522,6 +539,11 @@ class ZaloAdapter(BasePlatformAdapter):
         self.delete_webhook_on_polling_start = self._config_bool(
             "delete_webhook_on_polling_start",
             "ZALO_DELETE_WEBHOOK_ON_POLLING_START",
+            False,
+        )
+        self.delete_webhook_on_disconnect = self._config_bool(
+            "delete_webhook_on_disconnect",
+            "ZALO_DELETE_WEBHOOK_ON_DISCONNECT",
             False,
         )
         self.url_intake_public_base = str(
@@ -593,7 +615,7 @@ class ZaloAdapter(BasePlatformAdapter):
         if self._webhook_config_incomplete:
             self._set_fatal_error(
                 "webhook_config_incomplete",
-                "ZALO_WEBHOOK_URL and ZALO_WEBHOOK_SECRET must be configured together",
+                "ZALO_WEBHOOK_URL/ZALO_WEBHOOK_PUBLIC_URL and ZALO_WEBHOOK_SECRET must be configured together",
                 retryable=False,
             )
             await self.disconnect()
@@ -646,6 +668,13 @@ class ZaloAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._mark_disconnected()
+
+        if self.delete_webhook_on_disconnect and self._client is not None:
+            try:
+                await self._api("deleteWebhook", {})
+                logger.info("Zalo: deleted webhook on disconnect")
+            except Exception as exc:
+                logger.warning("Zalo: deleteWebhook on disconnect failed: %s", exc)
 
         if self._web_runner is not None:
             try:
@@ -783,6 +812,39 @@ class ZaloAdapter(BasePlatformAdapter):
         except Exception as exc:
             return SendResult(success=False, error=str(exc), retryable=True)
 
+    async def send_animation(
+        self,
+        chat_id: str,
+        animation_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a native Zalo sticker when the animation URL is a sticker id."""
+        _ = caption, reply_to, metadata
+        sticker_id = str(animation_url or "").strip()
+        if not sticker_id:
+            return SendResult(success=False, error="missing sticker id")
+        try:
+            response = await self._api(
+                "sendSticker",
+                {"chat_id": str(chat_id), "sticker": sticker_id},
+            )
+            return SendResult(
+                success=True,
+                message_id=self._extract_message_id(response),
+                raw_response=response,
+            )
+        except ZaloApiError as exc:
+            return SendResult(
+                success=False,
+                error=str(exc),
+                raw_response=exc.payload,
+                retryable=exc.retryable,
+            )
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc), retryable=True)
+
     async def _api(self, method: str, payload: Dict[str, Any]) -> Any:
         if self._client is None:
             raise RuntimeError("Zalo HTTP client is not connected")
@@ -818,6 +880,7 @@ class ZaloAdapter(BasePlatformAdapter):
         return data
 
     async def _poll_loop(self) -> None:
+        backoff_idx = 0
         while self._running:
             try:
                 updates = await self._api(
@@ -829,34 +892,53 @@ class ZaloAdapter(BasePlatformAdapter):
                     logger.debug("Zalo: getUpdates returned %d event(s)", len(extracted))
                 for update in extracted:
                     await self._handle_update(update)
+                backoff_idx = 0
             except ZaloApiError as exc:
                 if exc.error_code == POLL_TIMEOUT_ERROR_CODE:
                     logger.debug("Zalo: long poll timed out with no events")
+                    backoff_idx = 0
                 elif exc.fatal:
                     self._set_fatal_error("api_auth_failed", str(exc), retryable=False)
                     break
                 else:
-                    logger.warning("Zalo: polling failed: %s", exc)
-                    await asyncio.sleep(max(self.poll_interval_seconds, 1.0))
+                    delay = self._poll_backoff_sleep(backoff_idx)
+                    logger.warning("Zalo: polling failed: %s; retrying in %.1fs", exc, delay)
+                    await asyncio.sleep(delay)
+                    backoff_idx = min(backoff_idx + 1, len(POLL_BACKOFF_SECONDS) - 1)
+                    continue
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("Zalo: polling failed: %s", exc)
-                await asyncio.sleep(max(self.poll_interval_seconds, 1.0))
+                delay = self._poll_backoff_sleep(backoff_idx)
+                logger.warning("Zalo: polling failed: %s; retrying in %.1fs", exc, delay)
+                await asyncio.sleep(delay)
+                backoff_idx = min(backoff_idx + 1, len(POLL_BACKOFF_SECONDS) - 1)
+                continue
 
             await asyncio.sleep(max(self.poll_interval_seconds, 0.0))
 
     @property
     def _webhook_enabled(self) -> bool:
+        if self.connection_mode == "polling":
+            return False
         return bool(self.webhook_url and self.webhook_secret)
 
     @property
     def _webhook_config_incomplete(self) -> bool:
+        if self.connection_mode == "polling":
+            return False
+        if self.connection_mode == "webhook":
+            return not bool(self.webhook_url and self.webhook_secret)
         return bool(self.webhook_url) != bool(self.webhook_secret)
 
     @property
     def _webhook_secret_valid(self) -> bool:
         return WEBHOOK_SECRET_MIN_LENGTH <= len(self.webhook_secret) <= WEBHOOK_SECRET_MAX_LENGTH
+
+    def _poll_backoff_sleep(self, backoff_idx: int) -> float:
+        cap = POLL_BACKOFF_SECONDS[min(backoff_idx, len(POLL_BACKOFF_SECONDS) - 1)]
+        jitter = cap * MAX_BACKOFF_JITTER_RATIO * random.random()
+        return cap + jitter
 
     async def _start_webhook_server(self) -> bool:
         if web is None:
@@ -1333,14 +1415,17 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
             seeded["poll_interval_seconds"] = float(os.environ["ZALO_POLL_INTERVAL_SECONDS"])
         except ValueError:
             pass
+    if os.getenv("ZALO_CONNECTION_MODE"):
+        seeded["connection_mode"] = os.environ["ZALO_CONNECTION_MODE"].strip().lower()
     if os.getenv("ZALO_PARSE_MODE"):
         parse_mode = os.environ["ZALO_PARSE_MODE"].strip().lower()
         if parse_mode in {"markdown", "html", ""}:
             seeded["parse_mode"] = parse_mode
     if os.getenv("ZALO_SUPPRESS_NOISY_STATUS"):
         seeded["suppress_noisy_status"] = _truthy(os.environ["ZALO_SUPPRESS_NOISY_STATUS"])
-    if os.getenv("ZALO_WEBHOOK_URL"):
-        seeded["webhook_url"] = os.environ["ZALO_WEBHOOK_URL"].strip()
+    webhook_url = os.getenv("ZALO_WEBHOOK_URL") or os.getenv("ZALO_WEBHOOK_PUBLIC_URL")
+    if webhook_url:
+        seeded["webhook_url"] = webhook_url.strip()
     if os.getenv("ZALO_WEBHOOK_SECRET"):
         seeded["webhook_secret"] = os.environ["ZALO_WEBHOOK_SECRET"].strip()
     if os.getenv("ZALO_WEBHOOK_PATH"):
@@ -1357,6 +1442,10 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     if os.getenv("ZALO_DELETE_WEBHOOK_ON_POLLING_START"):
         seeded["delete_webhook_on_polling_start"] = _truthy(
             os.environ["ZALO_DELETE_WEBHOOK_ON_POLLING_START"]
+        )
+    if os.getenv("ZALO_DELETE_WEBHOOK_ON_DISCONNECT"):
+        seeded["delete_webhook_on_disconnect"] = _truthy(
+            os.environ["ZALO_DELETE_WEBHOOK_ON_DISCONNECT"]
         )
     if os.getenv("ZALO_URL_INTAKE_PUBLIC_BASE"):
         seeded["url_intake_public_base"] = os.environ["ZALO_URL_INTAKE_PUBLIC_BASE"].strip()

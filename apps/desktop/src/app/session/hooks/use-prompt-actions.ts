@@ -555,7 +555,14 @@ export function usePromptActions({
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = rawText.trim()
       const usingComposerAttachments = !options?.attachments
-      const attachments = options?.attachments ?? $composerAttachments.get()
+      // Drop undefined/null holes a session switch or draft restore can leave in
+      // the attachments array (same bug class as AttachmentList #49624). Without
+      // this, the sibling iterations below (a.kind / a.label / a.refText, and the
+      // sync step) throw "Cannot read properties of undefined (reading 'refText')"
+      // and break the chat surface.
+      const attachments = (options?.attachments ?? $composerAttachments.get()).filter(
+        (a): a is ComposerAttachment => Boolean(a)
+      )
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
@@ -568,14 +575,17 @@ export function usePromptActions({
       let attachmentRefs = attachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
 
       const buildContextText = (atts: ComposerAttachment[]): string => {
-        const contextRefs = atts
+        // atts may be the post-sync array, which can reintroduce holes; filter
+        // before touching a.refText / a.kind.
+        const present = atts.filter((a): a is ComposerAttachment => Boolean(a))
+        const contextRefs = present
           .map(a => a.refText)
           .filter(Boolean)
           .join('\n')
 
         return (
           [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
-          (atts.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
+          (present.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
         )
       }
 

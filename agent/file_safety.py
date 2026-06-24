@@ -36,11 +36,9 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "id_rsa"),
             os.path.join(home, ".ssh", "id_ed25519"),
             os.path.join(home, ".ssh", "config"),
-            # Active profile .env (or top-level .env when not in profile mode).
-            str(hermes_home / ".env"),
-            # Top-level .env, even when running under a profile — overwriting it
-            # leaks credentials across every profile that inherits from root (#15981).
-            str(hermes_root / ".env"),
+            # Active/root Hermes .env writes are guarded content-aware by
+            # hermes_env_secret_preservation_error(). Keep deletion/move callers
+            # protected via is_write_denied()'s default Hermes-env exact check.
             # Active profile Anthropic PKCE credential store.
             str(hermes_home / ".anthropic_oauth.json"),
             # Top-level Anthropic PKCE credential store remains sensitive even
@@ -77,6 +75,115 @@ def build_write_denied_prefixes(home: str) -> list[str]:
     ]
 
 
+def is_hermes_env_path(path: str) -> bool:
+    """Return True when *path* is the active/root Hermes ``.env`` file."""
+    try:
+        resolved = Path(path).expanduser().resolve(strict=False)
+    except Exception:
+        resolved = Path(os.path.realpath(os.path.expanduser(str(path))))
+
+    for base in (_hermes_home_path(), _hermes_root_path()):
+        try:
+            if resolved == (base / ".env").expanduser().resolve(strict=False):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+_SECRET_ENV_KEY_SUFFIXES = (
+    "_API_KEY",
+    "_TOKEN",
+    "_SECRET",
+    "_PASSWORD",
+    "_ACCESS_KEY",
+    "_SECRET_ACCESS_KEY",
+    "_PRIVATE_KEY",
+    "_OAUTH_TOKEN",
+    "_WEBHOOK_SECRET",
+    "_ENCRYPT_KEY",
+    "_APP_SECRET",
+    "_CLIENT_SECRET",
+    "_CORP_SECRET",
+    "_AES_KEY",
+    "_KEY",
+)
+
+_EXPLICIT_SECRET_ENV_KEYS = frozenset({
+    "HASS_TOKEN",
+    "TELEGRAM_BOT_TOKEN",
+})
+
+
+def _parse_dotenv_assignments(content: str) -> dict[str, str]:
+    """Parse simple dotenv KEY=VALUE assignments without exposing values."""
+    assignments: dict[str, str] = {}
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or not key.replace("_", "A").isalnum() or key[0].isdigit():
+            continue
+        assignments[key] = value.strip()
+    return assignments
+
+
+def _is_secret_env_key(key: str) -> bool:
+    upper = key.upper()
+    return upper in _EXPLICIT_SECRET_ENV_KEYS or any(
+        upper.endswith(suffix) for suffix in _SECRET_ENV_KEY_SUFFIXES
+    )
+
+
+def _nonempty_secret_keys(content: str) -> set[str]:
+    return {
+        key
+        for key, value in _parse_dotenv_assignments(content).items()
+        if _is_secret_env_key(key) and value.strip().strip("'\"")
+    }
+
+
+def hermes_env_secret_preservation_error(path: str, new_content: str) -> str | None:
+    """Return an error if replacing Hermes .env would erase existing secrets.
+
+    Whole-file replacement of the active/root Hermes ``.env`` is allowed only
+    when every existing non-empty secret key is still present with a non-empty
+    value in the replacement content. Secret values are never included in the
+    returned message.
+    """
+    if not is_hermes_env_path(path):
+        return None
+
+    try:
+        existing_content = Path(path).expanduser().read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return (
+            "Refusing to replace Hermes .env because existing secrets could not "
+            "be inspected safely. Use a targeted update that preserves current secret keys."
+        )
+
+    existing_secret_keys = _nonempty_secret_keys(existing_content)
+    if not existing_secret_keys:
+        return None
+
+    replacement_secret_keys = _nonempty_secret_keys(new_content)
+    if existing_secret_keys.issubset(replacement_secret_keys):
+        return None
+
+    return (
+        "Refusing to replace Hermes .env because it would remove existing secret keys. "
+        "Use a targeted update that preserves current secret keys, or edit the file manually."
+    )
+
+
 def get_safe_write_root() -> Optional[str]:
     """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset."""
     root = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
@@ -88,10 +195,13 @@ def get_safe_write_root() -> Optional[str]:
         return None
 
 
-def is_write_denied(path: str) -> bool:
+def is_write_denied(path: str, *, allow_hermes_env_file: bool = False) -> bool:
     """Return True if path is blocked by the write denylist or safe root."""
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
+
+    if not allow_hermes_env_file and is_hermes_env_path(path):
+        return True
 
     if resolved in build_write_denied_paths(home):
         return True

@@ -268,6 +268,13 @@ HARDLINE_PATTERNS = [
     # Raw block device overwrites (dd + redirection)
     (r'\bdd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
     (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
+    # Hermes .env whole-file replacement/truncation. This protects existing
+    # credential keys below the normal approval/yolo layer while still leaving
+    # append/update flows available for commands that preserve the file.
+    (rf'(?<!>)>\s*["\']?{_HERMES_ENV_PATH}["\']?(?:\s|$|[;&|])', "Hermes .env secret erasure via redirection"),
+    (rf'\b(?:cp|mv|install)\b[^\n;&|]*\s["\']?{_HERMES_ENV_PATH}["\']?\s*{_COMMAND_TAIL}', "Hermes .env secret erasure via replacement file"),
+    (rf'\btruncate\b(?=[^\n;&|]*(?:-s|--size)\s*=?\s*["\']?0["\']?)[^\n;&|]*["\']?{_HERMES_ENV_PATH}["\']?', "Hermes .env secret erasure via truncation"),
+    (rf'\btee\b(?![^\n;&|]*\s(?:-a|--append)\b)[^\n;&|]*["\']?{_HERMES_ENV_PATH}["\']?', "Hermes .env secret erasure via tee"),
     # Fork bomb (classic shell form)
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system

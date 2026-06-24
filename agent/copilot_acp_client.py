@@ -21,7 +21,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from agent.file_safety import get_read_block_error, is_write_denied
+from agent.file_safety import (
+    get_read_block_error,
+    hermes_env_secret_preservation_error,
+    is_write_denied,
+)
 from agent.redact import redact_sensitive_text
 
 ACP_MARKER_BASE_URL = "acp://copilot"
@@ -654,12 +658,16 @@ class CopilotACPClient:
         elif method == "fs/write_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
-                if is_write_denied(str(path)):
+                content = str(params.get("content") or "")
+                if is_write_denied(str(path), allow_hermes_env_file=True):
                     raise PermissionError(
                         f"Write denied: '{path}' is a protected system/credential file."
                     )
+                env_guard_error = hermes_env_secret_preservation_error(str(path), content)
+                if env_guard_error:
+                    raise PermissionError(env_guard_error)
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(str(params.get("content") or ""))
+                path.write_text(content)
                 response = {
                     "jsonrpc": "2.0",
                     "id": message_id,

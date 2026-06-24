@@ -37,6 +37,7 @@ from tools.binary_extensions import BINARY_EXTENSIONS
 from agent.file_safety import (
     build_write_denied_paths,
     build_write_denied_prefixes,
+    hermes_env_secret_preservation_error,
     is_write_denied as _shared_is_write_denied,
 )
 
@@ -143,9 +144,11 @@ def _has_bom(text: Optional[str]) -> bool:
     return bool(text) and text.startswith(_UTF8_BOM)
 
 
-def _is_write_denied(path: str) -> bool:
+def _is_write_denied(path: str, *, allow_hermes_env_file: bool = False) -> bool:
     """Return True if path is on the write deny list."""
-    return _shared_is_write_denied(path)
+    return _shared_is_write_denied(
+        path, allow_hermes_env_file=allow_hermes_env_file
+    )
 
 
 # =============================================================================
@@ -1333,9 +1336,14 @@ class ShellFileOperations(FileOperations):
         # Expand ~ and other shell paths
         path = self._expand_path(path)
 
-        # Block writes to sensitive paths
-        if _is_write_denied(path):
+        # Block writes to sensitive paths. Hermes .env is special-cased below:
+        # whole-file replacement is allowed only when it preserves existing
+        # secret keys, so safe updates do not require a manual out-of-band edit.
+        if _is_write_denied(path, allow_hermes_env_file=True):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        env_guard_error = hermes_env_secret_preservation_error(path, content)
+        if env_guard_error:
+            return WriteResult(error=env_guard_error)
 
         # Capture pre-write content.  Two consumers want it:
         #
@@ -1479,8 +1487,10 @@ class ShellFileOperations(FileOperations):
         # Expand ~ and other shell paths
         path = self._expand_path(path)
 
-        # Block writes to sensitive paths
-        if _is_write_denied(path):
+        # Block writes to sensitive paths. Hermes .env is allowed through to
+        # write_file(), which performs the content-aware secret preservation
+        # check after computing the patched file contents.
+        if _is_write_denied(path, allow_hermes_env_file=True):
             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Read current content

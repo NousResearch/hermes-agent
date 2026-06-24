@@ -152,11 +152,10 @@ def bundled_data_files() -> list[tuple[str, list[str]]]:
     ]
 
 
-if __name__ == "__main__":
-    setup(
-        cmdclass={
-            "build": ReadOnlySourceBuild,
-            "egg_info": ReadOnlySourceEggInfo,
-        },
-        data_files=bundled_data_files(),
-    )
+setup(
+    cmdclass={
+        "build": ReadOnlySourceBuild,
+        "egg_info": ReadOnlySourceEggInfo,
+    },
+    data_files=bundled_data_files(),
+)

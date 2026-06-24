@@ -1,8 +1,9 @@
-import importlib.util
 from pathlib import Path
 import posixpath
 import re
+import runpy
 import tomllib
+import unittest.mock
 
 import pytest
 
@@ -17,26 +18,30 @@ find_packages = pytest.importorskip("setuptools", exc_type=ImportError).find_pac
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _load_setup_module():
-    """Import the repo-root setup.py without triggering its setup() call.
+def _setup_data_files() -> list[tuple[str, list[str]]]:
+    """Return the ``data_files`` list setup.py passes to ``setuptools.setup()``.
 
-    The setup() invocation is guarded behind ``if __name__ == "__main__"``, so
-    loading the file under any other module name exposes
-    ``bundled_data_files()`` / ``_data_file_tree()`` for inspection without
-    running a build.
+    Runs setup.py via runpy with ``setuptools.setup`` patched to a capture shim
+    (the same technique as tests/test_docker_webui_install_surface.py), so the
+    exact wheel data-files the build backend receives are read without running a
+    real build. setup.py generates these dynamically — see
+    ``setup.py:bundled_data_files()``.
     """
-    spec = importlib.util.spec_from_file_location(
-        "hermes_setup_py", REPO_ROOT / "setup.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    import setuptools
+
+    captured: dict = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+
+    with unittest.mock.patch.object(setuptools, "setup", _capture):
+        runpy.run_path(str(REPO_ROOT / "setup.py"))
+    return captured.get("data_files", [])
 
 
 def _shipped_data_sources() -> set[str]:
     """All POSIX source paths setup.py ships as wheel data-files."""
-    setup_mod = _load_setup_module()
-    return {src for _, sources in setup_mod.bundled_data_files() for src in sources}
+    return {src for _, sources in _setup_data_files() for src in sources}
 
 
 def _distribution_name(requirement: str) -> str:
@@ -311,8 +316,7 @@ def test_bundled_skills_ship_in_wheel_data_files():
         glob into one target dir, so a collapsed tree would corrupt seeding),
       - runtime cruft (index-cache, __pycache__, *.pyc) is not shipped.
     """
-    setup_mod = _load_setup_module()
-    entries = setup_mod.bundled_data_files()
+    entries = _setup_data_files()
 
     shipped: set[str] = set()
     for target, sources in entries:

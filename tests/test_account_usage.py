@@ -1,8 +1,11 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
+    _parse_dt,
     fetch_account_usage,
     render_account_usage_lines,
 )
@@ -93,6 +96,90 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+@pytest.mark.parametrize("value", [[], {}, [1, 2], {"reset_at": 1}, (), object()])
+def test_parse_dt_returns_none_for_unhashable_or_unexpected_types(value):
+    # A JSON-valid but unexpected shape (list/dict) must degrade to None rather
+    # than raise TypeError from a set-membership hash. Regression for usage-API
+    # reset fields dropping the entire account-usage snapshot.
+    assert _parse_dt(value) is None
+
+
+def test_parse_dt_preserves_supported_values():
+    assert _parse_dt(None) is None
+    assert _parse_dt("") is None
+    assert _parse_dt("   ") is None
+    assert _parse_dt(1_900_000_000) == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
+    assert _parse_dt("2026-01-02T03:04:05Z") == datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+
+def test_fetch_account_usage_codex_survives_unhashable_reset_at(monkeypatch):
+    # An unexpected reset_at type drops only the reset time; the rest of the
+    # snapshot (plan, used_percent, sibling windows) must still come through.
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: {"tokens": {"account_id": "acct_123"}},
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "plan_type": "pro",
+                "rate_limit": {
+                    "primary_window": {"used_percent": 15, "reset_at": []},
+                    "secondary_window": {"used_percent": 40, "reset_at": 1_900_500_000},
+                },
+                "credits": {"has_credits": True, "balance": 12.5},
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert len(snapshot.windows) == 2
+    assert snapshot.windows[0].label == "Session"
+    assert snapshot.windows[0].used_percent == 15.0
+    assert snapshot.windows[0].reset_at is None
+    assert snapshot.windows[1].reset_at == datetime.fromtimestamp(1_900_500_000, tz=timezone.utc)
+
+
+def test_fetch_account_usage_anthropic_survives_unhashable_resets_at(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_anthropic_token",
+        lambda: "oauth-token",
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._is_oauth_token",
+        lambda token: True,
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "five_hour": {"utilization": 0.25, "resets_at": {}},
+                "seven_day": {"utilization": 0.5, "resets_at": "2026-01-02T03:04:05Z"},
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert len(snapshot.windows) == 2
+    assert snapshot.windows[0].label == "Current session"
+    assert snapshot.windows[0].used_percent == 25.0
+    assert snapshot.windows[0].reset_at is None
+    assert snapshot.windows[1].reset_at == datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

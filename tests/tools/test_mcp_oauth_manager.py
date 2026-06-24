@@ -164,3 +164,105 @@ def test_manager_fails_fast_noninteractive_without_cached_tokens(tmp_path, monke
         mgr.get_or_build_provider("linear", "https://mcp.linear.app/mcp", None)
 
     assert mgr._entries["linear"].provider is None
+
+
+
+@pytest.mark.asyncio
+async def test_bearer_header_materializes_cached_valid_token(tmp_path, monkeypatch):
+    """OAuth Streamable-HTTP data-plane can use a plain bearer header.
+
+    The long-lived GET/SSE stream must not be routed through the SDK
+    OAuthClientProvider auth flow, because that provider holds an auth lock
+    until the response completes and can block the following tools/list POST.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch, is_tty=False)
+
+    from mcp.shared.auth import OAuthToken
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    await HermesTokenStorage("srv").set_tokens(
+        OAuthToken(
+            access_token="ACCESS",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token="REFRESH",
+        )
+    )
+
+    mgr = MCPOAuthManager()
+    header = await mgr.get_bearer_authorization_header(
+        "srv", "https://example.com/mcp", None,
+    )
+
+    assert header == "Bearer ACCESS"
+
+
+@pytest.mark.asyncio
+async def test_bearer_header_refreshes_expired_token(tmp_path, monkeypatch):
+    """Expired cached tokens refresh before a data-plane bearer is returned."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch, is_tty=False)
+
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthMetadata, OAuthToken
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    storage = HermesTokenStorage("srv")
+    await storage.set_tokens(
+        OAuthToken(
+            access_token="OLD",
+            token_type="Bearer",
+            expires_in=0,
+            refresh_token="REFRESH",
+        )
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id="client-id",
+            client_secret="client-secret",
+            redirect_uris=["http://127.0.0.1/callback"],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="client_secret_post",
+        )
+    )
+    storage.save_oauth_metadata(
+        OAuthMetadata(
+            issuer="https://auth.example.com",
+            authorization_endpoint="https://auth.example.com/authorize",
+            token_endpoint="https://auth.example.com/token",
+        )
+    )
+
+    class _Resp:
+        status_code = 200
+
+        async def aread(self):
+            return b'{"access_token":"NEW","token_type":"Bearer","expires_in":3600,"refresh_token":"REFRESH2"}'
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            self.request = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def send(self, request):
+            self.request = request
+            return _Resp()
+
+    monkeypatch.setattr("httpx.AsyncClient", _Client)
+
+    mgr = MCPOAuthManager()
+    header = await mgr.get_bearer_authorization_header(
+        "srv", "https://example.com/mcp", None,
+    )
+
+    assert header == "Bearer NEW"

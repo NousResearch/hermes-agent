@@ -1982,9 +1982,23 @@ class MCPServerTask:
         if self._auth_type == "oauth":
             try:
                 from tools.mcp_oauth_manager import get_manager
-                _oauth_auth = get_manager().get_or_build_provider(
+                _oauth_manager = get_manager()
+                _oauth_auth = _oauth_manager.get_or_build_provider(
                     self.name, url, config.get("oauth"),
                 )
+                _bearer_header = await _oauth_manager.get_bearer_authorization_header(
+                    self.name, url, config.get("oauth"),
+                )
+                if _bearer_header:
+                    # Do not pass the SDK OAuth provider into Streamable HTTP's
+                    # long-lived data-plane connection. OAuthClientProvider
+                    # holds its auth-flow lock until the HTTP response
+                    # completes; the GET/SSE stream never completes, so the
+                    # following tools/list POST can hang forever waiting to
+                    # attach auth. Materialize OAuth to a plain bearer header
+                    # up front instead.
+                    headers["Authorization"] = _bearer_header
+                    _oauth_auth = None
             except Exception as exc:
                 logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
                 raise

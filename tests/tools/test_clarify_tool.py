@@ -200,6 +200,18 @@ class TestClarifyDictChoices:
         assert _flatten_choice(7) == "7"
         assert _flatten_choice(None) == ""
 
+    def test_flatten_joins_list_of_strings(self):
+        """A list choice is flattened by joining its elements with spaces."""
+        assert _flatten_choice(["alpha", "beta"]) == "alpha beta"
+
+    def test_flatten_joins_tuple_of_strings(self):
+        """A tuple choice is flattened by joining its elements with spaces."""
+        assert _flatten_choice(("alpha", "beta")) == "alpha beta"
+
+    def test_flatten_joins_nested_dicts_in_list(self):
+        """List elements are recursively flattened before joining."""
+        assert _flatten_choice([{"label": "alpha"}, {"label": "beta"}]) == "alpha beta"
+
     def test_dict_choices_reach_callback_as_clean_text(self):
         """The whole point: the UI callback never sees a dict repr."""
         seen = []

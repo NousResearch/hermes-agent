@@ -1383,6 +1383,17 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     except Exception:
         pass
 
+    # 2b. Check fallback_providers — if the user explicitly listed a provider
+    # in their fallback chain, that's an intentional configuration choice.
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        from hermes_cli.fallback_config import get_fallback_chain
+        for entry in get_fallback_chain(_load_cfg()):
+            if (entry.get("provider") or "").strip().lower() == normalized:
+                return True
+    except Exception:
+        pass
+
     # 3. Check provider-specific env vars
     # Exclude CLAUDE_CODE_OAUTH_TOKEN — it's set by Claude Code itself,
     # not by the user explicitly configuring anthropic in Hermes.

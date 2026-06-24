@@ -118,6 +118,40 @@ def test_render_account_usage_lines_includes_reset_and_provider():
     assert "Credits balance: $9.99" in lines[3]
 
 
+def test_render_account_usage_lines_treats_non_finite_percent_as_unavailable():
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow(label="Session", used_percent=float("nan")),
+            AccountUsageWindow(label="Weekly", used_percent=float("inf")),
+        ),
+    )
+
+    lines = render_account_usage_lines(snapshot)
+
+    assert "Session: unavailable" in lines[2]
+    assert "Weekly: unavailable" in lines[3]
+
+
+def test_render_account_usage_lines_clamps_out_of_range_percentages():
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow(label="Negative", used_percent=-5),
+            AccountUsageWindow(label="Over", used_percent=150),
+        ),
+    )
+
+    lines = render_account_usage_lines(snapshot)
+
+    assert "Negative: 100% remaining (0% used)" in lines[2]
+    assert "Over: 0% remaining (100% used)" in lines[3]
+
+
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):
     monkeypatch.setattr(
         "agent.account_usage.resolve_runtime_provider",

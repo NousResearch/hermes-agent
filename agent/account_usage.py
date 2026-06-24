@@ -102,11 +102,12 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     else:
         lines.append(f"Provider: {snapshot.provider}")
     for window in snapshot.windows:
-        if window.used_percent is None:
+        used_percent = _normalized_percent(window.used_percent)
+        if used_percent is None:
             base = f"{window.label}: unavailable"
         else:
-            remaining = max(0, round(100 - float(window.used_percent)))
-            used = max(0, round(float(window.used_percent)))
+            remaining = round(100 - used_percent)
+            used = round(used_percent)
             base = f"{window.label}: {remaining}% remaining ({used}% used)"
         if window.reset_at:
             base += f" • resets {_format_reset(window.reset_at)}"
@@ -118,6 +119,18 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     if snapshot.unavailable_reason:
         lines.append(f"Unavailable: {snapshot.unavailable_reason}")
     return lines
+
+
+def _normalized_percent(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        percent = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(percent):
+        return None
+    return max(0.0, min(100.0, percent))
 
 
 def _fmt_usd(d: float) -> str:

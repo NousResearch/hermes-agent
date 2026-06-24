@@ -44,25 +44,14 @@ name: uv.lock check
 # the same way.  Better to catch it here than after merge.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/uv-lockfile-check.yml"
-
-  # No paths filter — the job must always run so the required check
-  # reports a status (path-gated workflows leave checks "pending" forever
-  # when no matching files change, which blocks merge).
-  pull_request:
-    branches: [main]
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
   group: uv-lockfile-check-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   check:

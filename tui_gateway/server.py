@@ -178,6 +178,14 @@ _LONG_HANDLERS = frozenset(
         "browser.manage",
         "cli.exec",
         "llm.oneshot",
+        # Pet RPCs hit the network (manifest fetch / spritesheet download) or do
+        # per-frame PNG decode/encode (pet.cells): inline they serialize on the
+        # reader thread, so picker previews trickle in one at a time and the
+        # animation poll stutters. On the pool they run concurrently.
+        "pet.cells",
+        "pet.gallery",
+        "pet.select",
+        "pet.thumb",
         "plugins.manage",
         "session.branch",
         "session.compress",
@@ -379,6 +387,59 @@ def _release_active_session_slot(session: dict | None) -> None:
         lease.release()
     except Exception:
         logger.debug("Failed to release active session slot", exc_info=True)
+
+
+def _transfer_active_session_slot(
+    sid: str,
+    session: dict,
+    *,
+    new_session_id: str,
+) -> bool:
+    if not new_session_id:
+        return False
+    lease = session.get("active_session_lease")
+    if lease is None:
+        return True
+    try:
+        from hermes_cli.active_sessions import transfer_active_session
+
+        if transfer_active_session(
+            lease,
+            session_id=new_session_id,
+            metadata={"live_session_id": sid},
+        ):
+            return True
+    except Exception:
+        logger.debug("Failed to transfer active session slot", exc_info=True)
+
+    # Fallback: the in-place transfer could not move the lease (entry pruned /
+    # pid-check transiently failed). Reserve the new slot BEFORE releasing the
+    # old one, so a concurrent gateway at the session cap cannot grab the freed
+    # slot in a release-then-reacquire window and leave this session with no
+    # lease at all (#49041 review). If the reserve fails, KEEP the old lease.
+    new_lease, limit_message = _claim_active_session_slot(
+        new_session_id,
+        live_session_id=sid,
+    )
+    if new_lease is not None:
+        old_lease = session.pop("active_session_lease", None)
+        if old_lease is not None:
+            try:
+                old_lease.release()
+            except Exception:
+                logger.debug("Failed to release stale active session slot", exc_info=True)
+        session["active_session_lease"] = new_lease
+        return True
+    # Reserve failed — retain the existing lease rather than dropping it.
+    if limit_message:
+        logger.warning(
+            "Compression session lease re-anchor failed (kept old lease): "
+            "sid=%s new_session_id=%s reason=%s",
+            sid,
+            new_session_id,
+            limit_message,
+        )
+    return False
 
 
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
@@ -743,6 +804,29 @@ def _profile_home(profile: str | None) -> Path | None:
     if home.resolve() == Path(_hermes_home).resolve():
         return None
     return home if (home / "state.db").exists() or home.exists() else None
+
+
+def _profile_scoped(handler):
+    """Bind ``params['profile']``'s HERMES_HOME around a pet RPC handler.
+
+    Pets are per-profile: ``display.pet.*`` lives in the profile's config.yaml and
+    sprites install under its ``pets/`` dir (both resolve via ``get_hermes_home``).
+    The desktop sends ``profile`` on pet calls so config + pets dir resolve to the
+    focused profile even in app-global remote mode, where one backend serves every
+    profile. No-op for the launch profile (own-profile backends already resolve it).
+    """
+
+    def wrapper(rid, params):
+        home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+        if home is None:
+            return handler(rid, params)
+        token = set_hermes_home_override(home)
+        try:
+            return handler(rid, params)
+        finally:
+            reset_hermes_home_override(token)
+
+    return wrapper
 
 
 # Placeholder ``terminal.cwd`` values that don't name a real directory — the
@@ -1457,7 +1541,7 @@ def _save_cfg(cfg: dict):
 
     path = _hermes_home / "config.yaml"
     with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f)
+        yaml.safe_dump(cfg, f, allow_unicode=True)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
         _cfg_path = path
@@ -2543,6 +2627,19 @@ def _sync_session_key_after_compress(
     if not new_session_id or new_session_id == old_key:
         return
 
+    lease_reanchored = _transfer_active_session_slot(
+        sid,
+        session,
+        new_session_id=new_session_id,
+    )
+    if not lease_reanchored:
+        logger.warning(
+            "Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
+            sid,
+            old_key,
+            new_session_id,
+        )
+
     try:
         from tools.approval import (
             disable_session_yolo,
@@ -2612,6 +2709,14 @@ def _get_usage(agent) -> dict:
             usage["context_max"] = ctx_max
             usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
+    # Live count of background/async subagents still running (delegate_task
+    # batches + background single delegations). Mirrors the classic CLI status
+    # bar's ⛓ indicator; sourced from the same async_delegation registry.
+    try:
+        from tools.async_delegation import active_count as _async_active_count
+        usage["active_subagents"] = _async_active_count()
+    except Exception:
+        pass
     try:
         from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
 
@@ -4932,7 +5037,7 @@ def _session_live_title(session: dict, key: str) -> str:
 
 
 def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
-    key = str(session.get("session_key") or sid)
+    key = _session_lookup_key(session, fallback=sid)
     agent = session.get("agent")
     history = list(session.get("history") or [])
     status = _session_live_status(sid, session)
@@ -4956,11 +5061,21 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     }
 
 
+def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
+    agent = session.get("agent")
+    return str(
+        getattr(agent, "session_id", None)
+        or session.get("session_key")
+        or fallback
+        or ""
+    )
+
+
 def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
     for sid, session in list(_sessions.items()):
         if session.get("_finalized"):
             continue
-        if str(session.get("session_key") or "") == session_key:
+        if _session_lookup_key(session, fallback=sid) == session_key:
             return sid, session
     return None
 
@@ -5004,7 +5119,7 @@ def _live_session_payload(
         "messages": _history_to_messages(history),
         "running": running,
         "session_id": sid,
-        "session_key": session.get("session_key") or sid,
+        "session_key": _session_lookup_key(session, fallback=sid),
         "started_at": float(session.get("created_at") or time.time()),
         "status": _session_live_status(sid, session),
     }
@@ -5442,6 +5557,399 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
     return _ok(rid, usage)
+
+
+def _pet_frame_counts(spritesheet) -> dict:
+    """Real (padding-trimmed) frame count per state, for the desktop canvas.
+
+    Fail-open: a decode hiccup returns ``{}`` and the canvas falls back to its
+    static ``framesPerState`` rather than breaking the (cosmetic) pet.
+    """
+    try:
+        from agent.pet import render
+
+        return render.state_frame_counts(str(spritesheet))
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        return {}
+
+
+def _pet_state_rows(spritesheet) -> list[str]:
+    """Row taxonomy for the concrete active pet sheet.
+
+    Hermes has to support both the legacy 8-row petdex atlas and the current
+    Codex/petdex 9-row atlas. The desktop canvas gets this list and indexes it
+    with the same `PetState` names the Python renderer uses.
+    """
+    try:
+        from PIL import Image
+
+        from agent.pet import constants
+
+        with Image.open(spritesheet) as image:
+            row_count = max(1, image.height // constants.FRAME_H)
+        return list(constants.state_rows_for_grid(row_count))
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        from agent.pet import constants
+
+        return list(constants.STATE_ROWS)
+
+
+@method("pet.info")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Return the active petdex pet for surfaces that render sprites.
+
+    Shared by the desktop (canvas) and the TUI (half-block). Carries the
+    spritesheet bytes (base64) plus the engine's frame geometry + state-row
+    taxonomy so the renderer is a thin, framework-native consumer. The
+    activity→state decision is mirrored from ``agent.pet.state`` client-side.
+
+    Agent-independent (reads config + disk), so it works on any session and
+    before the agent finishes building. Fail-open: returns ``enabled=False``
+    on any error rather than erroring the surface.
+    """
+    import base64
+
+    try:
+        from agent.pet import constants, store
+
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+            pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+        except Exception:
+            pet_cfg = {}
+
+        enabled = bool(pet_cfg.get("enabled"))
+        configured_slug = str(pet_cfg.get("slug", "") or "")
+        pet = store.resolve_active_pet(configured_slug) if enabled else None
+
+        if not enabled or pet is None or not pet.exists:
+            return _ok(rid, {"enabled": False})
+
+        raw = pet.spritesheet.read_bytes()
+        suffix = pet.spritesheet.suffix.lower()
+        mime = "image/png" if suffix == ".png" else "image/webp"
+        return _ok(
+            rid,
+            {
+                "enabled": True,
+                "slug": pet.slug,
+                "displayName": pet.display_name,
+                "mime": mime,
+                "spritesheetBase64": base64.standard_b64encode(raw).decode("ascii"),
+                "frameW": constants.FRAME_W,
+                "frameH": constants.FRAME_H,
+                "framesPerState": constants.FRAMES_PER_STATE,
+                "framesByState": _pet_frame_counts(pet.spritesheet),
+                "loopMs": constants.LOOP_MS,
+                "scale": float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE),
+                "stateRows": _pet_state_rows(pet.spritesheet),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface
+        logger.debug("pet.info failed: %s", exc)
+        return _ok(rid, {"enabled": False})
+
+
+@method("pet.cells")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Return half-block cell frames for one pet state (TUI renderer).
+
+    The TUI can't draw a canvas, so the engine downsamples the spritesheet to
+    a grid of half-block cells and the Ink side paints them with native color
+    props. Each cell is ``[tr,tg,tb,ta, br,bg,bb,ba]`` (top + bottom pixel).
+
+    Params: ``state`` (idle/run/review/failed/wave/jump), ``cols`` (width).
+    Fail-open: ``enabled=False`` on any problem.
+    """
+    try:
+        from agent.pet import constants, render, store
+        from agent.pet.render import PetRenderer
+
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+            pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+        except Exception:
+            pet_cfg = {}
+
+        if not bool(pet_cfg.get("enabled")):
+            return _ok(rid, {"enabled": False})
+
+        pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))
+        if pet is None or not pet.exists:
+            return _ok(rid, {"enabled": False})
+
+        state = str(params.get("state") or constants.PetState.IDLE.value)
+        scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
+        cols = int(params.get("cols") or 0) or constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
+
+        # Graphics path: when the TUI is attached to a real TTY (``graphics``)
+        # and the terminal speaks the kitty protocol, return a Unicode-
+        # placeholder payload for a crisp image instead of half-blocks. Env
+        # detection (KITTY_WINDOW_ID / TERM / TERM_PROGRAM) is shared with the
+        # Ink process since it spawns us; the dashboard PTY (xterm.js) has no
+        # such env, so it falls through to half-blocks automatically. Only
+        # kitty is grid-safe in Ink — iTerm/sixel stay on the fallback.
+        if params.get("graphics"):
+            configured = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
+            gmode = render.detect_terminal_graphics() if configured in ("", "auto") else configured
+            if gmode == "kitty":
+                image_id = render.kitty_image_id(pet.slug)
+                # kitty sizes from scaled pixels (_cell_box), so unicode_cols is moot here.
+                payload = PetRenderer(
+                    str(pet.spritesheet), mode="kitty", scale=scale
+                ).kitty_payload(state, image_id=image_id)
+                if payload:
+                    kcount = len(payload["frames"]) or 1
+                    return _ok(
+                        rid,
+                        {
+                            "enabled": True,
+                            "slug": pet.slug,
+                            "displayName": pet.display_name,
+                            "state": state,
+                            "graphics": "kitty",
+                            "imageId": image_id,
+                            "color": render.kitty_color_hex(image_id),
+                            "cols": payload["cols"],
+                            "rows": payload["rows"],
+                            "placeholder": payload["placeholder"],
+                            "frames": payload["frames"],
+                            "frameMs": constants.LOOP_MS / max(1, kcount),
+                            "scale": scale,
+                        },
+                    )
+
+        renderer = PetRenderer(
+            str(pet.spritesheet),
+            mode="unicode",
+            scale=scale,
+            unicode_cols=cols,
+        )
+        count = renderer.frame_count(state) or 1
+        frames = []
+        for i in range(count):
+            grid = renderer.cells(state, i, cols=cols)
+            frames.append(
+                [[[*top, *bottom] for (top, bottom) in row] for row in grid]
+            )
+
+        return _ok(
+            rid,
+            {
+                "enabled": True,
+                "slug": pet.slug,
+                "displayName": pet.display_name,
+                "state": state,
+                "cols": cols,
+                "frameMs": constants.LOOP_MS / max(1, count),
+                "frames": frames,
+                "scale": scale,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.cells failed: %s", exc)
+        return _ok(rid, {"enabled": False})
+
+
+@method("pet.gallery")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """List adoptable pets for the desktop appearance picker.
+
+    Returns the petdex gallery merged with local install state plus the
+    current config (active slug + enabled). Agent-independent. Fail-open:
+    returns whatever is installed locally if the gallery can't be reached, so
+    the picker still works offline.
+    """
+    try:
+        from agent.pet import store
+
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+            pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+        except Exception:
+            pet_cfg = {}
+
+        installed = {p.slug: p for p in store.installed_pets()}
+
+        gallery: list[dict] = []
+        seen: set[str] = set()
+        try:
+            from agent.pet.manifest import fetch_manifest
+
+            for entry in fetch_manifest():
+                seen.add(entry.slug)
+                gallery.append(
+                    {
+                        "slug": entry.slug,
+                        "displayName": entry.display_name,
+                        "installed": entry.slug in installed,
+                        "spritesheetUrl": entry.spritesheet_url,
+                        # petdex exposes no popularity metric; "curated" (its
+                        # hand-picked/official set, identified by the asset path)
+                        # is the closest signal, so the picker can surface it first.
+                        "curated": "/curated/" in entry.spritesheet_url,
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001 - offline: fall back to installed
+            logger.debug("pet.gallery manifest fetch failed: %s", exc)
+
+        # Always include locally-installed pets even if the gallery is unreachable.
+        for slug, pet in installed.items():
+            if slug not in seen:
+                gallery.append(
+                    {"slug": slug, "displayName": pet.display_name, "installed": True, "spritesheetUrl": ""}
+                )
+
+        return _ok(
+            rid,
+            {
+                "enabled": bool(pet_cfg.get("enabled")),
+                "active": str(pet_cfg.get("slug", "") or ""),
+                "pets": gallery,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.gallery failed: %s", exc)
+        return _ok(rid, {"enabled": False, "active": "", "pets": []})
+
+
+@method("pet.select")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Adopt a pet from the desktop picker: install (if needed) + activate.
+
+    Params: ``slug`` (required). Writes ``display.pet.*`` to config and returns
+    ``{ok, slug, displayName}``. The surface re-pulls ``pet.info`` to render it.
+    """
+    slug = str(params.get("slug") or "").strip()
+    if not slug:
+        return _err(rid, 4004, "missing slug")
+    try:
+        from agent.pet import store
+        from agent.pet.manifest import ManifestError
+        from hermes_cli.pets import _set_active
+
+        try:
+            pet = store.install_pet(slug)
+        except (store.PetStoreError, ManifestError) as exc:
+            return _err(rid, 5031, f"could not adopt '{slug}': {exc}")
+        _set_active(slug)
+        return _ok(rid, {"ok": True, "slug": slug, "displayName": pet.display_name})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.select failed: %s", exc)
+        return _err(rid, 5031, f"pet.select failed: {exc}")
+
+
+@method("pet.remove")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Uninstall a pet from the desktop picker (delete its on-disk directory).
+
+    Params: ``slug`` (required). If the removed pet was the active one, the
+    display is turned off so nothing tries to render a now-missing sprite.
+    Returns ``{ok, slug}`` where ``ok`` reflects whether a directory was deleted.
+    """
+    slug = str(params.get("slug") or "").strip()
+    if not slug:
+        return _err(rid, 4004, "missing slug")
+    try:
+        from agent.pet import store
+        from hermes_cli.pets import _clear_active_if
+
+        removed = store.remove_pet(slug)
+
+        # If that was the active pet, stop surfaces pointing at a deleted sprite.
+        try:
+            _clear_active_if(slug)
+        except Exception as exc:  # noqa: BLE001 - removal already succeeded
+            logger.debug("pet.remove config update failed: %s", exc)
+
+        return _ok(rid, {"ok": removed, "slug": slug})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.remove failed: %s", exc)
+        return _err(rid, 5031, f"pet.remove failed: {exc}")
+
+
+@method("pet.thumb")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Return a small idle-frame PNG (data URI) for one pet — the picker preview.
+
+    Cropped + cached server-side so the renderer gets a same-origin data URL
+    instead of a CDN ``<img>`` (which the desktop CSP / R2 hotlink rules break).
+    Params: ``slug`` (required), ``url`` (optional petdex spritesheet URL used
+    only for not-yet-installed pets). Fail-open: ``{ok: false}`` with no error.
+    """
+    slug = str(params.get("slug") or "").strip()
+    if not slug:
+        return _err(rid, 4004, "missing slug")
+    try:
+        import base64
+
+        from agent.pet import store
+
+        data = store.thumbnail_png(slug, source_url=str(params.get("url") or ""))
+        if not data:
+            return _ok(rid, {"ok": False, "slug": slug})
+
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "slug": slug,
+                "dataUri": "data:image/png;base64," + base64.standard_b64encode(data).decode("ascii"),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.thumb failed: %s", exc)
+        return _ok(rid, {"ok": False, "slug": slug})
+
+
+@method("pet.disable")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Turn the pet off from the desktop picker (``display.pet.enabled=false``)."""
+    try:
+        from hermes_cli.pets import _set_enabled
+
+        _set_enabled(False)
+        return _ok(rid, {"ok": True})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.disable failed: %s", exc)
+        return _err(rid, 5031, f"pet.disable failed: {exc}")
+
+
+@method("pet.scale")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Persist ``display.pet.scale`` from the desktop slider. Params: ``scale``.
+
+    Clamped to the engine bounds. The renderer updates its own ``$petInfo`` for
+    instant feedback; this just makes the change durable + visible to the other
+    terminal surfaces on their next read.
+    """
+    try:
+        from hermes_cli.pets import set_pet_scale
+
+        scale, err = set_pet_scale(params.get("scale"))
+        if err:
+            return _err(rid, 4004, err)
+        return _ok(rid, {"ok": True, "scale": scale})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.scale failed: %s", exc)
+        return _err(rid, 5031, f"pet.scale failed: {exc}")
 
 
 @method("credits.view")
@@ -9042,6 +9550,15 @@ def _(rid, params: dict) -> dict:
         if not arg:
             return _err(rid, 4004, "usage: /queue <prompt>")
         return _ok(rid, {"type": "send", "message": arg})
+
+    if name == "learn":
+        # Open-ended: build the standards-guided prompt and submit it as a
+        # normal agent turn. The live agent gathers whatever the user
+        # described (dirs, URLs, this conversation, pasted text) with its own
+        # tools and authors the skill via skill_manage. Works on any backend.
+        from agent.learn_prompt import build_learn_prompt
+
+        return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
 
     if name == "retry":
         if not session:

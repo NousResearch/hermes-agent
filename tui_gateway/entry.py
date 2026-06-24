@@ -1,20 +1,14 @@
 import sys
 import os
 
-# Fix #51286: prevent cwd packages from shadowing Hermes internal modules.
-# Python puts "" (cwd) at sys.path[0] unconditionally. If the user runs
-# `hermes` from a directory that happens to contain a `utils/`, `proxy/`,
-# or `ui/` package, our internal imports will resolve to the wrong module
-# and crash with ImportError.
-_HERMES_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if sys.path[0] != _HERMES_ROOT:
-    sys.path.insert(0, _HERMES_ROOT)
-_src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
-if _src_root and _src_root not in sys.path:
-    sys.path.insert(0, _src_root)
-# Strip '' and '.' — both resolve to CWD at import time and can let a local
-# directory shadow installed packages.
-sys.path = [p for p in sys.path if p not in {"", "."}]
+# Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory
+# from shadowing Hermes's own top-level modules.  ``hermes_bootstrap`` lives at
+# the repo root next to this package, so importing it is safe before the guard
+# runs (its name won't collide with a user package), and it owns the canonical
+# path-hardening logic shared with the other entry points.
+import hermes_bootstrap
+
+hermes_bootstrap.harden_import_path()
 
 import json
 import logging

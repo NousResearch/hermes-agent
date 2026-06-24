@@ -21,7 +21,7 @@ def temp_home(tmp_path, monkeypatch):
 @pytest.fixture
 def chronos(monkeypatch):
     """A ChronosCronScheduler with a fake NAS client capturing calls."""
-    from plugins.cron.chronos import ChronosCronScheduler
+    from plugins.cron_providers.chronos import ChronosCronScheduler
 
     class FakeClient:
         def __init__(self):
@@ -47,7 +47,7 @@ def chronos(monkeypatch):
     fake = FakeClient()
     prov._client = fake
     # callback_url is read via _cfg; patch the module helper to avoid config.
-    monkeypatch.setattr("plugins.cron.chronos._cfg",
+    monkeypatch.setattr("plugins.cron_providers.chronos._cfg",
                         lambda *k, default="": "https://agent.example/" if k[-1] == "callback_url" else "https://portal.test")
     return prov, fake
 
@@ -55,15 +55,15 @@ def chronos(monkeypatch):
 # -- is_available -------------------------------------------------------------
 
 def test_is_available_false_without_config(temp_home, monkeypatch):
-    from plugins.cron.chronos import ChronosCronScheduler
+    from plugins.cron_providers.chronos import ChronosCronScheduler
 
-    monkeypatch.setattr("plugins.cron.chronos._cfg", lambda *k, default="": "")
+    monkeypatch.setattr("plugins.cron_providers.chronos._cfg", lambda *k, default="": "")
     assert ChronosCronScheduler().is_available() is False
 
 
 def test_is_available_true_with_config_and_token(temp_home, monkeypatch):
-    import plugins.cron.chronos as mod
-    from plugins.cron.chronos import ChronosCronScheduler
+    import plugins.cron_providers.chronos as mod
+    from plugins.cron_providers.chronos import ChronosCronScheduler
 
     monkeypatch.setattr(mod, "_cfg", lambda *k, default="": "https://x" )
     monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state",
@@ -73,8 +73,8 @@ def test_is_available_true_with_config_and_token(temp_home, monkeypatch):
 
 def test_is_available_makes_no_network(temp_home, monkeypatch):
     """is_available must not construct the NAS client / hit network."""
-    import plugins.cron.chronos as mod
-    from plugins.cron.chronos import ChronosCronScheduler
+    import plugins.cron_providers.chronos as mod
+    from plugins.cron_providers.chronos import ChronosCronScheduler
 
     monkeypatch.setattr(mod, "_cfg", lambda *k, default="": "https://x")
     monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state",

@@ -371,7 +371,10 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         return _InstallResult(True, "", "")
 
     venv_root = Path(sys.executable).parent.parent
-    uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)}
+    # cmake 4.x removed compatibility with cmake_minimum_required < 3.5.
+    # python-olm (mautrix[encryption]) bundles libolm/CMakeLists.txt that
+    # declares VERSION 3.4; this env var lets cmake 4.x configure it anyway.
+    uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root), "CMAKE_POLICY_VERSION_MINIMUM": "3.5"}
 
     # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
     uv_bin = shutil.which("uv")

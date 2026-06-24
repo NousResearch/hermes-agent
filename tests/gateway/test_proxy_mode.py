@@ -1,5 +1,7 @@
 """Tests for gateway proxy mode — forwarding messages to a remote API server."""
 
+import sys
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -83,12 +85,17 @@ class _FakeSession:
         pass
 
 
+class _FakeClientTimeout:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
 def _patch_aiohttp(session):
-    """Patch aiohttp.ClientSession to return our fake session."""
-    return patch(
-        "aiohttp.ClientSession",
-        return_value=session,
-    )
+    """Patch the lazily imported aiohttp module used by proxy mode."""
+    module = types.ModuleType("aiohttp")
+    module.ClientSession = MagicMock(return_value=session)
+    module.ClientTimeout = _FakeClientTimeout
+    return patch.dict(sys.modules, {"aiohttp": module})
 
 
 class TestGetProxyUrl:
@@ -322,7 +329,7 @@ class TestRunAgentViaProxy:
                 pass
 
         with patch("gateway.run._load_gateway_config", return_value={}):
-            with patch("aiohttp.ClientSession", return_value=_ErrorSession()):
+            with _patch_aiohttp(_ErrorSession()):
                 with patch("aiohttp.ClientTimeout"):
                     result = await runner._run_agent_via_proxy(
                         message="hi",

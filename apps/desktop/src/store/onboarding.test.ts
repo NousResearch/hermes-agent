@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { OAuthProvider } from '@/types/hermes'
 
+import * as notifications from '@/store/notifications'
+
 import {
   $desktopOnboarding,
   type DesktopOnboardingState,
@@ -136,6 +138,8 @@ describe('refreshOnboarding', () => {
     })
 
     installApiMock(api)
+    // Simulate a returning user: cache is set and store is configured.
+    window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
     $desktopOnboarding.set(
       baseState({
         configured: true,
@@ -151,14 +155,12 @@ describe('refreshOnboarding', () => {
     expect(api).not.toHaveBeenCalled()
     expect($desktopOnboarding.get().configured).toBe(true)
     expect($desktopOnboarding.get().reason).toBeNull()
-    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
+    // The cache must survive the refresh — proving we didn't downgrade.
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
   })
 
   it('shows a non-blocking notification when preserving configured on fallback', async () => {
-    const notifyErrorSpy = vi.spyOn(
-      await import('@/store/notifications'),
-      'notifyError'
-    )
+    const notifySpy = vi.spyOn(notifications, 'notify')
 
     installApiMock(vi.fn())
     $desktopOnboarding.set(
@@ -172,11 +174,40 @@ describe('refreshOnboarding', () => {
 
     await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
 
-    expect(notifyErrorSpy).toHaveBeenCalledWith(
-      'runtime-not-ready',
-      expect.stringContaining('could not verify the running backend')
+    expect(notifySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'runtime-not-ready',
+        kind: 'error'
+      })
     )
     expect($desktopOnboarding.get().configured).toBe(true)
+  })
+
+  it('does not preserve configured when onboarding was explicitly requested', async () => {
+    const api = vi.fn(async ({ path }: { path: string }) => {
+      if (path === '/api/providers/oauth') {
+        return { providers: [provider('fresh')] }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    installApiMock(api)
+    $desktopOnboarding.set(
+      baseState({
+        configured: true,
+        providers: [provider('cached')],
+        reason: null,
+        requested: true
+      })
+    )
+
+    const ready = await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+
+    expect(ready).toBe(false)
+    // requested overrides preservation — should downgrade.
+    expect($desktopOnboarding.get().configured).toBe(false)
+    expect(api).toHaveBeenCalledTimes(1)
   })
 
   it('still surfaces onboarding when fallback failure happens before configured state', async () => {

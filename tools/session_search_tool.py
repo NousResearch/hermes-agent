@@ -31,12 +31,53 @@ support.
 
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional, Union
 
 # Sources that are excluded from session browsing/searching by default.
 # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool
 # so they don't clutter the user's session history.
 _HIDDEN_SESSION_SOURCES = ("tool",)
+
+
+def _payload_char_limit() -> int:
+    """Per-field character cap for session_search payloads.
+
+    Session transcripts can contain giant tool results. Returning them verbatim
+    inside live gateway turns can produce hundreds of thousands of characters,
+    starving the gateway and forcing context compression. Keep search/read useful
+    by defaulting to bounded previews; callers can scroll for more surrounding
+    rows, but individual fields remain capped.
+    """
+    raw = os.getenv("HERMES_SESSION_SEARCH_FIELD_CHAR_LIMIT", "4000").strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 4000
+    # 0 disables only for explicit operator/debug use; otherwise clamp to a
+    # range that protects interactive gateways from pathological rows.
+    if value == 0:
+        return 0
+    return max(500, min(value, 20_000))
+
+
+def _truncate_payload_value(value: Any, limit: int) -> tuple[Any, int]:
+    """Return (possibly truncated value, omitted_char_count)."""
+    if value is None or limit == 0:
+        return value, 0
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            value = str(value)
+    if len(value) <= limit:
+        return value, 0
+    omitted = len(value) - limit
+    return (
+        value[:limit]
+        + f"\n…[session_search truncated {omitted:,} chars; use a narrower query/window or read the source session directly]",
+        omitted,
+    )
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -88,16 +129,23 @@ def _resolve_to_parent(db, session_id: str) -> str:
 
 def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
     """Slim a message row for the tool response. Keeps content even if empty."""
+    limit = _payload_char_limit()
+    content, content_omitted = _truncate_payload_value(m.get("content"), limit)
     entry = {
         "id": m.get("id"),
         "role": m.get("role"),
-        "content": m.get("content"),
+        "content": content,
         "timestamp": m.get("timestamp"),
     }
+    if content_omitted:
+        entry["content_truncated_chars"] = content_omitted
     if m.get("tool_name"):
         entry["tool_name"] = m.get("tool_name")
     if m.get("tool_calls"):
-        entry["tool_calls"] = m.get("tool_calls")
+        tool_calls, tool_calls_omitted = _truncate_payload_value(m.get("tool_calls"), limit)
+        entry["tool_calls"] = tool_calls
+        if tool_calls_omitted:
+            entry["tool_calls_truncated_chars"] = tool_calls_omitted
     if m.get("tool_call_id"):
         entry["tool_call_id"] = m.get("tool_call_id")
     if anchor_id is not None and m.get("id") == anchor_id:

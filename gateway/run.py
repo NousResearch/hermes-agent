@@ -3959,6 +3959,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
+        # Track parent chats reached through active thread/topic notices. If a
+        # thread in the same parent chat was notified, do not also post a root/home
+        # shutdown notice into that parent chat. That preserves thread_ts/topic
+        # locality and avoids the visible double-post that makes restarts look
+        # noisier than they are.
+        notified_parent_chats: set[tuple[str, str]] = set()
         for session_key in active:
             source = None
             try:
@@ -4042,6 +4048,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
 
                 notified.add(dedup_key)
+                notified_parent_chats.add((platform_str, chat_id))
                 logger.info(
                     "Sent shutdown notification to active chat %s:%s",
                     platform_str, chat_id,
@@ -4076,6 +4083,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             dedup_key = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
             if dedup_key in notified:
+                continue
+            # If an active session in this parent chat already received a
+            # thread/topic-scoped shutdown notice, do not also send the root/home
+            # fallback into the same parent. Identical target dedupe above still
+            # handles home channels with their own thread_id.
+            if (platform.value, str(home.chat_id)) in notified_parent_chats:
                 continue
 
             try:

@@ -17,6 +17,7 @@ from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
     _HIDDEN_SESSION_SOURCES,
     _format_timestamp,
+    _shape_message,
     session_search,
 )
 
@@ -102,6 +103,15 @@ class TestSchema:
 class TestHiddenSources:
     def test_tool_source_hidden(self):
         assert "tool" in _HIDDEN_SESSION_SOURCES
+
+
+class TestPayloadShaping:
+    def test_large_message_content_is_truncated_with_metadata(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_SEARCH_FIELD_CHAR_LIMIT", "1000")
+        shaped = _shape_message({"id": 1, "role": "tool", "content": "x" * 2500})
+        assert len(shaped["content"]) < 1200
+        assert shaped["content_truncated_chars"] == 1500
+        assert "session_search truncated" in shaped["content"]
 
 
 class TestFormatTimestamp:

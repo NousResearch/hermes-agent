@@ -1245,7 +1245,7 @@ async def test_restart_home_channel_notification_dedupes_active_chat():
 
 
 @pytest.mark.asyncio
-async def test_restart_home_channel_notification_not_deduped_across_threads():
+async def test_restart_home_channel_notification_dedupes_parent_chat_after_thread_notice():
     runner, adapter = make_restart_runner()
     runner._restart_requested = True
     session_key = "agent:main:telegram:group:999"
@@ -1267,9 +1267,8 @@ async def test_restart_home_channel_notification_not_deduped_across_threads():
 
     await runner._notify_active_sessions_of_shutdown()
 
-    assert len(adapter.sent) == 2
+    assert len(adapter.sent) == 1
     assert adapter.sent_calls[0][2] == {"thread_id": "topic-7"}
-    assert adapter.sent_calls[1][2] is None
 
 
 @pytest.mark.asyncio

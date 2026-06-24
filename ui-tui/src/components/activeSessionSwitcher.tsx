@@ -90,6 +90,32 @@ export const resumableHistory = (history: readonly SessionListItem[], live: read
   return history.filter(h => !liveIds.has(h.id))
 }
 
+/** Sort key for the resumable-history list. When last_active is populated
+ *  by the gateway it takes precedence over started_at, so a session that
+ *  was just resumed sorts above an older one of the same lineage. When
+ *  the messages table is empty for a session (last_active is null), the
+ *  key falls back to started_at so the row stays in the timeline. */
+export const sessionSortKey = (row: SessionListItem) => row.last_active ?? row.started_at
+
+/** Apply the user's sort preference to the resumable history. The
+ *  gateway already returns rows in DESC order for whichever key is
+ *  active (see ``list_sessions_rich(order_by_last_active=...)`` in
+ *  hermes_state), so this helper is the source of truth when the
+ *  picker flips sortByActive faster than the next round-trip can
+ *  land. Stable on equal keys so the picker doesn't visibly jump. */
+export const sortResumableHistory = (history: readonly SessionListItem[], sortByActive: boolean): SessionListItem[] => {
+  const key = sortByActive ? sessionSortKey : (row: SessionListItem) => row.started_at
+  const out = [...history]
+
+  out.sort((a, b) => {
+    const diff = key(b) - key(a)
+
+    return diff !== 0 ? diff : a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  })
+
+  return out
+}
+
 export const resumeRowContextHintSegments: OrchestratorHintSegment[] = [
   { role: 'label', text: 'Resumable:' },
   { role: 'text', text: ' ' },
@@ -129,9 +155,11 @@ export const orchestratorGlobalHotkeyHintSegments: OrchestratorHintSegment[] = [
   { role: 'hotkey', text: '↑↓' },
   { role: 'text', text: ' move · ' },
   { role: 'hotkey', text: 'Ctrl+N' },
-  { role: 'text', text: ' new · ' },
+  { role: 'text', text: ' · ' },
   { role: 'hotkey', text: 'Ctrl+R' },
-  { role: 'text', text: ' refresh · ' },
+  { role: 'text', text: ' · ' },
+  { role: 'hotkey', text: 'Ctrl+S' },
+  { role: 'text', text: ' sort · ' },
   { role: 'hotkey', text: 'Esc' },
   { role: 'text', text: ' close' }
 ]
@@ -311,6 +339,12 @@ export function ActiveSessionSwitcher({
   const [draftModel, setDraftModel] = useState('')
   const [pickingModel, setPickingModel] = useState(false)
   const [closingId, setClosingId] = useState('')
+  // Sort mode for the resumable history list. Default 'created' matches
+  // the gateway's default order_by_last_active=False (started_at DESC).
+  // Ctrl+S flips this; the load() callback already returns rows in DESC
+  // order so a client-side re-sort on toggle is the only re-render
+  // trigger needed.
+  const [sortByActive, setSortByActive] = useState(false)
   // When non-null, the user pressed `d` on this (history) session and we await
   // a second `d` to confirm deletion. Tracked by session id (not row index) so
   // the 1.5s live-status poll re-indexing rows can't redirect the delete to a
@@ -390,7 +424,7 @@ export function ActiveSessionSwitcher({
           }
         }
 
-        const hist = resumableHistory(rawHistoryRef.current, next)
+        const hist = sortResumableHistory(resumableHistory(rawHistoryRef.current, next), sortByActive)
         const initializeSelection = !initialSelectionAppliedRef.current
         initialSelectionAppliedRef.current = true
         const maxSel = next.length + hist.length // == total - 1 (new row is index 0)
@@ -437,7 +471,7 @@ export function ActiveSessionSwitcher({
         return []
       }
     },
-    [currentSessionId, gw]
+    [currentSessionId, gw, sortByActive]
   )
 
   useEffect(() => {
@@ -598,6 +632,17 @@ export function ActiveSessionSwitcher({
 
     if (isCtrl('r')) {
       void load()
+
+      return
+    }
+
+    if (isCtrl('s')) {
+      // Ctrl+S toggles the resumable-history sort between creation-time
+      // and last-active. setHistory below re-runs through the sort, and
+      // rawHistoryRef is preserved so the next 1.5s poll re-applies
+      // it without re-querying the gateway.
+      setSortByActive(prev => !prev)
+      setHistory(prev => sortResumableHistory(prev, !sortByActive))
 
       return
     }

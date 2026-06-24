@@ -189,6 +189,11 @@ export interface SessionListItem {
   source?: string
   started_at: number
   title: string
+  /** Unix seconds of last message, or null when the messages table is
+   *  empty for this session. Only populated when the gateway was
+   *  called with order_by_last_active=true. The picker falls back to
+   *  started_at when null so the order is stable across the lifecycle. */
+  last_active?: number | null
 }
 
 export interface SessionListResponse {

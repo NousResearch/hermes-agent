@@ -24,7 +24,9 @@ import {
   resumableHistory,
   selectedSessionRowStyle,
   sessionRowKindAt,
-  sessionsCountLabel
+  sessionsCountLabel,
+  sessionSortKey,
+  sortResumableHistory
 } from '../components/activeSessionSwitcher.js'
 import type { SessionActiveItem } from '../gatewayTypes.js'
 import type { SessionListItem } from '../gatewayTypes.js'
@@ -41,7 +43,7 @@ describe('session orchestrator helpers', () => {
   it('keeps session orchestrator hotkey hints short and contextual', () => {
     expect(orchestratorContextHint(false)).toBe('Session row: Enter switch · Ctrl+D close')
     expect(orchestratorContextHint(true)).toBe('New row: type prompt · Enter start · Tab model')
-    expect(orchestratorGlobalHotkeyHint).toBe('↑↓ move · Ctrl+N new · Ctrl+R refresh · Esc close')
+    expect(orchestratorGlobalHotkeyHint).toBe('↑↓ move · Ctrl+N · Ctrl+R · Ctrl+S sort · Esc close')
     expect(orchestratorGlobalHotkeyHint.length).toBeLessThanOrEqual(56)
   })
 
@@ -66,6 +68,7 @@ describe('session orchestrator helpers', () => {
       '↑↓',
       'Ctrl+N',
       'Ctrl+R',
+      'Ctrl+S',
       'Esc'
     ])
     expect(orchestratorHintSegmentColor(DEFAULT_THEME, 'hotkey')).toBe(DEFAULT_THEME.color.accent)
@@ -200,5 +203,39 @@ describe('unified Sessions overlay helpers', () => {
     expect(relativeSessionAge(nowSec - 3 * 86400)).toBe('3d ago')
     expect(relativeSessionAge(undefined)).toBe('')
     expect(relativeSessionAge(0)).toBe('')
+  })
+})
+
+describe('session sort helpers', () => {
+  // Three sessions: A (mid activity), B (newest activity), C (no messages).
+  const A: SessionListItem = { id: 'a', title: 'A', message_count: 1, preview: '', started_at: 100, last_active: 200 }
+  const B: SessionListItem = { id: 'b', title: 'B', message_count: 1, preview: '', started_at: 300, last_active: 500 }
+  const C: SessionListItem = { id: 'c', title: 'C', message_count: 1, preview: '', started_at: 400, last_active: null }
+
+  it('sessionSortKey falls back to started_at when last_active is null', () => {
+    expect(sessionSortKey(A)).toBe(200)
+    expect(sessionSortKey(C)).toBe(400)
+  })
+
+  it('sortResumableHistory orders by last_active desc when sortByActive is true', () => {
+    // Keys: A=200, B=500, C=null→400. DESC: B, C, A.
+    const out = sortResumableHistory([A, B, C], true)
+
+    expect(out.map(s => s.id)).toEqual(['b', 'c', 'a'])
+  })
+
+  it('sortResumableHistory orders by started_at desc when sortByActive is false', () => {
+    // Pure creation-time sort ignores last_active entirely: C(400), B(300), A(100).
+    const out = sortResumableHistory([A, B, C], false)
+
+    expect(out.map(s => s.id)).toEqual(['c', 'b', 'a'])
+  })
+
+  it('sortResumableHistory does not mutate the input array', () => {
+    const input = [A, B, C]
+
+    sortResumableHistory(input, true)
+
+    expect(input.map(s => s.id)).toEqual(['a', 'b', 'c'])
   })
 })

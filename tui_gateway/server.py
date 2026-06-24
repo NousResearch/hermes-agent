@@ -4123,13 +4123,22 @@ def _(rid, params: dict) -> dict:
         deny = frozenset({"tool"})
 
         limit = int(params.get("limit", 200) or 200)
+        # Sort is opt-in: the ui-tui session picker lets users toggle
+        # last-active sort with Ctrl+S. When set, list_sessions_rich
+        # walks compression-continuation chains in SQL so a session that
+        # was reopened recently surfaces above an older one. The REST
+        # API already passes order_by_last_active=True for the same
+        # reason; this RPC is the in-process analogue.
+        order_by_last_active = bool(params.get("order_by_last_active", False))
         # Over-fetch modestly so per-source filtering doesn't leave us
-        # short; the compression-tip projection in ``list_sessions_rich``
+        # short; the compression-tip projection in list_sessions_rich
         # can also merge rows.
         fetch_limit = max(limit * 2, 200)
         rows = [
             s
-            for s in db.list_sessions_rich(source=None, limit=fetch_limit)
+            for s in db.list_sessions_rich(
+                source=None, limit=fetch_limit, order_by_last_active=order_by_last_active,
+            )
             if (s.get("source") or "").strip().lower() not in deny
         ][:limit]
         return _ok(
@@ -4143,6 +4152,9 @@ def _(rid, params: dict) -> dict:
                         "started_at": s.get("started_at") or 0,
                         "message_count": s.get("message_count") or 0,
                         "source": s.get("source") or "",
+                        # None when the messages table is empty for this
+                        # session; the picker falls back to started_at.
+                        "last_active": s.get("last_active"),
                     }
                     for s in rows
                 ]

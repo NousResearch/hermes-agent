@@ -32,10 +32,33 @@ const STATE_ALIASES: Record<PetState, string[]> = {
   waiting: ['waiting']
 }
 
+const ROW_TO_STATE: Record<string, PetState> = {
+  idle: 'idle',
+  wave: 'wave',
+  waving: 'wave',
+  jump: 'jump',
+  jumping: 'jump',
+  run: 'run',
+  running: 'run',
+  'running-right': 'run',
+  'running-left': 'run',
+  failed: 'failed',
+  review: 'review',
+  waiting: 'waiting'
+}
+
 interface PetSpriteProps {
   info: PetInfo
   /** On-screen scale multiplier applied on top of the pet's native scale. */
   zoom?: number
+  /**
+   * Force a specific animation state instead of reading the live `$petState`.
+   * Used by the generate-flow preview to showcase every row without driving (or
+   * being driven by) the real agent activity that moves the floating mascot.
+   */
+  stateOverride?: PetState
+  /** Force a concrete row name from `info.stateRows` (e.g. `running-right`). */
+  rowOverride?: string
 }
 
 /**
@@ -49,9 +72,20 @@ interface PetSpriteProps {
  * with `memo`, this component effectively never re-renders after mount until
  * the pet itself changes.
  */
-function PetSpriteImpl({ info, zoom = 1 }: PetSpriteProps) {
+function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSpriteProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const stateRef = useRef<PetState>($petState.get())
+  const overrideRef = useRef<PetState | undefined>(stateOverride)
+  const rowOverrideRef = useRef<string | undefined>(rowOverride)
+
+  // Keep the override current without re-running the RAF setup effect.
+  useEffect(() => {
+    overrideRef.current = stateOverride
+  }, [stateOverride])
+
+  useEffect(() => {
+    rowOverrideRef.current = rowOverride
+  }, [rowOverride])
 
   const frameW = info.frameW ?? DEFAULT_FRAME_W
   const frameH = info.frameH ?? DEFAULT_FRAME_H
@@ -116,6 +150,7 @@ function PetSpriteImpl({ info, zoom = 1 }: PetSpriteProps) {
     // than flashing blank padding.
     const resolve = (s: PetState): { row: number; count: number } => {
       const real = framesByState?.[s] ?? frames
+
       if (real > 0) {
         return { row: rowIndexForState(s), count: real }
       }
@@ -123,8 +158,16 @@ function PetSpriteImpl({ info, zoom = 1 }: PetSpriteProps) {
       return { row: rowIndexForState('idle'), count: Math.max(1, framesByState?.idle ?? frames) }
     }
 
+    const resolveRow = (rowName: string): { row: number; count: number } => {
+      const row = rows.indexOf(rowName)
+      const state = ROW_TO_STATE[rowName]
+      const count = Math.max(1, framesByState?.[rowName] ?? (state ? framesByState?.[state] : 0) ?? frames)
+      return { row: row >= 0 ? row : rowIndexForState(state ?? 'idle'), count }
+    }
+
     const render = (now: number) => {
-      const { row, count } = resolve(stateRef.current)
+      const forcedRow = rowOverrideRef.current
+      const { row, count } = forcedRow ? resolveRow(forcedRow) : resolve(overrideRef.current ?? stateRef.current)
       // Per-state step keeps every state's loop ~loopMs even when frame counts
       // differ; counts vary per row so derive the cadence here, not once.
       const stepMs = loopMs / count

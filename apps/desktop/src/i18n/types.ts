@@ -284,11 +284,23 @@ export interface Translations {
         unreachable: string
         noMatch: (query: string) => string
         installedTag: string
+        generatedTag: string
         countCapped: (cap: number, total: number) => string
         count: (n: number) => string
         uninstall: (name: string) => string
+        delete: (name: string) => string
+        deleteTitle: (name: string) => string
+        deleteBody: string
+        deleteConfirm: string
+        rename: (name: string) => string
+        renameTitle: string
+        renamePlaceholder: string
+        renameSave: string
+        exportPet: (name: string) => string
         adoptFailed: (slug: string) => string
         uninstallFailed: (slug: string) => string
+        renameFailed: (slug: string) => string
+        exportFailed: (slug: string) => string
         noneAvailable: string
         turnOnFailed: string
         turnOffFailed: string
@@ -635,9 +647,31 @@ export interface Translations {
       turnOff: string
       turnOn: string
       installed: string
+      generatedTag: string
       adoptFailed: string
       toggleFailed: string
       noneAvailable: string
+    }
+    generatePet: {
+      title: string
+      placeholder: string
+      promptHint: string
+      readyHint: string
+      generate: string
+      generating: string
+      retry: string
+      hatch: string
+      spawning: string
+      hatching: string
+      hatchingSub: string
+      hatched: string
+      hatchRow: (state: string, done: number, total: number) => string
+      hatchComposing: string
+      hatchSaving: string
+      namePlaceholder: string
+      staleBackend: string
+      adopt: string
+      startOver: string
     }
     installTheme: {
       title: string

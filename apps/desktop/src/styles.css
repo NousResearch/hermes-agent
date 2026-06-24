@@ -1426,3 +1426,235 @@ canvas {
     animation: none;
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/* Pet egg hatch (Cmd-K → Pets → Generate)                                    */
+/* The incubation wobble + reveal flash/pop give the draft→pet step a         */
+/* Pokémon-style "egg is hatching" beat instead of a bare spinner.            */
+/* -------------------------------------------------------------------------- */
+
+.pet-egg {
+  position: relative;
+  width: 5.5rem;
+  height: 7rem;
+  border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%;
+  background:
+    radial-gradient(120% 90% at 32% 26%, color-mix(in srgb, var(--ui-accent) 14%, #fff) 0%, #f4ecd8 46%, #e4d3ad 100%);
+  box-shadow:
+    inset -0.45rem -0.6rem 1.1rem color-mix(in srgb, #000 16%, transparent),
+    inset 0.35rem 0.4rem 0.7rem color-mix(in srgb, #fff 70%, transparent),
+    0 0.4rem 0.9rem color-mix(in srgb, #000 22%, transparent);
+  transform-origin: 50% 88%;
+  animation: pet-egg-wobble 2.4s ease-in-out infinite;
+}
+
+/* Compact egg (empty-state hero). Children are %-based so they track the size;
+   only the rem box-shadow needs scaling down to stay crisp. */
+.pet-egg--sm {
+  width: 3.25rem;
+  height: 4.1rem;
+  box-shadow:
+    inset -0.28rem -0.38rem 0.7rem color-mix(in srgb, #000 16%, transparent),
+    inset 0.22rem 0.26rem 0.45rem color-mix(in srgb, #fff 70%, transparent),
+    0 0.25rem 0.55rem color-mix(in srgb, #000 22%, transparent);
+}
+
+.pet-egg__shine {
+  position: absolute;
+  top: 14%;
+  left: 22%;
+  width: 28%;
+  height: 22%;
+  border-radius: 50%;
+  background: color-mix(in srgb, #fff 85%, transparent);
+  filter: blur(2px);
+  opacity: 0.85;
+}
+
+.pet-egg__spot {
+  position: absolute;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ui-accent) 70%, #b89b63);
+  opacity: 0.55;
+}
+
+.pet-egg__glow {
+  position: absolute;
+  inset: -35%;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--ui-accent) 55%, transparent) 0%, transparent 62%);
+  animation: pet-egg-glow 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.pet-egg-shadow {
+  width: 4.5rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, #000 32%, transparent) 0%, transparent 72%);
+  animation: pet-egg-shadow 2.4s ease-in-out infinite;
+}
+
+/* Contact shadow sized for the compact incubator egg (roughly its footprint). */
+.pet-egg-shadow--sm {
+  width: 3rem;
+  height: 0.6rem;
+}
+
+/* Hatch wiggle for the pixel egg (rocks around its base). */
+.pet-wobble {
+  transform-origin: 50% 85%;
+  animation: pet-egg-wobble 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-wobble {
+    animation: none;
+  }
+}
+
+@keyframes pet-egg-wobble {
+  0%,
+  62%,
+  100% {
+    transform: rotate(0deg);
+  }
+  8% {
+    transform: rotate(-7deg);
+  }
+  16% {
+    transform: rotate(6deg);
+  }
+  24% {
+    transform: rotate(-5deg);
+  }
+  32% {
+    transform: rotate(4deg);
+  }
+  40% {
+    transform: rotate(0deg);
+  }
+  /* the "almost out" burst */
+  70% {
+    transform: rotate(-12deg);
+  }
+  76% {
+    transform: rotate(12deg);
+  }
+  82% {
+    transform: rotate(-9deg);
+  }
+  88% {
+    transform: rotate(7deg);
+  }
+  94% {
+    transform: rotate(-3deg);
+  }
+}
+
+@keyframes pet-egg-glow {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.92);
+  }
+  70% {
+    opacity: 0.4;
+  }
+  84% {
+    opacity: 0.85;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes pet-egg-shadow {
+  0%,
+  62%,
+  100% {
+    transform: scaleX(1);
+    opacity: 0.6;
+  }
+  76% {
+    transform: scaleX(0.8);
+    opacity: 0.45;
+  }
+}
+
+.pet-reveal {
+  animation: pet-reveal-pop 620ms cubic-bezier(0.22, 1.4, 0.4, 1) both;
+}
+
+@keyframes pet-reveal-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.35) translateY(0.4rem);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.12) translateY(0);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-egg,
+  .pet-egg__glow,
+  .pet-egg-shadow,
+  .pet-reveal {
+    animation: none;
+  }
+  .pet-reveal {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Pet generation progress bar — determinate (hatch rows: done/total) or         */
+/* indeterminate (drafts, which return together so a % would just snap).         */
+.pet-progress {
+  position: relative;
+  height: 0.25rem;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--ui-accent) 15%, transparent);
+}
+
+.pet-progress__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  border-radius: 9999px;
+  background: var(--ui-accent);
+  transition: width 320ms ease;
+}
+
+.pet-progress__indeterminate {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  border-radius: 9999px;
+  background: var(--ui-accent);
+  animation: pet-progress-slide 1.15s ease-in-out infinite;
+}
+
+@keyframes pet-progress-slide {
+  0% {
+    left: -42%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-progress__indeterminate {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.4;
+  }
+}

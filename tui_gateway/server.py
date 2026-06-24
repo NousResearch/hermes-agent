@@ -1626,6 +1626,15 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
         return _answers.pop(rid, "")
 
 
+def _clarify_timeout_seconds() -> int:
+    try:
+        from tools.clarify_gateway import get_clarify_timeout
+
+        return get_clarify_timeout()
+    except Exception:
+        return 600
+
+
 def _clear_pending(sid: str | None = None) -> None:
     """Release pending prompts with an empty answer.
 
@@ -3357,7 +3366,10 @@ def _agent_cbs(sid: str) -> dict:
             "notification.clear", sid, {"key": key}
         ),
         "clarify_callback": lambda q, c: _block(
-            "clarify.request", sid, {"question": q, "choices": c}
+            "clarify.request",
+            sid,
+            {"question": q, "choices": c},
+            timeout=_clarify_timeout_seconds(),
         ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.

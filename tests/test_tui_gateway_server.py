@@ -14,6 +14,30 @@ from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
 
 
+def test_clarify_callback_uses_configured_timeout(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(server, "_clarify_timeout_seconds", lambda: 42)
+
+    def fake_block(event, sid, payload, timeout=300):
+        captured.update(
+            {"event": event, "sid": sid, "payload": payload, "timeout": timeout}
+        )
+        return "answer"
+
+    monkeypatch.setattr(server, "_block", fake_block)
+
+    result = server._agent_cbs("sid-1")["clarify_callback"]("Pick one", ["a", "b"])
+
+    assert result == "answer"
+    assert captured == {
+        "event": "clarify.request",
+        "sid": "sid-1",
+        "payload": {"question": "Pick one", "choices": ["a", "b"]},
+        "timeout": 42,
+    }
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

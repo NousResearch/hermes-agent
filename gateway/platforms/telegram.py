@@ -13,8 +13,10 @@ import json
 import logging
 import os
 import tempfile
+import hashlib
 import html as _html
 import re
+import urllib.request
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
@@ -3201,6 +3203,280 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    def _tb_candidate_store_paths(self) -> tuple[_Path, _Path]:
+        """Return tb-bot candidate and button state paths.
+
+        This is intentionally local/profile-specific glue for Sam's Dubai real
+        estate morning digest. Buttons still go through the normal Telegram
+        gateway callback stream, but publication data lives in the tb-bot
+        toolbox output directory.
+        """
+        candidates = _Path(
+            os.getenv(
+                "TB_BOT_TOP8_PATH",
+                "/Users/maria/projects/tb-bot/outputs/telegram_reviews/latest_top8_candidates.json",
+            )
+        )
+        state = _Path(
+            os.getenv(
+                "TB_BOT_BUTTON_STATE_PATH",
+                "/Users/maria/projects/tb-bot/data/button_publish_state.json",
+            )
+        )
+        return candidates, state
+
+    def _tb_load_candidate(self, candidate_no: int) -> dict:
+        candidates_path, _state_path = self._tb_candidate_store_paths()
+        if not candidates_path.exists():
+            raise FileNotFoundError(f"Candidate list not found: {candidates_path}")
+        data = json.loads(candidates_path.read_text(encoding="utf-8"))
+        for item in data.get("items", []):
+            try:
+                if int(item.get("n")) == candidate_no:
+                    return item
+            except (TypeError, ValueError):
+                continue
+        raise KeyError(f"Candidate {candidate_no} not found in {candidates_path}")
+
+    def _tb_load_publish_state(self) -> dict:
+        _candidates_path, state_path = self._tb_candidate_store_paths()
+        if not state_path.exists():
+            return {"published": {}, "skipped": {}}
+        try:
+            return json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {"published": {}, "skipped": {}}
+
+    def _tb_save_publish_state(self, state: dict) -> None:
+        _candidates_path, state_path = self._tb_candidate_store_paths()
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = state_path.with_suffix(state_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(state_path)
+
+    def _tb_render_publication_text(self, item: dict) -> str:
+        """Render an approved tb-bot candidate as an original AlfaroDXB post.
+
+        Important editorial rule: public posts must never look copied from the
+        scraped source. Source names, source URLs, internal scores, and review
+        metadata stay internal to Sam/Hermes. The published group post must be
+        a pre-written original AlfaroDXB draft; if no draft exists, fail closed.
+        """
+        draft = item.get("draft_post") or item.get("processed_text") or item.get("rewritten_text")
+        if not draft:
+            raise ValueError("Missing rewritten draft_post; refusing to publish scraped source excerpt")
+
+        text = str(draft).strip()
+        if not text:
+            raise ValueError("Empty rewritten draft_post; refusing to publish")
+
+        forbidden_patterns = [
+            r"https?://",
+            r"t\.me/",
+            r"\bsource\s*:",
+            r"\boriginal source\b",
+            r"\bfull data at\b",
+            r"#DXBInteract\b",
+            r"#DubaiRealEstate\b",
+        ]
+        source_values = [
+            item.get("source"),
+            item.get("source_name"),
+            item.get("source_username"),
+            item.get("channel_name"),
+        ]
+        for value in source_values:
+            value = str(value or "").strip()
+            if value:
+                forbidden_patterns.append(re.escape(value))
+
+        for pattern in forbidden_patterns:
+            if re.search(pattern, text, flags=re.I):
+                raise ValueError(f"Rewritten draft contains forbidden source attribution/pattern: {pattern}")
+
+        return text
+
+    def _tb_primary_photo_url(self, item: dict) -> str | None:
+        """Return the first real source photo URL, excluding Telegram emoji assets."""
+        for media in item.get("media") or []:
+            if not isinstance(media, dict) or media.get("type") != "image":
+                continue
+            url = str(media.get("url") or "").strip()
+            if not url.startswith(("http://", "https://")):
+                continue
+            if "telegram.org/img/emoji" in url:
+                continue
+            return url
+        return None
+
+    def _tb_download_photo(self, url: str) -> _Path | None:
+        """Download source photo and upload bytes instead of asking Telegram to fetch the URL."""
+        if not url:
+            return None
+        cache_dir = _Path(tempfile.gettempdir()) / "hermes_tb_bot_media"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+        path = cache_dir / f"{digest}.jpg"
+        if path.exists() and path.stat().st_size > 0:
+            return path
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+        except Exception as exc:
+            logger.warning("tb-bot photo download failed: %s", exc)
+            return None
+        if not data:
+            return None
+        path.write_bytes(data)
+        return path
+
+    def _tb_cap_photo_caption(self, text: str, limit: int = 1024) -> str:
+        """Keep AlfaroDXB photo captions within Telegram's 1024-char limit."""
+        if len(text) <= limit:
+            return text
+        marker = "\n\n…"
+        return text[: max(0, limit - len(marker))].rstrip() + marker
+
+    async def _tb_send_publication(self, target_chat_id: str, item: dict, text: str) -> tuple[Any, Any]:
+        """Publish the rewritten post with photo+caption together when a photo exists."""
+        photo_url = self._tb_primary_photo_url(item)
+        photo_path = self._tb_download_photo(photo_url) if photo_url else None
+        if photo_path:
+            caption = self._tb_cap_photo_caption(text)
+            with photo_path.open("rb") as photo_file:
+                sent = await self._app.bot.send_photo(
+                    chat_id=target_chat_id,
+                    photo=photo_file,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                )
+            return sent, sent
+        sent = await self._app.bot.send_message(
+            chat_id=target_chat_id,
+            text=text,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=False,
+        )
+        return sent, None
+
+    async def _handle_tb_publish_callback(
+        self,
+        query: Any,
+        data: str,
+        *,
+        query_chat_id: Any = None,
+        query_chat_type: Any = None,
+        query_thread_id: Any = None,
+        query_user_name: Any = None,
+    ) -> None:
+        """Handle tb-bot Publish/Skip inline buttons for the morning digest."""
+        # Supported formats: tb:publish:1, tb:skip:1, legacy tb_publish_1, tb_skip_1.
+        action = None
+        candidate_token = None
+        if data.startswith("tb:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                action, candidate_token = parts[1], parts[2]
+        elif data.startswith("tb_publish_"):
+            action, candidate_token = "publish", data.rsplit("_", 1)[-1]
+        elif data.startswith("tb_skip_"):
+            action, candidate_token = "skip", data.rsplit("_", 1)[-1]
+
+        if action not in {"publish", "skip"} or not candidate_token:
+            await query.answer(text="Invalid content action.")
+            return
+        try:
+            candidate_no = int(candidate_token)
+        except ValueError:
+            await query.answer(text="Invalid candidate number.")
+            return
+
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to publish content.")
+            return
+
+        try:
+            item = self._tb_load_candidate(candidate_no)
+        except Exception as exc:
+            logger.error("tb-bot callback failed to load candidate %s: %s", candidate_no, exc)
+            await query.answer(text="Candidate not found.")
+            return
+
+        # Key state by the underlying story, not just the visible card number.
+        # This prevents a previous digest's candidate #3 from blocking a new
+        # digest's candidate #3 after fresh cards are sent.
+        identity = (
+            item.get("id")
+            or item.get("fingerprint")
+            or item.get("url")
+            or item.get("title")
+            or str(candidate_no)
+        )
+        key = f"{candidate_no}:{identity}"
+        state = self._tb_load_publish_state()
+        now = datetime.now(timezone.utc).isoformat()
+        user_display = getattr(query.from_user, "first_name", "User")
+
+        if action == "skip":
+            state.setdefault("skipped", {})[key] = {"at": now, "by": caller_id}
+            self._tb_save_publish_state(state)
+            await query.answer(text=f"⏭️ Candidate {candidate_no} skipped")
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            return
+
+        if key in state.get("published", {}):
+            await query.answer(text=f"Already published candidate {candidate_no}.")
+            return
+
+        target_chat_id = os.getenv("ALFARO_DXB_CHAT_ID", "-1002400963636")
+        try:
+            text = self._tb_render_publication_text(item)
+        except Exception as exc:
+            logger.error("tb-bot callback refused candidate %s: %s", candidate_no, exc)
+            await query.answer(text="Publish blocked — missing clean rewritten draft.")
+            return
+
+        try:
+            sent, photo_sent = await self._tb_send_publication(target_chat_id, item, text)
+        except Exception as exc:
+            logger.error("tb-bot callback publish failed: %s", exc, exc_info=True)
+            await query.answer(text="Publish failed — check gateway logs.")
+            return
+
+        state.setdefault("published", {})[key] = {
+            "at": now,
+            "by": caller_id,
+            "target_chat_id": str(target_chat_id),
+            "message_id": getattr(sent, "message_id", None),
+            "photo_message_id": getattr(photo_sent, "message_id", None) if photo_sent else None,
+            "title": item.get("title"),
+            "url": item.get("url"),
+        }
+        self._tb_save_publish_state(state)
+        await query.answer(text=f"🚀 Published candidate {candidate_no} to AlfaroDXB")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        logger.info(
+            "tb-bot candidate %s published to %s by %s (%s)",
+            candidate_no,
+            target_chat_id,
+            user_display,
+            caller_id,
+        )
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -3226,6 +3502,18 @@ class TelegramAdapter(BasePlatformAdapter):
         # --- Gmail-triage callbacks (gt:verb:arg) ---
         if data.startswith("gt:"):
             await self._handle_gmail_triage_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
+
+        # --- tb-bot real-estate candidate callbacks ---
+        if data.startswith(("tb:", "tb_publish_", "tb_skip_")):
+            await self._handle_tb_publish_callback(
                 query,
                 data,
                 query_chat_id=query_chat_id,

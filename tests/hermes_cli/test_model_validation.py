@@ -291,7 +291,7 @@ class TestFetchApiModels:
 
         calls = []
 
-        def _fake_urlopen(req, timeout=5.0):
+        def _fake_urlopen(req, timeout=5.0, context=None):
             calls.append(req.full_url)
             if req.full_url.endswith("/v1/models"):
                 return _Resp()

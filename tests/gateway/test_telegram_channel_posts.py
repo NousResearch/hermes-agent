@@ -11,7 +11,7 @@ import importlib.util
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -179,3 +179,71 @@ async def test_command_handler_uses_effective_message_for_channel_post(telegram_
     assert event.message_type == MessageType.COMMAND
     assert event.source.chat_type == "channel"
     assert event.source.chat_id == "-1003950368353"
+
+
+@pytest.mark.asyncio
+async def test_media_handler_processes_channel_post_document(telegram_adapter_cls):
+    """Regression: channel_post documents must not be silently dropped.
+
+    _handle_media_message used ``update.message`` directly, which is None for
+    channel broadcasts (PTB puts them in ``update.channel_post``).  After the
+    fix the handler uses ``effective_message`` so documents sent to channels
+    are downloaded and cached just like DM documents.
+    """
+    from unittest.mock import AsyncMock
+
+    adapter = _make_adapter(telegram_adapter_cls)
+    adapter.handle_message = AsyncMock()
+
+    # Build a channel message carrying a document attachment
+    doc = MagicMock()
+    doc.file_name = "report.pdf"
+    doc.mime_type = "application/pdf"
+    doc.file_size = 2048
+
+    file_obj = AsyncMock()
+    file_obj.download_as_bytearray = AsyncMock(return_value=bytearray(b"%PDF-1.4"))
+    file_obj.file_path = "documents/report.pdf"
+    doc.get_file = AsyncMock(return_value=file_obj)
+
+    chat = SimpleNamespace(
+        id=-1003950368353,
+        type="channel",
+        title="wzrd",
+        full_name=None,
+        is_forum=False,
+    )
+    msg = SimpleNamespace(
+        chat=chat,
+        from_user=None,
+        text="",
+        caption="annual report",
+        entities=[],
+        caption_entities=[],
+        message_thread_id=None,
+        is_topic_message=False,
+        message_id=42,
+        reply_to_message=None,
+        quote=None,
+        date=None,
+        forum_topic_created=None,
+        document=doc,
+        photo=None,
+        video=None,
+        audio=None,
+        voice=None,
+        sticker=None,
+        media_group_id=None,
+    )
+    update = _make_channel_update(msg)
+
+    with patch("plugins.platforms.telegram.adapter.cache_document_from_bytes") as mock_cache:
+        mock_cache.return_value = "/tmp/cached/report.pdf"
+        await adapter._handle_media_message(update, MagicMock())
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "annual report"
+    assert event.source.chat_type == "channel"
+    assert event.source.chat_id == "-1003950368353"
+    assert len(event.media_urls) == 1

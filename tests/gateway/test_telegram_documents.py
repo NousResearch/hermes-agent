@@ -113,6 +113,7 @@ def _make_update(msg):
     """Wrap a message in a mock Update."""
     update = MagicMock()
     update.message = msg
+    update.effective_message = msg
     return update
 
 

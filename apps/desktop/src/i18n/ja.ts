@@ -287,7 +287,32 @@ export const ja = defineLocale({
       installError: 'そのテーマをインストールできませんでした。',
       installed: name => `「${name}」をインストールしました。`,
       removeTheme: 'テーマを削除',
-      importedBadge: 'インポート済み'
+      importedBadge: 'インポート済み',
+      pet: {
+        title: 'ペット',
+        intro:
+          'アプリ上に浮かぶ petdex のアニメーションマスコットを採用しましょう。ツール実行中は走り、成功すると喜び、エラーでしょんぼりと、Hermes の状態に反応します。',
+        restartHint:
+          'ペット機能には再起動が必要です。この機能が追加される前に起動したアプリが動作中です。Hermes を終了して再度開き、このページに戻ってください。',
+        scaleTitle: 'サイズ',
+        scaleDesc: '浮遊マスコットの大きさを変更します。すべての画面に即時反映されます。',
+        on: 'オン',
+        off: 'オフ',
+        chooseTitle: 'ペットを選ぶ',
+        chooseDesc: '選ぶと（必要に応じて）インストールされ、アクティブになります。',
+        searchPlaceholder: 'ペットを検索…',
+        unreachable: 'petdex ギャラリーに接続できませんでした。接続を確認してこのページを開き直してください。',
+        noMatch: query => `「${query}」に一致するペットがありません。`,
+        installedTag: 'インストール済み',
+        countCapped: (cap, total) => `${total} 件中 ${cap} 件を表示中——入力して絞り込めます。`,
+        count: n => `${n} 件のペット。`,
+        uninstall: name => `${name} をアンインストール`,
+        adoptFailed: slug => `${slug} を採用できませんでした`,
+        uninstallFailed: slug => `${slug} をアンインストールできませんでした`,
+        noneAvailable: 'オンにできるペットがありません。',
+        turnOnFailed: 'ペットをオンにできませんでした。',
+        turnOffFailed: 'ペットをオフにできませんでした。'
+      }
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',
@@ -843,8 +868,22 @@ export const ja = defineLocale({
     commandCenter: 'コマンドセンター',
     appearance: '外観',
     settings: '設定',
-    changeTheme: 'テーマを変更...',
+    changeTheme: 'テーマを変更',
     changeColorMode: 'カラーモードを変更...',
+    pets: {
+      title: 'ペット',
+      placeholder: 'ペットを検索…',
+      loading: 'petdex ギャラリーを読み込み中…',
+      error: 'petdex ギャラリーに接続できません。',
+      staleBackend: 'ペット機能を使うには Hermes を再起動してください。',
+      empty: '一致するペットがありません。',
+      turnOff: 'オフ',
+      turnOn: 'オン',
+      installed: 'インストール済み',
+      adoptFailed: 'ペットを採用できませんでした。',
+      toggleFailed: 'ペットを切り替えできませんでした。',
+      noneAvailable: '利用可能なペットがありません。'
+    },
     installTheme: {
       title: 'テーマをインストール...',
       placeholder: 'VS Code Marketplace を検索...',

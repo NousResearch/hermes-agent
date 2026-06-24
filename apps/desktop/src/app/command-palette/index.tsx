@@ -29,6 +29,7 @@ import {
   Moon,
   Package,
   Palette,
+  PawPrint,
   Plus,
   RefreshCw,
   Settings,
@@ -40,7 +41,7 @@ import {
   Zap
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
+import { $commandPaletteOpen, $commandPalettePage, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
 import { runGatewayRestart } from '@/store/system-actions'
 import { luminance } from '@/themes/color'
@@ -64,6 +65,7 @@ import { fieldCopyForSchemaKey } from '../settings/field-copy'
 import { prettyName } from '../settings/helpers'
 
 import { MarketplaceThemePage } from './marketplace-theme-page'
+import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 
 interface PaletteItem {
   /** Keybind action id — its live combo renders as a hotkey hint. */
@@ -207,6 +209,7 @@ function themeSupportsMode(name: string, target: 'light' | 'dark'): boolean {
 export function CommandPalette() {
   const { t } = useI18n()
   const open = useStore($commandPaletteOpen)
+  const pendingPage = useStore($commandPalettePage)
   const bindings = useStore($bindings)
   const navigate = useNavigate()
   const { availableThemes, resolvedMode, setMode, setTheme, themeName } = useTheme()
@@ -251,6 +254,14 @@ export function CommandPalette() {
       setPage(null)
     }
   }, [open])
+
+  // Deep-link into a nested page (e.g. `/pet list` → pets picker).
+  useEffect(() => {
+    if (open && pendingPage) {
+      setPage(pendingPage)
+      $commandPalettePage.set(null)
+    }
+  }, [open, pendingPage])
 
   const go = useCallback((path: string) => () => navigate(path), [navigate])
 
@@ -391,6 +402,13 @@ export function CommandPalette() {
             keywords: ['appearance', 'color mode', 'brightness', 'dark', 'light', 'system'],
             label: cc.changeColorMode,
             to: 'color-mode'
+          },
+          {
+            icon: PawPrint,
+            id: 'appearance-pets',
+            keywords: ['pet', 'petdex', 'mascot', 'pets', '/pet', 'paw'],
+            label: cc.pets.title,
+            to: 'pets'
           }
         ]
       },
@@ -559,6 +577,12 @@ export function CommandPalette() {
           }
         ]
       },
+      // Server-driven page: browse petdex gallery, adopt/switch, toggle off.
+      pets: {
+        title: t.commandCenter.pets.title,
+        placeholder: t.commandCenter.pets.placeholder,
+        groups: []
+      },
       // Server-driven page: items come from the Marketplace, rendered by
       // <MarketplaceThemePage> (loader + live search + per-row install).
       'install-theme': {
@@ -633,45 +657,51 @@ export function CommandPalette() {
               }}
               onValueChange={setSearch}
               placeholder={placeholder}
+              right={page === 'pets' ? <PetInlineToggle /> : undefined}
               value={search}
             />
             <CommandList className="dt-portal-scrollbar max-h-[min(20rem,56vh)]">
-              {page === 'install-theme' ? (
+              {/* Server-driven pages render their own list; the rest show groups. */}
+              {page === 'pets' ? (
+                <PetPalettePage search={search} />
+              ) : page === 'install-theme' ? (
                 <MarketplaceThemePage onPickTheme={setTheme} search={search} />
               ) : (
-                <CommandEmpty>{t.commandCenter.noResults}</CommandEmpty>
-              )}
-              {visibleGroups.map((group, index) => (
-                <CommandGroup
-                  className={HUD_HEADING}
-                  heading={group.heading}
-                  key={group.heading ?? `palette-group-${index}`}
-                >
-                  {group.items.map(item => {
-                    const Icon = item.icon
-                    const combo = item.action ? bindings[item.action]?.[0] : undefined
+                <>
+                  <CommandEmpty>{t.commandCenter.noResults}</CommandEmpty>
+                  {visibleGroups.map((group, index) => (
+                    <CommandGroup
+                      className={HUD_HEADING}
+                      heading={group.heading}
+                      key={group.heading ?? `palette-group-${index}`}
+                    >
+                      {group.items.map(item => {
+                        const Icon = item.icon
+                        const combo = item.action ? bindings[item.action]?.[0] : undefined
 
-                    return (
-                      <CommandItem
-                        className={cn(HUD_ITEM, HUD_TEXT)}
-                        key={item.id}
-                        keywords={item.keywords}
-                        onSelect={() => handleSelect(item)}
-                        value={`${item.label} ${item.keywords?.join(' ') ?? ''} ${item.id}`}
-                      >
-                        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-                        <span className="truncate">{item.label}</span>
-                        {combo && <KbdCombo className="ml-auto opacity-55" combo={combo} size="sm" />}
-                        {item.to && (
-                          <ChevronRight
-                            className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')}
-                          />
-                        )}
-                      </CommandItem>
-                    )
-                  })}
-                </CommandGroup>
-              ))}
+                        return (
+                          <CommandItem
+                            className={cn(HUD_ITEM, HUD_TEXT)}
+                            key={item.id}
+                            keywords={item.keywords}
+                            onSelect={() => handleSelect(item)}
+                            value={`${item.label} ${item.keywords?.join(' ') ?? ''} ${item.id}`}
+                          >
+                            <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+                            <span className="truncate">{item.label}</span>
+                            {combo && <KbdCombo className="ml-auto opacity-55" combo={combo} size="sm" />}
+                            {item.to && (
+                              <ChevronRight
+                                className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')}
+                              />
+                            )}
+                          </CommandItem>
+                        )
+                      })}
+                    </CommandGroup>
+                  ))}
+                </>
+              )}
             </CommandList>
           </Command>
         </DialogPrimitive.Content>

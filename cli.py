@@ -12031,6 +12031,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     record_final_assistant(self.agent, response)
                 except Exception:
                     logging.debug("kanban worker final assistant journal failed", exc_info=True)
+                try:
+                    _kanban_activity = getattr(self, "_kanban_activity_journal", None)
+                    if _kanban_activity is not None:
+                        _kanban_activity.flush_assistant_text()
+                        _kanban_activity.assistant_text(response)
+                except Exception:
+                    logging.debug("kanban worker activity final assistant journal failed", exc_info=True)
 
             # Auto-generate session title after first exchange (non-blocking)
             if response and result and not result.get("failed") and not result.get("partial"):

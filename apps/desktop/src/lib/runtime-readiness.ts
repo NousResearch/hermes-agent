@@ -16,6 +16,7 @@ export interface RuntimeReadinessSignals {
 
 export interface RuntimeReadinessOptions {
   defaultReason?: string
+  requestedProvider?: string
   unknownReady?: boolean
 }
 
@@ -54,21 +55,27 @@ function normalizeMessage(value: null | string | undefined): null | string {
 
 async function requestWithFallback<T>(
   requestGateway: RuntimeReadinessRequester,
-  method: string
+  method: string,
+  params?: Record<string, unknown>
 ): Promise<{ error: null | string; value: null | T }> {
   try {
-    return { error: null, value: await requestGateway<T>(method) }
+    return { error: null, value: await requestGateway<T>(method, params) }
   } catch (error) {
     return { error: toErrorMessage(error), value: null }
   }
 }
 
 export async function fetchRuntimeReadinessSignals(
-  requestGateway: RuntimeReadinessRequester
+  requestGateway: RuntimeReadinessRequester,
+  requestedProvider?: string
 ): Promise<RuntimeReadinessSignals> {
+  const runtimeParams = requestedProvider?.trim()
+    ? { provider: requestedProvider.trim() }
+    : undefined
+
   const [setup, runtime] = await Promise.all([
     requestWithFallback<SetupStatusSnapshot>(requestGateway, 'setup.status'),
-    requestWithFallback<RuntimeCheckSnapshot>(requestGateway, 'setup.runtime_check')
+    requestWithFallback<RuntimeCheckSnapshot>(requestGateway, 'setup.runtime_check', runtimeParams)
   ])
 
   return {
@@ -141,7 +148,7 @@ export async function evaluateRuntimeReadiness(
   requestGateway: RuntimeReadinessRequester,
   options: RuntimeReadinessOptions = {}
 ): Promise<RuntimeReadinessResult> {
-  const signals = await fetchRuntimeReadinessSignals(requestGateway)
+  const signals = await fetchRuntimeReadinessSignals(requestGateway, options.requestedProvider)
 
   return interpretRuntimeReadiness(signals, options)
 }

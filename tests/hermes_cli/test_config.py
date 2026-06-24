@@ -21,6 +21,7 @@ from hermes_cli.config import (
     save_env_value,
     save_env_value_secure,
     sanitize_env_file,
+    write_platform_config_field,
     _sanitize_env_lines,
 )
 
@@ -254,6 +255,24 @@ class TestSaveAndLoadRoundtrip:
 
             reloaded = load_config()
             assert reloaded["terminal"]["timeout"] == 999
+
+    def test_write_platform_config_field_coerces_nested_platform_maps(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "model: test/custom-model\nplatforms: not-a-map\n",
+                encoding="utf-8",
+            )
+
+            write_platform_config_field(
+                "email",
+                "unauthorized_dm_behavior",
+                "pair",
+                raw=True,
+            )
+
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+            assert saved["model"] == "test/custom-model"
+            assert saved["platforms"]["email"]["unauthorized_dm_behavior"] == "pair"
 
 
 class TestSaveEnvValueSecure:
@@ -955,6 +974,17 @@ class TestInterimAssistantMessageConfig:
         assert raw["display"]["interim_assistant_messages"] is True
 
 
+class TestCliRefreshIntervalConfig:
+    """Test the CLI refresh_interval config default (#45592 / #48309)."""
+
+    def test_default_config_enables_cli_refresh_interval(self):
+        """cli_refresh_interval defaults to 1.0 so the idle status-bar
+        clock keeps ticking and the bottom chrome stays alive during
+        idle (#45592). Users on emulators where the periodic redraw
+        fights auto-scroll can set it to 0 (#48309)."""
+        assert DEFAULT_CONFIG["display"]["cli_refresh_interval"] == 1.0
+
+
 class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}
@@ -1045,7 +1075,6 @@ class TestEnvWriteDenylist:
     @pytest.mark.parametrize(
         "allowed_key",
         [
-            "HERMES_GEMINI_CLIENT_ID",
             "HERMES_LANGFUSE_PUBLIC_KEY",
             "HERMES_SPOTIFY_CLIENT_ID",
             "HERMES_QWEN_BASE_URL",

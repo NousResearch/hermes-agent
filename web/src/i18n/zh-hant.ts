@@ -158,6 +158,7 @@ export const zhHant: Translations = {
     selectedSessionsDeleted: "已刪除 {count} 個工作階段",
     failedToDeleteSelected: "刪除所選工作階段失敗",
     resumeInChat: "在對話中繼續",
+    newChat: "新對話",
     previousPage: "上一頁",
     nextPage: "下一頁",
     roles: {
@@ -285,8 +286,8 @@ export const zhHant: Translations = {
     nameRequired: "名稱為必填",
     nameRule:
       "僅允許小寫字母、數字、底線及連字號；首字必須為字母或數字；最多 64 個字元。",
-    invalidName: "設定檔名稱無效",
-    cloneFromDefault: "從預設設定檔複製設定",
+    invalidName: "設定檔名稱無效",    cloneFrom: "從設定檔複製",
+    cloneFromNone: "無（空白）",
     allProfiles: "設定檔",
     noProfiles: "找不到設定檔。",
     defaultBadge: "預設",

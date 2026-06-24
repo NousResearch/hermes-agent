@@ -43,12 +43,13 @@ class CustomProfile(ProviderProfile):
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Custom/Ollama: base_url is user-configured; fetch if set."""
-        if not self.base_url:
+        if not (base_url or self.base_url):
             return None
-        return super().fetch_models(api_key=api_key, timeout=timeout)
+        return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
 
 
 custom = CustomProfile(

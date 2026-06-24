@@ -8,12 +8,14 @@ import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
+import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
-import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { storedSessionIdForNotification } from '../lib/session-ids'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
@@ -31,12 +33,16 @@ import {
   FILE_BROWSER_MAX_WIDTH,
   FILE_BROWSER_MIN_WIDTH,
   pinSession,
+  PREVIEW_PANE_ID,
   setSidebarOverlayMounted,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '../store/layout'
+import { respondToApprovalAction } from '../store/native-notifications'
+import { setPetActivity } from '../store/pet'
+import { setPetOverlayOpenAppHandler, setPetOverlaySubmitHandler } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import {
   $activeGatewayProfile,
@@ -48,10 +54,14 @@ import {
 } from '../store/profile'
 import {
   $activeSessionId,
+  $attentionSessionIds,
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
+  $messages,
   $messagingSessions,
+  $resumeFailedSessionId,
+  $resumeExhaustedSessionId,
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
@@ -76,6 +86,7 @@ import {
   setSessionsLoading,
   setSessionsTotal
 } from '../store/session'
+import { onSessionsChanged } from '../store/session-sync'
 import { clearSessionTodos, setSessionTodos, todoListActive } from '../store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
@@ -197,6 +208,8 @@ export function DesktopController() {
   const activeSessionId = useStore($activeSessionId)
   const currentCwd = useStore($currentCwd)
   const freshDraftReady = useStore($freshDraftReady)
+  const resumeFailedSessionId = useStore($resumeFailedSessionId)
+  const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const filePreviewTarget = useStore($filePreviewTarget)
   const previewTarget = useStore($previewTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
@@ -267,6 +280,30 @@ export function DesktopController() {
       unsubscribe?.()
       stopUpdatePoller()
     }
+  }, [])
+
+  // Notification click: the main process already focused the window; jump to its
+  // session. Notifications are tagged with the gateway *runtime* session id, but
+  // the chat route is keyed by the *stored* id — navigating with the runtime id
+  // resumes a non-existent stored session ("session not found") and strands the
+  // user. Translate runtime -> stored before navigating.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
+      if (sessionId) {
+        navigate(sessionRoute(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionIdRef.current)))
+      }
+    })
+
+    return () => unsubscribe?.()
+  }, [navigate, runtimeIdByStoredSessionIdRef])
+
+  // Notification action button (Approve/Reject) — resolve in place, no navigation.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onNotificationAction?.(({ actionId, sessionId }) => {
+      void respondToApprovalAction(sessionId ?? null, actionId)
+    })
+
+    return () => unsubscribe?.()
   }, [])
 
   // hermes:// deep links (e.g. a docs "Send to App" button for an automation blueprint).
@@ -441,6 +478,17 @@ export function DesktopController() {
   const loadMoreSessions = useCallback(() => {
     bumpSessionsLimit()
     void refreshSessions()
+  }, [refreshSessions])
+
+  // Another window mutated the shared session list (e.g. a chat started in the
+  // pop-out). Re-pull so the sidebar reflects it. Pop-outs have no sidebar, so
+  // only real windows bother.
+  useEffect(() => {
+    if (isSecondaryWindow()) {
+      return
+    }
+
+    return onSessionsChanged(() => void refreshSessions().catch(() => undefined))
   }, [refreshSessions])
 
   // ALL-profiles view pages one profile at a time: fetch that profile's next
@@ -678,7 +726,9 @@ export function DesktopController() {
     }
 
     lastGatewayProfileRef.current = activeGatewayProfile
-    void refreshCurrentModel()
+    // Force: the new profile has its own default, so reseed even if the composer
+    // already shows the previous profile's model.
+    void refreshCurrentModel(true)
     void refreshActiveProfile()
   }, [activeGatewayProfile, refreshCurrentModel])
 
@@ -699,6 +749,49 @@ export function DesktopController() {
       return branched
     },
     [branchCurrentSession, refreshSessions]
+  )
+
+  // Clear a failed turn's red error banner from the transcript. Errors are
+  // renderer-local state (never persisted), so dismissing is purely a view +
+  // session-cache edit. A message that errored before emitting any visible
+  // text is a bare error placeholder → drop it entirely; one that streamed
+  // partial output then failed keeps its content and just sheds the error.
+  // Both the per-runtime cache AND the live $messages view must be updated:
+  // `preserveLocalAssistantErrors` re-grafts any still-errored message it
+  // finds in the view onto the next session.info flush, so clearing only the
+  // cache would let the heartbeat resurrect the banner.
+  const dismissError = useCallback(
+    (messageId: string) => {
+      const runtimeSessionId = activeSessionIdRef.current
+
+      if (!runtimeSessionId) {
+        return
+      }
+
+      const clearErrorIn = (messages: ChatMessage[]): ChatMessage[] =>
+        messages.flatMap(message => {
+          if (message.id !== messageId || !message.error) {
+            return [message]
+          }
+
+          if (!chatMessageText(message).trim() && !message.parts.some(part => part.type !== 'text')) {
+            return []
+          }
+
+          return [{ ...message, error: undefined, pending: false }]
+        })
+
+      // View first: the flush below reads $messages as the "current" baseline
+      // for error preservation, so the banner must be gone from it before the
+      // cache update triggers a re-sync.
+      setMessages(clearErrorIn($messages.get()))
+
+      updateSessionState(runtimeSessionId, state => ({
+        ...state,
+        messages: clearErrorIn(state.messages)
+      }))
+    },
+    [activeSessionIdRef, updateSessionState]
   )
 
   const startSessionInWorkspace = useCallback(
@@ -750,6 +843,53 @@ export function DesktopController() {
     sttEnabled,
     updateSessionState
   })
+
+  // The popped-out pet drives two actions back into the app: send a prompt, and
+  // open the most recent thread. Both are registered ONCE through refs that track
+  // the latest callbacks — re-registering on every `submitText`/`resumeSession`
+  // identity change left a brief window where the handler was nulled (cleanup
+  // before re-register), which could drop a submit fired from the overlay (e.g.
+  // creating a session from the new-session screen). The ref form keeps a stable,
+  // always-current handler. Primary window only — it owns the overlay.
+  const submitTextRef = useRef(submitText)
+  submitTextRef.current = submitText
+  const resumeSessionRef = useRef(resumeSession)
+  resumeSessionRef.current = resumeSession
+
+  useEffect(() => {
+    if (isSecondaryWindow()) {
+      return
+    }
+
+    setPetOverlaySubmitHandler(text => void submitTextRef.current(text))
+    // Mail icon: $sessions is ordered most-recent-first; the pet is global (not
+    // per session) so "most recent" is the right target. main.cjs already raised
+    // the window before forwarding this.
+    setPetOverlayOpenAppHandler(() => {
+      const recent = $sessions.get()[0]
+
+      if (recent?.id) {
+        void resumeSessionRef.current(recent.id)
+      }
+    })
+
+    return () => {
+      setPetOverlaySubmitHandler(null)
+      setPetOverlayOpenAppHandler(null)
+    }
+  }, [])
+
+  // Mirror "a session is blocked on the user" (clarify/approval) into the pet's
+  // awaitingInput flag so it shows the `waiting` pose. Lives on $petActivity so
+  // it rides the same atom the pop-out overlay mirrors — no session list needed
+  // there. Every window keeps its own in-window pet in sync.
+  useEffect(() => {
+    const sync = () => setPetActivity({ awaitingInput: $attentionSessionIds.get().length > 0 })
+
+    sync()
+
+    return $attentionSessionIds.listen(sync)
+  }, [])
 
   useGatewayBoot({
     handleGatewayEvent: handleDesktopGatewayEvent,
@@ -810,6 +950,8 @@ export function DesktopController() {
     gatewayState,
     locationPathname: location.pathname,
     resumeSession,
+    resumeFailedSessionId,
+    resumeExhaustedSessionId,
     routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
@@ -826,7 +968,6 @@ export function DesktopController() {
     gatewayLogLines,
     gatewayState,
     inferenceStatus,
-    modelMenuContent,
     openAgents,
     freshDraftReady,
     openCommandCenterSection,
@@ -867,6 +1008,7 @@ export function DesktopController() {
 
   const overlays = (
     <>
+      <RemoteDisplayBanner />
       {!isSecondaryWindow() && <DesktopInstallOverlay />}
       {!isSecondaryWindow() && (
         <DesktopOnboardingOverlay
@@ -948,6 +1090,7 @@ export function DesktopController() {
     <ChatView
       gateway={gatewayRef.current}
       maxVoiceRecordingSeconds={voiceMaxRecordingSeconds}
+      modelMenuContent={modelMenuContent}
       onAddContextRef={composer.addContextRefAttachment}
       onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}
       onAttachDroppedItems={composer.attachDroppedItems}
@@ -959,6 +1102,7 @@ export function DesktopController() {
           void removeSession(selectedStoredSessionId)
         }
       }}
+      onDismissError={dismissError}
       onEdit={editMessage}
       onPasteClipboardImage={() => void composer.pasteClipboardImage()}
       onPickFiles={() => void composer.pickContextPaths('file')}
@@ -967,6 +1111,7 @@ export function DesktopController() {
       onReload={reloadFromMessage}
       onRemoveAttachment={id => void composer.removeAttachment(id)}
       onRestoreToMessage={restoreToMessage}
+      onRetryResume={sessionId => void resumeSession(sessionId, true)}
       onSteer={steerPrompt}
       onSubmit={submitText}
       onThreadMessagesChange={handleThreadMessagesChange}
@@ -983,7 +1128,7 @@ export function DesktopController() {
   const previewPane = (
     <Pane
       disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
-      id="preview"
+      id={PREVIEW_PANE_ID}
       key="preview"
       maxWidth={PREVIEW_RAIL_MAX_WIDTH}
       minWidth={PREVIEW_RAIL_MIN_WIDTH}

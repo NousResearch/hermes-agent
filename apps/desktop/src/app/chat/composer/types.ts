@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react'
+
 import type { HermesGateway } from '@/hermes'
 import type { ComposerAttachment } from '@/store/composer'
 
@@ -22,6 +24,8 @@ export interface ChatBarState {
     canSwitch: boolean
     loading?: boolean
     quickModels?: QuickModelOption[]
+    /** Reused status-bar dropdown (built with gateway + selectModel upstream). */
+    modelMenuContent?: ReactNode
   }
   tools: { enabled: boolean; label: string; suggestions?: ContextSuggestion[] }
   voice: { enabled: boolean; active: boolean }

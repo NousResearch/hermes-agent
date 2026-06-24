@@ -357,7 +357,7 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
       </button>
 
       {visibleRows.length > 0 ? (
-        <div className="grid min-w-0 gap-1 pl-6">
+        <div className="grid min-w-0 gap-1 pl-6" data-selectable-text="true">
           {visibleRows.map((entry, i) => (
             <StreamLine
               active={running && i === visibleRows.length - 1}
@@ -371,7 +371,7 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
       ) : null}
 
       {open && fileLines.length > 0 ? (
-        <div className="grid min-w-0 gap-0.5 pl-6">
+        <div className="grid min-w-0 gap-0.5 pl-6" data-selectable-text="true">
           <p className="text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">
             {t.agents.files}
           </p>

@@ -35,12 +35,15 @@ Config keys this provider responds to::
 
 Env vars::
 
-    FIRECRAWL_API_KEY=...            # direct cloud auth
+    FIRECRAWL_API_KEY=...            # direct cloud auth; unset → keyless free tier
     FIRECRAWL_API_URL=...            # self-hosted Firecrawl
     FIRECRAWL_GATEWAY_URL=...        # Nous tool-gateway (subscribers)
     TOOL_GATEWAY_DOMAIN=...          # alternate gateway env
     TOOL_GATEWAY_SCHEME=...
     TOOL_GATEWAY_USER_TOKEN=...
+
+When no credentials are set, Firecrawl SDK 4.30+ falls back to the
+keyless free tier (rate-limited per IP).
 """
 
 from __future__ import annotations
@@ -165,12 +168,13 @@ def _has_direct_firecrawl_config() -> bool:
 
 
 def check_firecrawl_api_key() -> bool:
-    """Return True when Firecrawl backend (direct or gateway) is usable.
+    """Return True when any Firecrawl backend (keyless, direct, or gateway) is usable.
 
     Re-exported by :mod:`tools.web_tools` for backward compatibility with
     existing tests and the ``hermes tools`` setup flow.
     """
-    return _has_direct_firecrawl_config() or _is_tool_gateway_ready()
+    # SDK 4.30+ supports keyless fallback when no credentials are set
+    return True
 
 
 def _firecrawl_backend_help_suffix() -> str:
@@ -191,8 +195,8 @@ def _raise_web_backend_configuration_error() -> None:
 
     message = (
         "Web tools are not configured. "
-        "Set FIRECRAWL_API_KEY for cloud Firecrawl or set FIRECRAWL_API_URL "
-        "for a self-hosted Firecrawl instance."
+        "Set FIRECRAWL_API_KEY for cloud Firecrawl, set FIRECRAWL_API_URL "
+        "for a self-hosted Firecrawl instance, or use Firecrawl Keyless."
     )
     if _wt.managed_nous_tools_enabled():
         message += (
@@ -233,22 +237,24 @@ def _get_firecrawl_client() -> Any:
         managed_gateway = _wt.resolve_managed_tool_gateway(
             "firecrawl", token_reader=_wt._read_nous_access_token
         )
-        if managed_gateway is None:
-            logger.error(
-                "Firecrawl client initialization failed: "
-                "missing direct config and tool-gateway auth."
+        if managed_gateway is not None:
+            kwargs = {
+                "api_key": managed_gateway.nous_user_token,
+                "api_url": managed_gateway.gateway_origin,
+            }
+            client_config = (
+                "tool-gateway",
+                kwargs["api_url"],
+                managed_gateway.nous_user_token,
             )
-            _raise_web_backend_configuration_error()
-
-        kwargs = {
-            "api_key": managed_gateway.nous_user_token,
-            "api_url": managed_gateway.gateway_origin,
-        }
-        client_config = (
-            "tool-gateway",
-            kwargs["api_url"],
-            managed_gateway.nous_user_token,
-        )
+        elif direct_config is not None:
+            kwargs, client_config = direct_config
+        else:
+            # Keyless: SDK 4.30+ supports no-key construction and falls
+            # back to the keyless free tier (rate-limited per IP).
+            logger.info("No Firecrawl credentials set; using keyless free tier.")
+            kwargs = {}
+            client_config = ("keyless", None, None)
 
     cached = getattr(_wt, "_firecrawl_client", None)
     cached_config = getattr(_wt, "_firecrawl_client_config", None)
@@ -257,7 +263,14 @@ def _get_firecrawl_client() -> Any:
 
     # Construct via the re-exported Firecrawl proxy on tools.web_tools so
     # unit tests patching ``tools.web_tools.Firecrawl`` see their mock.
-    _wt._firecrawl_client = _wt.Firecrawl(**kwargs)
+    if client_config[0] == "keyless":
+        # v1 client still rejects no-key; construct v2 directly — search and
+        # scrape are v2 methods and work without a key in SDK 4.30+.
+        from firecrawl.v2 import FirecrawlClient as _V2Cls  # noqa: WPS433
+
+        _wt._firecrawl_client = _V2Cls(api_url="https://api.firecrawl.dev")
+    else:
+        _wt._firecrawl_client = _wt.Firecrawl(**kwargs)
     _wt._firecrawl_client_config = client_config
     return _wt._firecrawl_client
 
@@ -365,7 +378,7 @@ def _extract_scrape_payload(scrape_result: Any) -> Dict[str, Any]:
 
 
 class FirecrawlWebSearchProvider(WebSearchProvider):
-    """Firecrawl search + extract provider with dual auth paths."""
+    """Firecrawl search + extract provider with keyless, direct, and gateway auth paths."""
 
     @property
     def name(self) -> str:

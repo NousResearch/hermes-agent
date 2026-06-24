@@ -371,6 +371,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_swarm.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- list ---
+    p_lane_status = sub.add_parser(
+        "lane-status",
+        aliases=["lanes"],
+        help="Report developer lane heartbeats, claims, wakes, and evidence receipts",
+    )
+    p_lane_status.add_argument("--json", action="store_true", help="Emit JSON output")
+
     p_list = sub.add_parser("list", aliases=["ls"], help="List tasks")
     p_list.add_argument("--mine", action="store_true",
                         help="Filter by $HERMES_PROFILE as assignee")
@@ -882,6 +889,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         "init":     _cmd_init,
         "create":   _cmd_create,
         "swarm":    _cmd_swarm,
+        "lane-status": _cmd_lane_status,
+        "lanes":    _cmd_lane_status,
         "list":     _cmd_list,
         "ls":       _cmd_list,
         "show":     _cmd_show,
@@ -1354,6 +1363,32 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
         print("Workers: " + ", ".join(created.worker_ids))
         print(f"Verifier: {created.verifier_id}")
         print(f"Synthesizer: {created.synthesizer_id}")
+    return 0
+
+
+def _cmd_lane_status(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        report = kb.lane_status_report(conn)
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+    lanes = report.get("lanes", [])
+    if not lanes:
+        print("No developer lane heartbeats recorded.")
+        return 0
+    print("Developer lane status")
+    print(f"Generated at: {report.get('generated_at')}")
+    for lane in lanes:
+        active = lane.get("active_claim") or {}
+        last_event = lane.get("last_event") or {}
+        print(f"- {lane['lane_id']}: {lane['classification']}")
+        print(f"  heartbeat_freshness_seconds: {lane['heartbeat_freshness_seconds']}")
+        print(f"  active_claim: {active.get('work_item_id') or '-'}")
+        print(f"  stale_claims: {lane['stale_claims']}")
+        print(f"  next_scheduled_wake: {lane.get('next_scheduled_wake')}")
+        print(f"  last_event_consumed: {lane.get('last_event_consumed')}")
+        print(f"  last_event: {last_event.get('event_type') or '-'}")
+        print(f"  last_evidence_receipt: {lane.get('last_evidence_receipt') or '-'}")
     return 0
 
 

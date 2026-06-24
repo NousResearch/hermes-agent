@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
 import re
@@ -944,6 +945,80 @@ CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, cre
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+
+-- Event-driven developer lane control-loop state.  This is deliberately
+-- colocated with the Kanban board so claims, queue items, heartbeats, and
+-- operator-visible reports share the same durable SQLite transaction boundary.
+CREATE TABLE IF NOT EXISTS lane_heartbeats (
+    lane_id                     TEXT PRIMARY KEY,
+    agent_session_id            TEXT NOT NULL,
+    repo_scope                  TEXT NOT NULL,
+    state                       TEXT NOT NULL,
+    claimed_work_item_id        TEXT,
+    last_successful_activity_at INTEGER,
+    last_error_at               INTEGER,
+    last_error_message          TEXT,
+    next_eligible_wake_time     INTEGER NOT NULL,
+    evidence_path               TEXT,
+    last_event_id               INTEGER,
+    idle_backoff_seconds        INTEGER NOT NULL DEFAULT 60,
+    updated_at                  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lane_continuity_packets (
+    lane_id     TEXT PRIMARY KEY,
+    packet_json TEXT NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lane_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    lane_id       TEXT,
+    event_type    TEXT NOT NULL,
+    work_item_id  TEXT,
+    evidence_path TEXT,
+    consumed_at   INTEGER,
+    created_at    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lane_work_items (
+    work_item_id          TEXT PRIMARY KEY,
+    repo_scope            TEXT NOT NULL,
+    status                TEXT NOT NULL DEFAULT 'open',
+    priority              INTEGER NOT NULL DEFAULT 0,
+    failed_required_ci    INTEGER NOT NULL DEFAULT 0,
+    stale_open_pr         INTEGER NOT NULL DEFAULT 0,
+    governance_blocker    INTEGER NOT NULL DEFAULT 0,
+    review_gap            INTEGER NOT NULL DEFAULT 0,
+    dependency_unblocked  INTEGER NOT NULL DEFAULT 0,
+    governance_state      TEXT,
+    capability            TEXT,
+    blocked_event_id      INTEGER,
+    last_event_id         INTEGER,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lane_claims (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_item_id          TEXT NOT NULL,
+    lane_id               TEXT NOT NULL,
+    claim_owner           TEXT NOT NULL,
+    claim_started_at      INTEGER NOT NULL,
+    claim_expires_at      INTEGER NOT NULL,
+    claim_status          TEXT NOT NULL,
+    claim_evidence_path   TEXT NOT NULL,
+    closed_at             INTEGER,
+    recovery_of_claim_id  INTEGER,
+    close_message         TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lane_claims_one_active
+    ON lane_claims(work_item_id)
+    WHERE claim_status = 'active';
+CREATE INDEX IF NOT EXISTS idx_lane_heartbeats_state ON lane_heartbeats(state, updated_at);
+CREATE INDEX IF NOT EXISTS idx_lane_events_lane_created ON lane_events(lane_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_lane_work_rank ON lane_work_items(status, priority, updated_at);
 """
 
 
@@ -1132,6 +1207,25 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
+@contextlib.contextmanager
+def _cross_process_init_lock(path: Path):
+    """Serialize SQLite integrity/WAL/schema initialization across processes.
+
+    The module-local ``_INIT_LOCK`` only protects threads inside one Python
+    process. Runtime supervisors start as independent processes and can all hit
+    ``connect()`` for the first time at once; schema initialization must not run
+    concurrently across those processes.
+    """
+    lock_path = path.with_name(f"{path.name}.init.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -1160,42 +1254,44 @@ def connect(
     else:
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
-    # and other invalid-header cases without opening a sqlite connection.
-    _validate_sqlite_header(path)
-    # Full integrity probe — catches corruption past the header (malformed
-    # pages, broken internal metadata). Cached per-path after first success
-    # via _INITIALIZED_PATHS so it only runs once per process per path.
-    _guard_existing_db_is_healthy(path)
-    resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
-    try:
-        conn.row_factory = sqlite3.Row
-        with _INIT_LOCK:
-            # WAL activation can take an exclusive lock while SQLite creates the
-            # sidecar files for a fresh database. Keep it in the same process-local
-            # critical section as schema initialization so concurrent gateway
-            # startup threads do not race before _INITIALIZED_PATHS is populated.
-            # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
-            # falls back to DELETE with one WARNING so kanban stays usable there.
-            # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-            from hermes_state import apply_wal_with_fallback
-            apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            needs_init = resolved not in _INITIALIZED_PATHS
-            if needs_init:
-                # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
-                # migrations. Cached so subsequent connect() calls in the same
-                # process are cheap. The lock prevents same-process dispatcher
-                # threads from racing through the additive ALTER TABLE pass with
-                # stale PRAGMA snapshots during gateway startup.
-                conn.executescript(SCHEMA_SQL)
-                _migrate_add_optional_columns(conn)
-                _INITIALIZED_PATHS.add(resolved)
-    except Exception:
-        conn.close()
-        raise
+    with _cross_process_init_lock(path):
+        # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
+        # and other invalid-header cases without opening a sqlite connection.
+        _validate_sqlite_header(path)
+        # Full integrity probe — catches corruption past the header (malformed
+        # pages, broken internal metadata). Cached per-path after first success
+        # via _INITIALIZED_PATHS so it only runs once per process per path.
+        _guard_existing_db_is_healthy(path)
+        resolved = str(path.resolve())
+        conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+        try:
+            conn.row_factory = sqlite3.Row
+            with _INIT_LOCK:
+                # WAL activation can take an exclusive lock while SQLite creates the
+                # sidecar files for a fresh database. Keep it in the same process-local
+                # critical section as schema initialization so concurrent gateway
+                # startup threads do not race before _INITIALIZED_PATHS is populated.
+                # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
+                # falls back to DELETE with one WARNING so kanban stays usable there.
+                # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
+                from hermes_state import apply_wal_with_fallback
+                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA foreign_keys=ON")
+                needs_init = resolved not in _INITIALIZED_PATHS
+                if needs_init:
+                    # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
+                    # migrations. Cached so subsequent connect() calls in the same
+                    # process are cheap. Cross-process supervisors also serialize
+                    # here via the file lock above; without that, simultaneous first
+                    # connects can interleave WAL/schema setup and leave malformed
+                    # sqlite_master metadata.
+                    conn.executescript(SCHEMA_SQL)
+                    _migrate_add_optional_columns(conn)
+                    _INITIALIZED_PATHS.add(resolved)
+        except Exception:
+            conn.close()
+            raise
     return conn
 
 
@@ -1482,6 +1578,363 @@ def write_txn(conn: sqlite3.Connection):
         raise
     else:
         conn.execute("COMMIT")
+
+
+# ---------------------------------------------------------------------------
+# Event-driven developer lane control loop
+# ---------------------------------------------------------------------------
+
+LANE_TERMINAL_CLAIM_STATUSES = {
+    "completed", "blocked", "refused", "superseded", "no-op with evidence", "expired/recovered"
+}
+LANE_GOVERNANCE_HOLDS = {"do-not-merge", "awaiting-human", "held", "human-review"}
+
+
+def _dict(row: sqlite3.Row | None) -> Optional[dict[str, Any]]:
+    return dict(row) if row is not None else None
+
+
+def _now(now: Optional[int] = None) -> int:
+    return int(time.time() if now is None else now)
+
+
+def _lane_row(conn: sqlite3.Connection, lane_id: str) -> Optional[dict[str, Any]]:
+    return _dict(conn.execute("SELECT * FROM lane_heartbeats WHERE lane_id=?", (lane_id,)).fetchone())
+
+
+def record_lane_heartbeat(
+    conn: sqlite3.Connection,
+    *,
+    lane_id: str,
+    agent_session_id: str,
+    repo_scope: str,
+    state: str,
+    claimed_work_item_id: Optional[str] = None,
+    last_successful_activity_at: Optional[int] = None,
+    last_error_at: Optional[int] = None,
+    last_error_message: Optional[str] = None,
+    next_eligible_wake_time: Optional[int] = None,
+    evidence_path: Optional[str] = None,
+    last_event_id: Optional[int] = None,
+    now: Optional[int] = None,
+) -> dict[str, Any]:
+    """Upsert a durable developer-lane heartbeat and return the record.
+
+    Idle lanes use bounded exponential timer fallback.  Event wakeups are
+    recorded separately in lane_events and take precedence in next_lane_wake().
+    """
+    ts = _now(now)
+    previous = _lane_row(conn, lane_id)
+    prev_backoff = int(previous.get("idle_backoff_seconds") or 60) if previous else 60
+    if state == "idle-no-work":
+        idle_backoff = min(max(prev_backoff * 2 if previous and previous.get("state") == "idle-no-work" else 60, 60), 3600)
+        wake = next_eligible_wake_time if next_eligible_wake_time is not None else ts + idle_backoff
+    else:
+        idle_backoff = 60
+        wake = next_eligible_wake_time if next_eligible_wake_time is not None else ts + 60
+    success_at = last_successful_activity_at
+    if success_at is None and state in {"working", "completed", "idle-no-work"}:
+        success_at = ts
+    with write_txn(conn):
+        conn.execute(
+            """
+            INSERT INTO lane_heartbeats (
+                lane_id, agent_session_id, repo_scope, state, claimed_work_item_id,
+                last_successful_activity_at, last_error_at, last_error_message,
+                next_eligible_wake_time, evidence_path, last_event_id,
+                idle_backoff_seconds, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(lane_id) DO UPDATE SET
+                agent_session_id=excluded.agent_session_id,
+                repo_scope=excluded.repo_scope,
+                state=excluded.state,
+                claimed_work_item_id=excluded.claimed_work_item_id,
+                last_successful_activity_at=excluded.last_successful_activity_at,
+                last_error_at=COALESCE(excluded.last_error_at, lane_heartbeats.last_error_at),
+                last_error_message=COALESCE(excluded.last_error_message, lane_heartbeats.last_error_message),
+                next_eligible_wake_time=excluded.next_eligible_wake_time,
+                evidence_path=COALESCE(excluded.evidence_path, lane_heartbeats.evidence_path),
+                last_event_id=COALESCE(excluded.last_event_id, lane_heartbeats.last_event_id),
+                idle_backoff_seconds=excluded.idle_backoff_seconds,
+                updated_at=excluded.updated_at
+            """,
+            (lane_id, agent_session_id, repo_scope, state, claimed_work_item_id,
+             success_at, last_error_at, last_error_message, wake, evidence_path,
+             last_event_id, idle_backoff, ts),
+        )
+    return _lane_row(conn, lane_id) or {}
+
+
+def write_lane_continuity_packet(conn: sqlite3.Connection, *, lane_id: str, packet: dict[str, Any], now: Optional[int] = None) -> dict[str, Any]:
+    required = [
+        "current_objective", "current_repo_branch_pr", "files_touched_or_planned",
+        "active_blocker", "last_verified_command_check", "next_safe_action",
+        "explicit_non_claims", "operator_approvals_relied_on",
+    ]
+    missing = [k for k in required if k not in packet]
+    if missing:
+        raise ValueError(f"continuity packet missing required fields: {', '.join(missing)}")
+    ts = _now(now)
+    with write_txn(conn):
+        conn.execute(
+            "INSERT INTO lane_continuity_packets(lane_id, packet_json, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(lane_id) DO UPDATE SET packet_json=excluded.packet_json, updated_at=excluded.updated_at",
+            (lane_id, json.dumps(packet, sort_keys=True), ts),
+        )
+    return packet
+
+
+def discover_lane_session_state(conn: sqlite3.Connection, lane_id: str, agent_session_id: str) -> dict[str, Any]:
+    hb = _lane_row(conn, lane_id)
+    packet_row = conn.execute("SELECT packet_json FROM lane_continuity_packets WHERE lane_id=?", (lane_id,)).fetchone()
+    packet = json.loads(packet_row["packet_json"]) if packet_row else None
+    active_claim = None
+    if hb and hb.get("claimed_work_item_id"):
+        active_claim = _dict(conn.execute(
+            "SELECT * FROM lane_claims WHERE work_item_id=? AND claim_status='active' ORDER BY id DESC LIMIT 1",
+            (hb["claimed_work_item_id"],),
+        ).fetchone())
+    return {
+        "heartbeat": hb,
+        "continuity_packet": packet,
+        "active_claim": active_claim,
+        "ownership_valid": bool(active_claim and active_claim.get("claim_owner") == agent_session_id),
+    }
+
+
+def claim_lane_work_item(
+    conn: sqlite3.Connection,
+    work_item_id: str,
+    *,
+    lane_id: str,
+    claim_owner: str,
+    ttl_seconds: int,
+    evidence_path: str,
+    now: Optional[int] = None,
+    recovery_of_claim_id: Optional[int] = None,
+) -> dict[str, Any]:
+    ts = _now(now)
+    expires = ts + max(1, int(ttl_seconds))
+    if not evidence_path:
+        raise ValueError("claim_evidence_path is required")
+    with write_txn(conn):
+        existing = conn.execute(
+            "SELECT * FROM lane_claims WHERE work_item_id=? AND claim_status='active'",
+            (work_item_id,),
+        ).fetchone()
+        if existing is not None:
+            return {"claimed": False, "reason": "active_claim_exists", "active_claim": dict(existing)}
+        cur = conn.execute(
+            """
+            INSERT INTO lane_claims(
+                work_item_id, lane_id, claim_owner, claim_started_at,
+                claim_expires_at, claim_status, claim_evidence_path,
+                recovery_of_claim_id
+            ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+            """,
+            (work_item_id, lane_id, claim_owner, ts, expires, evidence_path, recovery_of_claim_id),
+        )
+    return {"claimed": True, "claim_id": cur.lastrowid, "claim_expires_at": expires}
+
+
+def close_lane_claim(conn: sqlite3.Connection, claim_id: int, *, status: str, evidence_path: str, message: Optional[str] = None, now: Optional[int] = None) -> bool:
+    if status not in LANE_TERMINAL_CLAIM_STATUSES:
+        raise ValueError(f"invalid lane claim close status: {status}")
+    if not evidence_path:
+        raise ValueError("close evidence_path is required")
+    ts = _now(now)
+    with write_txn(conn):
+        res = conn.execute(
+            "UPDATE lane_claims SET claim_status=?, claim_evidence_path=?, closed_at=?, close_message=? "
+            "WHERE id=? AND claim_status='active'",
+            (status, evidence_path, ts, message, claim_id),
+        )
+    return res.rowcount == 1
+
+
+def recover_stale_lane_claims(conn: sqlite3.Connection, *, now: Optional[int] = None, evidence_path: str) -> list[str]:
+    ts = _now(now)
+    if not evidence_path:
+        raise ValueError("recovery evidence_path is required")
+    recovered: list[str] = []
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT * FROM lane_claims WHERE claim_status='active' AND claim_expires_at < ? ORDER BY claim_expires_at",
+            (ts,),
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE lane_claims SET claim_status='expired/recovered', claim_evidence_path=?, closed_at=?, close_message=? WHERE id=?",
+                (evidence_path, ts, "expired claim recovered by control loop", row["id"]),
+            )
+            recovered.append(row["work_item_id"])
+    return recovered
+
+
+def record_lane_event(
+    conn: sqlite3.Connection,
+    *,
+    lane_id: Optional[str],
+    event_type: str,
+    work_item_id: Optional[str] = None,
+    evidence_path: Optional[str] = None,
+    now: Optional[int] = None,
+) -> dict[str, Any]:
+    ts = _now(now)
+    with write_txn(conn):
+        cur = conn.execute(
+            "INSERT INTO lane_events(lane_id, event_type, work_item_id, evidence_path, created_at) VALUES (?, ?, ?, ?, ?)",
+            (lane_id, event_type, work_item_id, evidence_path, ts),
+        )
+        event_id = cur.lastrowid
+        if work_item_id:
+            conn.execute("UPDATE lane_work_items SET last_event_id=?, updated_at=? WHERE work_item_id=?", (event_id, ts, work_item_id))
+    return {"event_id": event_id, "event_type": event_type, "work_item_id": work_item_id}
+
+
+def next_lane_wake(conn: sqlite3.Connection, lane_id: str, *, now: Optional[int] = None) -> dict[str, Any]:
+    ts = _now(now)
+    hb = _lane_row(conn, lane_id)
+    last_event_id = int(hb.get("last_event_id") or 0) if hb else 0
+    ev = conn.execute(
+        "SELECT * FROM lane_events WHERE (lane_id=? OR lane_id IS NULL) AND id > ? AND consumed_at IS NULL ORDER BY id LIMIT 1",
+        (lane_id, last_event_id),
+    ).fetchone()
+    if ev is not None:
+        return {"eligible_now": True, "wake_reason": f"event:{ev['event_type']}", "event_id": ev["id"]}
+    wake_time = int(hb.get("next_eligible_wake_time") or ts) if hb else ts
+    return {"eligible_now": ts >= wake_time, "wake_reason": "timer", "next_eligible_wake_time": wake_time}
+
+
+def upsert_lane_work_item(
+    conn: sqlite3.Connection,
+    *,
+    work_item_id: str,
+    repo_scope: str,
+    status: str = "open",
+    priority: int = 0,
+    failed_required_ci: bool = False,
+    stale_open_pr: bool = False,
+    governance_blocker: bool = False,
+    review_gap: bool = False,
+    dependency_unblocked: bool = False,
+    governance_state: Optional[str] = None,
+    capability: Optional[str] = None,
+    blocked_event_id: Optional[int] = None,
+    now: Optional[int] = None,
+) -> dict[str, Any]:
+    ts = _now(now)
+    with write_txn(conn):
+        conn.execute(
+            """
+            INSERT INTO lane_work_items(
+                work_item_id, repo_scope, status, priority, failed_required_ci,
+                stale_open_pr, governance_blocker, review_gap, dependency_unblocked,
+                governance_state, capability, blocked_event_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(work_item_id) DO UPDATE SET
+                repo_scope=excluded.repo_scope, status=excluded.status, priority=excluded.priority,
+                failed_required_ci=excluded.failed_required_ci, stale_open_pr=excluded.stale_open_pr,
+                governance_blocker=excluded.governance_blocker, review_gap=excluded.review_gap,
+                dependency_unblocked=excluded.dependency_unblocked, governance_state=excluded.governance_state,
+                capability=excluded.capability, blocked_event_id=excluded.blocked_event_id, updated_at=excluded.updated_at
+            """,
+            (work_item_id, repo_scope, status, int(priority), int(failed_required_ci), int(stale_open_pr),
+             int(governance_blocker), int(review_gap), int(dependency_unblocked), governance_state,
+             capability, blocked_event_id, ts, ts),
+        )
+    return _dict(conn.execute("SELECT * FROM lane_work_items WHERE work_item_id=?", (work_item_id,)).fetchone()) or {}
+
+
+def _work_item_pickable(row: sqlite3.Row, authorized_scopes: Iterable[str], capabilities: Optional[Iterable[str]], conn: sqlite3.Connection) -> bool:
+    if row["repo_scope"] not in set(authorized_scopes):
+        return False
+    if capabilities is not None and row["capability"] and row["capability"] not in set(capabilities):
+        return False
+    if row["governance_state"] in LANE_GOVERNANCE_HOLDS:
+        return False
+    if row["status"] == "blocked":
+        # Blocked work becomes eligible only after a new event beyond the event
+        # that originally caused/recorded the block.
+        if not (row["last_event_id"] and (row["blocked_event_id"] is None or row["last_event_id"] != row["blocked_event_id"])):
+            return False
+    if conn.execute("SELECT 1 FROM lane_claims WHERE work_item_id=? AND claim_status='active'", (row["work_item_id"],)).fetchone():
+        return False
+    return True
+
+
+def pickup_next_lane_work(
+    conn: sqlite3.Connection,
+    *,
+    lane_id: str,
+    agent_session_id: str,
+    authorized_scopes: list[str],
+    capabilities: Optional[list[str]] = None,
+    ttl_seconds: int = DEFAULT_CLAIM_TTL_SECONDS,
+    evidence_path: Optional[str] = None,
+    now: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    ts = _now(now)
+    rows = conn.execute(
+        """
+        SELECT * FROM lane_work_items
+        WHERE status IN ('open', 'blocked')
+        ORDER BY priority DESC, failed_required_ci DESC, stale_open_pr DESC,
+                 governance_blocker DESC, review_gap DESC, dependency_unblocked DESC,
+                 created_at ASC
+        """
+    ).fetchall()
+    for row in rows:
+        if not _work_item_pickable(row, authorized_scopes, capabilities, conn):
+            continue
+        evidence = evidence_path or f"lane-claims/{lane_id}/{row['work_item_id']}-{ts}.json"
+        claim = claim_lane_work_item(conn, row["work_item_id"], lane_id=lane_id, claim_owner=agent_session_id, ttl_seconds=ttl_seconds, evidence_path=evidence, now=ts)
+        if claim.get("claimed"):
+            conn.execute("UPDATE lane_work_items SET status='claimed', updated_at=? WHERE work_item_id=?", (ts, row["work_item_id"]))
+            hb = record_lane_heartbeat(conn, lane_id=lane_id, agent_session_id=agent_session_id, repo_scope=row["repo_scope"], state="working", claimed_work_item_id=row["work_item_id"], evidence_path=evidence, now=ts)
+            item = dict(row)
+            item.update({"claim": claim, "heartbeat": hb})
+            return item
+    record_lane_heartbeat(conn, lane_id=lane_id, agent_session_id=agent_session_id, repo_scope=authorized_scopes[0] if authorized_scopes else "", state="idle-no-work", now=ts)
+    return None
+
+
+def lane_status_report(conn: sqlite3.Connection, *, now: Optional[int] = None) -> dict[str, Any]:
+    ts = _now(now)
+    lanes = []
+    for row in conn.execute("SELECT * FROM lane_heartbeats ORDER BY lane_id").fetchall():
+        active = _dict(conn.execute(
+            "SELECT * FROM lane_claims WHERE lane_id=? AND claim_status='active' ORDER BY id DESC LIMIT 1",
+            (row["lane_id"],),
+        ).fetchone())
+        last_event = _dict(conn.execute(
+            "SELECT * FROM lane_events WHERE lane_id=? ORDER BY id DESC LIMIT 1",
+            (row["lane_id"],),
+        ).fetchone())
+        age = ts - int(row["updated_at"])
+        classification = row["state"]
+        if row["state"] == "refused-closeout":
+            classification = "refused-closeout"
+        elif age > 3600:
+            classification = "stale"
+        elif row["state"] in {"blocked", "awaiting-human", "idle-no-work", "working", "failed-heartbeat"}:
+            classification = row["state"]
+        stale_claims = conn.execute(
+            "SELECT COUNT(*) AS n FROM lane_claims WHERE lane_id=? AND claim_status='active' AND claim_expires_at < ?",
+            (row["lane_id"], ts),
+        ).fetchone()["n"]
+        lanes.append({
+            "lane_id": row["lane_id"],
+            "classification": classification,
+            "heartbeat_freshness_seconds": age,
+            "active_claim": active,
+            "stale_claims": int(stale_claims),
+            "next_scheduled_wake": row["next_eligible_wake_time"],
+            "last_event_consumed": row["last_event_id"],
+            "last_event": last_event,
+            "last_evidence_receipt": row["evidence_path"],
+        })
+    return {"generated_at": ts, "lanes": lanes}
 
 
 # ---------------------------------------------------------------------------

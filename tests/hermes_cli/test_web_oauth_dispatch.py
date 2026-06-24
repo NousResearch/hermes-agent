@@ -134,6 +134,31 @@ def test_nous_dashboard_device_flow_ignores_legacy_scope_override(monkeypatch):
         ws._oauth_sessions.pop(result["session_id"], None)
 
 
+def test_nous_dashboard_device_flow_defaults_malformed_interval(monkeypatch):
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    def fake_request_device_code(**kwargs):
+        data = _fake_nous_device_data()
+        data["interval"] = "fast"
+        return data
+
+    monkeypatch.setattr(auth_mod, "_request_device_code", fake_request_device_code)
+    monkeypatch.setattr(ws, "_nous_poller", lambda sid: None)
+
+    result = asyncio.run(ws._start_device_code_flow("nous"))
+    try:
+        assert result["flow"] == "device_code"
+        assert result["user_code"] == "NOUS-1234"
+        assert result["poll_interval"] == auth_mod.DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS
+        assert (
+            ws._oauth_sessions[result["session_id"]]["interval"]
+            == auth_mod.DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS
+        )
+    finally:
+        ws._oauth_sessions.pop(result["session_id"], None)
+
+
 def test_oauth_provider_status_uses_profile_query(tmp_path, monkeypatch):
     from hermes_cli import web_server as ws
     from hermes_constants import get_hermes_home

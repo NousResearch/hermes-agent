@@ -6116,6 +6116,14 @@ _OAUTH_SESSION_TTL_SECONDS = 15 * 60
 _oauth_sessions: Dict[str, Dict[str, Any]] = {}
 _oauth_sessions_lock = threading.Lock()
 
+
+def _coerce_oauth_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return parsed if parsed > 0 else default
+
 # Import OAuth constants from canonical source instead of duplicating.
 # Guarded so hermes web still starts if anthropic_adapter is unavailable;
 # Phase 2 endpoints will return 501 in that case.
@@ -6375,6 +6383,7 @@ async def _start_device_code_flow(
     """
     if provider_id == "nous":
         from hermes_cli.auth import (
+            DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS,
             _request_device_code,
             PROVIDER_REGISTRY,
         )
@@ -6407,8 +6416,12 @@ async def _start_device_code_flow(
             None, _do_nous_device_request
         )
         sid, sess = _new_oauth_session("nous", "device_code", profile=profile)
+        poll_interval = _coerce_oauth_positive_int(
+            device_data.get("interval"),
+            DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS,
+        )
         sess["device_code"] = str(device_data["device_code"])
-        sess["interval"] = int(device_data["interval"])
+        sess["interval"] = poll_interval
         sess["expires_at"] = time.time() + int(device_data["expires_in"])
         sess["portal_base_url"] = portal_base_url
         sess["client_id"] = client_id
@@ -6422,7 +6435,7 @@ async def _start_device_code_flow(
             "user_code": str(device_data["user_code"]),
             "verification_url": str(device_data["verification_uri_complete"]),
             "expires_in": int(device_data["expires_in"]),
-            "poll_interval": int(device_data["interval"]),
+            "poll_interval": poll_interval,
         }
 
     if provider_id == "openai-codex":

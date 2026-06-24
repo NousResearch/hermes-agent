@@ -397,6 +397,130 @@ class TestGatewayRuntimeStatus:
 
         assert status.get_runtime_status_running_pid(payload) == 132
 
+    def test_runtime_status_running_pid_rejects_pid_reused_by_other_profile(self, monkeypatch):
+        """Regression (user report): a stale profile's recycled PID must not be
+        reported running just because it now hosts a DIFFERENT profile's gateway.
+
+        Per-profile Docker supervision: ``coder``'s gateway died leaving a
+        ``gateway_state=running`` record at PID 139.  The OS then recycled 139
+        onto the live *default* gateway (``hermes gateway run``).  The recorded
+        ``start_time`` is absent (older state file), so the start-time PID-reuse
+        guard does not catch it.  Without the profile scope the live command
+        line still ``looks_like_gateway`` and ``coder`` is wrongly reported up.
+        """
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+        }
+        coder_home = Path("/opt/data/profiles/coder")
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        # PID 139 is now the live DEFAULT gateway (bare, no -p coder).
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes gateway run --replace"
+        )
+
+        assert (
+            status.get_runtime_status_running_pid(payload, expected_home=coder_home)
+            is None
+        )
+
+    def test_runtime_status_running_pid_accepts_matching_profile_cmdline(self, monkeypatch):
+        """A genuinely-live named gateway carries ``-p <profile>`` / ``--profile``
+        on its command line and must be reported running for that profile."""
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 1000,
+        }
+        coder_home = Path("/opt/data/profiles/coder")
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        for cmdline in (
+            "hermes -p coder gateway run --replace",
+            "/opt/hermes/.venv/bin/hermes --profile coder gateway run --replace",
+            "hermes_home=/opt/data/profiles/coder hermes gateway run --replace",
+        ):
+            monkeypatch.setattr(status, "_read_process_cmdline", lambda pid, c=cmdline: c)
+            assert (
+                status.get_runtime_status_running_pid(payload, expected_home=coder_home)
+                == 139
+            ), cmdline
+
+    def test_runtime_status_running_pid_default_profile_rejects_named_cmdline(self, monkeypatch):
+        """The default/root profile runs a bare gateway (no profile flag).  A
+        recycled PID now hosting a *named* profile gateway must not be reported
+        running for the default profile."""
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+        }
+        default_home = Path("/opt/data")
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes -p coder gateway run --replace"
+        )
+
+        assert (
+            status.get_runtime_status_running_pid(payload, expected_home=default_home)
+            is None
+        )
+
+    def test_runtime_status_running_pid_default_profile_accepts_bare_cmdline(self, monkeypatch):
+        """The default/root gateway (bare ``hermes gateway run``) is reported
+        running for the default profile."""
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 1000,
+        }
+        default_home = Path("/opt/data")
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes gateway run --replace"
+        )
+
+        assert (
+            status.get_runtime_status_running_pid(payload, expected_home=default_home)
+            == 139
+        )
+
+    def test_runtime_status_running_pid_profile_scope_falls_back_when_cmdline_unreadable(self, monkeypatch):
+        """When the live command line is unreadable (Windows/permission), the
+        profile scope cannot apply — fall back to the persisted record so the
+        cross-platform behavior is preserved."""
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 1000,
+        }
+        coder_home = Path("/opt/data/profiles/coder")
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert (
+            status.get_runtime_status_running_pid(payload, expected_home=coder_home)
+            == 139
+        )
+
     def test_write_runtime_status_records_platform_failure(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

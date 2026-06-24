@@ -1483,8 +1483,15 @@ class TestEdgeCases:
 
         # Primary pid-file/lock check returns None (no lock held by this reader),
         # exactly as it does for a separate-process dashboard. The fallback must
-        # then read the state file and confirm the gateway is alive.
-        with patch("gateway.status.get_running_pid", return_value=None):
+        # then read the state file and confirm the gateway is alive by checking
+        # the recorded PID's live command line. In the real separate-process
+        # scenario that PID belongs to the live gateway, so mock its command
+        # line to a bare ``gateway run`` (this is the default/root home, which
+        # runs the gateway with no profile flag).
+        with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._read_process_cmdline",
+            return_value="hermes gateway run --replace",
+        ):
             assert _check_gateway_running(default_home) is True
 
     def test_gateway_running_check_runtime_state_stopped(self, profile_env):
@@ -1510,6 +1517,77 @@ class TestEdgeCases:
 
         with patch("gateway.status.get_running_pid", return_value=None):
             assert _check_gateway_running(default_home) is False
+
+    def test_gateway_running_check_rejects_pid_reused_by_other_profile(self, profile_env):
+        """Regression (user report): the dashboard showed a NAMED profile's
+        gateway green while ``hermes -p <name> gateway status`` showed it
+        stopped.
+
+        Per-profile Docker supervision: a named profile (``coder``) left a
+        ``gateway_state=running`` record whose PID the OS later recycled onto a
+        DIFFERENT live process (here the default profile's gateway).  The
+        ``_check_gateway_running`` fallback must scope the live PID to *this*
+        profile's command line, so a recycled PID hosting another profile's
+        gateway is not reported running for ``coder``.
+        """
+        from hermes_cli.profiles import _check_gateway_running
+
+        tmp_path = profile_env
+        coder_home = tmp_path / ".hermes" / "profiles" / "coder"
+        coder_home.mkdir(parents=True, exist_ok=True)
+        (coder_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": 139,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "gateway_state": "running",
+                    "active_agents": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        # PID 139 is alive but is the DEFAULT gateway (bare, no -p coder), not
+        # coder's. start_time is absent so the PID-reuse guard cannot catch it;
+        # the profile scope must.
+        with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._pid_exists", return_value=True
+        ), patch("gateway.status._get_process_start_time", return_value=None), patch(
+            "gateway.status._read_process_cmdline",
+            return_value="hermes gateway run --replace",
+        ):
+            assert _check_gateway_running(coder_home) is False
+
+    def test_gateway_running_check_detects_matching_named_profile(self, profile_env):
+        """A genuinely-live named gateway (``-p coder`` on its command line) is
+        still reported running for that profile."""
+        from hermes_cli.profiles import _check_gateway_running
+
+        tmp_path = profile_env
+        coder_home = tmp_path / ".hermes" / "profiles" / "coder"
+        coder_home.mkdir(parents=True, exist_ok=True)
+        (coder_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": 139,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "start_time": 1000,
+                    "gateway_state": "running",
+                    "active_agents": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=None), patch(
+            "gateway.status._pid_exists", return_value=True
+        ), patch("gateway.status._get_process_start_time", return_value=1000), patch(
+            "gateway.status._read_process_cmdline",
+            return_value="hermes -p coder gateway run --replace",
+        ):
+            assert _check_gateway_running(coder_home) is True
 
     def test_profile_name_boundary_single_char(self):
         """Single alphanumeric character is valid."""

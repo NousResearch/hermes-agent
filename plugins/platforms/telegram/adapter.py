@@ -2972,7 +2972,20 @@ class TelegramAdapter(BasePlatformAdapter):
         if finalize and self._rich_eligible(content):
             rich_result = await self._try_edit_rich(chat_id, message_id, content)
             if rich_result is not None:
-                return rich_result
+                if rich_result.success:
+                    return rich_result
+                # Rich edit failed — if content exceeds the legacy limit, fall
+                # through to _edit_overflow_split for reliable delivery.  The
+                # rich API call is atomic (either succeeds or raises), so the
+                # message was NOT edited and we can safely split via the legacy
+                # path.  (#51961)
+                if utf16_len(content) <= self.MAX_MESSAGE_LENGTH:
+                    return rich_result
+                logger.debug(
+                    "[%s] Rich finalize failed for oversized content (%d UTF-16), "
+                    "falling through to legacy overflow split",
+                    self.name, utf16_len(content),
+                )
 
         # Pre-flight: if content already exceeds the limit, split-and-deliver
         # without round-tripping a doomed edit.  During streaming

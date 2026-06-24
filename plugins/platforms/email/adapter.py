@@ -971,11 +971,33 @@ async def _standalone_send(
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=_ssl.create_default_context())
-        server.login(address, password)
-        server.send_message(msg)
-        server.quit()
+        ctx = _ssl.create_default_context()
+
+        def _connect(*, ipv4_only: bool = False) -> smtplib.SMTP:
+            smtp_cls = _IPv4SMTP if ipv4_only else smtplib.SMTP
+            smtp_ssl_cls = _IPv4SMTP_SSL if ipv4_only else smtplib.SMTP_SSL
+            if smtp_port == 465:
+                return smtp_ssl_cls(smtp_host, smtp_port, timeout=SMTP_CONNECT_TIMEOUT, context=ctx)
+            client = smtp_cls(smtp_host, smtp_port, timeout=SMTP_CONNECT_TIMEOUT)
+            try:
+                client.starttls(context=ctx)
+            except Exception:
+                client.close()
+                raise
+            return client
+
+        try:
+            server = _connect()
+        except (socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
+            if isinstance(exc, _ssl.SSLError):
+                raise
+            server = _connect(ipv4_only=True)
+
+        try:
+            server.login(address, password)
+            server.send_message(msg)
+        finally:
+            server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         try:

@@ -1482,5 +1482,92 @@ class TestConnectionConfigResolution(unittest.TestCase):
             self.assertTrue(check_email_requirements())
 
 
+class TestStandaloneSendSmtp(unittest.TestCase):
+    """Test _standalone_send() IPv4 fallback and port-465 support."""
+
+    def test_port_587_uses_starttls(self):
+        """Non-465 ports must use SMTP + STARTTLS, not SMTP_SSL."""
+        import asyncio
+        from unittest.mock import MagicMock, patch
+
+        mock_client = MagicMock()
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "a@test.com", "EMAIL_PASSWORD": "pw",
+            "EMAIL_SMTP_HOST": "smtp.test.com", "EMAIL_SMTP_PORT": "587",
+        }):
+            with patch("smtplib.SMTP", return_value=mock_client) as mock_smtp, \
+                 patch("smtplib.SMTP_SSL") as mock_ssl:
+                from plugins.platforms.email.adapter import _standalone_send
+                pconfig = MagicMock()
+                pconfig.extra = {}
+                result = asyncio.run(_standalone_send(pconfig, "b@test.com", "hi"))
+
+        mock_smtp.assert_called_once()
+        mock_client.starttls.assert_called_once()
+        mock_ssl.assert_not_called()
+        self.assertTrue(result.get("success"))
+
+    def test_port_465_uses_smtp_ssl(self):
+        """Port 465 must use SMTP_SSL (implicit TLS), not SMTP + STARTTLS."""
+        import asyncio
+
+        mock_ssl_client = MagicMock()
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "a@test.com", "EMAIL_PASSWORD": "pw",
+            "EMAIL_SMTP_HOST": "smtp.test.com", "EMAIL_SMTP_PORT": "465",
+        }):
+            with patch("smtplib.SMTP") as mock_smtp, \
+                 patch("smtplib.SMTP_SSL", return_value=mock_ssl_client):
+                from plugins.platforms.email.adapter import _standalone_send
+                pconfig = MagicMock()
+                pconfig.extra = {}
+                result = asyncio.run(_standalone_send(pconfig, "b@test.com", "hi"))
+
+        mock_smtp.assert_not_called()
+        self.assertTrue(result.get("success"))
+
+    def test_ipv4_fallback_on_timeout(self):
+        """Connection timeout triggers IPv4-only retry."""
+        import asyncio
+        import socket as _socket
+        from plugins.platforms.email import adapter as email_mod
+
+        mock_client = MagicMock()
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "a@test.com", "EMAIL_PASSWORD": "pw",
+            "EMAIL_SMTP_HOST": "smtp.test.com", "EMAIL_SMTP_PORT": "587",
+        }):
+            with patch("smtplib.SMTP", side_effect=_socket.timeout("timed out")), \
+                 patch.object(email_mod, "_IPv4SMTP", return_value=mock_client):
+                pconfig = MagicMock()
+                pconfig.extra = {}
+                result = asyncio.run(email_mod._standalone_send(pconfig, "b@test.com", "hi"))
+
+        mock_client.starttls.assert_called_once()
+        self.assertTrue(result.get("success"))
+
+    def test_ssl_error_not_retried(self):
+        """TLS verification failure must not trigger IPv4 fallback."""
+        import asyncio
+        import ssl as _ssl
+        from plugins.platforms.email import adapter as email_mod
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "a@test.com", "EMAIL_PASSWORD": "pw",
+            "EMAIL_SMTP_HOST": "smtp.test.com", "EMAIL_SMTP_PORT": "587",
+        }):
+            with patch("smtplib.SMTP", side_effect=_ssl.SSLError("cert verify")), \
+                 patch.object(email_mod, "_IPv4SMTP") as mock_ipv4:
+                pconfig = MagicMock()
+                pconfig.extra = {}
+                result = asyncio.run(email_mod._standalone_send(pconfig, "b@test.com", "hi"))
+
+        mock_ipv4.assert_not_called()
+        self.assertIn("error", result)
+
+
 if __name__ == "__main__":
     unittest.main()

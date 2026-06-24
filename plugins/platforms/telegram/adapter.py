@@ -1745,9 +1745,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
                 if self.has_fatal_error:
                     return
-                if not (self._app and self._app.bot):
+                bot = self._app.bot if self._app else None
+                if bot is None:
                     continue
-                await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
+                # A real PTB Bot always exposes get_me(); if it's absent the
+                # app isn't a live polling client (e.g. torn down or a test
+                # double), so there is nothing to probe — exit rather than spin.
+                if not callable(getattr(bot, "get_me", None)):
+                    return
+                await asyncio.wait_for(bot.get_me(), PROBE_TIMEOUT)
             except asyncio.CancelledError:
                 return
             except (asyncio.TimeoutError, OSError) as probe_err:

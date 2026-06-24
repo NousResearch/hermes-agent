@@ -298,6 +298,43 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     return None
 
 
+def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> Optional[str]:
+    """Return an informational notice when a created job won't deliver anywhere.
+
+    TUI/CLI sessions cannot be captured as a cron ``origin`` (no
+    ``HERMES_SESSION_PLATFORM``/``CHAT_ID`` is set for them), so a
+    ``deliver="origin"`` request — or an omitted ``deliver`` that defaults to
+    origin-or-local — produces a job that runs and saves output to
+    ``last_output`` but is never delivered back into the session. This is by
+    design (there is no live-delivery channel for local sessions), but silently
+    dropping the user's "tell me when it runs" intent is the trap reported in
+    #51568. Surface it at create time so the agent can relay it instead of
+    promising a delivery that never happens.
+
+    Returns ``None`` when the user explicitly asked for ``local`` (no surprise),
+    or when the job resolves to a real delivery target.
+    """
+    # An explicit local request is exactly what the user asked for — no notice.
+    if (user_deliver or "").strip().lower() == "local":
+        return None
+    try:
+        from cron.scheduler import _resolve_delivery_targets
+
+        if _resolve_delivery_targets(job):
+            return None  # Will actually deliver somewhere — nothing to flag.
+    except Exception:
+        # If resolution can't be evaluated, fall back to the origin signal.
+        if job.get("origin"):
+            return None
+    return (
+        "This is a local-only cron job: its output is saved (view it with "
+        "cronjob(action='list')) but will NOT be delivered back into this "
+        "session — CLI/TUI sessions have no live-delivery channel. To be "
+        "notified when it runs, recreate or update the job with deliver set to "
+        "a gateway-connected platform, e.g. deliver='telegram' or deliver='all'."
+    )
+
+
 def _repeat_display(job: Dict[str, Any]) -> str:
     times = (job.get("repeat") or {}).get("times")
     completed = (job.get("repeat") or {}).get("completed", 0)
@@ -607,6 +644,10 @@ def cronjob(
                 no_agent=_no_agent,
             )
             _notify_provider_jobs_changed_safe()
+            _create_message = f"Cron job '{job['name']}' created."
+            _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
+            if _local_notice:
+                _create_message = f"{_create_message} {_local_notice}"
             return json.dumps(
                 {
                     "success": True,
@@ -619,7 +660,7 @@ def cronjob(
                     "deliver": job.get("deliver", "local"),
                     "next_run_at": job["next_run_at"],
                     "job": _format_job(job),
-                    "message": f"Cron job '{job['name']}' created.",
+                    "message": _create_message,
                 },
                 indent=2,
             )

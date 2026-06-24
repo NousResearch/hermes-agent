@@ -503,3 +503,81 @@ class TestResolveModelOverride:
         )
         assert provider == "custom:cliproxy"
         assert model == "gpt-5.4"
+
+
+class TestLocalDeliveryNotice:
+    """#51568 — TUI/CLI cron jobs are local-only; surface that at create time
+    so the agent doesn't promise a delivery that never happens."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        # Default: no session origin (the TUI/CLI condition).
+        for var in (
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_THREAD_ID",
+            "HERMES_SESSION_CHAT_NAME",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars()  # reset ContextVars to empty
+        yield
+        clear_session_vars(tokens)
+
+    def test_omitted_deliver_no_origin_emits_notice(self):
+        created = json.loads(
+            cronjob(action="create", prompt="Output the time", schedule="every 2m")
+        )
+        assert created["success"] is True
+        # Omitted deliver from a session with no origin downgrades to local.
+        assert created["deliver"] == "local"
+        assert "local-only cron job" in created["message"]
+        assert "deliver='telegram'" in created["message"]
+
+    def test_explicit_origin_no_origin_emits_notice(self):
+        created = json.loads(
+            cronjob(
+                action="create", prompt="x", schedule="every 2m", deliver="origin"
+            )
+        )
+        assert created["deliver"] == "origin"
+        assert "local-only cron job" in created["message"]
+
+    def test_explicit_local_no_notice(self):
+        # The user explicitly asked for local — no surprise to flag.
+        created = json.loads(
+            cronjob(
+                action="create", prompt="x", schedule="every 2m", deliver="local"
+            )
+        )
+        assert created["deliver"] == "local"
+        assert "local-only cron job" not in created["message"]
+
+    def test_explicit_platform_target_no_notice(self):
+        # An explicit platform:chat target resolves to a real delivery target.
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="x",
+                schedule="every 2m",
+                deliver="telegram:123",
+            )
+        )
+        assert created["deliver"] == "telegram:123"
+        assert "local-only cron job" not in created["message"]
+
+    def test_gateway_origin_no_notice(self, monkeypatch):
+        # With a captured gateway origin, omitted deliver becomes origin and
+        # resolves to that chat — nothing to warn about.
+        from gateway.session_context import set_session_vars
+
+        set_session_vars(platform="telegram", chat_id="999")
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 2m")
+        )
+        assert created["deliver"] == "origin"
+        assert "local-only cron job" not in created["message"]

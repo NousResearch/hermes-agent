@@ -709,7 +709,24 @@ PLATFORM_HINTS = {
         "(those are only intercepted on messaging platforms like Telegram, "
         "Discord, Slack, etc.; on the CLI they render as literal text). "
         "When referring to a file you created or changed, just state its "
-        "absolute path in plain text; the user can open it from there."
+        "absolute path in plain text; the user can open it from there. "
+        "Cron jobs scheduled from this session are LOCAL-ONLY: their output is "
+        "saved (viewable via cronjob action='list') but is NOT delivered back "
+        "into this terminal — there is no live-delivery channel here. If the "
+        "user wants to be notified when a job runs, the job's `deliver` must "
+        "target a gateway-connected messaging platform (e.g. deliver='telegram' "
+        "or 'all'). Do not promise the user that a deliver='origin' or "
+        "default-deliver cron job will message them in this session."
+    ),
+    "tui": (
+        "You are running in the Hermes terminal UI (TUI). "
+        "Cron jobs scheduled from this session are LOCAL-ONLY: their output is "
+        "saved (viewable via cronjob action='list') but is NOT delivered back "
+        "into this TUI session — there is no live-delivery channel here. If the "
+        "user wants to be notified when a job runs, the job's `deliver` must "
+        "target a gateway-connected messaging platform (e.g. deliver='telegram' "
+        "or 'all'). Do not promise the user that a deliver='origin' or "
+        "default-deliver cron job will message them in this session."
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "

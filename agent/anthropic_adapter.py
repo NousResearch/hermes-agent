@@ -2532,6 +2532,16 @@ def build_anthropic_kwargs(
                 kwargs["temperature"] = 1
                 kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
 
+        # Third-party providers: disable thinking by default
+        # Non-Anthropic models (deepseek, qwen, glm, etc.) exposed through
+        # Anthropic-compatible endpoints may route ALL output into thinking
+        # blocks when no thinking config is provided (e.g. deepseek-v4-flash
+        # on api.openmodel.ai). Disable thinking for these models unless the
+        # caller has explicitly set a reasoning_config.
+        _is_native_anthro = model.lower().startswith("claude-")
+        if not reasoning_config and not _is_native_anthro and not _is_kimi_coding:
+            kwargs["thinking"] = {"type": "disabled"}
+
     # ── Strip sampling params on 4.7+ ─────────────────────────────────
     # Opus 4.7 rejects any non-default temperature/top_p/top_k with a 400.
     # Callers (auxiliary_client, etc.) may set these for older models;

@@ -112,6 +112,11 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "anthropic_messages"
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
+    if hostname == "api.openmodel.ai":
+        # OpenModel API exposes Anthropic Messages protocol via /v1/messages
+        # (same shape as api.anthropic.com); the /v1/chat/completions route
+        # returns 404 when models list show supported_protocols: ["messages"]
+        return "anthropic_messages"
     return None
 
 

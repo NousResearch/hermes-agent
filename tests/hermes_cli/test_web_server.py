@@ -2285,7 +2285,14 @@ class TestPtyWebSocket:
             self.ws_module.app.state, "bound_port", 9119, raising=False
         )
 
-        with self.client.websocket_connect(self._url(channel="abc-123")) as conn:
+        # bound_host is set above, so the WS Host/Origin guard
+        # (_ws_host_origin_is_allowed, GHSA-4pqm-j46f-795x) now requires the
+        # handshake Host header to match the bound interface. The TestClient
+        # defaults to "Host: testserver"; send a loopback Host so the upgrade
+        # is accepted.
+        with self.client.websocket_connect(
+            self._url(channel="abc-123"), headers={"host": "127.0.0.1:9119"}
+        ) as conn:
             try:
                 conn.receive_bytes()
             except Exception:

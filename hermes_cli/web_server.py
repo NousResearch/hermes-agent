@@ -3314,6 +3314,48 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
         return True
     return client_host in _LOOPBACK_HOSTS
 
+
+def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
+    """Apply the dashboard Host/Origin guard to WebSocket upgrades.
+
+    FastAPI HTTP middleware (``host_header_middleware``) does not run for
+    WebSocket routes, so the DNS-rebinding Host check used for normal
+    dashboard HTTP requests must be repeated here before accepting the
+    upgrade. Browsers also send an Origin header on WebSocket handshakes;
+    when present, require it to target the same bound dashboard host.
+
+    Mirrors the HTTP-layer ``_is_accepted_host`` defence so a victim browser
+    tricked into a TTL-flipped attacker hostname (DNS rebinding) cannot reach
+    the WS endpoints even though its connection peer is 127.0.0.1.
+
+    See GHSA-4pqm-j46f-795x.
+    """
+    bound_host = getattr(app.state, "bound_host", None)
+    if not bound_host:
+        return True
+
+    host_header = ws.headers.get("host", "")
+    if not _is_accepted_host(host_header, bound_host):
+        return False
+
+    origin = ws.headers.get("origin", "")
+    if not origin:
+        # No Origin header (non-browser client, e.g. the spawned PTY child).
+        # The session-token / client-IP gates remain the auth boundary.
+        return True
+
+    parsed = urllib.parse.urlparse(origin)
+    if parsed.scheme not in {"http", "https"}:
+        # Non-web origin (packaged Electron: file://, null, app://). The
+        # token credential is the real auth boundary for those clients.
+        return True
+
+    if not parsed.netloc:
+        return False
+
+    return _is_accepted_host(parsed.netloc, bound_host)
+
+
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
@@ -3413,6 +3455,10 @@ async def pty_ws(ws: WebSocket) -> None:
     expected = _SESSION_TOKEN
     if not hmac.compare_digest(token.encode(), expected.encode()):
         await ws.close(code=4401)
+        return
+
+    if not _ws_host_origin_is_allowed(ws):
+        await ws.close(code=4403)
         return
 
     if not _ws_client_is_allowed(ws):
@@ -3534,6 +3580,10 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
+    if not _ws_host_origin_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+
     if not _ws_client_is_allowed(ws):
         await ws.close(code=4403)
         return
@@ -3566,6 +3616,10 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
+    if not _ws_host_origin_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+
     if not _ws_client_is_allowed(ws):
         await ws.close(code=4403)
         return
@@ -3593,6 +3647,10 @@ async def events_ws(ws: WebSocket) -> None:
     token = ws.query_params.get("token", "")
     if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
         await ws.close(code=4401)
+        return
+
+    if not _ws_host_origin_is_allowed(ws):
+        await ws.close(code=4403)
         return
 
     if not _ws_client_is_allowed(ws):

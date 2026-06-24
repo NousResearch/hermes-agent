@@ -15,7 +15,8 @@
     "write-translations": "docusaurus write-translations",
     "write-heading-ids": "docusaurus write-heading-ids",
     "typecheck": "tsc",
-    "lint:diagrams": "ascii-guard lint --exclude-code-blocks docs"
+    "lint:diagrams": "ascii-guard lint --exclude-code-blocks docs",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@docusaurus/core": "3.10.1",
@@ -32,6 +33,7 @@
     "@docusaurus/module-type-aliases": "3.10.1",
     "@docusaurus/tsconfig": "3.10.1",
     "@docusaurus/types": "3.10.1",
+    "patch-package": "^8.0.1",
     "typescript": "~5.6.2"
   },
   "browserslist": {
@@ -47,6 +49,7 @@
     ]
   },
   "overrides": {
+    "js-yaml": "4.2.0",
     "serialize-javascript": "7.0.5",
     "uuid": "11.1.1",
     "joi": "17.13.4",

@@ -146,3 +146,90 @@ class TestHostHeaderMiddleware:
         resp = client.get("/api/status")
         # Should get through to the status endpoint, not a 400
         assert resp.status_code != 400
+
+
+class _FakeWS:
+    """Minimal WebSocket stand-in exposing just the .headers mapping the
+    Host/Origin guard reads. Avoids spinning up the full ASGI app."""
+
+    def __init__(self, headers: dict[str, str]):
+        # Header lookups in the guard are lowercase; mirror that.
+        self.headers = {k.lower(): v for k, v in headers.items()}
+
+
+class TestWebSocketHostOriginGuard:
+    """Tests for GHSA-4pqm-j46f-795x — DNS-rebinding bypass via WebSocket
+    endpoints. FastAPI HTTP middleware does NOT run on WS upgrades, so the
+    Host (and, when present, Origin) header must be validated inside the WS
+    handlers. _ws_host_origin_is_allowed is that guard."""
+
+    def setup_method(self):
+        from hermes_cli.web_server import app
+
+        app.state.bound_host = "127.0.0.1"
+
+    def teardown_method(self):
+        from hermes_cli.web_server import app
+
+        if hasattr(app.state, "bound_host"):
+            del app.state.bound_host
+
+    def test_unbound_host_skips_guard(self):
+        from hermes_cli.web_server import app, _ws_host_origin_is_allowed
+
+        if hasattr(app.state, "bound_host"):
+            del app.state.bound_host
+        # No bound_host → nothing to compare against → allow (HTTP layer
+        # behaves the same).
+        assert _ws_host_origin_is_allowed(_FakeWS({"host": "evil.example"}))
+
+    def test_loopback_host_allowed(self):
+        from hermes_cli.web_server import _ws_host_origin_is_allowed
+
+        assert _ws_host_origin_is_allowed(_FakeWS({"host": "localhost:9119"}))
+        assert _ws_host_origin_is_allowed(_FakeWS({"host": "127.0.0.1:9119"}))
+
+    def test_rebinding_host_rejected(self):
+        """An attacker hostname that TTL-flips to 127.0.0.1 passes the peer-IP
+        check but must be rejected by the Host guard on the WS upgrade."""
+        from hermes_cli.web_server import _ws_host_origin_is_allowed
+
+        assert not _ws_host_origin_is_allowed(_FakeWS({"host": "evil.example"}))
+        assert not _ws_host_origin_is_allowed(
+            _FakeWS({"host": "rebind.attacker.test:9119"})
+        )
+
+    def test_cross_origin_rejected(self):
+        """Browser sends Origin on the WS handshake; a mismatched web Origin
+        (the cross-site rebinding driver) must be rejected even if Host is
+        spoofed to loopback."""
+        from hermes_cli.web_server import _ws_host_origin_is_allowed
+
+        assert not _ws_host_origin_is_allowed(
+            _FakeWS({"host": "127.0.0.1:9119", "origin": "https://evil.example"})
+        )
+
+    def test_matching_origin_allowed(self):
+        from hermes_cli.web_server import _ws_host_origin_is_allowed
+
+        assert _ws_host_origin_is_allowed(
+            _FakeWS({"host": "127.0.0.1:9119", "origin": "http://127.0.0.1:9119"})
+        )
+
+    def test_non_web_origin_allowed(self):
+        """Packaged Electron / native clients send file://, null, or app://
+        origins. The token credential is the auth boundary there — don't
+        reject on Origin scheme."""
+        from hermes_cli.web_server import _ws_host_origin_is_allowed
+
+        for origin in ("file://", "null", "app://hermes"):
+            assert _ws_host_origin_is_allowed(
+                _FakeWS({"host": "127.0.0.1:9119", "origin": origin})
+            )
+
+    def test_missing_origin_allowed(self):
+        """Non-browser WS clients omit Origin entirely — allowed (Host still
+        validated)."""
+        from hermes_cli.web_server import _ws_host_origin_is_allowed
+
+        assert _ws_host_origin_is_allowed(_FakeWS({"host": "127.0.0.1:9119"}))

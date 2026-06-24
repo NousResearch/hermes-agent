@@ -231,7 +231,7 @@ def enforce_turn_budget(
         if total_size <= config.turn_budget:
             break
         msg = tool_messages[idx]
-        content = msg["content"]
+        content = msg.get("content", "")
         tool_use_id = msg.get("tool_call_id", f"budget_{idx}")
 
         replacement = maybe_persist_tool_result(

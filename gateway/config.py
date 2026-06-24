@@ -1476,11 +1476,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if hass_token:
         if Platform.HOMEASSISTANT not in config.platforms:
             config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
-        config.platforms[Platform.HOMEASSISTANT].enabled = True
-        config.platforms[Platform.HOMEASSISTANT].token = hass_token
+        hass_config = config.platforms[Platform.HOMEASSISTANT]
+        # Respect an explicit YAML disable. This lets specialized gateway
+        # profiles inherit shared secrets without unintentionally connecting
+        # the Home Assistant adapter.
+        enabled_was_explicit = bool(hass_config.extra.get("_enabled_explicit", False))
+        if hass_config.enabled or not enabled_was_explicit:
+            hass_config.enabled = True
+        hass_config.token = hass_token
         hass_url = os.getenv("HASS_URL")
         if hass_url:
-            config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
+            hass_config.extra["url"] = hass_url
 
     # Email
     email_addr = os.getenv("EMAIL_ADDRESS")
@@ -1530,23 +1536,29 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if api_server_enabled or api_server_key:
         if Platform.API_SERVER not in config.platforms:
             config.platforms[Platform.API_SERVER] = PlatformConfig()
-        config.platforms[Platform.API_SERVER].enabled = True
+        api_config = config.platforms[Platform.API_SERVER]
+        # API_SERVER_KEY may come from a machine-global/shared secret source.
+        # Respect an explicit YAML disable so secondary profile gateways do not
+        # all try to bind the same local API port.
+        enabled_was_explicit = bool(api_config.extra.get("_enabled_explicit", False))
+        if api_config.enabled or not enabled_was_explicit:
+            api_config.enabled = True
         if api_server_key:
-            config.platforms[Platform.API_SERVER].extra["key"] = api_server_key
+            api_config.extra["key"] = api_server_key
         if api_server_cors_origins:
             origins = [origin.strip() for origin in api_server_cors_origins.split(",") if origin.strip()]
             if origins:
-                config.platforms[Platform.API_SERVER].extra["cors_origins"] = origins
+                api_config.extra["cors_origins"] = origins
         if api_server_port:
             try:
-                config.platforms[Platform.API_SERVER].extra["port"] = int(api_server_port)
+                api_config.extra["port"] = int(api_server_port)
             except ValueError:
                 pass
         if api_server_host:
-            config.platforms[Platform.API_SERVER].extra["host"] = api_server_host
+            api_config.extra["host"] = api_server_host
         api_server_model_name = os.getenv("API_SERVER_MODEL_NAME", "")
         if api_server_model_name:
-            config.platforms[Platform.API_SERVER].extra["model_name"] = api_server_model_name
+            api_config.extra["model_name"] = api_server_model_name
 
     # Webhook platform
     webhook_enabled = os.getenv("WEBHOOK_ENABLED", "").lower() in {"true", "1", "yes"}

@@ -451,6 +451,36 @@ class TestBuildPreloadedSkillsPrompt:
         assert loaded == ["present-skill"]
         assert missing == ["missing-skill"]
 
+    def test_loads_kanban_shared_skill_dir_from_internal_env(self, tmp_path, monkeypatch):
+        """Kanban workers can preload skills from the board owner's skill dir.
+
+        Worker profiles have their own HERMES_HOME and local skills directory,
+        but the dispatcher injects HERMES_KANBAN_SHARED_SKILLS_DIRS so a task
+        skill created in the shared/default profile loads instead of crashing as
+        Unknown skill(s) during startup.
+        """
+        local = tmp_path / "worker" / "skills"
+        shared = tmp_path / "default" / "skills"
+        local.mkdir(parents=True)
+        shared.mkdir(parents=True)
+        _make_skill(shared, "shared-kanban-skill")
+
+        monkeypatch.setenv("HERMES_KANBAN_SHARED_SKILLS_DIRS", str(shared))
+        from agent.skill_utils import _external_dirs_cache_clear
+        _external_dirs_cache_clear()
+        try:
+            with patch("tools.skills_tool.SKILLS_DIR", local):
+                prompt, loaded, missing = build_preloaded_skills_prompt(
+                    ["shared-kanban-skill"]
+                )
+        finally:
+            monkeypatch.delenv("HERMES_KANBAN_SHARED_SKILLS_DIRS", raising=False)
+            _external_dirs_cache_clear()
+
+        assert missing == []
+        assert loaded == ["shared-kanban-skill"]
+        assert "shared-kanban-skill" in prompt
+
 
 class TestBuildSkillInvocationMessage:
     def test_loads_skill_by_stored_path_when_frontmatter_name_differs(self, tmp_path):

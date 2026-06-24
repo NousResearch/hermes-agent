@@ -2729,6 +2729,7 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
 
     conn = kb.connect()
     try:
+        (kb.kanban_home() / "skills").mkdir(parents=True, exist_ok=True)
         tid = kb.create_task(conn, title="skill-loading test",
                              assignee="some-profile")
         task = kb.get_task(conn, tid)
@@ -2751,6 +2752,9 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
     env = captured["env"]
     assert env.get("HERMES_KANBAN_TASK") == tid
     assert env.get("HERMES_PROFILE") == "some-profile"
+    assert env.get("HERMES_KANBAN_SHARED_SKILLS_DIRS") == str(
+        kb.kanban_home() / "skills"
+    )
 
 
 def test_default_spawn_raises_terminal_timeout_to_task_runtime(kanban_home, monkeypatch):

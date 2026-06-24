@@ -404,7 +404,7 @@ def _normalize_string_set(values) -> Set[str]:
 # which becomes the dominant cost of ``hermes`` startup when ~120 skills
 # each trigger a category lookup during banner construction (10+ seconds
 # of pure waste).
-_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
+_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int, str], List[Path]] = {}
 
 
 def _external_dirs_cache_clear() -> None:
@@ -414,28 +414,46 @@ def _external_dirs_cache_clear() -> None:
 
 
 def get_external_skills_dirs() -> List[Path]:
-    """Read ``skills.external_dirs`` from config.yaml and return validated paths.
+    """Read additional skill roots and return validated paths.
+
+    Sources, in order:
+    1. ``skills.external_dirs`` from config.yaml.
+    2. Internal dispatcher-provided ``HERMES_KANBAN_SHARED_SKILLS_DIRS``.
 
     Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
     path.  Only directories that actually exist are returned.  Duplicates and
     paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
 
-    Cached in-process, keyed on ``config.yaml`` mtime — the function is
-    called once per skill during banner / tool-registry scans, and YAML
-    parsing a non-trivial config dominates ``hermes`` cold-start time
+    ``HERMES_KANBAN_SHARED_SKILLS_DIRS`` is intentionally not a user-facing
+    config knob.  The Kanban dispatcher sets it for worker subprocesses so a
+    profile-isolated worker can still read the board owner's shared skill
+    library at startup instead of crashing with ``Unknown skill(s)`` when a
+    task references a default-profile skill.
+
+    Cached in-process, keyed on ``config.yaml`` mtime + the internal env value
+    — the function is called once per skill during banner / tool-registry scans,
+    and YAML parsing a non-trivial config dominates ``hermes`` cold-start time
     when the cache is absent.
     """
     config_path = get_config_path()
+    shared_dirs_env = os.environ.get("HERMES_KANBAN_SHARED_SKILLS_DIRS", "")
+    cache_key: Tuple[str, int, str] | None
     if not config_path.exists():
-        return []
-
-    # Cache key: (absolute path, mtime_ns).  stat() is ~2us vs ~85ms for
-    # the full YAML parse, so the fast path is nearly free.
-    try:
-        stat = config_path.stat()
-        cache_key: Tuple[str, int] = (str(config_path), stat.st_mtime_ns)
-    except OSError:
-        cache_key = None  # type: ignore[assignment]
+        if not shared_dirs_env:
+            return []
+        cache_key = None
+    else:
+        # Cache key: (absolute path, mtime_ns, internal shared dirs env).  stat() is
+        # ~2us vs ~85ms for the full YAML parse, so the fast path is nearly free.
+        try:
+            stat = config_path.stat()
+            cache_key = (
+                str(config_path),
+                stat.st_mtime_ns,
+                shared_dirs_env,
+            )
+        except OSError:
+            cache_key = None  # type: ignore[assignment]
 
     if cache_key is not None:
         cached = _EXTERNAL_DIRS_CACHE.get(cache_key)
@@ -443,31 +461,30 @@ def get_external_skills_dirs() -> List[Path]:
             # Return a copy so callers can't mutate the cached list.
             return list(cached)
 
+    raw_dirs: List[str] = []
     parsed = _load_raw_config()
-    if not parsed:
-        return []
+    if parsed:
+        skills_cfg = parsed.get("skills")
+        if isinstance(skills_cfg, dict):
+            configured_dirs = skills_cfg.get("external_dirs")
+            if isinstance(configured_dirs, str):
+                raw_dirs.append(configured_dirs)
+            elif isinstance(configured_dirs, list):
+                raw_dirs.extend(str(item) for item in configured_dirs)
 
-    skills_cfg = parsed.get("skills")
-    if not isinstance(skills_cfg, dict):
-        return []
-
-    raw_dirs = skills_cfg.get("external_dirs")
-    if not raw_dirs:
-        result: List[Path] = []
-        if cache_key is not None:
-            _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
-        return result
-    if isinstance(raw_dirs, str):
-        raw_dirs = [raw_dirs]
-    if not isinstance(raw_dirs, list):
-        return []
+    if shared_dirs_env:
+        # Dispatcher-provided value is pathsep-separated so paths containing
+        # commas remain valid on POSIX/Windows.
+        raw_dirs.extend(
+            item for item in shared_dirs_env.split(os.pathsep) if item.strip()
+        )
 
     from hermes_constants import get_hermes_home
 
     hermes_home = get_hermes_home()
     local_skills = get_skills_dir().resolve()
     seen: Set[Path] = set()
-    result = []
+    result: List[Path] = []
 
     for entry in raw_dirs:
         entry = str(entry).strip()

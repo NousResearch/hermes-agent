@@ -565,6 +565,46 @@ class TestLoadGatewayConfig:
         assert config.platforms[Platform.API_SERVER].enabled is False
         assert Platform.API_SERVER not in config.get_connected_platforms()
 
+    def test_explicit_api_server_disable_beats_env_key(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  api_server:\n"
+            "    enabled: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("API_SERVER_KEY", "test-api-key")
+        monkeypatch.setenv("API_SERVER_PORT", "8642")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.API_SERVER].enabled is False
+        assert config.platforms[Platform.API_SERVER].extra["key"] == "test-api-key"
+        assert Platform.API_SERVER not in config.get_connected_platforms()
+
+    def test_explicit_homeassistant_disable_beats_env_token(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  homeassistant:\n"
+            "    enabled: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HASS_TOKEN", "test-hass-token")
+        monkeypatch.setenv("HASS_URL", "http://homeassistant.local:8123")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.HOMEASSISTANT].enabled is False
+        assert config.platforms[Platform.HOMEASSISTANT].token == "test-hass-token"
+        assert Platform.HOMEASSISTANT not in config.get_connected_platforms()
+
     def test_bridges_nested_gateway_platforms_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

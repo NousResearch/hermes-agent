@@ -7330,6 +7330,16 @@ def _default_spawn(
         # This only happens in test fixtures where the isolated
         # HERMES_HOME never had profiles created.
         pass
+
+    # Kanban boards are shared across profiles, while skills are normally
+    # profile-local. Give worker subprocesses read-only visibility into the
+    # board owner's shared skill library so per-task skills created/curated in
+    # the default profile do not fatal-crash isolated workers with
+    # ``Unknown skill(s)``. The child still writes new skills to its own profile;
+    # this only widens the read path used by skill discovery/loading.
+    shared_skills_dir = kanban_home() / "skills"
+    if shared_skills_dir.is_dir():
+        env["HERMES_KANBAN_SHARED_SKILLS_DIRS"] = str(shared_skills_dir)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

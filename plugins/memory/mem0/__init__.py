@@ -47,6 +47,70 @@ _BREAKER_COOLDOWN_SECS = 120
 
 _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 
+
+class _SelfHostedBackend:
+    """Lightweight httpx backend for self-hosted Mem0 REST API (no SDK needed)."""
+
+    def __init__(self, host: str, api_key: str = ""):
+        import httpx
+        self._host = host.rstrip("/")
+        self._client = httpx.Client(
+            base_url=self._host,
+            timeout=30.0,
+            headers={"Authorization": f"Token {api_key}"} if api_key else {},
+        )
+
+    def add(self, messages, *, infer=True, user_id=None, agent_id=None, metadata=None):
+        payload = {"messages": messages, "infer": infer}
+        if user_id:
+            payload["user_id"] = user_id
+        if agent_id:
+            payload["agent_id"] = agent_id
+        if metadata:
+            payload["metadata"] = metadata
+        r = self._client.post("/memories", json=payload)
+        r.raise_for_status()
+        return r.json()
+
+    def get_all(self, *, filters=None, page=1, page_size=100):
+        params = {}
+        if filters:
+            if filters.get("user_id"):
+                params["user_id"] = filters["user_id"]
+            if filters.get("agent_id"):
+                params["agent_id"] = filters["agent_id"]
+        params["page"] = page
+        params["page_size"] = page_size
+        r = self._client.get("/memories", params=params)
+        r.raise_for_status()
+        return r.json()
+
+    def search(self, query, *, filters=None, top_k=5, rerank=False):
+        payload = {"query": query, "top_k": top_k, "rerank": rerank}
+        if filters:
+            payload["filters"] = filters
+        r = self._client.post("/search", json=payload)
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, dict) and "results" in data:
+            return data["results"]
+        if isinstance(data, list):
+            return data
+        return [data] if data else []
+
+    def update(self, memory_id, **kwargs):
+        r = self._client.put(f"/memories/{memory_id}", json=kwargs)
+        r.raise_for_status()
+        return r.json()
+
+    def delete(self, memory_id):
+        r = self._client.delete(f"/memories/{memory_id}")
+        r.raise_for_status()
+        return r.json()
+
+    def close(self):
+        self._client.close()
+
 # Sentinel returned when neither MEM0_USER_ID nor a gateway-native id is
 # available. Treated as "no operator-configured user_id" by initialize() so
 # that legacy mem0.json files written by the setup wizard (which historically
@@ -95,7 +159,7 @@ def _load_config() -> dict:
         try:
             file_cfg = json.loads(config_path.read_text(encoding="utf-8"))
             config.update({k: v for k, v in file_cfg.items()
-                           if v is not None and v != ""})
+                           if v is not None and (v != "" or k == "api_key")})
         except Exception:
             pass
 
@@ -217,6 +281,9 @@ class Mem0MemoryProvider(MemoryProvider):
         mode = cfg.get("mode", "platform")
         if mode == "oss":
             return bool(cfg.get("oss", {}).get("vector_store"))
+        # Self-hosted mode: available when host is configured
+        if cfg.get("host"):
+            return True
         return bool(cfg.get("api_key"))
 
     def save_config(self, values, hermes_home):
@@ -251,6 +318,12 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def _create_backend(self):
         try:
+            # Self-hosted mode: use httpx wrapper when host is configured
+            if self._config.get("host"):
+                return _SelfHostedBackend(
+                    self._config["host"],
+                    self._api_key or "",
+                )
             if self._mode == "oss":
                 from ._backend import OSSBackend
                 return OSSBackend(self._config.get("oss", {}))

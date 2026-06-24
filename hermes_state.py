@@ -554,6 +554,15 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    -- ── Session hover summary (issue #45103) ────────────────────────
+    -- Cached AI-generated 3-5 sentence summary of the conversation,
+    -- surfaced in the Desktop sidebar's hover card. Pre-generated in
+    -- the background so hover is instant (no LLM call on hover).
+    -- summary_model records which model produced the text so a future
+    -- schema-driven regeneration policy can detect stale summaries.
+    summary TEXT,
+    summary_updated_at REAL,
+    summary_model TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -2326,11 +2335,16 @@ class SessionDB:
                     continue
                 # Preserve the root's started_at for stable sort order, but
                 # surface the tip's identity and activity data.
+                # Note: summary / summary_updated_at / summary_model are
+                # projected from the tip too — the cached summary belongs
+                # to the live conversation, not the historical root
+                # (issue #45103).
                 merged = dict(s)
                 for key in (
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",
                     "model", "system_prompt", "cwd",
+                    "summary", "summary_updated_at", "summary_model",
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]

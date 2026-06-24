@@ -129,9 +129,14 @@ export function ProfileRail() {
   const isAll = scope === ALL_PROFILES
   const activeKey = normalizeProfileKey(gatewayProfile)
   const defaultProfile = profiles.find(profile => profile.is_default)
-  const onDefault = !isAll && activeKey === 'default'
+  const defaultKey = defaultProfile ? normalizeProfileKey(defaultProfile.name) : 'default'
+  const onDefault = !isAll && activeKey === defaultKey
 
-  const named = sortByProfileOrder(profiles.filter(profile => !profile.is_default), order)
+  const named = sortByProfileOrder(
+    profiles.filter(profile => !profile.is_default),
+    order
+  )
+
   const multiProfile = profiles.length > 1
 
   // distance constraint: a small drag reorders, a tap still selects the profile.
@@ -196,19 +201,26 @@ export function ProfileRail() {
 
   return (
     <div aria-label="Profiles" className="flex items-center gap-0.5" role="tablist">
-      {/* One button toggles default ↔ all: home face when scoped to a profile,
-          layers face when showing everything. Pinned left like Manage is right.
-          Hidden until a second profile exists. */}
+      {/* Multi-profile users need two distinct concepts here: "All profiles" is
+          an aggregate browsing mode; the default/root profile is a real profile
+          identity and must stay visible by name. */}
       {multiProfile &&
         (defaultProfile ? (
-          // On default → toggle to all. Anywhere else (all view or a named
-          // profile) → return to default. So leaving a profile never lands on all.
-          <ProfilePill
-            active={isAll || onDefault}
-            glyph={isAll ? 'layers' : 'home'}
-            label={onDefault ? p.showAllProfiles : p.switchToProfile(defaultProfile.name)}
-            onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
-          />
+          <>
+            <ProfilePill
+              active={isAll}
+              glyph="layers"
+              label={p.allProfiles}
+              onSelect={() => setShowAllProfiles(true)}
+            />
+            <ProfileLabelPill
+              active={onDefault}
+              glyph="home"
+              label={defaultProfile.name}
+              onSelect={() => selectProfile(defaultProfile.name)}
+              tooltip={p.switchToProfile(defaultProfile.name)}
+            />
+          </>
         ) : (
           <ProfilePill active={isAll} glyph="layers" label={p.allProfiles} onSelect={() => setShowAllProfiles(true)} />
         ))}
@@ -328,6 +340,36 @@ function ProfilePill({ active, glyph, label, onSelect }: ProfilePillProps) {
         variant="ghost"
       >
         <Codicon name={glyph} size="0.875rem" />
+      </Button>
+    </Tip>
+  )
+}
+
+interface ProfileLabelPillProps {
+  active: boolean
+  glyph: string
+  label: string
+  tooltip: string
+  onSelect: () => void
+}
+
+function ProfileLabelPill({ active, glyph, label, onSelect, tooltip }: ProfileLabelPillProps) {
+  return (
+    <Tip label={tooltip}>
+      <Button
+        aria-label={tooltip}
+        aria-pressed={active}
+        className={cn(
+          'h-6 max-w-20 gap-1 overflow-hidden bg-transparent px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
+          active && 'bg-(--ui-control-active-background) text-foreground'
+        )}
+        onClick={onSelect}
+        size="xs"
+        type="button"
+        variant="ghost"
+      >
+        <Codicon name={glyph} size="0.75rem" />
+        <span className="min-w-0 truncate">{label}</span>
       </Button>
     </Tip>
   )
@@ -481,7 +523,11 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
             <Codicon name="edit" size="0.875rem" />
             <span>{p.rename}</span>
           </ContextMenuItem>
-          <ContextMenuItem className="text-destructive focus:text-destructive" onSelect={onDelete} variant="destructive">
+          <ContextMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={onDelete}
+            variant="destructive"
+          >
             <Codicon name="trash" size="0.875rem" />
             <span>{t.common.delete}</span>
           </ContextMenuItem>

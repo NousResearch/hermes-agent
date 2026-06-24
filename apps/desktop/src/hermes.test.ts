@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import { getSessionMessages, listAllProfileSessions, listSessions, searchSessions } from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -55,6 +55,28 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
+    })
+  })
+
+  it('searches all profiles by default with the cross-profile timeout', async () => {
+    api.mockResolvedValue({ results: [] })
+
+    await searchSessions('docker deploy')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/search?q=docker%20deploy&profile=all',
+      timeoutMs: 60_000
+    })
+  })
+
+  it('scopes search to a concrete profile without request-level routing', async () => {
+    api.mockResolvedValue({ results: [] })
+
+    await searchSessions('docker', 'coder')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/search?q=docker&profile=coder',
+      timeoutMs: 60_000
     })
   })
 })

@@ -10,8 +10,11 @@
 
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
+import { SETTINGS_ROUTE } from '@/app/routes'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
+import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
 import { PetEggHatch } from '@/components/pet/pet-egg-hatch'
 import { PetStarShower } from '@/components/pet/pet-star-shower'
 import { PetSprite } from '@/components/pet/pet-sprite'
@@ -22,12 +25,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { GenerateButton } from '@/components/ui/generate-button'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
+import { ExternalLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
-import { Egg, Loader2, PawPrint, RefreshCw } from '@/lib/icons'
+import { Egg, Loader2, PawPrint, RefreshCw, Settings2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import { type PetInfo } from '@/store/pet'
 import {
+  $petGenAvailable,
   $petGenDrafts,
   $petGenerateOpen,
   $petGenError,
@@ -38,6 +43,7 @@ import {
   adoptHatched,
   cancelGenerate,
   cancelHatch,
+  checkPetGenAvailable,
   cleanPetName,
   cleanupPetGen,
   closePetGenerate,
@@ -87,6 +93,13 @@ export function PetGenerateOverlay() {
   const status = useStore($petGenStatus)
   const { requestGateway } = useGatewayRequest()
 
+  // Yield the screen to a full-screen route overlay (e.g. /settings while the
+  // user adds an image-gen key) without tearing down — the store keeps us open,
+  // and we reappear + re-check on return.
+  if (useRouteOverlayActive()) {
+    return null
+  }
+
   const handleOpenChange = (next: boolean) => {
     if (!next) {
       // Deletes a hatched-but-unadopted preview pet so it doesn't linger, then
@@ -116,15 +129,27 @@ function PetGenerateContent() {
   const { t } = useI18n()
   const copy = t.commandCenter.generatePet
   const { requestGateway } = useGatewayRequest()
+  const navigate = useNavigate()
 
   const status = useStore($petGenStatus)
   const error = useStore($petGenError)
+  const available = useStore($petGenAvailable)
+  // `null` = not yet probed → stay optimistic (show the prompt); only the
+  // confirmed-no-backend case swaps in the setup card.
+  const unavailable = available === false
   const drafts = useStore($petGenDrafts)
   const selected = useStore($petGenSelected)
   const preview = useStore($petGenPreview)
   const stage = useStore($petGenStage)
 
   const [prompt, setPrompt] = useState('')
+
+  // Probe backend availability on open — and again whenever the content
+  // remounts (e.g. after returning from the providers settings), so adding a
+  // key flips the setup card to the prompt with no manual refresh.
+  useEffect(() => {
+    void checkPetGenAvailable(requestGateway)
+  }, [requestGateway])
 
   const busy = status === 'generating' || status === 'hatching'
   const hasDrafts = drafts.length > 0
@@ -176,14 +201,23 @@ function PetGenerateContent() {
   // The header title tracks the phase instead of sticking on "Generate a pet".
   const headerTitle =
     status === 'hatching' ? copy.spawning : status === 'preview' || status === 'adopting' ? copy.hatched : copy.title
-  // Prompt input only belongs on the describe/draft screens.
-  const showPrompt = status !== 'hatching' && status !== 'preview' && status !== 'adopting'
+  // Send the user to set up a key without closing — the overlay yields to the
+  // settings route (useRouteOverlayActive) and reappears + re-checks on return.
+  const setupImageGen = () => navigate(`${SETTINGS_ROUTE}?tab=providers`)
+
+  // Prompt input only belongs on the describe/draft screens (and never when
+  // there's no backend to generate with).
+  const showPrompt = !unavailable && status !== 'hatching' && status !== 'preview' && status !== 'adopting'
 
   return (
     <>
-      <DialogHeader>
-        <DialogTitle icon={Egg}>{headerTitle}</DialogTitle>
-      </DialogHeader>
+      {unavailable ? (
+        <DialogTitle className="sr-only">{copy.title}</DialogTitle>
+      ) : (
+        <DialogHeader>
+          <DialogTitle icon={Egg}>{headerTitle}</DialogTitle>
+        </DialogHeader>
+      )}
 
       <div className={cn('flex min-h-0 flex-1 flex-col', isEmptyState ? 'gap-4' : 'gap-2.5')}>
         {/* Concept prompt with the inline sparkle generate/stop affordance (the
@@ -215,13 +249,15 @@ function PetGenerateContent() {
           </div>
         )}
 
-        {error && status !== 'preview' && status !== 'adopting' && (
+        {error && !unavailable && status !== 'preview' && status !== 'adopting' && (
           <Alert variant="destructive">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
 
-        {status === 'stale' ? (
+        {unavailable ? (
+          <GenerateUnavailable onSetup={setupImageGen} />
+        ) : status === 'stale' ? (
           <Alert variant="destructive">
             <AlertDescription>{copy.staleBackend}</AlertDescription>
           </Alert>
@@ -256,6 +292,51 @@ function PetGenerateContent() {
 // Creative seed prompts — specifics make better pets (petdex's own advice).
 // Doubling as guidance and a one-click way to see the flow.
 const EXAMPLE_PROMPTS = ['a bubble-tea otter', 'a tiny sock elf', 'a pixel dragon', 'a grumpy office cat', 'a neon axolotl']
+
+// Shown when no reference-capable image backend is configured: generation is
+// impossible, so we replace the prompt entirely with a friendly path to set one
+// up (in-app) plus where to grab a key.
+function GenerateUnavailable({ onSetup }: { onSetup: () => void }) {
+  return (
+    <div className="flex flex-col items-center gap-4 px-2 py-6 text-center">
+      <span className="grid size-11 place-items-center rounded-full bg-primary/10 text-primary">
+        <PawPrint className="size-5" />
+      </span>
+      <div className="space-y-1.5">
+        <p className="text-[length:var(--conversation-text-font-size)] font-semibold">Add an image backend to generate</p>
+        <p className="mx-auto max-w-[19rem] text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-tertiary)">
+          Hatching a custom pet needs a provider that can ground on a reference image.
+        </p>
+      </div>
+      <Button onClick={onSetup} size="sm">
+        <Settings2 className="size-4" />
+        Set up image generation
+      </Button>
+      <p className="flex flex-wrap items-center justify-center gap-x-1.5 text-[0.6875rem] text-(--ui-text-tertiary)">
+        <span>Grab a key from</span>
+        <ExternalLink href="https://portal.nousresearch.com" showExternalIcon={false}>
+          Nous Portal
+        </ExternalLink>
+        <span>·</span>
+        <ExternalLink
+          className="opacity-40 transition-opacity hover:opacity-100"
+          href="https://openrouter.ai/keys"
+          showExternalIcon={false}
+        >
+          OpenRouter
+        </ExternalLink>
+        <span>·</span>
+        <ExternalLink
+          className="opacity-40 transition-opacity hover:opacity-100"
+          href="https://platform.openai.com/api-keys"
+          showExternalIcon={false}
+        >
+          OpenAI
+        </ExternalLink>
+      </p>
+    </div>
+  )
+}
 
 function EmptyHint({ onExample }: { onExample: (prompt: string) => void }) {
   return (

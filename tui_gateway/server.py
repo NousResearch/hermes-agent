@@ -6144,6 +6144,27 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"ok": True})
 
 
+@method("pet.generate.status")
+def _(rid, params: dict) -> dict:
+    """Whether pet generation is possible right now.
+
+    True only when a reference-capable image backend (OpenRouter / Nous Portal /
+    OpenAI gpt-image) is configured — the desktop checks this on open so it can
+    offer setup instead of a dead prompt. Cheap (config + plugin discovery).
+    """
+    try:
+        from agent.pet.generate.imagegen import GenerationError, resolve_provider
+
+        try:
+            resolve_provider(require_references=True)
+            return _ok(rid, {"available": True})
+        except GenerationError:
+            return _ok(rid, {"available": False})
+    except Exception as exc:  # noqa: BLE001 - never break the surface
+        logger.debug("pet.generate.status failed: %s", exc)
+        return _ok(rid, {"available": False})
+
+
 @method("pet.generate")
 def _(rid, params: dict) -> dict:
     """Generate candidate base looks for a new pet (the draft/variant step).

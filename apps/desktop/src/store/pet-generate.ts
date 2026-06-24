@@ -96,6 +96,22 @@ export const $petGenStatus = atom<PetGenStatus>('idle')
 export const $petGenStage = atom<PetHatchStage | null>(null)
 export const $petGenError = atom<string | null>(null)
 
+// Whether a reference-capable image backend is configured. `null` = not yet
+// probed (treat as available so the prompt shows optimistically); the overlay
+// re-probes on open and on return from settings.
+export const $petGenAvailable = atom<boolean | null>(null)
+
+/** Probe whether generation is possible (a reference-capable backend exists). */
+export async function checkPetGenAvailable(request: GatewayRequest): Promise<void> {
+  try {
+    const res = await request<{ available: boolean }>('pet.generate.status')
+    $petGenAvailable.set(Boolean(res?.available))
+  } catch {
+    // Unknown (old backend / transient) — don't gate the UI on a failed probe.
+    $petGenAvailable.set(true)
+  }
+}
+
 /** Whether the dedicated "Generate a pet" Pokédex overlay is open. */
 export const $petGenerateOpen = atom(false)
 

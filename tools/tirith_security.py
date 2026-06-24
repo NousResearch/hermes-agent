@@ -795,12 +795,28 @@ def check_command_security(command: str) -> dict:
     # and the "can be confused with file extensions" heuristic generates false
     # positives for normal API calls.  Any other finding (including other
     # lookalike_tld entries for non-.app TLDs) preserves the warn action.
-    if action == "warn" and findings:
-        non_suppressible = [f for f in findings if not _is_app_tld_finding(f)]
-        if not non_suppressible:
+    # Suppress static false positives where tirith mis-parsed code as a URL.
+    #   * lookalike_tld warnings for the legitimate .app gTLD (warn only).
+    #   * invalid_host_chars findings whose "hostname" is actually a regex or
+    #     quoted-code fragment (block or warn) -- e.g. a re.finditer pattern
+    #     like r'https://www\.alaskaair\.com[^&"<>\s]+'. Such a host carries
+    #     backslashes / character-class brackets that can never occur in a real
+    #     DNS name even under percent-encoding or homograph tricks, so it is
+    #     scanner noise, not a real obfuscated host.
+    # Runtime SSRF resolution (url_safety) still fails closed on any genuinely
+    # bogus host, so dropping these static findings does not lower the floor.
+    if action in {"warn", "block"} and findings:
+        kept = [
+            f
+            for f in findings
+            if not _is_app_tld_finding(f) and not _is_regex_artifact_host_finding(f)
+        ]
+        if not kept:
             action = "allow"
             findings = []
             summary = ""
+        else:
+            findings = kept
 
     return {"action": action, "findings": findings, "summary": summary}
 
@@ -820,3 +836,37 @@ def _is_app_tld_finding(finding: dict) -> bool:
         if val is not None and ".app" in str(val).lower():
             return True
     return False
+
+
+# Characters that are unmistakable regex / shell-code metacharacters and can
+# never appear in a real DNS hostname -- not even via percent-encoding (which
+# yields %5C / %5B, not the literal byte) or IDN homographs. Their presence in
+# a tirith-extracted "hostname" means tirith mis-parsed a regex literal or a
+# quoted code fragment inside the command as if it were a URL.
+_REGEX_ARTIFACT_HOST_CHARS = frozenset('\\[]^(){}|<>"')
+
+
+def _is_regex_artifact_host_finding(finding: dict) -> bool:
+    """True when an invalid_host_chars finding is really a regex/code fragment.
+
+    tirith's static lint pulls a pseudo-hostname out of the raw command and
+    flags characters that are "never valid in DNS". Regex literals embedded in
+    code (for example a re.finditer pattern with escaped dots and a character
+    class) trip this on every run. We recognise that case by the presence of
+    metacharacters that cannot occur in any real URL host, so the caller can
+    drop the finding and stop benign web-scraping commands from gating.
+    """
+    if not isinstance(finding, dict):
+        return False
+    if finding.get("rule_id") != "invalid_host_chars":
+        return False
+    candidates = []
+    for ev in finding.get("evidence") or []:
+        if isinstance(ev, dict) and ev.get("raw") is not None:
+            candidates.append(str(ev["raw"]))
+    for field in ("value", "host", "hostname", "detail", "description", "message"):
+        val = finding.get(field)
+        if val is not None:
+            candidates.append(str(val))
+    blob = "".join(candidates)
+    return any(ch in _REGEX_ARTIFACT_HOST_CHARS for ch in blob)

@@ -70,9 +70,97 @@ def _seed_config(tmp_path: Path, mcp_servers: dict):
 class FakeTool:
     """Mimics an MCP tool object returned by the SDK."""
 
-    def __init__(self, name: str, description: str = ""):
+    def __init__(self, name: str, description: str = "", inputSchema=None):
         self.name = name
         self.description = description
+        self.inputSchema = (
+            inputSchema if inputSchema is not None
+            else {"type": "object", "properties": {}}
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests: MCP tool-schema validation
+# ---------------------------------------------------------------------------
+
+class TestMcpSchemaValidation:
+    def test_validate_rejects_default_null(self):
+        from hermes_cli.mcp_config import (
+            MCPSchemaValidationError,
+            _validate_mcp_tool_schemas,
+        )
+
+        tool = FakeTool(
+            "bad_tool",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "optional_text": {"type": "string", "default": None},
+                },
+            },
+        )
+
+        with pytest.raises(MCPSchemaValidationError, match="default:null"):
+            _validate_mcp_tool_schemas([tool])
+
+    def test_validate_accepts_plain_object_schema(self):
+        from hermes_cli.mcp_config import _validate_mcp_tool_schemas
+
+        tool = FakeTool(
+            "good_tool",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                },
+                "required": ["query"],
+            },
+        )
+
+        _validate_mcp_tool_schemas([tool])
+
+    def test_validate_rejects_malformed_json_schema(self):
+        from hermes_cli.mcp_config import (
+            MCPSchemaValidationError,
+            _validate_mcp_tool_schemas,
+        )
+
+        tool = FakeTool(
+            "bad_schema",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": 123},
+                },
+            },
+        )
+
+        with pytest.raises(MCPSchemaValidationError, match="invalid JSON Schema"):
+            _validate_mcp_tool_schemas([tool])
+
+    def test_cmd_validate_schemas_exits_nonzero_on_failure(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {"bad": {"command": "fake"}})
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_server_tools",
+            lambda name, cfg: [
+                FakeTool(
+                    "bad_tool",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"optional_text": {"type": "string", "default": None}},
+                    },
+                )
+            ],
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_validate_schemas
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_mcp_validate_schemas(_make_args(name="bad"))
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "Schema validation failed" in out
 
 
 # ---------------------------------------------------------------------------

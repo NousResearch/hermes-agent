@@ -75,6 +75,16 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_test_p = mcp_sub.add_parser("test", help="Test MCP server connection")
     mcp_test_p.add_argument("name", help="Server name to test")
 
+    mcp_validate_p = mcp_sub.add_parser(
+        "validate-schemas",
+        help="Validate configured MCP tool schemas for provider compatibility",
+    )
+    mcp_validate_p.add_argument(
+        "name",
+        nargs="?",
+        help="Server name to validate (omit to validate all configured servers)",
+    )
+
     mcp_cfg_p = mcp_sub.add_parser(
         "configure", aliases=["config"], help="Toggle tool selection"
     )

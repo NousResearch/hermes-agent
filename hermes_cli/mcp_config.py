@@ -294,6 +294,147 @@ def _unwrap_exception_group(exc: BaseException) -> Exception:
     return RuntimeError(str(exc))
 
 
+# ─── hermes mcp validate-schemas ────
+
+class MCPSchemaValidationError(ValueError):
+    """Raised when an MCP server exposes provider-incompatible tool schemas."""
+
+
+def _find_null_defaults(value: Any, path: str = "$") -> List[str]:
+    """Return JSON paths where a schema contains ``default: null``."""
+    hits: List[str] = []
+    if isinstance(value, dict):
+        if "default" in value and value["default"] is None:
+            hits.append(f"{path}.default")
+        for key, child in value.items():
+            hits.extend(_find_null_defaults(child, f"{path}.{key}"))
+    elif isinstance(value, list):
+        for idx, child in enumerate(value):
+            hits.extend(_find_null_defaults(child, f"{path}[{idx}]"))
+    return hits
+
+
+def _validate_mcp_tool_schemas(tools: List[Any]) -> None:
+    """Validate MCP tool schemas for provider compatibility.
+
+    Hermes eagerly registers configured MCP tool schemas at session startup,
+    so a bad schema can break unrelated requests for that profile.  Keep this
+    gate intentionally conservative: schemas must normalize to a JSON object,
+    must serialize cleanly, must be valid JSON Schema, and must not contain
+    ``default: null`` because that provider-incompatible pattern was part of
+    real-world provider incompatibilities.
+    """
+    import json as _json
+    from tools.mcp_tool import _normalize_mcp_input_schema
+
+    errors: List[str] = []
+    for tool in tools:
+        tool_name = getattr(tool, "name", "<unnamed>") or "<unnamed>"
+        raw_schema = getattr(tool, "inputSchema", None)
+        try:
+            schema = _normalize_mcp_input_schema(raw_schema)
+        except Exception as exc:
+            errors.append(f"{tool_name}: schema normalization failed: {exc}")
+            continue
+        if not isinstance(schema, dict):
+            errors.append(f"{tool_name}: normalized schema is {type(schema).__name__}, not object")
+            continue
+        try:
+            _json.dumps(schema, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            errors.append(f"{tool_name}: normalized schema is not strict JSON: {exc}")
+        try:
+            from jsonschema import Draft202012Validator
+
+            Draft202012Validator.check_schema(schema)
+        except Exception as exc:
+            errors.append(f"{tool_name}: invalid JSON Schema: {exc}")
+        null_defaults = _find_null_defaults(schema)
+        if null_defaults:
+            shown = ", ".join(null_defaults[:5])
+            suffix = "" if len(null_defaults) <= 5 else f" (+{len(null_defaults) - 5} more)"
+            errors.append(f"{tool_name}: contains default:null at {shown}{suffix}")
+    if errors:
+        joined = "; ".join(errors)
+        raise MCPSchemaValidationError(f"MCP tool schema validation failed: {joined}")
+
+
+def _probe_server_tools(
+    name: str, config: dict, connect_timeout: float = 30
+) -> List[Any]:
+    """Temporarily connect to one MCP server and return raw MCP tool objects."""
+    issues = validate_mcp_server_entry(name, config)
+    if issues:
+        raise ValueError("; ".join(issues))
+
+    from tools.mcp_tool import (
+        _ensure_mcp_loop,
+        _run_on_mcp_loop,
+        _connect_server,
+        _stop_mcp_loop_if_idle,
+    )
+
+    config = _resolve_mcp_server_config(config)
+
+    _ensure_mcp_loop()
+    tools_found: List[Any] = []
+
+    async def _probe():
+        server = await asyncio.wait_for(
+            _connect_server(name, config), timeout=connect_timeout
+        )
+        try:
+            tools_found.extend(list(server._tools or []))
+        finally:
+            await server.shutdown()
+
+    try:
+        _run_on_mcp_loop(_probe(), timeout=connect_timeout + 10)
+    except BaseException as exc:
+        raise _unwrap_exception_group(exc) from None
+    finally:
+        _stop_mcp_loop_if_idle()
+
+    return tools_found
+
+
+def cmd_mcp_validate_schemas(args):
+    """Validate configured MCP tool schemas without changing config."""
+    servers = _get_mcp_servers()
+    requested = getattr(args, "name", None)
+    if requested:
+        if requested not in servers:
+            _error(f"Server '{requested}' not found in config.")
+            if servers:
+                _info(f"Available: {', '.join(servers.keys())}")
+            return
+        items = [(requested, servers[requested])]
+    else:
+        items = list(servers.items())
+
+    if not items:
+        _info("No MCP servers configured.")
+        return
+
+    failures = 0
+    print()
+    for name, cfg in items:
+        print(color(f"  Validating schemas for '{name}'...", Colors.CYAN))
+        try:
+            tools = _probe_server_tools(name, cfg)
+            _validate_mcp_tool_schemas(tools)
+        except Exception as exc:
+            failures += 1
+            _error(f"{name}: {exc}")
+            continue
+        _success(f"{name}: {len(tools)} tool schema(s) valid")
+    if failures:
+        _error(f"Schema validation failed for {failures}/{len(items)} server(s)")
+        raise SystemExit(1)
+    else:
+        _success(f"Schema validation passed for {len(items)} server(s)")
+
+
 # ─── hermes mcp add ──────────────────────────────────────────────────────────
 
 def cmd_mcp_add(args):
@@ -885,6 +1026,7 @@ def mcp_command(args):
         "list": cmd_mcp_list,
         "ls": cmd_mcp_list,
         "test": cmd_mcp_test,
+        "validate-schemas": cmd_mcp_validate_schemas,
         "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure,
         "login": cmd_mcp_login,
